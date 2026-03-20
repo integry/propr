@@ -1597,6 +1597,982 @@ describe('E2E Webhook PR Events Simulation', () => {
     });
 });
 
+// --- Check Run Event Types ---
+
+interface MockCheckRun {
+    id: number;
+    name: string;
+    head_sha: string;
+    status: 'queued' | 'in_progress' | 'completed';
+    conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | null;
+    pull_requests: Array<{
+        number: number;
+        id: number;
+        head: { sha: string; ref: string };
+        base: { sha: string; ref: string };
+    }>;
+    started_at: string;
+    html_url: string;
+}
+
+interface CheckRunCompletedPayload {
+    action: 'completed';
+    check_run: MockCheckRun;
+    repository: MockRepository;
+    sender: MockSender;
+}
+
+// --- Mock Factory for Check Run Events ---
+
+function createMockCheckRun(options: {
+    name?: string;
+    headSha?: string;
+    conclusion?: MockCheckRun['conclusion'];
+    status?: MockCheckRun['status'];
+    pullRequests?: Array<{ number: number; headSha?: string }>;
+} = {}): MockCheckRun {
+    const {
+        name = 'CI Tests',
+        headSha = 'abc123sha456',
+        conclusion = 'success',
+        status = 'completed',
+        pullRequests = [{ number: 42 }]
+    } = options;
+
+    return {
+        id: Math.floor(Math.random() * 1000000),
+        name,
+        head_sha: headSha,
+        status,
+        conclusion,
+        pull_requests: pullRequests.map(pr => ({
+            number: pr.number,
+            id: pr.number * 100,
+            head: { sha: pr.headSha || headSha, ref: `feature-branch-${pr.number}` },
+            base: { sha: 'base123', ref: 'main' }
+        })),
+        started_at: new Date().toISOString(),
+        html_url: `https://github.com/testowner/testrepo/runs/${Math.floor(Math.random() * 1000)}`
+    };
+}
+
+// --- Mock Check Run Webhook Handler ---
+
+interface MockCheckRunState {
+    processedEvents: Array<{
+        type: 'check_run_completed';
+        payload: CheckRunCompletedPayload;
+        correlationId: string;
+        timestamp: Date;
+    }>;
+    prMerges: Array<{
+        repository: string;
+        prNumber: number;
+        headSha: string;
+        mergedAt: Date;
+    }>;
+    branchDeletions: Array<{
+        repository: string;
+        prNumber: number;
+        branchRef: string;
+    }>;
+    statusUpdates: Array<{
+        repository: string;
+        prNumber: number;
+        newStatus: string;
+    }>;
+    skippedMerges: Array<{
+        repository: string;
+        prNumber: number;
+        reason: string;
+        checkRunSha: string;
+        currentPrSha?: string;
+    }>;
+}
+
+interface MockPRState {
+    number: number;
+    headSha: string;
+    hasAutoMergeLabel: boolean;
+    isDraft: boolean;
+    allChecksPassing: boolean;
+    linkedIssueHasLabel: boolean;
+    headBranch: string;
+    baseBranch: string;
+}
+
+function createMockCheckRunHandler(): MockCheckRunState & {
+    prStates: Map<string, MockPRState>;
+    registerPR: (repository: string, prState: MockPRState) => void;
+    updatePRHead: (repository: string, prNumber: number, newSha: string) => void;
+    processCheckRunEvent: (payload: CheckRunCompletedPayload, correlationId: string) => Promise<void>;
+    clear: () => void;
+} {
+    const state: MockCheckRunState = {
+        processedEvents: [],
+        prMerges: [],
+        branchDeletions: [],
+        statusUpdates: [],
+        skippedMerges: []
+    };
+
+    const prStates = new Map<string, MockPRState>();
+
+    return {
+        ...state,
+        prStates,
+
+        registerPR(repository: string, prState: MockPRState): void {
+            const key = `${repository}:${prState.number}`;
+            prStates.set(key, prState);
+        },
+
+        updatePRHead(repository: string, prNumber: number, newSha: string): void {
+            const key = `${repository}:${prNumber}`;
+            const prState = prStates.get(key);
+            if (prState) {
+                prState.headSha = newSha;
+            }
+        },
+
+        /**
+         * Simulates check_run webhook event processing.
+         * Mimics the behavior in checkRunHandler.ts
+         */
+        async processCheckRunEvent(payload: CheckRunCompletedPayload, correlationId: string): Promise<void> {
+            const repository = payload.repository.full_name;
+
+            // Record the event
+            state.processedEvents.push({
+                type: 'check_run_completed',
+                payload,
+                correlationId,
+                timestamp: new Date()
+            });
+
+            // Only process completed actions
+            if (payload.action !== 'completed') return;
+
+            // Only process success or skipped conclusions
+            const conclusion = payload.check_run.conclusion;
+            if (conclusion !== 'success' && conclusion !== 'skipped') return;
+
+            // Must have associated PRs
+            const pullRequests = payload.check_run.pull_requests;
+            if (!pullRequests || pullRequests.length === 0) return;
+
+            // Process each PR
+            for (const pr of pullRequests) {
+                const prNumber = pr.number;
+                const checkRunSha = payload.check_run.head_sha;
+                const prKey = `${repository}:${prNumber}`;
+                const prState = prStates.get(prKey);
+
+                if (!prState) {
+                    state.skippedMerges.push({
+                        repository,
+                        prNumber,
+                        reason: 'PR not found',
+                        checkRunSha
+                    });
+                    continue;
+                }
+
+                // Skip draft PRs
+                if (prState.isDraft) {
+                    state.skippedMerges.push({
+                        repository,
+                        prNumber,
+                        reason: 'PR is draft',
+                        checkRunSha
+                    });
+                    continue;
+                }
+
+                // Check for auto-merge label (on PR or linked issue)
+                if (!prState.hasAutoMergeLabel && !prState.linkedIssueHasLabel) {
+                    state.skippedMerges.push({
+                        repository,
+                        prNumber,
+                        reason: 'No auto-merge label',
+                        checkRunSha
+                    });
+                    continue;
+                }
+
+                // SHA matching - critical for preventing stale merges
+                if (prState.headSha !== checkRunSha) {
+                    state.skippedMerges.push({
+                        repository,
+                        prNumber,
+                        reason: 'SHA mismatch - outdated check run',
+                        checkRunSha,
+                        currentPrSha: prState.headSha
+                    });
+                    continue;
+                }
+
+                // All checks must be passing
+                if (!prState.allChecksPassing) {
+                    state.skippedMerges.push({
+                        repository,
+                        prNumber,
+                        reason: 'Not all checks passing',
+                        checkRunSha
+                    });
+                    continue;
+                }
+
+                // Merge the PR
+                state.prMerges.push({
+                    repository,
+                    prNumber,
+                    headSha: checkRunSha,
+                    mergedAt: new Date()
+                });
+
+                // Delete the branch
+                state.branchDeletions.push({
+                    repository,
+                    prNumber,
+                    branchRef: prState.headBranch
+                });
+
+                // Update status to merged
+                state.statusUpdates.push({
+                    repository,
+                    prNumber,
+                    newStatus: 'merged'
+                });
+            }
+        },
+
+        clear(): void {
+            state.processedEvents = [];
+            state.prMerges = [];
+            state.branchDeletions = [];
+            state.statusUpdates = [];
+            state.skippedMerges = [];
+            prStates.clear();
+        }
+    };
+}
+
+// --- E2E Webhook Check Run Tests ---
+
+describe('E2E Webhook Check Run Simulation', () => {
+    let checkRunHandler: ReturnType<typeof createMockCheckRunHandler>;
+
+    beforeEach(() => {
+        checkRunHandler = createMockCheckRunHandler();
+    });
+
+    afterEach(() => {
+        checkRunHandler.clear();
+    });
+
+    describe('Check Run Completion Triggers Merge', () => {
+        test('merges PR when check run completes with success and PR has auto-merge label', async () => {
+            // Register a PR with auto-merge label
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 42,
+                headSha: 'abc123sha456',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-42',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'abc123sha456',
+                    pullRequests: [{ number: 42 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-checkrun-001');
+
+            // Verify event was recorded
+            assert.strictEqual(checkRunHandler.processedEvents.length, 1, 'Should record one check run event');
+            assert.strictEqual(checkRunHandler.processedEvents[0]?.type, 'check_run_completed');
+
+            // Verify PR was merged
+            assert.strictEqual(checkRunHandler.prMerges.length, 1, 'Should merge one PR');
+            assert.strictEqual(checkRunHandler.prMerges[0]?.prNumber, 42, 'Should merge PR #42');
+            assert.strictEqual(checkRunHandler.prMerges[0]?.headSha, 'abc123sha456', 'Should record correct SHA');
+
+            // Verify branch was deleted
+            assert.strictEqual(checkRunHandler.branchDeletions.length, 1, 'Should delete one branch');
+            assert.strictEqual(checkRunHandler.branchDeletions[0]?.branchRef, 'feature-branch-42');
+
+            // Verify status was updated
+            assert.strictEqual(checkRunHandler.statusUpdates.length, 1, 'Should update status');
+            assert.strictEqual(checkRunHandler.statusUpdates[0]?.newStatus, 'merged');
+        });
+
+        test('merges PR when check run completes with skipped conclusion', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 43,
+                headSha: 'def456sha789',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-43',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'skipped',
+                    headSha: 'def456sha789',
+                    pullRequests: [{ number: 43 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-checkrun-002');
+
+            assert.strictEqual(checkRunHandler.prMerges.length, 1, 'Should merge PR with skipped conclusion');
+            assert.strictEqual(checkRunHandler.prMerges[0]?.prNumber, 43);
+        });
+
+        test('merges PR when linked issue has auto-merge label (not PR)', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 44,
+                headSha: 'ghi789sha012',
+                hasAutoMergeLabel: false,  // No label on PR
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: true,  // But linked issue has it
+                headBranch: 'feature-branch-44',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'ghi789sha012',
+                    pullRequests: [{ number: 44 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-checkrun-003');
+
+            assert.strictEqual(checkRunHandler.prMerges.length, 1, 'Should merge when linked issue has label');
+        });
+    });
+
+    describe('Ignores Outdated SHAs', () => {
+        test('skips merge when check run SHA does not match current PR head', async () => {
+            // Register PR with a newer SHA than the check run
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 50,
+                headSha: 'new-sha-after-push',  // Current PR head
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-50',
+                baseBranch: 'main'
+            });
+
+            // Check run completed for an older SHA
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'old-sha-before-push',  // Outdated SHA
+                    pullRequests: [{ number: 50 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-checkrun-stale-001');
+
+            // Verify event was recorded
+            assert.strictEqual(checkRunHandler.processedEvents.length, 1, 'Should record the event');
+
+            // Verify PR was NOT merged
+            assert.strictEqual(checkRunHandler.prMerges.length, 0, 'Should NOT merge with stale SHA');
+
+            // Verify skip reason was recorded
+            assert.strictEqual(checkRunHandler.skippedMerges.length, 1, 'Should record skip');
+            assert.strictEqual(checkRunHandler.skippedMerges[0]?.reason, 'SHA mismatch - outdated check run');
+            assert.strictEqual(checkRunHandler.skippedMerges[0]?.checkRunSha, 'old-sha-before-push');
+            assert.strictEqual(checkRunHandler.skippedMerges[0]?.currentPrSha, 'new-sha-after-push');
+        });
+
+        test('handles rapid pushes - only merges on latest SHA', async () => {
+            const repository = 'testowner/testrepo';
+            const prNumber = 51;
+
+            // Initial state with first SHA
+            checkRunHandler.registerPR(repository, {
+                number: prNumber,
+                headSha: 'sha-push-1',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-51',
+                baseBranch: 'main'
+            });
+
+            // Simulate push - update to second SHA before check run completes
+            checkRunHandler.updatePRHead(repository, prNumber, 'sha-push-2');
+
+            // Check run for first push completes
+            const payload1: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-push-1',  // First push SHA
+                    pullRequests: [{ number: prNumber }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload1, 'corr-rapid-001');
+
+            // Should NOT merge (stale)
+            assert.strictEqual(checkRunHandler.prMerges.length, 0, 'Should not merge stale check run');
+
+            // Now check run for second push completes
+            const payload2: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-push-2',  // Current SHA
+                    pullRequests: [{ number: prNumber }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload2, 'corr-rapid-002');
+
+            // Should merge now
+            assert.strictEqual(checkRunHandler.prMerges.length, 1, 'Should merge on current SHA');
+            assert.strictEqual(checkRunHandler.prMerges[0]?.headSha, 'sha-push-2');
+        });
+
+        test('handles out-of-order check run completions', async () => {
+            const repository = 'testowner/testrepo';
+
+            checkRunHandler.registerPR(repository, {
+                number: 52,
+                headSha: 'sha-latest',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-52',
+                baseBranch: 'main'
+            });
+
+            // Simulate check runs completing out of order (old one finishes last)
+            const oldCheckRun: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    name: 'Slow CI',
+                    conclusion: 'success',
+                    headSha: 'sha-old',
+                    pullRequests: [{ number: 52 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            const latestCheckRun: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    name: 'Fast CI',
+                    conclusion: 'success',
+                    headSha: 'sha-latest',
+                    pullRequests: [{ number: 52 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            // Process in wrong order (old one arrives after new one)
+            await checkRunHandler.processCheckRunEvent(latestCheckRun, 'corr-order-001');
+            await checkRunHandler.processCheckRunEvent(oldCheckRun, 'corr-order-002');
+
+            // Should only merge once (on the latest SHA)
+            assert.strictEqual(checkRunHandler.prMerges.length, 1, 'Should merge only once');
+            assert.strictEqual(checkRunHandler.prMerges[0]?.headSha, 'sha-latest', 'Should merge on latest SHA');
+
+            // Should skip the old one
+            const oldSkip = checkRunHandler.skippedMerges.find(s => s.checkRunSha === 'sha-old');
+            assert.ok(oldSkip, 'Should skip old check run');
+            assert.strictEqual(oldSkip?.reason, 'SHA mismatch - outdated check run');
+        });
+    });
+
+    describe('Check Run Conclusion Filtering', () => {
+        test('does not merge when check run fails', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 60,
+                headSha: 'sha-60',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-60',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'failure',
+                    headSha: 'sha-60',
+                    pullRequests: [{ number: 60 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-fail-001');
+
+            // Event should be recorded but not processed for merge
+            assert.strictEqual(checkRunHandler.processedEvents.length, 1);
+            assert.strictEqual(checkRunHandler.prMerges.length, 0, 'Should not merge on failure');
+        });
+
+        test('does not merge when check run is cancelled', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 61,
+                headSha: 'sha-61',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-61',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'cancelled',
+                    headSha: 'sha-61',
+                    pullRequests: [{ number: 61 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-cancel-001');
+
+            assert.strictEqual(checkRunHandler.prMerges.length, 0, 'Should not merge on cancellation');
+        });
+
+        test('does not merge when check run times out', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 62,
+                headSha: 'sha-62',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-62',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'timed_out',
+                    headSha: 'sha-62',
+                    pullRequests: [{ number: 62 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-timeout-001');
+
+            assert.strictEqual(checkRunHandler.prMerges.length, 0, 'Should not merge on timeout');
+        });
+    });
+
+    describe('All Checks Must Pass', () => {
+        test('does not merge when not all checks are passing', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 70,
+                headSha: 'sha-70',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: false,  // Some checks still running or failing
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-70',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-70',
+                    pullRequests: [{ number: 70 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-partial-001');
+
+            assert.strictEqual(checkRunHandler.prMerges.length, 0, 'Should not merge with partial checks');
+            assert.strictEqual(checkRunHandler.skippedMerges[0]?.reason, 'Not all checks passing');
+        });
+    });
+
+    describe('Draft PR Handling', () => {
+        test('does not merge draft PRs', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 80,
+                headSha: 'sha-80',
+                hasAutoMergeLabel: true,
+                isDraft: true,  // Draft PR
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-80',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-80',
+                    pullRequests: [{ number: 80 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-draft-001');
+
+            assert.strictEqual(checkRunHandler.prMerges.length, 0, 'Should not merge draft PR');
+            assert.strictEqual(checkRunHandler.skippedMerges[0]?.reason, 'PR is draft');
+        });
+    });
+
+    describe('No Auto-Merge Label', () => {
+        test('does not merge when PR and linked issue both lack auto-merge label', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 90,
+                headSha: 'sha-90',
+                hasAutoMergeLabel: false,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-branch-90',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-90',
+                    pullRequests: [{ number: 90 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-nolabel-001');
+
+            assert.strictEqual(checkRunHandler.prMerges.length, 0, 'Should not merge without label');
+            assert.strictEqual(checkRunHandler.skippedMerges[0]?.reason, 'No auto-merge label');
+        });
+    });
+
+    describe('Multiple PRs in Single Check Run', () => {
+        test('processes multiple PRs from same check run independently', async () => {
+            // Register two PRs
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 100,
+                headSha: 'shared-sha-123',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-100',
+                baseBranch: 'main'
+            });
+
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 101,
+                headSha: 'shared-sha-123',
+                hasAutoMergeLabel: false,  // No label - should not merge
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-101',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'shared-sha-123',
+                    pullRequests: [{ number: 100 }, { number: 101 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-multi-001');
+
+            // Only PR #100 should be merged
+            assert.strictEqual(checkRunHandler.prMerges.length, 1, 'Should merge only one PR');
+            assert.strictEqual(checkRunHandler.prMerges[0]?.prNumber, 100);
+
+            // PR #101 should be skipped
+            const skip101 = checkRunHandler.skippedMerges.find(s => s.prNumber === 101);
+            assert.ok(skip101, 'Should skip PR #101');
+            assert.strictEqual(skip101?.reason, 'No auto-merge label');
+        });
+    });
+
+    describe('Event Correlation', () => {
+        test('preserves correlation ID through check run processing', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 110,
+                headSha: 'sha-110',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-110',
+                baseBranch: 'main'
+            });
+
+            const correlationId = 'check-run-correlation-xyz';
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-110',
+                    pullRequests: [{ number: 110 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, correlationId);
+
+            assert.strictEqual(checkRunHandler.processedEvents[0]?.correlationId, correlationId);
+        });
+    });
+
+    describe('Complex Scenarios', () => {
+        test('handles full workflow: push -> check run -> merge', async () => {
+            const repository = 'testowner/testrepo';
+            const prNumber = 120;
+            const sha = 'commit-sha-final';
+
+            // Step 1: PR is opened with auto-merge label
+            checkRunHandler.registerPR(repository, {
+                number: prNumber,
+                headSha: sha,
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-120',
+                baseBranch: 'main'
+            });
+
+            // Step 2: CI check run completes successfully
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    name: 'CI Pipeline',
+                    conclusion: 'success',
+                    headSha: sha,
+                    pullRequests: [{ number: prNumber }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-workflow-001');
+
+            // Verify complete merge flow
+            assert.strictEqual(checkRunHandler.prMerges.length, 1, 'PR should be merged');
+            assert.strictEqual(checkRunHandler.branchDeletions.length, 1, 'Branch should be deleted');
+            assert.strictEqual(checkRunHandler.statusUpdates.length, 1, 'Status should be updated');
+            assert.strictEqual(checkRunHandler.statusUpdates[0]?.newStatus, 'merged');
+        });
+
+        test('concurrent check runs for different PRs', async () => {
+            // Register multiple PRs
+            for (let i = 130; i < 133; i++) {
+                checkRunHandler.registerPR('testowner/testrepo', {
+                    number: i,
+                    headSha: `sha-${i}`,
+                    hasAutoMergeLabel: true,
+                    isDraft: false,
+                    allChecksPassing: true,
+                    linkedIssueHasLabel: false,
+                    headBranch: `feature-${i}`,
+                    baseBranch: 'main'
+                });
+            }
+
+            // Simulate concurrent check run completions
+            const payloads = [130, 131, 132].map(num => ({
+                action: 'completed' as const,
+                check_run: createMockCheckRun({
+                    conclusion: 'success' as const,
+                    headSha: `sha-${num}`,
+                    pullRequests: [{ number: num }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }));
+
+            await Promise.all(payloads.map((p, i) =>
+                checkRunHandler.processCheckRunEvent(p, `corr-concurrent-${i}`)
+            ));
+
+            // All should be merged
+            assert.strictEqual(checkRunHandler.prMerges.length, 3, 'All PRs should be merged');
+            const mergedPRs = checkRunHandler.prMerges.map(m => m.prNumber).sort((a, b) => a - b);
+            assert.deepStrictEqual(mergedPRs, [130, 131, 132]);
+        });
+    });
+
+    describe('Edge Cases', () => {
+        test('handles check run with no associated PRs', async () => {
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-orphan',
+                    pullRequests: []  // No PRs
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-orphan-001');
+
+            // Should be recorded but no merges
+            assert.strictEqual(checkRunHandler.processedEvents.length, 1);
+            assert.strictEqual(checkRunHandler.prMerges.length, 0);
+        });
+
+        test('handles unregistered PR gracefully', async () => {
+            // No PR registered, but check run references it
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-unknown',
+                    pullRequests: [{ number: 999 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-unknown-001');
+
+            assert.strictEqual(checkRunHandler.prMerges.length, 0);
+            assert.strictEqual(checkRunHandler.skippedMerges[0]?.reason, 'PR not found');
+        });
+
+        test('records timestamp for each event', async () => {
+            checkRunHandler.registerPR('testowner/testrepo', {
+                number: 140,
+                headSha: 'sha-140',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-140',
+                baseBranch: 'main'
+            });
+
+            const beforeTime = new Date();
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-140',
+                    pullRequests: [{ number: 140 }]
+                }),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-time-001');
+
+            const afterTime = new Date();
+
+            const event = checkRunHandler.processedEvents[0];
+            assert.ok(event);
+            assert.ok(event.timestamp >= beforeTime, 'Timestamp should be after test start');
+            assert.ok(event.timestamp <= afterTime, 'Timestamp should be before test end');
+
+            const merge = checkRunHandler.prMerges[0];
+            assert.ok(merge);
+            assert.ok(merge.mergedAt >= beforeTime, 'Merge time should be after test start');
+            assert.ok(merge.mergedAt <= afterTime, 'Merge time should be before test end');
+        });
+
+        test('handles special characters in repository name', async () => {
+            checkRunHandler.registerPR('my-org/my-repo-name', {
+                number: 150,
+                headSha: 'sha-150',
+                hasAutoMergeLabel: true,
+                isDraft: false,
+                allChecksPassing: true,
+                linkedIssueHasLabel: false,
+                headBranch: 'feature-150',
+                baseBranch: 'main'
+            });
+
+            const payload: CheckRunCompletedPayload = {
+                action: 'completed',
+                check_run: createMockCheckRun({
+                    conclusion: 'success',
+                    headSha: 'sha-150',
+                    pullRequests: [{ number: 150 }]
+                }),
+                repository: createMockRepository('my-org', 'my-repo-name'),
+                sender: createMockSender()
+            };
+
+            await checkRunHandler.processCheckRunEvent(payload, 'corr-special-001');
+
+            assert.strictEqual(checkRunHandler.prMerges.length, 1);
+            assert.strictEqual(checkRunHandler.prMerges[0]?.repository, 'my-org/my-repo-name');
+        });
+    });
+});
+
 describe('Daemon Action Verification', () => {
     test('labeled event triggers appropriate daemon action chain', async () => {
         const webhookHandler = createMockWebhookHandler();
