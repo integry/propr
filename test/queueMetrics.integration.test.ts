@@ -693,6 +693,204 @@ describe('Queue Completion Metrics Integration', () => {
         });
     });
 
+    describe('Queue Failure Metrics', () => {
+        test('should increment failed counter', async () => {
+            const mockJob: MockJob = {
+                data: {
+                    repoOwner: 'failowner',
+                    repoName: 'failrepo',
+                    number: 42,
+                    modelName: 'claude-3-opus',
+                    correlationId: 'fail-corr-42',
+                },
+                timestamp: Date.now(),
+            };
+
+            const error = new Error('Connection timeout');
+            await updateFailedMetrics(mockRedis, mockJob, error);
+
+            const failedCount = await mockRedis.get('metrics:jobs:failed');
+            assert.strictEqual(failedCount, '1', 'Failed count should be incremented to 1');
+
+            // Process another failure
+            const mockJob2: MockJob = {
+                data: {
+                    repoOwner: 'failowner2',
+                    repoName: 'failrepo2',
+                    number: 43,
+                },
+                timestamp: Date.now() + 100,
+            };
+            await updateFailedMetrics(mockRedis, mockJob2, new Error('API error'));
+
+            const failedCount2 = await mockRedis.get('metrics:jobs:failed');
+            assert.strictEqual(failedCount2, '2', 'Failed count should be incremented to 2');
+        });
+
+        test('should truncate error message to 100 characters', async () => {
+            const mockJob: MockJob = {
+                data: {
+                    repoOwner: 'truncowner',
+                    repoName: 'truncrepo',
+                    number: 100,
+                    correlationId: 'trunc-corr-100',
+                },
+                timestamp: Date.now(),
+            };
+
+            // Create a very long error message (200+ characters)
+            const longErrorMessage = 'Error: ' + 'X'.repeat(200) + ' - additional details that should be truncated';
+            const error = new Error(longErrorMessage);
+            await updateFailedMetrics(mockRedis, mockJob, error);
+
+            const aiMetricsRaw = await mockRedis.zrange('metrics:ai:log:v1', 0, -1);
+            assert.strictEqual(aiMetricsRaw.length, 1, 'Should have 1 AI metrics entry');
+
+            const aiMetrics: AiMetrics = JSON.parse(aiMetricsRaw[0]);
+            assert.strictEqual(aiMetrics.error?.length, 100, 'Error message should be truncated to exactly 100 characters');
+            assert.strictEqual(aiMetrics.error, longErrorMessage.substring(0, 100), 'Truncated error should match first 100 chars');
+        });
+
+        test('should log error with timestamp', async () => {
+            const timestamp = Date.now();
+            const mockJob: MockJob = {
+                data: {
+                    repoOwner: 'timestampowner',
+                    repoName: 'timestamprepo',
+                    number: 555,
+                    modelName: 'claude-3-sonnet',
+                    correlationId: 'ts-corr-555',
+                },
+                timestamp,
+            };
+
+            const errorMessage = 'Database connection failed';
+            const error = new Error(errorMessage);
+            await updateFailedMetrics(mockRedis, mockJob, error);
+
+            // Verify AI metrics contains both error and timestamp
+            const aiMetricsRaw = await mockRedis.zrange('metrics:ai:log:v1', 0, -1);
+            assert.strictEqual(aiMetricsRaw.length, 1, 'Should have 1 AI metrics entry');
+
+            const aiMetrics: AiMetrics = JSON.parse(aiMetricsRaw[0]);
+
+            // Verify timestamp is logged
+            assert.strictEqual(aiMetrics.timestamp, timestamp, 'Timestamp should be recorded correctly');
+            assert.ok(aiMetrics.timestamp > 0, 'Timestamp should be a positive number');
+
+            // Verify error is logged
+            assert.strictEqual(aiMetrics.error, errorMessage, 'Error message should be logged');
+
+            // Verify status is failed
+            assert.strictEqual(aiMetrics.status, 'failed', 'Status should be failed');
+
+            // Verify other metadata is preserved
+            assert.strictEqual(aiMetrics.issueNumber, 555, 'Issue number should be recorded');
+            assert.strictEqual(aiMetrics.repo, 'timestampowner/timestamprepo', 'Repository should be recorded');
+            assert.strictEqual(aiMetrics.correlationId, 'ts-corr-555', 'Correlation ID should be recorded');
+            assert.strictEqual(aiMetrics.model, 'claude-3-sonnet', 'Model should be recorded');
+        });
+
+        test('should log multiple failures with distinct timestamps', async () => {
+            const baseTimestamp = Date.now();
+            const failures = [
+                { timestamp: baseTimestamp, number: 1, error: 'Error 1' },
+                { timestamp: baseTimestamp + 1000, number: 2, error: 'Error 2' },
+                { timestamp: baseTimestamp + 2000, number: 3, error: 'Error 3' },
+            ];
+
+            for (const failure of failures) {
+                const mockJob: MockJob = {
+                    data: {
+                        repoOwner: 'multiowner',
+                        repoName: 'multirepo',
+                        number: failure.number,
+                    },
+                    timestamp: failure.timestamp,
+                };
+                await updateFailedMetrics(mockRedis, mockJob, new Error(failure.error));
+            }
+
+            // Verify all failures are logged
+            const failedCount = await mockRedis.get('metrics:jobs:failed');
+            assert.strictEqual(failedCount, '3', 'Should have 3 failed jobs');
+
+            // Verify AI metrics are stored with timestamps (sorted by timestamp)
+            const aiMetricsRaw = await mockRedis.zrange('metrics:ai:log:v1', 0, -1);
+            assert.strictEqual(aiMetricsRaw.length, 3, 'Should have 3 AI metrics entries');
+
+            const metrics = aiMetricsRaw.map(m => JSON.parse(m) as AiMetrics);
+
+            // Verify ordering by timestamp
+            assert.strictEqual(metrics[0].timestamp, baseTimestamp, 'First entry should have earliest timestamp');
+            assert.strictEqual(metrics[1].timestamp, baseTimestamp + 1000, 'Second entry should have middle timestamp');
+            assert.strictEqual(metrics[2].timestamp, baseTimestamp + 2000, 'Third entry should have latest timestamp');
+
+            // Verify each has correct error
+            assert.strictEqual(metrics[0].error, 'Error 1', 'First error message');
+            assert.strictEqual(metrics[1].error, 'Error 2', 'Second error message');
+            assert.strictEqual(metrics[2].error, 'Error 3', 'Third error message');
+        });
+
+        test('should track daily failed count', async () => {
+            const mockJob: MockJob = {
+                data: {
+                    repoOwner: 'dailyowner',
+                    repoName: 'dailyrepo',
+                    number: 200,
+                },
+                timestamp: Date.now(),
+            };
+
+            await updateFailedMetrics(mockRedis, mockJob, new Error('Daily failure'));
+
+            const dateKey = new Date().toISOString().split('T')[0];
+            const dailyFailed = await mockRedis.get(`metrics:daily:${dateKey}:failed`);
+            assert.strictEqual(dailyFailed, '1', 'Daily failed count should be 1');
+        });
+
+        test('should handle error with special characters', async () => {
+            const mockJob: MockJob = {
+                data: {
+                    repoOwner: 'specialowner',
+                    repoName: 'specialrepo',
+                    number: 300,
+                },
+                timestamp: Date.now(),
+            };
+
+            const specialError = 'Error: {"code": 500, "message": "Internal\nServer\tError"}';
+            await updateFailedMetrics(mockRedis, mockJob, new Error(specialError));
+
+            const aiMetricsRaw = await mockRedis.zrange('metrics:ai:log:v1', 0, -1);
+            const aiMetrics: AiMetrics = JSON.parse(aiMetricsRaw[0]);
+
+            assert.strictEqual(aiMetrics.error, specialError, 'Should preserve special characters in error');
+            assert.strictEqual(aiMetrics.status, 'failed', 'Status should be failed');
+        });
+
+        test('should set cost and turns to zero for failed jobs', async () => {
+            const mockJob: MockJob = {
+                data: {
+                    repoOwner: 'zeroowner',
+                    repoName: 'zerorepo',
+                    number: 400,
+                    modelName: 'claude-3-opus',
+                },
+                timestamp: Date.now(),
+            };
+
+            await updateFailedMetrics(mockRedis, mockJob, new Error('Job failed before processing'));
+
+            const aiMetricsRaw = await mockRedis.zrange('metrics:ai:log:v1', 0, -1);
+            const aiMetrics: AiMetrics = JSON.parse(aiMetricsRaw[0]);
+
+            assert.strictEqual(aiMetrics.cost, 0, 'Cost should be 0 for failed jobs');
+            assert.strictEqual(aiMetrics.turns, 0, 'Turns should be 0 for failed jobs');
+            assert.strictEqual(aiMetrics.status, 'failed', 'Status should be failed');
+        });
+    });
+
     describe('Edge Cases', () => {
         test('should handle zero cost jobs', async () => {
             const mockJob: MockJob = {
