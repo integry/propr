@@ -31,6 +31,11 @@ interface CleanupResult {
     retained: number;
 }
 
+interface PruneResult {
+    pruned: number;
+    skipped: number;
+}
+
 async function createRetentionMarker(worktreePath: string, retentionHours: number): Promise<void> {
     const retentionInfo: RetentionInfo = {
         timestamp: new Date().toISOString(),
@@ -149,6 +154,65 @@ async function cleanupExpiredWorktrees(worktreesBasePath: string): Promise<Clean
     retained = result.retained;
 
     return { cleaned, retained };
+}
+
+/**
+ * Safely prunes stale worktree references, but only for entries older than the specified threshold.
+ * This prevents accidentally removing metadata for currently running tasks.
+ *
+ * @param localRepoPath - Path to the main repository
+ * @param minAgeHours - Minimum age in hours before a stale entry can be pruned (default: 1 hour)
+ */
+async function safePruneWorktrees(localRepoPath: string, minAgeHours: number = 1): Promise<PruneResult> {
+    let pruned = 0;
+    let skipped = 0;
+
+    const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
+    if (!await fs.pathExists(worktreesDir)) {
+        return { pruned: 0, skipped: 0 };
+    }
+
+    const entries = await fs.readdir(worktreesDir);
+    const now = Date.now();
+    const minAgeMs = minAgeHours * 60 * 60 * 1000;
+
+    for (const entry of entries) {
+        const entryPath = path.join(worktreesDir, entry);
+        const gitdirFile = path.join(entryPath, 'gitdir');
+
+        if (!await fs.pathExists(gitdirFile)) {
+            // Entry doesn't have gitdir file, check age before removing
+            const stats = await fs.stat(entryPath);
+            const ageMs = now - stats.mtimeMs;
+
+            if (ageMs > minAgeMs) {
+                await fs.remove(entryPath);
+                pruned++;
+            } else {
+                skipped++;
+            }
+            continue;
+        }
+
+        // Check if the worktree directory still exists
+        const gitdirContent = await fs.readFile(gitdirFile, 'utf8');
+        const worktreePath = gitdirContent.trim();
+
+        if (!await fs.pathExists(worktreePath)) {
+            // Worktree directory doesn't exist, check age before removing metadata
+            const stats = await fs.stat(entryPath);
+            const ageMs = now - stats.mtimeMs;
+
+            if (ageMs > minAgeMs) {
+                await fs.remove(entryPath);
+                pruned++;
+            } else {
+                skipped++;
+            }
+        }
+    }
+
+    return { pruned, skipped };
 }
 
 interface WorktreeInfo {
@@ -965,6 +1029,305 @@ describe('Worktree Lifecycle Integration Tests', () => {
             // Worktree should be retained since retention info couldn't be read
             assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree with corrupted info should be retained');
             assert.strictEqual(result.retained, 1, 'Should report 1 retained worktree');
+        });
+    });
+
+    describe('Safe Worktree Pruning', () => {
+        test('detects and prunes stale metadata when worktree directory is missing', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 7001,
+                issueTitle: 'Missing Directory Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Verify worktree metadata exists in .git/worktrees
+            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
+            const metadataEntriesBefore = await fs.readdir(worktreesMetaDir);
+            assert(metadataEntriesBefore.length > 0, 'Should have worktree metadata');
+
+            // Remove the worktree directory directly (simulating a crash or manual deletion)
+            await fs.remove(worktreeInfo.worktreePath);
+
+            // Verify worktree directory is gone but metadata still exists
+            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Worktree directory should be removed');
+            const metadataStillExists = await fs.pathExists(worktreesMetaDir);
+            assert(metadataStillExists, 'Metadata directory should still exist');
+
+            // Backdate the metadata entry so it's older than minAgeHours
+            const metadataEntries = await fs.readdir(worktreesMetaDir);
+            for (const entry of metadataEntries) {
+                const entryPath = path.join(worktreesMetaDir, entry);
+                // Set mtime to 2 hours ago
+                const pastTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
+                await fs.utimes(entryPath, pastTime, pastTime);
+            }
+
+            // Run safe prune with 1 hour minimum age
+            const result = await safePruneWorktrees(testRepoPath, 1);
+
+            // Stale metadata should be pruned
+            assert.strictEqual(result.pruned, 1, 'Should prune 1 stale entry');
+            assert.strictEqual(result.skipped, 0, 'Should skip 0 entries');
+
+            // Verify metadata is actually removed
+            const metadataEntriesAfter = await fs.readdir(worktreesMetaDir);
+            assert.strictEqual(metadataEntriesAfter.length, 0, 'All stale metadata should be removed');
+        });
+
+        test('skips young stale entries that are below minimum age threshold', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 7002,
+                issueTitle: 'Young Entry Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Remove the worktree directory directly (making metadata stale)
+            await fs.remove(worktreeInfo.worktreePath);
+
+            // Metadata is fresh (just created), so minAgeHours check should skip it
+            // Run safe prune with 1 hour minimum age
+            const result = await safePruneWorktrees(testRepoPath, 1);
+
+            // Young stale entry should be skipped
+            assert.strictEqual(result.pruned, 0, 'Should not prune any entries');
+            assert.strictEqual(result.skipped, 1, 'Should skip 1 young entry');
+
+            // Verify metadata still exists
+            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
+            const metadataEntries = await fs.readdir(worktreesMetaDir);
+            assert(metadataEntries.length > 0, 'Metadata should still exist');
+        });
+
+        test('handles non-existent .git/worktrees directory gracefully', async () => {
+            // Create a fresh repo without any worktrees (so .git/worktrees doesn't exist)
+            const freshRepoPath = path.join(tempDir, 'fresh-repo');
+            await fs.ensureDir(freshRepoPath);
+            const freshGit = simpleGit(freshRepoPath);
+            await freshGit.init();
+            await freshGit.addConfig('user.email', 'test@example.com');
+            await freshGit.addConfig('user.name', 'Test User');
+
+            // Verify .git/worktrees doesn't exist
+            const worktreesMetaDir = path.join(freshRepoPath, '.git', 'worktrees');
+            assert(!await fs.pathExists(worktreesMetaDir), '.git/worktrees should not exist');
+
+            // Run safe prune - should not throw
+            const result = await safePruneWorktrees(freshRepoPath, 1);
+
+            assert.strictEqual(result.pruned, 0, 'Should prune 0 entries');
+            assert.strictEqual(result.skipped, 0, 'Should skip 0 entries');
+        });
+
+        test('prunes entries without gitdir file when old enough', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 7003,
+                issueTitle: 'No Gitdir Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Find and corrupt the worktree metadata by removing gitdir file
+            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
+            const metadataEntries = await fs.readdir(worktreesMetaDir);
+
+            for (const entry of metadataEntries) {
+                const gitdirPath = path.join(worktreesMetaDir, entry, 'gitdir');
+                if (await fs.pathExists(gitdirPath)) {
+                    await fs.remove(gitdirPath);
+                }
+                // Backdate the entry
+                const entryPath = path.join(worktreesMetaDir, entry);
+                const pastTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
+                await fs.utimes(entryPath, pastTime, pastTime);
+            }
+
+            // Run safe prune
+            const result = await safePruneWorktrees(testRepoPath, 1);
+
+            // Entry without gitdir should be pruned if old enough
+            assert.strictEqual(result.pruned, 1, 'Should prune entry without gitdir');
+            assert.strictEqual(result.skipped, 0, 'Should skip 0 entries');
+        });
+
+        test('skips entries without gitdir file when too young', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 7004,
+                issueTitle: 'Young No Gitdir Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Find and corrupt the worktree metadata by removing gitdir file
+            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
+            const metadataEntries = await fs.readdir(worktreesMetaDir);
+
+            for (const entry of metadataEntries) {
+                const gitdirPath = path.join(worktreesMetaDir, entry, 'gitdir');
+                if (await fs.pathExists(gitdirPath)) {
+                    await fs.remove(gitdirPath);
+                }
+                // Don't backdate - keep it fresh
+            }
+
+            // Run safe prune with 1 hour minimum
+            const result = await safePruneWorktrees(testRepoPath, 1);
+
+            // Young entry without gitdir should be skipped
+            assert.strictEqual(result.pruned, 0, 'Should not prune young entry');
+            assert.strictEqual(result.skipped, 1, 'Should skip 1 young entry');
+        });
+
+        test('preserves valid worktree metadata for existing directories', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 7005,
+                issueTitle: 'Valid Worktree Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Verify both worktree directory and metadata exist
+            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should exist');
+            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
+            const metadataEntriesBefore = await fs.readdir(worktreesMetaDir);
+            assert(metadataEntriesBefore.length > 0, 'Should have worktree metadata');
+
+            // Run safe prune - should not affect valid worktrees
+            const result = await safePruneWorktrees(testRepoPath, 0); // Even with 0 hour threshold
+
+            // Nothing should be pruned since worktree directory exists
+            assert.strictEqual(result.pruned, 0, 'Should not prune valid worktrees');
+            assert.strictEqual(result.skipped, 0, 'Should not skip valid worktrees');
+
+            // Verify worktree and metadata still exist
+            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should still exist');
+            const metadataEntriesAfter = await fs.readdir(worktreesMetaDir);
+            assert.strictEqual(metadataEntriesAfter.length, metadataEntriesBefore.length, 'Metadata count should be unchanged');
+        });
+
+        test('handles mixed scenarios with valid, stale-old, and stale-young entries', async () => {
+            const git = simpleGit(testRepoPath);
+
+            // Create worktree 1: valid (directory exists)
+            const issue1: IssueInfo = {
+                issueId: 7006,
+                issueTitle: 'Valid Mixed Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+            const worktree1 = generateWorktreeInfo(issue1);
+            await createWorktreeWithGit(git, worktree1, 'HEAD');
+
+            // Create worktree 2: stale but young (directory deleted, metadata fresh)
+            const issue2: IssueInfo = {
+                issueId: 7007,
+                issueTitle: 'Stale Young Mixed Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+            const worktree2 = generateWorktreeInfo(issue2);
+            await createWorktreeWithGit(git, worktree2, 'HEAD');
+            await fs.remove(worktree2.worktreePath); // Make it stale
+
+            // Create worktree 3: stale and old (directory deleted, metadata old)
+            const issue3: IssueInfo = {
+                issueId: 7008,
+                issueTitle: 'Stale Old Mixed Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+            const worktree3 = generateWorktreeInfo(issue3);
+            await createWorktreeWithGit(git, worktree3, 'HEAD');
+            await fs.remove(worktree3.worktreePath); // Make it stale
+
+            // Find and backdate worktree3's metadata
+            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
+            const metadataEntries = await fs.readdir(worktreesMetaDir);
+
+            // The gitdir file contains the path to the worktree's .git file
+            // (e.g., /path/to/worktree/.git), so we compare with worktreePath + '/.git'
+            const worktree3GitPath = path.join(worktree3.worktreePath, '.git');
+
+            for (const entry of metadataEntries) {
+                const gitdirPath = path.join(worktreesMetaDir, entry, 'gitdir');
+                if (await fs.pathExists(gitdirPath)) {
+                    const gitdirContent = await fs.readFile(gitdirPath, 'utf8');
+                    const worktreeGitPath = gitdirContent.trim();
+
+                    // If this points to worktree3's .git path (which is deleted), backdate it
+                    if (worktreeGitPath === worktree3GitPath) {
+                        const entryPath = path.join(worktreesMetaDir, entry);
+                        const pastTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
+                        await fs.utimes(entryPath, pastTime, pastTime);
+                    }
+                }
+            }
+
+            // Run safe prune with 1 hour minimum
+            const result = await safePruneWorktrees(testRepoPath, 1);
+
+            // Should prune only the old stale entry
+            assert.strictEqual(result.pruned, 1, 'Should prune 1 old stale entry');
+            assert.strictEqual(result.skipped, 1, 'Should skip 1 young stale entry');
+
+            // Verify worktree1 still exists and is valid
+            assert(await fs.pathExists(worktree1.worktreePath), 'Valid worktree should still exist');
+        });
+
+        test('respects configurable minimum age threshold', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 7009,
+                issueTitle: 'Config Age Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Remove worktree directory to make metadata stale
+            await fs.remove(worktreeInfo.worktreePath);
+
+            // Backdate metadata to 30 minutes ago
+            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
+            const metadataEntries = await fs.readdir(worktreesMetaDir);
+            for (const entry of metadataEntries) {
+                const entryPath = path.join(worktreesMetaDir, entry);
+                const halfHourAgo = new Date(Date.now() - 30 * 60 * 1000);
+                await fs.utimes(entryPath, halfHourAgo, halfHourAgo);
+            }
+
+            // Run with 1 hour minimum - should skip (30 min < 1 hour)
+            const result1 = await safePruneWorktrees(testRepoPath, 1);
+            assert.strictEqual(result1.pruned, 0, 'Should not prune with 1 hour threshold');
+            assert.strictEqual(result1.skipped, 1, 'Should skip with 1 hour threshold');
+
+            // Run with 0.25 hour (15 min) minimum - should prune (30 min > 15 min)
+            const result2 = await safePruneWorktrees(testRepoPath, 0.25);
+            assert.strictEqual(result2.pruned, 1, 'Should prune with 15 min threshold');
+            assert.strictEqual(result2.skipped, 0, 'Should not skip with 15 min threshold');
         });
     });
 });
