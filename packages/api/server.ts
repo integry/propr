@@ -263,6 +263,8 @@ function setupRoutes(): void {
   app.post('/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup);
   app.post('/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft);
   app.post('/api/planner/validate-context-repository', plannerRoutes.validateContextRepository);
+  app.post('/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution);
+  app.post('/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution);
 
   app.post('/api/planner/relevance', relevanceRoutes.analyzeRelevance);
 

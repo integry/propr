@@ -1,12 +1,12 @@
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2, Edit3 } from 'lucide-react';
+import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2, Edit3, Pause, Play } from 'lucide-react';
 import { DraftWithPlan, deleteDraft } from '../../api/proprApi';
 import DeletePlanDialog from './DeletePlanDialog';
 import RevisePlanDialog from './RevisePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';
-import { PlanTask, reviseDraft } from '../../api/plannerApi';
+import { PlanTask, reviseDraft, pauseDraft, resumeDraft } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
 import { useToast } from '../ui/useToast';
 
@@ -84,6 +84,8 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const [isDeleting, setIsDeleting] = useState(false);
   const [showReviseDialog, setShowReviseDialog] = useState(false);
   const [isRevising, setIsRevising] = useState(false);
+  const [isPaused, setIsPaused] = useState(draft.paused || false);
+  const [isPauseLoading, setIsPauseLoading] = useState(false);
 
   // Epic PR options state
   const [useEpic, setUseEpic] = useState(false);
@@ -112,6 +114,38 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       });
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  // Handle pause/resume toggle
+  const handlePauseResume = async () => {
+    setIsPauseLoading(true);
+    try {
+      if (isPaused) {
+        await resumeDraft(draft.draft_id);
+        setIsPaused(false);
+        addToast({
+          type: 'success',
+          message: 'Plan execution resumed',
+          duration: 3000
+        });
+      } else {
+        await pauseDraft(draft.draft_id);
+        setIsPaused(true);
+        addToast({
+          type: 'success',
+          message: 'Plan execution paused. Current task will complete, but next task won\'t start.',
+          duration: 4000
+        });
+      }
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: (err as Error).message || `Failed to ${isPaused ? 'resume' : 'pause'} plan`,
+        duration: 5000
+      });
+    } finally {
+      setIsPauseLoading(false);
     }
   };
 
@@ -204,6 +238,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
               <span className="hidden sm:inline">Merged</span>
             </span>
           )}
+          {isPaused && (
+            <span className="px-2 py-1 rounded text-xs font-medium bg-orange-100 text-orange-700 flex items-center gap-1 flex-shrink-0">
+              <Pause size={12} />
+              <span className="hidden sm:inline">Paused</span>
+            </span>
+          )}
           {/* Repository and Branch Breadcrumb - hidden on mobile */}
           <div className="hidden md:flex items-center gap-2 text-sm flex-shrink-0">
             <div className="h-4 w-px bg-gray-300" />
@@ -225,6 +265,28 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Pause/Resume - only show for executed or pr_created status */}
+          {(draft.status === 'executed' || draft.status === 'pr_created') && (
+            <button
+              onClick={handlePauseResume}
+              disabled={isPauseLoading}
+              className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                isPaused
+                  ? 'text-green-600 hover:text-green-700 hover:bg-green-50'
+                  : 'text-orange-600 hover:text-orange-700 hover:bg-orange-50'
+              }`}
+              title={isPaused ? 'Resume plan execution' : 'Pause plan execution'}
+            >
+              {isPauseLoading ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : isPaused ? (
+                <Play size={16} />
+              ) : (
+                <Pause size={16} />
+              )}
+              <span className="hidden sm:inline">{isPaused ? 'Resume' : 'Pause'}</span>
+            </button>
+          )}
           {/* Revise Plan */}
           <button
             onClick={() => setShowReviseDialog(true)}
