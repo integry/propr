@@ -613,6 +613,477 @@ async function waitForCommitHash(
     return task;
 }
 
+// Define the ConversationLogEntry interface to match the one in analysisService.ts
+interface ConversationLogEntry {
+    type?: string;
+    id?: string;
+    name?: string;
+    content?: string;
+    tool_use_id?: string;
+    is_error?: boolean;
+    compacted?: boolean;
+}
+
+// Replicate the compactConversationLog function for testing
+// This mirrors the implementation in packages/core/src/services/analysisService.ts:144-183
+function compactConversationLog(conversationLog: ConversationLogEntry[]): ConversationLogEntry[] {
+    if (!Array.isArray(conversationLog)) {
+        return [];
+    }
+
+    const toolUseMap = new Map<string, string>();
+    conversationLog.forEach(entry => {
+        if (entry.type === 'tool_use' && entry.id && entry.name) {
+            toolUseMap.set(entry.id, entry.name);
+        }
+    });
+
+    return conversationLog.map(entry => {
+        if (entry.type === 'text' || entry.type === 'tool_use') {
+            return entry;
+        }
+
+        if (entry.type === 'tool_result') {
+            if (entry.is_error) {
+                return entry;
+            }
+
+            const toolName = entry.tool_use_id ? toolUseMap.get(entry.tool_use_id) : undefined;
+            const content = entry.content || '';
+
+            if (toolName === 'Read' || toolName === 'Grep' || toolName === 'Glob') {
+                if (content.startsWith('No files found')) {
+                    return entry;
+                }
+                const lines = content.split('\n');
+                const summary = `[Content from ${toolName}: ${lines.length} lines. Content omitted for analysis.]`;
+                return { ...entry, content: summary, compacted: true };
+            }
+
+            return entry;
+        }
+
+        return entry;
+    });
+}
+
+describe('compactConversationLog', () => {
+    describe('omits Read/Grep/Glob tool output', () => {
+        test('compacts Read tool output to summary', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'tool-1', name: 'Read' },
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'tool-1',
+                    content: 'line 1\nline 2\nline 3\nline 4\nline 5'
+                }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[1].content, '[Content from Read: 5 lines. Content omitted for analysis.]');
+            assert.strictEqual(result[1].compacted, true);
+        });
+
+        test('compacts Grep tool output to summary', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'grep-1', name: 'Grep' },
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'grep-1',
+                    content: 'match 1\nmatch 2\nmatch 3'
+                }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[1].content, '[Content from Grep: 3 lines. Content omitted for analysis.]');
+            assert.strictEqual(result[1].compacted, true);
+        });
+
+        test('compacts Glob tool output to summary', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'glob-1', name: 'Glob' },
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'glob-1',
+                    content: 'file1.ts\nfile2.ts\nfile3.ts\nfile4.ts\nfile5.ts\nfile6.ts\nfile7.ts'
+                }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[1].content, '[Content from Glob: 7 lines. Content omitted for analysis.]');
+            assert.strictEqual(result[1].compacted, true);
+        });
+
+        test('preserves "No files found" responses from Glob', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'glob-2', name: 'Glob' },
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'glob-2',
+                    content: 'No files found matching pattern'
+                }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[1].content, 'No files found matching pattern');
+            assert.strictEqual(result[1].compacted, undefined);
+        });
+
+        test('preserves "No files found" responses from Grep', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'grep-2', name: 'Grep' },
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'grep-2',
+                    content: 'No files found with matches'
+                }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[1].content, 'No files found with matches');
+            assert.strictEqual(result[1].compacted, undefined);
+        });
+
+        test('preserves error results from Read/Grep/Glob tools', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'read-err', name: 'Read' },
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'read-err',
+                    content: 'Error: File not found',
+                    is_error: true
+                }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[1].content, 'Error: File not found');
+            assert.strictEqual(result[1].is_error, true);
+            assert.strictEqual(result[1].compacted, undefined);
+        });
+
+        test('does not compact other tool results (Bash, Write, etc.)', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'bash-1', name: 'Bash' },
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'bash-1',
+                    content: 'Command output line 1\nCommand output line 2\nCommand output line 3'
+                }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[1].content, 'Command output line 1\nCommand output line 2\nCommand output line 3');
+            assert.strictEqual(result[1].compacted, undefined);
+        });
+
+        test('handles multiple tool results with mixed types', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'read-1', name: 'Read' },
+                { type: 'tool_result', tool_use_id: 'read-1', content: 'file content\nline 2' },
+                { type: 'tool_use', id: 'bash-1', name: 'Bash' },
+                { type: 'tool_result', tool_use_id: 'bash-1', content: 'bash output' },
+                { type: 'tool_use', id: 'grep-1', name: 'Grep' },
+                { type: 'tool_result', tool_use_id: 'grep-1', content: 'grep result\nline 2\nline 3' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            // Read should be compacted
+            assert.strictEqual(result[1].content, '[Content from Read: 2 lines. Content omitted for analysis.]');
+            assert.strictEqual(result[1].compacted, true);
+
+            // Bash should not be compacted
+            assert.strictEqual(result[3].content, 'bash output');
+            assert.strictEqual(result[3].compacted, undefined);
+
+            // Grep should be compacted
+            assert.strictEqual(result[5].content, '[Content from Grep: 3 lines. Content omitted for analysis.]');
+            assert.strictEqual(result[5].compacted, true);
+        });
+    });
+
+    describe('preserves agent messages', () => {
+        test('preserves text type entries unchanged', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'text', content: 'This is a text message from the assistant' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[0].type, 'text');
+            assert.strictEqual(result[0].content, 'This is a text message from the assistant');
+        });
+
+        test('preserves tool_use type entries unchanged', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'tool-123', name: 'Read', content: '{"path": "/some/file.ts"}' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[0].type, 'tool_use');
+            assert.strictEqual(result[0].id, 'tool-123');
+            assert.strictEqual(result[0].name, 'Read');
+            assert.strictEqual(result[0].content, '{"path": "/some/file.ts"}');
+        });
+
+        test('preserves mixed conversation with agent messages intact', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'text', content: 'I will read the file for you.' },
+                { type: 'tool_use', id: 'read-1', name: 'Read' },
+                { type: 'tool_result', tool_use_id: 'read-1', content: 'file\ncontent\nhere' },
+                { type: 'text', content: 'The file contains 3 lines.' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            // Text messages preserved
+            assert.strictEqual(result[0].type, 'text');
+            assert.strictEqual(result[0].content, 'I will read the file for you.');
+            assert.strictEqual(result[3].type, 'text');
+            assert.strictEqual(result[3].content, 'The file contains 3 lines.');
+
+            // tool_use preserved
+            assert.strictEqual(result[1].type, 'tool_use');
+            assert.strictEqual(result[1].name, 'Read');
+
+            // tool_result compacted
+            assert.strictEqual(result[2].compacted, true);
+        });
+
+        test('returns same array length after compaction', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'text', content: 'message 1' },
+                { type: 'tool_use', id: 'tool-1', name: 'Read' },
+                { type: 'tool_result', tool_use_id: 'tool-1', content: 'content' },
+                { type: 'text', content: 'message 2' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result.length, conversationLog.length);
+        });
+    });
+
+    describe('handles non-array input', () => {
+        test('returns empty array for null input', () => {
+            const result = compactConversationLog(null as unknown as ConversationLogEntry[]);
+
+            assert.deepStrictEqual(result, []);
+        });
+
+        test('returns empty array for undefined input', () => {
+            const result = compactConversationLog(undefined as unknown as ConversationLogEntry[]);
+
+            assert.deepStrictEqual(result, []);
+        });
+
+        test('returns empty array for string input', () => {
+            const result = compactConversationLog('not an array' as unknown as ConversationLogEntry[]);
+
+            assert.deepStrictEqual(result, []);
+        });
+
+        test('returns empty array for number input', () => {
+            const result = compactConversationLog(42 as unknown as ConversationLogEntry[]);
+
+            assert.deepStrictEqual(result, []);
+        });
+
+        test('returns empty array for object input', () => {
+            const result = compactConversationLog({ type: 'text' } as unknown as ConversationLogEntry[]);
+
+            assert.deepStrictEqual(result, []);
+        });
+
+        test('handles empty array input correctly', () => {
+            const result = compactConversationLog([]);
+
+            assert.deepStrictEqual(result, []);
+            assert.strictEqual(result.length, 0);
+        });
+    });
+
+    describe('reduces payload size', () => {
+        test('significantly reduces content length for large Read output', () => {
+            const largeContent = Array.from({ length: 500 }, (_, i) => `Line ${i + 1}: This is some content that represents a typical line in a source file.`).join('\n');
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'read-large', name: 'Read' },
+                { type: 'tool_result', tool_use_id: 'read-large', content: largeContent }
+            ];
+
+            const originalSize = JSON.stringify(conversationLog).length;
+            const result = compactConversationLog(conversationLog);
+            const compactedSize = JSON.stringify(result).length;
+
+            // The compacted version should be significantly smaller
+            assert.ok(compactedSize < originalSize, `Compacted size (${compactedSize}) should be less than original (${originalSize})`);
+            // Should be at least 90% smaller for large payloads
+            assert.ok(compactedSize < originalSize * 0.1, `Compacted size should be less than 10% of original`);
+        });
+
+        test('significantly reduces content length for large Grep output', () => {
+            const largeContent = Array.from({ length: 200 }, (_, i) => `src/file${i}.ts:${i * 10}: const match = 'some pattern';`).join('\n');
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'grep-large', name: 'Grep' },
+                { type: 'tool_result', tool_use_id: 'grep-large', content: largeContent }
+            ];
+
+            const originalSize = JSON.stringify(conversationLog).length;
+            const result = compactConversationLog(conversationLog);
+            const compactedSize = JSON.stringify(result).length;
+
+            assert.ok(compactedSize < originalSize, 'Compacted size should be less than original');
+            assert.ok(compactedSize < originalSize * 0.1, 'Compacted size should be less than 10% of original');
+        });
+
+        test('significantly reduces content length for large Glob output', () => {
+            const largeContent = Array.from({ length: 300 }, (_, i) => `src/components/feature${i}/Component${i}.tsx`).join('\n');
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'glob-large', name: 'Glob' },
+                { type: 'tool_result', tool_use_id: 'glob-large', content: largeContent }
+            ];
+
+            const originalSize = JSON.stringify(conversationLog).length;
+            const result = compactConversationLog(conversationLog);
+            const compactedSize = JSON.stringify(result).length;
+
+            assert.ok(compactedSize < originalSize, 'Compacted size should be less than original');
+            assert.ok(compactedSize < originalSize * 0.1, 'Compacted size should be less than 10% of original');
+        });
+
+        test('compacts multiple large tool results in a conversation', () => {
+            // Use larger content (300 lines each) to demonstrate significant payload reduction
+            const largeReadContent = Array.from({ length: 300 }, (_, i) => `Line ${i}: This is content from a source file that takes up significant space.`).join('\n');
+            const largeGrepContent = Array.from({ length: 300 }, (_, i) => `src/file${i}.ts:${i * 10}: const match = 'pattern';`).join('\n');
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'text', content: 'Analyzing the codebase' },
+                { type: 'tool_use', id: 'read-1', name: 'Read' },
+                { type: 'tool_result', tool_use_id: 'read-1', content: largeReadContent },
+                { type: 'tool_use', id: 'grep-1', name: 'Grep' },
+                { type: 'tool_result', tool_use_id: 'grep-1', content: largeGrepContent },
+                { type: 'text', content: 'Analysis complete' }
+            ];
+
+            const originalSize = JSON.stringify(conversationLog).length;
+            const result = compactConversationLog(conversationLog);
+            const compactedSize = JSON.stringify(result).length;
+
+            // Should still preserve text entries but compact tool results
+            // With large tool outputs, the payload should be significantly reduced
+            assert.ok(compactedSize < originalSize * 0.05, 'Total payload should be reduced by at least 95%');
+        });
+    });
+
+    describe('edge cases', () => {
+        test('handles tool_result without matching tool_use', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'orphan-id',
+                    content: 'some content'
+                }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            // Without a matching tool_use, toolName will be undefined, so content is preserved
+            assert.strictEqual(result[0].content, 'some content');
+            assert.strictEqual(result[0].compacted, undefined);
+        });
+
+        test('handles tool_result with empty content', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'read-empty', name: 'Read' },
+                { type: 'tool_result', tool_use_id: 'read-empty', content: '' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            // Empty content doesn't start with "No files found", so it gets compacted
+            assert.strictEqual(result[1].content, '[Content from Read: 1 lines. Content omitted for analysis.]');
+            assert.strictEqual(result[1].compacted, true);
+        });
+
+        test('handles tool_result with undefined content', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'read-undef', name: 'Read' },
+                { type: 'tool_result', tool_use_id: 'read-undef' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            // undefined content becomes empty string, which gets compacted
+            assert.strictEqual(result[1].content, '[Content from Read: 1 lines. Content omitted for analysis.]');
+            assert.strictEqual(result[1].compacted, true);
+        });
+
+        test('handles entries with unknown type', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'unknown_type', content: 'some content' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            // Unknown types are passed through unchanged
+            assert.strictEqual(result[0].type, 'unknown_type');
+            assert.strictEqual(result[0].content, 'some content');
+        });
+
+        test('handles entries without type property', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { content: 'no type specified' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            // Entries without type are passed through unchanged
+            assert.strictEqual(result[0].content, 'no type specified');
+            assert.strictEqual(result[0].type, undefined);
+        });
+
+        test('correctly counts single line content', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'read-single', name: 'Read' },
+                { type: 'tool_result', tool_use_id: 'read-single', content: 'single line without newline' }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            assert.strictEqual(result[1].content, '[Content from Read: 1 lines. Content omitted for analysis.]');
+        });
+
+        test('preserves original entry properties in compacted result', () => {
+            const conversationLog: ConversationLogEntry[] = [
+                { type: 'tool_use', id: 'read-props', name: 'Read' },
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'read-props',
+                    content: 'line 1\nline 2',
+                    id: 'result-123'
+                }
+            ];
+
+            const result = compactConversationLog(conversationLog);
+
+            // Original properties should be preserved via spread
+            assert.strictEqual(result[1].type, 'tool_result');
+            assert.strictEqual(result[1].tool_use_id, 'read-props');
+            assert.strictEqual(result[1].id, 'result-123');
+            // Content should be replaced
+            assert.strictEqual(result[1].content, '[Content from Read: 2 lines. Content omitted for analysis.]');
+            assert.strictEqual(result[1].compacted, true);
+        });
+    });
+});
+
 describe('waitForCommitHash', () => {
     describe('returns immediately when hash already present', () => {
         test('returns task unchanged when commit_hash is already present', async () => {
