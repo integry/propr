@@ -1,5 +1,5 @@
 import logger from '../utils/logger.js';
-import { findPlanIssueByRepoAndPR, findPlanIssueByRepoAndNumber, updatePlanIssueByPR } from '../config/planIssueManager.js';
+import { findPlanIssueByRepoAndPR, findPlanIssueByRepoAndNumber, updatePlanIssueByPR, PlanIssueStatus } from '../config/planIssueManager.js';
 import { isEpicBranch, extractFirstIssueIdFromEpicBranch } from '../services/taskExecutionService.js';
 import { triggerNextPendingIssue } from './planIssueTracking.js';
 import {
@@ -125,7 +125,7 @@ async function performMergeAndPostActions(ctx: PRMergeContext): Promise<void> {
         const repository = `${owner}/${repoName}`;
         const planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
         if (planIssue) {
-            await updatePlanIssueByPR(repository, prNumber, { status: 'merged' });
+            await updatePlanIssueByPR(repository, prNumber, { status: PlanIssueStatus.MERGED });
             log.info({ repository, prNumber }, 'Updated plan issue status to merged');
         }
     } else {
