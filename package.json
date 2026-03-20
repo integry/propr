@@ -12,6 +12,7 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
+    "test:unit": "npx tsx --test test/minimal.test.ts test/modelName.test.ts",
     "test:e2e": "npx tsx --test test/e2e.test.ts",
     "test:docker": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test test/*.test.ts",
     "test:docker:single": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test",
