@@ -588,70 +588,339 @@ describe('calculateCostEstimate', () => {
      * Pure function extracted from planningHelpers.ts for testing cost estimation.
      * The original function is at: src/services/planningHelpers.ts:110
      *
-     * This version accepts injectable pricing to avoid network calls.
+     * This version accepts injectable pricing to avoid network calls, supporting:
+     * - Pricing API path (when pricing is provided)
+     * - Fallback formula (when pricing is null)
+     * - Error simulation (when pricingFetcher throws)
+     *
+     * Constants:
+     * - DEFAULT_OUTPUT_TOKENS = 4000 (assumed completion tokens)
+     * - Fallback rates: $3 per 1M input tokens, $15 per 1M output tokens
      */
+    const DEFAULT_OUTPUT_TOKENS = 4000;
+
     async function calculateCostEstimate(
         totalTokens: number,
         warnings: string[],
         logger: { warn: (...args: unknown[]) => void },
-        pricing: { prompt: number; completion: number } | null = null
+        pricingFetcher: () => Promise<{ prompt: number; completion: number } | null> = async () => null
     ): Promise<number> {
-        const DEFAULT_OUTPUT_TOKENS = 4000;
-
-        if (pricing) {
-            return totalTokens * pricing.prompt + DEFAULT_OUTPUT_TOKENS * pricing.completion;
+        try {
+            const pricing = await pricingFetcher();
+            if (pricing) {
+                return totalTokens * pricing.prompt + DEFAULT_OUTPUT_TOKENS * pricing.completion;
+            }
+            warnings.push('Using fallback pricing - could not fetch current model pricing');
+        } catch (e) {
+            warnings.push('Using fallback pricing - pricing service error');
+            logger.warn({ error: (e as Error).message }, 'Failed to get model pricing');
         }
-
-        // Fallback formula when pricing unavailable
-        warnings.push('Using fallback pricing - could not fetch current model pricing');
         return (totalTokens / 1_000_000) * 3 + (DEFAULT_OUTPUT_TOKENS / 1_000_000) * 15;
     }
 
-    test('should calculate cost from pricing API', async () => {
-        const warnings: string[] = [];
-        const logger = { warn: () => {} };
-        const pricing = { prompt: 0.000003, completion: 0.000015 };
+    describe('pricing API path (acceptance criteria: calculates accurately)', () => {
+        test('should calculate cost from pricing API', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            const pricing = { prompt: 0.000003, completion: 0.000015 };
 
-        const result = await calculateCostEstimate(100000, warnings, logger, pricing);
+            const result = await calculateCostEstimate(100000, warnings, logger, async () => pricing);
 
-        // 100000 * 0.000003 + 4000 * 0.000015 = 0.3 + 0.06 = 0.36
-        assert.strictEqual(result, 0.36);
-        assert.strictEqual(warnings.length, 0, 'Should not add warning when pricing available');
+            // 100000 * 0.000003 + 4000 * 0.000015 = 0.3 + 0.06 = 0.36
+            assert.strictEqual(result, 0.36);
+            assert.strictEqual(warnings.length, 0, 'Should not add warning when pricing available');
+        });
+
+        test('should handle zero tokens with pricing', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            const pricing = { prompt: 0.000003, completion: 0.000015 };
+
+            const result = await calculateCostEstimate(0, warnings, logger, async () => pricing);
+
+            // 0 * 0.000003 + 4000 * 0.000015 = 0 + 0.06 = 0.06
+            assert.ok(Math.abs(result - 0.06) < 0.0001, `Expected ~0.06, got ${result}`);
+        });
+
+        test('should handle large token counts with pricing', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            const pricing = { prompt: 0.000003, completion: 0.000015 };
+
+            const result = await calculateCostEstimate(1000000, warnings, logger, async () => pricing);
+
+            // 1000000 * 0.000003 + 4000 * 0.000015 = 3 + 0.06 = 3.06
+            assert.strictEqual(result, 3.06);
+        });
+
+        test('should calculate correctly with different model pricing ratios', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            // Simulate GPT-4o pricing (different ratio than Claude)
+            const gpt4oPricing = { prompt: 0.000005, completion: 0.000015 };
+
+            const result = await calculateCostEstimate(100000, warnings, logger, async () => gpt4oPricing);
+
+            // 100000 * 0.000005 + 4000 * 0.000015 = 0.5 + 0.06 = 0.56
+            assert.strictEqual(result, 0.56);
+        });
+
+        test('should handle very small token counts accurately', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            const pricing = { prompt: 0.000003, completion: 0.000015 };
+
+            const result = await calculateCostEstimate(100, warnings, logger, async () => pricing);
+
+            // 100 * 0.000003 + 4000 * 0.000015 = 0.0003 + 0.06 = 0.0603
+            assert.ok(Math.abs(result - 0.0603) < 0.0001, `Expected ~0.0603, got ${result}`);
+        });
+
+        test('should handle context window sized token counts', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            const pricing = { prompt: 0.000003, completion: 0.000015 };
+            // 200k context window
+            const result = await calculateCostEstimate(200000, warnings, logger, async () => pricing);
+
+            // 200000 * 0.000003 + 4000 * 0.000015 = 0.6 + 0.06 = 0.66
+            assert.strictEqual(result, 0.66);
+        });
     });
 
-    test('should fallback to formula when pricing unavailable', async () => {
-        const warnings: string[] = [];
-        const logger = { warn: () => {} };
+    describe('fallback pricing path (acceptance criteria: applies fallback formula)', () => {
+        test('should fallback to formula when pricing returns null', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
 
-        const result = await calculateCostEstimate(100000, warnings, logger, null);
+            const result = await calculateCostEstimate(100000, warnings, logger, async () => null);
 
-        // Fallback: (100000/1000000)*3 + (4000/1000000)*15 = 0.3 + 0.06 = 0.36
-        // Use approximate comparison due to floating point
-        assert.ok(Math.abs(result - 0.36) < 0.0001, `Expected ~0.36, got ${result}`);
-        assert.ok(warnings.includes('Using fallback pricing - could not fetch current model pricing'));
+            // Fallback: (100000/1000000)*3 + (4000/1000000)*15 = 0.3 + 0.06 = 0.36
+            assert.ok(Math.abs(result - 0.36) < 0.0001, `Expected ~0.36, got ${result}`);
+            assert.ok(warnings.includes('Using fallback pricing - could not fetch current model pricing'));
+        });
+
+        test('should handle zero tokens with fallback pricing', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+
+            const result = await calculateCostEstimate(0, warnings, logger, async () => null);
+
+            // Fallback: (0/1000000)*3 + (4000/1000000)*15 = 0 + 0.06 = 0.06
+            assert.ok(Math.abs(result - 0.06) < 0.0001, `Expected ~0.06, got ${result}`);
+        });
+
+        test('should handle large token counts with fallback pricing', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+
+            const result = await calculateCostEstimate(1000000, warnings, logger, async () => null);
+
+            // Fallback: (1000000/1000000)*3 + (4000/1000000)*15 = 3 + 0.06 = 3.06
+            assert.ok(Math.abs(result - 3.06) < 0.0001, `Expected ~3.06, got ${result}`);
+        });
+
+        test('should add warning only once on fallback', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+
+            await calculateCostEstimate(100000, warnings, logger, async () => null);
+
+            assert.strictEqual(warnings.length, 1, 'Should add exactly one warning');
+            assert.strictEqual(warnings[0], 'Using fallback pricing - could not fetch current model pricing');
+        });
     });
 
-    test('should handle zero tokens', async () => {
-        const warnings: string[] = [];
-        const logger = { warn: () => {} };
-        const pricing = { prompt: 0.000003, completion: 0.000015 };
+    describe('error handling path (acceptance criteria: handles pricing service errors)', () => {
+        test('should fallback to formula when pricing service throws', async () => {
+            const warnings: string[] = [];
+            const warnCalls: unknown[][] = [];
+            const logger = { warn: (...args: unknown[]) => { warnCalls.push(args); } };
 
-        const result = await calculateCostEstimate(0, warnings, logger, pricing);
+            const result = await calculateCostEstimate(100000, warnings, logger, async () => {
+                throw new Error('Connection refused');
+            });
 
-        // 0 * 0.000003 + 4000 * 0.000015 = 0 + 0.06 = 0.06
-        // Use approximate comparison due to floating point
-        assert.ok(Math.abs(result - 0.06) < 0.0001, `Expected ~0.06, got ${result}`);
+            // Should use fallback formula
+            assert.ok(Math.abs(result - 0.36) < 0.0001, `Expected ~0.36, got ${result}`);
+            assert.ok(warnings.includes('Using fallback pricing - pricing service error'));
+        });
+
+        test('should log error when pricing service throws', async () => {
+            const warnings: string[] = [];
+            const warnCalls: unknown[][] = [];
+            const logger = { warn: (...args: unknown[]) => { warnCalls.push(args); } };
+
+            await calculateCostEstimate(100000, warnings, logger, async () => {
+                throw new Error('API timeout');
+            });
+
+            assert.strictEqual(warnCalls.length, 1, 'Should log warning');
+            const logData = warnCalls[0][0] as { error: string };
+            assert.strictEqual(logData.error, 'API timeout');
+            assert.ok((warnCalls[0][1] as string).includes('Failed to get model pricing'));
+        });
+
+        test('should handle different error types gracefully', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+
+            // TypeError
+            const result1 = await calculateCostEstimate(100000, warnings, logger, async () => {
+                throw new TypeError('Invalid response format');
+            });
+            assert.ok(Math.abs(result1 - 0.36) < 0.0001);
+
+            // Clear warnings for next test
+            warnings.length = 0;
+
+            // Network error
+            const result2 = await calculateCostEstimate(100000, warnings, logger, async () => {
+                throw new Error('ECONNREFUSED');
+            });
+            assert.ok(Math.abs(result2 - 0.36) < 0.0001);
+        });
     });
 
-    test('should handle large token counts', async () => {
-        const warnings: string[] = [];
-        const logger = { warn: () => {} };
-        const pricing = { prompt: 0.000003, completion: 0.000015 };
+    describe('model-specific token ratios (acceptance criteria: applies model-specific pricing)', () => {
+        test('should calculate Claude Sonnet pricing accurately', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            // Claude Sonnet 4 pricing: $3/M input, $15/M output
+            const claudeSonnetPricing = { prompt: 0.000003, completion: 0.000015 };
 
-        const result = await calculateCostEstimate(1000000, warnings, logger, pricing);
+            const result = await calculateCostEstimate(500000, warnings, logger, async () => claudeSonnetPricing);
 
-        // 1000000 * 0.000003 + 4000 * 0.000015 = 3 + 0.06 = 3.06
-        assert.strictEqual(result, 3.06);
+            // 500000 * 0.000003 + 4000 * 0.000015 = 1.5 + 0.06 = 1.56
+            assert.strictEqual(result, 1.56);
+        });
+
+        test('should calculate Claude Opus pricing accurately', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            // Claude Opus 4 pricing: $15/M input, $75/M output
+            const claudeOpusPricing = { prompt: 0.000015, completion: 0.000075 };
+
+            const result = await calculateCostEstimate(500000, warnings, logger, async () => claudeOpusPricing);
+
+            // 500000 * 0.000015 + 4000 * 0.000075 = 7.5 + 0.3 = 7.8
+            assert.strictEqual(result, 7.8);
+        });
+
+        test('should calculate GPT-4 class pricing accurately', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            // GPT-4-turbo pricing: $10/M input, $30/M output
+            const gpt4Pricing = { prompt: 0.00001, completion: 0.00003 };
+
+            const result = await calculateCostEstimate(500000, warnings, logger, async () => gpt4Pricing);
+
+            // 500000 * 0.00001 + 4000 * 0.00003 = 5 + 0.12 = 5.12
+            assert.strictEqual(result, 5.12);
+        });
+
+        test('should calculate Gemini pricing accurately', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            // Gemini 2.0 Flash pricing (example)
+            const geminiPricing = { prompt: 0.0000001, completion: 0.0000004 };
+
+            const result = await calculateCostEstimate(500000, warnings, logger, async () => geminiPricing);
+
+            // 500000 * 0.0000001 + 4000 * 0.0000004 = 0.05 + 0.0016 = 0.0516
+            assert.ok(Math.abs(result - 0.0516) < 0.0001, `Expected ~0.0516, got ${result}`);
+        });
+    });
+
+    describe('edge cases', () => {
+        test('should handle fractional token counts', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            const pricing = { prompt: 0.000003, completion: 0.000015 };
+
+            // In practice tokens are integers, but test robustness
+            const result = await calculateCostEstimate(99999.5, warnings, logger, async () => pricing);
+
+            // 99999.5 * 0.000003 + 4000 * 0.000015
+            const expected = 99999.5 * 0.000003 + 4000 * 0.000015;
+            assert.ok(Math.abs(result - expected) < 0.0001, `Expected ~${expected}, got ${result}`);
+        });
+
+        test('should handle extremely large token counts (10M+)', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            const pricing = { prompt: 0.000003, completion: 0.000015 };
+
+            const result = await calculateCostEstimate(10000000, warnings, logger, async () => pricing);
+
+            // 10000000 * 0.000003 + 4000 * 0.000015 = 30 + 0.06 = 30.06
+            assert.strictEqual(result, 30.06);
+        });
+
+        test('should handle very cheap pricing (free tier simulation)', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            const freePricing = { prompt: 0, completion: 0 };
+
+            const result = await calculateCostEstimate(100000, warnings, logger, async () => freePricing);
+
+            assert.strictEqual(result, 0);
+        });
+
+        test('should always include DEFAULT_OUTPUT_TOKENS cost', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+            const pricing = { prompt: 0, completion: 0.000015 };
+
+            // Even with 0 input tokens and 0 prompt price, should have completion cost
+            const result = await calculateCostEstimate(0, warnings, logger, async () => pricing);
+
+            // 0 * 0 + 4000 * 0.000015 = 0.06
+            assert.ok(Math.abs(result - 0.06) < 0.0001, `Expected ~0.06, got ${result}`);
+        });
+    });
+
+    describe('mathematical accuracy verification', () => {
+        test('should avoid floating point errors in typical scenarios', async () => {
+            const warnings: string[] = [];
+            const logger = { warn: () => {} };
+
+            // Test several values that could cause floating point issues
+            const testCases = [
+                { tokens: 1, expected: 1 * 0.000003 + 4000 * 0.000015 },
+                { tokens: 333, expected: 333 * 0.000003 + 4000 * 0.000015 },
+                { tokens: 128000, expected: 128000 * 0.000003 + 4000 * 0.000015 },
+                { tokens: 999999, expected: 999999 * 0.000003 + 4000 * 0.000015 },
+            ];
+
+            const pricing = { prompt: 0.000003, completion: 0.000015 };
+
+            for (const tc of testCases) {
+                const result = await calculateCostEstimate(tc.tokens, [], logger, async () => pricing);
+                assert.ok(
+                    Math.abs(result - tc.expected) < 0.0001,
+                    `For ${tc.tokens} tokens: expected ${tc.expected}, got ${result}`
+                );
+            }
+        });
+
+        test('should match fallback formula exactly with equivalent pricing', async () => {
+            const warnings1: string[] = [];
+            const warnings2: string[] = [];
+            const logger = { warn: () => {} };
+
+            // Fallback uses: $3/M input, $15/M output
+            // Which is: 0.000003 per token input, 0.000015 per token output
+            const equivalentPricing = { prompt: 0.000003, completion: 0.000015 };
+
+            const apiResult = await calculateCostEstimate(100000, warnings1, logger, async () => equivalentPricing);
+            const fallbackResult = await calculateCostEstimate(100000, warnings2, logger, async () => null);
+
+            assert.ok(
+                Math.abs(apiResult - fallbackResult) < 0.0001,
+                `API result (${apiResult}) should match fallback (${fallbackResult})`
+            );
+        });
     });
 });
 
