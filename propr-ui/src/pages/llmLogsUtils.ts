@@ -26,12 +26,20 @@ export const formatCost = (cost: number | null): string => {
   return `$${cost.toFixed(3)}`;
 };
 
-// Format tokens
-export const formatTokens = (input: number | null, output: number | null): string => {
-  if (input === null && output === null) return '-';
-  const inputStr = input !== null ? input.toLocaleString() : '0';
-  const outputStr = output !== null ? output.toLocaleString() : '0';
-  return `${inputStr} / ${outputStr}`;
+// Format tokens - includes cache tokens in input total (per Claude billing)
+export const formatTokens = (
+  input: number | null,
+  output: number | null,
+  cacheCreation?: number | null,
+  cacheRead?: number | null
+): string => {
+  // Total input includes: input_tokens + cache_creation + cache_read (per Claude billing)
+  const totalInput = (input ?? 0) + (cacheCreation ?? 0) + (cacheRead ?? 0);
+  const totalOutput = output ?? 0;
+
+  if (totalInput === 0 && totalOutput === 0) return '-';
+
+  return `${totalInput.toLocaleString()} / ${totalOutput.toLocaleString()}`;
 };
 
 // Format timestamp
