@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { GripVertical, ArrowLeft } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
+import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo, getUserRepoPreferences, updateUserRepoPreferences, UserRepoPreferences } from '../api/proprApi';
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
 import { AddRepositoryModal } from '../components/AddRepositoryModal';
 import { RepoActionContainer } from '../components/Repositories';
@@ -34,6 +34,7 @@ const RepositoriesPage: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [showHiddenRepos, setShowHiddenRepos] = useState<boolean>(false);
+  const [userRepoPrefs, setUserRepoPrefs] = useState<UserRepoPreferences>({});
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Track repositories with pending optimistic updates to prevent server responses from overwriting them
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
@@ -42,33 +43,58 @@ const RepositoriesPage: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
-      const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
-      const rawRepos = data.repos_to_monitor || [];
+
+      // Load both repo config and user preferences in parallel
+      const [repoData, prefs] = await Promise.all([
+        getRepoConfig() as Promise<{ repos_to_monitor?: unknown[] }>,
+        getUserRepoPreferences().catch(() => ({} as UserRepoPreferences))
+      ]);
+
+      const rawRepos = repoData.repos_to_monitor || [];
+
+      // Store user preferences
+      setUserRepoPrefs(prefs);
 
       // Transform and validate the data to ensure correct format
-      // Handle both object format {id, name, enabled, alias?, baseBranch?, starred?, hidden?} and legacy formats
+      // Handle both object format {id, name, enabled, alias?, baseBranch?} and legacy formats
+      // User-specific starred/hidden flags come from userRepoPrefs, not global config
       const validRepos: Repo[] = rawRepos
-        .map((repo: unknown) => {
+        .map((repo: unknown): Repo | null => {
           if (typeof repo === 'string') {
             // Legacy format: just a string like "owner/repo"
-            return { id: generateId(), name: repo, enabled: true };
+            const userPref = prefs[repo] || {};
+            return {
+              id: generateId(),
+              name: repo,
+              enabled: true,
+              starred: userPref.starred,
+              hidden: userPref.hidden
+            };
           } else if (repo && typeof repo === 'object') {
             const repoObj = repo as Record<string, unknown>;
-            // Object format: {id?, name, enabled, alias?, baseBranch?, starred?, hidden?} or possibly {full_name, ...}
+            // Object format: {id?, name, enabled, alias?, baseBranch?} or possibly {full_name, ...}
             const name = (repoObj.name as string) || (repoObj.full_name as string);
             const enabled = typeof repoObj.enabled === 'boolean' ? repoObj.enabled : true;
             const id = (repoObj.id as string) || generateId();
             const alias = repoObj.alias as string | undefined;
             const baseBranch = repoObj.baseBranch as string | undefined;
-            const starred = typeof repoObj.starred === 'boolean' ? repoObj.starred : undefined;
-            const hidden = typeof repoObj.hidden === 'boolean' ? repoObj.hidden : undefined;
+            // Get starred/hidden from user preferences, not global config
+            const userPref = name ? (prefs[name] || {}) : {};
             if (name) {
-              return { id, name, enabled, alias, baseBranch, starred, hidden };
+              return {
+                id,
+                name,
+                enabled,
+                alias,
+                baseBranch,
+                starred: userPref.starred,
+                hidden: userPref.hidden
+              };
             }
           }
           return null;
         })
-        .filter((repo): repo is Repo => repo !== null && repo.name !== undefined);
+        .filter((repo): repo is Repo => repo !== null);
 
       setRepos(validRepos);
     } catch (err) {
@@ -301,24 +327,78 @@ const RepositoriesPage: React.FC = () => {
     performAutoSave(newRepos);
   };
 
-  const handleToggleStar = (repoId: string) => {
-    const newRepos = repos.map(repo =>
-      repo.id === repoId
-        ? { ...repo, starred: !repo.starred }
-        : repo
+  const handleToggleStar = async (repoId: string) => {
+    const repo = repos.find(r => r.id === repoId);
+    if (!repo) return;
+
+    const newStarred = !repo.starred;
+
+    // Optimistic UI update
+    setRepos(prevRepos =>
+      prevRepos.map(r =>
+        r.id === repoId ? { ...r, starred: newStarred } : r
+      )
     );
-    setRepos(newRepos);
-    performAutoSave(newRepos);
+    setUserRepoPrefs(prev => ({
+      ...prev,
+      [repo.name]: { ...prev[repo.name], starred: newStarred }
+    }));
+
+    // Save to user preferences (not global config)
+    try {
+      await updateUserRepoPreferences({
+        [repo.name]: { starred: newStarred }
+      });
+    } catch (err) {
+      // Revert on error
+      setRepos(prevRepos =>
+        prevRepos.map(r =>
+          r.id === repoId ? { ...r, starred: !newStarred } : r
+        )
+      );
+      setUserRepoPrefs(prev => ({
+        ...prev,
+        [repo.name]: { ...prev[repo.name], starred: !newStarred }
+      }));
+      console.error('Failed to save starred preference:', err);
+    }
   };
 
-  const handleToggleHidden = (repoId: string) => {
-    const newRepos = repos.map(repo =>
-      repo.id === repoId
-        ? { ...repo, hidden: !repo.hidden }
-        : repo
+  const handleToggleHidden = async (repoId: string) => {
+    const repo = repos.find(r => r.id === repoId);
+    if (!repo) return;
+
+    const newHidden = !repo.hidden;
+
+    // Optimistic UI update
+    setRepos(prevRepos =>
+      prevRepos.map(r =>
+        r.id === repoId ? { ...r, hidden: newHidden } : r
+      )
     );
-    setRepos(newRepos);
-    performAutoSave(newRepos);
+    setUserRepoPrefs(prev => ({
+      ...prev,
+      [repo.name]: { ...prev[repo.name], hidden: newHidden }
+    }));
+
+    // Save to user preferences (not global config)
+    try {
+      await updateUserRepoPreferences({
+        [repo.name]: { hidden: newHidden }
+      });
+    } catch (err) {
+      // Revert on error
+      setRepos(prevRepos =>
+        prevRepos.map(r =>
+          r.id === repoId ? { ...r, hidden: !newHidden } : r
+        )
+      );
+      setUserRepoPrefs(prev => ({
+        ...prev,
+        [repo.name]: { ...prev[repo.name], hidden: !newHidden }
+      }));
+      console.error('Failed to save hidden preference:', err);
+    }
   };
 
   const handleToggleShowHidden = () => {
