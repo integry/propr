@@ -10,6 +10,68 @@ import { TokenUsage } from '../../types.js';
 import { ConversationLogEntry } from '../../../claude/claudeHelpers.js';
 
 /**
+ * Extracts usage data from a conversation log entry.
+ * Checks both message?.usage and entry.usage (root level).
+ */
+function extractUsageFromEntry(entry: ConversationLogEntry): { usage: TokenUsage | undefined; msgId: string | undefined } {
+    const message = entry.message as { id?: string; usage?: TokenUsage } | undefined;
+    const entryWithUsage = entry as { usage?: TokenUsage };
+    return {
+        usage: message?.usage || entryWithUsage.usage,
+        msgId: message?.id
+    };
+}
+
+/**
+ * Adds usage tokens to the aggregated totals.
+ */
+function addUsageToAggregated(aggregated: TokenUsage, usage: TokenUsage): void {
+    aggregated.input_tokens = (aggregated.input_tokens || 0) + (usage.input_tokens || 0);
+    aggregated.output_tokens = (aggregated.output_tokens || 0) + (usage.output_tokens || 0);
+    aggregated.cache_creation_input_tokens =
+        (aggregated.cache_creation_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+    aggregated.cache_read_input_tokens =
+        (aggregated.cache_read_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+}
+
+/**
+ * Calculates total tokens from a TokenUsage object.
+ */
+function calculateTotalTokens(usage: TokenUsage): number {
+    return (usage.input_tokens || 0) +
+        (usage.output_tokens || 0) +
+        (usage.cache_creation_input_tokens || 0) +
+        (usage.cache_read_input_tokens || 0);
+}
+
+/**
+ * Logs aggregation results based on whether tokens were found.
+ */
+function logAggregationResults(
+    conversationLogLength: number,
+    foundCount: number,
+    aggregated: TokenUsage,
+    totalTokens: number
+): void {
+    if (totalTokens > 0) {
+        logger.info({
+            conversationLogLength,
+            messagesWithUsage: foundCount,
+            aggregatedInputTokens: aggregated.input_tokens,
+            aggregatedCacheRead: aggregated.cache_read_input_tokens,
+            aggregatedCacheCreation: aggregated.cache_creation_input_tokens,
+            aggregatedOutputTokens: aggregated.output_tokens,
+            totalTokens
+        }, 'Token aggregation from conversation log');
+    } else {
+        logger.debug({
+            conversationLogLength,
+            messagesWithUsage: foundCount
+        }, 'Token aggregation found no usage data');
+    }
+}
+
+/**
  * Aggregates token usage from all messages in the conversation log.
  *
  * The Claude CLI sometimes reports only the last turn's usage rather than
@@ -34,57 +96,23 @@ export function aggregateTokensFromConversationLog(
     };
 
     let foundCount = 0;
-    const seenIds = new Set<string>(); // Deduplicate by message ID (per Claude docs, same ID = same usage)
+    const seenIds = new Set<string>();
 
     for (const entry of conversationLog) {
-        // Check both message?.usage and entry.usage (root level)
-        // Claude CLI sometimes stores usage at the root of the entry instead of nested in message
-        const message = entry.message as { id?: string; usage?: TokenUsage } | undefined;
-        const entryWithUsage = entry as { usage?: TokenUsage };
-        const usage = message?.usage || entryWithUsage.usage;
+        const { usage, msgId } = extractUsageFromEntry(entry);
 
-        if (usage) {
-            // Deduplicate by message ID to avoid double-counting
-            const msgId = message?.id;
-            if (msgId && seenIds.has(msgId)) {
-                continue;
-            }
-            if (msgId) {
-                seenIds.add(msgId);
-            }
+        if (!usage) continue;
 
-            foundCount++;
-            aggregated.input_tokens = (aggregated.input_tokens || 0) + (usage.input_tokens || 0);
-            aggregated.output_tokens = (aggregated.output_tokens || 0) + (usage.output_tokens || 0);
-            aggregated.cache_creation_input_tokens =
-                (aggregated.cache_creation_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
-            aggregated.cache_read_input_tokens =
-                (aggregated.cache_read_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
-        }
+        // Deduplicate by message ID to avoid double-counting
+        if (msgId && seenIds.has(msgId)) continue;
+        if (msgId) seenIds.add(msgId);
+
+        foundCount++;
+        addUsageToAggregated(aggregated, usage);
     }
 
-    const totalTokens = (aggregated.input_tokens || 0) +
-        (aggregated.output_tokens || 0) +
-        (aggregated.cache_creation_input_tokens || 0) +
-        (aggregated.cache_read_input_tokens || 0);
-
-    // Log at info level when we find significant token usage to help debug
-    if (totalTokens > 0) {
-        logger.info({
-            conversationLogLength: conversationLog.length,
-            messagesWithUsage: foundCount,
-            aggregatedInputTokens: aggregated.input_tokens,
-            aggregatedCacheRead: aggregated.cache_read_input_tokens,
-            aggregatedCacheCreation: aggregated.cache_creation_input_tokens,
-            aggregatedOutputTokens: aggregated.output_tokens,
-            totalTokens
-        }, 'Token aggregation from conversation log');
-    } else {
-        logger.debug({
-            conversationLogLength: conversationLog.length,
-            messagesWithUsage: foundCount
-        }, 'Token aggregation found no usage data');
-    }
+    const totalTokens = calculateTotalTokens(aggregated);
+    logAggregationResults(conversationLog.length, foundCount, aggregated, totalTokens);
 
     return aggregated;
 }
