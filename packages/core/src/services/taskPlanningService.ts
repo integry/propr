@@ -8,7 +8,7 @@ import { loadFileSummaries } from './relevance/contextBuilder.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
 import {
-  updateTrace, findFilesForPlan, RELEVANT_SUMMARY_COUNT, parseContextConfig, checkoutBaseBranch, truncateToSentences
+  updateTrace, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
 } from './planningHelpers.js';
 import { loadSettings } from '../config/configManager.js';
 
@@ -84,8 +84,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const repoPrefix = draft.repository + '/';
   const repoSummaries = allSummaries.filter(s => s.path.startsWith(repoPrefix)).map(s => ({ ...s, path: s.path.slice(repoPrefix.length) }));
   const summaryMap = new Map(repoSummaries.map(s => [s.path, s.summary]));
-  const topRelevantFiles = relevantFilePaths.slice(0, RELEVANT_SUMMARY_COUNT);
-  const candidateSummaries = topRelevantFiles.map(p => { const summary = summaryMap.get(p); return summary ? { path: p, summary } : null; }).filter((item): item is { path: string; summary: string } => item !== null);
+  const candidateSummaries = relevantFilePaths.map(p => { const summary = summaryMap.get(p); return summary ? { path: p, summary } : null; }).filter((item): item is { path: string; summary: string } => item !== null);
   const fullSummaryText = candidateSummaries.map(s => `FILE ${s.path}: ${s.summary}`).join('\n');
 
   // Calculate token budgets
