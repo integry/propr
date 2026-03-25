@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2, Edit3, Pause, Play } from 'lucide-react';
@@ -69,19 +69,78 @@ const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt })
   );
 };
 
-interface HeaderActionsProps {
-  draft: DraftWithPlan; isPaused: boolean; isPauseLoading: boolean; isRevising: boolean;
-  isDeleting: boolean; repoUrl: string | null; onPauseResume: () => void; onRevise: () => void; onDelete: () => void;
+// Footer stats display component
+interface FooterStats {
+  total: number;
+  merged: number;
+  underReview: number;
+  pending: number;
+  processing: number;
 }
 
-const HeaderActions: React.FC<HeaderActionsProps> = ({
-  draft, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl,
-  onPauseResume, onRevise, onDelete
+interface PlanFooterStatsProps {
+  stats: FooterStats;
+  onRefresh: () => void;
+}
+
+const PlanFooterStats: React.FC<PlanFooterStatsProps> = ({ stats, onRefresh }) => (
+  <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs sm:text-sm text-gray-600">
+      <span className="font-medium">{stats.total} {stats.total === 1 ? 'Issue' : 'Issues'}</span>
+      {stats.merged > 0 && (
+        <>
+          <span className="text-gray-400">•</span>
+          <span className="text-purple-600">{stats.merged} Merged</span>
+        </>
+      )}
+      {stats.processing > 0 && (
+        <>
+          <span className="text-gray-400">•</span>
+          <span className="text-amber-600">{stats.processing} Processing</span>
+        </>
+      )}
+      {stats.pending > 0 && (
+        <>
+          <span className="text-gray-400">•</span>
+          <span className="text-gray-500">{stats.pending} Pending</span>
+        </>
+      )}
+    </div>
+    <button
+      onClick={onRefresh}
+      className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors flex-shrink-0"
+      title="Refresh issues"
+    >
+      <RefreshCw size={16} />
+    </button>
+  </div>
+);
+
+// Header actions component (pause/resume, revise, delete, github link)
+interface PlanHeaderActionsProps {
+  draftStatus: string;
+  isPaused: boolean;
+  isPauseLoading: boolean;
+  isRevising: boolean;
+  isDeleting: boolean;
+  repoUrl: string | null;
+  onPauseResume: () => void;
+  onRevise: () => void;
+  onDelete: () => void;
+}
+
+const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({
+  draftStatus,
+  isPaused,
+  isPauseLoading,
+  isRevising,
+  isDeleting,
+  repoUrl,
+  onPauseResume,
+  onRevise,
+  onDelete
 }) => {
-  const showPauseResume = draft.status === 'executed' || draft.status === 'pr_created';
-  const pauseButtonClass = isPaused
-    ? 'text-green-600 hover:text-green-700 hover:bg-green-50'
-    : 'text-orange-600 hover:text-orange-700 hover:bg-orange-50';
+  const showPauseResume = draftStatus === 'executed' || draftStatus === 'pr_created';
 
   return (
     <div className="flex items-center gap-2 flex-shrink-0">
@@ -89,10 +148,20 @@ const HeaderActions: React.FC<HeaderActionsProps> = ({
         <button
           onClick={onPauseResume}
           disabled={isPauseLoading}
-          className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${pauseButtonClass}`}
+          className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+            isPaused
+              ? 'text-green-600 hover:text-green-700 hover:bg-green-50'
+              : 'text-orange-600 hover:text-orange-700 hover:bg-orange-50'
+          }`}
           title={isPaused ? 'Resume plan execution' : 'Pause plan execution'}
         >
-          {isPauseLoading ? <Loader2 size={16} className="animate-spin" /> : isPaused ? <Play size={16} /> : <Pause size={16} />}
+          {isPauseLoading ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : isPaused ? (
+            <Play size={16} />
+          ) : (
+            <Pause size={16} />
+          )}
           <span className="hidden sm:inline">{isPaused ? 'Resume' : 'Pause'}</span>
         </button>
       )}
@@ -132,21 +201,6 @@ const HeaderActions: React.FC<HeaderActionsProps> = ({
   );
 };
 
-interface FooterStatsProps { stats: { total: number; merged: number; processing: number; pending: number }; onRefresh: () => void; }
-
-const FooterStats: React.FC<FooterStatsProps> = ({ stats, onRefresh }) => (
-  <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
-    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs sm:text-sm text-gray-600">
-      <span className="font-medium">{stats.total} {stats.total === 1 ? 'Issue' : 'Issues'}</span>
-      {stats.merged > 0 && (<><span className="text-gray-400">•</span><span className="text-purple-600">{stats.merged} Merged</span></>)}
-      {stats.processing > 0 && (<><span className="text-gray-400">•</span><span className="text-amber-600">{stats.processing} Processing</span></>)}
-      {stats.pending > 0 && (<><span className="text-gray-400">•</span><span className="text-gray-500">{stats.pending} Pending</span></>)}
-    </div>
-    <button onClick={onRefresh} className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors flex-shrink-0" title="Refresh issues">
-      <RefreshCw size={16} />
-    </button>
-  </div>
-);
 
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRefetch }) => {
   const navigate = useNavigate();
@@ -170,114 +224,78 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
 
   // Handle delete plan confirmation
-  const handleDeletePlanConfirm = async () => {
+  const handleDeletePlanConfirm = useCallback(async () => {
     setIsDeleting(true);
     try {
       await deleteDraft(draft.draft_id);
       setShowDeleteDialog(false);
-      addToast({
-        type: 'success',
-        message: 'Plan deleted successfully',
-        duration: 3000
-      });
+      addToast({ type: 'success', message: 'Plan deleted successfully', duration: 3000 });
       navigate('/plans');
     } catch (err) {
-      addToast({
-        type: 'error',
-        message: (err as Error).message || 'Failed to delete plan',
-        duration: 5000
-      });
+      addToast({ type: 'error', message: (err as Error).message || 'Failed to delete plan', duration: 5000 });
     } finally {
       setIsDeleting(false);
     }
-  };
+  }, [draft.draft_id, addToast, navigate]);
 
   // Handle pause/resume toggle
-  const handlePauseResume = async () => {
+  const handlePauseResume = useCallback(async () => {
     setIsPauseLoading(true);
     try {
       if (isPaused) {
         await resumeDraft(draft.draft_id);
         setIsPaused(false);
-        addToast({
-          type: 'success',
-          message: 'Plan execution resumed',
-          duration: 3000
-        });
+        addToast({ type: 'success', message: 'Plan execution resumed', duration: 3000 });
       } else {
         await pauseDraft(draft.draft_id);
         setIsPaused(true);
-        addToast({
-          type: 'success',
-          message: 'Plan execution paused. Current task will complete, but next task won\'t start.',
-          duration: 4000
-        });
+        addToast({ type: 'success', message: 'Plan execution paused. Current task will complete, but next task won\'t start.', duration: 4000 });
       }
     } catch (err) {
-      addToast({
-        type: 'error',
-        message: (err as Error).message || `Failed to ${isPaused ? 'resume' : 'pause'} plan`,
-        duration: 5000
-      });
+      addToast({ type: 'error', message: (err as Error).message || `Failed to ${isPaused ? 'resume' : 'pause'} plan`, duration: 5000 });
     } finally {
       setIsPauseLoading(false);
     }
-  };
+  }, [draft.draft_id, isPaused, addToast]);
 
   // Handle revise plan confirmation
-  const handleRevisePlanConfirm = async () => {
+  const handleRevisePlanConfirm = useCallback(async () => {
     setIsRevising(true);
     try {
       const result = await reviseDraft(draft.draft_id);
       setShowReviseDialog(false);
-      addToast({
-        type: 'success',
-        message: result.issuesDetached > 0
-          ? `Plan revised successfully. ${result.issuesDetached} issue(s) detached.`
-          : 'Plan revised successfully.',
-        duration: 3000
-      });
-      // Trigger refetch to reload the draft with updated status
-      if (onRefetch) {
-        onRefetch();
-      }
+      const message = result.issuesDetached > 0
+        ? `Plan revised successfully. ${result.issuesDetached} issue(s) detached.`
+        : 'Plan revised successfully.';
+      addToast({ type: 'success', message, duration: 3000 });
+      onRefetch?.();
     } catch (err) {
-      addToast({
-        type: 'error',
-        message: (err as Error).message || 'Failed to revise plan',
-        duration: 5000
-      });
+      addToast({ type: 'error', message: (err as Error).message || 'Failed to revise plan', duration: 5000 });
     } finally {
       setIsRevising(false);
     }
-  };
+  }, [draft.draft_id, addToast, onRefetch]);
 
   // Defensively ensure plan_json is an array
-  const tasks: PlanTask[] = (() => {
+  const tasks: PlanTask[] = useMemo(() => {
     let planJson = draft.plan_json;
     if (typeof planJson === 'string') {
       try { planJson = JSON.parse(planJson); } catch { return []; }
     }
     return Array.isArray(planJson) ? planJson : [];
-  })();
+  }, [draft.plan_json]);
 
   // Extract repository URL from draft
-  const getRepositoryUrl = () => {
-    const repo = draft.repository;
-    if (!repo) return null;
-    return `https://github.com/${repo}/issues`;
-  };
-
-  const repoUrl = getRepositoryUrl();
+  const repoUrl = draft.repository ? `https://github.com/${draft.repository}/issues` : null;
 
   // Extract repository and branch info
   const repository = draft.repository || '';
   const baseBranch = draft.context_config?.baseBranch || 'main';
 
   // Callback to receive issues from PlanIssuesManager
-  const handleIssuesChange = (updatedIssues: PlanIssue[]) => {
+  const handleIssuesChange = useCallback((updatedIssues: PlanIssue[]) => {
     setIssues(updatedIssues);
-  };
+  }, []);
 
   // Compute footer stats from issues (actual data, not tasks)
   const footerStats = useMemo(() => {
@@ -290,9 +308,9 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   }, [issues]);
 
   // Handle refresh from footer
-  const handleRefresh = () => {
+  const handleRefresh = useCallback(() => {
     setRefreshKey(prev => prev + 1);
-  };
+  }, []);
 
   return (
     <motion.div
@@ -303,7 +321,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       {/* Pro Studio Header - Anchored with gray background */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
-          {/* Plan Name - responsive width based on available space */}
           <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
             {planName}
           </h1>
@@ -319,7 +336,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
               <span className="hidden sm:inline">Paused</span>
             </span>
           )}
-          {/* Repository and Branch Breadcrumb - hidden on mobile */}
           <div className="hidden md:flex items-center gap-2 text-sm flex-shrink-0">
             <div className="h-4 w-px bg-gray-300" />
             <Github size={16} className="text-gray-500" />
@@ -328,7 +344,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
             <GitBranch size={14} className="text-gray-500" />
             <span className="text-gray-600">{baseBranch}</span>
           </div>
-          {/* Original Prompt - styled like Step 2 (Review Plan) */}
           {draft.initial_prompt && (
             <>
               <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
@@ -339,8 +354,8 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
           )}
         </div>
 
-        <HeaderActions
-          draft={draft}
+        <PlanHeaderActions
+          draftStatus={draft.status}
           isPaused={isPaused}
           isPauseLoading={isPauseLoading}
           isRevising={isRevising}
@@ -366,8 +381,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         />
       </div>
 
-      {/* Pro Studio Footer - Anchored with status summary and refresh */}
-      <FooterStats stats={footerStats} onRefresh={handleRefresh} />
+      <PlanFooterStats stats={footerStats} onRefresh={handleRefresh} />
 
       <DeletePlanDialog
         isOpen={showDeleteDialog}

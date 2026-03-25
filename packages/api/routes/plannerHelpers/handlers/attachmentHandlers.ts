@@ -6,6 +6,7 @@ import { Request, Response } from 'express';
 import { AttachmentService } from '@propr/core';
 import type { MulterFile } from '@propr/core';
 import type { OwnershipResult } from '../types.js';
+import { validateUUID } from '../../validation.js';
 
 interface AttachmentContentDeps {
   verifyOwnership: (draftId: string, userId: string, fields: string[]) => Promise<OwnershipResult>;
@@ -13,6 +14,20 @@ interface AttachmentContentDeps {
 
 export function createGetAttachmentContentHandler(deps: AttachmentContentDeps) {
   return async function getAttachmentContent(req: Request, res: Response): Promise<void> {
+    // Validate draft ID
+    const idValidation = validateUUID(req.params.id, 'Draft ID');
+    if (!idValidation.valid) {
+      res.status(400).json({ error: idValidation.error });
+      return;
+    }
+
+    // Validate attachment ID
+    const attachmentIdValidation = validateUUID(req.params.attachmentId, 'Attachment ID');
+    if (!attachmentIdValidation.valid) {
+      res.status(400).json({ error: attachmentIdValidation.error });
+      return;
+    }
+
     try {
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id', 'attachments']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
@@ -44,6 +59,13 @@ interface UploadAttachmentDeps {
 
 export function createUploadAttachmentHandler(deps: UploadAttachmentDeps) {
   return async function uploadAttachment(req: Request, res: Response): Promise<void> {
+    // Validate draft ID
+    const idValidation = validateUUID(req.params.id, 'Draft ID');
+    if (!idValidation.valid) {
+      res.status(400).json({ error: idValidation.error });
+      return;
+    }
+
     if (!req.file) { res.status(400).json({ error: 'No file uploaded' }); return; }
     try {
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id);
@@ -66,6 +88,20 @@ interface DeleteAttachmentDeps {
 
 export function createDeleteAttachmentHandler(deps: DeleteAttachmentDeps) {
   return async function deleteAttachment(req: Request, res: Response): Promise<void> {
+    // Validate draft ID
+    const idValidation = validateUUID(req.params.id, 'Draft ID');
+    if (!idValidation.valid) {
+      res.status(400).json({ error: idValidation.error });
+      return;
+    }
+
+    // Validate attachment ID
+    const attachmentIdValidation = validateUUID(req.params.attachmentId, 'Attachment ID');
+    if (!attachmentIdValidation.valid) {
+      res.status(400).json({ error: attachmentIdValidation.error });
+      return;
+    }
+
     try {
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }

@@ -62,15 +62,15 @@ test('Redis connection events are registered', () => {
     assert.strictEqual(mockRedis.on.mock.calls[1].arguments[0], 'error');
 });
 
-test('createWorker creates a worker with correct configuration', () => {
+test('createWorker creates a worker with correct configuration', async () => {
     const processorFn = async (): Promise<{ status: string }> => ({ status: 'completed' });
-    const worker = createWorker('test-queue', processorFn as Parameters<typeof createWorker>[1]);
-    
+    const worker = await createWorker('test-queue', processorFn as Parameters<typeof createWorker>[1]);
+
     assert.ok(worker);
     assert.strictEqual(mockWorker.name, 'test-queue');
     assert.strictEqual(mockWorker.processor, processorFn);
     assert.strictEqual(mockWorker.opts.concurrency, 5);
-    
+
     const eventNames = mockWorker.on.mock.calls.map((call: { arguments: unknown[] }) => call.arguments[0]);
     assert.ok(eventNames.includes('completed'));
     assert.ok(eventNames.includes('failed'));

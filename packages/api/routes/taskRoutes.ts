@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import { generateCorrelationId, getAuthenticatedOctokit, issueQueue, COMMENT_BATCH_DELAY_MS } from '@propr/core';
 import type { SystemTaskJobData, CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
+import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
 
 interface TaskRoutesDeps {
   db: Knex;
@@ -17,19 +18,104 @@ interface TaskRecord {
   task_type: string;
 }
 
+interface CommitInfo {
+  sha: string;
+  shortSha: string;
+  message: string;
+  author: string;
+  date: string | null;
+}
+
+interface GitHubCommit {
+  sha: string;
+  commit: {
+    message: string;
+    author?: {
+      name?: string;
+      email?: string;
+      date?: string;
+    } | null;
+  };
+  author?: {
+    login?: string;
+  } | null;
+}
+
+function formatCommit(c: GitHubCommit): CommitInfo {
+  return {
+    sha: c.sha,
+    shortSha: c.sha.substring(0, 7),
+    message: c.commit.message.split('\n')[0],
+    author: c.commit.author?.name || c.author?.login || 'Unknown',
+    date: c.commit.author?.date || null
+  };
+}
+
+function validateRevertPreviewParams(query: Record<string, string>): { valid: true; params: { owner: string; repo: string; pr: string; commit: string } } | { valid: false; error: string } {
+  const { owner, repo, pr, commit } = query;
+
+  if (!owner || !repo || !pr || !commit) {
+    return { valid: false, error: 'Missing required parameters: owner, repo, pr, commit' };
+  }
+
+  if (typeof owner !== 'string' || owner.length > 100) {
+    return { valid: false, error: 'Invalid owner name' };
+  }
+
+  if (typeof repo !== 'string' || repo.length > 100) {
+    return { valid: false, error: 'Invalid repo name' };
+  }
+
+  if (typeof commit !== 'string' || !/^[a-f0-9]{7,40}$/i.test(commit)) {
+    return { valid: false, error: 'Invalid commit hash' };
+  }
+
+  return { valid: true, params: { owner, repo, pr, commit } };
+}
+
 export function createTaskRoutes(deps: TaskRoutesDeps) {
   const { db, taskQueue } = deps;
 
   async function getTasks(req: Request, res: Response): Promise<void> {
     try {
-      const { status = 'all', limit = '50', offset = '0', repository = 'all', search = '', forReview = '', excludeMerged = '' } = req.query as Record<string, string>;
+      const { status = 'all', repository = 'all', search = '', forReview = '', excludeMerged = '' } = req.query as Record<string, string>;
+
+      // Validate limit parameter
+      const limitValidation = validatePositiveInteger(req.query.limit, 'Limit', { max: 1000 });
+      if (!limitValidation.valid) {
+        res.status(400).json({ error: limitValidation.error });
+        return;
+      }
+      const limit = limitValidation.value ?? 50;
+
+      // Validate offset parameter
+      const offsetValidation = validatePositiveInteger(req.query.offset, 'Offset', { max: 1000000 });
+      if (!offsetValidation.valid) {
+        res.status(400).json({ error: offsetValidation.error });
+        return;
+      }
+      const offset = offsetValidation.value ?? 0;
+
+      // Validate repository filter
+      const repoValidation = validateRepositoryFilter(repository);
+      if (!repoValidation.valid) {
+        res.status(400).json({ error: repoValidation.error });
+        return;
+      }
+
+      // Validate search parameter length
+      const searchValidation = validateStringLength(search, 'Search', { maxLength: 500 });
+      if (!searchValidation.valid) {
+        res.status(400).json({ error: searchValidation.error });
+        return;
+      }
 
       const result = await getTasksFromDb({
         db,
         status,
         repository,
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit,
+        offset,
         search,
         forReview: forReview === 'true',
         excludeMerged: excludeMerged === 'true'
@@ -55,6 +141,38 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
           error: 'Missing required parameters',
           required: ['repo', 'pr', 'commit', 'commentId', 'owner']
         });
+        return;
+      }
+
+      // Validate repo name
+      if (typeof repo !== 'string' || repo.length > 100) {
+        res.status(400).json({ error: 'Invalid repo name' });
+        return;
+      }
+
+      // Validate owner name
+      if (typeof owner !== 'string' || owner.length > 100) {
+        res.status(400).json({ error: 'Invalid owner name' });
+        return;
+      }
+
+      // Validate PR number
+      const prValidation = validatePositiveInteger(pr, 'PR number', { required: true, max: 10000000 });
+      if (!prValidation.valid) {
+        res.status(400).json({ error: prValidation.error });
+        return;
+      }
+
+      // Validate commit hash
+      if (typeof commit !== 'string' || !/^[a-f0-9]{7,40}$/i.test(commit)) {
+        res.status(400).json({ error: 'Invalid commit hash' });
+        return;
+      }
+
+      // Validate commentId
+      const commentIdValidation = validatePositiveInteger(commentId, 'Comment ID', { required: true, max: 10000000000 });
+      if (!commentIdValidation.valid) {
+        res.status(400).json({ error: commentIdValidation.error });
         return;
       }
 
@@ -97,13 +215,18 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
   async function getRevertPreview(req: Request, res: Response): Promise<void> {
     try {
-      const { owner, repo, pr, commit } = req.query as Record<string, string>;
+      const validation = validateRevertPreviewParams(req.query as Record<string, string>);
+      if (!validation.valid) {
+        res.status(400).json({ error: validation.error });
+        return;
+      }
 
-      if (!owner || !repo || !pr || !commit) {
-        res.status(400).json({
-          error: 'Missing required parameters',
-          required: ['owner', 'repo', 'pr', 'commit']
-        });
+      const { owner, repo, pr, commit } = validation.params;
+
+      // Validate PR number
+      const prValidation = validatePositiveInteger(pr, 'PR number', { required: true, max: 10000000 });
+      if (!prValidation.valid) {
+        res.status(400).json({ error: prValidation.error });
         return;
       }
 
@@ -113,9 +236,6 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
         owner, repo, pull_number: prNumber
       });
-
-      const branch = prData.head.ref;
-      const baseBranch = prData.base.ref;
 
       const { data: prCommits } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
         owner, repo, pull_number: prNumber, per_page: 100
@@ -128,35 +248,15 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      const commitsToRemove = prCommits.slice(targetCommitIndex).map(c => ({
-        sha: c.sha,
-        shortSha: c.sha.substring(0, 7),
-        message: c.commit.message.split('\n')[0],
-        author: c.commit.author?.name || c.author?.login || 'Unknown',
-        date: c.commit.author?.date || null
-      }));
-
+      const commitsToRemove = prCommits.slice(targetCommitIndex).map(formatCommit);
       const newHeadCommit = targetCommitIndex > 0 ? prCommits[targetCommitIndex - 1] : null;
-
-      const remainingCommits = prCommits.slice(0, targetCommitIndex).map(c => ({
-        sha: c.sha,
-        shortSha: c.sha.substring(0, 7),
-        message: c.commit.message.split('\n')[0],
-        author: c.commit.author?.name || c.author?.login || 'Unknown',
-        date: c.commit.author?.date || null
-      }));
+      const remainingCommits = prCommits.slice(0, targetCommitIndex).map(formatCommit);
 
       res.json({
-        branch,
-        baseBranch,
+        branch: prData.head.ref,
+        baseBranch: prData.base.ref,
         targetCommit: { sha: commit, shortSha: commit.substring(0, 7) },
-        newHead: newHeadCommit ? {
-          sha: newHeadCommit.sha,
-          shortSha: newHeadCommit.sha.substring(0, 7),
-          message: newHeadCommit.commit.message.split('\n')[0],
-          author: newHeadCommit.commit.author?.name || newHeadCommit.author?.login || 'Unknown',
-          date: newHeadCommit.commit.author?.date || null
-        } : null,
+        newHead: newHeadCommit ? formatCommit(newHeadCommit) : null,
         commitsToRemove,
         remainingCommits,
         willRevertToBase: targetCommitIndex === 0
@@ -172,8 +272,10 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const { taskId } = req.params;
       const { force } = req.query;
 
-      if (!taskId) {
-        res.status(400).json({ error: 'Task ID is required' });
+      // Validate taskId parameter
+      const taskIdValidation = validateTaskId(taskId);
+      if (!taskIdValidation.valid) {
+        res.status(400).json({ error: taskIdValidation.error });
         return;
       }
 
@@ -222,12 +324,21 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const { taskId } = req.params;
       const { body } = req.body;
 
-      if (!taskId) {
-        res.status(400).json({ error: 'Task ID is required' });
+      // Validate taskId parameter
+      const taskIdValidation = validateTaskId(taskId);
+      if (!taskIdValidation.valid) {
+        res.status(400).json({ error: taskIdValidation.error });
         return;
       }
 
-      if (!body || typeof body !== 'string' || body.trim().length === 0) {
+      // Validate comment body
+      const bodyValidation = validateStringLength(body, 'Comment body', { required: true, minLength: 1, maxLength: 65536 });
+      if (!bodyValidation.valid) {
+        res.status(400).json({ error: bodyValidation.error });
+        return;
+      }
+
+      if (typeof body !== 'string' || body.trim().length === 0) {
         res.status(400).json({ error: 'Comment body is required' });
         return;
       }

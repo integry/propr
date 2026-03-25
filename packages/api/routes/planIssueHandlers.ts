@@ -10,7 +10,7 @@ import {
   safeUpdateLabels,
   logger
 } from '@propr/core';
-import type { PlanIssueStatus } from '@propr/core';
+import { PlanIssueStatus } from '@propr/core';
 import type { OwnershipResult } from './plannerHelpers.js';
 import {
   getLlmLabel,
@@ -46,7 +46,7 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
         };
 
         if (status) {
-          const validStatuses: PlanIssueStatus[] = ['pending', 'processing', 'under_review', 'in_refinement', 'refinement_processing', 'merged', 'closed'];
+          const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
           if (validStatuses.includes(status as PlanIssueStatus)) {
             options.status = status as PlanIssueStatus;
           }
@@ -139,7 +139,7 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
 
       const { agent_alias, model_name, status } = req.body;
 
-      const validStatuses: PlanIssueStatus[] = ['pending', 'processing', 'under_review', 'in_refinement', 'refinement_processing', 'merged', 'closed'];
+      const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
       if (status && !validStatuses.includes(status)) {
         res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
         return;
@@ -212,7 +212,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       }
 
       const issues = await getPlanIssuesByDraft(draftId);
-      const pendingIssues = issues.filter(issue => issue.status === 'pending');
+      const pendingIssues = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
       if (pendingIssues.length === 0) {
         res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });

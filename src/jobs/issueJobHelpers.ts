@@ -12,9 +12,10 @@ export {
     handleSimpleUsageLimitError,
     handleUsageLimitError,
     handleGenericError,
-    type UsageLimitError
-} from './issueJobErrorHandlers.js';
-import type { IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
+    type UsageLimitError,
+    type GenericErrorOptions
+} from './errorHandlers.js';
+import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
 
 export type RepoValidation = RepoValidationResult;
 
@@ -35,11 +36,19 @@ export interface PostProcessingResult {
     error?: string;
 }
 
-interface CreatePROptions { commitResult: CommitResult | null; claudeResult: ClaudeCodeResponse | null; modelName: string; repoValidation: RepoValidation; PR_LABEL: string; correlatedLogger: Logger; issueTitle: string; }
-
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
 };
+
+interface CreatePROptions {
+    commitResult: CommitResult | null;
+    claudeResult: ClaudeCodeResponse | null;
+    modelName: string;
+    repoValidation: RepoValidation;
+    PR_LABEL: string;
+    correlatedLogger: Logger;
+    issueTitle: string;
+}
 
 export async function updateTaskTitleInStorage(
     taskId: string,
@@ -80,7 +89,6 @@ export async function createPullRequest(
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
     const modelShortName = getModelShortName(modelName);
-    // New format: [412 by Claude Opus] Title
     const prTitle = '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle;
 
     const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
@@ -119,7 +127,6 @@ Comment on this PR to request refinements — the AI agent monitors comments and
             prUrl: prResponse.data.html_url
         }, 'PR created successfully');
 
-        // Only add PR_LABEL to PRs (baseLabel/modelLabel are for issues only)
         try {
             await withRetry(
                 () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
@@ -175,7 +182,6 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
             const existingPR = existingPRs.data[0];
             correlatedLogger.info({ issueNumber: issueRef.number, prNumber: existingPR.number, prUrl: existingPR.html_url, currentBase: existingPR.base.ref }, 'Found existing PR for branch');
 
-            // Check if the PR base branch is correct, update if needed
             const expectedBase = issueRef.baseBranch;
             if (expectedBase && existingPR.base.ref !== expectedBase) {
                 correlatedLogger.info({ prNumber: existingPR.number, currentBase: existingPR.base.ref, expectedBase }, 'PR has wrong base branch, updating...');
@@ -192,7 +198,6 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
                 }
             }
 
-            // Add PR label to the existing PR (only PR_LABEL, not issue labels like baseLabel/modelLabel)
             try {
                 await withRetry(
                     () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
@@ -215,7 +220,12 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
     } catch { throw prError; }
 }
 
-interface FinalResultResults { worktreeInfo: WorktreeInfo | undefined; claudeResult: ClaudeCodeResponse | null; postProcessingResult: PostProcessingResult | null; commitResult: CommitResult | null; }
+interface FinalResultResults {
+    worktreeInfo: WorktreeInfo | undefined;
+    claudeResult: ClaudeCodeResponse | null;
+    postProcessingResult: PostProcessingResult | null;
+    commitResult: CommitResult | null;
+}
 
 function determineResultStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
     if (!claudeResult?.success) return 'claude_processing_failed';

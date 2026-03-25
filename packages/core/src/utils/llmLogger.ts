@@ -7,6 +7,7 @@ import { db } from '../db/connection.js';
 import logger from './logger.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
+import { calculateCostWithCachePricing } from './tokenCalculation.js';
 import type { ExecutionType } from './llmMetrics.types.js';
 
 export interface LlmLogEntry {
@@ -33,23 +34,38 @@ export interface LlmLogEntry {
 }
 
 /**
- * Calculate cost based on model and token usage.
+ * Calculate cost based on model and token usage, including cache tokens.
+ * Reuses the shared calculateCostWithCachePricing function.
  */
-async function calculateCost(modelName: string, inputTokens?: number, outputTokens?: number): Promise<number | undefined> {
-  if (!inputTokens && !outputTokens) {
+async function calculateCost(entry: LlmLogEntry): Promise<number | undefined> {
+  const inputTokens = entry.inputTokens || 0;
+  const outputTokens = entry.outputTokens || 0;
+  const cacheCreationTokens = entry.cacheCreationInputTokens || 0;
+  const cacheReadTokens = entry.cacheReadInputTokens || 0;
+
+  // No tokens = no cost
+  if (inputTokens === 0 && outputTokens === 0 && cacheCreationTokens === 0 && cacheReadTokens === 0) {
     return undefined;
   }
 
   try {
-    const openRouterId = getOpenRouterId(modelName);
+    const openRouterId = getOpenRouterId(entry.modelName);
     const pricing = await getModelPricing(openRouterId);
 
     if (pricing) {
-      const cost = ((inputTokens || 0) * pricing.prompt) + ((outputTokens || 0) * pricing.completion);
+      const stats = {
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        totalTokens: inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens,
+        totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens,
+      };
+      const cost = calculateCostWithCachePricing(entry.modelName, stats, pricing);
       return cost > 0 ? cost : undefined;
     }
   } catch (error) {
-    logger.debug({ error: (error as Error).message, modelName }, 'Failed to calculate cost for LLM log');
+    logger.debug({ error: (error as Error).message, modelName: entry.modelName }, 'Failed to calculate cost for LLM log');
   }
 
   return undefined;
@@ -65,10 +81,10 @@ export async function persistLlmLog(entry: LlmLogEntry): Promise<number | null> 
   }
 
   try {
-    // Calculate cost if not provided and we have token usage
+    // Calculate cost if not provided and we have any token usage
     let costUsd = entry.costUsd;
-    if (costUsd === undefined && (entry.inputTokens || entry.outputTokens)) {
-      costUsd = await calculateCost(entry.modelName, entry.inputTokens, entry.outputTokens);
+    if (costUsd === undefined) {
+      costUsd = await calculateCost(entry);
     }
 
     const [inserted] = await db('llm_logs').insert({

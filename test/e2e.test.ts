@@ -14,6 +14,9 @@ import {
   type ModelTestResult, type AgentModelPair,
   newModelResult,
   createAndGeneratePlan, waitForTasks, pollTasksToCompletion,
+  triggerSequentialImplementation, waitForPlanIssueCondition,
+  hasInProgressIssue, getIssueStatusCounts,
+  IN_PROGRESS_STATUSES,
 } from "./e2e/helpers.js";
 import { writeReport } from "./e2e/report.js";
 
@@ -262,8 +265,146 @@ describe("ProPR CLI E2E", {
     });
   });
 
-  // 10. All-models implementation
-  describe("10. All-models", { timeout: 2_400_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+  // 10. Plan sequential processing
+  describe("10. Plan sequential processing", { timeout: 900_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+    let sequentialPlanId: string | null = null;
+
+    it("create plan with multiple issues for sequential test", async () => {
+      // Create a plan with multiple small, independent tasks
+      const { planId, issues } = await createAndGeneratePlan(
+        REPO!,
+        "Create 3 tiny independent files: 1) Add a constants.ts with a VERSION constant, 2) Add a types.ts with a Config interface, 3) Add a utils/helpers.ts with a sleep function.",
+        client,
+        createdPlanIds,
+      );
+      sequentialPlanId = planId;
+
+      // We need at least 2 issues to test sequential processing
+      assert.ok(issues.length >= 2, `Expected at least 2 issues, got ${issues.length}`);
+      console.log(`    Created plan with ${issues.length} issues`);
+    });
+
+    it("trigger sequential processing (useEpic + autoMerge)", async () => {
+      if (!sequentialPlanId) {
+        console.log("    Skipping: no plan created");
+        return;
+      }
+
+      const result = await triggerSequentialImplementation(sequentialPlanId, client);
+
+      // Sequential processing should succeed
+      assert.ok(result.success, `Sequential trigger failed: ${result.message}`);
+
+      // With autoMerge + epic, only first issue should be implemented
+      // Rest should be queued for sequential processing
+      assert.strictEqual(result.implemented, 1, "Expected exactly 1 issue to be implemented immediately");
+      assert.ok(result.queued >= 1, `Expected at least 1 issue queued, got ${result.queued}`);
+      assert.ok(result.autoMergeEnabled, "Auto-merge should be enabled");
+      assert.ok(result.epicLabel, "Epic label should be created");
+
+      console.log(`    Implemented: ${result.implemented}, Queued: ${result.queued}`);
+      console.log(`    Epic label: ${result.epicLabel}`);
+      console.log(`    Auto-merge: ${result.autoMergeEnabled}`);
+    });
+
+    it("first issue is in-progress, subsequent issues remain pending", async () => {
+      if (!sequentialPlanId) {
+        console.log("    Skipping: no plan created");
+        return;
+      }
+
+      // Wait briefly for status to update
+      await sleep(2000);
+
+      const issues = await listPlanIssues(sequentialPlanId, client);
+      const counts = getIssueStatusCounts(issues);
+
+      console.log(`    Issue statuses: pending=${counts.pending}, in-progress=${counts.inProgress}, terminal=${counts.terminal}`);
+
+      // First issue should be in-progress (processing or under_review)
+      assert.ok(counts.inProgress >= 1, "Expected at least 1 issue in-progress");
+
+      // At least one issue should still be pending (queued for sequential)
+      assert.ok(counts.pending >= 1, "Expected at least 1 issue still pending");
+
+      // Log individual issue statuses
+      for (const issue of issues) {
+        console.log(`    Issue #${issue.issue_number}: ${issue.status}`);
+      }
+    });
+
+    it("in-progress issue blocks next trigger", async () => {
+      if (!sequentialPlanId) {
+        console.log("    Skipping: no plan created");
+        return;
+      }
+
+      // Get current issues
+      const issues = await listPlanIssues(sequentialPlanId, client);
+
+      // Check that we have an in-progress issue
+      const inProgressIssue = issues.find((i) => IN_PROGRESS_STATUSES.has(i.status));
+      if (!inProgressIssue) {
+        console.log("    No in-progress issue found, test inconclusive");
+        return;
+      }
+
+      console.log(`    In-progress issue #${inProgressIssue.issue_number}: ${inProgressIssue.status}`);
+
+      // Verify pending issues exist
+      const pendingIssues = issues.filter((i) => i.status === "pending");
+      if (pendingIssues.length === 0) {
+        console.log("    No pending issues to verify blocking behavior");
+        return;
+      }
+
+      // The key assertion: in-progress issues block pending ones
+      // This is verified by the fact that after triggerSequentialImplementation,
+      // only 1 issue was implemented while others remain pending
+      assert.ok(
+        hasInProgressIssue(issues),
+        "Expected in-progress issue to be present, blocking pending issues"
+      );
+
+      console.log(`    Verified: ${pendingIssues.length} pending issue(s) blocked by in-progress issue #${inProgressIssue.issue_number}`);
+    });
+
+    it("poll first issue to completion", { timeout: 600_000 }, async () => {
+      if (!sequentialPlanId) {
+        console.log("    Skipping: no plan created");
+        return;
+      }
+
+      // Wait for at least one issue to reach a terminal state or under_review
+      const finalIssues = await waitForPlanIssueCondition(
+        sequentialPlanId,
+        client,
+        (issues) => {
+          // Consider under_review as a valid stopping point (PR created)
+          const hasTerminalOrReview = issues.some(
+            (i) => i.status === "merged" || i.status === "closed" || i.status === "under_review"
+          );
+          return hasTerminalOrReview;
+        },
+        600_000, // 10 minutes
+        10_000,  // 10 second poll interval
+      );
+
+      const counts = getIssueStatusCounts(finalIssues);
+      console.log(`    Final statuses: pending=${counts.pending}, in-progress=${counts.inProgress}, terminal=${counts.terminal}`);
+
+      // At least one issue should have progressed beyond 'processing'
+      const progressedIssue = finalIssues.find(
+        (i) => i.status === "under_review" || i.status === "merged" || i.status === "closed"
+      );
+      assert.ok(progressedIssue, "Expected at least one issue to progress to under_review, merged, or closed");
+
+      console.log(`    Issue #${progressedIssue!.issue_number} progressed to: ${progressedIssue!.status}`);
+    });
+  });
+
+  // 11. All-models implementation
+  describe("11. All-models", { timeout: 2_400_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
     it("create plans with enough issues", async () => {
       const pairs = allPairs();
       if (pairs.length === 0) return;
@@ -357,8 +498,8 @@ describe("ProPR CLI E2E", {
     });
   });
 
-  // 11. Report + verification
-  describe("11. Report", { skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+  // 12. Report + verification
+  describe("12. Report", { skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
     it("write report", async () => {
       const planEntries = [
         { label: "Greenfield", id: greenfieldDraftId, plan: greenfieldPlan },

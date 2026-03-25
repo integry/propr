@@ -6,7 +6,7 @@ import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@propr/c
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
 import { validatePRCreation } from '@propr/core';
-import { linkPRToPlanIssue, findPlanIssueByRepoAndNumber, getPlanIssuesByDraft, updatePlanIssueStatus } from '@propr/core';
+import { linkPRToPlanIssue, findPlanIssueByRepoAndNumber, getPlanIssuesByDraft, updatePlanIssueStatus, PlanIssueStatus } from '@propr/core';
 import { getAuthenticatedOctokit, getPrimaryProcessingLabels } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
@@ -365,7 +365,7 @@ async function triggerNextPlanIssueIfNeeded(
         }
 
         // Mark the current issue as completed (since no PR was needed)
-        await updatePlanIssueStatus(repository, issueRef.number, 'merged');
+        await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED);
         log.info({ repository, issueNumber: issueRef.number }, 'Marked plan issue as merged (no changes needed)');
 
         // Find the next pending issue in the plan
