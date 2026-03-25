@@ -40,7 +40,7 @@ interface ErrorLike {
  * @param config - Retry configuration
  * @returns Delay in milliseconds
  */
-function calculateDelay(attempt: number, config: RetryConfig): number {
+export function calculateDelay(attempt: number, config: RetryConfig): number {
     const exponentialDelay = config.baseDelay * Math.pow(config.exponentialBase, attempt);
     let delay = Math.min(exponentialDelay, config.maxDelay);
 
@@ -58,7 +58,7 @@ function calculateDelay(attempt: number, config: RetryConfig): number {
  * @param config - Retry configuration
  * @returns Whether the error is retryable
  */
-function isRetryableError(error: Error | unknown, config: RetryConfig): boolean {
+export function isRetryableError(error: Error | unknown, config: RetryConfig): boolean {
     const err = error as ErrorLike;
 
     if (err.code && config.retryableErrors.includes(err.code)) {

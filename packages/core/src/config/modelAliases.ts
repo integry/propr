@@ -287,5 +287,6 @@ export {
     getOpenRouterId,
     resolveLlmLabel,
     resolveCustomLabel,
-    getAllCustomLabels
+    getAllCustomLabels,
+    findMatchingModel
 };

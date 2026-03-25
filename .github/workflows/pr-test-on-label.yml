@@ -1,0 +1,151 @@
+name: Full Test Suite (Label Triggered)
+
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  test:
+    name: Run Full Test Suite
+    if: github.event.label.name == 'run-tests'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    services:
+      redis:
+        image: redis:alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            propr-ui/package-lock.json
+            docs/package-lock.json
+            packages/shared/package-lock.json
+            packages/api/package-lock.json
+            packages/core/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Full Test Suite
+        id: tests
+        continue-on-error: true
+        env:
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          NODE_ENV: test
+        run: |
+          echo "Running full test suite with Redis..."
+          npx tsx --test test/*.test.ts 2>&1 | tee test_output.txt
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+
+          if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "test_result=success" >> $GITHUB_OUTPUT
+            echo "All tests passed"
+          else
+            echo "test_result=failure" >> $GITHUB_OUTPUT
+            echo "Some tests failed"
+          fi
+
+          exit $TEST_EXIT_CODE
+
+      - name: Post Success Comment
+        if: steps.tests.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const prNumber = context.issue.number;
+            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
+
+            let output = '';
+            try { output = fs.readFileSync('test_output.txt', 'utf8'); }
+            catch (e) { output = 'Output file not available.'; }
+
+            if (output.length > 60000) {
+              output = output.substring(0, 60000) + "\n\n...(truncated)";
+            }
+
+            const body = [
+              '### Full Test Suite Results',
+              '',
+              'All tests passed.',
+              '',
+              '<details>',
+              '<summary>View Test Output</summary>',
+              '',
+              '~~~text',
+              output,
+              '~~~',
+              '</details>',
+              '',
+              '**[View Workflow](' + runUrl + ')**'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body
+            });
+
+      - name: Post Failure Comment
+        if: steps.tests.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const prNumber = context.issue.number;
+            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
+
+            let output = '';
+            try { output = fs.readFileSync('test_output.txt', 'utf8'); }
+            catch (e) { output = 'Output file not available.'; }
+
+            if (output.length > 60000) {
+              output = output.substring(0, 60000) + "\n\n...(truncated)";
+            }
+
+            const body = [
+              '### Full Test Suite Results',
+              '',
+              'Some tests failed. Please review the output below.',
+              '',
+              '<details>',
+              '<summary>View Test Output</summary>',
+              '',
+              '~~~text',
+              output,
+              '~~~',
+              '</details>',
+              '',
+              '**[View Workflow](' + runUrl + ')**'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body
+            });
+
+      - name: Fail Job
+        if: steps.tests.outcome == 'failure'
+        run: exit 1
