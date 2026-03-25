@@ -214,23 +214,3 @@ export interface RepositoryInfo {
   defaultBranch: string;
   branches: string[];
 }
-
-export interface ValidateContextRepositoryResponse {
-  valid: boolean;
-  repository: string;
-  defaultBranch?: string;
-  description?: string;
-  error?: string;
-}
-
-export interface ReviseDraftResponse {
-  success: boolean;
-  message: string;
-  previousStatus: string;
-  issuesDetached: number;
-}
-
-export interface PauseResumeResponse {
-  paused: boolean;
-  pausedAt: string | null;
-}

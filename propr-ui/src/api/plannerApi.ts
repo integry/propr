@@ -1,15 +1,69 @@
 import { handleApiResponse, API_BASE_URL } from './proprApi';
 
-// Re-export all types for backward compatibility
-export * from './plannerTypes';
+// Re-export all types from plannerTypes for backwards compatibility
+export type {
+  GenerationStepData,
+  GenerationStep,
+  GenerationTrace,
+  PlannerAttachment,
+  PlannerDraft,
+  ContextStats,
+  Granularity,
+  ContextRepository,
+  GranularityEnforcementMetadata,
+  SmartFileSelection,
+  PreviewStats,
+  PreviewResult,
+  PreviewOptions,
+  PlanGenerationOptions,
+  CreateDraftOptions,
+  PlanTask,
+  ChatMessage,
+  DraftContextConfig,
+  RefinementResult,
+  DraftWithPlan,
+  RefineResponse,
+  FinalizeResponse,
+  IssueSummary,
+  DraftListItem,
+  GetDraftsOptions,
+  PaginatedDraftsResponse,
+  RepositoryInfo
+} from './plannerTypes';
 
 import type {
-  PlannerDraft, PlannerAttachment, ContextStats, PlanGenerationOptions,
-  CreateDraftOptions, PreviewOptions, PreviewResult, DraftWithPlan,
-  PlanTask, ChatMessage, RefineResponse, FinalizeResponse,
-  PaginatedDraftsResponse, GetDraftsOptions, RepositoryInfo,
-  ValidateContextRepositoryResponse, ReviseDraftResponse, PauseResumeResponse
+  PlannerDraft,
+  PlannerAttachment,
+  ContextStats,
+  PreviewOptions,
+  PreviewResult,
+  PlanGenerationOptions,
+  CreateDraftOptions,
+  DraftWithPlan,
+  PlanTask,
+  ChatMessage,
+  RefineResponse,
+  FinalizeResponse,
+  GetDraftsOptions,
+  PaginatedDraftsResponse,
+  RepositoryInfo
 } from './plannerTypes';
+
+// Re-export from plannerDraftManagementApi for backwards compatibility
+export {
+  resetDraftToSetup,
+  validateContextRepository,
+  abortGeneration,
+  abortRefinement,
+  reviseDraft,
+  pauseDraft,
+  resumeDraft
+} from './plannerDraftManagementApi';
+export type {
+  ValidateContextRepositoryResponse,
+  ReviseDraftResponse,
+  PauseResumeResponse
+} from './plannerDraftManagementApi';
 
 export const createDraft = async (repository: string, prompt: string, options?: CreateDraftOptions): Promise<PlannerDraft> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts`, {
@@ -143,15 +197,6 @@ export const deleteDraft = async (draftId: string): Promise<void> => {
   await handleApiResponse(response);
 };
 
-export const resetDraftToSetup = async (draftId: string): Promise<PlannerDraft> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/reset-to-setup`, {
-    method: 'POST',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
 export const getRepositoryInfo = async (draftId: string): Promise<RepositoryInfo> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/repository-info`, { credentials: 'include' });
   await handleApiResponse(response);
@@ -171,62 +216,4 @@ export const downloadContext = async (options: PreviewOptions): Promise<Blob> =>
   });
   await handleApiResponse(response);
   return response.blob();
-};
-
-export const validateContextRepository = async (repository: string, branch?: string): Promise<ValidateContextRepositoryResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/validate-context-repository`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repository, branch }),
-    credentials: 'include'
-  });
-  const data = await response.json();
-  return data;
-};
-
-export const abortGeneration = async (draftId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/abort`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ draftId }),
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
-
-export const abortRefinement = async (draftId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/abort-refinement`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ draftId }),
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
-
-export const reviseDraft = async (draftId: string): Promise<ReviseDraftResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/revise`, {
-    method: 'POST',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const pauseDraft = async (draftId: string): Promise<PauseResumeResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/pause`, {
-    method: 'POST',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const resumeDraft = async (draftId: string): Promise<PauseResumeResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/resume`, {
-    method: 'POST',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
 };
