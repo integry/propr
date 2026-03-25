@@ -46,6 +46,7 @@ interface SourceConfig {
   baseBranch: string;
   filesLength: number;
   compress: boolean;
+  manualFilesLength: number;
 }
 
 interface FetchConfig {
@@ -59,6 +60,8 @@ interface FetchConfig {
   generationModel: string | null;
   /** Additional repositories to include as reference context */
   contextRepositories: { repository: string; branch?: string }[];
+  /** File paths explicitly added by the user to include in context */
+  manualFiles: string[];
 }
 
 interface UseContextRefreshOptions {
@@ -152,6 +155,11 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     setPreview(prev => ({ ...prev, isLoading: true, error: null }));
 
     try {
+      // Combine attachment file names and manual file paths
+      const allFiles = [
+        ...currentConfig.files.map(f => f.originalName),
+        ...currentConfig.manualFiles
+      ];
       const result = await previewContext({
         draftId,
         prompt: currentConfig.prompt,
@@ -159,7 +167,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         granularity: currentConfig.granularity,
         contextLevel: currentConfig.contextLevel,
         compress: currentConfig.compress,
-        files: currentConfig.files.map(f => f.originalName),
+        files: allFiles.length > 0 ? allFiles : undefined,
         generationModel: currentConfig.generationModel || undefined,
         contextRepositories: currentConfig.contextRepositories.length > 0 ? currentConfig.contextRepositories : undefined
       }, controller.signal);
@@ -168,7 +176,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         prompt: currentConfig.prompt,
         baseBranch: currentConfig.baseBranch,
         filesLength: currentConfig.files.length,
-        compress: currentConfig.compress
+        compress: currentConfig.compress,
+        manualFilesLength: currentConfig.manualFiles.length
       };
 
       // Mark that we just fetched to prevent source change effect from re-triggering
@@ -213,7 +222,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       setIsContextStale(true);
       startCountdown();
     }
-  }, [config.baseBranch, config.prompt, config.files.length, config.compress, initialSyncDone, startCountdown]);
+  }, [config.baseBranch, config.prompt, config.files.length, config.compress, config.manualFiles.length, initialSyncDone, startCountdown]);
 
   // Source changes - start countdown (unless paused)
   useEffect(() => {
@@ -232,20 +241,23 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       prompt: config.prompt,
       baseBranch: config.baseBranch,
       filesLength: config.files.length,
-      compress: config.compress
+      compress: config.compress,
+      manualFilesLength: config.manualFiles.length
     };
 
     const isStrictlyStale = !lastFetched || (
       lastFetched.prompt !== currentSource.prompt ||
       lastFetched.baseBranch !== currentSource.baseBranch ||
       lastFetched.filesLength !== currentSource.filesLength ||
-      lastFetched.compress !== currentSource.compress
+      lastFetched.compress !== currentSource.compress ||
+      lastFetched.manualFilesLength !== currentSource.manualFilesLength
     );
 
     const isSignificant = !lastFetched ||
       lastFetched.baseBranch !== currentSource.baseBranch ||
       lastFetched.filesLength !== currentSource.filesLength ||
       lastFetched.compress !== currentSource.compress ||
+      lastFetched.manualFilesLength !== currentSource.manualFilesLength ||
       isSignificantPromptChange(lastFetched.prompt, currentSource.prompt);
 
     if (!isStrictlyStale) {
@@ -267,7 +279,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     debounceTimerRef.current = setTimeout(() => startCountdown(), DEBOUNCE_DELAY);
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   // Note: isContextStale intentionally not in deps - we use isContextStaleRef to check without re-triggering
-  }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, isPaused, clearCountdown, startCountdown]);
+  }, [config.prompt, config.baseBranch, config.files.length, config.compress, config.manualFiles.length, initialSyncDone, isPaused, clearCountdown, startCountdown]);
 
   // View changes - fetch immediately (granularity, contextLevel, generationModel)
   // Only triggers when actual view settings change, not when isContextStale transitions
