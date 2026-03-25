@@ -20,6 +20,7 @@ export interface IssueJobData {
     title?: string;
     subtitle?: string;
     issueNumber?: number;
+    isRetryFromRateLimit?: boolean;  // Set when job is retried after rate limit
 }
 
 export interface CommentJobData {
