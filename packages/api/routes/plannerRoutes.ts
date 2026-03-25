@@ -116,7 +116,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
     try {
       // Validate pagination parameters
-      const paginationResult = validatePagination(req.query.page, req.query.limit, { maxLimit: 100, defaultLimit: 10 });
+      const paginationResult = validatePagination(req.query.page, req.query.limit, { maxLimit: 1000, defaultLimit: 10 });
       if (!paginationResult.valid) {
         res.status(400).json({ error: paginationResult.error });
         return;
