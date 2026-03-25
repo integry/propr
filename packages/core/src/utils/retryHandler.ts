@@ -65,9 +65,12 @@ export function isRetryableError(error: Error | unknown, config: RetryConfig): b
         return true;
     }
 
+    // Check status codes - but don't short-circuit, also check message patterns below
     if (err.status) {
         const retryableStatuses = [429, 500, 502, 503, 504];
-        return retryableStatuses.includes(err.status);
+        if (retryableStatuses.includes(err.status)) {
+            return true;
+        }
     }
 
     const retryablePatterns = [

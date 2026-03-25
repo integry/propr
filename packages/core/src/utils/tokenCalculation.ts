@@ -79,44 +79,58 @@ export function getCachePricingMultipliers(model: string): CachePricingMultiplie
 /**
  * Get token usage stats from Claude result.
  *
- * Per Claude documentation, the result message contains authoritative cumulative usage.
- * This function prefers tokenUsage (from result message) over conversation log aggregation.
+ * This function computes both the reported token usage (from tokenUsage) and
+ * the aggregated usage from the conversation log, then returns the higher value.
+ * This prevents undercounting when Claude CLI only reports the last turn's usage.
  *
  * Total input includes: input_tokens + cache_creation_input_tokens + cache_read_input_tokens
  */
 export function getUsageStats(claudeResult: ClaudeResult | null): UsageStats {
-    let inputTokens = 0;
-    let outputTokens = 0;
+    let reportedInputTokens = 0;
+    let reportedOutputTokens = 0;
+    let aggregatedInputTokens = 0;
+    let aggregatedOutputTokens = 0;
 
-    // Prefer the result message's cumulative tokenUsage (authoritative)
+    // Get reported token usage from tokenUsage
     if (claudeResult?.tokenUsage) {
         const usage = claudeResult.tokenUsage;
-        // Total input = base input + cache tokens (per Claude billing docs)
-        inputTokens = (usage.input_tokens ?? 0) +
-                      (usage.cache_creation_input_tokens ?? 0) +
-                      (usage.cache_read_input_tokens ?? 0);
-        outputTokens = usage.output_tokens ?? 0;
-    } else if (claudeResult?.conversationLog) {
-        // Fallback: aggregate from conversation log (deduplicate by message ID)
+        reportedInputTokens = (usage.input_tokens ?? 0) +
+                              (usage.cache_creation_input_tokens ?? 0) +
+                              (usage.cache_read_input_tokens ?? 0);
+        reportedOutputTokens = usage.output_tokens ?? 0;
+    }
+
+    // Aggregate from conversation log (check both message?.usage and entry.usage)
+    if (claudeResult?.conversationLog) {
         const seenIds = new Set<string>();
         claudeResult.conversationLog.forEach(msg => {
             const msgObj = msg.message as { id?: string; usage?: MessageUsage } | undefined;
-            if (msgObj?.usage) {
+            const entryWithUsage = msg as { usage?: MessageUsage };
+            // Check both message?.usage and root-level entry.usage
+            const usage = msgObj?.usage || entryWithUsage.usage;
+            if (usage) {
                 // Skip if we've already counted this message ID
-                if (msgObj.id && seenIds.has(msgObj.id)) {
+                const msgId = msgObj?.id;
+                if (msgId && seenIds.has(msgId)) {
                     return;
                 }
-                if (msgObj.id) {
-                    seenIds.add(msgObj.id);
+                if (msgId) {
+                    seenIds.add(msgId);
                 }
-                const usage = msgObj.usage;
-                inputTokens += (usage.input_tokens ?? 0);
-                inputTokens += (usage.cache_creation_input_tokens ?? 0);
-                inputTokens += (usage.cache_read_input_tokens ?? 0);
-                outputTokens += (usage.output_tokens ?? 0);
+                aggregatedInputTokens += (usage.input_tokens ?? 0);
+                aggregatedInputTokens += (usage.cache_creation_input_tokens ?? 0);
+                aggregatedInputTokens += (usage.cache_read_input_tokens ?? 0);
+                aggregatedOutputTokens += (usage.output_tokens ?? 0);
             }
         });
     }
+
+    // Return the higher of reported or aggregated to avoid undercounting
+    const reportedTotal = reportedInputTokens + reportedOutputTokens;
+    const aggregatedTotal = aggregatedInputTokens + aggregatedOutputTokens;
+
+    const inputTokens = aggregatedTotal > reportedTotal ? aggregatedInputTokens : reportedInputTokens;
+    const outputTokens = aggregatedTotal > reportedTotal ? aggregatedOutputTokens : reportedOutputTokens;
 
     return {
         inputTokens,
@@ -128,38 +142,68 @@ export function getUsageStats(claudeResult: ClaudeResult | null): UsageStats {
 /**
  * Get detailed token usage stats including separate cache token counts.
  * Use this when you need to calculate costs with provider-specific cache pricing.
+ *
+ * This function computes both the reported token usage (from tokenUsage) and
+ * the aggregated usage from the conversation log, then returns the higher value.
+ * This prevents undercounting when Claude CLI only reports the last turn's usage.
  */
 export function getDetailedUsageStats(claudeResult: ClaudeResult | null): DetailedUsageStats {
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheCreationTokens = 0;
-    let cacheReadTokens = 0;
+    let reportedInputTokens = 0;
+    let reportedOutputTokens = 0;
+    let reportedCacheCreationTokens = 0;
+    let reportedCacheReadTokens = 0;
 
+    let aggregatedInputTokens = 0;
+    let aggregatedOutputTokens = 0;
+    let aggregatedCacheCreationTokens = 0;
+    let aggregatedCacheReadTokens = 0;
+
+    // Get reported token usage from tokenUsage
     if (claudeResult?.tokenUsage) {
         const usage = claudeResult.tokenUsage;
-        inputTokens = usage.input_tokens ?? 0;
-        outputTokens = usage.output_tokens ?? 0;
-        cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
-        cacheReadTokens = usage.cache_read_input_tokens ?? 0;
-    } else if (claudeResult?.conversationLog) {
+        reportedInputTokens = usage.input_tokens ?? 0;
+        reportedOutputTokens = usage.output_tokens ?? 0;
+        reportedCacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
+        reportedCacheReadTokens = usage.cache_read_input_tokens ?? 0;
+    }
+
+    // Aggregate from conversation log (check both message?.usage and entry.usage)
+    if (claudeResult?.conversationLog) {
         const seenIds = new Set<string>();
         claudeResult.conversationLog.forEach(msg => {
             const msgObj = msg.message as { id?: string; usage?: MessageUsage } | undefined;
-            if (msgObj?.usage) {
-                if (msgObj.id && seenIds.has(msgObj.id)) {
+            const entryWithUsage = msg as { usage?: MessageUsage };
+            // Check both message?.usage and root-level entry.usage
+            const usage = msgObj?.usage || entryWithUsage.usage;
+            if (usage) {
+                const msgId = msgObj?.id;
+                if (msgId && seenIds.has(msgId)) {
                     return;
                 }
-                if (msgObj.id) {
-                    seenIds.add(msgObj.id);
+                if (msgId) {
+                    seenIds.add(msgId);
                 }
-                const usage = msgObj.usage;
-                inputTokens += usage.input_tokens ?? 0;
-                outputTokens += usage.output_tokens ?? 0;
-                cacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
-                cacheReadTokens += usage.cache_read_input_tokens ?? 0;
+                aggregatedInputTokens += usage.input_tokens ?? 0;
+                aggregatedOutputTokens += usage.output_tokens ?? 0;
+                aggregatedCacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
+                aggregatedCacheReadTokens += usage.cache_read_input_tokens ?? 0;
             }
         });
     }
+
+    // Calculate totals for comparison
+    const reportedTotal = reportedInputTokens + reportedOutputTokens +
+                          reportedCacheCreationTokens + reportedCacheReadTokens;
+    const aggregatedTotal = aggregatedInputTokens + aggregatedOutputTokens +
+                            aggregatedCacheCreationTokens + aggregatedCacheReadTokens;
+
+    // Use whichever is higher to avoid undercounting
+    const useAggregated = aggregatedTotal > reportedTotal;
+
+    const inputTokens = useAggregated ? aggregatedInputTokens : reportedInputTokens;
+    const outputTokens = useAggregated ? aggregatedOutputTokens : reportedOutputTokens;
+    const cacheCreationTokens = useAggregated ? aggregatedCacheCreationTokens : reportedCacheCreationTokens;
+    const cacheReadTokens = useAggregated ? aggregatedCacheReadTokens : reportedCacheReadTokens;
 
     const totalInputWithCache = inputTokens + cacheCreationTokens + cacheReadTokens;
 

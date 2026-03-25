@@ -307,7 +307,7 @@ const LlmLogsPage: React.FC = () => {
                           {log.modelName || '-'}
                         </td>
                         <td className="hidden sm:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                          {formatTokens(log.inputTokens, log.outputTokens)}
+                          {formatTokens(log.inputTokens, log.outputTokens, log.cacheCreationInputTokens, log.cacheReadInputTokens)}
                         </td>
                         <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap text-xs sm:text-sm text-gray-700 font-mono">
                           {formatCost(log.costUsd)}

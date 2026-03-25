@@ -1,33 +1,21 @@
-import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
-    ErrorCategories,
-    safeRemoveLabel,
     generateCompletionComment,
-    recordLLMMetrics,
-    formatResetTime,
-    issueQueue,
     db,
     getModelShortName,
     withRetry,
     retryConfigs
 } from '@propr/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
-import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
-
-function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
-    return {
-        model: response.model,
-        success: response.success,
-        executionTime: response.executionTime,
-        sessionId: response.sessionId,
-        conversationId: response.conversationId,
-        finalResult: response.finalResult,
-        conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
-        error: response.error,
-        tokenUsage: response.tokenUsage
-    };
-}
+export {
+    calculateUsageLimitDelay,
+    handleSimpleUsageLimitError,
+    handleUsageLimitError,
+    handleGenericError,
+    type UsageLimitError,
+    type GenericErrorOptions
+} from './errorHandlers.js';
+import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
 
 export type RepoValidation = RepoValidationResult;
 
@@ -36,10 +24,6 @@ export const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || Strin
 
 // Re-export getModelShortName for consumers that import from this file
 export { getModelShortName };
-
-export interface UsageLimitError extends Error {
-    resetTimestamp?: number;
-}
 
 export interface PostProcessingResult {
     success: boolean;
@@ -52,188 +36,18 @@ export interface PostProcessingResult {
     error?: string;
 }
 
-interface UsageLimitErrorOptions { octokit: Octokit; correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string; }
-interface GenericErrorOptions extends UsageLimitErrorOptions { claudeResult: ClaudeCodeResponse | null; worktreeInfo: WorktreeInfo | undefined; AI_PROCESSING_TAG: string; }
-interface CreatePROptions { commitResult: CommitResult | null; claudeResult: ClaudeCodeResponse | null; modelName: string; repoValidation: RepoValidation; PR_LABEL: string; correlatedLogger: Logger; issueTitle: string; }
-
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
 };
 
-export function calculateUsageLimitDelay(error: UsageLimitError): number {
-    const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
-    return (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
-}
-
-export async function handleSimpleUsageLimitError(
-    error: UsageLimitError,
-    job: Job<IssueJobData>,
-    correlatedLogger: Logger,
-    repository: string
-): Promise<JobResult> {
-    correlatedLogger.warn({ repository, resetTimestamp: error.resetTimestamp }, 'Claude usage limit hit during processing. Requeueing job.');
-    const delay = calculateUsageLimitDelay(error);
-    await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
-    return { status: 'requeued', repository, delay };
-}
-
-export async function handleUsageLimitError(
-    error: UsageLimitError,
-    job: Job<IssueJobData>,
-    issueRef: IssueJobData,
-    options: UsageLimitErrorOptions
-): Promise<void> {
-    const { octokit, correlatedLogger, stateManager, taskId } = options;
-    const jobId = job.id;
-
-    correlatedLogger.warn({
-        jobId,
-        issueNumber: issueRef.number,
-        resetTimestamp: error.resetTimestamp
-    }, 'Claude usage limit hit during issue processing. Requeueing job.');
-
-    const delay = calculateUsageLimitDelay(error);
-    const readableResetTime = formatResetTime(error.resetTimestamp);
-
-    if (octokit) {
-        try {
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: issueRef.repoOwner,
-                repo: issueRef.repoName,
-                issue_number: issueRef.number,
-                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing this issue.
-
-The job has been automatically rescheduled and will restart ${readableResetTime}.
-
----
-*Job ID: ${jobId} will run again after delay.*`
-            });
-        } catch (commentError) {
-            correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to issue.');
-        }
-    }
-
-    await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
-
-    try {
-        await stateManager.markTaskFailed(taskId, error, {
-            errorCategory: ErrorCategories.CLAUDE_EXECUTION
-        });
-    } catch (stateError) {
-        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to failed (requeued)');
-    }
-}
-
-function categorizeError(errorMessage: string | undefined): string {
-    if (errorMessage?.includes('authentication')) return 'auth_error';
-    if (errorMessage?.includes('network')) return 'network_error';
-    if (errorMessage?.includes('git')) return 'git_error';
-    if (errorMessage?.includes('GitHub')) return 'github_api_error';
-    if (errorMessage?.includes('timeout')) return 'timeout_error';
-    return 'unknown_error';
-}
-
-async function postCancellationNotice(
-    issueRef: IssueJobData,
-    octokit: Octokit,
-    AI_PROCESSING_TAG: string,
-    correlatedLogger: Logger
-): Promise<void> {
-    try {
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            issue_number: issueRef.number,
-            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can re-add the AI label to restart processing.`
-        });
-        await safeRemoveLabel(
-            { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
-            AI_PROCESSING_TAG
-        );
-    } catch (commentError) {
-        correlatedLogger.warn({ error: (commentError as Error).message }, 'Failed to post cancellation notice');
-    }
-}
-
-export async function handleGenericError(
-    error: Error,
-    job: Job<IssueJobData>,
-    issueRef: IssueJobData,
-    options: GenericErrorOptions
-): Promise<void> {
-    const { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG } = options;
-    const errorCategory = categorizeError(error.message);
-    const isUserCancelled = error.message?.includes('aborted by user');
-
-    correlatedLogger.error({
-        jobId: job.id,
-        issueNumber: issueRef.number,
-        repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-        correlationId: issueRef.correlationId,
-        taskId,
-        errMessage: error.message,
-        stack: error.stack,
-        status: 'system_error',
-        resolution: 'failed',
-        failureCategory: errorCategory,
-        claudeAttempted: !!claudeResult,
-        claudeSuccess: claudeResult?.success || false,
-        worktreeCreated: !!worktreeInfo,
-        timestamp: new Date().toISOString(),
-        systemVersion: process.env.npm_package_version || 'unknown'
-    }, 'Error processing GitHub issue job - enhanced error metrics logged');
-
-    if (claudeResult) {
-        try {
-            await recordLLMMetrics(toClaudeResult(claudeResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId: issueRef.correlationId, taskId });
-            correlatedLogger.info({ correlationId: issueRef.correlationId, issueNumber: issueRef.number }, 'LLM metrics recorded for failed job');
-        } catch (metricsError) {
-            correlatedLogger.error({ error: (metricsError as Error).message, correlationId: issueRef.correlationId }, 'Failed to record LLM metrics for failed job');
-        }
-    }
-
-    if (octokit && !isUserCancelled) {
-        await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger });
-    } else if (octokit && isUserCancelled) {
-        await postCancellationNotice(issueRef, octokit, AI_PROCESSING_TAG, correlatedLogger);
-    }
-
-    try {
-        // Check if task is already in a terminal state (e.g., already cancelled by stop endpoint)
-        const currentState = await stateManager.getTaskState(taskId);
-        const TERMINAL_STATES = ['completed', 'failed', 'cancelled'];
-        if (currentState && TERMINAL_STATES.includes(currentState.state)) {
-            correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');
-            return;
-        }
-
-        if (isUserCancelled) {
-            await stateManager.markTaskCancelled(taskId, 'user', { historyMetadata: { originalError: error.message } });
-            correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
-        } else {
-            await stateManager.markTaskFailed(taskId, error, { errorCategory });
-        }
-    } catch (stateError) {
-        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state');
-    }
-}
-
-interface PostErrorCommentOptions { octokit: Octokit; errorCategory: string; claudeResult: ClaudeCodeResponse | null; worktreeInfo: WorktreeInfo | undefined; AI_PROCESSING_TAG: string; correlatedLogger: Logger; }
-
-async function postErrorComment(issueRef: IssueJobData, error: Error, options: PostErrorCommentOptions): Promise<void> {
-    const { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger } = options;
-    try {
-        const categoryHints: Record<string, string> = {
-            git_error: 'This appears to be a Git-related issue. The system may have encountered a corrupted repository or git operation failure. The issue will be automatically retried, and any corrupted repositories will be cleaned up.\n\n',
-            auth_error: 'This is an authentication issue. Please ensure the GitHub token has proper permissions.\n\n',
-            network_error: 'This is a network connectivity issue. The system will automatically retry.\n\n'
-        };
-        const errorMessage = `❌ **Failed to process this issue**\n\n**Error Category:** ${errorCategory.replace('_', ' ')}\n**Error Message:** ${error.message}\n\n${categoryHints[errorCategory] || ''}**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n${worktreeInfo ? `**Branch:** ${worktreeInfo.branchName}\n` : ''}\n<details><summary>Technical Details</summary>\n\n\`\`\`\n${error.stack || error.message}\n\`\`\`\n</details>\n\n---\n*The system will automatically retry this task. If the issue persists, please contact support.*`;
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, body: errorMessage });
-        await safeRemoveLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
-    } catch (commentError) {
-        correlatedLogger.error({ error: (commentError as Error).message, issueNumber: issueRef.number }, 'Failed to post error comment to GitHub issue');
-    }
+interface CreatePROptions {
+    commitResult: CommitResult | null;
+    claudeResult: ClaudeCodeResponse | null;
+    modelName: string;
+    repoValidation: RepoValidation;
+    PR_LABEL: string;
+    correlatedLogger: Logger;
+    issueTitle: string;
 }
 
 export async function updateTaskTitleInStorage(
@@ -275,7 +89,6 @@ export async function createPullRequest(
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
     const modelShortName = getModelShortName(modelName);
-    // New format: [412 by Claude Opus] Title
     const prTitle = '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle;
 
     const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
@@ -314,17 +127,21 @@ Comment on this PR to request refinements — the AI agent monitors comments and
             prUrl: prResponse.data.html_url
         }, 'PR created successfully');
 
-        // Only add PR_LABEL to PRs (baseLabel/modelLabel are for issues only)
-        await withRetry(
-            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-                owner: issueRef.repoOwner,
-                repo: issueRef.repoName,
-                issue_number: prResponse.data.number,
-                labels: [PR_LABEL]
-            }),
-            retryConfigs.githubApi,
-            `add_pr_label_${prResponse.data.number}`
-        );
+        try {
+            await withRetry(
+                () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+                    owner: issueRef.repoOwner,
+                    repo: issueRef.repoName,
+                    issue_number: prResponse.data.number,
+                    labels: [PR_LABEL]
+                }),
+                retryConfigs.githubApi,
+                `add_pr_label_${prResponse.data.number}`
+            );
+            correlatedLogger.info({ prNumber: prResponse.data.number, label: PR_LABEL }, 'Added PR label to new PR');
+        } catch (labelError) {
+            correlatedLogger.warn({ prNumber: prResponse.data.number, label: PR_LABEL, error: (labelError as Error).message }, 'Failed to add PR label to new PR after retries');
+        }
 
         return {
             success: true,
@@ -365,7 +182,6 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
             const existingPR = existingPRs.data[0];
             correlatedLogger.info({ issueNumber: issueRef.number, prNumber: existingPR.number, prUrl: existingPR.html_url, currentBase: existingPR.base.ref }, 'Found existing PR for branch');
 
-            // Check if the PR base branch is correct, update if needed
             const expectedBase = issueRef.baseBranch;
             if (expectedBase && existingPR.base.ref !== expectedBase) {
                 correlatedLogger.info({ prNumber: existingPR.number, currentBase: existingPR.base.ref, expectedBase }, 'PR has wrong base branch, updating...');
@@ -382,7 +198,6 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
                 }
             }
 
-            // Add PR label to the existing PR (only PR_LABEL, not issue labels like baseLabel/modelLabel)
             try {
                 await withRetry(
                     () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
@@ -405,7 +220,12 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
     } catch { throw prError; }
 }
 
-interface FinalResultResults { worktreeInfo: WorktreeInfo | undefined; claudeResult: ClaudeCodeResponse | null; postProcessingResult: PostProcessingResult | null; commitResult: CommitResult | null; }
+interface FinalResultResults {
+    worktreeInfo: WorktreeInfo | undefined;
+    claudeResult: ClaudeCodeResponse | null;
+    postProcessingResult: PostProcessingResult | null;
+    commitResult: CommitResult | null;
+}
 
 function determineResultStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
     if (!claudeResult?.success) return 'claude_processing_failed';

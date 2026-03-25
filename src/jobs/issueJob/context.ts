@@ -76,6 +76,7 @@ export async function initializeJobContext(job: Job<IssueJobData>): Promise<JobC
     jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId,
     AI_PROCESSING_TAG: `${triggeringLabel}-processing`,
     AI_DONE_TAG: `${triggeringLabel}-done`,
+    AI_WAITING_TAG: `${triggeringLabel}-waiting`,
     AI_PRIMARY_TAG: triggeringLabel,
     PR_LABEL: await getPrLabel()
   };

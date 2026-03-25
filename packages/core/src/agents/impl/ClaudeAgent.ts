@@ -27,7 +27,7 @@ import {
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, getDefaultModel } from '../../config/modelAliases.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
-import { processDockerResult, buildDockerArgs } from './utils/index.js';
+import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog } from './utils/index.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -285,13 +285,25 @@ export class ClaudeAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const claudeOutput = parseStreamJsonOutput(result);
 
+            // Ensure the prompt is in the conversation log and get corrected token usage
+            const fullConversationLog = ensurePromptInConversationLog(
+                claudeOutput.conversationLog,
+                analysisPrompt
+            );
+            const correctedTokenUsage = getCorrectedTokenUsage(
+                claudeOutput.tokenUsage,
+                fullConversationLog
+            );
+
             if (claudeOutput.finalResult?.result || claudeOutput.success) {
                 const analysisText = (claudeOutput.finalResult?.result || '').trim();
                 logger.info({
                     agentAlias: this.config.alias,
                     responseLength: analysisText.length,
                     model: effectiveModel,
-                    executionTimeMs
+                    executionTimeMs,
+                    reportedTokens: claudeOutput.tokenUsage,
+                    correctedTokens: correctedTokenUsage
                 }, 'Lightweight analysis completed');
 
                 return {
@@ -299,7 +311,7 @@ export class ClaudeAgent implements Agent {
                     modelUsed: claudeOutput.model || effectiveModel,
                     executionTimeMs,
                     success: true,
-                    tokenUsage: claudeOutput.tokenUsage,
+                    tokenUsage: correctedTokenUsage,
                     sessionId: claudeOutput.sessionId ?? undefined
                 };
             }

@@ -50,7 +50,7 @@ import {
   createAbortRefinementHandler,
   createReviseDraftHandler
 } from './plannerActionHandlers.js';
-import { linkTodosToDraft } from '@propr/core';
+import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -176,7 +176,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       }
 
       let drafts = await query
-        .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt')
+        .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt', 'paused', 'paused_at')
         .orderBy('updated_at', 'desc');
 
       // Apply relevance scoring and sorting when searching
@@ -407,6 +407,48 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const abortRefinement = createAbortRefinementHandler(db);
   const reviseDraft = createReviseDraftHandler(db);
 
+  async function pauseDraftExecution(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const result = await pauseDraft(req.params.id);
+      if (!result.success) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+
+      res.json({ paused: result.paused, pausedAt: result.pausedAt });
+    } catch (error) {
+      console.error('Pause draft error:', error);
+      res.status(500).json({ error: 'Failed to pause draft execution' });
+    }
+  }
+
+  async function resumeDraftExecution(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const result = await resumeDraft(req.params.id);
+      if (!result.success) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+
+      res.json({ paused: result.paused, pausedAt: result.pausedAt });
+    } catch (error) {
+      console.error('Resume draft error:', error);
+      res.status(500).json({ error: 'Failed to resume draft execution' });
+    }
+  }
+
   return {
     listDrafts,
     createDraft,
@@ -431,6 +473,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     validateContextRepository,
     abortGeneration,
     abortRefinement,
-    reviseDraft
+    reviseDraft,
+    pauseDraftExecution,
+    resumeDraftExecution
   };
 }
