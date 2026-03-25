@@ -4,6 +4,7 @@ import { Knex } from 'knex';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
+import { validateTaskId } from './validation.js';
 
 interface LiveDetailsRoutesDeps {
   redisClient: RedisClientType;
@@ -16,6 +17,14 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
     try {
       const { taskId: jobId } = req.params;
+
+      // Validate taskId parameter
+      const taskIdValidation = validateTaskId(jobId);
+      if (!taskIdValidation.valid) {
+        res.status(400).json({ error: taskIdValidation.error });
+        return;
+      }
+
       const taskId = normalizeTaskId(jobId);
 
       console.log(`[live-details] jobId: ${jobId}, taskId: ${taskId}`);

@@ -4,22 +4,23 @@ import { checkAndUpdateDraftStatus } from '../services/taskPlanningService.js';
 
 /**
  * Status enum for plan issues.
- * - pending: Issue created, not yet implementing
- * - processing: Initial AI processing in progress
- * - under_review: PR created, awaiting review
- * - in_refinement: Follow-up comments being processed
- * - refinement_processing: Processing follow-up comments
- * - merged: PR has been merged
- * - closed: Issue/PR closed without merge
+ * - PENDING: Issue created, not yet implementing
+ * - PROCESSING: Initial AI processing in progress
+ * - UNDER_REVIEW: PR created, awaiting review
+ * - IN_REFINEMENT: Follow-up comments being processed
+ * - REFINEMENT_PROCESSING: Processing follow-up comments
+ * - MERGED: PR has been merged
+ * - CLOSED: Issue/PR closed without merge
  */
-export type PlanIssueStatus =
-    | 'pending'
-    | 'processing'
-    | 'under_review'
-    | 'in_refinement'
-    | 'refinement_processing'
-    | 'merged'
-    | 'closed';
+export enum PlanIssueStatus {
+    PENDING = 'pending',
+    PROCESSING = 'processing',
+    UNDER_REVIEW = 'under_review',
+    IN_REFINEMENT = 'in_refinement',
+    REFINEMENT_PROCESSING = 'refinement_processing',
+    MERGED = 'merged',
+    CLOSED = 'closed'
+}
 
 /**
  * Represents a plan issue record in the database.
@@ -93,7 +94,7 @@ export async function createPlanIssue(input: CreatePlanIssueInput): Promise<Plan
             issue_number: input.issue_number,
             agent_alias: input.agent_alias || null,
             model_name: input.model_name || null,
-            status: 'pending',
+            status: PlanIssueStatus.PENDING,
             followup_count: 0,
             created_at: db.fn.now(),
             updated_at: db.fn.now()
@@ -357,7 +358,7 @@ export async function linkPRToPlanIssue(
             .where({ repository, issue_number: issueNumber })
             .update({
                 pr_number: prNumber,
-                status: 'under_review',
+                status: PlanIssueStatus.UNDER_REVIEW,
                 updated_at: db.fn.now()
             });
 

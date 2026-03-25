@@ -12,6 +12,7 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
+    "test:unit": "npx tsx --test test/minimal.test.ts test/modelName.test.ts",
     "test:e2e": "npx tsx --test test/e2e.test.ts",
     "test:docker": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test test/*.test.ts",
     "test:docker:single": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test",
@@ -57,10 +58,10 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "@propr/core": "*",
     "@octokit/auth-app": "^8.0.1",
     "@octokit/core": "^7.0.2",
     "@octokit/plugin-paginate-rest": "^13.1.1",
+    "@propr/core": "*",
     "better-sqlite3": "^11.7.0",
     "bullmq": "^5.53.0",
     "cors": "^2.8.5",
@@ -79,6 +80,7 @@
     "pino-pretty": "^13.0.0",
     "redis": "^4.6.5",
     "simple-git": "^3.27.0",
+    "undici": "^7.24.4",
     "uuid": "^11.1.0"
   },
   "devDependencies": {

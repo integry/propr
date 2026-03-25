@@ -1,5 +1,5 @@
 import logger from '../utils/logger.js';
-import { findPlanIssueByRepoAndPR, findPlanIssueByRepoAndNumber, updatePlanIssueByPR } from '../config/planIssueManager.js';
+import { findPlanIssueByRepoAndPR, findPlanIssueByRepoAndNumber, updatePlanIssueByPR, PlanIssueStatus } from '../config/planIssueManager.js';
 import { isEpicBranch, extractFirstIssueIdFromEpicBranch } from '../services/taskExecutionService.js';
 import { triggerNextPendingIssue } from './planIssueTracking.js';
 import {
@@ -17,6 +17,9 @@ import {
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 
 export { mergePR, type MergePROptions, type MergePRResult };
+
+// Export types and internal functions for testing
+export type { PRMergeContext };
 
 interface PRContext {
     owner: string;
@@ -76,7 +79,7 @@ async function handleEpicPRWithoutAutoMerge(ctx: PRMergeContext): Promise<void> 
 /**
  * Determines if a PR should be auto-merged based on labels.
  */
-async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
+export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
     const { owner, repoName, prNumber, prInfo, log } = ctx;
 
     if (isEpicBranch(prInfo.headBranch)) {
@@ -122,7 +125,7 @@ async function performMergeAndPostActions(ctx: PRMergeContext): Promise<void> {
         const repository = `${owner}/${repoName}`;
         const planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
         if (planIssue) {
-            await updatePlanIssueByPR(repository, prNumber, { status: 'merged' });
+            await updatePlanIssueByPR(repository, prNumber, { status: PlanIssueStatus.MERGED });
             log.info({ repository, prNumber }, 'Updated plan issue status to merged');
         }
     } else {

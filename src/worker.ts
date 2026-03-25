@@ -259,7 +259,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         }
     });
 
-    const worker = createWorker(GITHUB_ISSUE_QUEUE_NAME, async (job: Job<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData>): Promise<JobResult> => {
+    const worker = await createWorker(GITHUB_ISSUE_QUEUE_NAME, async (job: Job<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData>): Promise<JobResult> => {
         if (job.name === 'processGitHubIssue') {
             return processGitHubIssueJob(job as Job<IssueJobData>);
         } else if (job.name === 'processPullRequestComment') {

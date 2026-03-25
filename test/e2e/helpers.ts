@@ -16,6 +16,10 @@ import {
   listPlanIssues,
   type PlanIssue,
 } from "../../packages/cli/src/api/plans.js";
+import {
+  implementAllIssues,
+  type ImplementAllIssuesResponse,
+} from "../../packages/cli/src/api/implement.js";
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -245,4 +249,108 @@ export async function pollTasksToCompletion(
 
     if (allDone) break;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plan issue status helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * In-progress statuses for plan issues.
+ * Issues in these states are actively being processed.
+ */
+export const IN_PROGRESS_STATUSES = new Set([
+  "processing",
+  "under_review",
+  "in_refinement",
+  "refinement_processing",
+]);
+
+/**
+ * Terminal statuses for plan issues.
+ * Once an issue reaches these states, it is considered complete.
+ */
+export const TERMINAL_STATUSES = new Set(["merged", "closed"]);
+
+/**
+ * Checks if any plan issue is currently in-progress.
+ */
+export function hasInProgressIssue(issues: PlanIssue[]): boolean {
+  return issues.some((issue) => IN_PROGRESS_STATUSES.has(issue.status));
+}
+
+/**
+ * Gets counts of issues by status category.
+ */
+export function getIssueStatusCounts(issues: PlanIssue[]): {
+  pending: number;
+  inProgress: number;
+  terminal: number;
+  total: number;
+} {
+  let pending = 0;
+  let inProgress = 0;
+  let terminal = 0;
+
+  for (const issue of issues) {
+    if (issue.status === "pending") {
+      pending++;
+    } else if (IN_PROGRESS_STATUSES.has(issue.status)) {
+      inProgress++;
+    } else if (TERMINAL_STATUSES.has(issue.status)) {
+      terminal++;
+    }
+  }
+
+  return { pending, inProgress, terminal, total: issues.length };
+}
+
+/**
+ * Waits for plan issues to reach expected states.
+ *
+ * @param draftId - The plan draft ID
+ * @param client - API client
+ * @param condition - Function that returns true when the condition is met
+ * @param timeoutMs - Maximum time to wait (default 300s)
+ * @param pollIntervalMs - Interval between polls (default 5s)
+ * @returns The final list of plan issues
+ */
+export async function waitForPlanIssueCondition(
+  draftId: string,
+  client: ApiClient,
+  condition: (issues: PlanIssue[]) => boolean,
+  timeoutMs = 300_000,
+  pollIntervalMs = 5_000,
+): Promise<PlanIssue[]> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < timeoutMs) {
+    const issues = await listPlanIssues(draftId, client);
+    if (condition(issues)) {
+      return issues;
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  // Return final state even if condition wasn't met
+  return listPlanIssues(draftId, client);
+}
+
+/**
+ * Triggers implementation with sequential processing and verifies the behavior.
+ *
+ * @param draftId - The plan draft ID
+ * @param client - API client
+ * @returns Result of implement-all with sequential processing
+ */
+export async function triggerSequentialImplementation(
+  draftId: string,
+  client: ApiClient,
+): Promise<ImplementAllIssuesResponse> {
+  const result = await implementAllIssues(
+    draftId,
+    { useEpic: true, autoMerge: true },
+    client,
+  );
+  return result;
 }

@@ -1,7 +1,8 @@
 export { default as logger, generateCorrelationId, createCorrelatedLogger } from './utils/logger.js';
 export { handleError, withErrorHandling, safeAsync, makeIdempotent, categorizeError, ErrorCategories } from './utils/errorHandler.js';
 export type { ErrorCategory, ErrorDetails, ErrorHandlerOptions, IssueRef as ErrorIssueRef } from './utils/errorHandler.js';
-export { withRetry, retryConfigs } from './utils/retryHandler.js';
+export { withRetry, retryConfigs, calculateDelay } from './utils/retryHandler.js';
+export type { RetryConfig, RetryOptions } from './utils/retryHandler.js';
 export * from './utils/constants.js';
 export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './utils/llmMetrics.js';
 export { persistLlmLog, createLlmLogFromAnalysis } from './utils/llmLogger.js';
@@ -40,21 +41,21 @@ export {
     linkPRToPlanIssue,
     updatePlanIssueByPR,
     batchUpdatePlanIssueConfig,
-    deletePlanIssue
+    deletePlanIssue,
+    PlanIssueStatus
 } from './config/planIssueManager.js';
 export type {
-    PlanIssueStatus,
     PlanIssue,
     CreatePlanIssueInput,
     UpdatePlanIssueInput,
     GetPlanIssuesOptions,
     PaginatedPlanIssuesResult
 } from './config/planIssueManager.js';
-export { resolveModelAlias, getDefaultModel, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, getOpenRouterId, resolveCustomLabel, getAllCustomLabels } from './config/modelAliases.js';
+export { resolveModelAlias, getDefaultModel, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, getOpenRouterId, resolveCustomLabel, getAllCustomLabels, findMatchingModel } from './config/modelAliases.js';
 export type { LlmLabelResolution } from './config/modelAliases.js';
 export { CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS, ALL_MODELS, AGENT_MODELS, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
 export type { AgentType as ModelAgentType, ModelInfo } from './config/modelDefinitions.js';
-export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL } from './config/modelLimits.js';
+export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL, MIN_CONTEXT_LEVEL, MAX_CONTEXT_LEVEL, EFFECTIVE_MAX_RATIO, MODEL_LIMITS } from './config/modelLimits.js';
 export type { ContextLevel } from './config/modelLimits.js';
 
 export { db, closeConnection, createKnexConfigForMigrations, runMigrations } from './db/connection.js';
@@ -68,11 +69,15 @@ export { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, fetchLatestChange
 export type { WorktreeResult, WorktreeInfo, FetchLatestChangesOptions, FetchLatestChangesResult } from './git/repoManager.js';
 export { cleanupExistingBranch, createWorktreeFromExistingBranch } from './git/worktreeCreation.js';
 export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';
+export { isGitCorruptionError, GIT_CORRUPTION_PATTERNS, getCorruptionPatternStrings } from './git/gitCorruption.js';
 
 export {
     issueQueue,
     analysisQueue,
     indexingQueue,
+    getIssueQueue,
+    getAnalysisQueue,
+    getIndexingQueue,
     GITHUB_ISSUE_QUEUE_NAME,
     ANALYSIS_QUEUE_NAME,
     INDEXING_QUEUE_NAME,
@@ -102,6 +107,13 @@ export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor,
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
+export {
+    determinePRStatusUpdate,
+    isTerminalStatus,
+    isInProgressStatus,
+    TERMINAL_STATUSES
+} from './webhook/statusMachine.js';
+export type { PlanIssueStatus as StatusMachinePlanIssueStatus } from './webhook/statusMachine.js';
 
 export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';

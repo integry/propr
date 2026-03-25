@@ -5,7 +5,8 @@ import {
   safeUpdateLabels,
   logger,
   ensureEpicPR,
-  updatePlanIssue
+  updatePlanIssue,
+  PlanIssueStatus
 } from '@propr/core';
 
 export interface ImplementIssueContext {
@@ -105,7 +106,7 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
 
   const primaryModel = models[0];
   await updatePlanIssue(draftId, issueNumber, {
-    status: 'processing',
+    status: PlanIssueStatus.PROCESSING,
     agent_alias: primaryModel.agent_alias,
     model_name: primaryModel.model_name
   });
@@ -144,7 +145,7 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
     owner, repo, issue_number: issueNumber, labels: labelsToAdd
   });
 
-  await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
+  await updatePlanIssue(draftId, issueNumber, { status: PlanIssueStatus.PROCESSING });
 
   const autoMergeNote = autoMerge ? ' with auto-merge enabled' : '';
   const labelMessage = llmLabel
@@ -198,7 +199,7 @@ export async function processIssueForImplementation(params: ProcessIssueParams):
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
       owner, repo, issue_number: issue.issue_number, labels: labelsToAdd
     });
-    await updatePlanIssue(draftId, issue.issue_number, { status: 'processing' });
+    await updatePlanIssue(draftId, issue.issue_number, { status: PlanIssueStatus.PROCESSING });
     return { issueNumber: issue.issue_number, success: true };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : 'Unknown error';

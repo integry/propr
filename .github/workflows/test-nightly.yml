@@ -1,0 +1,187 @@
+name: Nightly Test Suite (Tier 3)
+
+on:
+  schedule:
+    # Run nightly at 2:00 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allow manual trigger for testing
+
+jobs:
+  e2e-tests:
+    name: Run E2E Test Suite
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    services:
+      redis:
+        image: redis:alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            propr-ui/package-lock.json
+            docs/package-lock.json
+            packages/shared/package-lock.json
+            packages/api/package-lock.json
+            packages/core/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Full Test Suite
+        id: full_tests
+        continue-on-error: true
+        env:
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          NODE_ENV: test
+        run: |
+          echo "Running full test suite with Redis..."
+          npx tsx --test test/*.test.ts 2>&1 | tee test_output.txt
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+
+          if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "test_result=success" >> $GITHUB_OUTPUT
+            echo "All tests passed"
+          else
+            echo "test_result=failure" >> $GITHUB_OUTPUT
+            echo "Some tests failed"
+          fi
+
+          exit $TEST_EXIT_CODE
+
+      - name: Run E2E Tests
+        id: e2e_tests
+        if: steps.full_tests.outcome == 'success'
+        continue-on-error: true
+        env:
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          NODE_ENV: test
+        run: |
+          echo "Running E2E test suite..."
+          npm run test:e2e 2>&1 | tee e2e_output.txt
+          E2E_EXIT_CODE=${PIPESTATUS[0]}
+
+          if [ $E2E_EXIT_CODE -eq 0 ]; then
+            echo "e2e_result=success" >> $GITHUB_OUTPUT
+            echo "E2E tests passed"
+          else
+            echo "e2e_result=failure" >> $GITHUB_OUTPUT
+            echo "E2E tests failed"
+          fi
+
+          exit $E2E_EXIT_CODE
+
+      - name: Create Failure Issue
+        if: steps.full_tests.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
+            const date = new Date().toISOString().split('T')[0];
+
+            let testOutput = '';
+            try { testOutput = fs.readFileSync('test_output.txt', 'utf8'); }
+            catch (e) { testOutput = 'Test output file not available.'; }
+
+            let e2eOutput = '';
+            try { e2eOutput = fs.readFileSync('e2e_output.txt', 'utf8'); }
+            catch (e) { e2eOutput = 'E2E output file not available or not run.'; }
+
+            // Truncate outputs if too long
+            if (testOutput.length > 30000) {
+              testOutput = testOutput.substring(0, 30000) + "\n\n...(truncated)";
+            }
+            if (e2eOutput.length > 30000) {
+              e2eOutput = e2eOutput.substring(0, 30000) + "\n\n...(truncated)";
+            }
+
+            const fullTestStatus = '${{ steps.full_tests.outcome }}' === 'failure' ? 'Failed' : 'Passed';
+            const e2eTestStatus = '${{ steps.e2e_tests.outcome }}' === 'failure' ? 'Failed' : ('${{ steps.e2e_tests.outcome }}' === 'skipped' ? 'Skipped' : 'Passed');
+
+            const body = [
+              '## Nightly Test Suite Failure Report',
+              '',
+              `**Date:** ${date}`,
+              `**Full Test Suite:** ${fullTestStatus}`,
+              `**E2E Tests:** ${e2eTestStatus}`,
+              '',
+              '### Full Test Suite Output',
+              '',
+              '<details>',
+              '<summary>View Test Output</summary>',
+              '',
+              '~~~text',
+              testOutput,
+              '~~~',
+              '</details>',
+              '',
+              '### E2E Test Output',
+              '',
+              '<details>',
+              '<summary>View E2E Output</summary>',
+              '',
+              '~~~text',
+              e2eOutput,
+              '~~~',
+              '</details>',
+              '',
+              `**[View Workflow Run](${runUrl})**`,
+            ].join('\n');
+
+            // Check for existing open issues with the same title pattern
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'nightly-test-failure',
+              per_page: 10,
+            });
+
+            const todayTitle = `Nightly Test Suite Failed - ${date}`;
+            const existingToday = existingIssues.data.find(issue => issue.title === todayTitle);
+
+            if (existingToday) {
+              // Update existing issue with new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingToday.number,
+                body: `## Re-run Results\n\n${body}`,
+              });
+              console.log(`Updated existing issue #${existingToday.number}`);
+            } else {
+              // Create new issue
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: todayTitle,
+                body: body,
+                labels: ['nightly-test-failure', 'bug'],
+              });
+              console.log(`Created issue #${issue.data.number}`);
+            }
+
+      - name: Fail Job
+        if: steps.full_tests.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'
+        run: exit 1
