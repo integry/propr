@@ -112,6 +112,20 @@ const SetupWizardContent: React.FC<{
     }));
   };
 
+  const handleAddManualFile = (filePath: string) => {
+    setConfig(prev => ({
+      ...prev,
+      manualFiles: [...prev.manualFiles, filePath]
+    }));
+  };
+
+  const handleRemoveManualFile = (filePath: string) => {
+    setConfig(prev => ({
+      ...prev,
+      manualFiles: prev.manualFiles.filter(f => f !== filePath)
+    }));
+  };
+
   const isGenerating = generationPolling.isGenerating;
   const stats = contextRefresh.preview.data?.stats;
 
@@ -152,6 +166,9 @@ const SetupWizardContent: React.FC<{
           isGenerating={isGenerating}
           generationTrace={generationPolling.generationTrace}
           onAbort={generationHandlers.handleAbortGeneration}
+          manualFiles={config.manualFiles}
+          onAddManualFile={handleAddManualFile}
+          onRemoveManualFile={handleRemoveManualFile}
         />
         <SetupWizardRightPane
           contextLevel={config.contextLevel}
@@ -260,7 +277,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     compress: false,
     files: draft?.attachments ?? [],
     contextRepositories: draftContextConfig?.contextRepositories ?? [],
-    generationModel: draftContextConfig?.generationModel ?? null
+    generationModel: draftContextConfig?.generationModel ?? null,
+    manualFiles: draftContextConfig?.manualFiles ?? []
   }));
 
   const [isChangingRepo, setIsChangingRepo] = useState(false);
@@ -291,6 +309,14 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       setConfig(prev => {
         if (prev.generationModel === draftConfig.generationModel) return prev;
         return { ...prev, generationModel: draftConfig.generationModel };
+      });
+    }
+    if (draftConfig?.manualFiles && draftConfig.manualFiles.length > 0) {
+      setConfig(prev => {
+        const currentJson = JSON.stringify(prev.manualFiles);
+        const newJson = JSON.stringify(draftConfig.manualFiles);
+        if (currentJson === newJson) return prev;
+        return { ...prev, manualFiles: draftConfig.manualFiles };
       });
     }
   }, [draft]);
