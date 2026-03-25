@@ -133,16 +133,18 @@ export async function handleUsageLimitError(
     const delay = calculateUsageLimitDelay(error);
     const retryTimestamp = Math.floor((Date.now() + delay) / 1000);
 
-    // Update labels: remove AI-processing, add AI-waiting
+    // Update labels: add AI-waiting FIRST, then remove AI-processing
+    // Order is important to prevent race condition where polling could pick up
+    // the issue between label changes (issue would briefly have no exclusion label)
     if (octokit && AI_PROCESSING_TAG && AI_WAITING_TAG) {
         try {
-            await safeRemoveLabel(
-                { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
-                AI_PROCESSING_TAG
-            );
             await safeAddLabel(
                 { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
                 AI_WAITING_TAG
+            );
+            await safeRemoveLabel(
+                { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+                AI_PROCESSING_TAG
             );
             correlatedLogger.info({ issueNumber: issueRef.number, AI_PROCESSING_TAG, AI_WAITING_TAG }, 'Swapped processing label to waiting label');
         } catch (labelError) {
@@ -170,7 +172,15 @@ export async function handleUsageLimitError(
         ...job.data,
         isRetryFromRateLimit: true
     };
-    await issueQueue.add(job.name, requeuedJobData, { delay: Math.max(0, delay) });
+
+    // Use deterministic jobId for deduplication - prevents duplicate requeue jobs
+    // when multiple instances of the same issue hit rate limit simultaneously
+    const requeueJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${issueRef.agentAlias || 'default'}-${issueRef.modelName || 'default'}-${issueRef.baseBranch || 'main'}-ratelimit-retry`;
+
+    await issueQueue.add(job.name, requeuedJobData, {
+        jobId: requeueJobId,
+        delay: Math.max(0, delay)
+    });
 
     // Keep task in processing state - don't mark as failed
     // The task will continue when the retry runs
