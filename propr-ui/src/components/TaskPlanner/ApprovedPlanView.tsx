@@ -213,7 +213,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const repository = draft.repository || '';
   const baseBranch = draft.context_config?.baseBranch || 'main';
   const repoUrl = draft.repository ? `https://github.com/${draft.repository}/issues` : null;
-  const showPauseResume = draft.status === 'executed' || draft.status === 'pr_created';
 
   const tasks: PlanTask[] = useMemo(() => {
     let planJson = draft.plan_json;
