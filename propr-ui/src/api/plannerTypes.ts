@@ -116,6 +116,8 @@ export interface PreviewOptions {
   generationModel?: string;
   /** Additional repositories to include as reference context */
   contextRepositories?: ContextRepository[];
+  /** Files manually excluded from context by the user */
+  excludedFiles?: string[];
 }
 
 export interface PlanGenerationOptions {
@@ -126,6 +128,8 @@ export interface PlanGenerationOptions {
   contextRepositories?: ContextRepository[];
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
   generationModel?: string;
+  /** Files manually excluded from context by the user */
+  excludedFiles?: string[];
 }
 
 export interface CreateDraftOptions {
@@ -167,6 +171,8 @@ export interface DraftContextConfig {
   granularityEnforcement?: GranularityEnforcementMetadata;
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
   generationModel?: string;
+  /** Files manually excluded from context by the user */
+  excludedFiles?: string[];
 }
 
 export interface RefinementResult {
