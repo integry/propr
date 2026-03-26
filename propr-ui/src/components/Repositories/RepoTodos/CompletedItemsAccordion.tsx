@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Check, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import { RepoTodo } from '../../../api/repoTodosApi';
 
@@ -7,6 +7,7 @@ export interface CompletedItemsAccordionProps {
   onToggleComplete: (todoId: string, isCompleted: boolean) => void;
   onDeleteTodo: (todoId: string) => void;
   disabled?: boolean;
+  forceExpand?: boolean;
 }
 
 const CompletedItemsAccordion: React.FC<CompletedItemsAccordionProps> = ({
@@ -14,8 +15,15 @@ const CompletedItemsAccordion: React.FC<CompletedItemsAccordionProps> = ({
   onToggleComplete,
   onDeleteTodo,
   disabled,
+  forceExpand,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+
+  useEffect(() => {
+    if (forceExpand) {
+      setIsExpanded(true);
+    }
+  }, [forceExpand]);
 
   if (todos.length === 0) return null;
 
