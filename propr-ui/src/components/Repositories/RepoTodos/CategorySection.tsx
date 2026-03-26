@@ -9,6 +9,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { RepoTodoCategory, RepoTodo } from '../../../api/repoTodosApi';
 import SortableTodoItem from './SortableTodoItem';
 import CategoryHeader from './CategoryHeader';
+import AddTodoInput from './AddTodoInput';
 
 export interface CategorySectionProps {
   category: RepoTodoCategory | null;
@@ -25,6 +26,9 @@ export interface CategorySectionProps {
   isExpanded: boolean;
   onToggleExpand: () => void;
   isSortable?: boolean;
+  isAddingTodo?: boolean;
+  onConfirmAddTodo?: (content: string) => void;
+  onCancelAddTodo?: () => void;
 }
 
 const CategorySection: React.FC<CategorySectionProps> = ({
@@ -42,6 +46,9 @@ const CategorySection: React.FC<CategorySectionProps> = ({
   isExpanded,
   onToggleExpand,
   isSortable = false,
+  isAddingTodo = false,
+  onConfirmAddTodo,
+  onCancelAddTodo,
 }) => {
   const categoryId = category?.categoryId || null;
   const todoIds = todos.map((t) => t.todoId);
@@ -103,6 +110,15 @@ const CategorySection: React.FC<CategorySectionProps> = ({
             isOver ? 'bg-teal-50 border-2 border-dashed border-teal-300' : ''
           }`}
         >
+          {isAddingTodo && onConfirmAddTodo && onCancelAddTodo && (
+            <div className="mb-2">
+              <AddTodoInput
+                categoryId={categoryId}
+                onAdd={onConfirmAddTodo}
+                onCancel={onCancelAddTodo}
+              />
+            </div>
+          )}
           <SortableContext items={todoIds} strategy={verticalListSortingStrategy}>
             {todos.map((todo) => (
               <SortableTodoItem
