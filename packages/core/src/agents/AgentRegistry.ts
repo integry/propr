@@ -1,14 +1,15 @@
 import path from 'path';
 import os from 'os';
 import logger from '../utils/logger.js';
-import { Agent, AgentConfig } from './types.js';
+import { Agent, AgentConfig, AgentType } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
 import { GeminiAgent } from './impl/GeminiAgent.js';
 import * as configManager from '../config/configManager.js';
-import { ensureAgentDockerImage } from '../claude/docker/dockerExecutor.js';
+import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
+import { getEffectiveCliVersion, computeContentHash } from './version/versionService.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -43,6 +44,9 @@ export class AgentRegistry {
         logger.info('Refreshing agent registry...');
 
         try {
+            // Run migration to ensure all agents have version config
+            await configManager.migrateAgentConfigs();
+
             const configs = await configManager.loadAgents();
 
             // Clear existing maps
@@ -75,7 +79,24 @@ export class AgentRegistry {
                     }
 
                     // Ensure Docker image exists before registering agent
-                    const imageReady = await ensureAgentDockerImage(config.type, config.dockerImage);
+                    // Use versioned image if version config is present
+                    let imageReady = false;
+                    if (config.cliVersionType && config.cliVersionResolved) {
+                        const contentHash = computeContentHash(config.type as AgentType);
+                        const result = await ensureVersionedAgentImage(
+                            config.type,
+                            config.cliVersionResolved,
+                            contentHash
+                        );
+                        imageReady = result.success;
+                        if (result.success && result.imageTag !== config.dockerImage) {
+                            // Update config with correct image tag
+                            config.dockerImage = result.imageTag;
+                        }
+                    } else {
+                        imageReady = await ensureAgentDockerImage(config.type, config.dockerImage);
+                    }
+
                     if (!imageReady) {
                         logger.error({
                             agentAlias: config.alias,
@@ -93,7 +114,8 @@ export class AgentRegistry {
                         agentId: config.id,
                         agentAlias: config.alias,
                         agentType: config.type,
-                        dockerImage: config.dockerImage
+                        dockerImage: config.dockerImage,
+                        cliVersion: config.cliVersionResolved
                     }, 'Agent registered successfully');
                 } catch (error) {
                     const err = error as Error;
@@ -213,7 +235,7 @@ export class AgentRegistry {
             type: 'claude',
             alias: 'default',
             enabled: true,
-            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest',
+            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest',
             configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
             supportedModels: [
                 'claude-opus-4-5',

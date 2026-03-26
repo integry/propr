@@ -43,6 +43,8 @@ export interface DockerArgsParams {
     CLAUDE_MAX_TURNS: number;
     systemPrompt?: string;
     tools?: string;
+    taskId?: string;
+    agentAlias?: string;
 }
 
 export interface ConversationLogEntry {
@@ -229,12 +231,18 @@ export function verifyWorktreePostExecution(
 }
 
 export function buildDockerArgs(params: DockerArgsParams): string[] {
-    const { worktreePath, githubToken, modelName, issueNumber, CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS, systemPrompt, tools } = params;
+    const { worktreePath, githubToken, modelName, issueNumber, CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS, systemPrompt, tools, taskId, agentAlias } = params;
+
+    // Generate human-readable container name
+    const timestamp = Date.now().toString(36);
+    const shortTaskId = taskId ? taskId.substring(0, 8) : timestamp;
+    const containerName = `${agentAlias || 'claude'}-issue-${issueNumber}-${shortTaskId}`;
 
     // Always use stdin for prompt to avoid E2BIG errors with large prompts
     const dockerArgs: string[] = [
         'run', '--rm',
         '-i', // Allow stdin for piping prompt
+        '--name', containerName,
         '--security-opt', 'no-new-privileges',
         '--cap-add', 'CHOWN',
         '--network', 'bridge',

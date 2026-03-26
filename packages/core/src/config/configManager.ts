@@ -23,6 +23,11 @@ interface ConfigSettings {
 }
 
 /**
+ * CLI version type - how the version is specified.
+ */
+export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
+
+/**
  * Configuration for a specific agent instance.
  * Stored in system_configs table under 'agents' key.
  */
@@ -33,7 +38,7 @@ export interface AgentConfig {
     enabled: boolean;
 
     // Docker configuration
-    dockerImage: string;    // e.g., 'claude-code-processor:latest'
+    dockerImage: string;    // e.g., 'propr-claude:latest'
     configPath: string;     // Host path to mount (e.g., '/root/.claude')
 
     // Model configuration
@@ -46,6 +51,11 @@ export interface AgentConfig {
     // Custom GitHub labels per model (maps model ID to custom label)
     // e.g., { 'claude-opus-4-5-20251101': 'my-opus-bot', 'claude-sonnet-4-5-20251101': 'my-sonnet-bot' }
     modelCustomLabels?: Record<string, string>;
+
+    // CLI Version Configuration
+    cliVersionType?: CliVersionType;  // How the version is specified (default, tag, specific, custom)
+    cliVersion?: string;              // User-specified version (e.g., "2.1.84", "stable", "latest")
+    cliVersionResolved?: string;      // Resolved semver version (populated by backend)
 }
 
 /**
@@ -294,6 +304,50 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
     await saveConfig('agents', agents);
     logger.info({ agentCount: agents.length }, 'Successfully saved agents configuration');
     return true;
+}
+
+/**
+ * Default CLI versions for each agent type.
+ * Used by migration to set cliVersionResolved for agents without version config.
+ */
+const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
+    claude: '2.1.77',
+    codex: '0.116.0',
+    gemini: '0.35.1'
+};
+
+/**
+ * Migrates agent configurations to include CLI version fields.
+ * Sets cliVersionType='default' for agents without version config.
+ * This ensures backwards compatibility with existing configurations.
+ *
+ * @returns true if any agents were migrated, false otherwise
+ */
+export async function migrateAgentConfigs(): Promise<boolean> {
+    try {
+        const agents = await loadAgents();
+        let migrated = false;
+
+        for (const agent of agents) {
+            if (!agent.cliVersionType) {
+                agent.cliVersionType = 'default';
+                agent.cliVersionResolved = DEFAULT_CLI_VERSIONS[agent.type];
+                migrated = true;
+                logger.info({ agentAlias: agent.alias, type: agent.type }, 'Migrated agent to default CLI version');
+            }
+        }
+
+        if (migrated) {
+            await saveAgents(agents);
+            logger.info({ agentCount: agents.length }, 'Agent configuration migration completed');
+        }
+
+        return migrated;
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message }, 'Failed to migrate agent configurations');
+        return false;
+    }
 }
 
 // --- Summarization Settings ---

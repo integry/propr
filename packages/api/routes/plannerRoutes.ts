@@ -120,9 +120,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         .count('* as count')
         .where({ user_id: req.user!.id })
         .groupBy('repository')
-        .orderBy('repository');
+        .orderBy('repository') as { repository: string; count: number | string }[];
 
-      const repositories = results.map((row: { repository: string; count: number | string }) => ({
+      const repositories = results.map((row) => ({
         repo: row.repository,
         count: typeof row.count === 'string' ? parseInt(row.count, 10) : row.count
       }));

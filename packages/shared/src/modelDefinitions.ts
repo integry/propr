@@ -68,24 +68,37 @@ ALL_MODELS.forEach(m => {
 });
 
 // Agent default configurations
-export const AGENT_DEFAULTS: Record<AgentType, { dockerImage: string; configPath: string; defaultModels: string[]; defaultAlias: string }> = {
+export const AGENT_DEFAULTS: Record<AgentType, {
+  dockerImage: string;
+  configPath: string;
+  defaultModels: string[];
+  defaultAlias: string;
+  npmPackage: string;
+  defaultCliVersion: string;
+}> = {
   claude: {
     dockerImage: 'claude-code-processor:latest',
     configPath: '~/.claude',
     defaultModels: CLAUDE_MODELS.map(m => m.id),
-    defaultAlias: 'claude'
+    defaultAlias: 'claude',
+    npmPackage: '@anthropic-ai/claude-code',
+    defaultCliVersion: '2.1.77'
   },
   codex: {
     dockerImage: 'codex-cli:latest',
     configPath: '~/.codex',
     defaultModels: CODEX_MODELS.map(m => m.id),
-    defaultAlias: 'codex'
+    defaultAlias: 'codex',
+    npmPackage: '@openai/codex',
+    defaultCliVersion: '0.116.0'
   },
   gemini: {
     dockerImage: 'gemini-cli:latest',
     configPath: '~/.gemini',
     defaultModels: GEMINI_MODELS.map(m => m.id),
-    defaultAlias: 'gemini'
+    defaultAlias: 'gemini',
+    npmPackage: '@google/gemini-cli',
+    defaultCliVersion: '0.35.1'
   }
 };
 

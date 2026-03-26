@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { AgentConfig } from '../../api/proprApi';
+import React, { useState, useEffect, useCallback } from 'react';
+import { AgentConfig, CliVersionType } from '../../api/proprApi';
 import { AgentType, AGENT_MODELS, AGENT_DEFAULTS } from '../../config/modelDefinitions';
+import { getAgentVersions, AvailableVersionsResponse } from '../../api/agentVersionApi';
 
 interface AgentConfigModalProps {
   agent: AgentConfig | null;
@@ -32,10 +33,33 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     configPath: AGENT_DEFAULTS.claude.configPath,
     supportedModels: AGENT_DEFAULTS.claude.defaultModels,
     defaultModel: AGENT_DEFAULTS.claude.defaultModels[0],
-    modelCustomLabels: {}
+    modelCustomLabels: {},
+    cliVersionType: 'default',
+    cliVersion: undefined,
+    cliVersionResolved: AGENT_DEFAULTS.claude.defaultCliVersion
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [versionData, setVersionData] = useState<AvailableVersionsResponse | null>(null);
+  const [versionLoading, setVersionLoading] = useState(false);
+
+  // Load version data when agent type changes
+  const loadVersionData = useCallback(async (agentType: AgentType) => {
+    setVersionLoading(true);
+    try {
+      const data = await getAgentVersions(agentType);
+      setVersionData(data);
+    } catch (error) {
+      console.error('Failed to load version data:', error);
+      setVersionData(null);
+    } finally {
+      setVersionLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadVersionData(formData.type);
+  }, [formData.type, loadVersionData]);
 
   useEffect(() => {
     if (agent) {
@@ -48,7 +72,10 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         configPath: agent.configPath,
         supportedModels: agent.supportedModels,
         defaultModel: agent.defaultModel || agent.supportedModels[0],
-        modelCustomLabels: agent.modelCustomLabels || {}
+        modelCustomLabels: agent.modelCustomLabels || {},
+        cliVersionType: agent.cliVersionType || 'default',
+        cliVersion: agent.cliVersion,
+        cliVersionResolved: agent.cliVersionResolved || AGENT_DEFAULTS[agent.type].defaultCliVersion
       });
     }
   }, [agent]);
@@ -64,7 +91,30 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       dockerImage: defaults.dockerImage, // Docker image is predefined and not editable
       configPath: prev.configPath === prevDefaults.configPath ? defaults.configPath : prev.configPath,
       supportedModels: defaults.defaultModels,
-      defaultModel: defaults.defaultModels[0]
+      defaultModel: defaults.defaultModels[0],
+      // Reset version to default when changing agent type
+      cliVersionType: 'default',
+      cliVersion: undefined,
+      cliVersionResolved: defaults.defaultCliVersion
+    }));
+  };
+
+  const handleVersionTypeChange = (versionType: CliVersionType) => {
+    const defaults = AGENT_DEFAULTS[formData.type];
+    setFormData(prev => ({
+      ...prev,
+      cliVersionType: versionType,
+      cliVersion: versionType === 'default' ? undefined : prev.cliVersion,
+      cliVersionResolved: versionType === 'default' ? defaults.defaultCliVersion : prev.cliVersionResolved
+    }));
+  };
+
+  const handleVersionChange = (version: string) => {
+    setFormData(prev => ({
+      ...prev,
+      cliVersion: version,
+      // The resolved version will be set by the backend
+      cliVersionResolved: undefined
     }));
   };
 
@@ -155,7 +205,10 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       configPath: formData.configPath,
       supportedModels: formData.supportedModels,
       defaultModel: formData.defaultModel,
-      modelCustomLabels: Object.keys(cleanedModelCustomLabels).length > 0 ? cleanedModelCustomLabels : undefined
+      modelCustomLabels: Object.keys(cleanedModelCustomLabels).length > 0 ? cleanedModelCustomLabels : undefined,
+      cliVersionType: formData.cliVersionType,
+      cliVersion: formData.cliVersion,
+      cliVersionResolved: formData.cliVersionResolved
     };
 
     onSave(agentToSave);
@@ -196,6 +249,104 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* CLI Version */}
+          <div>
+            <label className="block text-gray-700 mb-1.5 font-medium text-sm">CLI Version</label>
+            <div className="inline-flex bg-gray-100 rounded-full p-1 mb-2">
+              {(['default', 'tag', 'specific', 'custom'] as CliVersionType[]).map(type => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => handleVersionTypeChange(type)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium capitalize transition-all ${
+                    formData.cliVersionType === type
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  {type === 'default' ? 'Default' : type === 'tag' ? 'NPM Tag' : type === 'specific' ? 'Version' : 'Custom'}
+                </button>
+              ))}
+            </div>
+
+            {/* Conditional version inputs */}
+            {formData.cliVersionType === 'default' && (
+              <div className="bg-gray-50 border border-gray-200 rounded-md p-2">
+                <span className="text-sm text-gray-600">
+                  Using default version: <code className="bg-gray-100 px-1.5 py-0.5 rounded font-mono text-xs">{AGENT_DEFAULTS[formData.type].defaultCliVersion}</code>
+                </span>
+              </div>
+            )}
+
+            {formData.cliVersionType === 'tag' && (
+              <div>
+                <select
+                  value={formData.cliVersion || ''}
+                  onChange={(e) => handleVersionChange(e.target.value)}
+                  className="w-full px-3 py-1.5 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm"
+                  disabled={versionLoading}
+                >
+                  <option value="">Select a tag...</option>
+                  {versionData?.availableTags.map(tag => (
+                    <option key={tag.tag} value={tag.tag}>
+                      {tag.tag} ({tag.version})
+                    </option>
+                  ))}
+                </select>
+                {versionLoading && <p className="text-xs text-gray-500 mt-1">Loading tags...</p>}
+              </div>
+            )}
+
+            {formData.cliVersionType === 'specific' && (
+              <div>
+                <select
+                  value={formData.cliVersion || ''}
+                  onChange={(e) => handleVersionChange(e.target.value)}
+                  className="w-full px-3 py-1.5 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm"
+                  disabled={versionLoading}
+                >
+                  <option value="">Select a version...</option>
+                  {versionData?.recentVersions.map(v => (
+                    <option key={v.version} value={v.version}>
+                      {v.version} ({new Date(v.publishedAt).toLocaleDateString()})
+                    </option>
+                  ))}
+                </select>
+                {versionLoading && <p className="text-xs text-gray-500 mt-1">Loading versions...</p>}
+              </div>
+            )}
+
+            {formData.cliVersionType === 'custom' && (
+              <div>
+                <input
+                  type="text"
+                  value={formData.cliVersion || ''}
+                  onChange={(e) => handleVersionChange(e.target.value)}
+                  placeholder="e.g., 2.1.77"
+                  className="w-full px-3 py-1.5 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Enter a specific semver version.{' '}
+                  <a
+                    href={`https://www.npmjs.com/package/${AGENT_DEFAULTS[formData.type].npmPackage}?activeTab=versions`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary-600 hover:text-primary-800 underline"
+                  >
+                    View all versions on npm
+                  </a>
+                </p>
+              </div>
+            )}
+
+            {/* Show resolved version if available */}
+            {formData.cliVersionResolved && formData.cliVersionType !== 'default' && (
+              <p className="mt-1.5 text-xs text-green-600">
+                Resolved: <code className="bg-green-50 px-1.5 py-0.5 rounded">{formData.cliVersionResolved}</code>
+              </p>
+            )}
           </div>
 
           {/* Alias */}

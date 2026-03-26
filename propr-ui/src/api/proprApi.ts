@@ -352,6 +352,8 @@ export const logout = (): void => {
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
 
+export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
+
 export interface AgentConfig {
   id: string;
   type: 'claude' | 'codex' | 'gemini';
@@ -363,6 +365,10 @@ export interface AgentConfig {
   defaultModel?: string;
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
+  // CLI Version Configuration
+  cliVersionType?: CliVersionType;
+  cliVersion?: string;
+  cliVersionResolved?: string;
 }
 
 export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
