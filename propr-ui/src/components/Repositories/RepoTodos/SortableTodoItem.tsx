@@ -117,21 +117,6 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
         </button>
       )}
 
-      {/* Completion checkbox */}
-      <button
-        onClick={() => onToggleComplete(todo.todoId, !todo.isCompleted)}
-        disabled={disabled}
-        className={`flex-shrink-0 w-4 h-4 mt-0.5 rounded-full border-2 transition-all
-          ${todo.isCompleted
-            ? 'bg-green-500 border-green-500 text-white'
-            : 'border-slate-300 hover:border-green-400'
-          }
-          ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}
-        `}
-      >
-        {todo.isCompleted && <Check size={10} className="m-auto" />}
-      </button>
-
       {/* Content */}
       <div className="flex-1 min-w-0">
         {isEditing ? (
@@ -161,6 +146,26 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
           </span>
         )}
       </div>
+
+      {/* Completion button */}
+      <button
+        onClick={() => onToggleComplete(todo.todoId, !todo.isCompleted)}
+        disabled={disabled}
+        className={`flex-shrink-0 w-5 h-5 mt-0.5 rounded-full border-2 transition-all flex items-center justify-center
+          ${todo.isCompleted
+            ? 'bg-green-500 border-green-500 text-white'
+            : 'border-slate-300 hover:border-green-500 hover:bg-green-50 group/complete'
+          }
+          ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}
+        `}
+        title={todo.isCompleted ? 'Mark as incomplete' : 'Mark as complete'}
+      >
+        {todo.isCompleted ? (
+          <Check size={12} />
+        ) : (
+          <Check size={12} className="opacity-0 group-hover/complete:opacity-50 text-green-500 transition-opacity" />
+        )}
+      </button>
 
       {/* Actions */}
       <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
