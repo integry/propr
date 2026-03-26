@@ -21,7 +21,7 @@ import type { RegenerateContextParams, RegenerateContextResult } from './plannin
  * Performs relevance analysis, file selection, and context generation.
  */
 export async function regenerateContext(params: RegenerateContextParams): Promise<RegenerateContextResult> {
-  const { draftId, baseBranch, worktreePath, prompt, manualFiles, draft, contextModel, compress, previewTokenLimit, correlationId, correlatedLogger } = params;
+  const { draftId, baseBranch, worktreePath, prompt, manualFiles, draft, contextModel, compress, previewTokenLimit, correlationId, correlatedLogger, excludedFiles } = params;
   const securityWarnings: string[] = [];
 
   try {
@@ -87,14 +87,22 @@ export async function regenerateContext(params: RegenerateContextParams): Promis
     candidates: relevanceResult.files.map(f => ({ path: f.path, reason: f.reason, score: f.score }))
   });
 
-  const autoFilePaths = relevanceResult.files.map(f => f.path);
+  // Filter out excluded files from auto-detected files before token limits and smart selection
+  const excludedFilesSet = new Set(excludedFiles || []);
+  const autoFilePaths = relevanceResult.files
+    .map(f => f.path)
+    .filter(p => !excludedFilesSet.has(p));
   const fileScores: Record<string, number> = {};
   for (const file of relevanceResult.files) {
-    fileScores[file.path] = file.score;
+    if (!excludedFilesSet.has(file.path)) {
+      fileScores[file.path] = file.score;
+    }
   }
-  const combinedFiles = [...new Set([...allManualFiles, ...autoFilePaths])];
+  // Filter excluded files from manual files and combine with auto files
+  const filteredManualFiles = allManualFiles.filter(f => !excludedFilesSet.has(f));
+  const combinedFiles = [...new Set([...filteredManualFiles, ...autoFilePaths])];
 
-  correlatedLogger.info({ manualFiles: { count: allManualFiles.length }, autoFiles: { count: autoFilePaths.length }, combinedCount: combinedFiles.length }, 'Preview file selection');
+  correlatedLogger.info({ manualFiles: { count: filteredManualFiles.length }, autoFiles: { count: autoFilePaths.length }, combinedCount: combinedFiles.length, excludedCount: excludedFilesSet.size }, 'Preview file selection');
 
   const estimatedContextDuration = estimateContextGatheringDuration(combinedFiles.length);
   const contextStartedAt = new Date().toISOString();

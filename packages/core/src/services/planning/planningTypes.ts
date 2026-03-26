@@ -208,6 +208,8 @@ export interface RegenerateContextParams {
   previewTokenLimit: number;
   correlationId?: string;
   correlatedLogger: MinimalLogger;
+  /** Files to exclude from the generated context */
+  excludedFiles?: string[];
 }
 
 /** Result of context regeneration */
