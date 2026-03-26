@@ -112,6 +112,13 @@ const SetupWizardContent: React.FC<{
     }));
   };
 
+  const handleExcludeFile = (filePath: string) => {
+    setConfig(prev => ({
+      ...prev,
+      excludedFiles: [...prev.excludedFiles, filePath]
+    }));
+  };
+
   const isGenerating = generationPolling.isGenerating;
   const stats = contextRefresh.preview.data?.stats;
 
@@ -173,6 +180,7 @@ const SetupWizardContent: React.FC<{
           previewTrace={previewTrace}
           isGenerating={isGenerating}
           generationTrace={generationPolling.generationTrace}
+          onExcludeFile={handleExcludeFile}
         />
       </div>
 

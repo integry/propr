@@ -49,6 +49,8 @@ interface SetupWizardRightPaneProps {
   // Generation state props
   isGenerating?: boolean;
   generationTrace?: GenerationTrace;
+  // File exclusion callback
+  onExcludeFile?: (filePath: string) => void;
 }
 
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
@@ -71,6 +73,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   previewTrace,
   isGenerating,
   generationTrace,
+  onExcludeFile,
 }) => {
   return (
     <div className="w-full md:w-[35%] h-auto md:h-full flex flex-col bg-white border-t md:border-t-0 md:border-l border-gray-300">
@@ -89,6 +92,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
             smartSelection={smartSelection}
             totalTokens={stats?.totalTokens}
             costEstimate={stats?.costEstimate}
+            onExcludeFile={onExcludeFile}
           />
         ) : (
           <div className="p-3 md:p-5 space-y-4">
