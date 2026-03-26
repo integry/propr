@@ -24,7 +24,6 @@ import {
   TodoItemOverlay,
   CategorySection,
   CompletedItemsAccordion,
-  AddTodoInput,
   useRepoTodos,
 } from './RepoTodos';
 
@@ -62,6 +61,12 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
 
   const handleAddTodo = useCallback((categoryId: string | null) => {
     setAddingToCategory(categoryId);
+    // Auto-expand the category when adding a todo
+    const expandKey = categoryId || 'uncategorized';
+    setExpandedCategories((prev) => {
+      if (prev.has(expandKey)) return prev;
+      return new Set([...prev, expandKey]);
+    });
   }, []);
 
   const onConfirmAddTodo = useCallback(async (content: string) => {
@@ -231,36 +236,28 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
 
       <div className="flex-1 overflow-y-auto px-4 py-4" style={{ scrollbarWidth: 'thin', scrollbarColor: '#d1d5db transparent' }}>
         <DndContext sensors={sensors} collisionDetection={collisionDetectionStrategy} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-          {addingToCategory === null && (
-            <div className="mb-4">
-              <AddTodoInput categoryId={null} onAdd={onConfirmAddTodo} onCancel={() => setAddingToCategory(false)} />
-            </div>
-          )}
           <SortableContext items={categoryIds} strategy={verticalListSortingStrategy}>
             {categories.map((category) => (
-              <React.Fragment key={category.categoryId}>
-                {addingToCategory === category.categoryId && (
-                  <div className="mb-2 ml-4">
-                    <AddTodoInput categoryId={category.categoryId} onAdd={onConfirmAddTodo} onCancel={() => setAddingToCategory(false)} />
-                  </div>
-                )}
-                <CategorySection
-                  category={category}
-                  todos={todosByCategory[category.categoryId] || []}
-                  selectedTodoIds={selectedTodoIds}
-                  onToggleSelect={handleToggleSelect}
-                  onToggleComplete={handleToggleComplete}
-                  onDeleteTodo={handleDeleteTodo}
-                  onEditTodo={handleEditTodo}
-                  onAddTodo={handleAddTodo}
-                  onEditCategory={handleEditCategory}
-                  onDeleteCategory={handleDeleteCategory}
-                  disabled={disabled}
-                  isExpanded={expandedCategories.has(category.categoryId)}
-                  onToggleExpand={() => handleToggleCategoryExpand(category.categoryId)}
-                  isSortable={true}
-                />
-              </React.Fragment>
+              <CategorySection
+                key={category.categoryId}
+                category={category}
+                todos={todosByCategory[category.categoryId] || []}
+                selectedTodoIds={selectedTodoIds}
+                onToggleSelect={handleToggleSelect}
+                onToggleComplete={handleToggleComplete}
+                onDeleteTodo={handleDeleteTodo}
+                onEditTodo={handleEditTodo}
+                onAddTodo={handleAddTodo}
+                onEditCategory={handleEditCategory}
+                onDeleteCategory={handleDeleteCategory}
+                disabled={disabled}
+                isExpanded={expandedCategories.has(category.categoryId)}
+                onToggleExpand={() => handleToggleCategoryExpand(category.categoryId)}
+                isSortable={true}
+                isAddingTodo={addingToCategory === category.categoryId}
+                onConfirmAddTodo={onConfirmAddTodo}
+                onCancelAddTodo={() => setAddingToCategory(false)}
+              />
             ))}
           </SortableContext>
           <CategorySection
@@ -275,6 +272,9 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
             disabled={disabled}
             isExpanded={expandedCategories.has('uncategorized')}
             onToggleExpand={() => handleToggleCategoryExpand('uncategorized')}
+            isAddingTodo={addingToCategory === null}
+            onConfirmAddTodo={onConfirmAddTodo}
+            onCancelAddTodo={() => setAddingToCategory(false)}
           />
           <DragOverlay>{activeTodo ? <TodoItemOverlay todo={activeTodo} /> : null}</DragOverlay>
         </DndContext>
