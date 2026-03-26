@@ -33,7 +33,7 @@ export function createGenerateHandler(db: Knex) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId, baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel } = req.body as GenerateRequestBody;
+    const { draftId, baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles } = req.body as GenerateRequestBody;
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
 
     // Validate context repositories if provided
@@ -43,6 +43,12 @@ export function createGenerateHandler(db: Knex) {
         res.status(400).json({ error: repoValidation.error });
         return;
       }
+    }
+
+    // Validate excludedFiles if provided
+    if (excludedFiles && (!Array.isArray(excludedFiles) || !excludedFiles.every(f => typeof f === 'string'))) {
+      res.status(400).json({ error: 'excludedFiles must be an array of strings' });
+      return;
     }
 
     const correlationId = generateCorrelationId();
@@ -64,7 +70,7 @@ export function createGenerateHandler(db: Knex) {
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
       const worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken });
 
-      await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel });
+      await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles });
 
       // Clear any previous abort signal to allow immediate retry after abort
       const redis = new Redis({
