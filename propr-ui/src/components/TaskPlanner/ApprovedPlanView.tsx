@@ -375,6 +375,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         <PlanIssuesManager
           draftId={draft.draft_id}
           tasks={tasks}
+          onRefresh={onRefetch}
           onIssuesChange={handleIssuesChange}
           refreshKey={refreshKey}
           useEpic={useEpic}

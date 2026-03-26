@@ -3,6 +3,21 @@ import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssu
 import { AgentConfig, getAgents } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
+import { DraftUpdatePayload } from '@propr/shared';
+
+/** Progress state for issue creation via WebSocket */
+export interface IssueCreationProgress {
+  status: 'idle' | 'in_progress' | 'completed' | 'failed';
+  createdCount: number;
+  totalCount: number;
+  failedCount: number;
+  lastCreatedIssue?: {
+    number: number;
+    url: string;
+    title: string;
+  };
+  error?: string;
+}
 
 interface UsePlanIssuesManagerProps {
   draftId: string;
@@ -31,7 +46,15 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   const [issueMultiModeMap, setIssueMultiModeMap] = useState<Record<number, boolean>>({});
   const [issueSelectedModelsMap, setIssueSelectedModelsMap] = useState<Record<number, AgentModelPair[]>>({});
 
-  const { onTaskUpdate, isConnected } = useSocket();
+  const { onTaskUpdate, onDraftUpdate, subscribeToDraft, unsubscribeFromDraft, isConnected } = useSocket();
+
+  // Issue creation progress state (tracked via WebSocket DRAFT_UPDATE events)
+  const [issueCreationProgress, setIssueCreationProgress] = useState<IssueCreationProgress>({
+    status: 'idle',
+    createdCount: 0,
+    totalCount: 0,
+    failedCount: 0
+  });
 
   const issueTitles = useMemo(() => {
     const map: Record<number, string> = {};
@@ -156,6 +179,65 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     await fetchIssues();
   }, [fetchIssues]);
 
+  // Handle draft update from WebSocket - track issue creation progress
+  const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
+    // Only handle updates for this draft
+    if (payload.draftId !== draftId) return;
+
+    // Only handle execution step updates (issue creation progress)
+    if (payload.step !== 'execution') return;
+
+    console.log('[usePlanIssuesManager] Received draft update via WebSocket:', payload);
+
+    const data = payload.data as {
+      createdCount?: number;
+      totalCount?: number;
+      failedCount?: number;
+      lastCreatedIssue?: { number: number; url: string; title: string };
+      error?: string;
+    } | undefined;
+
+    if (payload.status === 'in_progress') {
+      setIssueCreationProgress({
+        status: 'in_progress',
+        createdCount: data?.createdCount ?? 0,
+        totalCount: data?.totalCount ?? 0,
+        failedCount: data?.failedCount ?? 0,
+        lastCreatedIssue: data?.lastCreatedIssue
+      });
+    } else if (payload.status === 'completed') {
+      setIssueCreationProgress({
+        status: 'completed',
+        createdCount: data?.createdCount ?? 0,
+        totalCount: data?.totalCount ?? 0,
+        failedCount: data?.failedCount ?? 0
+      });
+      // Refresh issues to get the newly created issues
+      await fetchIssues();
+      onRefresh?.();
+    } else if (payload.status === 'failed') {
+      setIssueCreationProgress({
+        status: 'failed',
+        createdCount: data?.createdCount ?? 0,
+        totalCount: data?.totalCount ?? 0,
+        failedCount: data?.failedCount ?? 0,
+        error: data?.error || 'Issue creation failed'
+      });
+      // Still refresh to show any partially created issues
+      await fetchIssues();
+    }
+  }, [draftId, fetchIssues, onRefresh]);
+
+  // Reset issue creation progress when issues change (e.g., after completion)
+  const resetIssueCreationProgress = useCallback(() => {
+    setIssueCreationProgress({
+      status: 'idle',
+      createdCount: 0,
+      totalCount: 0,
+      failedCount: 0
+    });
+  }, []);
+
   // Subscribe to WebSocket events for task updates when there are active issues
   useEffect(() => {
     if (!hasActiveIssues || !isConnected) return;
@@ -167,6 +249,22 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
       unsubscribe();
     };
   }, [hasActiveIssues, isConnected, onTaskUpdate, handleTaskUpdate]);
+
+  // Subscribe to WebSocket events for draft updates (issue creation progress)
+  useEffect(() => {
+    if (!draftId || !isConnected) return;
+
+    // Subscribe to this specific draft's room
+    subscribeToDraft(draftId);
+
+    // Listen for draft updates (issue creation progress)
+    const unsubscribe = onDraftUpdate(handleDraftUpdate);
+
+    return () => {
+      unsubscribeFromDraft(draftId);
+      unsubscribe();
+    };
+  }, [draftId, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, handleDraftUpdate]);
 
   const handleImplementIssue = useCallback(async (issueNumber: number, models?: AgentModelPair[]) => {
     setImplementingIssue(issueNumber);
@@ -347,6 +445,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     applyingGlobal,
     issueMultiModeMap,
     issueSelectedModelsMap,
+    issueCreationProgress,
+    resetIssueCreationProgress,
     handleImplementIssue,
     handleGlobalAgentChange,
     handleGlobalModelChange,
