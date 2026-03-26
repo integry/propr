@@ -19,6 +19,30 @@ export interface IssueCreationProgress {
   error?: string;
 }
 
+/** Data payload for execution step updates */
+interface ExecutionStepData {
+  createdCount?: number;
+  totalCount?: number;
+  failedCount?: number;
+  lastCreatedIssue?: { number: number; url: string; title: string };
+  error?: string;
+}
+
+/** Create progress state from execution step data */
+function createProgressState(
+  status: IssueCreationProgress['status'],
+  data: ExecutionStepData | undefined
+): IssueCreationProgress {
+  return {
+    status,
+    createdCount: data?.createdCount ?? 0,
+    totalCount: data?.totalCount ?? 0,
+    failedCount: data?.failedCount ?? 0,
+    lastCreatedIssue: status === 'in_progress' ? data?.lastCreatedIssue : undefined,
+    error: status === 'failed' ? (data?.error || 'Issue creation failed') : undefined
+  };
+}
+
 interface UsePlanIssuesManagerProps {
   draftId: string;
   tasks: PlanTask[];
@@ -181,50 +205,24 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   // Handle draft update from WebSocket - track issue creation progress
   const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
-    // Only handle updates for this draft
-    if (payload.draftId !== draftId) return;
-
-    // Only handle execution step updates (issue creation progress)
-    if (payload.step !== 'execution') return;
+    // Only handle updates for this draft and execution step
+    if (payload.draftId !== draftId || payload.step !== 'execution') return;
 
     console.log('[usePlanIssuesManager] Received draft update via WebSocket:', payload);
 
-    const data = payload.data as {
-      createdCount?: number;
-      totalCount?: number;
-      failedCount?: number;
-      lastCreatedIssue?: { number: number; url: string; title: string };
-      error?: string;
-    } | undefined;
+    const data = payload.data as ExecutionStepData | undefined;
+    const status = payload.status as IssueCreationProgress['status'];
 
-    if (payload.status === 'in_progress') {
-      setIssueCreationProgress({
-        status: 'in_progress',
-        createdCount: data?.createdCount ?? 0,
-        totalCount: data?.totalCount ?? 0,
-        failedCount: data?.failedCount ?? 0,
-        lastCreatedIssue: data?.lastCreatedIssue
-      });
-    } else if (payload.status === 'completed') {
-      setIssueCreationProgress({
-        status: 'completed',
-        createdCount: data?.createdCount ?? 0,
-        totalCount: data?.totalCount ?? 0,
-        failedCount: data?.failedCount ?? 0
-      });
-      // Refresh issues to get the newly created issues
-      await fetchIssues();
-      onRefresh?.();
-    } else if (payload.status === 'failed') {
-      setIssueCreationProgress({
-        status: 'failed',
-        createdCount: data?.createdCount ?? 0,
-        totalCount: data?.totalCount ?? 0,
-        failedCount: data?.failedCount ?? 0,
-        error: data?.error || 'Issue creation failed'
-      });
-      // Still refresh to show any partially created issues
-      await fetchIssues();
+    if (status === 'in_progress' || status === 'completed' || status === 'failed') {
+      setIssueCreationProgress(createProgressState(status, data));
+
+      // Refresh issues when completed or failed to show created issues
+      if (status === 'completed' || status === 'failed') {
+        await fetchIssues();
+        if (status === 'completed') {
+          onRefresh?.();
+        }
+      }
     }
   }, [draftId, fetchIssues, onRefresh]);
 
