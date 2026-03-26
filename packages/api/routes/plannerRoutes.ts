@@ -110,6 +110,32 @@ interface PlannerRoutesDeps {
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
 
+  async function listRepositories(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    try {
+      const results = await db!('task_drafts')
+        .select('repository')
+        .count('* as count')
+        .where({ user_id: req.user!.id })
+        .groupBy('repository')
+        .orderBy('repository');
+
+      const repositories = results.map((row: { repository: string; count: number | string }) => ({
+        repo: row.repository,
+        count: typeof row.count === 'string' ? parseInt(row.count, 10) : row.count
+      }));
+
+      const total = repositories.reduce((sum: number, r: { count: number }) => sum + r.count, 0);
+
+      res.json({ repositories, total });
+    } catch (error) {
+      console.error('List repositories error:', error);
+      res.status(500).json({ error: 'Failed to fetch repositories' });
+    }
+  }
+
   async function listDrafts(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
@@ -450,6 +476,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   return {
+    listRepositories,
     listDrafts,
     createDraft,
     getDraft,
