@@ -13,7 +13,8 @@ import {
   estimateLlmDuration,
   loadSettings,
   estimateTokens,
-  REFINER_SYSTEM_PROMPT
+  REFINER_SYSTEM_PROMPT,
+  getEventPublisher
 } from '@propr/core';
 import type { Plan } from '@propr/core';
 import {
@@ -255,15 +256,55 @@ export function createFinalizeHandler(db: Knex) {
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
 
     const correlationId = generateCorrelationId();
+    const userId = req.user!.id;
 
+    // Update draft status to 'executing' before returning
     try {
-      const result = await executeDraft(draftId, req.user!.id, correlationId);
-      if (result.alreadyExecuted) { res.json({ success: true, alreadyExecuted: true, issuesCreated: 0 }); return; }
-      res.json({ success: true, results: result.results, issuesCreated: result.results?.length || 0 });
+      await db('task_drafts').where({ draft_id: draftId }).update({
+        status: 'executing',
+        updated_at: db.fn.now()
+      });
     } catch (error) {
-      console.error('Finalize plan error:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to execute plan' });
+      console.error('Failed to update draft status:', error);
+      res.status(500).json({ error: 'Failed to start execution' });
+      return;
     }
+
+    // Return 202 Accepted immediately - execution runs in background
+    res.status(202).json({ success: true, status: 'executing', message: 'Plan execution started' });
+
+    // Run execution in background
+    (async () => {
+      try {
+        const result = await executeDraft(draftId, userId, correlationId);
+        if (result.alreadyExecuted) {
+          console.log(`[finalize] Draft ${draftId} was already executed`);
+        } else {
+          console.log(`[finalize] Draft ${draftId} execution completed, ${result.results?.length || 0} issues created`);
+        }
+      } catch (error) {
+        console.error(`[finalize] Draft ${draftId} execution failed:`, error);
+        // Emit failure event via WebSocket
+        const eventPublisher = getEventPublisher();
+        await eventPublisher.publishDraftUpdate({
+          draftId,
+          step: 'execution',
+          status: 'failed',
+          data: {
+            error: error instanceof Error ? error.message : 'Execution failed'
+          }
+        });
+        // Update status to failed on error
+        try {
+          await db('task_drafts').where({ draft_id: draftId }).update({
+            status: 'failed',
+            updated_at: db.fn.now()
+          });
+        } catch (updateError) {
+          console.error(`[finalize] Failed to update draft status to failed:`, updateError);
+        }
+      }
+    })();
   };
 }
 
