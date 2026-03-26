@@ -81,7 +81,9 @@ export interface GranularityEnforcementMetadata {
 export interface SmartFileSelection {
   path: string;
   reason: string;
-  source: 'manual' | 'auto';
+  source: 'manual' | 'auto' | 'context-repo';
+  /** Repository name for context-repo files (e.g., "owner/repo") */
+  repository?: string;
   score?: number;
 }
 
