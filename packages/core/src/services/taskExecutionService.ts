@@ -5,6 +5,7 @@ import { type Logger } from 'pino';
 import { createPlanIssue } from '../config/planIssueManager.js';
 import { buildUserNotesCommentBody, generateAndSaveTaskTitle, type PlanTaskAttachment } from './taskExecutionHelpers.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
+import { getEventPublisher } from '../utils/eventPublisher.js';
 
 // Re-export Epic PR functions from separate module
 export {
@@ -341,10 +342,40 @@ async function processTaskAndCreateIssue(options: ProcessTaskOptions): Promise<P
 
 export async function executeDraft(draftId: string, userId: string, correlationId?: string): Promise<ExecutionResult> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+  const eventPublisher = getEventPublisher();
 
   correlatedLogger.info({ draftId }, 'Starting draft execution');
 
-  const { draft, planJson, owner, repoName } = await validateAndPrepareDraft(draftId, userId, correlatedLogger);
+  let validatedData;
+  try {
+    validatedData = await validateAndPrepareDraft(draftId, userId, correlatedLogger);
+  } catch (error) {
+    // Emit failure event if validation fails
+    await eventPublisher.publishDraftUpdate({
+      draftId,
+      step: 'execution',
+      status: 'failed',
+      data: {
+        error: error instanceof Error ? error.message : 'Validation failed'
+      }
+    });
+    throw error;
+  }
+
+  const { draft, planJson, owner, repoName } = validatedData;
+  const totalCount = planJson.length;
+
+  // Emit initial progress event
+  await eventPublisher.publishDraftUpdate({
+    draftId,
+    step: 'execution',
+    status: 'in_progress',
+    data: {
+      createdCount: 0,
+      totalCount,
+      failedCount: 0
+    }
+  });
 
   try {
     await generateAndSaveTaskTitle({
@@ -386,6 +417,23 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       // Update the task with issue information
       planJson[i].issue_number = result.issue.number;
       planJson[i].issue_url = result.issue.url;
+
+      // Emit progress event after each successful issue creation
+      await eventPublisher.publishDraftUpdate({
+        draftId,
+        step: 'execution',
+        status: 'in_progress',
+        data: {
+          createdCount: results.length,
+          totalCount,
+          failedCount: failures.length,
+          lastCreatedIssue: {
+            number: result.issue.number,
+            url: result.issue.url,
+            title: result.issue.title
+          }
+        }
+      });
     } else {
       failures.push({
         taskIndex: i,
@@ -398,6 +446,23 @@ export async function executeDraft(draftId: string, userId: string, correlationI
         taskTitle: task.title,
         error: result.error
       }, 'Task failed, continuing with remaining tasks');
+
+      // Emit progress event on failure as well
+      await eventPublisher.publishDraftUpdate({
+        draftId,
+        step: 'execution',
+        status: 'in_progress',
+        data: {
+          createdCount: results.length,
+          totalCount,
+          failedCount: failures.length,
+          lastFailedTask: {
+            index: i,
+            title: task.title,
+            error: result.error || 'Unknown error'
+          }
+        }
+      });
     }
 
     if (i < planJson.length - 1) {
@@ -460,6 +525,23 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       context_config: JSON.stringify(updatedConfig),
       updated_at: db!.fn.now()
     });
+
+  // Emit completion event
+  await eventPublisher.publishDraftUpdate({
+    draftId,
+    step: 'execution',
+    status: failures.length === totalCount ? 'failed' : 'completed',
+    data: {
+      createdCount: results.length,
+      totalCount,
+      failedCount: failures.length,
+      results: results.map(r => ({
+        number: r.number,
+        url: r.url,
+        title: r.title
+      }))
+    }
+  });
 
   correlatedLogger.info({
     draftId,
