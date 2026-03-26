@@ -31,6 +31,72 @@ export interface CategorySectionProps {
   onCancelAddTodo?: () => void;
 }
 
+interface TodoListContentProps {
+  todos: RepoTodo[];
+  selectedTodoIds: Set<string>;
+  onToggleSelect: (todoId: string) => void;
+  onToggleComplete: (todoId: string, isCompleted: boolean) => void;
+  onDeleteTodo: (todoId: string) => void;
+  onEditTodo: (todoId: string, content: string) => void;
+  disabled?: boolean;
+  isOver: boolean;
+  categoryId: string | null;
+  isAddingTodo: boolean;
+  onConfirmAddTodo?: (content: string) => void;
+  onCancelAddTodo?: () => void;
+}
+
+const TodoListContent: React.FC<TodoListContentProps> = ({
+  todos,
+  selectedTodoIds,
+  onToggleSelect,
+  onToggleComplete,
+  onDeleteTodo,
+  onEditTodo,
+  disabled,
+  isOver,
+  categoryId,
+  isAddingTodo,
+  onConfirmAddTodo,
+  onCancelAddTodo,
+}) => {
+  const todoIds = todos.map((t) => t.todoId);
+  const showAddTodoInput = isAddingTodo && onConfirmAddTodo && onCancelAddTodo;
+
+  return (
+    <>
+      {showAddTodoInput && (
+        <div className="mb-2">
+          <AddTodoInput
+            categoryId={categoryId}
+            onAdd={onConfirmAddTodo}
+            onCancel={onCancelAddTodo}
+          />
+        </div>
+      )}
+      <SortableContext items={todoIds} strategy={verticalListSortingStrategy}>
+        {todos.map((todo) => (
+          <SortableTodoItem
+            key={todo.todoId}
+            todo={todo}
+            isSelected={selectedTodoIds.has(todo.todoId)}
+            onToggleSelect={onToggleSelect}
+            onToggleComplete={onToggleComplete}
+            onDelete={onDeleteTodo}
+            onEdit={onEditTodo}
+            disabled={disabled}
+          />
+        ))}
+      </SortableContext>
+      {todos.length === 0 && (
+        <p className={`text-xs text-slate-400 italic py-2 px-2 ${isOver ? 'text-teal-600' : ''}`}>
+          {isOver ? 'Drop here to add to this category' : 'No items in this category'}
+        </p>
+      )}
+    </>
+  );
+};
+
 const CategorySection: React.FC<CategorySectionProps> = ({
   category,
   todos,
@@ -51,7 +117,6 @@ const CategorySection: React.FC<CategorySectionProps> = ({
   onCancelAddTodo,
 }) => {
   const categoryId = category?.categoryId || null;
-  const todoIds = todos.map((t) => t.todoId);
   const droppableId = `category-drop-${categoryId || 'uncategorized'}`;
 
   // Make category sortable (for reordering categories themselves)
@@ -110,34 +175,20 @@ const CategorySection: React.FC<CategorySectionProps> = ({
             isOver ? 'bg-teal-50 border-2 border-dashed border-teal-300' : ''
           }`}
         >
-          {isAddingTodo && onConfirmAddTodo && onCancelAddTodo && (
-            <div className="mb-2">
-              <AddTodoInput
-                categoryId={categoryId}
-                onAdd={onConfirmAddTodo}
-                onCancel={onCancelAddTodo}
-              />
-            </div>
-          )}
-          <SortableContext items={todoIds} strategy={verticalListSortingStrategy}>
-            {todos.map((todo) => (
-              <SortableTodoItem
-                key={todo.todoId}
-                todo={todo}
-                isSelected={selectedTodoIds.has(todo.todoId)}
-                onToggleSelect={onToggleSelect}
-                onToggleComplete={onToggleComplete}
-                onDelete={onDeleteTodo}
-                onEdit={onEditTodo}
-                disabled={disabled}
-              />
-            ))}
-          </SortableContext>
-          {todos.length === 0 && (
-            <p className={`text-xs text-slate-400 italic py-2 px-2 ${isOver ? 'text-teal-600' : ''}`}>
-              {isOver ? 'Drop here to add to this category' : 'No items in this category'}
-            </p>
-          )}
+          <TodoListContent
+            todos={todos}
+            selectedTodoIds={selectedTodoIds}
+            onToggleSelect={onToggleSelect}
+            onToggleComplete={onToggleComplete}
+            onDeleteTodo={onDeleteTodo}
+            onEditTodo={onEditTodo}
+            disabled={disabled}
+            isOver={isOver}
+            categoryId={categoryId}
+            isAddingTodo={isAddingTodo}
+            onConfirmAddTodo={onConfirmAddTodo}
+            onCancelAddTodo={onCancelAddTodo}
+          />
         </div>
       )}
     </div>
