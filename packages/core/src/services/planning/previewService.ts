@@ -37,6 +37,96 @@ import type {
 const DEFAULT_OUTPUT_TOKENS = 4000;
 const SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';
 
+interface FilteredFileData {
+  filteredAutoFilePaths: string[];
+  combinedFiles: string[];
+  filteredFileTokenCounts: Record<string, number>;
+}
+
+/**
+ * Filter files to exclude any paths in the excludedFiles set.
+ */
+function filterExcludedFiles(
+  autoFilePaths: string[],
+  manualFiles: string[],
+  fileTokenCounts: Record<string, number>,
+  excludedFiles?: string[]
+): FilteredFileData {
+  const excludedFilesSet = new Set(excludedFiles || []);
+  const filteredAutoFilePaths = autoFilePaths.filter(f => !excludedFilesSet.has(f));
+  const combinedFiles = [...new Set([...manualFiles, ...filteredAutoFilePaths])].filter(f => !excludedFilesSet.has(f));
+
+  const filteredFileTokenCounts: Record<string, number> = {};
+  for (const [path, tokens] of Object.entries(fileTokenCounts)) {
+    if (!excludedFilesSet.has(path)) {
+      filteredFileTokenCounts[path] = tokens;
+    }
+  }
+
+  return { filteredAutoFilePaths, combinedFiles, filteredFileTokenCounts };
+}
+
+interface BuildPreviewResultParams {
+  simulatedTokens: number;
+  attachmentTokens: number;
+  smartSummaryTokens: number;
+  additionalContextTokens: number;
+  additionalContextFiles: number;
+  additionalContextFilesIncluded: Array<{ repository: string; path: string }>;
+  targetTokenLimit: number;
+  generationModel?: string;
+  repomixContextLength: number;
+  simulatedIncludedFiles: string[];
+  smartSelection: SmartFileSelection[];
+  costEstimate: number;
+  warnings: string[];
+  correlatedLogger: MinimalLogger;
+  canUseCache: boolean;
+}
+
+/**
+ * Build the final preview result with token calculations and stats.
+ */
+function buildPreviewResult(params: BuildPreviewResultParams): PreviewResult {
+  const {
+    simulatedTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens,
+    additionalContextFiles, additionalContextFilesIncluded, targetTokenLimit, generationModel,
+    repomixContextLength, simulatedIncludedFiles, smartSelection, costEstimate, warnings,
+    correlatedLogger, canUseCache
+  } = params;
+
+  const estimatedActualTokens = Math.ceil(simulatedTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+  const additionalContextTokensEstimated = Math.ceil(additionalContextTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+  const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens + additionalContextTokensEstimated;
+  const maxTokensEstimated = Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO);
+  const { modelName, modelMaxContextTokens } = getModelDisplayInfo(generationModel);
+
+  const contextRepoSelection: SmartFileSelection[] = additionalContextFilesIncluded.map(f => ({
+    path: f.path,
+    reason: 'Reference context',
+    source: 'context-repo' as const,
+    repository: f.repository
+  }));
+  const fullSmartSelection = [...smartSelection, ...contextRepoSelection];
+
+  correlatedLogger.info({
+    usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens,
+    smartSummaryTokens, additionalContextTokens: additionalContextTokensEstimated, additionalContextFiles,
+    totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens
+  }, 'Context preview completed');
+
+  return {
+    success: true,
+    stats: {
+      totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContextLength,
+      fileCount: simulatedIncludedFiles.length, contextRepoFileCount: additionalContextFiles,
+      attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens
+    },
+    smartSelection: fullSmartSelection,
+    warnings
+  };
+}
+
 interface LoadAdditionalContextOptions {
   contextRepositories: ContextRepository[];
   tokenBudget: number;
@@ -251,17 +341,9 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const { repomixContext, smartSummaries, autoFilePaths, includedFiles, smartSummaryTokens, fileTokenCounts, fileScores } = contextData;
 
   // Filter out excluded files from the file lists before token limits and smart selection
-  const excludedFilesSet = new Set(excludedFiles || []);
-  const filteredAutoFilePaths = autoFilePaths.filter(f => !excludedFilesSet.has(f));
-  const combinedFiles = [...new Set([...manualFiles, ...filteredAutoFilePaths])].filter(f => !excludedFilesSet.has(f));
-
-  // Filter excluded files from token counts so they don't count towards token limits
-  const filteredFileTokenCounts: Record<string, number> = {};
-  for (const [path, tokens] of Object.entries(fileTokenCounts)) {
-    if (!excludedFilesSet.has(path)) {
-      filteredFileTokenCounts[path] = tokens;
-    }
-  }
+  const { filteredAutoFilePaths, combinedFiles, filteredFileTokenCounts } = filterExcludedFiles(
+    autoFilePaths, manualFiles, fileTokenCounts, excludedFiles
+  );
 
   const reservedOverheadTiktokens = Math.ceil((attachmentTokens + smartSummaryTokens) / TIKTOKEN_TO_CLAUDE_RATIO);
   const fileSelectionLimit = Math.max(0, targetTokenLimit - reservedOverheadTiktokens);
@@ -322,26 +404,9 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     updated_at: db.fn.now()
   });
 
-  const estimatedActualTokens = Math.ceil(simulatedTokens * TIKTOKEN_TO_CLAUDE_RATIO);
-  const additionalContextTokensEstimated = Math.ceil(additionalContextTokens * TIKTOKEN_TO_CLAUDE_RATIO);
-  const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens + additionalContextTokensEstimated;
-  const maxTokensEstimated = Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO);
-  const { modelName, modelMaxContextTokens } = getModelDisplayInfo(generationModel);
-
-  const contextRepoSelection: SmartFileSelection[] = additionalContextFilesIncluded.map(f => ({
-    path: f.path,
-    reason: 'Reference context',
-    source: 'context-repo' as const,
-    repository: f.repository
-  }));
-  const fullSmartSelection = [...smartSelection, ...contextRepoSelection];
-
-  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens: additionalContextTokensEstimated, additionalContextFiles, totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
-
-  return {
-    success: true,
-    stats: { totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContext.length, fileCount: simulatedIncludedFiles.length, contextRepoFileCount: additionalContextFiles, attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens },
-    smartSelection: fullSmartSelection,
-    warnings
-  };
+  return buildPreviewResult({
+    simulatedTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens, additionalContextFiles,
+    additionalContextFilesIncluded, targetTokenLimit, generationModel, repomixContextLength: repomixContext.length,
+    simulatedIncludedFiles, smartSelection, costEstimate, warnings, correlatedLogger, canUseCache: !!canUseCache
+  });
 }
