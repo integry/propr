@@ -13,9 +13,9 @@ export async function updateDraftContextConfig(
   draft: Record<string, unknown>,
   body: GenerateRequestBody
 ): Promise<void> {
-  const { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel } = body;
+  const { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles } = body;
   const hasUpdates = baseBranch || granularity || contextLevel !== undefined ||
-                     compress !== undefined || contextRepositories !== undefined || generationModel !== undefined;
+                     compress !== undefined || contextRepositories !== undefined || generationModel !== undefined || excludedFiles !== undefined;
   if (!hasUpdates) return;
 
   // Parse context_config if it's a JSON string (stored as text in SQLite)
@@ -36,7 +36,8 @@ export async function updateDraftContextConfig(
     ...(contextLevel !== undefined && { contextLevel }),
     ...(compress !== undefined && { compress }),
     ...(contextRepositories !== undefined && { contextRepositories }),
-    ...(generationModel !== undefined && { generationModel })
+    ...(generationModel !== undefined && { generationModel }),
+    ...(excludedFiles !== undefined && { excludedFiles })
   };
   await db('task_drafts').where({ draft_id: draftId }).update({
     context_config: JSON.stringify(updatedConfig),

@@ -45,13 +45,14 @@ export function validateContextRepositories(
 }
 
 export function validatePreviewInput(body: Record<string, unknown>): { valid: boolean; error?: string } {
-  const { draftId, prompt, baseBranch, granularity, files, contextRepositories } = body;
+  const { draftId, prompt, baseBranch, granularity, files, contextRepositories, excludedFiles } = body;
   if (!draftId) return { valid: false, error: 'draftId is required' };
   if (!prompt || typeof prompt !== 'string') return { valid: false, error: 'prompt is required' };
   if (!baseBranch || typeof baseBranch !== 'string') return { valid: false, error: 'baseBranch is required' };
   if (!BRANCH_NAME_REGEX.test(baseBranch as string)) return { valid: false, error: 'Invalid branch name format' };
   if (granularity && !VALID_GRANULARITIES.includes(granularity as typeof VALID_GRANULARITIES[number])) return { valid: false, error: `granularity must be one of: ${VALID_GRANULARITIES.join(', ')}` };
   if (files && (!Array.isArray(files) || !files.every(f => typeof f === 'string'))) return { valid: false, error: 'files must be an array of strings' };
+  if (excludedFiles && (!Array.isArray(excludedFiles) || !excludedFiles.every(f => typeof f === 'string'))) return { valid: false, error: 'excludedFiles must be an array of strings' };
 
   // Validate context repositories if provided
   if (contextRepositories !== undefined) {
