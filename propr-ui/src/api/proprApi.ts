@@ -250,9 +250,6 @@ export const getCurrentUser = async (): Promise<unknown> => {
   return response.json();
 };
 
-<<<<<<< HEAD
-export const logout = (): void => { window.location.href = `${API_BASE_URL}/api/auth/logout`; };
-=======
 export const logout = (): void => {
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
@@ -275,7 +272,6 @@ export interface AgentConfig {
   cliVersion?: string;
   cliVersionResolved?: string;
 }
->>>>>>> origin/main
 
 export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
   const response = await fetch(`${API_BASE_URL}/api/config/agents`, { credentials: 'include' });
@@ -291,49 +287,6 @@ export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
   await handleApiResponse(response);
 };
 
-<<<<<<< HEAD
-export const getRevertPreview = async (params: { owner: string; repo: string; pr: string; commit: string }): Promise<RevertPreviewResponse> => {
-  const queryParams = new URLSearchParams(params);
-  const response = await fetch(`${API_BASE_URL}/api/tasks/revert-preview?${queryParams}`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const revertCommit = async (params: RevertParams): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks/revert`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params), credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
-
-export const getSummarizationSettings = async (): Promise<SummarizationSettings> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/summarization`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateSummarizationSettings = async (settings: SummarizationSettings): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/summarization`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings), credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
-
-export const triggerReindexAll = async (): Promise<TriggerReindexAllResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const postTaskFollowup = async (taskId: string, body: string): Promise<PostFollowupResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/followup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }), credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-=======
->>>>>>> origin/main
 
 export * from './plannerApi';
 export * from './taskStatsApi';
@@ -345,8 +298,5 @@ export * from './repoChatApi';
 export * from './repoImprovementsApi';
 export * from './tasks';
 export * from './repoTodosApi';
-<<<<<<< HEAD
 export * from './userRepoPreferencesApi';
-=======
 export * from './revertApi';
->>>>>>> origin/main
