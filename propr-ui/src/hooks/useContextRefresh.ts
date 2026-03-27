@@ -59,6 +59,8 @@ interface FetchConfig {
   generationModel: string | null;
   /** Additional repositories to include as reference context */
   contextRepositories: { repository: string; branch?: string }[];
+  /** Files manually excluded from context by the user */
+  excludedFiles: string[];
 }
 
 interface UseContextRefreshOptions {
@@ -161,7 +163,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         compress: currentConfig.compress,
         files: currentConfig.files.map(f => f.originalName),
         generationModel: currentConfig.generationModel || undefined,
-        contextRepositories: currentConfig.contextRepositories.length > 0 ? currentConfig.contextRepositories : undefined
+        contextRepositories: currentConfig.contextRepositories.length > 0 ? currentConfig.contextRepositories : undefined,
+        excludedFiles: currentConfig.excludedFiles.length > 0 ? currentConfig.excludedFiles : undefined
       }, controller.signal);
 
       lastFetchedSourceRef.current = {

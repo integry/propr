@@ -112,6 +112,13 @@ const SetupWizardContent: React.FC<{
     }));
   };
 
+  const handleExcludeFile = (filePath: string) => {
+    setConfig(prev => ({
+      ...prev,
+      excludedFiles: [...prev.excludedFiles, filePath]
+    }));
+  };
+
   const isGenerating = generationPolling.isGenerating;
   const stats = contextRefresh.preview.data?.stats;
 
@@ -173,6 +180,7 @@ const SetupWizardContent: React.FC<{
           previewTrace={previewTrace}
           isGenerating={isGenerating}
           generationTrace={generationPolling.generationTrace}
+          onExcludeFile={handleExcludeFile}
         />
       </div>
 
@@ -260,7 +268,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     compress: false,
     files: draft?.attachments ?? [],
     contextRepositories: draftContextConfig?.contextRepositories ?? [],
-    generationModel: draftContextConfig?.generationModel ?? null
+    generationModel: draftContextConfig?.generationModel ?? null,
+    excludedFiles: draftContextConfig?.excludedFiles ?? []
   }));
 
   const [isChangingRepo, setIsChangingRepo] = useState(false);
@@ -271,7 +280,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Sync contextRepositories and generationModel from draft when it loads
+  // Sync contextRepositories, generationModel, and excludedFiles from draft when it loads
   // (useState initializer may run before draft is available)
   // Only update when values actually differ to prevent infinite update loops
   useEffect(() => {
@@ -291,6 +300,15 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       setConfig(prev => {
         if (prev.generationModel === draftConfig.generationModel) return prev;
         return { ...prev, generationModel: draftConfig.generationModel };
+      });
+    }
+    if (draftConfig?.excludedFiles && draftConfig.excludedFiles.length > 0) {
+      setConfig(prev => {
+        // Compare by serializing to JSON to detect actual changes
+        const currentJson = JSON.stringify(prev.excludedFiles);
+        const newJson = JSON.stringify(draftConfig.excludedFiles);
+        if (currentJson === newJson) return prev;
+        return { ...prev, excludedFiles: draftConfig.excludedFiles };
       });
     }
   }, [draft]);

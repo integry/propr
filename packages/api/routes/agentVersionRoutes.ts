@@ -9,7 +9,6 @@ import {
     resolveVersion,
     computeContentHash,
     generateImageTag,
-    AGENT_NPM_PACKAGES,
     AGENT_DEFAULT_VERSIONS,
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,

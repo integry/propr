@@ -159,6 +159,8 @@ export interface GenerateContextPreviewOptions {
   contextRepositories?: ContextRepository[];
   /** GitHub token for cloning context repositories */
   githubToken?: string;
+  /** Files to exclude from the generated context */
+  excludedFiles?: string[];
 }
 
 export interface Base64Image {
@@ -206,6 +208,8 @@ export interface RegenerateContextParams {
   previewTokenLimit: number;
   correlationId?: string;
   correlatedLogger: MinimalLogger;
+  /** Files to exclude from the generated context */
+  excludedFiles?: string[];
 }
 
 /** Result of context regeneration */

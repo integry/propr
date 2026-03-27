@@ -385,81 +385,6 @@ export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
   await handleApiResponse(response);
 };
 
-export interface RevertParams {
-  repo: string;
-  pr: string;
-  commit: string;
-  commentId: string;
-  owner: string;
-}
-
-export interface CommitInfo {
-  sha: string;
-  shortSha: string;
-  message: string;
-  author: string;
-  date: string | null;
-}
-
-export interface RevertPreviewResponse {
-  branch: string;
-  baseBranch: string;
-  targetCommit: { sha: string; shortSha: string };
-  newHead: CommitInfo | null;
-  commitsToRemove: CommitInfo[];
-  remainingCommits: CommitInfo[];
-  willRevertToBase: boolean;
-}
-
-export const getRevertPreview = async (params: { owner: string; repo: string; pr: string; commit: string }): Promise<RevertPreviewResponse> => {
-  const queryParams = new URLSearchParams(params);
-  const response = await fetch(`${API_BASE_URL}/api/tasks/revert-preview?${queryParams}`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const revertCommit = async (params: RevertParams): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks/revert`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params), credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
-
-export interface SummarizationSettings {
-  enabled: boolean;
-  agent_alias: string;
-  custom_prompt?: string;
-  default_prompt?: string;
-}
-
-export const getSummarizationSettings = async (): Promise<SummarizationSettings> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/summarization`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateSummarizationSettings = async (settings: SummarizationSettings): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/summarization`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings), credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
-
-export interface TriggerReindexAllResponse { success: boolean; repositoriesQueued: number; }
-export const triggerReindexAll = async (): Promise<TriggerReindexAllResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export interface PostFollowupResponse { success: boolean; message: string; }
-export const postTaskFollowup = async (taskId: string, body: string): Promise<PostFollowupResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/followup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }), credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
 
 export * from './plannerApi';
 export * from './taskStatsApi';
@@ -471,3 +396,4 @@ export * from './repoChatApi';
 export * from './repoImprovementsApi';
 export * from './tasks';
 export * from './repoTodosApi';
+export * from './revertApi';
