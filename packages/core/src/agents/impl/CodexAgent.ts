@@ -91,7 +91,8 @@ export class CodexAgent implements Agent {
                 worktreePath,
                 githubToken,
                 modelName: effectiveModel,
-                issueNumber: issueRef.number
+                issueNumber: issueRef.number,
+                taskId
             });
 
             // Execute Docker command with prompt via stdin
@@ -222,14 +223,15 @@ export class CodexAgent implements Agent {
         }
     }
 
-    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<AnalysisResult> {
+    async analyze(prompt: string, context?: string, model?: string, taskId?: string, executionType?: string): Promise<AnalysisResult> {
         const startTime = Date.now();
         logger.info({
             agentAlias: this.config.alias,
             promptLength: prompt.length,
             hasContext: !!context,
             requestedModel: model,
-            taskId
+            taskId,
+            executionType
         }, 'Running lightweight analysis via Codex agent...');
 
         // Use provided model or Codex's default model (null = use Codex's config default)
@@ -264,7 +266,9 @@ export class CodexAgent implements Agent {
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
                 issueNumber: 0,
-                jsonOutput: true // Use JSON output to capture token usage
+                jsonOutput: true, // Use JSON output to capture token usage
+                taskId,
+                executionType
             });
 
             const result = await executeDockerCommand('docker', dockerArgs, {
@@ -363,13 +367,17 @@ export class CodexAgent implements Agent {
         modelName?: string;
         issueNumber: number;
         jsonOutput?: boolean;
+        taskId?: string;
+        executionType?: string;
     }): string[] {
         const {
             worktreePath,
             githubToken,
             modelName,
             issueNumber,
-            jsonOutput = true
+            jsonOutput = true,
+            taskId,
+            executionType
         } = params;
 
         const dockerImage = this.config.dockerImage;
@@ -383,11 +391,18 @@ export class CodexAgent implements Agent {
             }
         }
 
+        // Generate human-readable container name
+        const timestamp = Date.now().toString(36);
+        const shortTaskId = taskId ? taskId.substring(0, 8) : timestamp;
+        const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
+        const containerName = `${this.config.alias || 'codex'}-${taskType}-${shortTaskId}`;
+
         // Build Docker run arguments
         // Note: Use node user (1000:1000) directly to preserve stdin piping
         const dockerArgs: string[] = [
             'run', '--rm',
             '-i', // Allow stdin for piping prompt
+            '--name', containerName,
             '--security-opt', 'no-new-privileges',
             '--network', 'bridge',
             '--user', '1000:1000', // Run as node user to preserve stdin

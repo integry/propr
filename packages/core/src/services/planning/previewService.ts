@@ -327,7 +327,8 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const cache = existingConfig?.contextCache;
   const cacheHasSufficientLimit = !cache?.cachedMaxTokenLimit || cache.cachedMaxTokenLimit >= maxTokenLimit;
-  const canUseCache = cache && cache.contentHash === contentHash && cache.fileTokenCounts && cacheHasSufficientLimit;
+  // Cache must have repomixContext - older caches may have omitted it to save space
+  const canUseCache = cache && cache.contentHash === contentHash && cache.fileTokenCounts && cache.repomixContext && cacheHasSufficientLimit;
 
   const { base64Images, imageTokens } = await loadImagesFromAttachments(attachments, correlatedLogger);
   const attachmentTokens = calculateAttachmentTokens(attachments, imageTokens);
@@ -388,10 +389,10 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     additionalContext
   });
 
-  // Store cache metadata without the large repomixContext (it's already in generated_context)
-  // This prevents context_config from becoming too large to spread/enumerate
+  // Store cache metadata including repomixContext and smartSummaries for cache reuse
   const cacheMetadata = {
     contentHash, autoFilePaths, includedFiles,
+    repomixContext, smartSummaries,
     repomixTokens: contextData.repomixTokens, smartSummaryTokens, fileTokenCounts, cachedMaxTokenLimit: maxTokenLimit,
     fileScores
   };

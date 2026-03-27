@@ -207,6 +207,24 @@ export const deleteDraft = async (draftId: string): Promise<void> => {
   await handleApiResponse(response);
 };
 
+export interface RepositoryCount {
+  repo: string;
+  count: number;
+}
+
+export interface RepositoriesResponse {
+  repositories: RepositoryCount[];
+  total: number;
+}
+
+export const getDraftRepositories = async (): Promise<RepositoriesResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/repositories`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export const getRepositoryInfo = async (draftId: string): Promise<RepositoryInfo> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/repository-info`, {
     credentials: 'include'

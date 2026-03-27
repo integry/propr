@@ -93,8 +93,9 @@ if [ $# -gt 0 ]; then
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2
         # Switch to node user and execute the command
+        # -E preserves environment variables (including NODE_OPTIONS for memory limit)
         cd /home/node/workspace
-        exec sudo -u node -H "$@"
+        exec sudo -E -u node -H "$@"
     else
         exec "$@"
     fi

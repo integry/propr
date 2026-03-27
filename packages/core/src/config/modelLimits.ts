@@ -18,9 +18,16 @@ export const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
 
 export const MODEL_LIMITS: Record<string, number> = {
   'default': 200000,
+  // Claude 4.6 models (1M context)
+  'claude-opus-4-6': 1000000,
+  'claude-sonnet-4-6': 1000000,
+  // Claude 4.5 models (200K context)
   'claude-opus-4-5': 200000,
+  'claude-opus-4-5-20251101': 200000,
   'claude-sonnet-4-5': 200000,
+  'claude-sonnet-4-5-20250929': 200000,
   'claude-haiku-4-5': 200000,
+  'claude-haiku-4-5-20251001': 200000,
 };
 
 export function getEffectiveTokenLimit(modelId: string | undefined, level: ContextLevel): number {

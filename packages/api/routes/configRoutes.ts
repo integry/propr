@@ -2,7 +2,16 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
 import * as configManager from '@propr/core';
-import { AgentRegistry, DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
+import {
+    AgentRegistry,
+    DEFAULT_INSTRUCTIONS,
+    RepoToMonitor,
+    resolveVersion,
+    computeContentHash,
+    generateImageTag,
+    AGENT_DEFAULT_VERSIONS
+} from '@propr/core';
+import type { CliVersionType, AgentType } from '@propr/core';
 import { withConfigLock, validateAgentsConfig } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 
@@ -306,7 +315,41 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: validationError } };
       }
 
-      await configManager.saveAgents(agents);
+      // Resolve CLI versions for each agent
+      const processedAgents = [];
+      for (const agent of agents) {
+        const processedAgent = { ...agent };
+
+        // If agent has version configuration, resolve it
+        if (agent.cliVersionType) {
+          try {
+            const agentType = agent.type as AgentType;
+            const versionType = agent.cliVersionType as CliVersionType;
+
+            // Resolve version to actual semver
+            const resolvedVersion = await resolveVersion(agentType, versionType, agent.cliVersion);
+            processedAgent.cliVersionResolved = resolvedVersion;
+
+            // Compute content hash and update docker image tag
+            const contentHash = computeContentHash(agentType);
+            const imageTag = generateImageTag(agentType, resolvedVersion, contentHash);
+            processedAgent.dockerImage = imageTag;
+
+          } catch (versionError) {
+            console.warn(`Failed to resolve version for agent ${agent.alias}:`, versionError);
+            // Keep existing values if resolution fails
+          }
+        } else {
+          // Default: use default version if no type specified
+          const agentType = agent.type as AgentType;
+          processedAgent.cliVersionType = 'default';
+          processedAgent.cliVersionResolved = AGENT_DEFAULT_VERSIONS[agentType];
+        }
+
+        processedAgents.push(processedAgent);
+      }
+
+      await configManager.saveAgents(processedAgents);
 
       // Refresh the AgentRegistry to apply changes immediately
       try {
@@ -317,9 +360,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await publishConfigUpdate('agents_update');
-      await logActivityHelper(`Updated agents configuration (${agents.length} agents)`, 'agents-update', 'agents_updated', req.user?.username);
+      await logActivityHelper(`Updated agents configuration (${processedAgents.length} agents)`, 'agents-update', 'agents_updated', req.user?.username);
 
-      return { status: 200, body: { success: true, agents } };
+      return { status: 200, body: { success: true, agents: processedAgents } };
     });
 
     res.status(result.status).json(result.body);

@@ -146,7 +146,8 @@ export class ClaudeAgent implements Agent {
                 modelName: effectiveModel,
                 issueNumber: issueRef.number,
                 systemPrompt,
-                tools
+                tools,
+                taskId
             });
 
             const result = await executeDockerCommand('docker', dockerArgs, {
@@ -248,7 +249,8 @@ export class ClaudeAgent implements Agent {
         prompt: string,
         context?: string,
         model?: string,
-        taskId?: string
+        taskId?: string,
+        executionType?: string
     ): Promise<AnalysisResult> {
         const startTime = Date.now();
 
@@ -257,7 +259,8 @@ export class ClaudeAgent implements Agent {
             promptLength: prompt.length,
             hasContext: !!context,
             requestedModel: model,
-            taskId
+            taskId,
+            executionType
         }, 'Running lightweight analysis via Claude agent...');
 
         const effectiveModel = model || resolveModelAlias('haiku');
@@ -273,7 +276,9 @@ export class ClaudeAgent implements Agent {
                 modelName: effectiveModel,
                 issueNumber: 0,
                 systemPrompt: 'You are a helpful assistant.',
-                tools: ''
+                tools: '',
+                taskId,
+                executionType
             });
 
             const result = await executeDockerCommand('docker', dockerArgs, {

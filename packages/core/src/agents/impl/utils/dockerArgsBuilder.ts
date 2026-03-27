@@ -28,6 +28,10 @@ export interface DockerArgsParams {
     systemPrompt?: string;
     /** Optional tools configuration */
     tools?: string;
+    /** Optional task ID for container naming */
+    taskId?: string;
+    /** Optional execution type for container naming (e.g., 'plan-generation', 'context-analysis') */
+    executionType?: string;
 }
 
 /**
@@ -49,7 +53,7 @@ export function buildDockerArgs(
     maxTurns: number,
     params: DockerArgsParams
 ): string[] {
-    const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools } = params;
+    const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, taskId, executionType } = params;
     const configPath = resolveConfigPath(config.configPath);
 
     // Build environment variable arguments
@@ -66,9 +70,16 @@ export function buildDockerArgs(
         ? ['-v', `${claudeJsonPath}:/home/node/.claude.json:rw`]
         : [];
 
+    // Generate human-readable container name
+    const timestamp = Date.now().toString(36);
+    const shortTaskId = taskId ? taskId.substring(0, 8) : timestamp;
+    const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
+    const containerName = `${config.alias || config.type}-${taskType}-${shortTaskId}`;
+
     // Build base Docker arguments
     const dockerArgs: string[] = [
         'run', '--rm', '-i',
+        '--name', containerName,
         '--security-opt', 'no-new-privileges',
         '--cap-add', 'CHOWN',
         '--network', 'bridge',

@@ -187,7 +187,8 @@ export {
     buildClaudePrompt
 } from './claude/claudeHelpers.js';
 export type { ClaudeOutput, ConversationLogEntry, ClaudeOutputResult, BuildClaudePromptOptions, DockerArgsParams, StorePromptOptions } from './claude/claudeHelpers.js';
-export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError } from './claude/docker/dockerExecutor.js';
+export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError, ensureVersionedAgentImage, cleanupUnusedAgentImages, listAgentImages } from './claude/docker/dockerExecutor.js';
+export type { VersionedImageBuildResult } from './claude/docker/dockerExecutor.js';
 export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 
@@ -227,7 +228,10 @@ export type {
     AnalysisResult
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
-export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents } from './config/configManager.js';
+export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, migrateAgentConfigs } from './config/configManager.js';
+
+// Agent version management
+export * from './agents/version/index.js';
 
 // Repository chat message persistence
 export {

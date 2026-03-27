@@ -24,8 +24,14 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 # Use the existing node user (UID 1000) and give it sudo privileges
 RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
+# CLI version argument - can be overridden at build time
+ARG CLI_VERSION=latest
+
 # Install Gemini CLI globally
-RUN npm install -g @google/gemini-cli@latest
+RUN npm install -g @google/gemini-cli@${CLI_VERSION}
+
+# Increase Node.js memory limit for large prompts/responses
+ENV NODE_OPTIONS="--max-old-space-size=8192"
 
 # Create workspace directory only - Gemini config will be mounted at runtime
 RUN mkdir -p /home/node/workspace && \
