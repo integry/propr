@@ -167,6 +167,14 @@ async function fetchPRConflictInfo(
     };
 }
 
+export interface HandleMergeCommandOptions {
+    owner: string;
+    repoName: string;
+    prNumber: number;
+    redisClient: Redis;
+    correlationId: string;
+}
+
 /**
  * Handles a /merge comment on a PR by enqueuing a merge conflict resolution job.
  * This bypasses the auto_resolve_merge_conflicts setting since the user explicitly requested it.
@@ -174,12 +182,9 @@ async function fetchPRConflictInfo(
  * it will perform the merge regardless (clean or with conflicts).
  */
 export async function handleMergeCommand(
-    owner: string,
-    repoName: string,
-    prNumber: number,
-    redisClient: Redis,
-    correlationId: string
+    options: HandleMergeCommandOptions
 ): Promise<ConflictDetectionResult | null> {
+    const { owner, repoName, prNumber, correlationId } = options;
     const log = logger.withCorrelation(correlationId);
     const repository = `${owner}/${repoName}`;
 

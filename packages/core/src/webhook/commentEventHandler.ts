@@ -160,7 +160,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     if (comment.body && /(?:^|\s)\/merge(?:\s|$)/.test(comment.body)) {
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/merge command detected, enqueuing merge job');
         try {
-            await handleMergeCommand(owner, repo, prNumber, redisClient, correlationId);
+            await handleMergeCommand({ owner, repoName: repo, prNumber, redisClient, correlationId });
         } catch (mergeError) {
             correlatedLogger.error({ pullRequestNumber: prNumber, error: (mergeError as Error).message }, 'Failed to handle /merge command');
         }
