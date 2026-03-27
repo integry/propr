@@ -311,7 +311,7 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
  * Used by migration to set cliVersionResolved for agents without version config.
  */
 const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
-    claude: '2.1.77',
+    claude: '2.1.85',
     codex: '0.116.0',
     gemini: '0.35.1'
 };

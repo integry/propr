@@ -88,7 +88,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.77'
+    defaultCliVersion: '2.1.85'
   },
   codex: {
     dockerImage: 'codex-cli:latest',

@@ -32,7 +32,7 @@ export const AGENT_NPM_TAGS: Record<AgentType, string[]> = {
  * These are used when cliVersionType is 'default'.
  */
 export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
-    claude: '2.1.77',
+    claude: '2.1.85',
     codex: '0.116.0',
     gemini: '0.35.1'
 };
