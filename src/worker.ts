@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from '@propr/core';
-import type { IssueJobData, CommentJobData, TaskImportJobData, SystemTaskJobData, JobResult } from '@propr/core';
+import type { IssueJobData, CommentJobData, TaskImportJobData, SystemTaskJobData, MergeConflictJobData, JobResult } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
@@ -12,6 +12,7 @@ import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
 import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
 import { processTaskImportJob } from './jobs/processTaskImportJob.js';
 import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
+import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -127,7 +128,7 @@ Examples:
 `);
 }
 
-async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData, JobResult>> {
+async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData, JobResult>> {
     const workerId = `worker:${generateCorrelationId()}`;
     let workerConcurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
     let aiPrimaryTag = 'AI';
@@ -259,7 +260,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         }
     });
 
-    const worker = await createWorker(GITHUB_ISSUE_QUEUE_NAME, async (job: Job<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData>): Promise<JobResult> => {
+    const worker = await createWorker(GITHUB_ISSUE_QUEUE_NAME, async (job: Job<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData>): Promise<JobResult> => {
         if (job.name === 'processGitHubIssue') {
             return processGitHubIssueJob(job as Job<IssueJobData>);
         } else if (job.name === 'processPullRequestComment') {
@@ -268,6 +269,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
             return processTaskImportJob(job as Job<TaskImportJobData>);
         } else if (job.name === 'processSystemTask') {
             return processSystemTaskJob(job as Job<SystemTaskJobData>);
+        } else if (job.name === 'processMergeConflict') {
+            return processMergeConflictJob(job as Job<MergeConflictJobData>);
         } else {
             throw new Error(`Unknown job type: ${job.name}`);
         }
@@ -296,7 +299,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
     return worker;
 }
 
-export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, processSystemTaskJob, startWorker };
+export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, processSystemTaskJob, processMergeConflictJob, startWorker };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     const options = parseArguments();
