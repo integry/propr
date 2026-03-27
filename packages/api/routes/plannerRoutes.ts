@@ -476,32 +476,11 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   return {
-    listRepositories,
-    listDrafts,
-    createDraft,
-    getDraft,
-    updateDraft,
-    deleteDraft,
-    uploadAttachment,
-    deleteAttachment,
-    getAttachmentContent,
-    getRepositoryInfo,
-    getContextStats,
-    previewContext,
-    downloadContext,
-    generate,
-    refine,
-    finalize,
-    resetDraftToSetup,
-    getIssues,
-    implementIssue,
-    updateIssue,
-    implementAllIssues,
-    validateContextRepository,
-    abortGeneration,
-    abortRefinement,
-    reviseDraft,
-    pauseDraftExecution,
-    resumeDraftExecution
+    listRepositories, listDrafts, createDraft, getDraft, updateDraft, deleteDraft,
+    uploadAttachment, deleteAttachment, getAttachmentContent, getRepositoryInfo,
+    getContextStats, previewContext, downloadContext, generate, refine, finalize,
+    resetDraftToSetup, getIssues, implementIssue, updateIssue, implementAllIssues,
+    validateContextRepository, abortGeneration, abortRefinement, reviseDraft,
+    pauseDraftExecution, resumeDraftExecution,
   };
 }
