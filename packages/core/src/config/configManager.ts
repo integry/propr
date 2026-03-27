@@ -317,8 +317,15 @@ const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
 };
 
 /**
- * Migrates agent configurations to include CLI version fields.
- * Sets cliVersionType='default' for agents without version config.
+ * Claude 4.6 models that should be added to existing Claude agents.
+ * These models have 1M context windows and require newer Claude Code versions.
+ */
+const CLAUDE_46_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];
+
+/**
+ * Migrates agent configurations to include CLI version fields and new models.
+ * - Sets cliVersionType='default' for agents without version config
+ * - Adds Claude 4.6 models to existing Claude agents
  * This ensures backwards compatibility with existing configurations.
  *
  * @returns true if any agents were migrated, false otherwise
@@ -329,11 +336,26 @@ export async function migrateAgentConfigs(): Promise<boolean> {
         let migrated = false;
 
         for (const agent of agents) {
+            // Migration 1: Add CLI version fields
             if (!agent.cliVersionType) {
                 agent.cliVersionType = 'default';
                 agent.cliVersionResolved = DEFAULT_CLI_VERSIONS[agent.type];
                 migrated = true;
                 logger.info({ agentAlias: agent.alias, type: agent.type }, 'Migrated agent to default CLI version');
+            }
+
+            // Migration 2: Add Claude 4.6 models to existing Claude agents
+            if (agent.type === 'claude' && agent.supportedModels) {
+                const missingModels = CLAUDE_46_MODELS.filter(m => !agent.supportedModels.includes(m));
+                if (missingModels.length > 0) {
+                    // Add 4.6 models at the beginning (they're the newest)
+                    agent.supportedModels = [...missingModels, ...agent.supportedModels];
+                    migrated = true;
+                    logger.info({
+                        agentAlias: agent.alias,
+                        addedModels: missingModels
+                    }, 'Added Claude 4.6 models to agent');
+                }
             }
         }
 

@@ -238,11 +238,11 @@ export class AgentRegistry {
             dockerImage: process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest',
             configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
             supportedModels: [
-                'claude-opus-4-5',
-                'claude-sonnet-4-5',
-                'claude-haiku-4-5',
-                'claude-opus-4-20250514',
-                'claude-sonnet-4-20250514'
+                'claude-opus-4-6',
+                'claude-sonnet-4-6',
+                'claude-opus-4-5-20251101',
+                'claude-sonnet-4-5-20250929',
+                'claude-haiku-4-5-20251001'
             ],
             defaultModel: process.env.CLAUDE_MODEL || undefined
         };
