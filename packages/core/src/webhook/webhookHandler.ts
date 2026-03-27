@@ -11,6 +11,7 @@ import {
 } from './planIssueTracking.js';
 import { handleCheckRunEvent } from './checkRunHandler.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
+import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import type {
     IssuesEvent,
     IssuesLabeledEvent,
@@ -25,12 +26,14 @@ import type {
     PullRequestEvent,
     PullRequestLabeledEvent,
     PullRequestUnlabeledEvent,
-    CheckRunEvent
+    CheckRunEvent,
+    PushEvent
 } from '@octokit/webhooks-types';
+import type { Redis } from 'ioredis';
 
 const execAsync = promisify(exec);
 
-export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request' | 'check_run';
+export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request' | 'check_run' | 'push';
 
 // --- PREVIEW ENVIRONMENT CONFIGURATION ---
 // This implements the "Singleton Processor" pattern for webhook routing.
@@ -88,6 +91,7 @@ let handleCommentDeleted: CommentDeletedHandler | null = null;
 let handleCommentEdited: CommentEditedHandler | null = null;
 let processPullRequest: PullRequestProcessor | null = null;
 let processCheckRun: CheckRunProcessor | null = null;
+let webhookRedisClient: Redis | null = null;
 
 export interface WebhookHandlerOptions {
     issueProcessor: IssueProcessor;
@@ -96,6 +100,7 @@ export interface WebhookHandlerOptions {
     commentEditedHandler: CommentEditedHandler;
     pullRequestProcessor?: PullRequestProcessor;
     checkRunProcessor?: CheckRunProcessor;
+    redisClient?: Redis;
 }
 
 export async function initializeWebhookHandler(options: WebhookHandlerOptions): Promise<void> {
@@ -105,6 +110,7 @@ export async function initializeWebhookHandler(options: WebhookHandlerOptions): 
     handleCommentEdited = options.commentEditedHandler;
     processPullRequest = options.pullRequestProcessor || null;
     processCheckRun = options.checkRunProcessor || null;
+    webhookRedisClient = options.redisClient || null;
     logger.info('Webhook handler initialized');
 }
 
@@ -162,6 +168,10 @@ function isPullRequestUnlabeledEvent(payload: PullRequestEvent): payload is Pull
 
 function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
     return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
+}
+
+function isPushEvent(payload: unknown): payload is PushEvent {
+    return typeof payload === 'object' && payload !== null && 'ref' in payload && 'commits' in payload && !('action' in payload);
 }
 
 // --- PROCESSOR LABEL MANAGEMENT: Track 'preview-env' label on ProPR repo PRs ---
@@ -448,6 +458,19 @@ export async function processWebhookEvent(
         await handleEpicPRLabelCleanup(payload, correlationId, correlatedLogger);
     }
 
-    // 7. Standard Local Processing
+    // 7. Merge conflict detection: detect dirty PRs and enqueue auto-resolve work
+    if (webhookRedisClient) {
+        try {
+            if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
+                await handlePullRequestConflictDetection(payload, webhookRedisClient, correlationId);
+            } else if (eventType === 'push' && isPushEvent(payload)) {
+                await handlePushConflictDetection(payload, webhookRedisClient, correlationId);
+            }
+        } catch (conflictDetectionError) {
+            correlatedLogger.warn({ error: conflictDetectionError }, 'Merge conflict detection failed, continuing');
+        }
+    }
+
+    // 8. Standard Local Processing
     await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
 }
