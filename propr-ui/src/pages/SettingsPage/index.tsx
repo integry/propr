@@ -162,12 +162,18 @@ const SettingsPage: React.FC = () => {
               <GeneralSettingsSection
                 settings={{
                   worker_concurrency: settings.worker_concurrency,
-                  auto_followup_score_threshold: settings.auto_followup_score_threshold
+                  auto_followup_score_threshold: settings.auto_followup_score_threshold,
+                  auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts
                 }}
                 onSettingChange={(e) => {
-                  const value = e.target.name === 'auto_followup_score_threshold'
-                    ? parseInt(e.target.value, 10)
-                    : e.target.value;
+                  let value: string | number | boolean;
+                  if (e.target.name === 'auto_followup_score_threshold') {
+                    value = parseInt(e.target.value, 10);
+                  } else if (e.target.name === 'auto_resolve_merge_conflicts') {
+                    value = (e.target as HTMLInputElement).checked;
+                  } else {
+                    value = e.target.value;
+                  }
                   setSettings(prev => ({ ...prev, [e.target.name]: value }));
                 }}
                 onBlur={triggerAutoSave}
