@@ -2,44 +2,45 @@ import type { WorktreeInfo } from '@propr/core';
 import type { AutoResolveContext } from '@propr/core';
 
 /**
- * Builds a conflict-resolution prompt that instructs the agent to resolve
- * merge conflicts introduced by merging the target (base) branch into the PR branch.
+ * Builds a prompt that instructs the agent to check for and resolve any merge conflicts
+ * after merging the target (base) branch into the PR branch.
  */
 export function buildConflictResolutionPrompt(options: {
     pullRequestNumber: number;
     baseBranch: string;
     headBranch: string;
-    conflictedFiles: string[];
+    conflictedFiles?: string[];
     worktreeInfo: WorktreeInfo;
     repoOwner: string;
     repoName: string;
 }): string {
     const { pullRequestNumber, baseBranch, headBranch, conflictedFiles, worktreeInfo, repoOwner, repoName } = options;
 
-    const fileList = conflictedFiles.map(f => `- \`${f}\``).join('\n');
+    const hasKnownConflicts = conflictedFiles && conflictedFiles.length > 0;
+    const fileList = hasKnownConflicts ? conflictedFiles.map(f => `- \`${f}\``).join('\n') : '';
 
-    return `You are working on pull request #${pullRequestNumber} to resolve merge conflicts.
+    return `You are working on pull request #${pullRequestNumber} after merging \`${baseBranch}\` into \`${headBranch}\`.
 
 **Context:**
-The target branch \`${baseBranch}\` was merged into the PR branch \`${headBranch}\`, and merge conflicts now exist that need to be resolved.
+The target branch \`${baseBranch}\` was just merged into the PR branch \`${headBranch}\`. ${hasKnownConflicts ? 'Merge conflicts were detected.' : 'The merge may or may not have conflicts.'}
 
-**Conflicted Files:**
-${fileList}
-
+${hasKnownConflicts ? `**Known Conflicted Files:**\n${fileList}\n` : ''}
 **Instructions:**
-1. Resolve ALL merge conflicts in the files listed above.
-2. Remove all conflict markers (\`<<<<<<<\`, \`=======\`, \`>>>>>>>\`) from every file.
-3. Preserve the intent of the PR changes while incorporating the updates from \`${baseBranch}\`.
-4. If both sides modified the same logic, prefer the PR's intent but ensure compatibility with the base branch changes.
-5. After resolving conflicts, verify that the code is syntactically correct.
-6. If there are tests related to the conflicted files, update them as needed to reflect the resolved state.
+1. Search ALL files for merge conflict markers (\`<<<<<<<\`, \`=======\`, \`>>>>>>>\`).
+2. If ANY conflict markers are found in ANY file, resolve them:
+   - Preserve the intent of the PR changes while incorporating updates from \`${baseBranch}\`.
+   - If both sides modified the same logic, prefer the PR's intent but ensure compatibility.
+   - Remove ALL conflict markers after resolving.
+3. Verify the code is syntactically correct after resolution.
+4. Provide a brief summary of what conflicts were found and how they were resolved.
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
 - DO NOT commit your changes - the system will handle the commit for you.
 - DO NOT create a new pull request.
 - The repository is ${repoOwner}/${repoName}.
-- Focus ONLY on resolving the merge conflicts. Do not make unrelated changes.`;
+- Focus ONLY on finding and resolving merge conflicts. Do not make unrelated changes.
+- If no conflict markers are found, simply confirm the merge is clean.`;
 }
 
 /**
@@ -94,8 +95,24 @@ export function buildMergeConflictComment(options: {
 
     if (wasCleanMerge) {
         let comment = `🔀 **Auto-merged \`${baseBranch}\` into \`${headBranch}\`** (clean merge) in commit ${shortHash}\n\n`;
-        comment += `No conflicts were found — the merge was applied automatically without invoking an AI agent.\n`;
-        comment += `\n---\n_System-triggered merge conflict resolution_`;
+        comment += `No conflicts were found — the merge was verified by an AI agent.\n`;
+
+        if (model || executionTimeMs) {
+            comment += `\n---\n### 🤖 Verification Details\n\n`;
+            if (model) comment += `* **Model:** ${model}\n`;
+            if (executionTimeMs) {
+                const seconds = Math.floor(executionTimeMs / 1000);
+                const m = Math.floor(seconds / 60);
+                const s = seconds % 60;
+                comment += `* **Time:** ${m > 0 ? `${m}m ${s}s` : `${s}s`}\n`;
+            }
+        }
+
+        if (taskUrl) {
+            comment += `\n[View Task Execution](${taskUrl})`;
+        }
+
+        comment += `\n\n---\n_System-triggered merge conflict resolution_`;
         return comment;
     }
 
