@@ -67,9 +67,12 @@ export async function validatePromptTokens(
   modelId?: string
 ): Promise<{ valid: boolean; tokenCount: number; source: 'tiktoken' | 'api' }> {
   const tiktokenEstimate = estimateTokens(prompt);
-  // Use model-specific ratio: Claude uses 1.36x, Gemini uses ~1.1x (closer to tiktoken)
-  const isGemini = modelId?.toLowerCase().includes('gemini');
-  const tokenRatio = isGemini ? 1.1 : TIKTOKEN_TO_CLAUDE_RATIO;
+  // Use model-specific ratio: tiktoken (cl100k_base) is accurate for OpenAI models
+  // Claude needs 1.36x multiplier, Gemini needs ~1.1x
+  const modelLower = modelId?.toLowerCase() || '';
+  const isOpenAI = modelLower.includes('gpt-') || modelLower.includes('codex') || modelLower.includes('openai');
+  const isGemini = modelLower.includes('gemini');
+  const tokenRatio = isOpenAI ? 1.0 : (isGemini ? 1.1 : TIKTOKEN_TO_CLAUDE_RATIO);
   const conservativeEstimate = Math.ceil(tiktokenEstimate * tokenRatio);
   const effectiveLimit = modelLimit - CLAUDE_CODE_OVERHEAD;
 

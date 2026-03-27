@@ -109,9 +109,10 @@ if [ $# -gt 0 ]; then
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..."
         # Switch to node user and execute the command
-        # Use su with -m to preserve environment variables (including NODE_OPTIONS for memory limit)
+        # -E preserves environment variables (including NODE_OPTIONS for memory limit)
+        # -H sets HOME to target user's home directory (/home/node)
         cd /home/node/workspace
-        exec su -m -s /bin/bash node -c "cd /home/node/workspace && $*"
+        exec sudo -E -u node -H "$@"
     else
         exec "$@"
     fi

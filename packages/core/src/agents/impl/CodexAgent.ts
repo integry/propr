@@ -399,14 +399,16 @@ export class CodexAgent implements Agent {
         const containerName = `${this.config.alias || 'codex'}-${taskType}-${shortTaskId}`;
 
         // Build Docker run arguments
-        // Note: Use node user (1000:1000) directly to preserve stdin piping
+        // Note: Start as root so entrypoint can fix volume permissions, then drops to node user
+        // This matches the Claude agent pattern for consistent security handling
         const dockerArgs: string[] = [
             'run', '--rm',
             '-i', // Allow stdin for piping prompt
             '--name', containerName,
             '--security-opt', 'no-new-privileges',
+            '--cap-add', 'CHOWN',
             '--network', 'bridge',
-            '--user', '1000:1000', // Run as node user to preserve stdin
+            '--user', '0:0', // Start as root; entrypoint drops to node after permission fixes
             '-v', `${worktreePath}:/home/node/workspace:rw`,
             '-v', '/tmp/git-processor:/tmp/git-processor:rw',
             '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
