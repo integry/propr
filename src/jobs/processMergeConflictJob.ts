@@ -6,7 +6,7 @@ import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitChanges, pushBranch, mergeBaseIntoBranch } from '@propr/core';
-import type { WorktreeInfo, MergeResult } from '@propr/core';
+import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
 import { createLogFiles } from '@propr/core';
 import { UsageLimitError, AgentRegistry } from '@propr/core';
@@ -68,69 +68,8 @@ async function resolveDefaultAgentAndModel(
     return { resolvedAlias, resolvedModel };
 }
 
-async function handleCleanMerge(options: {
-    worktreeInfo: WorktreeInfo;
-    branchName: string;
-    baseBranch: string;
-    pullRequestNumber: number;
-    repoUrl: string;
-    githubToken: GitHubToken;
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
-    repoOwner: string;
-    repoName: string;
-    startingCommentId: number;
-    stateManager: WorkerStateManager;
-    taskId: string;
-    correlatedLogger: Logger;
-}): Promise<JobResult> {
-    const { worktreeInfo, branchName, baseBranch, pullRequestNumber, repoUrl, githubToken,
-        octokit, repoOwner, repoName, startingCommentId, stateManager, taskId, correlatedLogger } = options;
-
-    // The merge was clean - commit and push
-    const commitMessage = buildMergeConflictCommitMessage({
-        baseBranch,
-        headBranch: branchName,
-        pullRequestNumber,
-        wasCleanMerge: true,
-    });
-
-    const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Merge base branch' });
-
-    if (commitResult) {
-        await pushBranch(worktreeInfo.worktreePath, branchName, { repoUrl, authToken: githubToken.token });
-    }
-
-    // Update the starting comment with clean merge result
-    const comment = buildMergeConflictComment({
-        wasCleanMerge: true,
-        commitHash: commitResult?.commitHash,
-        baseBranch,
-        headBranch: branchName,
-    });
-
-    await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-        owner: repoOwner, repo: repoName, comment_id: startingCommentId, body: comment,
-    });
-
-    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: 'Clean merge completed successfully', commitHash: commitResult?.commitHash,
-    });
-
-    if (commitResult?.commitHash) {
-        try {
-            await db('tasks').where({ task_id: taskId }).update({ commit_hash: commitResult.commitHash });
-        } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
-        }
-    }
-
-    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, baseBranch }, 'Clean merge completed successfully');
-
-    return { status: 'complete', commit: commitResult?.commitHash, pullRequestNumber, mergeType: 'clean' };
-}
-
-async function handleConflictMerge(options: {
-    mergeResult: MergeResult;
+async function handleMergeWithAgent(options: {
+    conflictedFiles?: string[];
     worktreeInfo: WorktreeInfo;
     branchName: string;
     baseBranch: string;
@@ -146,11 +85,9 @@ async function handleConflictMerge(options: {
     correlationId: string;
     correlatedLogger: Logger;
 }): Promise<JobResult> {
-    const { mergeResult, worktreeInfo, branchName, baseBranch, pullRequestNumber, repoUrl,
+    const { conflictedFiles, worktreeInfo, branchName, baseBranch, pullRequestNumber, repoUrl,
         repoOwner, repoName, githubToken, octokit, startingCommentId,
         stateManager, taskId, correlationId, correlatedLogger } = options;
-
-    const conflictedFiles = mergeResult.conflictedFiles || [];
 
     // Build the conflict resolution prompt
     const prompt = buildConflictResolutionPrompt({
@@ -276,9 +213,9 @@ async function handleConflictMerge(options: {
  * Processes a merge conflict resolution job.
  * This job:
  * 1. Creates a worktree from the PR head branch
- * 2. Merges the base branch into it
- * 3. If clean merge: commits and pushes
- * 4. If conflicts: invokes the AI agent to resolve them
+ * 2. Merges the base branch into it (git leaves conflict markers if any)
+ * 3. Always invokes the AI agent to verify/resolve the merge
+ * 4. Commits and pushes the result
  * 5. Posts GitHub comments about the outcome
  */
 export async function processMergeConflictJob(job: Job<MergeConflictJobData>): Promise<JobResult> {
@@ -354,26 +291,31 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
 
         correlatedLogger.info({ worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName }, 'Created worktree for merge conflict resolution');
 
-        // Perform the merge
+        // Perform the merge - git will leave conflict markers if any
         const mergeResult = await mergeBaseIntoBranch(worktreeInfo.worktreePath, baseBranch);
 
         if (mergeResult.outcome === 'failed') {
             throw new Error(`Merge failed: ${mergeResult.error}`);
         }
 
-        if (mergeResult.outcome === 'clean') {
-            return await handleCleanMerge({
-                worktreeInfo, branchName: headBranch, baseBranch, pullRequestNumber,
-                repoUrl, githubToken, octokit, repoOwner, repoName,
-                startingCommentId, stateManager, taskId, correlatedLogger,
-            });
-        }
-
-        // Conflicts found - invoke agent
-        return await handleConflictMerge({
-            mergeResult, worktreeInfo, branchName: headBranch, baseBranch, pullRequestNumber,
-            repoUrl, repoOwner, repoName, githubToken, octokit, startingCommentId,
-            stateManager, taskId, correlationId, correlatedLogger,
+        // Always invoke the AI agent to verify/resolve the merge
+        // This ensures conflict markers are detected and resolved even if git reported clean
+        return await handleMergeWithAgent({
+            conflictedFiles: mergeResult.conflictedFiles,
+            worktreeInfo,
+            branchName: headBranch,
+            baseBranch,
+            pullRequestNumber,
+            repoUrl,
+            repoOwner,
+            repoName,
+            githubToken,
+            octokit,
+            startingCommentId,
+            stateManager,
+            taskId,
+            correlationId,
+            correlatedLogger,
         });
 
     } catch (error) {
