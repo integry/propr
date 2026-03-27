@@ -16,7 +16,7 @@ export interface MergeResult {
 export async function mergeBaseIntoBranch(
     worktreePath: string,
     baseBranch: string,
-    options?: { authToken?: string; repoUrl?: string }
+    _options?: { authToken?: string; repoUrl?: string }
 ): Promise<MergeResult> {
     const git: SimpleGit = simpleGit({ baseDir: worktreePath });
 

@@ -9,7 +9,7 @@ import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitC
 import type { WorktreeInfo, MergeResult } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
 import { createLogFiles } from '@propr/core';
-import { UsageLimitError, AgentRegistry, resolveLlmLabel } from '@propr/core';
+import { UsageLimitError, AgentRegistry } from '@propr/core';
 import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { MergeConflictJobData, JobResult } from '@propr/core';
