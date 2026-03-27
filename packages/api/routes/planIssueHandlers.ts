@@ -157,8 +157,8 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
         const [owner, repo] = repository.split('/');
 
         if (owner && repo) {
-          const oldLabel = getLlmLabel(currentIssue.model_name);
-          const newLabel = getLlmLabel(model_name);
+          const oldLabel = await getLlmLabel(currentIssue.model_name);
+          const newLabel = await getLlmLabel(model_name);
           const octokit = await getAuthenticatedOctokit();
           const labelLogger = logger.withCorrelation(`update-issue-${draftId}-${issueNumber}`);
 
