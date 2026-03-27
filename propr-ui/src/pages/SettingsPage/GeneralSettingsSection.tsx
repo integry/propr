@@ -3,6 +3,7 @@ import React from 'react';
 interface GeneralSettings {
   worker_concurrency: string;
   auto_followup_score_threshold: number;
+  auto_resolve_merge_conflicts: boolean;
 }
 
 interface GeneralSettingsSectionProps {
@@ -65,6 +66,26 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
           </select>
           <p className="text-xs text-gray-500">
             When an implementation critique score is at or below this threshold, automatically post a follow-up comment to trigger a retry. Set to 0 to disable.
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="auto_resolve_merge_conflicts"
+              name="auto_resolve_merge_conflicts"
+              checked={settings.auto_resolve_merge_conflicts}
+              onChange={onSettingChange}
+              onBlur={onBlur}
+              className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+            <label className="text-sm font-medium text-gray-700" htmlFor="auto_resolve_merge_conflicts">
+              Auto-Resolve Merge Conflicts
+            </label>
+          </div>
+          <p className="text-xs text-gray-500">
+            When enabled, the system will automatically merge the PR base branch into contributor branches and ask an agent to resolve any conflicts. Disable this to prevent automatic mutation of open pull requests.
           </p>
         </div>
       </div>

@@ -61,7 +61,8 @@ export function useSettingsState() {
     planner_context_model: '',
     planner_generation_model: '',
     default_agent_alias: '',
-    auto_followup_score_threshold: 4
+    auto_followup_score_threshold: 4,
+    auto_resolve_merge_conflicts: false
   });
   const [prLabel, setPrLabel] = useState('');
 
@@ -111,6 +112,7 @@ export function useSettingsState() {
           default_agent_alias?: string;
           github_user_whitelist?: string[];
           auto_followup_score_threshold?: number;
+          auto_resolve_merge_conflicts?: boolean;
         };
         const keywordsData = kData as { followup_keywords?: string[] };
         const ignoreKeywordsData = ignoreData as { followup_ignore_keywords?: string[] };
@@ -133,7 +135,8 @@ export function useSettingsState() {
           planner_context_model: settingsData.planner_context_model || '',
           planner_generation_model: settingsData.planner_generation_model || '',
           default_agent_alias: defaultAgentAlias,
-          auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4
+          auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4,
+          auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false
         });
 
         // Parse Whitelist
@@ -211,7 +214,8 @@ export function useSettingsState() {
           planner_context_model: settingsToSave.planner_context_model,
           planner_generation_model: settingsToSave.planner_generation_model,
           default_agent_alias: settingsToSave.default_agent_alias,
-          auto_followup_score_threshold: settingsToSave.auto_followup_score_threshold
+          auto_followup_score_threshold: settingsToSave.auto_followup_score_threshold,
+          auto_resolve_merge_conflicts: settingsToSave.auto_resolve_merge_conflicts
         }),
         updatePrLabel(prLabelToSave.trim()),
         updatePrimaryProcessingLabels(primaryLabelsToSave),

@@ -372,6 +372,27 @@ export async function migrateAgentConfigs(): Promise<boolean> {
     }
 }
 
+// --- Auto Resolve Merge Conflicts ---
+
+/**
+ * Loads the auto_resolve_merge_conflicts setting from the database.
+ * Returns false if the setting has not been explicitly set (backward-compatible default).
+ */
+export async function loadAutoResolveMergeConflicts(): Promise<boolean> {
+    const value = await getConfig<boolean>('auto_resolve_merge_conflicts', false);
+    logger.info({ auto_resolve_merge_conflicts: value }, 'Successfully loaded auto-resolve merge conflicts setting');
+    return value;
+}
+
+/**
+ * Saves the auto_resolve_merge_conflicts setting to the database.
+ */
+export async function saveAutoResolveMergeConflicts(enabled: boolean): Promise<boolean> {
+    await saveConfig('auto_resolve_merge_conflicts', enabled);
+    logger.info({ auto_resolve_merge_conflicts: enabled }, 'Successfully saved auto-resolve merge conflicts setting');
+    return true;
+}
+
 // --- Summarization Settings ---
 
 /**
