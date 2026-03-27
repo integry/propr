@@ -3,3 +3,9 @@ export const PENDING_PR_COMMENTS_KEY_PREFIX: string = 'pending-pr-comments';
 export function getPendingPrCommentsKey(owner: string, repo: string, prNumber: number): string {
     return `${PENDING_PR_COMMENTS_KEY_PREFIX}:${owner}:${repo}:${prNumber}`;
 }
+
+export const MERGE_CONFLICT_IDEMPOTENCY_PREFIX: string = 'merge-conflict-queued';
+
+export function getMergeConflictIdempotencyKey(owner: string, repo: string, prNumber: number, headSha: string, baseSha: string): string {
+    return `${MERGE_CONFLICT_IDEMPOTENCY_PREFIX}:${owner}:${repo}:${prNumber}:${headSha}:${baseSha}`;
+}

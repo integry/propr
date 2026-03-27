@@ -13,6 +13,7 @@ export type {
     AnalysisJobData,
     SystemTaskJobData,
     IndexingJobData,
+    MergeConflictJobData,
     JobData,
     ClaudeOutputResult,
     ClaudeResult,
