@@ -23,6 +23,16 @@ export interface IssueJobData {
     isRetryFromRateLimit?: boolean;  // Set when job is retried after rate limit
 }
 
+export type SystemAction = 'auto_resolve_merge_conflicts';
+
+export interface AutoResolveContext {
+    baseBranch: string;
+    headBranch: string;
+    headSha: string;
+    baseSha: string;
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
+}
+
 export interface CommentJobData {
     pullRequestNumber: number;
     commentId?: number;
@@ -36,6 +46,8 @@ export interface CommentJobData {
     correlationId: string;
     title?: string;
     subtitle?: string;
+    systemAction?: SystemAction;
+    autoResolveContext?: AutoResolveContext;
 }
 
 export interface UnprocessedComment {
@@ -81,7 +93,20 @@ export interface IndexingJobData {
     baseBranch?: string;     // Optional specific branch to index (defaults to repo default branch)
 }
 
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData;
+export interface MergeConflictJobData {
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    headBranch: string;
+    baseBranch: string;
+    headSha: string;
+    baseSha: string;
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
+    correlationId: string;
+    systemGenerated: true;    // Distinguishes from user-authored follow-up comments
+}
+
+export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;
 
 export interface ClaudeOutputResult {
     type?: string;

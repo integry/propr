@@ -1,5 +1,6 @@
 import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
+import path from 'path';
 import logger from '../../utils/logger.js';
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
@@ -12,7 +13,7 @@ export interface DockerCommandOptions {
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
 
-const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
+const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest';
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
@@ -38,6 +39,10 @@ const AGENT_DOCKERFILES: Record<string, string> = {
     'codex': 'Dockerfile.codex',
     'gemini': 'Dockerfile.gemini'
 };
+
+// Default project root - can be overridden via environment variable
+// In Docker container, the app root is /usr/src/app but cwd may be /usr/src/app/packages/api
+const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
 
 async function checkAbortSignal(taskId: string): Promise<boolean> {
     try {
@@ -322,7 +327,7 @@ export async function buildClaudeDockerImage(): Promise<boolean> {
  * This is called when agents are registered to ensure their images are ready.
  *
  * @param agentType - The type of agent ('claude', 'codex', 'gemini')
- * @param dockerImage - The expected Docker image name (e.g., 'codex-cli:latest')
+ * @param dockerImage - The expected Docker image name (e.g., 'propr-codex:latest')
  * @returns true if image exists or was built successfully, false otherwise
  */
 export async function ensureAgentDockerImage(agentType: string, dockerImage: string): Promise<boolean> {
@@ -381,6 +386,106 @@ export async function ensureAgentDockerImage(agentType: string, dockerImage: str
             error: err.message
         }, 'Error ensuring agent Docker image');
         return false;
+    }
+}
+
+/**
+ * Result from building a versioned Docker image.
+ */
+export interface VersionedImageBuildResult {
+    success: boolean;
+    imageTag: string;
+    error?: string;
+}
+
+/**
+ * Ensures a versioned agent Docker image exists, building it if necessary.
+ * The image tag format is: {imageName}:{cliVersion}-{contentHash}
+ */
+export async function ensureVersionedAgentImage(
+    agentType: string,
+    cliVersion: string,
+    contentHash: string,
+    basePath: string = PROJECT_ROOT
+): Promise<VersionedImageBuildResult> {
+    const dockerfileName = AGENT_DOCKERFILES[agentType];
+
+    if (!dockerfileName) {
+        return {
+            success: false,
+            imageTag: '',
+            error: `Unknown agent type: ${agentType}`
+        };
+    }
+
+    // Resolve dockerfile path relative to base path
+    const dockerfile = path.join(basePath, dockerfileName);
+
+    // Generate image tag
+    const imageNames: Record<string, string> = {
+        claude: 'propr-claude',
+        codex: 'propr-codex',
+        gemini: 'propr-gemini'
+    };
+
+    const imageName = imageNames[agentType];
+    if (!imageName) {
+        return {
+            success: false,
+            imageTag: '',
+            error: `Unknown agent type: ${agentType}`
+        };
+    }
+
+    const imageTag = `${imageName}:${cliVersion}-${contentHash}`;
+
+    logger.info({ agentType, imageTag, cliVersion, contentHash, dockerfile }, 'Ensuring versioned agent Docker image exists...');
+
+    try {
+        // Check if image already exists
+        const checkResult = await executeDockerCommand('docker', [
+            'images', '-q', imageTag
+        ]);
+
+        if (checkResult.stdout.trim()) {
+            logger.info({ agentType, imageTag }, 'Versioned Docker image already exists');
+            return { success: true, imageTag };
+        }
+
+        // Image doesn't exist, build it with CLI_VERSION build arg
+        logger.info({ agentType, imageTag, cliVersion, dockerfile, basePath }, 'Building versioned agent Docker image...');
+
+        const buildResult = await executeDockerCommand('docker', [
+            'build',
+            '-f', dockerfile,
+            '--build-arg', `CLI_VERSION=${cliVersion}`,
+            '-t', imageTag,
+            basePath
+        ], {
+            timeout: 600000 // 10 minute timeout for build
+        });
+
+        if (buildResult.exitCode === 0) {
+            logger.info({ agentType, imageTag, cliVersion }, 'Versioned agent Docker image built successfully');
+
+            // Trigger cleanup of unused images in the background, preserving the just-built version
+            const versionsToKeep = new Set<string>([cliVersion, `${cliVersion}-${contentHash}`]);
+            import('./dockerImageManager.js').then(m =>
+                m.cleanupUnusedAgentImages(agentType, versionsToKeep)
+            ).catch(err => {
+                logger.warn({ agentType, error: (err as Error).message }, 'Background cleanup failed');
+            });
+
+            return { success: true, imageTag };
+        } else {
+            logger.error({ agentType, imageTag, cliVersion, dockerfile, exitCode: buildResult.exitCode, stderr: buildResult.stderr }, 'Failed to build versioned agent Docker image');
+            return { success: false, imageTag, error: `Build failed with exit code ${buildResult.exitCode}: ${buildResult.stderr}` };
+        }
+
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ agentType, imageTag, cliVersion, dockerfile, error: err.message }, 'Error ensuring versioned agent Docker image');
+        return { success: false, imageTag, error: err.message };
     }
 }
 

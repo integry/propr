@@ -9,12 +9,30 @@ import { generateOptimizedContext } from './optimizedContext.js';
 import type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './types.js';
 import { SecurityException } from './types.js';
 
+/**
+ * Get the token ratio for converting between tiktoken and actual model tokens.
+ * - OpenAI/Codex: 1.0 (tiktoken is their tokenizer, so it's accurate)
+ * - Gemini: 1.1 (close to tiktoken but slightly higher)
+ * - Claude: 1.36 (tiktoken significantly underestimates)
+ */
+function getTokenRatio(modelId?: string): number {
+  const modelLower = modelId?.toLowerCase() || '';
+  if (modelLower.includes('gpt-') || modelLower.includes('codex') || modelLower.includes('openai')) {
+    return 1.0;
+  }
+  if (modelLower.includes('gemini')) {
+    return 1.1;
+  }
+  return TIKTOKEN_TO_CLAUDE_RATIO; // Default to Claude ratio
+}
+
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
-  const { repoPath, filesToInclude, tokenLimit, correlationId, includeFullDirectoryStructure = true, compress = false } = options;
+  const { repoPath, filesToInclude, tokenLimit, correlationId, includeFullDirectoryStructure = true, compress = false, modelId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
-  // Convert Claude token limit to tiktoken limit (tiktoken underestimates by ~36%)
-  const tiktokenLimit = Math.floor(tokenLimit / TIKTOKEN_TO_CLAUDE_RATIO);
+  // Convert model token limit to tiktoken limit based on model type
+  const tokenRatio = getTokenRatio(modelId);
+  const tiktokenLimit = Math.floor(tokenLimit / tokenRatio);
 
   correlatedLogger.info({ repoPath, filesToInclude, tokenLimit, tiktokenLimit, compress }, 'Starting context generation with repomix');
 

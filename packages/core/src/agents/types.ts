@@ -1,4 +1,5 @@
 import { IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
+import type { CliVersionType } from '../config/configManager.js';
 
 /**
  * Configuration for a specific agent instance.
@@ -11,7 +12,7 @@ export interface AgentConfig {
     enabled: boolean;
 
     // Docker configuration
-    dockerImage: string;    // e.g., 'claude-code-processor:latest'
+    dockerImage: string;    // e.g., 'propr-claude:latest'
     configPath: string;     // Host path to mount (e.g., '/root/.claude')
 
     // Model configuration
@@ -24,6 +25,11 @@ export interface AgentConfig {
     // Custom GitHub labels per model (maps model ID to custom label)
     // e.g., { 'claude-opus-4-5-20251101': 'my-opus-bot', 'claude-sonnet-4-5-20251101': 'my-sonnet-bot' }
     modelCustomLabels?: Record<string, string>;
+
+    // CLI Version Configuration
+    cliVersionType?: CliVersionType;  // How the version is specified (default, tag, specific, custom)
+    cliVersion?: string;              // User-specified version (e.g., "2.1.84", "stable", "latest")
+    cliVersionResolved?: string;      // Resolved semver version (populated by backend)
 }
 
 export interface AgentTaskOptions {
@@ -82,6 +88,14 @@ export interface AnalysisResult {
     error?: string;
 }
 
+export interface AnalyzeOptions {
+    context?: string;
+    model?: string;
+    taskId?: string;
+    /** Type of execution for container naming (e.g., 'plan-generation', 'context-analysis') */
+    executionType?: string;
+}
+
 export interface AgentExecutionResult {
     success: boolean;
     logs: string;           // Full stderr/stdout logs
@@ -125,7 +139,7 @@ export interface Agent {
      * Updated to support model override and abort signal.
      * Returns AnalysisResult with response and metadata for metrics tracking.
      */
-    analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<AnalysisResult>;
+    analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult>;
 
     /**
      * Verifies the agent is ready (e.g. docker image exists).

@@ -1,12 +1,13 @@
 import {
   getAuthenticatedOctokit,
   MODEL_INFO_MAP,
-  getDefaultModel,
   safeUpdateLabels,
   logger,
   ensureEpicPR,
   updatePlanIssue,
-  PlanIssueStatus
+  PlanIssueStatus,
+  loadSettings,
+  AgentRegistry
 } from '@propr/core';
 
 export interface ImplementIssueContext {
@@ -63,11 +64,36 @@ export interface BatchProcessParams {
 }
 
 /**
- * Gets the LLM GitHub label for a given model name.
- * Falls back to the default model's label if model_name is null.
+ * Gets the default model from the configured default agent.
+ * Falls back to 'claude-sonnet-4-6' if no default agent is configured.
  */
-export function getLlmLabel(modelName: string | null): string | null {
-  const effectiveModel = modelName || getDefaultModel();
+async function getConfiguredDefaultModel(): Promise<string> {
+  try {
+    const settings = await loadSettings();
+    const defaultAgentAlias = settings.default_agent_alias as string | undefined;
+
+    if (defaultAgentAlias) {
+      const registry = AgentRegistry.getInstance();
+      await registry.ensureInitialized();
+      const agent = registry.getAgentByAlias(defaultAgentAlias);
+
+      if (agent?.config.defaultModel) {
+        return agent.config.defaultModel;
+      }
+    }
+  } catch (err) {
+    logger.warn({ error: (err as Error).message }, 'Failed to get configured default model, using fallback');
+  }
+
+  return 'claude-sonnet-4-6'; // Fallback
+}
+
+/**
+ * Gets the LLM GitHub label for a given model name.
+ * Falls back to the default agent's model if model_name is null.
+ */
+export async function getLlmLabel(modelName: string | null): Promise<string | null> {
+  const effectiveModel = modelName || await getConfiguredDefaultModel();
   const modelInfo = MODEL_INFO_MAP[effectiveModel];
   return modelInfo?.githubLabel || null;
 }
@@ -80,10 +106,10 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
 }> {
   const { octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge, labelLogger, draftId, planIssue, models } = params;
 
-  const oldLlmLabel = getLlmLabel(planIssue.model_name);
+  const oldLlmLabel = await getLlmLabel(planIssue.model_name);
   const newLlmLabels = new Set<string>();
   for (const m of models) {
-    const label = getLlmLabel(m.model_name);
+    const label = await getLlmLabel(m.model_name);
     if (label) newLlmLabels.add(label);
   }
 
@@ -130,7 +156,7 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
 }> {
   const { octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge, draftId, planIssue } = params;
 
-  const llmLabel = getLlmLabel(planIssue.model_name);
+  const llmLabel = await getLlmLabel(planIssue.model_name);
   const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
 
   if (epicLabelName) {
@@ -185,7 +211,7 @@ export async function processIssueForImplementation(params: ProcessIssueParams):
   const { octokit, owner, repo, draftId, issue, implementLabel, epicLabelName, autoMerge } = params;
 
   try {
-    const llmLabel = getLlmLabel(issue.model_name);
+    const llmLabel = await getLlmLabel(issue.model_name);
     const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
 
     if (epicLabelName) {

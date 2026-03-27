@@ -250,7 +250,32 @@ export const getCurrentUser = async (): Promise<unknown> => {
   return response.json();
 };
 
+<<<<<<< HEAD
 export const logout = (): void => { window.location.href = `${API_BASE_URL}/api/auth/logout`; };
+=======
+export const logout = (): void => {
+  window.location.href = `${API_BASE_URL}/api/auth/logout`;
+};
+
+export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
+
+export interface AgentConfig {
+  id: string;
+  type: 'claude' | 'codex' | 'gemini';
+  alias: string;
+  enabled: boolean;
+  dockerImage: string;
+  configPath: string;
+  supportedModels: string[];
+  defaultModel?: string;
+  envVars?: Record<string, string>;
+  modelCustomLabels?: Record<string, string>;
+  // CLI Version Configuration
+  cliVersionType?: CliVersionType;
+  cliVersion?: string;
+  cliVersionResolved?: string;
+}
+>>>>>>> origin/main
 
 export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
   const response = await fetch(`${API_BASE_URL}/api/config/agents`, { credentials: 'include' });
@@ -266,6 +291,7 @@ export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
   await handleApiResponse(response);
 };
 
+<<<<<<< HEAD
 export const getRevertPreview = async (params: { owner: string; repo: string; pr: string; commit: string }): Promise<RevertPreviewResponse> => {
   const queryParams = new URLSearchParams(params);
   const response = await fetch(`${API_BASE_URL}/api/tasks/revert-preview?${queryParams}`, { credentials: 'include' });
@@ -306,6 +332,8 @@ export const postTaskFollowup = async (taskId: string, body: string): Promise<Po
   await handleApiResponse(response);
   return response.json();
 };
+=======
+>>>>>>> origin/main
 
 export * from './plannerApi';
 export * from './taskStatsApi';
@@ -317,4 +345,8 @@ export * from './repoChatApi';
 export * from './repoImprovementsApi';
 export * from './tasks';
 export * from './repoTodosApi';
+<<<<<<< HEAD
 export * from './userRepoPreferencesApi';
+=======
+export * from './revertApi';
+>>>>>>> origin/main

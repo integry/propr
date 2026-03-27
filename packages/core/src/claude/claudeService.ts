@@ -27,7 +27,7 @@ import { estimateTokens } from '../utils/tokenCalculation.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
-const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
+const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest';
 const CLAUDE_CONFIG_PATH: string = process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude');
 const CLAUDE_MAX_TURNS: number = parseInt(process.env.CLAUDE_MAX_TURNS || '1000', 10);
 const CLAUDE_TIMEOUT_MS: number = parseInt(process.env.CLAUDE_TIMEOUT_MS || '300000', 10);
@@ -136,7 +136,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             CLAUDE_CONFIG_PATH,
             CLAUDE_MAX_TURNS,
             systemPrompt: options.systemPrompt,
-            tools: options.tools
+            tools: options.tools,
+            agentAlias: 'claude'
         });
 
         const result = await executeDockerCommand('docker', dockerArgs, {
@@ -321,11 +322,12 @@ interface AgentExecutionParams {
     modelOverride?: string;
     prompt: string;
     taskId?: string;
+    executionType?: string;
     correlatedLogger: ReturnType<typeof logger.withCorrelation>;
 }
 
 async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<AnalysisResult | null> {
-    const { agentAlias, modelOverride, prompt, taskId, correlatedLogger } = params;
+    const { agentAlias, modelOverride, prompt, taskId, executionType, correlatedLogger } = params;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
@@ -336,8 +338,8 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
     }
 
     const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
-    correlatedLogger.info({ agentAlias, resolvedModel, taskId }, 'Using agent-specific lightweight LLM analysis');
-    return await agent.analyze(prompt, undefined, resolvedModel, taskId);
+    correlatedLogger.info({ agentAlias, resolvedModel, taskId, executionType }, 'Using agent-specific lightweight LLM analysis');
+    return await agent.analyze(prompt, { model: resolvedModel, taskId, executionType });
 }
 
 async function executeClaudeAnalysis(
@@ -410,7 +412,7 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
 
     if (agentAlias) {
         try {
-            const analysisResult = await tryExecuteWithAgent({ agentAlias, modelOverride, prompt, taskId, correlatedLogger });
+            const analysisResult = await tryExecuteWithAgent({ agentAlias, modelOverride, prompt, taskId, executionType, correlatedLogger });
             if (analysisResult !== null) {
                 // Persist LLM log to the new llm_logs table
                 const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;

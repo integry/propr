@@ -41,26 +41,40 @@ export interface LlmLabelResolution {
 /**
  * Static model aliases for backwards compatibility.
  * These map short names to full Claude model IDs.
+ * Default aliases (opus, sonnet) point to latest 4.6 versions.
+ * Use opus45/sonnet45 aliases for older Claude Code versions.
  */
 const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
-    'opus': 'claude-opus-4-5',
-    'opus4': 'claude-opus-4-5',
-    'opus-4-0': 'claude-opus-4-5',
-    'claude-opus': 'claude-opus-4-5',
-    'claude-opus-4-0': 'claude-opus-4-5',
+    // Default aliases point to latest (4.6)
+    'opus': 'claude-opus-4-6',
+    'claude-opus': 'claude-opus-4-6',
 
-    'sonnet': 'claude-sonnet-4-5',
-    'sonnet4': 'claude-sonnet-4-5',
-    'sonnet-4-0': 'claude-sonnet-4-5',
-    'claude-sonnet': 'claude-sonnet-4-5',
-    'claude-sonnet-4-0': 'claude-sonnet-4-5',
+    'sonnet': 'claude-sonnet-4-6',
+    'claude-sonnet': 'claude-sonnet-4-6',
 
-    'haiku': 'claude-haiku-4-5',
-    'haiku45': 'claude-haiku-4-5',
-    'haiku4': 'claude-haiku-4-5',
-    'claude-haiku': 'claude-haiku-4-5',
-    'claude-haiku-4-0': 'claude-haiku-4-5',
-    'claude-4-5-haiku': 'claude-haiku-4-5'
+    // Explicit 4.6 aliases
+    'opus46': 'claude-opus-4-6',
+    'opus-4-6': 'claude-opus-4-6',
+    'claude-opus-4-6': 'claude-opus-4-6',
+
+    'sonnet46': 'claude-sonnet-4-6',
+    'sonnet-4-6': 'claude-sonnet-4-6',
+    'claude-sonnet-4-6': 'claude-sonnet-4-6',
+
+    // Explicit 4.5 aliases (for older Claude Code versions)
+    'opus45': 'claude-opus-4-5-20251101',
+    'opus-4-5': 'claude-opus-4-5-20251101',
+    'claude-opus-4-5': 'claude-opus-4-5-20251101',
+
+    'sonnet45': 'claude-sonnet-4-5-20250929',
+    'sonnet-4-5': 'claude-sonnet-4-5-20250929',
+    'claude-sonnet-4-5': 'claude-sonnet-4-5-20250929',
+
+    // Haiku aliases (only 4.5 available)
+    'haiku': 'claude-haiku-4-5-20251001',
+    'haiku45': 'claude-haiku-4-5-20251001',
+    'claude-haiku': 'claude-haiku-4-5-20251001',
+    'claude-haiku-4-5': 'claude-haiku-4-5-20251001'
 };
 
 /**

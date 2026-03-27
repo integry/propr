@@ -62,7 +62,9 @@ export interface GranularityEnforcementMetadata {
 export interface SmartFileSelection {
   path: string;
   reason: string;
-  source: 'manual' | 'auto';
+  source: 'manual' | 'auto' | 'context-repo';
+  /** Repository name for context-repo files (e.g., "owner/repo") */
+  repository?: string;
   score?: number;
 }
 
@@ -93,6 +95,8 @@ export interface PreviewOptions {
   files?: string[];
   generationModel?: string;
   contextRepositories?: ContextRepository[];
+  /** Files manually excluded from context by the user */
+  excludedFiles?: string[];
 }
 
 export interface PlanGenerationOptions {
@@ -102,6 +106,8 @@ export interface PlanGenerationOptions {
   compress?: boolean;
   contextRepositories?: ContextRepository[];
   generationModel?: string;
+  /** Files manually excluded from context by the user */
+  excludedFiles?: string[];
 }
 
 export interface CreateDraftOptions {
@@ -136,6 +142,8 @@ export interface DraftContextConfig {
   contextRepositories?: ContextRepository[];
   granularityEnforcement?: GranularityEnforcementMetadata;
   generationModel?: string;
+  /** Files manually excluded from context by the user */
+  excludedFiles?: string[];
 }
 
 export interface RefinementResult {

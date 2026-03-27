@@ -37,6 +37,113 @@ import type {
 const DEFAULT_OUTPUT_TOKENS = 4000;
 const SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';
 
+/**
+ * In-flight context preview requests.
+ * Used to coalesce duplicate requests for the same draft.
+ * Key is draftId + contentHash, value is the pending promise.
+ */
+const inFlightPreviews = new Map<string, Promise<PreviewResult>>();
+
+/**
+ * Generate a unique key for tracking in-flight requests.
+ * Based on draftId and content-affecting parameters.
+ */
+function getInFlightKey(draftId: string, prompt: string, baseBranch: string, compress: boolean, files: string[] | undefined): string {
+  // Use a simplified hash of content-affecting parameters
+  const filesKey = files?.sort().join(',') || '';
+  return `${draftId}:${prompt.length}:${baseBranch}:${compress}:${filesKey.length}`;
+}
+
+interface FilteredFileData {
+  filteredAutoFilePaths: string[];
+  combinedFiles: string[];
+  filteredFileTokenCounts: Record<string, number>;
+}
+
+/**
+ * Filter files to exclude any paths in the excludedFiles set.
+ */
+function filterExcludedFiles(
+  autoFilePaths: string[],
+  manualFiles: string[],
+  fileTokenCounts: Record<string, number>,
+  excludedFiles?: string[]
+): FilteredFileData {
+  const excludedFilesSet = new Set(excludedFiles || []);
+  const filteredAutoFilePaths = autoFilePaths.filter(f => !excludedFilesSet.has(f));
+  const combinedFiles = [...new Set([...manualFiles, ...filteredAutoFilePaths])].filter(f => !excludedFilesSet.has(f));
+
+  const filteredFileTokenCounts: Record<string, number> = {};
+  for (const [path, tokens] of Object.entries(fileTokenCounts)) {
+    if (!excludedFilesSet.has(path)) {
+      filteredFileTokenCounts[path] = tokens;
+    }
+  }
+
+  return { filteredAutoFilePaths, combinedFiles, filteredFileTokenCounts };
+}
+
+interface BuildPreviewResultParams {
+  simulatedTokens: number;
+  attachmentTokens: number;
+  smartSummaryTokens: number;
+  additionalContextTokens: number;
+  additionalContextFiles: number;
+  additionalContextFilesIncluded: Array<{ repository: string; path: string }>;
+  targetTokenLimit: number;
+  generationModel?: string;
+  repomixContextLength: number;
+  simulatedIncludedFiles: string[];
+  smartSelection: SmartFileSelection[];
+  costEstimate: number;
+  warnings: string[];
+  correlatedLogger: MinimalLogger;
+  canUseCache: boolean;
+}
+
+/**
+ * Build the final preview result with token calculations and stats.
+ */
+function buildPreviewResult(params: BuildPreviewResultParams): PreviewResult {
+  const {
+    simulatedTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens,
+    additionalContextFiles, additionalContextFilesIncluded, targetTokenLimit, generationModel,
+    repomixContextLength, simulatedIncludedFiles, smartSelection, costEstimate, warnings,
+    correlatedLogger, canUseCache
+  } = params;
+
+  const estimatedActualTokens = Math.ceil(simulatedTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+  const additionalContextTokensEstimated = Math.ceil(additionalContextTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+  const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens + additionalContextTokensEstimated;
+  const maxTokensEstimated = Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO);
+  const { modelName, modelMaxContextTokens } = getModelDisplayInfo(generationModel);
+
+  const contextRepoSelection: SmartFileSelection[] = additionalContextFilesIncluded.map(f => ({
+    path: f.path,
+    reason: 'Reference context',
+    source: 'context-repo' as const,
+    repository: f.repository
+  }));
+  const fullSmartSelection = [...smartSelection, ...contextRepoSelection];
+
+  correlatedLogger.info({
+    usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens,
+    smartSummaryTokens, additionalContextTokens: additionalContextTokensEstimated, additionalContextFiles,
+    totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens
+  }, 'Context preview completed');
+
+  return {
+    success: true,
+    stats: {
+      totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContextLength,
+      fileCount: simulatedIncludedFiles.length, contextRepoFileCount: additionalContextFiles,
+      attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens
+    },
+    smartSelection: fullSmartSelection,
+    warnings
+  };
+}
+
 interface LoadAdditionalContextOptions {
   contextRepositories: ContextRepository[];
   tokenBudget: number;
@@ -126,19 +233,21 @@ interface GetContextDataParams {
   manualFiles: string[];
   draft: TaskDraft;
   contextModel?: string;
+  generationModel?: string;
   compress: boolean;
   maxTokenLimit: number;
   correlationId?: string;
   correlatedLogger: MinimalLogger;
   contentHash: string;
   cacheHasSufficientLimit: boolean;
+  excludedFiles?: string[];
 }
 
 /**
  * Get context data from cache or regenerate it.
  */
 async function getContextData(params: GetContextDataParams): Promise<{ contextData: ContextData; warnings: string[] }> {
-  const { canUseCache, cache, draftId, correlatedLogger, contentHash, cacheHasSufficientLimit, maxTokenLimit, ...regenParams } = params;
+  const { canUseCache, cache, draftId, correlatedLogger, contentHash, cacheHasSufficientLimit, maxTokenLimit, excludedFiles, ...regenParams } = params;
   const warnings: string[] = [];
 
   if (canUseCache && cache) {
@@ -158,10 +267,12 @@ async function getContextData(params: GetContextDataParams): Promise<{ contextDa
     manualFiles: regenParams.manualFiles,
     draft: regenParams.draft,
     contextModel: regenParams.contextModel,
+    generationModel: regenParams.generationModel,
     compress: regenParams.compress,
     previewTokenLimit: maxTokenLimit,
     correlationId: regenParams.correlationId,
-    correlatedLogger
+    correlatedLogger,
+    excludedFiles
   });
   const contextData: ContextData = {
     repomixContext: result.repomixContext,
@@ -206,11 +317,56 @@ export function truncateToSentences(text: string): string {
 }
 
 /**
+ * Determine if the existing context cache can be reused.
+ */
+function isCacheValid(cache: ContextCache | undefined, contentHash: string, maxTokenLimit: number): boolean {
+  if (!cache) return false;
+  if (cache.contentHash !== contentHash) return false;
+  if (!cache.fileTokenCounts || !cache.repomixContext) return false;
+  if (cache.cachedMaxTokenLimit && cache.cachedMaxTokenLimit < maxTokenLimit) return false;
+  return true;
+}
+
+/**
  * Generate a context preview for a draft.
  * Main entry point for the preview service.
+ *
+ * Uses promise coalescing to prevent duplicate context analysis when
+ * multiple requests come in for the same draft with the same content.
  */
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken } = options;
+  const { draftId, prompt, baseBranch, compress = false, files, correlationId } = options;
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+
+  // Generate key for in-flight tracking
+  const inFlightKey = getInFlightKey(draftId, prompt, baseBranch, compress, files);
+
+  // Check if there's already an in-flight request for this draft with same content
+  const existingRequest = inFlightPreviews.get(inFlightKey);
+  if (existingRequest) {
+    correlatedLogger.info({ draftId, inFlightKey }, 'Coalescing duplicate context preview request - reusing in-flight promise');
+    return existingRequest;
+  }
+
+  // Create and track the new request
+  const requestPromise = generateContextPreviewInternal(options);
+  inFlightPreviews.set(inFlightKey, requestPromise);
+
+  // Clean up the in-flight entry when done (success or failure)
+  requestPromise.finally(() => {
+    inFlightPreviews.delete(inFlightKey);
+    correlatedLogger.debug({ draftId, inFlightKey }, 'Removed in-flight context preview entry');
+  });
+
+  return requestPromise;
+}
+
+/**
+ * Internal implementation of context preview generation.
+ * Called by generateContextPreview after coalescing check.
+ */
+async function generateContextPreviewInternal(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken, excludedFiles } = options;
   const targetTokenLimit = getEffectiveTokenLimit(generationModel, contextLevel);
   const maxTokenLimit = getEffectiveTokenLimit(generationModel, MAX_CONTEXT_LEVEL);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -235,25 +391,30 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const cache = existingConfig?.contextCache;
   const cacheHasSufficientLimit = !cache?.cachedMaxTokenLimit || cache.cachedMaxTokenLimit >= maxTokenLimit;
-  const canUseCache = cache && cache.contentHash === contentHash && cache.fileTokenCounts && cacheHasSufficientLimit;
+  const canUseCache = isCacheValid(cache, contentHash, maxTokenLimit);
+
 
   const { base64Images, imageTokens } = await loadImagesFromAttachments(attachments, correlatedLogger);
   const attachmentTokens = calculateAttachmentTokens(attachments, imageTokens);
 
   const { contextData, warnings: contextWarnings } = await getContextData({
     canUseCache: !!canUseCache, cache, draftId, baseBranch, worktreePath, prompt, manualFiles, draft, contextModel,
-    compress, maxTokenLimit, correlationId, correlatedLogger, contentHash, cacheHasSufficientLimit
+    generationModel, compress, maxTokenLimit, correlationId, correlatedLogger, contentHash, cacheHasSufficientLimit, excludedFiles
   });
   warnings.push(...contextWarnings);
 
   const { repomixContext, smartSummaries, autoFilePaths, includedFiles, smartSummaryTokens, fileTokenCounts, fileScores } = contextData;
-  const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
+
+  // Filter out excluded files from the file lists before token limits and smart selection
+  const { filteredAutoFilePaths, combinedFiles, filteredFileTokenCounts } = filterExcludedFiles(
+    autoFilePaths, manualFiles, fileTokenCounts, excludedFiles
+  );
 
   const reservedOverheadTiktokens = Math.ceil((attachmentTokens + smartSummaryTokens) / TIKTOKEN_TO_CLAUDE_RATIO);
   const fileSelectionLimit = Math.max(0, targetTokenLimit - reservedOverheadTiktokens);
 
   const simulatedSelection = selectFilesWithinLimit(
-    fileTokenCounts, fileSelectionLimit,
+    filteredFileTokenCounts, fileSelectionLimit,
     compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined),
     compress ? combinedFiles : undefined
   );
@@ -269,14 +430,14 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   }, 'Simulated file selection for context level');
 
   const costEstimate = await calculateCostEstimate(simulatedTokens, warnings, correlatedLogger);
-  const smartSelection = buildSmartSelection(manualFiles, autoFilePaths, includedFilesSet, fileScores);
+  const smartSelection = buildSmartSelection(manualFiles, filteredAutoFilePaths, includedFilesSet, fileScores);
 
   // Load additional context from context repositories
   let additionalContext: string | undefined;
   let additionalContextTokens = 0;
   let additionalContextFiles = 0;
   let additionalContextFilesIncluded: Array<{ repository: string; path: string }> = [];
-  if (contextRepositories && contextRepositories.length > 0 && githubToken) {
+  if (contextRepositories?.length && githubToken) {
     const additionalContextBudget = calculateAdditionalContextBudget(targetTokenLimit, simulatedTokens, attachmentTokens, smartSummaryTokens);
     const result = await loadAdditionalContextFromRepos({ contextRepositories, tokenBudget: additionalContextBudget, githubToken, correlationId, correlatedLogger });
     additionalContext = result.additionalContext;
@@ -292,10 +453,10 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     additionalContext
   });
 
-  // Store cache metadata without the large repomixContext (it's already in generated_context)
-  // This prevents context_config from becoming too large to spread/enumerate
+  // Store cache metadata including repomixContext and smartSummaries for cache reuse
   const cacheMetadata = {
     contentHash, autoFilePaths, includedFiles,
+    repomixContext, smartSummaries,
     repomixTokens: contextData.repomixTokens, smartSummaryTokens, fileTokenCounts, cachedMaxTokenLimit: maxTokenLimit,
     fileScores
   };
@@ -308,26 +469,9 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     updated_at: db.fn.now()
   });
 
-  const estimatedActualTokens = Math.ceil(simulatedTokens * TIKTOKEN_TO_CLAUDE_RATIO);
-  const additionalContextTokensEstimated = Math.ceil(additionalContextTokens * TIKTOKEN_TO_CLAUDE_RATIO);
-  const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens + additionalContextTokensEstimated;
-  const maxTokensEstimated = Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO);
-  const { modelName, modelMaxContextTokens } = getModelDisplayInfo(generationModel);
-
-  const contextRepoSelection: SmartFileSelection[] = additionalContextFilesIncluded.map(f => ({
-    path: f.path,
-    reason: 'Reference context',
-    source: 'context-repo' as const,
-    repository: f.repository
-  }));
-  const fullSmartSelection = [...smartSelection, ...contextRepoSelection];
-
-  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens: additionalContextTokensEstimated, additionalContextFiles, totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
-
-  return {
-    success: true,
-    stats: { totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContext.length, fileCount: simulatedIncludedFiles.length, contextRepoFileCount: additionalContextFiles, attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens },
-    smartSelection: fullSmartSelection,
-    warnings
-  };
+  return buildPreviewResult({
+    simulatedTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens, additionalContextFiles,
+    additionalContextFilesIncluded, targetTokenLimit, generationModel, repomixContextLength: repomixContext.length,
+    simulatedIncludedFiles, smartSelection, costEstimate, warnings, correlatedLogger, canUseCache: !!canUseCache
+  });
 }

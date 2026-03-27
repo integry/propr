@@ -23,6 +23,11 @@ interface ConfigSettings {
 }
 
 /**
+ * CLI version type - how the version is specified.
+ */
+export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
+
+/**
  * Configuration for a specific agent instance.
  * Stored in system_configs table under 'agents' key.
  */
@@ -33,7 +38,7 @@ export interface AgentConfig {
     enabled: boolean;
 
     // Docker configuration
-    dockerImage: string;    // e.g., 'claude-code-processor:latest'
+    dockerImage: string;    // e.g., 'propr-claude:latest'
     configPath: string;     // Host path to mount (e.g., '/root/.claude')
 
     // Model configuration
@@ -46,6 +51,11 @@ export interface AgentConfig {
     // Custom GitHub labels per model (maps model ID to custom label)
     // e.g., { 'claude-opus-4-5-20251101': 'my-opus-bot', 'claude-sonnet-4-5-20251101': 'my-sonnet-bot' }
     modelCustomLabels?: Record<string, string>;
+
+    // CLI Version Configuration
+    cliVersionType?: CliVersionType;  // How the version is specified (default, tag, specific, custom)
+    cliVersion?: string;              // User-specified version (e.g., "2.1.84", "stable", "latest")
+    cliVersionResolved?: string;      // Resolved semver version (populated by backend)
 }
 
 /**
@@ -293,6 +303,93 @@ export async function loadAgents(): Promise<AgentConfig[]> {
 export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
     await saveConfig('agents', agents);
     logger.info({ agentCount: agents.length }, 'Successfully saved agents configuration');
+    return true;
+}
+
+/**
+ * Default CLI versions for each agent type.
+ * Used by migration to set cliVersionResolved for agents without version config.
+ */
+const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
+    claude: '2.1.85',
+    codex: '0.116.0',
+    gemini: '0.35.1'
+};
+
+/**
+ * Claude 4.6 models that should be added to existing Claude agents.
+ * These models have 1M context windows and require newer Claude Code versions.
+ */
+const CLAUDE_46_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];
+
+/**
+ * Migrates agent configurations to include CLI version fields and new models.
+ * - Sets cliVersionType='default' for agents without version config
+ * - Adds Claude 4.6 models to existing Claude agents
+ * This ensures backwards compatibility with existing configurations.
+ *
+ * @returns true if any agents were migrated, false otherwise
+ */
+export async function migrateAgentConfigs(): Promise<boolean> {
+    try {
+        const agents = await loadAgents();
+        let migrated = false;
+
+        for (const agent of agents) {
+            // Migration 1: Add CLI version fields
+            if (!agent.cliVersionType) {
+                agent.cliVersionType = 'default';
+                agent.cliVersionResolved = DEFAULT_CLI_VERSIONS[agent.type];
+                migrated = true;
+                logger.info({ agentAlias: agent.alias, type: agent.type }, 'Migrated agent to default CLI version');
+            }
+
+            // Migration 2: Add Claude 4.6 models to existing Claude agents
+            if (agent.type === 'claude' && agent.supportedModels) {
+                const missingModels = CLAUDE_46_MODELS.filter(m => !agent.supportedModels.includes(m));
+                if (missingModels.length > 0) {
+                    // Add 4.6 models at the beginning (they're the newest)
+                    agent.supportedModels = [...missingModels, ...agent.supportedModels];
+                    migrated = true;
+                    logger.info({
+                        agentAlias: agent.alias,
+                        addedModels: missingModels
+                    }, 'Added Claude 4.6 models to agent');
+                }
+            }
+        }
+
+        if (migrated) {
+            await saveAgents(agents);
+            logger.info({ agentCount: agents.length }, 'Agent configuration migration completed');
+        }
+
+        return migrated;
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message }, 'Failed to migrate agent configurations');
+        return false;
+    }
+}
+
+// --- Auto Resolve Merge Conflicts ---
+
+/**
+ * Loads the auto_resolve_merge_conflicts setting from the database.
+ * Returns false if the setting has not been explicitly set (backward-compatible default).
+ */
+export async function loadAutoResolveMergeConflicts(): Promise<boolean> {
+    const value = await getConfig<boolean>('auto_resolve_merge_conflicts', false);
+    logger.info({ auto_resolve_merge_conflicts: value }, 'Successfully loaded auto-resolve merge conflicts setting');
+    return value;
+}
+
+/**
+ * Saves the auto_resolve_merge_conflicts setting to the database.
+ */
+export async function saveAutoResolveMergeConflicts(enabled: boolean): Promise<boolean> {
+    await saveConfig('auto_resolve_merge_conflicts', enabled);
+    logger.info({ auto_resolve_merge_conflicts: enabled }, 'Successfully saved auto-resolve merge conflicts setting');
     return true;
 }
 

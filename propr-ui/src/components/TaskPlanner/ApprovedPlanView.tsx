@@ -330,7 +330,21 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       </div>
 
       <div className="flex-1 overflow-auto p-4">
+<<<<<<< HEAD
         <PlanIssuesManager draftId={draft.draft_id} tasks={tasks} onIssuesChange={setIssues} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={setUseEpic} onAutoMergeChange={setAutoMerge} />
+=======
+        <PlanIssuesManager
+          draftId={draft.draft_id}
+          tasks={tasks}
+          onRefresh={onRefetch}
+          onIssuesChange={handleIssuesChange}
+          refreshKey={refreshKey}
+          useEpic={useEpic}
+          autoMerge={autoMerge}
+          onUseEpicChange={setUseEpic}
+          onAutoMergeChange={setAutoMerge}
+        />
+>>>>>>> origin/main
       </div>
 
       <PlanFooterStats stats={footerStats} onRefresh={handleRefresh} />

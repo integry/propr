@@ -27,8 +27,14 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 # This is required for the entrypoint script to fix permissions before dropping privileges
 RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
+# CLI version argument - can be overridden at build time
+ARG CLI_VERSION=latest
+
 # Install OpenAI Codex CLI globally
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex@${CLI_VERSION}
+
+# Increase Node.js memory limit for large prompts/responses
+ENV NODE_OPTIONS="--max-old-space-size=8192"
 
 # Create workspace directory only - Codex config will be mounted at runtime
 RUN mkdir -p /home/node/workspace && \

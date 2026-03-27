@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/proprApi';
+import { getDrafts, deleteDraft, abortGeneration, DraftListItem, getDraftRepositories } from '../api/proprApi';
 import { Filter, Search, X } from 'lucide-react';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
@@ -45,19 +45,11 @@ const PlansPage: React.FC = () => {
 
   const totalPages = useMemo(() => Math.ceil(totalDrafts / DEFAULT_PAGE_SIZE), [totalDrafts]);
 
-  // Fetch all repositories for the filter dropdown (without any filters applied)
+  // Fetch all repositories for the filter dropdown
   const loadAllRepositories = useCallback(async () => {
     try {
-      const data = await getDrafts({ limit: 1000 });
-      const repoCounts: Record<string, number> = {};
-      data.drafts.forEach(draft => {
-        const repo = draft.repository;
-        repoCounts[repo] = (repoCounts[repo] || 0) + 1;
-      });
-      const repos = Object.entries(repoCounts)
-        .map(([repo, count]) => ({ repo, count }))
-        .sort((a, b) => a.repo.localeCompare(b.repo));
-      setAllRepositories(repos);
+      const data = await getDraftRepositories();
+      setAllRepositories(data.repositories);
       setTotalAllDrafts(data.total);
     } catch (err) {
       console.error('Failed to load repositories:', err);

@@ -45,29 +45,29 @@ Change all imports from `@anthropic-ai/claude-code` to `@anthropic-ai/claude-age
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-code";
 
 // After
-import {
-  query,
-  tool,
-  createSdkMcpServer,
-} from "@anthropic-ai/claude-agent-sdk";
+import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 ```
 
 **4. Update package.json dependencies:**
 
 If you have the package listed in your `package.json`, update it:
 
+Before:
+
 ```json
-// Before
 {
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.0"
+    "@anthropic-ai/claude-code": "^0.0.42"
   }
 }
+```
 
-// After
+After:
+
+```json
 {
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.0"
+    "@anthropic-ai/claude-agent-sdk": "^0.2.0"
   }
 }
 ```
@@ -106,18 +106,14 @@ Change `ClaudeCodeOptions` to `ClaudeAgentOptions`:
 
 ```python
 # Before
-from claude_agent_sdk import query, ClaudeCodeOptions
+from claude_code_sdk import query, ClaudeCodeOptions
 
-options = ClaudeCodeOptions(
-    model="claude-sonnet-4-5"
-)
+options = ClaudeCodeOptions(model="claude-opus-4-6")
 
 # After
 from claude_agent_sdk import query, ClaudeAgentOptions
 
-options = ClaudeAgentOptions(
-    model="claude-sonnet-4-5"
-)
+options = ClaudeAgentOptions(model="claude-opus-4-6")
 ```
 
 **5. Review [breaking changes](#breaking-changes)**
@@ -137,21 +133,15 @@ To improve isolation and explicit configuration, Claude Agent SDK v0.1.0 introdu
 **Migration:**
 
 ```python
-# BEFORE (v0.0.x)
-from claude_agent_sdk import query, ClaudeCodeOptions
+# BEFORE (claude-code-sdk)
+from claude_code_sdk import query, ClaudeCodeOptions
 
-options = ClaudeCodeOptions(
-    model="claude-sonnet-4-5",
-    permission_mode="acceptEdits"
-)
+options = ClaudeCodeOptions(model="claude-opus-4-6", permission_mode="acceptEdits")
 
-# AFTER (v0.1.0)
+# AFTER (claude-agent-sdk)
 from claude_agent_sdk import query, ClaudeAgentOptions
 
-options = ClaudeAgentOptions(
-    model="claude-sonnet-4-5",
-    permission_mode="acceptEdits"
-)
+options = ClaudeAgentOptions(model="claude-opus-4-6", permission_mode="acceptEdits")
 ```
 
 **Why this changed:** The type name now matches the "Claude Agent SDK" branding and provides consistency across the SDK's naming conventions.
@@ -168,7 +158,7 @@ options = ClaudeAgentOptions(
 // BEFORE (v0.0.x) - Used Claude Code's system prompt by default
 const result = query({ prompt: "Hello" });
 
-// AFTER (v0.1.0) - Uses empty system prompt by default
+// AFTER (v0.1.0) - Uses minimal system prompt by default
 // To get the old behavior, explicitly request Claude Code's preset:
 const result = query({
   prompt: "Hello",
@@ -191,7 +181,7 @@ const result = query({
 async for message in query(prompt="Hello"):
     print(message)
 
-# AFTER (v0.1.0) - Uses empty system prompt by default
+# AFTER (v0.1.0) - Uses minimal system prompt by default
 # To get the old behavior, explicitly request Claude Code's preset:
 from claude_agent_sdk import query, ClaudeAgentOptions
 
@@ -199,16 +189,14 @@ async for message in query(
     prompt="Hello",
     options=ClaudeAgentOptions(
         system_prompt={"type": "preset", "preset": "claude_code"}  # Use the preset
-    )
+    ),
 ):
     print(message)
 
 # Or use a custom system prompt:
 async for message in query(
     prompt="Hello",
-    options=ClaudeAgentOptions(
-        system_prompt="You are a helpful coding assistant"
-    )
+    options=ClaudeAgentOptions(system_prompt="You are a helpful coding assistant"),
 ):
     print(message)
 ```
@@ -248,7 +236,7 @@ const result = query({
 const result = query({
   prompt: "Hello",
   options: {
-    settingSources: ["project"]  // Only project settings
+    settingSources: ["project"] // Only project settings
   }
 });
 ```
@@ -270,9 +258,7 @@ from claude_agent_sdk import query, ClaudeAgentOptions
 
 async for message in query(
     prompt="Hello",
-    options=ClaudeAgentOptions(
-        setting_sources=["user", "project", "local"]
-    )
+    options=ClaudeAgentOptions(setting_sources=["user", "project", "local"]),
 ):
     print(message)
 
@@ -281,7 +267,7 @@ async for message in query(
     prompt="Hello",
     options=ClaudeAgentOptions(
         setting_sources=["project"]  # Only project settings
-    )
+    ),
 ):
     print(message)
 ```

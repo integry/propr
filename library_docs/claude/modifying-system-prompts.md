@@ -11,7 +11,7 @@ System prompts define Claude's behavior, capabilities, and response style. The C
 A system prompt is the initial instruction set that shapes how Claude behaves throughout a conversation.
 
 <Note>
-**Default behavior:** The Agent SDK uses an **empty system prompt** by default for maximum flexibility. To use Claude Code's system prompt (tool instructions, code guidelines, etc.), specify `systemPrompt: { preset: "claude_code" }` in TypeScript or `system_prompt="claude_code"` in Python.
+**Default behavior:** The Agent SDK uses a **minimal system prompt** by default. It contains only essential tool instructions but omits Claude Code's coding guidelines, response style, and project context. To include the full Claude Code system prompt, specify `systemPrompt: { preset: "claude_code" }` in TypeScript or `system_prompt={"type": "preset", "preset": "claude_code"}` in Python.
 </Note>
 
 Claude Code's system prompt includes:
@@ -91,10 +91,10 @@ for await (const message of query({
   options: {
     systemPrompt: {
       type: "preset",
-      preset: "claude_code", // Use Claude Code's system prompt
+      preset: "claude_code" // Use Claude Code's system prompt
     },
-    settingSources: ["project"], // Required to load CLAUDE.md from project
-  },
+    settingSources: ["project"] // Required to load CLAUDE.md from project
+  }
 })) {
   messages.push(message);
 }
@@ -114,10 +114,10 @@ async for message in query(
     options=ClaudeAgentOptions(
         system_prompt={
             "type": "preset",
-            "preset": "claude_code"  # Use Claude Code's system prompt
+            "preset": "claude_code",  # Use Claude Code's system prompt
         },
-        setting_sources=["project"]  # Required to load CLAUDE.md from project
-    )
+        setting_sources=["project"],  # Required to load CLAUDE.md from project
+    ),
 ):
     messages.append(message)
 
@@ -156,11 +156,7 @@ import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 
-async function createOutputStyle(
-  name: string,
-  description: string,
-  prompt: string
-) {
+async function createOutputStyle(name: string, description: string, prompt: string) {
   // User-level: ~/.claude/output-styles
   // Project-level: .claude/output-styles
   const outputStylesDir = join(homedir(), ".claude", "output-styles");
@@ -174,10 +170,7 @@ description: ${description}
 
 ${prompt}`;
 
-  const filePath = join(
-    outputStylesDir,
-    `${name.toLowerCase().replace(/\s+/g, "-")}.md`
-  );
+  const filePath = join(outputStylesDir, `${name.toLowerCase().replace(/\s+/g, "-")}.md`);
   await writeFile(filePath, content, "utf-8");
 }
 
@@ -198,10 +191,11 @@ For every code submission:
 ```python Python
 from pathlib import Path
 
+
 async def create_output_style(name: str, description: str, prompt: str):
     # User-level: ~/.claude/output-styles
     # Project-level: .claude/output-styles
-    output_styles_dir = Path.home() / '.claude' / 'output-styles'
+    output_styles_dir = Path.home() / ".claude" / "output-styles"
 
     output_styles_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,21 +206,22 @@ description: {description}
 
 {prompt}"""
 
-    file_name = name.lower().replace(' ', '-') + '.md'
+    file_name = name.lower().replace(" ", "-") + ".md"
     file_path = output_styles_dir / file_name
-    file_path.write_text(content, encoding='utf-8')
+    file_path.write_text(content, encoding="utf-8")
+
 
 # Example: Create a code review specialist
 await create_output_style(
-    'Code Reviewer',
-    'Thorough code review assistant',
+    "Code Reviewer",
+    "Thorough code review assistant",
     """You are an expert code reviewer.
 
 For every code submission:
 1. Check for bugs and security issues
 2. Evaluate performance
 3. Suggest improvements
-4. Rate code quality (1-10)"""
+4. Rate code quality (1-10)""",
 )
 ```
 
@@ -259,10 +254,9 @@ for await (const message of query({
     systemPrompt: {
       type: "preset",
       preset: "claude_code",
-      append:
-        "Always include detailed docstrings and type hints in Python code.",
-    },
-  },
+      append: "Always include detailed docstrings and type hints in Python code."
+    }
+  }
 })) {
   messages.push(message);
   if (message.type === "assistant") {
@@ -282,12 +276,12 @@ async for message in query(
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
-            "append": "Always include detailed docstrings and type hints in Python code."
+            "append": "Always include detailed docstrings and type hints in Python code.",
         }
-    )
+    ),
 ):
     messages.append(message)
-    if message.type == 'assistant':
+    if message.type == "assistant":
         print(message.message.content)
 ```
 
@@ -315,8 +309,8 @@ const messages = [];
 for await (const message of query({
   prompt: "Create a data processing pipeline",
   options: {
-    systemPrompt: customPrompt,
-  },
+    systemPrompt: customPrompt
+  }
 })) {
   messages.push(message);
   if (message.type === "assistant") {
@@ -340,12 +334,10 @@ messages = []
 
 async for message in query(
     prompt="Create a data processing pipeline",
-    options=ClaudeAgentOptions(
-        system_prompt=custom_prompt
-    )
+    options=ClaudeAgentOptions(system_prompt=custom_prompt),
 ):
     messages.append(message)
-    if message.type == 'assistant':
+    if message.type == "assistant":
         print(message.message.content)
 ```
 
@@ -448,9 +440,9 @@ for await (const message of query({
         - OAuth 2.0 compliance
         - Token storage security
         - Session management
-      `,
-    },
-  },
+      `
+    }
+  }
 })) {
   messages.push(message);
 }
@@ -474,9 +466,9 @@ async for message in query(
             - OAuth 2.0 compliance
             - Token storage security
             - Session management
-            """
+            """,
         }
-    )
+    ),
 ):
     messages.append(message)
 ```

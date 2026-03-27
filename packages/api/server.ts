@@ -24,6 +24,7 @@ import {
   createPlannerRoutes,
   createRelevanceRoutes,
   createAgentRoutes,
+  createAgentVersionRoutes,
   createStatsRoutes,
   createSummaryBrowserRoutes,
   createRepoChatRoutes,
@@ -241,6 +242,7 @@ function setupRoutes(): void {
   app.get('/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches);
 
   app.get('/api/planner/drafts', plannerRoutes.listDrafts);
+  app.get('/api/planner/drafts/repositories', plannerRoutes.listRepositories);
   app.post('/api/planner/drafts', plannerRoutes.createDraft);
   app.get('/api/planner/drafts/:id', plannerRoutes.getDraft);
   app.put('/api/planner/drafts/:id', plannerRoutes.updateDraft);
@@ -272,6 +274,15 @@ function setupRoutes(): void {
 
   // Agent chat API routes
   app.use('/api/agents', agentRoutes.router);
+
+  // Agent version management routes
+  const agentVersionRoutes = createAgentVersionRoutes();
+  app.get('/api/agents/versions/:agentType', agentVersionRoutes.getVersions);
+  app.post('/api/agents/:agentId/build-image', agentVersionRoutes.buildImage);
+  app.delete('/api/agents/:agentType/images/cleanup', agentVersionRoutes.cleanupImages);
+  app.get('/api/agents/:agentType/images', agentVersionRoutes.listImages);
+  app.post('/api/agents/resolve-version', agentVersionRoutes.resolveVersionEndpoint);
+  app.get('/api/agents/:agentType/image-tag', agentVersionRoutes.getImageTag);
 
   // Stats routes
   app.get('/api/stats/tasks', statsRoutes.getTaskStats);

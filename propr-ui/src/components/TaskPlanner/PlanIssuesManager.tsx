@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle, Layers, ArrowDownToLine, Info } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
@@ -7,6 +7,7 @@ import PlanIssueRow from './PlanIssueRow';
 import AgentModelSelector from './AgentModelSelector';
 import SequentialWarningDialog from './SequentialWarningDialog';
 import { usePlanIssuesManager } from './usePlanIssuesManager';
+import { IssueCreationProgressIndicator } from './IssueCreationProgressIndicator';
 
 interface PlanIssuesManagerProps {
   draftId: string;
@@ -67,6 +68,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     applyingGlobal,
     issueMultiModeMap,
     issueSelectedModelsMap,
+    issueCreationProgress,
+    resetIssueCreationProgress,
     handleImplementIssue,
     handleGlobalAgentChange,
     handleGlobalModelChange,
@@ -173,6 +176,17 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           </button>
         </div>
       )}
+
+      {/* Issue Creation Progress Indicator */}
+      <AnimatePresence>
+        {issueCreationProgress.status !== 'idle' && (
+          <IssueCreationProgressIndicator
+            progress={issueCreationProgress}
+            onDismiss={issueCreationProgress.status !== 'in_progress' ? resetIssueCreationProgress : undefined}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Unified Execution Options Toolbar */}
       {pendingCount > 0 && (
         <div className="flex flex-col gap-3 sm:gap-4 py-3 border-y border-gray-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-4">

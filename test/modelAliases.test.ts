@@ -6,49 +6,47 @@ import type { AgentConfig } from '@propr/core';
 
 test('Model Aliases Configuration', async (t) => {
     await t.test('should resolve known aliases to full model IDs', () => {
-        assert.strictEqual(resolveModelAlias('opus'), 'claude-opus-4-20250514');
-        assert.strictEqual(resolveModelAlias('sonnet'), 'claude-sonnet-4-5-20250929');
-        assert.strictEqual(resolveModelAlias('sonnet37'), 'claude-3-7-sonnet-20250219');
-        assert.strictEqual(resolveModelAlias('sonnet35'), 'claude-3-5-sonnet-20241022');
-        assert.strictEqual(resolveModelAlias('haiku'), 'claude-3-5-haiku-20241022');
+        // Default aliases point to 4.6 models
+        assert.strictEqual(resolveModelAlias('opus'), 'claude-opus-4-6');
+        assert.strictEqual(resolveModelAlias('sonnet'), 'claude-sonnet-4-6');
+        // Explicit 4.5 aliases
+        assert.strictEqual(resolveModelAlias('opus45'), 'claude-opus-4-5-20251101');
+        assert.strictEqual(resolveModelAlias('sonnet45'), 'claude-sonnet-4-5-20250929');
+        assert.strictEqual(resolveModelAlias('haiku'), 'claude-haiku-4-5-20251001');
     });
 
     await t.test('should handle case-insensitive aliases', () => {
-        assert.strictEqual(resolveModelAlias('OPUS'), 'claude-opus-4-20250514');
-        assert.strictEqual(resolveModelAlias('Sonnet'), 'claude-sonnet-4-5-20250929');
-        assert.strictEqual(resolveModelAlias('HAIKU'), 'claude-3-5-haiku-20241022');
+        assert.strictEqual(resolveModelAlias('OPUS'), 'claude-opus-4-6');
+        assert.strictEqual(resolveModelAlias('Sonnet'), 'claude-sonnet-4-6');
+        assert.strictEqual(resolveModelAlias('HAIKU'), 'claude-haiku-4-5-20251001');
     });
 
     await t.test('should return full model IDs as-is', () => {
-        assert.strictEqual(resolveModelAlias('claude-3-5-sonnet-20241022'), 'claude-3-5-sonnet-20241022');
+        assert.strictEqual(resolveModelAlias('claude-sonnet-4-5-20250929'), 'claude-sonnet-4-5-20250929');
         assert.strictEqual(resolveModelAlias('custom-model-id'), 'custom-model-id');
     });
 
     await t.test('should use default model when no model specified', () => {
         const defaultModel = resolveModelAlias(null);
-        assert.strictEqual(defaultModel, 'claude-sonnet-4-5-20250929');
+        assert.strictEqual(defaultModel, 'claude-sonnet-4-6');
         assert.strictEqual(defaultModel, MODEL_ALIASES[DEFAULT_MODEL_ALIAS]);
     });
 
     await t.test('getDefaultModel should return sonnet as default', () => {
-        assert.strictEqual(getDefaultModel(), 'claude-sonnet-4-5-20250929');
+        assert.strictEqual(getDefaultModel(), 'claude-sonnet-4-6');
         assert.strictEqual(DEFAULT_MODEL_ALIAS, 'sonnet');
     });
 
-    await t.test('should handle legacy aliases', () => {
-        assert.strictEqual(resolveModelAlias('claude-3-opus'), 'claude-3-opus-20240229');
-        assert.strictEqual(resolveModelAlias('claude-3-5-sonnet'), 'claude-3-5-sonnet-20241022');
-        assert.strictEqual(resolveModelAlias('claude-3-haiku'), 'claude-3-haiku-20240307');
-        assert.strictEqual(resolveModelAlias('claude-3-sonnet'), 'claude-3-sonnet-20240229');
+    await t.test('should handle explicit version aliases', () => {
+        // 4.6 aliases
+        assert.strictEqual(resolveModelAlias('opus46'), 'claude-opus-4-6');
+        assert.strictEqual(resolveModelAlias('sonnet46'), 'claude-sonnet-4-6');
+        // 4.5 aliases
+        assert.strictEqual(resolveModelAlias('opus-4-5'), 'claude-opus-4-5-20251101');
+        assert.strictEqual(resolveModelAlias('sonnet-4-5'), 'claude-sonnet-4-5-20250929');
+        assert.strictEqual(resolveModelAlias('haiku45'), 'claude-haiku-4-5-20251001');
     });
 
-    await t.test('should handle official Anthropic aliases', () => {
-        assert.strictEqual(resolveModelAlias('claude-opus-4-0'), 'claude-opus-4-20250514');
-        assert.strictEqual(resolveModelAlias('claude-sonnet-4-0'), 'claude-sonnet-4-5-20250929');
-        assert.strictEqual(resolveModelAlias('claude-3-7-sonnet-latest'), 'claude-3-7-sonnet-20250219');
-        assert.strictEqual(resolveModelAlias('claude-3-5-sonnet-latest'), 'claude-3-5-sonnet-20241022');
-        assert.strictEqual(resolveModelAlias('claude-3-5-haiku-latest'), 'claude-3-5-haiku-20241022');
-    });
 });
 
 test('resolveLlmLabel - 5-step model resolution', async (t) => {
@@ -60,8 +58,8 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
                 type: 'claude' as const,
                 alias: 'claude',
                 enabled: true,
-                supportedModels: ['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
-                defaultModel: 'claude-sonnet-4-5-20250929'
+                supportedModels: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                defaultModel: 'claude-sonnet-4-6'
             }
         },
         {
@@ -100,10 +98,10 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     registry.ensureInitialized = async () => { /* no-op for tests */ };
 
     await t.test('Step 1: resolves exact githubLabel match from modelDefinitions', async () => {
-        // Labels like "claude-opus" should match the githubLabel "llm-claude-opus"
-        const result = await resolveLlmLabel('claude-opus');
+        // Labels like "claude-opus46" should match the githubLabel "llm-claude-opus46"
+        const result = await resolveLlmLabel('claude-opus46');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to claude agent');
-        assert.strictEqual(result.model, 'claude-opus-4-5-20251101', 'Should resolve to exact model from modelDefinitions');
+        assert.strictEqual(result.model, 'claude-opus-4-6', 'Should resolve to exact model from modelDefinitions');
     });
 
     await t.test('Step 1: resolves exact githubLabel for gemini models', async () => {
@@ -129,7 +127,7 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     await t.test('Step 2: resolves claude alias to default model', async () => {
         const result = await resolveLlmLabel('claude');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to claude agent');
-        assert.strictEqual(result.model, 'claude-sonnet-4-5-20250929', 'Should use claude default model');
+        assert.strictEqual(result.model, 'claude-sonnet-4-6', 'Should use claude default model');
     });
 
     await t.test('Step 2: resolves codex alias to default model', async () => {
@@ -155,19 +153,19 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     await t.test('Step 4: resolves static MODEL_ALIASES for backwards compatibility (opus)', async () => {
         const result = await resolveLlmLabel('opus');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default (claude) agent');
-        assert.strictEqual(result.model, 'claude-opus-4-5', 'Should resolve to claude-opus-4-5 from static aliases');
+        assert.strictEqual(result.model, 'claude-opus-4-6', 'Should resolve to claude-opus-4-6 from static aliases');
     });
 
     await t.test('Step 4: resolves static MODEL_ALIASES for sonnet', async () => {
         const result = await resolveLlmLabel('sonnet');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default agent');
-        assert.strictEqual(result.model, 'claude-sonnet-4-5', 'Should resolve to claude-sonnet-4-5');
+        assert.strictEqual(result.model, 'claude-sonnet-4-6', 'Should resolve to claude-sonnet-4-6');
     });
 
     await t.test('Step 4: resolves static MODEL_ALIASES for haiku', async () => {
         const result = await resolveLlmLabel('haiku');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default agent');
-        assert.strictEqual(result.model, 'claude-haiku-4-5', 'Should resolve to claude-haiku-4-5');
+        assert.strictEqual(result.model, 'claude-haiku-4-5-20251001', 'Should resolve to claude-haiku-4-5-20251001');
     });
 
     await t.test('Step 5: falls back to label as model name for unknown labels', async () => {
@@ -237,28 +235,28 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
     });
 
     await t.test('matches exact model ID (case-insensitive)', () => {
-        const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001']);
+        const config = createMockConfig(['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001']);
 
         // Exact match with correct case
-        assert.strictEqual(findMatchingModel('claude-opus-4-5-20251101', config), 'claude-opus-4-5-20251101');
-        assert.strictEqual(findMatchingModel('claude-sonnet-4-5-20250929', config), 'claude-sonnet-4-5-20250929');
+        assert.strictEqual(findMatchingModel('claude-opus-4-6', config), 'claude-opus-4-6');
+        assert.strictEqual(findMatchingModel('claude-sonnet-4-6', config), 'claude-sonnet-4-6');
 
         // Exact match with different case
-        assert.strictEqual(findMatchingModel('CLAUDE-OPUS-4-5-20251101', config), 'claude-opus-4-5-20251101');
-        assert.strictEqual(findMatchingModel('Claude-Sonnet-4-5-20250929', config), 'claude-sonnet-4-5-20250929');
+        assert.strictEqual(findMatchingModel('CLAUDE-OPUS-4-6', config), 'claude-opus-4-6');
+        assert.strictEqual(findMatchingModel('Claude-Sonnet-4-6', config), 'claude-sonnet-4-6');
     });
 
     await t.test('matches exact shortAlias from modelDefinitions', () => {
-        const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001']);
+        const config = createMockConfig(['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001']);
 
-        // shortAlias for claude models: opus, sonnet, haiku
-        assert.strictEqual(findMatchingModel('opus', config), 'claude-opus-4-5-20251101');
-        assert.strictEqual(findMatchingModel('sonnet', config), 'claude-sonnet-4-5-20250929');
+        // shortAlias for claude models: opus46, sonnet46, haiku
+        assert.strictEqual(findMatchingModel('opus46', config), 'claude-opus-4-6');
+        assert.strictEqual(findMatchingModel('sonnet46', config), 'claude-sonnet-4-6');
         assert.strictEqual(findMatchingModel('haiku', config), 'claude-haiku-4-5-20251001');
 
         // Case-insensitive shortAlias
-        assert.strictEqual(findMatchingModel('OPUS', config), 'claude-opus-4-5-20251101');
-        assert.strictEqual(findMatchingModel('Sonnet', config), 'claude-sonnet-4-5-20250929');
+        assert.strictEqual(findMatchingModel('OPUS46', config), 'claude-opus-4-6');
+        assert.strictEqual(findMatchingModel('Sonnet46', config), 'claude-sonnet-4-6');
     });
 
     await t.test('matches exact shortAlias for gemini models', () => {
@@ -286,6 +284,14 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
         assert.strictEqual(findMatchingModel('opus-4-5', config), 'claude-opus-4-5-20251101');
         assert.strictEqual(findMatchingModel('20251101', config), 'claude-opus-4-5-20251101');
         assert.strictEqual(findMatchingModel('sonnet-4-5', config), 'claude-sonnet-4-5-20250929');
+    });
+
+    await t.test('matches 4.5 model shortAliases correctly', () => {
+        const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929']);
+
+        // shortAlias for 4.5 models: opus45, sonnet45
+        assert.strictEqual(findMatchingModel('opus45', config), 'claude-opus-4-5-20251101');
+        assert.strictEqual(findMatchingModel('sonnet45', config), 'claude-sonnet-4-5-20250929');
     });
 
     await t.test('matches partial model ID for gemini', () => {
@@ -334,8 +340,8 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
     await t.test('prioritizes exact shortAlias over partial model ID match', () => {
         const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929']);
 
-        // 'opus' is exact shortAlias, should match before partial model ID match
-        assert.strictEqual(findMatchingModel('opus', config), 'claude-opus-4-5-20251101');
+        // 'opus45' is exact shortAlias, should match before partial model ID match
+        assert.strictEqual(findMatchingModel('opus45', config), 'claude-opus-4-5-20251101');
     });
 
     await t.test('handles models not in MODEL_INFO_MAP gracefully', () => {
@@ -349,17 +355,18 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
         assert.strictEqual(findMatchingModel('model-xyz', config), 'custom-model-xyz');
 
         // Known model still works
-        assert.strictEqual(findMatchingModel('opus', config), 'claude-opus-4-5-20251101');
+        assert.strictEqual(findMatchingModel('opus45', config), 'claude-opus-4-5-20251101');
     });
 });
 
 test('getModelShortName - returns short display names for PR titles', async (t) => {
     await t.test('returns correct short name for Claude models', () => {
-        // Claude Opus 4.5
-        assert.strictEqual(getModelShortName('claude-opus-4-5-20251101'), 'Claude Opus');
-        // Claude Sonnet 4.5
-        assert.strictEqual(getModelShortName('claude-sonnet-4-5-20250929'), 'Claude Sonnet');
-        // Claude Haiku 4.5
+        // Claude 4.6 models
+        assert.strictEqual(getModelShortName('claude-opus-4-6'), 'Claude Opus 4.6');
+        assert.strictEqual(getModelShortName('claude-sonnet-4-6'), 'Claude Sonnet 4.6');
+        // Claude 4.5 models
+        assert.strictEqual(getModelShortName('claude-opus-4-5-20251101'), 'Claude Opus 4.5');
+        assert.strictEqual(getModelShortName('claude-sonnet-4-5-20250929'), 'Claude Sonnet 4.5');
         assert.strictEqual(getModelShortName('claude-haiku-4-5-20251001'), 'Claude Haiku');
     });
 
@@ -410,12 +417,14 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName(undefined), 'AI');
     });
 
-    await t.test('verifies all 16 models return correct short names', () => {
+    await t.test('verifies all 18 models return correct short names', () => {
         // This test verifies the exact count and mapping for all models
         const expectedMappings: Record<string, string> = {
-            // 3 Claude models
-            'claude-opus-4-5-20251101': 'Claude Opus',
-            'claude-sonnet-4-5-20250929': 'Claude Sonnet',
+            // 5 Claude models (2 x 4.6, 3 x 4.5)
+            'claude-opus-4-6': 'Claude Opus 4.6',
+            'claude-sonnet-4-6': 'Claude Sonnet 4.6',
+            'claude-opus-4-5-20251101': 'Claude Opus 4.5',
+            'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
             'claude-haiku-4-5-20251001': 'Claude Haiku',
             // 8 Codex models
             'gpt-5.4': 'GPT-5.4',
@@ -434,9 +443,9 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
             'gemini-2.5-flash-lite': 'Flash Lite',
         };
 
-        // Verify we have exactly 16 models
+        // Verify we have exactly 18 models
         const modelCount = Object.keys(expectedMappings).length;
-        assert.strictEqual(modelCount, 16, `Expected 16 models but found ${modelCount}`);
+        assert.strictEqual(modelCount, 18, `Expected 18 models but found ${modelCount}`);
 
         // Verify each model returns the correct short name
         for (const [modelId, expectedShortName] of Object.entries(expectedMappings)) {
@@ -449,9 +458,9 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         }
     });
 
-    await t.test('ALL_MODELS array matches the 16 expected models', () => {
-        // Verify ALL_MODELS contains all 16 models
-        assert.strictEqual(ALL_MODELS.length, 16, `Expected 16 models in ALL_MODELS but found ${ALL_MODELS.length}`);
+    await t.test('ALL_MODELS array matches the 18 expected models', () => {
+        // Verify ALL_MODELS contains all 18 models
+        assert.strictEqual(ALL_MODELS.length, 18, `Expected 18 models in ALL_MODELS but found ${ALL_MODELS.length}`);
 
         // Verify each model in ALL_MODELS has a valid shortName
         for (const model of ALL_MODELS) {
