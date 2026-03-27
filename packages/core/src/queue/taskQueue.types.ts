@@ -30,7 +30,7 @@ export interface AutoResolveContext {
     headBranch: string;
     headSha: string;
     baseSha: string;
-    triggerSource: 'pull_request' | 'push' | 'auto_merge';
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
 }
 
 export interface CommentJobData {
@@ -101,7 +101,7 @@ export interface MergeConflictJobData {
     baseBranch: string;
     headSha: string;
     baseSha: string;
-    triggerSource: 'pull_request' | 'push' | 'auto_merge';
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
     correlationId: string;
     systemGenerated: true;    // Distinguishes from user-authored follow-up comments
 }
