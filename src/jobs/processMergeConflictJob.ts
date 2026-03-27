@@ -290,14 +290,42 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         });
         startingCommentId = (startingComment as { data: { id: number } }).data.id;
 
-        // Fetch PR info for title and update task metadata
+        // Fetch PR info for title and linked issues via GraphQL
         try {
-            const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-                owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
-            });
-            const prTitle = (prResponse as { data: { title: string } }).data.title;
+            const graphqlResponse = await octokit.graphql<{
+                repository: {
+                    pullRequest: {
+                        title: string;
+                        closingIssuesReferences: {
+                            nodes: Array<{ number: number; title: string }>;
+                        };
+                    };
+                };
+            }>(`
+                query($owner: String!, $repo: String!, $prNumber: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                        pullRequest(number: $prNumber) {
+                            title
+                            closingIssuesReferences(first: 1) {
+                                nodes {
+                                    number
+                                    title
+                                }
+                            }
+                        }
+                    }
+                }
+            `, { owner: repoOwner, repo: repoName, prNumber: pullRequestNumber });
+
+            const prTitle = graphqlResponse.repository.pullRequest.title;
+            const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
+            const linkedIssueNumber = linkedIssues.length > 0 ? linkedIssues[0].number : null;
             const taskTitle = `Merge: ${prTitle}`;
             const taskSubtitle = `Merging ${baseBranch} into ${headBranch}`;
+
+            if (linkedIssueNumber) {
+                correlatedLogger.info({ taskId, pullRequestNumber, linkedIssueNumber }, 'Found linked issue via GraphQL for merge task');
+            }
 
             // Update task with PR info in database
             await db('tasks').where({ task_id: taskId }).update({
@@ -311,10 +339,11 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
                     baseBranch,
                     headBranch,
                     type: 'merge_conflict',
+                    ...(linkedIssueNumber && { issueNumber: linkedIssueNumber }),
                 }),
             });
 
-            // Update Redis state with title
+            // Update Redis state with title and linked issue
             const state = await stateManager.getTaskState(taskId);
             if (state) {
                 state.issueRef = {
@@ -322,13 +351,14 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
                     pullRequestNumber,
                     title: taskTitle,
                     subtitle: taskSubtitle,
+                    ...(linkedIssueNumber && { issueNumber: linkedIssueNumber }),
                 };
                 await redisClient.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
             }
 
-            correlatedLogger.info({ taskId, prTitle, taskTitle }, 'Updated merge task with PR title');
+            correlatedLogger.info({ taskId, prTitle, taskTitle, linkedIssueNumber }, 'Updated merge task with PR title and linked issue');
         } catch (prError) {
-            correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR title for merge task');
+            correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR info for merge task');
         }
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting merge conflict resolution' });

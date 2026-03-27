@@ -78,6 +78,7 @@ interface UndoLinkContext {
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
     paginate: <T>(endpoint: string, options: Record<string, unknown>) => Promise<T[]>;
+    graphql: <T = unknown>(query: string, variables?: Record<string, unknown>) => Promise<T>;
 };
 
 export async function validateAndFilterComments(
@@ -159,12 +160,48 @@ export async function fetchLinkedIssueContext(
     const { correlationId, correlatedLogger } = options;
     let originalTaskSpec = '';
     let bodyHtml: string | undefined;
-    const linkedIssueMatch = prData.data.body?.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
 
-    if (!linkedIssueMatch) return { context: originalTaskSpec, linkedIssueNumber: null };
+    // Use GraphQL to get linked issues (cleaner than regex parsing)
+    let linkedIssueNumber: number | null = null;
+    try {
+        const graphqlResponse = await octokit.graphql<{
+            repository: {
+                pullRequest: {
+                    closingIssuesReferences: {
+                        nodes: Array<{ number: number }>;
+                    };
+                };
+            };
+        }>(`
+            query($owner: String!, $repo: String!, $prNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $prNumber) {
+                        closingIssuesReferences(first: 1) {
+                            nodes {
+                                number
+                            }
+                        }
+                    }
+                }
+            }
+        `, { owner: repoOwner, repo: repoName, prNumber: pullRequestNumber });
 
-    const linkedIssueNumber = parseInt(linkedIssueMatch[1], 10);
-    correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue in PR body');
+        const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
+        if (linkedIssues.length > 0) {
+            linkedIssueNumber = linkedIssues[0].number;
+            correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue via GraphQL');
+        }
+    } catch (graphqlError) {
+        correlatedLogger.warn({ pullRequestNumber, error: (graphqlError as Error).message }, 'GraphQL query for linked issues failed, falling back to regex');
+        // Fallback to regex parsing
+        const linkedIssueMatch = prData.data.body?.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
+        if (linkedIssueMatch) {
+            linkedIssueNumber = parseInt(linkedIssueMatch[1], 10);
+            correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue via regex fallback');
+        }
+    }
+
+    if (!linkedIssueNumber) return { context: originalTaskSpec, linkedIssueNumber: null };
 
     try {
         const linkedIssueData = await octokit.request<{ data: { title: string; body: string; body_html?: string; user: { login: string } } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
