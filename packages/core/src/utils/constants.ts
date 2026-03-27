@@ -6,6 +6,6 @@ export function getPendingPrCommentsKey(owner: string, repo: string, prNumber: n
 
 export const MERGE_CONFLICT_IDEMPOTENCY_PREFIX: string = 'merge-conflict-queued';
 
-export function getMergeConflictIdempotencyKey(owner: string, repo: string, prNumber: number, headSha: string, baseSha: string): string {
-    return `${MERGE_CONFLICT_IDEMPOTENCY_PREFIX}:${owner}:${repo}:${prNumber}:${headSha}:${baseSha}`;
+export function getMergeConflictIdempotencyKey(params: { owner: string; repo: string; prNumber: number; headSha: string; baseSha: string }): string {
+    return `${MERGE_CONFLICT_IDEMPOTENCY_PREFIX}:${params.owner}:${params.repo}:${params.prNumber}:${params.headSha}:${params.baseSha}`;
 }

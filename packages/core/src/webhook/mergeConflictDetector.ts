@@ -40,12 +40,9 @@ const IDEMPOTENCY_TTL_SECONDS = 24 * 3600; // 24 hours
  */
 async function detectAndEnqueueForPR(
     prInfo: PRConflictInfo,
-    owner: string,
-    repoName: string,
-    triggerSource: MergeConflictJobData['triggerSource'],
-    redisClient: Redis,
-    correlationId: string
+    options: { owner: string; repoName: string; triggerSource: MergeConflictJobData['triggerSource']; redisClient: Redis; correlationId: string }
 ): Promise<ConflictDetectionResult> {
+    const { owner, repoName, triggerSource, redisClient, correlationId } = options;
     const log = logger.withCorrelation(correlationId);
     const repository = `${owner}/${repoName}`;
     const { number: prNumber } = prInfo;
@@ -64,7 +61,7 @@ async function detectAndEnqueueForPR(
     }
 
     // Check idempotency: same PR + head SHA + base SHA already queued?
-    const idempotencyKey = getMergeConflictIdempotencyKey(owner, repoName, prNumber, prInfo.headSha, prInfo.baseSha);
+    const idempotencyKey = getMergeConflictIdempotencyKey({ owner, repo: repoName, prNumber, headSha: prInfo.headSha, baseSha: prInfo.baseSha });
     const alreadyQueued = await redisClient.get(idempotencyKey);
     if (alreadyQueued) {
         log.info({ repository, prNumber, headSha: prInfo.headSha, baseSha: prInfo.baseSha, outcome: 'skipped_duplicate' }, 'Merge conflict detection: already queued for this conflict state');
@@ -202,7 +199,7 @@ export async function handlePullRequestConflictDetection(
         return null;
     }
 
-    return detectAndEnqueueForPR(prInfo, owner, repoName, 'pull_request', redisClient, correlationId);
+    return detectAndEnqueueForPR(prInfo, { owner, repoName, triggerSource: 'pull_request', redisClient, correlationId });
 }
 
 /**
@@ -255,7 +252,7 @@ export async function handlePushConflictDetection(
             const prInfo = await fetchPRConflictInfo(owner, repoName, pr.number);
             if (!prInfo) continue;
 
-            const result = await detectAndEnqueueForPR(prInfo, owner, repoName, 'push', redisClient, correlationId);
+            const result = await detectAndEnqueueForPR(prInfo, { owner, repoName, triggerSource: 'push', redisClient, correlationId });
             results.push(result);
         } catch (error) {
             log.error({ repository, prNumber: pr.number, error: (error as Error).message }, 'Merge conflict detection: error checking PR');
