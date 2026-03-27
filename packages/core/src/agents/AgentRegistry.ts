@@ -9,7 +9,7 @@ import * as configManager from '../config/configManager.js';
 import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
-import { getEffectiveCliVersion, computeContentHash } from './version/versionService.js';
+import { computeContentHash } from './version/versionService.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -79,23 +79,7 @@ export class AgentRegistry {
                     }
 
                     // Ensure Docker image exists before registering agent
-                    // Use versioned image if version config is present
-                    let imageReady = false;
-                    if (config.cliVersionType && config.cliVersionResolved) {
-                        const contentHash = computeContentHash(config.type as AgentType);
-                        const result = await ensureVersionedAgentImage(
-                            config.type,
-                            config.cliVersionResolved,
-                            contentHash
-                        );
-                        imageReady = result.success;
-                        if (result.success && result.imageTag !== config.dockerImage) {
-                            // Update config with correct image tag
-                            config.dockerImage = result.imageTag;
-                        }
-                    } else {
-                        imageReady = await ensureAgentDockerImage(config.type, config.dockerImage);
-                    }
+                    const imageReady = await this.ensureAgentImage(config);
 
                     if (!imageReady) {
                         logger.error({
@@ -206,6 +190,26 @@ export class AgentRegistry {
         if (!this.initialized) {
             await this.refresh();
         }
+    }
+
+    /**
+     * Ensures the Docker image for an agent config is ready.
+     * Uses versioned image if version config is present, otherwise uses default.
+     */
+    private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
+        if (config.cliVersionType && config.cliVersionResolved) {
+            const contentHash = computeContentHash(config.type as AgentType);
+            const result = await ensureVersionedAgentImage(
+                config.type,
+                config.cliVersionResolved,
+                contentHash
+            );
+            if (result.success && result.imageTag !== config.dockerImage) {
+                config.dockerImage = result.imageTag;
+            }
+            return result.success;
+        }
+        return ensureAgentDockerImage(config.type, config.dockerImage);
     }
 
     /**
