@@ -401,11 +401,6 @@ export interface VersionedImageBuildResult {
 /**
  * Ensures a versioned agent Docker image exists, building it if necessary.
  * The image tag format is: {imageName}:{cliVersion}-{contentHash}
- *
- * @param agentType - The type of agent ('claude', 'codex', 'gemini')
- * @param cliVersion - The CLI version to install (e.g., '2.1.77')
- * @param contentHash - The content hash of Dockerfile and scripts (6 chars)
- * @returns Result with success status, image tag, and optional error
  */
 export async function ensureVersionedAgentImage(
     agentType: string,
@@ -475,155 +470,22 @@ export async function ensureVersionedAgentImage(
 
             // Trigger cleanup of unused images in the background, preserving the just-built version
             const versionsToKeep = new Set<string>([cliVersion, `${cliVersion}-${contentHash}`]);
-            cleanupUnusedAgentImages(agentType, versionsToKeep).catch(err => {
+            import('./dockerImageManager.js').then(m =>
+                m.cleanupUnusedAgentImages(agentType, versionsToKeep)
+            ).catch(err => {
                 logger.warn({ agentType, error: (err as Error).message }, 'Background cleanup failed');
             });
 
             return { success: true, imageTag };
         } else {
-            logger.error({
-                agentType,
-                imageTag,
-                cliVersion,
-                dockerfile,
-                exitCode: buildResult.exitCode,
-                stderr: buildResult.stderr
-            }, 'Failed to build versioned agent Docker image');
-            return {
-                success: false,
-                imageTag,
-                error: `Build failed with exit code ${buildResult.exitCode}: ${buildResult.stderr}`
-            };
+            logger.error({ agentType, imageTag, cliVersion, dockerfile, exitCode: buildResult.exitCode, stderr: buildResult.stderr }, 'Failed to build versioned agent Docker image');
+            return { success: false, imageTag, error: `Build failed with exit code ${buildResult.exitCode}: ${buildResult.stderr}` };
         }
 
     } catch (error) {
         const err = error as Error;
-        logger.error({
-            agentType,
-            imageTag,
-            cliVersion,
-            dockerfile,
-            error: err.message
-        }, 'Error ensuring versioned agent Docker image');
-        return {
-            success: false,
-            imageTag,
-            error: err.message
-        };
-    }
-}
-
-/**
- * Lists all Docker images for a specific agent type.
- *
- * @param agentType - The agent type
- * @returns Array of image tags (e.g., ['2.1.77-a3f2b1', '2.1.76-b4c3d2'])
- */
-export async function listAgentImages(agentType: string): Promise<string[]> {
-    const imageNames: Record<string, string> = {
-        claude: 'propr-claude',
-        codex: 'propr-codex',
-        gemini: 'propr-gemini'
-    };
-
-    const imageName = imageNames[agentType];
-    if (!imageName) {
-        return [];
-    }
-
-    try {
-        const result = await executeDockerCommand('docker', [
-            'images', `${imageName}`, '--format', '{{.Tag}}'
-        ]);
-
-        const tags = result.stdout
-            .trim()
-            .split('\n')
-            .filter(tag => tag && tag !== '<none>');
-
-        return tags;
-    } catch (error) {
-        logger.warn({ agentType, error: (error as Error).message }, 'Failed to list agent images');
-        return [];
-    }
-}
-
-/**
- * Cleans up unused Docker images for an agent type.
- * Keeps images that are currently in use by agent configs and the default version.
- *
- * @param agentType - The agent type
- * @param versionsInUse - Set of version strings currently in use (optional, will be fetched if not provided)
- * @returns Number of images deleted
- */
-export async function cleanupUnusedAgentImages(
-    agentType: string,
-    versionsInUse?: Set<string>
-): Promise<number> {
-    const imageNames: Record<string, string> = {
-        claude: 'propr-claude',
-        codex: 'propr-codex',
-        gemini: 'propr-gemini'
-    };
-
-    const imageName = imageNames[agentType];
-    if (!imageName) {
-        return 0;
-    }
-
-    try {
-        // Get all image tags for this agent
-        const allTags = await listAgentImages(agentType);
-
-        if (allTags.length === 0) {
-            return 0;
-        }
-
-        // If versionsInUse not provided, don't delete anything (safe default)
-        if (!versionsInUse || versionsInUse.size === 0) {
-            logger.debug({ agentType }, 'No versions specified to keep, skipping cleanup');
-            return 0;
-        }
-
-        // Always keep 'latest' tag
-        versionsInUse.add('latest');
-
-        let deletedCount = 0;
-
-        for (const tag of allTags) {
-            // Extract version from tag (format: version-hash or just version)
-            const versionMatch = tag.match(/^([^-]+)/);
-            const version = versionMatch ? versionMatch[1] : tag;
-
-            // Skip if version is in use or if it's 'latest'
-            if (tag === 'latest' || versionsInUse.has(version) || versionsInUse.has(tag)) {
-                continue;
-            }
-
-            // Delete the image
-            const fullImageName = `${imageName}:${tag}`;
-            logger.info({ agentType, imageTag: fullImageName }, 'Deleting unused agent Docker image');
-
-            try {
-                await executeDockerCommand('docker', ['rmi', fullImageName]);
-                deletedCount++;
-                logger.info({ agentType, imageTag: fullImageName }, 'Deleted unused agent Docker image');
-            } catch (deleteError) {
-                // Image might be in use by a container, skip
-                logger.debug({
-                    agentType,
-                    imageTag: fullImageName,
-                    error: (deleteError as Error).message
-                }, 'Could not delete image (may be in use)');
-            }
-        }
-
-        logger.info({ agentType, deletedCount }, 'Cleanup completed');
-        return deletedCount;
-
-    } catch (error) {
-        logger.error({ agentType, error: (error as Error).message }, 'Failed to cleanup unused agent images');
-        return 0;
+        logger.error({ agentType, imageTag, cliVersion, dockerfile, error: err.message }, 'Error ensuring versioned agent Docker image');
+        return { success: false, imageTag, error: err.message };
     }
 }
 

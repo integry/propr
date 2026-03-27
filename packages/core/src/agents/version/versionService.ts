@@ -16,7 +16,6 @@ import {
     DOCKER_CONTENT_FILES
 } from './types.js';
 import {
-    fetchNpmPackageInfo,
     getDistTags,
     getRecentVersions,
     resolveVersionSpec

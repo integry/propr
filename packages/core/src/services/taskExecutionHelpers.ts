@@ -160,6 +160,30 @@ export interface GenerateTitleOptions {
   db: Knex | null;
 }
 
+/**
+ * Build a title generation prompt that explicitly includes all task titles.
+ * Extracted for testability.
+ */
+export function buildTitlePrompt(planJson: PlanTask[]): string {
+  const taskTitles = planJson
+    .map((task, index) => `${index + 1}. ${task.title}`)
+    .join('\n');
+
+  return `Generate a short, descriptive title (5-8 words) for this epic/plan that reflects ALL of the following task titles.
+
+STRICT FORMATTING RULES:
+- Output ONLY the title text, nothing else
+- Do NOT use markdown formatting (no **, __, *, _, or # symbols)
+- Do NOT wrap the title in quotes
+- Do NOT prefix with "Title:" or any other label
+- Plain text only
+
+Task Titles:
+${taskTitles}
+
+Title (plain text only):`;
+}
+
 export async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<void> {
   const { draftId, planJson, owner, repoName, oldName, correlationId, db } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -174,27 +198,14 @@ export async function generateAndSaveTaskTitle(options: GenerateTitleOptions): P
     authToken: githubToken
   });
 
-  const planSummary = JSON.stringify(planJson).substring(0, 3000);
-  const prompt = `Generate a short, descriptive title (5-8 words) for this task based on the following plan.
-
-STRICT FORMATTING RULES:
-- Output ONLY the title text, nothing else
-- Do NOT use markdown formatting (no **, __, *, _, or # symbols)
-- Do NOT wrap the title in quotes
-- Do NOT prefix with "Title:" or any other label
-- Plain text only
-
-Plan:
-${planSummary}
-
-Title (plain text only):`;
+  const prompt = buildTitlePrompt(planJson);
 
   correlatedLogger.info({ draftId }, 'Generating task title via LLM');
 
   // Build metadata for LLM log tracking
   const titleGenerationMetadata = {
     planTaskCount: planJson.length,
-    planSummaryLength: planSummary.length,
+    promptLength: prompt.length,
     oldName,
   };
 

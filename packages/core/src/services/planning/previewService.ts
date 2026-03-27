@@ -206,6 +206,17 @@ export function truncateToSentences(text: string): string {
 }
 
 /**
+ * Determine if the existing context cache can be reused.
+ */
+function isCacheValid(cache: ContextCache | undefined, contentHash: string, maxTokenLimit: number): boolean {
+  if (!cache) return false;
+  if (cache.contentHash !== contentHash) return false;
+  if (!cache.fileTokenCounts || !cache.repomixContext) return false;
+  if (cache.cachedMaxTokenLimit && cache.cachedMaxTokenLimit < maxTokenLimit) return false;
+  return true;
+}
+
+/**
  * Generate a context preview for a draft.
  * Main entry point for the preview service.
  */
@@ -235,8 +246,8 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const cache = existingConfig?.contextCache;
   const cacheHasSufficientLimit = !cache?.cachedMaxTokenLimit || cache.cachedMaxTokenLimit >= maxTokenLimit;
-  // Cache must have repomixContext - older caches may have omitted it to save space
-  const canUseCache = cache && cache.contentHash === contentHash && cache.fileTokenCounts && cache.repomixContext && cacheHasSufficientLimit;
+  const canUseCache = isCacheValid(cache, contentHash, maxTokenLimit);
+
 
   const { base64Images, imageTokens } = await loadImagesFromAttachments(attachments, correlatedLogger);
   const attachmentTokens = calculateAttachmentTokens(attachments, imageTokens);
@@ -277,7 +288,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   let additionalContextTokens = 0;
   let additionalContextFiles = 0;
   let additionalContextFilesIncluded: Array<{ repository: string; path: string }> = [];
-  if (contextRepositories && contextRepositories.length > 0 && githubToken) {
+  if (contextRepositories?.length && githubToken) {
     const additionalContextBudget = calculateAdditionalContextBudget(targetTokenLimit, simulatedTokens, attachmentTokens, smartSummaryTokens);
     const result = await loadAdditionalContextFromRepos({ contextRepositories, tokenBudget: additionalContextBudget, githubToken, correlationId, correlatedLogger });
     additionalContext = result.additionalContext;

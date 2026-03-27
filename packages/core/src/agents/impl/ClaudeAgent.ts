@@ -13,6 +13,7 @@ import {
     AgentTaskOptions,
     AgentExecutionResult,
     AnalysisResult,
+    AnalyzeOptions,
     TokenUsage
 } from '../types.js';
 import { executeDockerCommand, ExecutionResult } from '../../claude/docker/dockerExecutor.js';
@@ -247,11 +248,9 @@ export class ClaudeAgent implements Agent {
      */
     async analyze(
         prompt: string,
-        context?: string,
-        model?: string,
-        taskId?: string,
-        executionType?: string
+        options?: AnalyzeOptions
     ): Promise<AnalysisResult> {
+        const { context, model, taskId, executionType } = options || {};
         const startTime = Date.now();
 
         logger.info({
