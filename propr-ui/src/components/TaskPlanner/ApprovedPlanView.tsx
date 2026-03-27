@@ -198,7 +198,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const navigate = useNavigate();
   const { addToast } = useToast();
 
-  const [issues, setIssues] = useState<PlanIssue[]>([]);
+  const [issues, _setIssues] = useState<PlanIssue[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
