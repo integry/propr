@@ -259,8 +259,16 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         // Keep DEFAULT_MODEL_NAME
     }
 
+    // Create task state with proper type for merge conflicts
     try {
-        await stateManager.createTaskState(taskId, { number: pullRequestNumber, repoOwner, repoName, modelName } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
+        await stateManager.createTaskState(taskId, {
+            number: pullRequestNumber,
+            repoOwner,
+            repoName,
+            modelName,
+            type: 'pr_followup',  // Treat as PR followup for UI consistency
+            pullRequestNumber,
+        } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state');
     }
@@ -281,6 +289,47 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
             body: `🔀 **Auto-resolving merge conflicts** — merging \`${baseBranch}\` into \`${headBranch}\`\n\nThis is a system-triggered action to keep the PR branch up to date.`,
         });
         startingCommentId = (startingComment as { data: { id: number } }).data.id;
+
+        // Fetch PR info for title and update task metadata
+        try {
+            const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
+            });
+            const prTitle = (prResponse as { data: { title: string } }).data.title;
+            const taskTitle = `Merge: ${prTitle}`;
+            const taskSubtitle = `Merging ${baseBranch} into ${headBranch}`;
+
+            // Update task with PR info in database
+            await db('tasks').where({ task_id: taskId }).update({
+                pr_number: pullRequestNumber,
+                initial_job_data: JSON.stringify({
+                    pullRequestNumber,
+                    repoOwner,
+                    repoName,
+                    title: taskTitle,
+                    subtitle: taskSubtitle,
+                    baseBranch,
+                    headBranch,
+                    type: 'merge_conflict',
+                }),
+            });
+
+            // Update Redis state with title
+            const state = await stateManager.getTaskState(taskId);
+            if (state) {
+                state.issueRef = {
+                    ...state.issueRef,
+                    pullRequestNumber,
+                    title: taskTitle,
+                    subtitle: taskSubtitle,
+                };
+                await redisClient.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
+            }
+
+            correlatedLogger.info({ taskId, prTitle, taskTitle }, 'Updated merge task with PR title');
+        } catch (prError) {
+            correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR title for merge task');
+        }
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting merge conflict resolution' });
         await ensureGitRepository(correlatedLogger);
