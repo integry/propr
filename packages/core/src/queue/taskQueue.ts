@@ -14,6 +14,8 @@ export type {
     SystemTaskJobData,
     IndexingJobData,
     MergeConflictJobData,
+    SystemAction,
+    AutoResolveContext,
     JobData,
     ClaudeOutputResult,
     ClaudeResult,
