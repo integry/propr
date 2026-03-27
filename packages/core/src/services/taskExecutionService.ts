@@ -53,6 +53,7 @@ interface ValidatedDraftData {
   isReFinalization: boolean;
 }
 
+// Statuses that allow RE-finalization (will detach existing issues and recreate)
 const RE_FINALIZABLE_STATUSES = ['approved', 'executed', 'pr_created', 'merged', 'failed'];
 
 async function validateAndPrepareDraft(
@@ -75,8 +76,11 @@ async function validateAndPrepareDraft(
   }
 
   const isReFinalization = RE_FINALIZABLE_STATUSES.includes(draft.status);
+  // 'executing' status means the handler already validated and set the status atomically
+  // This is the normal execution flow, not a re-finalization
+  const isNormalExecution = draft.status === 'review' || draft.status === 'executing';
 
-  if (draft.status !== 'review' && !isReFinalization) {
+  if (!isNormalExecution && !isReFinalization) {
     throw new Error(`Draft must be in 'review' status to execute. Current status: ${draft.status}`);
   }
 

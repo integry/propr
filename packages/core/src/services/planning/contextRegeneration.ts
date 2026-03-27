@@ -21,7 +21,7 @@ import type { RegenerateContextParams, RegenerateContextResult } from './plannin
  * Performs relevance analysis, file selection, and context generation.
  */
 export async function regenerateContext(params: RegenerateContextParams): Promise<RegenerateContextResult> {
-  const { draftId, baseBranch, worktreePath, prompt, manualFiles, draft, contextModel, compress, previewTokenLimit, correlationId, correlatedLogger, excludedFiles } = params;
+  const { draftId, baseBranch, worktreePath, prompt, manualFiles, draft, contextModel, generationModel, compress, previewTokenLimit, correlationId, correlatedLogger, excludedFiles } = params;
   const securityWarnings: string[] = [];
 
   try {
@@ -115,7 +115,7 @@ export async function regenerateContext(params: RegenerateContextParams): Promis
 
   const filesToInclude = compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined);
   const priorityFiles = compress ? combinedFiles : undefined;
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId });
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId, modelId: generationModel });
 
   const smartSummaryBudget = Math.floor(previewTokenLimit * 0.1);
   const smartSummaryResult = await buildSummaryContext({ tokenBudget: smartSummaryBudget, priorityPaths: combinedFiles, repoName: draft.repository as string, correlationId });

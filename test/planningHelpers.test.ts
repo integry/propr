@@ -61,9 +61,12 @@ async function validatePromptTokens(
     countTokensFn: (text: string) => Promise<number> = async () => 0
 ): Promise<{ valid: boolean; tokenCount: number; source: 'tiktoken' | 'api' }> {
     const tiktokenEstimate = estimateTokensFn(prompt);
-    // Use model-specific ratio: Claude uses 1.36x, Gemini uses ~1.1x (closer to tiktoken)
-    const isGemini = modelId?.toLowerCase().includes('gemini');
-    const tokenRatio = isGemini ? GEMINI_TOKEN_RATIO : TIKTOKEN_TO_CLAUDE_RATIO;
+    // Use model-specific ratio: tiktoken (cl100k_base) is accurate for OpenAI models
+    // Claude needs 1.36x multiplier, Gemini needs ~1.1x
+    const modelLower = modelId?.toLowerCase() || '';
+    const isOpenAI = modelLower.includes('gpt-') || modelLower.includes('codex') || modelLower.includes('openai');
+    const isGemini = modelLower.includes('gemini');
+    const tokenRatio = isOpenAI ? 1.0 : (isGemini ? GEMINI_TOKEN_RATIO : TIKTOKEN_TO_CLAUDE_RATIO);
     const conservativeEstimate = Math.ceil(tiktokenEstimate * tokenRatio);
     const effectiveLimit = modelLimit - CLAUDE_CODE_OVERHEAD;
 
@@ -382,6 +385,51 @@ describe('validatePromptTokens', () => {
 
             // Contains "gemini" so should use 1.1 ratio
             assert.strictEqual(result.tokenCount, Math.ceil(10000 * GEMINI_TOKEN_RATIO));
+        });
+
+        test('should use OpenAI ratio (1.0) for GPT models', async () => {
+            const logger = createMockLogger();
+            const result = await validatePromptTokens(
+                'test prompt',
+                100000,
+                logger,
+                'gpt-5.4',
+                () => 10000,
+                async () => 0
+            );
+
+            // OpenAI models use 1.0 ratio (tiktoken is accurate for them)
+            assert.strictEqual(result.tokenCount, 10000);
+        });
+
+        test('should use OpenAI ratio (1.0) for Codex models', async () => {
+            const logger = createMockLogger();
+            const result = await validatePromptTokens(
+                'test prompt',
+                100000,
+                logger,
+                'codex-2.0',
+                () => 10000,
+                async () => 0
+            );
+
+            // Codex models use 1.0 ratio (tiktoken is OpenAI's tokenizer)
+            assert.strictEqual(result.tokenCount, 10000);
+        });
+
+        test('should detect OpenAI model case-insensitively', async () => {
+            const logger = createMockLogger();
+            const result = await validatePromptTokens(
+                'test prompt',
+                100000,
+                logger,
+                'GPT-5',
+                () => 10000,
+                async () => 0
+            );
+
+            // Should use OpenAI ratio: 10000 * 1.0 = 10000
+            assert.strictEqual(result.tokenCount, 10000);
         });
     });
 

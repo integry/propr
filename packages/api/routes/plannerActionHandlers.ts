@@ -264,12 +264,36 @@ export function createFinalizeHandler(db: Knex) {
     const correlationId = generateCorrelationId();
     const userId = req.user!.id;
 
-    // Update draft status to 'executing' before returning
+    // Atomically update draft status to 'executing' only if it's in a valid state
+    // This prevents race conditions from duplicate finalize requests
+    const RE_FINALIZABLE_STATUSES = ['review', 'approved', 'executed', 'pr_created', 'merged', 'failed'];
     try {
-      await db('task_drafts').where({ draft_id: draftId }).update({
-        status: 'executing',
-        updated_at: db.fn.now()
-      });
+      const updated = await db('task_drafts')
+        .where({ draft_id: draftId, user_id: userId })
+        .whereIn('status', RE_FINALIZABLE_STATUSES)
+        .update({
+          status: 'executing',
+          updated_at: db.fn.now()
+        });
+
+      if (updated === 0) {
+        // Check why - either draft doesn't exist, unauthorized, or already executing
+        const draft = await db('task_drafts').where({ draft_id: draftId }).first();
+        if (!draft) {
+          res.status(404).json({ error: 'Draft not found' });
+          return;
+        }
+        if (draft.user_id !== userId) {
+          res.status(403).json({ error: 'Unauthorized' });
+          return;
+        }
+        if (draft.status === 'executing') {
+          res.status(409).json({ error: 'Draft is already being executed' });
+          return;
+        }
+        res.status(400).json({ error: `Cannot execute draft with status: ${draft.status}` });
+        return;
+      }
     } catch (error) {
       console.error('Failed to update draft status:', error);
       res.status(500).json({ error: 'Failed to start execution' });

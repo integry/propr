@@ -204,6 +204,8 @@ export interface RegenerateContextParams {
   manualFiles: string[];
   draft: TaskDraft;
   contextModel?: string;
+  /** Generation model for token ratio calculation (tiktoken is accurate for OpenAI, needs adjustment for Claude) */
+  generationModel?: string;
   compress: boolean;
   previewTokenLimit: number;
   correlationId?: string;

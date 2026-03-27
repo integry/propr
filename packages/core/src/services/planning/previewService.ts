@@ -37,6 +37,23 @@ import type {
 const DEFAULT_OUTPUT_TOKENS = 4000;
 const SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';
 
+/**
+ * In-flight context preview requests.
+ * Used to coalesce duplicate requests for the same draft.
+ * Key is draftId + contentHash, value is the pending promise.
+ */
+const inFlightPreviews = new Map<string, Promise<PreviewResult>>();
+
+/**
+ * Generate a unique key for tracking in-flight requests.
+ * Based on draftId and content-affecting parameters.
+ */
+function getInFlightKey(draftId: string, prompt: string, baseBranch: string, compress: boolean, files: string[] | undefined): string {
+  // Use a simplified hash of content-affecting parameters
+  const filesKey = files?.sort().join(',') || '';
+  return `${draftId}:${prompt.length}:${baseBranch}:${compress}:${filesKey.length}`;
+}
+
 interface FilteredFileData {
   filteredAutoFilePaths: string[];
   combinedFiles: string[];
@@ -216,6 +233,7 @@ interface GetContextDataParams {
   manualFiles: string[];
   draft: TaskDraft;
   contextModel?: string;
+  generationModel?: string;
   compress: boolean;
   maxTokenLimit: number;
   correlationId?: string;
@@ -249,6 +267,7 @@ async function getContextData(params: GetContextDataParams): Promise<{ contextDa
     manualFiles: regenParams.manualFiles,
     draft: regenParams.draft,
     contextModel: regenParams.contextModel,
+    generationModel: regenParams.generationModel,
     compress: regenParams.compress,
     previewTokenLimit: maxTokenLimit,
     correlationId: regenParams.correlationId,
@@ -311,8 +330,42 @@ function isCacheValid(cache: ContextCache | undefined, contentHash: string, maxT
 /**
  * Generate a context preview for a draft.
  * Main entry point for the preview service.
+ *
+ * Uses promise coalescing to prevent duplicate context analysis when
+ * multiple requests come in for the same draft with the same content.
  */
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
+  const { draftId, prompt, baseBranch, compress = false, files, correlationId } = options;
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+
+  // Generate key for in-flight tracking
+  const inFlightKey = getInFlightKey(draftId, prompt, baseBranch, compress, files);
+
+  // Check if there's already an in-flight request for this draft with same content
+  const existingRequest = inFlightPreviews.get(inFlightKey);
+  if (existingRequest) {
+    correlatedLogger.info({ draftId, inFlightKey }, 'Coalescing duplicate context preview request - reusing in-flight promise');
+    return existingRequest;
+  }
+
+  // Create and track the new request
+  const requestPromise = generateContextPreviewInternal(options);
+  inFlightPreviews.set(inFlightKey, requestPromise);
+
+  // Clean up the in-flight entry when done (success or failure)
+  requestPromise.finally(() => {
+    inFlightPreviews.delete(inFlightKey);
+    correlatedLogger.debug({ draftId, inFlightKey }, 'Removed in-flight context preview entry');
+  });
+
+  return requestPromise;
+}
+
+/**
+ * Internal implementation of context preview generation.
+ * Called by generateContextPreview after coalescing check.
+ */
+async function generateContextPreviewInternal(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
   const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken, excludedFiles } = options;
   const targetTokenLimit = getEffectiveTokenLimit(generationModel, contextLevel);
   const maxTokenLimit = getEffectiveTokenLimit(generationModel, MAX_CONTEXT_LEVEL);
@@ -346,7 +399,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const { contextData, warnings: contextWarnings } = await getContextData({
     canUseCache: !!canUseCache, cache, draftId, baseBranch, worktreePath, prompt, manualFiles, draft, contextModel,
-    compress, maxTokenLimit, correlationId, correlatedLogger, contentHash, cacheHasSufficientLimit, excludedFiles
+    generationModel, compress, maxTokenLimit, correlationId, correlatedLogger, contentHash, cacheHasSufficientLimit, excludedFiles
   });
   warnings.push(...contextWarnings);
 
