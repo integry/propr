@@ -23,6 +23,16 @@ export interface IssueJobData {
     isRetryFromRateLimit?: boolean;  // Set when job is retried after rate limit
 }
 
+export type SystemAction = 'auto_resolve_merge_conflicts';
+
+export interface AutoResolveContext {
+    baseBranch: string;
+    headBranch: string;
+    headSha: string;
+    baseSha: string;
+    triggerSource: 'pull_request' | 'push' | 'auto_merge';
+}
+
 export interface CommentJobData {
     pullRequestNumber: number;
     commentId?: number;
@@ -36,6 +46,8 @@ export interface CommentJobData {
     correlationId: string;
     title?: string;
     subtitle?: string;
+    systemAction?: SystemAction;
+    autoResolveContext?: AutoResolveContext;
 }
 
 export interface UnprocessedComment {

@@ -70,6 +70,8 @@ export type { WorktreeResult, WorktreeInfo, FetchLatestChangesOptions, FetchLate
 export { cleanupExistingBranch, createWorktreeFromExistingBranch } from './git/worktreeCreation.js';
 export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';
 export { isGitCorruptionError, GIT_CORRUPTION_PATTERNS, getCorruptionPatternStrings } from './git/gitCorruption.js';
+export { mergeBaseIntoBranch } from './git/mergeOperations.js';
+export type { MergeOutcome, MergeResult } from './git/mergeOperations.js';
 
 export {
     issueQueue,
@@ -100,7 +102,9 @@ export type {
     AiMetrics,
     WorkerCreateOptions,
     ProcessorFunction,
-    UnprocessedComment
+    UnprocessedComment,
+    SystemAction,
+    AutoResolveContext
 } from './queue/taskQueue.js';
 
 export { processWebhookEvent, initializeWebhookHandler } from './webhook/webhookHandler.js';
