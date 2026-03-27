@@ -145,7 +145,7 @@ async function handleMergeWithAgent(options: {
         throw new Error(`Agent execution failed during conflict resolution: ${claudeResult.error || 'Unknown error'}`);
     }
 
-    // Commit resolved conflicts
+    // Commit any changes from conflict resolution (if agent made changes)
     const commitMessage = buildMergeConflictCommitMessage({
         baseBranch,
         headBranch: branchName,
@@ -157,17 +157,23 @@ async function handleMergeWithAgent(options: {
 
     const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Resolve merge conflicts' });
 
-    if (commitResult) {
-        await pushBranch(worktreeInfo.worktreePath, branchName, { repoUrl, authToken: githubToken.token });
-    }
+    // Always push - even if no new commit was created by the agent,
+    // git merge may have created a merge commit that needs pushing
+    await pushBranch(worktreeInfo.worktreePath, branchName, { repoUrl, authToken: githubToken.token });
+
+    // Get the current HEAD commit hash (either from our commit or the merge commit)
+    const { simpleGit } = await import('simple-git');
+    const git = simpleGit({ baseDir: worktreeInfo.worktreePath });
+    const headCommit = await git.revparse(['HEAD']);
+    const finalCommitHash = commitResult?.commitHash || headCommit.trim();
 
     const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
     const taskUrl = `${webUiUrl}/tasks/${taskId}`;
 
     // Update the starting comment with resolution result
     const comment = buildMergeConflictComment({
-        wasCleanMerge: false,
-        commitHash: commitResult?.commitHash,
+        wasCleanMerge: !conflictedFiles || conflictedFiles.length === 0,
+        commitHash: finalCommitHash,
         baseBranch,
         headBranch: branchName,
         conflictedFiles,
@@ -181,20 +187,18 @@ async function handleMergeWithAgent(options: {
     });
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: 'Merge conflict resolution completed successfully', commitHash: commitResult?.commitHash,
+        reason: 'Merge conflict resolution completed successfully', commitHash: finalCommitHash,
     });
 
-    if (commitResult?.commitHash) {
-        try {
-            await db('tasks').where({ task_id: taskId }).update({ commit_hash: commitResult.commitHash });
-        } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
-        }
+    try {
+        await db('tasks').where({ task_id: taskId }).update({ commit_hash: finalCommitHash });
+    } catch (dbError) {
+        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
     }
 
     correlatedLogger.info({
         pullRequestNumber,
-        commitHash: commitResult?.commitHash,
+        commitHash: finalCommitHash,
         baseBranch,
         conflictedFiles,
         model: claudeResult.model || resolvedModel,
@@ -202,9 +206,9 @@ async function handleMergeWithAgent(options: {
 
     return {
         status: 'complete',
-        commit: commitResult?.commitHash,
+        commit: finalCommitHash,
         pullRequestNumber,
-        mergeType: 'conflict_resolved',
+        mergeType: conflictedFiles && conflictedFiles.length > 0 ? 'conflict_resolved' : 'clean',
         claudeResult: { success: claudeResult.success },
     };
 }

@@ -95,8 +95,24 @@ export function buildMergeConflictComment(options: {
 
     if (wasCleanMerge) {
         let comment = `🔀 **Auto-merged \`${baseBranch}\` into \`${headBranch}\`** (clean merge) in commit ${shortHash}\n\n`;
-        comment += `No conflicts were found — the merge was applied automatically without invoking an AI agent.\n`;
-        comment += `\n---\n_System-triggered merge conflict resolution_`;
+        comment += `No conflicts were found — the merge was verified by an AI agent.\n`;
+
+        if (model || executionTimeMs) {
+            comment += `\n---\n### 🤖 Verification Details\n\n`;
+            if (model) comment += `* **Model:** ${model}\n`;
+            if (executionTimeMs) {
+                const seconds = Math.floor(executionTimeMs / 1000);
+                const m = Math.floor(seconds / 60);
+                const s = seconds % 60;
+                comment += `* **Time:** ${m > 0 ? `${m}m ${s}s` : `${s}s`}\n`;
+            }
+        }
+
+        if (taskUrl) {
+            comment += `\n[View Task Execution](${taskUrl})`;
+        }
+
+        comment += `\n\n---\n_System-triggered merge conflict resolution_`;
         return comment;
     }
 
