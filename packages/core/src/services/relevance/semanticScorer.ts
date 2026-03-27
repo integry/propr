@@ -168,7 +168,7 @@ export async function scoreSemanticRelevance(
 
       try {
         // Pass modelId to use the configured context analysis model
-        const analysisResult = await agent.analyze(prompt, undefined, modelId);
+        const analysisResult = await agent.analyze(prompt, { model: modelId });
         const response = analysisResult.response;
         const parsed = parseSemanticResponse(response);
 

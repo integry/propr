@@ -339,7 +339,7 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
 
     const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
     correlatedLogger.info({ agentAlias, resolvedModel, taskId, executionType }, 'Using agent-specific lightweight LLM analysis');
-    return await agent.analyze(prompt, undefined, resolvedModel, taskId, executionType);
+    return await agent.analyze(prompt, { model: resolvedModel, taskId, executionType });
 }
 
 async function executeClaudeAnalysis(

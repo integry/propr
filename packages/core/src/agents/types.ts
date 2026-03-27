@@ -88,6 +88,14 @@ export interface AnalysisResult {
     error?: string;
 }
 
+export interface AnalyzeOptions {
+    context?: string;
+    model?: string;
+    taskId?: string;
+    /** Type of execution for container naming (e.g., 'plan-generation', 'context-analysis') */
+    executionType?: string;
+}
+
 export interface AgentExecutionResult {
     success: boolean;
     logs: string;           // Full stderr/stdout logs
@@ -130,9 +138,8 @@ export interface Agent {
      * Used for planning, summarization, and PR reviews.
      * Updated to support model override and abort signal.
      * Returns AnalysisResult with response and metadata for metrics tracking.
-     * @param executionType - Type of execution for container naming (e.g., 'plan-generation', 'context-analysis')
      */
-    analyze(prompt: string, context?: string, model?: string, taskId?: string, executionType?: string): Promise<AnalysisResult>;
+    analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult>;
 
     /**
      * Verifies the agent is ready (e.g. docker image exists).

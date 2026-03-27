@@ -225,7 +225,8 @@ export type {
     AgentExecutionResult,
     AgentType,
     TokenUsage as AgentTokenUsage,
-    AnalysisResult
+    AnalysisResult,
+    AnalyzeOptions
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, migrateAgentConfigs } from './config/configManager.js';

@@ -152,7 +152,7 @@ async function aggregateSingleDirectory(options: AggregateDirOptions): Promise<v
   let errorMessage: string | undefined;
 
   try {
-    const analysisResult = await agent.analyze(prompt, undefined, modelOverride);
+    const analysisResult = await agent.analyze(prompt, { model: modelOverride });
     const response = analysisResult.response;
     const summary = parseDirectorySummaryResponse(response);
 

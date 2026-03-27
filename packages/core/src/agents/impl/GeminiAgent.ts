@@ -1,5 +1,5 @@
 import logger from '../../utils/logger.js';
-import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult } from '../types.js';
+import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
@@ -127,7 +127,8 @@ export class GeminiAgent implements Agent {
         };
     }
 
-    async analyze(prompt: string, context?: string, model?: string, taskId?: string, executionType?: string): Promise<AnalysisResult> {
+    async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
+        const { context, model, taskId, executionType } = options || {};
         const startTime = Date.now();
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Gemini agent...');
         const effectiveModel = model || 'gemini-2.5-flash';
