@@ -1,2116 +1,861 @@
-# Agent SDK reference - TypeScript
+# TypeScript SDK
 
-Complete API reference for the TypeScript Agent SDK, including all functions, types, and interfaces.
+Install and configure the Anthropic TypeScript SDK for Node.js, Deno, Bun, and browser environments
 
 ---
 
-<script src="/components/typescript-sdk-type-links.js" defer />
+This library provides convenient access to the Anthropic REST API from server-side TypeScript or JavaScript.
 
-<Note>
-**Try the new V2 interface (preview):** A simplified interface with `send()` and `receive()` patterns is now available, making multi-turn conversations easier. [Learn more](/docs/en/agent-sdk/typescript-v2-preview)
-</Note>
+<Info>
+For API feature documentation with code examples, see the [API reference](/docs/en/api/overview). This page covers TypeScript-specific SDK features and configuration.
+</Info>
 
 ## Installation
 
 ```bash
-npm install @anthropic-ai/claude-agent-sdk
+npm install @anthropic-ai/sdk
 ```
 
-## Functions
+## Requirements
 
-### `query()`
+TypeScript >= 4.9 is supported.
 
-The primary function for interacting with Claude Code. Creates an async generator that streams messages as they arrive.
+The following runtimes are supported:
 
-```typescript
-function query({
-  prompt,
-  options
-}: {
-  prompt: string | AsyncIterable<SDKUserMessage>;
-  options?: Options;
-}): Query
+- Node.js 20 LTS or later ([non-EOL](https://endoflife.date/nodejs)) versions.
+- Deno v1.28.0 or higher.
+- Bun 1.0 or later.
+- Cloudflare Workers.
+- Vercel Edge Runtime.
+- Jest 28 or greater with the `"node"` environment (`"jsdom"` is not supported at this time).
+- Nitro v2.6 or greater.
+- Web browsers: disabled by default to avoid exposing your secret API credentials (see [API key best practices](https://support.anthropic.com/en/articles/9767949-api-key-best-practices-keeping-your-keys-safe-and-secure)). Enable browser support by explicitly setting `dangerouslyAllowBrowser` to `true`.
+
+Note that React Native is not supported at this time.
+
+If you are interested in other runtime environments, please open or upvote an issue on [GitHub](https://github.com/anthropics/anthropic-sdk-typescript).
+
+## Usage
+
+```typescript hidelines={1..2}
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  apiKey: process.env["ANTHROPIC_API_KEY"] // This is the default and can be omitted
+});
+
+const message = await client.messages.create({
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello, Claude" }],
+  model: "claude-opus-4-6"
+});
+
+console.log(message.content);
 ```
 
-#### Parameters
+## Request and response types
 
-| Parameter | Type | Description |
-| :-------- | :--- | :---------- |
-| `prompt` | `string \| AsyncIterable<`[`SDKUserMessage`](#sdkusermessage)`>` | The input prompt as a string or async iterable for streaming mode |
-| `options` | [`Options`](#options) | Optional configuration object (see Options type below) |
+This library includes TypeScript definitions for all request params and response fields. You may import and use them like so:
 
-#### Returns
+```typescript hidelines={1..2}
+import Anthropic from "@anthropic-ai/sdk";
 
-Returns a [`Query`](#query-1) object that extends `AsyncGenerator<`[`SDKMessage`](#sdkmessage)`, void>` with additional methods.
+const client = new Anthropic({
+  apiKey: process.env["ANTHROPIC_API_KEY"] // This is the default and can be omitted
+});
 
-### `tool()`
-
-Creates a type-safe MCP tool definition for use with SDK MCP servers.
-
-```typescript
-function tool<Schema extends ZodRawShape>(
-  name: string,
-  description: string,
-  inputSchema: Schema,
-  handler: (args: z.infer<ZodObject<Schema>>, extra: unknown) => Promise<CallToolResult>
-): SdkMcpToolDefinition<Schema>
+const params: Anthropic.MessageCreateParams = {
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello, Claude" }],
+  model: "claude-opus-4-6"
+};
+const message: Anthropic.Message = await client.messages.create(params);
 ```
 
-#### Parameters
+Documentation for each method, request param, and response field are available in docstrings and will appear on hover in most modern editors.
 
-| Parameter | Type | Description |
-| :-------- | :--- | :---------- |
-| `name` | `string` | The name of the tool |
-| `description` | `string` | A description of what the tool does |
-| `inputSchema` | `Schema extends ZodRawShape` | Zod schema defining the tool's input parameters |
-| `handler` | `(args, extra) => Promise<`[`CallToolResult`](#calltoolresult)`>` | Async function that executes the tool logic |
+## Counting tokens
 
-### `createSdkMcpServer()`
-
-Creates an MCP server instance that runs in the same process as your application.
+You can see the exact usage for a given request through the `usage` response property, e.g.
 
 ```typescript
-function createSdkMcpServer(options: {
-  name: string;
-  version?: string;
-  tools?: Array<SdkMcpToolDefinition<any>>;
-}): McpSdkServerConfigWithInstance
+const message = await client.messages.create(/* ... */);
+console.log(message.usage);
+// { input_tokens: 25, output_tokens: 13 }
 ```
 
-#### Parameters
+## Streaming responses
 
-| Parameter | Type | Description |
-| :-------- | :--- | :---------- |
-| `options.name` | `string` | The name of the MCP server |
-| `options.version` | `string` | Optional version string |
-| `options.tools` | `Array<SdkMcpToolDefinition>` | Array of tool definitions created with [`tool()`](#tool) |
+The SDK provides support for streaming responses using Server Sent Events (SSE).
 
-## Types
+```typescript hidelines={1..2}
+import Anthropic from "@anthropic-ai/sdk";
 
-### `Options`
+const client = new Anthropic();
 
-Configuration object for the `query()` function.
-
-| Property | Type | Default | Description |
-| :------- | :--- | :------ | :---------- |
-| `abortController` | `AbortController` | `new AbortController()` | Controller for cancelling operations |
-| `additionalDirectories` | `string[]` | `[]` | Additional directories Claude can access |
-| `agents` | `Record<string, [`AgentDefinition`](#agentdefinition)>` | `undefined` | Programmatically define subagents |
-| `allowDangerouslySkipPermissions` | `boolean` | `false` | Enable bypassing permissions. Required when using `permissionMode: 'bypassPermissions'` |
-| `allowedTools` | `string[]` | All tools | List of allowed tool names |
-| `betas` | [`SdkBeta`](#sdkbeta)`[]` | `[]` | Enable beta features (e.g., `['context-1m-2025-08-07']`) |
-| `canUseTool` | [`CanUseTool`](#canusetool) | `undefined` | Custom permission function for tool usage |
-| `continue` | `boolean` | `false` | Continue the most recent conversation |
-| `cwd` | `string` | `process.cwd()` | Current working directory |
-| `disallowedTools` | `string[]` | `[]` | List of disallowed tool names |
-| `env` | `Dict<string>` | `process.env` | Environment variables |
-| `executable` | `'bun' \| 'deno' \| 'node'` | Auto-detected | JavaScript runtime to use |
-| `executableArgs` | `string[]` | `[]` | Arguments to pass to the executable |
-| `extraArgs` | `Record<string, string \| null>` | `{}` | Additional arguments |
-| `fallbackModel` | `string` | `undefined` | Model to use if primary fails |
-| `forkSession` | `boolean` | `false` | When resuming with `resume`, fork to a new session ID instead of continuing the original session |
-| `hooks` | `Partial<Record<`[`HookEvent`](#hookevent)`, `[`HookCallbackMatcher`](#hookcallbackmatcher)`[]>>` | `{}` | Hook callbacks for events |
-| `includePartialMessages` | `boolean` | `false` | Include partial message events |
-| `maxBudgetUsd` | `number` | `undefined` | Maximum budget in USD for the query |
-| `maxThinkingTokens` | `number` | `undefined` | Maximum tokens for thinking process |
-| `maxTurns` | `number` | `undefined` | Maximum conversation turns |
-| `mcpServers` | `Record<string, [`McpServerConfig`](#mcpserverconfig)>` | `{}` | MCP server configurations |
-| `model` | `string` | Default from CLI | Claude model to use |
-| `outputFormat` | `{ type: 'json_schema', schema: JSONSchema }` | `undefined` | Define output format for agent results. See [Structured outputs](/docs/en/agent-sdk/structured-outputs) for details |
-| `pathToClaudeCodeExecutable` | `string` | Uses built-in executable | Path to Claude Code executable |
-| `permissionMode` | [`PermissionMode`](#permissionmode) | `'default'` | Permission mode for the session |
-| `permissionPromptToolName` | `string` | `undefined` | MCP tool name for permission prompts |
-| `plugins` | [`SdkPluginConfig`](#sdkpluginconfig)`[]` | `[]` | Load custom plugins from local paths. See [Plugins](/docs/en/agent-sdk/plugins) for details |
-| `resume` | `string` | `undefined` | Session ID to resume |
-| `resumeSessionAt` | `string` | `undefined` | Resume session at a specific message UUID |
-| `sandbox` | [`SandboxSettings`](#sandboxsettings) | `undefined` | Configure sandbox behavior programmatically. See [Sandbox settings](#sandboxsettings) for details |
-| `settingSources` | [`SettingSource`](#settingsource)`[]` | `[]` (no settings) | Control which filesystem settings to load. When omitted, no settings are loaded. **Note:** Must include `'project'` to load CLAUDE.md files |
-| `stderr` | `(data: string) => void` | `undefined` | Callback for stderr output |
-| `strictMcpConfig` | `boolean` | `false` | Enforce strict MCP validation |
-| `systemPrompt` | `string \| { type: 'preset'; preset: 'claude_code'; append?: string }` | `undefined` (empty prompt) | System prompt configuration. Pass a string for custom prompt, or `{ type: 'preset', preset: 'claude_code' }` to use Claude Code's system prompt. When using the preset object form, add `append` to extend the system prompt with additional instructions |
-| `tools` | `string[] \| { type: 'preset'; preset: 'claude_code' }` | `undefined` | Tool configuration. Pass an array of tool names or use the preset to get Claude Code's default tools |
-
-### `Query`
-
-Interface returned by the `query()` function.
-
-```typescript
-interface Query extends AsyncGenerator<SDKMessage, void> {
-  interrupt(): Promise<void>;
-  setPermissionMode(mode: PermissionMode): Promise<void>;
-  setModel(model?: string): Promise<void>;
-  setMaxThinkingTokens(maxThinkingTokens: number | null): Promise<void>;
-  supportedCommands(): Promise<SlashCommand[]>;
-  supportedModels(): Promise<ModelInfo[]>;
-  mcpServerStatus(): Promise<McpServerStatus[]>;
-  accountInfo(): Promise<AccountInfo>;
+const stream = await client.messages.create({
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello, Claude" }],
+  model: "claude-opus-4-6",
+  stream: true
+});
+for await (const messageStreamEvent of stream) {
+  console.log(messageStreamEvent.type);
 }
 ```
 
-#### Methods
+If you need to cancel a stream, you can `break` from the loop or call `stream.controller.abort()`.
 
-| Method | Description |
-| :----- | :---------- |
-| `interrupt()` | Interrupts the query (only available in streaming input mode) |
-| `setPermissionMode()` | Changes the permission mode (only available in streaming input mode) |
-| `setModel()` | Changes the model (only available in streaming input mode) |
-| `setMaxThinkingTokens()` | Changes the maximum thinking tokens (only available in streaming input mode) |
-| `supportedCommands()` | Returns available slash commands |
-| `supportedModels()` | Returns available models with display info |
-| `mcpServerStatus()` | Returns status of connected MCP servers |
-| `accountInfo()` | Returns account information |
+## Streaming helpers
 
-### `AgentDefinition`
+This library provides several conveniences for streaming messages, for example:
 
-Configuration for a subagent defined programmatically.
+```typescript hidelines={1..5,-3..-1}
+import Anthropic from "@anthropic-ai/sdk";
 
-```typescript
-type AgentDefinition = {
-  description: string;
-  tools?: string[];
-  prompt: string;
-  model?: 'sonnet' | 'opus' | 'haiku' | 'inherit';
+const anthropic = new Anthropic();
+
+async function main() {
+  const stream = anthropic.messages
+    .stream({
+      model: "claude-opus-4-6",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: "Say hello there!"
+        }
+      ]
+    })
+    .on("text", (text) => {
+      console.log(text);
+    });
+
+  const message = await stream.finalMessage();
+  console.log(message);
 }
+
+main();
 ```
 
-| Field | Required | Description |
-|:------|:---------|:------------|
-| `description` | Yes | Natural language description of when to use this agent |
-| `tools` | No | Array of allowed tool names. If omitted, inherits all tools |
-| `prompt` | Yes | The agent's system prompt |
-| `model` | No | Model override for this agent. If omitted, uses the main model |
+Streaming with `client.messages.stream(...)` exposes various helpers for your convenience including event handlers and accumulation.
 
-### `SettingSource`
+Alternatively, you can use `client.messages.create({ ..., stream: true })` which only returns an async iterable of the events in the stream and thus uses less memory (it does not build up a final message object for you).
 
-Controls which filesystem-based configuration sources the SDK loads settings from.
+## Tool helpers
 
-```typescript
-type SettingSource = 'user' | 'project' | 'local';
+This SDK provides helpers for making it easy to create and run tools in the Messages API. You can use Zod schemas or JSON Schemas to describe the input to a tool. You can then run those tools using the `client.messages.toolRunner()` method. This method will handle passing the inputs generated by the chosen model into the right tool and passing the result back to the model.
+
+For more details on tool use, see the [tool use overview](/docs/en/agents-and-tools/tool-use/overview).
+
+```typescript hidelines={1..2}
+import Anthropic from "@anthropic-ai/sdk";
+
+import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
+import { z } from "zod";
+
+const anthropic = new Anthropic();
+
+const weatherTool = betaZodTool({
+  name: "get_weather",
+  inputSchema: z.object({
+    location: z.string()
+  }),
+  description: "Get the current weather in a given location",
+  run: (input) => {
+    return `The weather in ${input.location} is foggy and 60°F`;
+  }
+});
+
+const finalMessage = await anthropic.beta.messages.toolRunner({
+  model: "claude-opus-4-6",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "What is the weather in San Francisco?" }],
+  tools: [weatherTool]
+});
 ```
 
-| Value | Description | Location |
-|:------|:------------|:---------|
-| `'user'` | Global user settings | `~/.claude/settings.json` |
-| `'project'` | Shared project settings (version controlled) | `.claude/settings.json` |
-| `'local'` | Local project settings (gitignored) | `.claude/settings.local.json` |
+### Tool errors
 
-#### Default behavior
+To report an error from a tool back to the model, throw a `ToolError` from the `run` function. Unlike a plain `Error`, `ToolError` accepts content blocks, allowing you to include images or other structured content in the error response:
 
-When `settingSources` is **omitted** or **undefined**, the SDK does **not** load any filesystem settings. This provides isolation for SDK applications.
+```typescript nocheck
+import { ToolError } from "@anthropic-ai/sdk/lib/tools/BetaRunnableTool";
 
-#### Why use settingSources?
-
-**Load all filesystem settings (legacy behavior):**
-```typescript
-// Load all settings like SDK v0.0.x did
-const result = query({
-  prompt: "Analyze this code",
-  options: {
-    settingSources: ['user', 'project', 'local']  // Load all settings
+const screenshotTool = betaZodTool({
+  name: "take_screenshot",
+  inputSchema: z.object({ url: z.string() }),
+  run: async (input) => {
+    if (!isValidUrl(input.url)) {
+      throw new ToolError(`Invalid URL: ${input.url}`);
+    }
+    const result = await takeScreenshot(input.url);
+    if (result.error) {
+      // Include the error screenshot so the model can see what went wrong
+      throw new ToolError([
+        { type: "text", text: `Failed to load page: ${result.error}` },
+        {
+          type: "image",
+          source: { type: "base64", data: result.screenshot, media_type: "image/png" }
+        }
+      ]);
+    }
+    return {
+      type: "image",
+      source: { type: "base64", data: result.screenshot, media_type: "image/png" }
+    };
   }
 });
 ```
 
-**Load only specific setting sources:**
-```typescript
-// Load only project settings, ignore user and local
-const result = query({
-  prompt: "Run CI checks",
-  options: {
-    settingSources: ['project']  // Only .claude/settings.json
-  }
+If a plain `Error` is thrown, the message will be converted to a text content block.
+
+## Tool use
+
+This SDK provides support for tool use, aka function calling. More details can be found in the [tool use overview](/docs/en/agents-and-tools/tool-use/overview).
+
+## MCP helpers
+
+This SDK provides helpers for integrating with [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers. These helpers convert MCP types to Claude API types, reducing boilerplate when working with MCP tools, prompts, and resources.
+
+<Tip>
+The Claude API also supports an [`mcp_servers` parameter](/docs/en/agents-and-tools/mcp) that lets Claude connect directly to remote MCP servers. Use `mcp_servers` when you have remote servers accessible via URL and only need tool support. Use the MCP helpers when you need local MCP servers, prompts, resources, or more control over the MCP connection.
+</Tip>
+
+For the Claude API's built-in remote MCP server support, see [MCP Connector](/docs/en/agents-and-tools/mcp-connector).
+
+```typescript nocheck hidelines={1}
+import Anthropic from "@anthropic-ai/sdk";
+import {
+  mcpTools,
+  mcpMessages,
+  mcpResourceToContent,
+  mcpResourceToFile
+} from "@anthropic-ai/sdk/helpers/beta/mcp";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const anthropic = new Anthropic();
+
+// Connect to an MCP server
+const transport = new StdioClientTransport({ command: "mcp-server", args: [] });
+const mcpClient = new Client({ name: "my-client", version: "1.0.0" });
+await mcpClient.connect(transport);
+
+// Use MCP prompts
+const { messages } = await mcpClient.getPrompt({ name: "my-prompt" });
+const response = await anthropic.beta.messages.create({
+  model: "claude-opus-4-6",
+  max_tokens: 1024,
+  messages: mcpMessages(messages)
 });
+
+// Use MCP tools with toolRunner
+const { tools } = await mcpClient.listTools();
+const runner = await anthropic.beta.messages.toolRunner({
+  model: "claude-opus-4-6",
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Use the available tools" }],
+  tools: mcpTools(tools, mcpClient)
+});
+
+// Use MCP resources as content
+const resource = await mcpClient.readResource({ uri: "file:///path/to/doc.txt" });
+await anthropic.beta.messages.create({
+  model: "claude-opus-4-6",
+  max_tokens: 1024,
+  messages: [
+    {
+      role: "user",
+      content: [
+        mcpResourceToContent(resource),
+        { type: "text", text: "Summarize this document" }
+      ]
+    }
+  ]
+});
+
+// Upload MCP resources as files
+const fileResource = await mcpClient.readResource({ uri: "file:///path/to/data.json" });
+await anthropic.beta.files.upload({ file: mcpResourceToFile(fileResource) });
 ```
 
-**Testing and CI environments:**
-```typescript
-// Ensure consistent behavior in CI by excluding local settings
-const result = query({
-  prompt: "Run tests",
-  options: {
-    settingSources: ['project'],  // Only team-shared settings
-    permissionMode: 'bypassPermissions'
-  }
-});
-```
+### MCP error handling
 
-**SDK-only applications:**
-```typescript
-// Define everything programmatically (default behavior)
-// No filesystem dependencies - settingSources defaults to []
-const result = query({
-  prompt: "Review this PR",
-  options: {
-    // settingSources: [] is the default, no need to specify
-    agents: { /* ... */ },
-    mcpServers: { /* ... */ },
-    allowedTools: ['Read', 'Grep', 'Glob']
-  }
-});
-```
+The conversion functions throw `UnsupportedMCPValueError` if an MCP value isn't supported by the Claude API (e.g., unsupported content type, unsupported MIME type, non-http/https resource link).
 
-**Loading CLAUDE.md project instructions:**
+## Message batches
+
+This SDK provides support for the [Message Batches API](/docs/en/build-with-claude/batch-processing) under the `client.messages.batches` namespace.
+
+### Creating a batch
+
+Message Batches takes an array of requests, where each object has a `custom_id` identifier, and the exact same request `params` as the standard Messages API:
+
 ```typescript
-// Load project settings to include CLAUDE.md files
-const result = query({
-  prompt: "Add a new feature following project conventions",
-  options: {
-    systemPrompt: {
-      type: 'preset',
-      preset: 'claude_code'  // Required to use CLAUDE.md
+await client.messages.batches.create({
+  requests: [
+    {
+      custom_id: "my-first-request",
+      params: {
+        model: "claude-opus-4-6",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "Hello, world" }]
+      }
     },
-    settingSources: ['project'],  // Loads CLAUDE.md from project directory
-    allowedTools: ['Read', 'Write', 'Edit']
-  }
+    {
+      custom_id: "my-second-request",
+      params: {
+        model: "claude-opus-4-6",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "Hi again, friend" }]
+      }
+    }
+  ]
 });
 ```
 
-#### Settings precedence
+### Getting results from a batch
 
-When multiple sources are loaded, settings are merged with this precedence (highest to lowest):
-1. Local settings (`.claude/settings.local.json`)
-2. Project settings (`.claude/settings.json`)
-3. User settings (`~/.claude/settings.json`)
+Once a Message Batch has been processed, indicated by `.processing_status === 'ended'`, you can access the results with `.batches.results()`
 
-Programmatic options (like `agents`, `allowedTools`) always override filesystem settings.
-
-### `PermissionMode`
-
-```typescript
-type PermissionMode =
-  | 'default'           // Standard permission behavior
-  | 'acceptEdits'       // Auto-accept file edits
-  | 'bypassPermissions' // Bypass all permission checks
-  | 'plan'              // Planning mode - no execution
-```
-
-### `CanUseTool`
-
-Custom permission function type for controlling tool usage.
-
-```typescript
-type CanUseTool = (
-  toolName: string,
-  input: ToolInput,
-  options: {
-    signal: AbortSignal;
-    suggestions?: PermissionUpdate[];
+```typescript nocheck
+const results = await client.messages.batches.results(batch_id);
+for await (const entry of results) {
+  if (entry.result.type === "succeeded") {
+    console.log(entry.result.message.content);
   }
-) => Promise<PermissionResult>;
-```
-
-### `PermissionResult`
-
-Result of a permission check.
-
-```typescript
-type PermissionResult = 
-  | {
-      behavior: 'allow';
-      updatedInput: ToolInput;
-      updatedPermissions?: PermissionUpdate[];
-    }
-  | {
-      behavior: 'deny';
-      message: string;
-      interrupt?: boolean;
-    }
-```
-
-### `McpServerConfig`
-
-Configuration for MCP servers.
-
-```typescript
-type McpServerConfig = 
-  | McpStdioServerConfig
-  | McpSSEServerConfig
-  | McpHttpServerConfig
-  | McpSdkServerConfigWithInstance;
-```
-
-#### `McpStdioServerConfig`
-
-```typescript
-type McpStdioServerConfig = {
-  type?: 'stdio';
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
-```
-
-#### `McpSSEServerConfig`
-
-```typescript
-type McpSSEServerConfig = {
-  type: 'sse';
-  url: string;
-  headers?: Record<string, string>;
-}
-```
-
-#### `McpHttpServerConfig`
-
-```typescript
-type McpHttpServerConfig = {
-  type: 'http';
-  url: string;
-  headers?: Record<string, string>;
-}
-```
-
-#### `McpSdkServerConfigWithInstance`
-
-```typescript
-type McpSdkServerConfigWithInstance = {
-  type: 'sdk';
-  name: string;
-  instance: McpServer;
-}
-```
-
-### `SdkPluginConfig`
-
-Configuration for loading plugins in the SDK.
-
-```typescript
-type SdkPluginConfig = {
-  type: 'local';
-  path: string;
-}
-```
-
-| Field | Type | Description |
-|:------|:-----|:------------|
-| `type` | `'local'` | Must be `'local'` (only local plugins currently supported) |
-| `path` | `string` | Absolute or relative path to the plugin directory |
-
-**Example:**
-```typescript
-plugins: [
-  { type: 'local', path: './my-plugin' },
-  { type: 'local', path: '/absolute/path/to/plugin' }
-]
-```
-
-For complete information on creating and using plugins, see [Plugins](/docs/en/agent-sdk/plugins).
-
-## Message Types
-
-### `SDKMessage`
-
-Union type of all possible messages returned by the query.
-
-```typescript
-type SDKMessage = 
-  | SDKAssistantMessage
-  | SDKUserMessage
-  | SDKUserMessageReplay
-  | SDKResultMessage
-  | SDKSystemMessage
-  | SDKPartialAssistantMessage
-  | SDKCompactBoundaryMessage;
-```
-
-### `SDKAssistantMessage`
-
-Assistant response message.
-
-```typescript
-type SDKAssistantMessage = {
-  type: 'assistant';
-  uuid: UUID;
-  session_id: string;
-  message: APIAssistantMessage; // From Anthropic SDK
-  parent_tool_use_id: string | null;
-}
-```
-
-### `SDKUserMessage`
-
-User input message.
-
-```typescript
-type SDKUserMessage = {
-  type: 'user';
-  uuid?: UUID;
-  session_id: string;
-  message: APIUserMessage; // From Anthropic SDK
-  parent_tool_use_id: string | null;
-}
-```
-
-### `SDKUserMessageReplay`
-
-Replayed user message with required UUID.
-
-```typescript
-type SDKUserMessageReplay = {
-  type: 'user';
-  uuid: UUID;
-  session_id: string;
-  message: APIUserMessage;
-  parent_tool_use_id: string | null;
-}
-```
-
-### `SDKResultMessage`
-
-Final result message.
-
-```typescript
-type SDKResultMessage =
-  | {
-      type: 'result';
-      subtype: 'success';
-      uuid: UUID;
-      session_id: string;
-      duration_ms: number;
-      duration_api_ms: number;
-      is_error: boolean;
-      num_turns: number;
-      result: string;
-      total_cost_usd: number;
-      usage: NonNullableUsage;
-      modelUsage: { [modelName: string]: ModelUsage };
-      permission_denials: SDKPermissionDenial[];
-      structured_output?: unknown;
-    }
-  | {
-      type: 'result';
-      subtype:
-        | 'error_max_turns'
-        | 'error_during_execution'
-        | 'error_max_budget_usd'
-        | 'error_max_structured_output_retries';
-      uuid: UUID;
-      session_id: string;
-      duration_ms: number;
-      duration_api_ms: number;
-      is_error: boolean;
-      num_turns: number;
-      total_cost_usd: number;
-      usage: NonNullableUsage;
-      modelUsage: { [modelName: string]: ModelUsage };
-      permission_denials: SDKPermissionDenial[];
-      errors: string[];
-    }
-```
-
-### `SDKSystemMessage`
-
-System initialization message.
-
-```typescript
-type SDKSystemMessage = {
-  type: 'system';
-  subtype: 'init';
-  uuid: UUID;
-  session_id: string;
-  apiKeySource: ApiKeySource;
-  cwd: string;
-  tools: string[];
-  mcp_servers: {
-    name: string;
-    status: string;
-  }[];
-  model: string;
-  permissionMode: PermissionMode;
-  slash_commands: string[];
-  output_style: string;
-}
-```
-
-### `SDKPartialAssistantMessage`
-
-Streaming partial message (only when `includePartialMessages` is true).
-
-```typescript
-type SDKPartialAssistantMessage = {
-  type: 'stream_event';
-  event: RawMessageStreamEvent; // From Anthropic SDK
-  parent_tool_use_id: string | null;
-  uuid: UUID;
-  session_id: string;
-}
-```
-
-### `SDKCompactBoundaryMessage`
-
-Message indicating a conversation compaction boundary.
-
-```typescript
-type SDKCompactBoundaryMessage = {
-  type: 'system';
-  subtype: 'compact_boundary';
-  uuid: UUID;
-  session_id: string;
-  compact_metadata: {
-    trigger: 'manual' | 'auto';
-    pre_tokens: number;
-  };
-}
-```
-
-### `SDKPermissionDenial`
-
-Information about a denied tool use.
-
-```typescript
-type SDKPermissionDenial = {
-  tool_name: string;
-  tool_use_id: string;
-  tool_input: ToolInput;
-}
-```
-
-## Hook Types
-
-### `HookEvent`
-
-Available hook events.
-
-```typescript
-type HookEvent =
-  | 'PreToolUse'
-  | 'PostToolUse'
-  | 'PostToolUseFailure'
-  | 'Notification'
-  | 'UserPromptSubmit'
-  | 'SessionStart'
-  | 'SessionEnd'
-  | 'Stop'
-  | 'SubagentStart'
-  | 'SubagentStop'
-  | 'PreCompact'
-  | 'PermissionRequest';
-```
-
-### `HookCallback`
-
-Hook callback function type.
-
-```typescript
-type HookCallback = (
-  input: HookInput, // Union of all hook input types
-  toolUseID: string | undefined,
-  options: { signal: AbortSignal }
-) => Promise<HookJSONOutput>;
-```
-
-### `HookCallbackMatcher`
-
-Hook configuration with optional matcher.
-
-```typescript
-interface HookCallbackMatcher {
-  matcher?: string;
-  hooks: HookCallback[];
-  /** Timeout in seconds for all hooks in this matcher (default: 60) */
-  timeout?: number;
-}
-```
-
-### `HookInput`
-
-Union type of all hook input types.
-
-```typescript
-type HookInput =
-  | PreToolUseHookInput
-  | PostToolUseHookInput
-  | PostToolUseFailureHookInput
-  | NotificationHookInput
-  | UserPromptSubmitHookInput
-  | SessionStartHookInput
-  | SessionEndHookInput
-  | StopHookInput
-  | SubagentStartHookInput
-  | SubagentStopHookInput
-  | PreCompactHookInput
-  | PermissionRequestHookInput;
-```
-
-### `BaseHookInput`
-
-Base interface that all hook input types extend.
-
-```typescript
-type BaseHookInput = {
-  session_id: string;
-  transcript_path: string;
-  cwd: string;
-  permission_mode?: string;
-}
-```
-
-#### `PreToolUseHookInput`
-
-```typescript
-type PreToolUseHookInput = BaseHookInput & {
-  hook_event_name: 'PreToolUse';
-  tool_name: string;
-  tool_input: ToolInput;
-}
-```
-
-#### `PostToolUseHookInput`
-
-```typescript
-type PostToolUseHookInput = BaseHookInput & {
-  hook_event_name: 'PostToolUse';
-  tool_name: string;
-  tool_input: ToolInput;
-  tool_response: ToolOutput;
-  tool_use_id: string;
-}
-```
-
-#### `PostToolUseFailureHookInput`
-
-```typescript
-type PostToolUseFailureHookInput = BaseHookInput & {
-  hook_event_name: 'PostToolUseFailure';
-  tool_name: string;
-  tool_input: unknown;
-  tool_use_id: string;
-  error: string;
-  is_interrupt?: boolean;
-}
-```
-
-#### `NotificationHookInput`
-
-```typescript
-type NotificationHookInput = BaseHookInput & {
-  hook_event_name: 'Notification';
-  message: string;
-  title?: string;
-}
-```
-
-#### `UserPromptSubmitHookInput`
-
-```typescript
-type UserPromptSubmitHookInput = BaseHookInput & {
-  hook_event_name: 'UserPromptSubmit';
-  prompt: string;
-}
-```
-
-#### `SessionStartHookInput`
-
-```typescript
-type SessionStartHookInput = BaseHookInput & {
-  hook_event_name: 'SessionStart';
-  source: 'startup' | 'resume' | 'clear' | 'compact';
-}
-```
-
-#### `SessionEndHookInput`
-
-```typescript
-type SessionEndHookInput = BaseHookInput & {
-  hook_event_name: 'SessionEnd';
-  reason: 'clear' | 'logout' | 'prompt_input_exit' | 'other';
-}
-```
-
-#### `StopHookInput`
-
-```typescript
-type StopHookInput = BaseHookInput & {
-  hook_event_name: 'Stop';
-  stop_hook_active: boolean;
-}
-```
-
-#### `SubagentStartHookInput`
-
-```typescript
-type SubagentStartHookInput = BaseHookInput & {
-  hook_event_name: 'SubagentStart';
-  agent_id: string;
-  agent_type: string;
-}
-```
-
-#### `SubagentStopHookInput`
-
-```typescript
-type SubagentStopHookInput = BaseHookInput & {
-  hook_event_name: 'SubagentStop';
-  stop_hook_active: boolean;
-  agent_id: string;
-  agent_transcript_path: string;
-}
-```
-
-#### `PreCompactHookInput`
-
-```typescript
-type PreCompactHookInput = BaseHookInput & {
-  hook_event_name: 'PreCompact';
-  trigger: 'manual' | 'auto';
-  custom_instructions: string | null;
-}
-```
-
-#### `PermissionRequestHookInput`
-
-```typescript
-type PermissionRequestHookInput = BaseHookInput & {
-  hook_event_name: 'PermissionRequest';
-  tool_name: string;
-  tool_input: unknown;
-  permission_suggestions?: PermissionUpdate[];
-}
-```
-
-### `HookJSONOutput`
-
-Hook return value.
-
-```typescript
-type HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput;
-```
-
-#### `AsyncHookJSONOutput`
-
-```typescript
-type AsyncHookJSONOutput = {
-  async: true;
-  asyncTimeout?: number;
-}
-```
-
-#### `SyncHookJSONOutput`
-
-```typescript
-type SyncHookJSONOutput = {
-  continue?: boolean;
-  suppressOutput?: boolean;
-  stopReason?: string;
-  decision?: 'approve' | 'block';
-  systemMessage?: string;
-  reason?: string;
-  hookSpecificOutput?:
-    | {
-        hookEventName: 'PreToolUse';
-        permissionDecision?: 'allow' | 'deny' | 'ask';
-        permissionDecisionReason?: string;
-        updatedInput?: Record<string, unknown>;
-      }
-    | {
-        hookEventName: 'UserPromptSubmit';
-        additionalContext?: string;
-      }
-    | {
-        hookEventName: 'SessionStart';
-        additionalContext?: string;
-      }
-    | {
-        hookEventName: 'SubagentStart';
-        additionalContext?: string;
-      }
-    | {
-        hookEventName: 'PostToolUse';
-        additionalContext?: string;
-        updatedMCPToolOutput?: unknown;
-      }
-    | {
-        hookEventName: 'PostToolUseFailure';
-        additionalContext?: string;
-      }
-    | {
-        hookEventName: 'PermissionRequest';
-        decision:
-          | {
-              behavior: 'allow';
-              updatedInput?: Record<string, unknown>;
-              updatedPermissions?: PermissionUpdate[];
-            }
-          | {
-              behavior: 'deny';
-              message?: string;
-              interrupt?: boolean;
-            };
-      };
-}
-```
-
-## Tool Input Types
-
-Documentation of input schemas for all built-in Claude Code tools. These types are exported from `@anthropic-ai/claude-agent-sdk` and can be used for type-safe tool interactions.
-
-### `ToolInput`
-
-**Note:** This is a documentation-only type for clarity. It represents the union of all tool input types.
-
-```typescript
-type ToolInput = 
-  | AgentInput
-  | BashInput
-  | BashOutputInput
-  | FileEditInput
-  | FileReadInput
-  | FileWriteInput
-  | GlobInput
-  | GrepInput
-  | KillShellInput
-  | NotebookEditInput
-  | WebFetchInput
-  | WebSearchInput
-  | TodoWriteInput
-  | ExitPlanModeInput
-  | ListMcpResourcesInput
-  | ReadMcpResourceInput;
-```
-
-### Task
-
-**Tool name:** `Task`
-
-```typescript
-interface AgentInput {
-  /**
-   * A short (3-5 word) description of the task
-   */
-  description: string;
-  /**
-   * The task for the agent to perform
-   */
-  prompt: string;
-  /**
-   * The type of specialized agent to use for this task
-   */
-  subagent_type: string;
-}
-```
-
-Launches a new agent to handle complex, multi-step tasks autonomously.
-
-### Bash
-
-**Tool name:** `Bash`
-
-```typescript
-interface BashInput {
-  /**
-   * The command to execute
-   */
-  command: string;
-  /**
-   * Optional timeout in milliseconds (max 600000)
-   */
-  timeout?: number;
-  /**
-   * Clear, concise description of what this command does in 5-10 words
-   */
-  description?: string;
-  /**
-   * Set to true to run this command in the background
-   */
-  run_in_background?: boolean;
-}
-```
-
-Executes bash commands in a persistent shell session with optional timeout and background execution.
-
-### BashOutput
-
-**Tool name:** `BashOutput`
-
-```typescript
-interface BashOutputInput {
-  /**
-   * The ID of the background shell to retrieve output from
-   */
-  bash_id: string;
-  /**
-   * Optional regex to filter output lines
-   */
-  filter?: string;
-}
-```
-
-Retrieves output from a running or completed background bash shell.
-
-### Edit
-
-**Tool name:** `Edit`
-
-```typescript
-interface FileEditInput {
-  /**
-   * The absolute path to the file to modify
-   */
-  file_path: string;
-  /**
-   * The text to replace
-   */
-  old_string: string;
-  /**
-   * The text to replace it with (must be different from old_string)
-   */
-  new_string: string;
-  /**
-   * Replace all occurrences of old_string (default false)
-   */
-  replace_all?: boolean;
-}
-```
-
-Performs exact string replacements in files.
-
-### Read
-
-**Tool name:** `Read`
-
-```typescript
-interface FileReadInput {
-  /**
-   * The absolute path to the file to read
-   */
-  file_path: string;
-  /**
-   * The line number to start reading from
-   */
-  offset?: number;
-  /**
-   * The number of lines to read
-   */
-  limit?: number;
-}
-```
-
-Reads files from the local filesystem, including text, images, PDFs, and Jupyter notebooks.
-
-### Write
-
-**Tool name:** `Write`
-
-```typescript
-interface FileWriteInput {
-  /**
-   * The absolute path to the file to write
-   */
-  file_path: string;
-  /**
-   * The content to write to the file
-   */
-  content: string;
-}
-```
-
-Writes a file to the local filesystem, overwriting if it exists.
-
-### Glob
-
-**Tool name:** `Glob`
-
-```typescript
-interface GlobInput {
-  /**
-   * The glob pattern to match files against
-   */
-  pattern: string;
-  /**
-   * The directory to search in (defaults to cwd)
-   */
-  path?: string;
-}
-```
-
-Fast file pattern matching that works with any codebase size.
-
-### Grep
-
-**Tool name:** `Grep`
-
-```typescript
-interface GrepInput {
-  /**
-   * The regular expression pattern to search for
-   */
-  pattern: string;
-  /**
-   * File or directory to search in (defaults to cwd)
-   */
-  path?: string;
-  /**
-   * Glob pattern to filter files (e.g. "*.js")
-   */
-  glob?: string;
-  /**
-   * File type to search (e.g. "js", "py", "rust")
-   */
-  type?: string;
-  /**
-   * Output mode: "content", "files_with_matches", or "count"
-   */
-  output_mode?: 'content' | 'files_with_matches' | 'count';
-  /**
-   * Case insensitive search
-   */
-  '-i'?: boolean;
-  /**
-   * Show line numbers (for content mode)
-   */
-  '-n'?: boolean;
-  /**
-   * Lines to show before each match
-   */
-  '-B'?: number;
-  /**
-   * Lines to show after each match
-   */
-  '-A'?: number;
-  /**
-   * Lines to show before and after each match
-   */
-  '-C'?: number;
-  /**
-   * Limit output to first N lines/entries
-   */
-  head_limit?: number;
-  /**
-   * Enable multiline mode
-   */
-  multiline?: boolean;
-}
-```
-
-Powerful search tool built on ripgrep with regex support.
-
-### KillBash
-
-**Tool name:** `KillBash`
-
-```typescript
-interface KillShellInput {
-  /**
-   * The ID of the background shell to kill
-   */
-  shell_id: string;
-}
-```
-
-Kills a running background bash shell by its ID.
-
-### NotebookEdit
-
-**Tool name:** `NotebookEdit`
-
-```typescript
-interface NotebookEditInput {
-  /**
-   * The absolute path to the Jupyter notebook file
-   */
-  notebook_path: string;
-  /**
-   * The ID of the cell to edit
-   */
-  cell_id?: string;
-  /**
-   * The new source for the cell
-   */
-  new_source: string;
-  /**
-   * The type of the cell (code or markdown)
-   */
-  cell_type?: 'code' | 'markdown';
-  /**
-   * The type of edit (replace, insert, delete)
-   */
-  edit_mode?: 'replace' | 'insert' | 'delete';
-}
-```
-
-Edits cells in Jupyter notebook files.
-
-### WebFetch
-
-**Tool name:** `WebFetch`
-
-```typescript
-interface WebFetchInput {
-  /**
-   * The URL to fetch content from
-   */
-  url: string;
-  /**
-   * The prompt to run on the fetched content
-   */
-  prompt: string;
-}
-```
-
-Fetches content from a URL and processes it with an AI model.
-
-### WebSearch
-
-**Tool name:** `WebSearch`
-
-```typescript
-interface WebSearchInput {
-  /**
-   * The search query to use
-   */
-  query: string;
-  /**
-   * Only include results from these domains
-   */
-  allowed_domains?: string[];
-  /**
-   * Never include results from these domains
-   */
-  blocked_domains?: string[];
-}
-```
-
-Searches the web and returns formatted results.
-
-### TodoWrite
-
-**Tool name:** `TodoWrite`
-
-```typescript
-interface TodoWriteInput {
-  /**
-   * The updated todo list
-   */
-  todos: Array<{
-    /**
-     * The task description
-     */
-    content: string;
-    /**
-     * The task status
-     */
-    status: 'pending' | 'in_progress' | 'completed';
-    /**
-     * Active form of the task description
-     */
-    activeForm: string;
-  }>;
-}
-```
-
-Creates and manages a structured task list for tracking progress.
-
-### ExitPlanMode
-
-**Tool name:** `ExitPlanMode`
-
-```typescript
-interface ExitPlanModeInput {
-  /**
-   * The plan to run by the user for approval
-   */
-  plan: string;
-}
-```
-
-Exits planning mode and prompts the user to approve the plan.
-
-### ListMcpResources
-
-**Tool name:** `ListMcpResources`
-
-```typescript
-interface ListMcpResourcesInput {
-  /**
-   * Optional server name to filter resources by
-   */
-  server?: string;
-}
-```
-
-Lists available MCP resources from connected servers.
-
-### ReadMcpResource
-
-**Tool name:** `ReadMcpResource`
-
-```typescript
-interface ReadMcpResourceInput {
-  /**
-   * The MCP server name
-   */
-  server: string;
-  /**
-   * The resource URI to read
-   */
-  uri: string;
-}
-```
-
-Reads a specific MCP resource from a server.
-
-## Tool Output Types
-
-Documentation of output schemas for all built-in Claude Code tools. These types represent the actual response data returned by each tool.
-
-### `ToolOutput`
-
-**Note:** This is a documentation-only type for clarity. It represents the union of all tool output types.
-
-```typescript
-type ToolOutput = 
-  | TaskOutput
-  | BashOutput
-  | BashOutputToolOutput
-  | EditOutput
-  | ReadOutput
-  | WriteOutput
-  | GlobOutput
-  | GrepOutput
-  | KillBashOutput
-  | NotebookEditOutput
-  | WebFetchOutput
-  | WebSearchOutput
-  | TodoWriteOutput
-  | ExitPlanModeOutput
-  | ListMcpResourcesOutput
-  | ReadMcpResourceOutput;
-```
-
-### Task
-
-**Tool name:** `Task`
-
-```typescript
-interface TaskOutput {
-  /**
-   * Final result message from the subagent
-   */
-  result: string;
-  /**
-   * Token usage statistics
-   */
-  usage?: {
-    input_tokens: number;
-    output_tokens: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  };
-  /**
-   * Total cost in USD
-   */
-  total_cost_usd?: number;
-  /**
-   * Execution duration in milliseconds
-   */
-  duration_ms?: number;
-}
-```
-
-Returns the final result from the subagent after completing the delegated task.
-
-### Bash
-
-**Tool name:** `Bash`
-
-```typescript
-interface BashOutput {
-  /**
-   * Combined stdout and stderr output
-   */
-  output: string;
-  /**
-   * Exit code of the command
-   */
-  exitCode: number;
-  /**
-   * Whether the command was killed due to timeout
-   */
-  killed?: boolean;
-  /**
-   * Shell ID for background processes
-   */
-  shellId?: string;
-}
-```
-
-Returns command output with exit status. Background commands return immediately with a shellId.
-
-### BashOutput
-
-**Tool name:** `BashOutput`
-
-```typescript
-interface BashOutputToolOutput {
-  /**
-   * New output since last check
-   */
-  output: string;
-  /**
-   * Current shell status
-   */
-  status: 'running' | 'completed' | 'failed';
-  /**
-   * Exit code (when completed)
-   */
-  exitCode?: number;
-}
-```
-
-Returns incremental output from background shells.
-
-### Edit
-
-**Tool name:** `Edit`
-
-```typescript
-interface EditOutput {
-  /**
-   * Confirmation message
-   */
-  message: string;
-  /**
-   * Number of replacements made
-   */
-  replacements: number;
-  /**
-   * File path that was edited
-   */
-  file_path: string;
-}
-```
-
-Returns confirmation of successful edits with replacement count.
-
-### Read
-
-**Tool name:** `Read`
-
-```typescript
-type ReadOutput = 
-  | TextFileOutput
-  | ImageFileOutput
-  | PDFFileOutput
-  | NotebookFileOutput;
-
-interface TextFileOutput {
-  /**
-   * File contents with line numbers
-   */
-  content: string;
-  /**
-   * Total number of lines in file
-   */
-  total_lines: number;
-  /**
-   * Lines actually returned
-   */
-  lines_returned: number;
-}
-
-interface ImageFileOutput {
-  /**
-   * Base64 encoded image data
-   */
-  image: string;
-  /**
-   * Image MIME type
-   */
-  mime_type: string;
-  /**
-   * File size in bytes
-   */
-  file_size: number;
-}
-
-interface PDFFileOutput {
-  /**
-   * Array of page contents
-   */
-  pages: Array<{
-    page_number: number;
-    text?: string;
-    images?: Array<{
-      image: string;
-      mime_type: string;
-    }>;
-  }>;
-  /**
-   * Total number of pages
-   */
-  total_pages: number;
-}
-
-interface NotebookFileOutput {
-  /**
-   * Jupyter notebook cells
-   */
-  cells: Array<{
-    cell_type: 'code' | 'markdown';
-    source: string;
-    outputs?: any[];
-    execution_count?: number;
-  }>;
-  /**
-   * Notebook metadata
-   */
-  metadata?: Record<string, any>;
-}
-```
-
-Returns file contents in format appropriate to file type.
-
-### Write
-
-**Tool name:** `Write`
-
-```typescript
-interface WriteOutput {
-  /**
-   * Success message
-   */
-  message: string;
-  /**
-   * Number of bytes written
-   */
-  bytes_written: number;
-  /**
-   * File path that was written
-   */
-  file_path: string;
-}
-```
-
-Returns confirmation after successfully writing the file.
-
-### Glob
-
-**Tool name:** `Glob`
-
-```typescript
-interface GlobOutput {
-  /**
-   * Array of matching file paths
-   */
-  matches: string[];
-  /**
-   * Number of matches found
-   */
-  count: number;
-  /**
-   * Search directory used
-   */
-  search_path: string;
-}
-```
-
-Returns file paths matching the glob pattern, sorted by modification time.
-
-### Grep
-
-**Tool name:** `Grep`
-
-```typescript
-type GrepOutput = 
-  | GrepContentOutput
-  | GrepFilesOutput
-  | GrepCountOutput;
-
-interface GrepContentOutput {
-  /**
-   * Matching lines with context
-   */
-  matches: Array<{
-    file: string;
-    line_number?: number;
-    line: string;
-    before_context?: string[];
-    after_context?: string[];
-  }>;
-  /**
-   * Total number of matches
-   */
-  total_matches: number;
-}
-
-interface GrepFilesOutput {
-  /**
-   * Files containing matches
-   */
-  files: string[];
-  /**
-   * Number of files with matches
-   */
-  count: number;
-}
-
-interface GrepCountOutput {
-  /**
-   * Match counts per file
-   */
-  counts: Array<{
-    file: string;
-    count: number;
-  }>;
-  /**
-   * Total matches across all files
-   */
-  total: number;
-}
-```
-
-Returns search results in the format specified by output_mode.
-
-### KillBash
-
-**Tool name:** `KillBash`
-
-```typescript
-interface KillBashOutput {
-  /**
-   * Success message
-   */
-  message: string;
-  /**
-   * ID of the killed shell
-   */
-  shell_id: string;
-}
-```
-
-Returns confirmation after terminating the background shell.
-
-### NotebookEdit
-
-**Tool name:** `NotebookEdit`
-
-```typescript
-interface NotebookEditOutput {
-  /**
-   * Success message
-   */
-  message: string;
-  /**
-   * Type of edit performed
-   */
-  edit_type: 'replaced' | 'inserted' | 'deleted';
-  /**
-   * Cell ID that was affected
-   */
-  cell_id?: string;
-  /**
-   * Total cells in notebook after edit
-   */
-  total_cells: number;
-}
-```
-
-Returns confirmation after modifying the Jupyter notebook.
-
-### WebFetch
-
-**Tool name:** `WebFetch`
-
-```typescript
-interface WebFetchOutput {
-  /**
-   * AI model's response to the prompt
-   */
-  response: string;
-  /**
-   * URL that was fetched
-   */
-  url: string;
-  /**
-   * Final URL after redirects
-   */
-  final_url?: string;
-  /**
-   * HTTP status code
-   */
-  status_code?: number;
-}
-```
-
-Returns the AI's analysis of the fetched web content.
-
-### WebSearch
-
-**Tool name:** `WebSearch`
-
-```typescript
-interface WebSearchOutput {
-  /**
-   * Search results
-   */
-  results: Array<{
-    title: string;
-    url: string;
-    snippet: string;
-    /**
-     * Additional metadata if available
-     */
-    metadata?: Record<string, any>;
-  }>;
-  /**
-   * Total number of results
-   */
-  total_results: number;
-  /**
-   * The query that was searched
-   */
-  query: string;
-}
-```
-
-Returns formatted search results from the web.
-
-### TodoWrite
-
-**Tool name:** `TodoWrite`
-
-```typescript
-interface TodoWriteOutput {
-  /**
-   * Success message
-   */
-  message: string;
-  /**
-   * Current todo statistics
-   */
-  stats: {
-    total: number;
-    pending: number;
-    in_progress: number;
-    completed: number;
-  };
-}
-```
-
-Returns confirmation with current task statistics.
-
-### ExitPlanMode
-
-**Tool name:** `ExitPlanMode`
-
-```typescript
-interface ExitPlanModeOutput {
-  /**
-   * Confirmation message
-   */
-  message: string;
-  /**
-   * Whether user approved the plan
-   */
-  approved?: boolean;
-}
-```
-
-Returns confirmation after exiting plan mode.
-
-### ListMcpResources
-
-**Tool name:** `ListMcpResources`
-
-```typescript
-interface ListMcpResourcesOutput {
-  /**
-   * Available resources
-   */
-  resources: Array<{
-    uri: string;
-    name: string;
-    description?: string;
-    mimeType?: string;
-    server: string;
-  }>;
-  /**
-   * Total number of resources
-   */
-  total: number;
-}
-```
-
-Returns list of available MCP resources.
-
-### ReadMcpResource
-
-**Tool name:** `ReadMcpResource`
-
-```typescript
-interface ReadMcpResourceOutput {
-  /**
-   * Resource contents
-   */
-  contents: Array<{
-    uri: string;
-    mimeType?: string;
-    text?: string;
-    blob?: string;
-  }>;
-  /**
-   * Server that provided the resource
-   */
-  server: string;
-}
-```
-
-Returns the contents of the requested MCP resource.
-
-## Permission Types
-
-### `PermissionUpdate`
-
-Operations for updating permissions.
-
-```typescript
-type PermissionUpdate = 
-  | {
-      type: 'addRules';
-      rules: PermissionRuleValue[];
-      behavior: PermissionBehavior;
-      destination: PermissionUpdateDestination;
-    }
-  | {
-      type: 'replaceRules';
-      rules: PermissionRuleValue[];
-      behavior: PermissionBehavior;
-      destination: PermissionUpdateDestination;
-    }
-  | {
-      type: 'removeRules';
-      rules: PermissionRuleValue[];
-      behavior: PermissionBehavior;
-      destination: PermissionUpdateDestination;
-    }
-  | {
-      type: 'setMode';
-      mode: PermissionMode;
-      destination: PermissionUpdateDestination;
-    }
-  | {
-      type: 'addDirectories';
-      directories: string[];
-      destination: PermissionUpdateDestination;
-    }
-  | {
-      type: 'removeDirectories';
-      directories: string[];
-      destination: PermissionUpdateDestination;
-    }
-```
-
-### `PermissionBehavior`
-
-```typescript
-type PermissionBehavior = 'allow' | 'deny' | 'ask';
-```
-
-### `PermissionUpdateDestination`
-
-```typescript
-type PermissionUpdateDestination = 
-  | 'userSettings'     // Global user settings
-  | 'projectSettings'  // Per-directory project settings
-  | 'localSettings'    // Gitignored local settings
-  | 'session'          // Current session only
-```
-
-### `PermissionRuleValue`
-
-```typescript
-type PermissionRuleValue = {
-  toolName: string;
-  ruleContent?: string;
-}
-```
-
-## Other Types
-
-### `ApiKeySource`
-
-```typescript
-type ApiKeySource = 'user' | 'project' | 'org' | 'temporary';
-```
-
-### `SdkBeta`
-
-Available beta features that can be enabled via the `betas` option. See [Beta headers](/docs/en/api/beta-headers) for more information.
-
-```typescript
-type SdkBeta = 'context-1m-2025-08-07';
-```
-
-| Value | Description | Compatible Models |
-|:------|:------------|:------------------|
-| `'context-1m-2025-08-07'` | Enables 1 million token [context window](/docs/en/build-with-claude/context-windows) | Claude Sonnet 4, Claude Sonnet 4.5 |
-
-### `SlashCommand`
-
-Information about an available slash command.
-
-```typescript
-type SlashCommand = {
-  name: string;
-  description: string;
-  argumentHint: string;
-}
-```
-
-### `ModelInfo`
-
-Information about an available model.
-
-```typescript
-type ModelInfo = {
-  value: string;
-  displayName: string;
-  description: string;
-}
-```
-
-### `McpServerStatus`
-
-Status of a connected MCP server.
-
-```typescript
-type McpServerStatus = {
-  name: string;
-  status: 'connected' | 'failed' | 'needs-auth' | 'pending';
-  serverInfo?: {
-    name: string;
-    version: string;
-  };
-}
-```
-
-### `AccountInfo`
-
-Account information for the authenticated user.
-
-```typescript
-type AccountInfo = {
-  email?: string;
-  organization?: string;
-  subscriptionType?: string;
-  tokenSource?: string;
-  apiKeySource?: string;
-}
-```
-
-### `ModelUsage`
-
-Per-model usage statistics returned in result messages.
-
-```typescript
-type ModelUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadInputTokens: number;
-  cacheCreationInputTokens: number;
-  webSearchRequests: number;
-  costUSD: number;
-  contextWindow: number;
-}
-```
-
-### `ConfigScope`
-
-```typescript
-type ConfigScope = 'local' | 'user' | 'project';
-```
-
-### `NonNullableUsage`
-
-A version of [`Usage`](#usage) with all nullable fields made non-nullable.
-
-```typescript
-type NonNullableUsage = {
-  [K in keyof Usage]: NonNullable<Usage[K]>;
-}
-```
-
-### `Usage`
-
-Token usage statistics (from `@anthropic-ai/sdk`).
-
-```typescript
-type Usage = {
-  input_tokens: number | null;
-  output_tokens: number | null;
-  cache_creation_input_tokens?: number | null;
-  cache_read_input_tokens?: number | null;
-}
-```
-
-### `CallToolResult`
-
-MCP tool result type (from `@modelcontextprotocol/sdk/types.js`).
-
-```typescript
-type CallToolResult = {
-  content: Array<{
-    type: 'text' | 'image' | 'resource';
-    // Additional fields vary by type
-  }>;
-  isError?: boolean;
-}
-```
-
-### `AbortError`
-
-Custom error class for abort operations.
-
-```typescript
-class AbortError extends Error {}
-```
-
-## Sandbox Configuration
-
-### `SandboxSettings`
-
-Configuration for sandbox behavior. Use this to enable command sandboxing and configure network restrictions programmatically.
-
-```typescript
-type SandboxSettings = {
-  enabled?: boolean;
-  autoAllowBashIfSandboxed?: boolean;
-  excludedCommands?: string[];
-  allowUnsandboxedCommands?: boolean;
-  network?: NetworkSandboxSettings;
-  ignoreViolations?: SandboxIgnoreViolations;
-  enableWeakerNestedSandbox?: boolean;
 }
 ```
-
-| Property | Type | Default | Description |
-| :------- | :--- | :------ | :---------- |
-| `enabled` | `boolean` | `false` | Enable sandbox mode for command execution |
-| `autoAllowBashIfSandboxed` | `boolean` | `false` | Auto-approve bash commands when sandbox is enabled |
-| `excludedCommands` | `string[]` | `[]` | Commands that always bypass sandbox restrictions (e.g., `['docker']`). These run unsandboxed automatically without model involvement |
-| `allowUnsandboxedCommands` | `boolean` | `false` | Allow the model to request running commands outside the sandbox. When `true`, the model can set `dangerouslyDisableSandbox` in tool input, which falls back to the [permissions system](#permissions-fallback-for-unsandboxed-commands) |
-| `network` | [`NetworkSandboxSettings`](#networksandboxsettings) | `undefined` | Network-specific sandbox configuration |
-| `ignoreViolations` | [`SandboxIgnoreViolations`](#sandboxignoreviolations) | `undefined` | Configure which sandbox violations to ignore |
-| `enableWeakerNestedSandbox` | `boolean` | `false` | Enable a weaker nested sandbox for compatibility |
-
-<Note>
-**Filesystem and network access restrictions** are NOT configured via sandbox settings. Instead, they are derived from [permission rules](https://code.claude.com/docs/en/settings#permission-settings):
-
-- **Filesystem read restrictions**: Read deny rules
-- **Filesystem write restrictions**: Edit allow/deny rules
-- **Network restrictions**: WebFetch allow/deny rules
-
-Use sandbox settings for command execution sandboxing, and permission rules for filesystem and network access control.
-</Note>
-
-#### Example usage
-
-```typescript
-import { query } from "@anthropic-ai/claude-agent-sdk";
 
-const result = await query({
-  prompt: "Build and test my project",
-  options: {
-    sandbox: {
-      enabled: true,
-      autoAllowBashIfSandboxed: true,
-      excludedCommands: ["docker"],
-      network: {
-        allowLocalBinding: true,
-        allowUnixSockets: ["/var/run/docker.sock"]
-      }
-    }
-  }
+## File uploads
+
+Request parameters that correspond to file uploads can be passed in many different forms:
+
+- `File` (or an object with the same structure)
+- a `fetch` `Response` (or an object with the same structure)
+- an `fs.ReadStream`
+- the return value of the `toFile` helper
+
+Set the content-type explicitly as the files API will not infer it for you:
+
+```typescript nocheck
+import fs from "fs";
+import Anthropic, { toFile } from "@anthropic-ai/sdk";
+
+const client = new Anthropic();
+
+// If you have access to Node `fs` we recommend using `fs.createReadStream()`:
+await client.beta.files.upload({
+  file: await toFile(fs.createReadStream("/path/to/file"), undefined, {
+    type: "application/json"
+  }),
+  betas: ["files-api-2025-04-14"]
+});
+
+// Or if you have the web `File` API you can pass a `File` instance:
+await client.beta.files.upload({
+  file: new File(["my bytes"], "file.txt", { type: "text/plain" }),
+  betas: ["files-api-2025-04-14"]
+});
+// You can also pass a `fetch` `Response`:
+await client.beta.files.upload({
+  file: await fetch("https://somesite/file"),
+  betas: ["files-api-2025-04-14"]
+});
+
+// Or a `Buffer` / `Uint8Array`
+await client.beta.files.upload({
+  file: await toFile(Buffer.from("my bytes"), "file", { type: "text/plain" }),
+  betas: ["files-api-2025-04-14"]
+});
+await client.beta.files.upload({
+  file: await toFile(new Uint8Array([0, 1, 2]), "file", { type: "text/plain" }),
+  betas: ["files-api-2025-04-14"]
 });
 ```
 
-### `NetworkSandboxSettings`
+## Handling errors
 
-Network-specific configuration for sandbox mode.
-
-```typescript
-type NetworkSandboxSettings = {
-  allowLocalBinding?: boolean;
-  allowUnixSockets?: string[];
-  allowAllUnixSockets?: boolean;
-  httpProxyPort?: number;
-  socksProxyPort?: number;
-}
-```
-
-| Property | Type | Default | Description |
-| :------- | :--- | :------ | :---------- |
-| `allowLocalBinding` | `boolean` | `false` | Allow processes to bind to local ports (e.g., for dev servers) |
-| `allowUnixSockets` | `string[]` | `[]` | Unix socket paths that processes can access (e.g., Docker socket) |
-| `allowAllUnixSockets` | `boolean` | `false` | Allow access to all Unix sockets |
-| `httpProxyPort` | `number` | `undefined` | HTTP proxy port for network requests |
-| `socksProxyPort` | `number` | `undefined` | SOCKS proxy port for network requests |
-
-### `SandboxIgnoreViolations`
-
-Configuration for ignoring specific sandbox violations.
+When the library is unable to connect to the API,
+or if the API returns a non-success status code (i.e., 4xx or 5xx response),
+a subclass of `APIError` will be thrown:
 
 ```typescript
-type SandboxIgnoreViolations = {
-  file?: string[];
-  network?: string[];
-}
-```
-
-| Property | Type | Default | Description |
-| :------- | :--- | :------ | :---------- |
-| `file` | `string[]` | `[]` | File path patterns to ignore violations for |
-| `network` | `string[]` | `[]` | Network patterns to ignore violations for |
-
-### Permissions Fallback for Unsandboxed Commands
-
-When `allowUnsandboxedCommands` is enabled, the model can request to run commands outside the sandbox by setting `dangerouslyDisableSandbox: true` in the tool input. These requests fall back to the existing permissions system, meaning your `canUseTool` handler will be invoked, allowing you to implement custom authorization logic.
-
-<Note>
-**`excludedCommands` vs `allowUnsandboxedCommands`:**
-- `excludedCommands`: A static list of commands that always bypass the sandbox automatically (e.g., `['docker']`). The model has no control over this.
-- `allowUnsandboxedCommands`: Lets the model decide at runtime whether to request unsandboxed execution by setting `dangerouslyDisableSandbox: true` in the tool input.
-</Note>
-
-```typescript
-import { query } from "@anthropic-ai/claude-agent-sdk";
-
-const result = await query({
-  prompt: "Deploy my application",
-  options: {
-    sandbox: {
-      enabled: true,
-      allowUnsandboxedCommands: true  // Model can request unsandboxed execution
-    },
-    permissionMode: "default",
-    canUseTool: async (tool, input) => {
-      // Check if the model is requesting to bypass the sandbox
-      if (tool === "Bash" && input.dangerouslyDisableSandbox) {
-        // The model wants to run this command outside the sandbox
-        console.log(`Unsandboxed command requested: ${input.command}`);
-
-        // Return true to allow, false to deny
-        return isCommandAuthorized(input.command);
-      }
-      return true;
+const message = await client.messages
+  .create({
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Hello, Claude" }],
+    model: "claude-opus-4-6"
+  })
+  .catch(async (err) => {
+    if (err instanceof Anthropic.APIError) {
+      console.log(err.status); // 400
+      console.log(err.name); // BadRequestError
+      console.log(err.headers); // {server: 'nginx', ...}
+    } else {
+      throw err;
     }
-  }
-});
+  });
 ```
 
-This pattern enables you to:
+Error codes are as follows:
 
-- **Audit model requests**: Log when the model requests unsandboxed execution
-- **Implement allowlists**: Only permit specific commands to run unsandboxed
-- **Add approval workflows**: Require explicit authorization for privileged operations
+| Status Code | Error Type                 |
+| ----------- | -------------------------- |
+| 400         | `BadRequestError`          |
+| 401         | `AuthenticationError`      |
+| 403         | `PermissionDeniedError`    |
+| 404         | `NotFoundError`            |
+| 422         | `UnprocessableEntityError` |
+| 429         | `RateLimitError`           |
+| >=500       | `InternalServerError`      |
+| N/A         | `APIConnectionError`       |
+
+## Request IDs
+
+> For more information on debugging requests, see [these docs](/docs/en/api/errors#request-id)
+
+All object responses in the SDK provide a `_request_id` property which is added from the `request-id` response header so that you can quickly log failing requests and report them back to Anthropic.
+
+```typescript
+const message = await client.messages.create({
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello, Claude" }],
+  model: "claude-opus-4-6"
+});
+console.log(message._request_id); // req_018EeWyXxfu5pfWkrYcMdjWG
+```
+
+## Retries
+
+Certain errors will be automatically retried 2 times by default, with a short exponential backoff.
+Connection errors (for example, due to a network connectivity problem), 408 Request Timeout, 409 Conflict,
+429 Rate Limit, and >=500 Internal errors will all be retried by default.
+
+You can use the `maxRetries` option to configure or disable this:
+
+```typescript
+// Configure the default for all requests:
+const client = new Anthropic({
+  maxRetries: 0 // default is 2
+});
+
+// Or, configure per-request:
+await client.messages.create(
+  {
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Hello, Claude" }],
+    model: "claude-opus-4-6"
+  },
+  { maxRetries: 5 }
+);
+```
+
+## Timeouts
+
+By default requests time out after 10 minutes. However if you have specified a large `max_tokens` value and are
+_not_ streaming, the default timeout will be calculated dynamically using the formula:
+
+```typescript nocheck
+const minimum = 10 * 60;
+const calculated = (60 * 60 * maxTokens) / 128_000;
+return calculated < minimum ? minimum * 1000 : calculated * 1000;
+```
+
+which will result in a timeout up to 60 minutes, scaled by the `max_tokens` parameter, unless overridden at the request or client level.
+
+You can configure this with a `timeout` option:
+
+```typescript
+// Configure the default for all requests:
+const client = new Anthropic({
+  timeout: 20 * 1000 // 20 seconds (default is 10 minutes)
+});
+
+// Override per-request:
+await client.messages.create(
+  {
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Hello, Claude" }],
+    model: "claude-opus-4-6"
+  },
+  { timeout: 5 * 1000 }
+);
+```
+
+On timeout, an `APIConnectionTimeoutError` is thrown.
+
+Note that requests which time out will be [retried twice by default](#retries).
+
+## Long requests
 
 <Warning>
-Commands running with `dangerouslyDisableSandbox: true` have full system access. Ensure your `canUseTool` handler validates these requests carefully.
+Consider using the streaming [Messages API](#streaming-responses) for longer running requests.
 </Warning>
 
-## See also
+Avoid setting a large `max_tokens` value without using streaming.
+Some networks may drop idle connections after a certain period of time, which
+can cause the request to fail or [timeout](#timeouts) without receiving a response from Anthropic.
 
-- [SDK overview](/docs/en/agent-sdk/overview) - General SDK concepts
-- [Python SDK reference](/docs/en/agent-sdk/python) - Python SDK documentation
-- [CLI reference](https://code.claude.com/docs/en/cli-reference) - Command-line interface
-- [Common workflows](https://code.claude.com/docs/en/common-workflows) - Step-by-step guides
+This SDK will also throw an error if a non-streaming request is expected to be above roughly 10 minutes long.
+Passing `stream: true` or [overriding](#timeouts) the `timeout` option at the client or request level disables this error.
+
+An expected request latency longer than the [timeout](#timeouts) for a non-streaming request
+will result in the client terminating the connection and retrying without receiving a response.
+
+When supported by the `fetch` implementation, the SDK sets a [TCP socket keep-alive](https://tldp.org/HOWTO/TCP-Keepalive-HOWTO/overview.html) option in order
+to reduce the impact of idle connection timeouts on some networks.
+This can be [overridden](#configuring-proxies) by configuring a custom proxy.
+
+## Auto-pagination
+
+List methods in the Claude API are paginated.
+You can use the `for await ... of` syntax to iterate through items across all pages:
+
+```typescript
+async function fetchAllMessageBatches(params: Record<string, unknown>) {
+  const allMessageBatches = [];
+  // Automatically fetches more pages as needed.
+  for await (const messageBatch of client.messages.batches.list({ limit: 20 })) {
+    allMessageBatches.push(messageBatch);
+  }
+  return allMessageBatches;
+}
+```
+
+Alternatively, you can request a single page at a time:
+
+```typescript
+let page = await client.messages.batches.list({ limit: 20 });
+for (const messageBatch of page.data) {
+  console.log(messageBatch);
+}
+
+// Convenience methods are provided for manually paginating:
+while (page.hasNextPage()) {
+  page = await page.getNextPage();
+  // ...
+}
+```
+
+## Default headers
+
+The SDK automatically sends the `anthropic-version` header set to `2023-06-01`.
+
+If you need to, you can override it by setting default headers on a per-request basis.
+
+Be aware that doing so may result in incorrect types and other unexpected or undefined behavior in the SDK.
+
+```typescript nocheck hidelines={1..2}
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic();
+
+const message = await client.messages.create(
+  {
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Hello, Claude" }],
+    model: "claude-opus-4-6"
+  },
+  { headers: { "anthropic-version": "My-Custom-Value" } }
+);
+```
+
+## Advanced usage
+
+### Accessing raw Response data (e.g., headers)
+
+The "raw" `Response` returned by `fetch()` can be accessed through the `.asResponse()` method on the `APIPromise` type that all methods return.
+This method returns as soon as the headers for a successful response are received and does not consume the response body, so you are free to write custom parsing or streaming logic.
+
+You can also use the `.withResponse()` method to get the raw `Response` along with the parsed data.
+Unlike `.asResponse()` this method consumes the body, returning once it is parsed.
+
+```typescript
+const client = new Anthropic();
+
+const response = await client.messages
+  .create({
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Hello, Claude" }],
+    model: "claude-opus-4-6"
+  })
+  .asResponse();
+console.log(response.headers.get("X-My-Header"));
+console.log(response.statusText); // access the underlying Response object
+
+const { data: message, response: raw } = await client.messages
+  .create({
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Hello, Claude" }],
+    model: "claude-opus-4-6"
+  })
+  .withResponse();
+console.log(raw.headers.get("X-My-Header"));
+console.log(message.content);
+```
+
+### Logging
+
+<Warning>
+All log messages are intended for debugging only. The format and content of log messages
+may change between releases.
+</Warning>
+
+#### Log levels
+
+The log level can be configured in two ways:
+
+1. Via the `ANTHROPIC_LOG` environment variable
+2. Using the `logLevel` client option (overrides the environment variable if set)
+
+```typescript hidelines={1..2}
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  logLevel: "debug" // Show all log messages
+});
+```
+
+Available log levels, from most to least verbose:
+
+- `'debug'` - Show debug messages, info, warnings, and errors
+- `'info'` - Show info messages, warnings, and errors
+- `'warn'` - Show warnings and errors (default)
+- `'error'` - Show only errors
+- `'off'` - Disable all logging
+
+At the `'debug'` level, all HTTP requests and responses are logged, including headers and bodies.
+Some authentication-related headers are redacted, but sensitive data in request and response bodies
+may still be visible.
+
+#### Custom logger
+
+By default, this library logs to `globalThis.console`. You can also provide a custom logger.
+Most logging libraries are supported, including [pino](https://www.npmjs.com/package/pino), [winston](https://www.npmjs.com/package/winston), [bunyan](https://www.npmjs.com/package/bunyan), [consola](https://www.npmjs.com/package/consola), [signale](https://www.npmjs.com/package/signale), and [@std/log](https://jsr.io/@std/log). If your logger doesn't work, please open an issue.
+
+When providing a custom logger, the `logLevel` option still controls which messages are emitted, messages
+below the configured level will not be sent to your logger.
+
+```typescript nocheck hidelines={1}
+import Anthropic from "@anthropic-ai/sdk";
+import pino from "pino";
+
+const logger = pino();
+
+const client = new Anthropic({
+  logger: logger.child({ name: "Anthropic" }),
+  logLevel: "debug" // Send all messages to pino, allowing it to filter
+});
+```
+
+### Making custom/undocumented requests
+
+This library is typed for convenient access to the documented API. If you need to access undocumented
+endpoints, params, or response properties, the library can still be used.
+
+#### Undocumented endpoints
+
+To make requests to undocumented endpoints, you can use `client.get`, `client.post`, and other HTTP verbs.
+Options on the client, such as retries, will be respected when making these requests.
+
+```typescript nocheck
+await client.post("/some/path", {
+  body: { some_prop: "foo" },
+  query: { some_query_arg: "bar" }
+});
+```
+
+#### Undocumented request params
+
+To make requests using undocumented parameters, you may use `// @ts-expect-error` on the undocumented
+parameter. This library doesn't validate at runtime that the request matches the type, so any extra values you
+send will be sent as-is.
+
+```typescript
+client.messages.create({
+  // ...
+  // @ts-expect-error baz is not yet public
+  baz: "undocumented option"
+});
+```
+
+For requests with the `GET` verb, any extra params will be in the query, all other requests will send the
+extra param in the body.
+
+If you want to explicitly send an extra argument, you can do so with the `query`, `body`, and `headers` request
+options.
+
+#### Undocumented response properties
+
+To access undocumented response properties, you may access the response object with `// @ts-expect-error` on
+the response object, or cast the response object to the requisite type. Like the request params, the SDK does not
+validate or strip extra properties from the response from the API.
+
+### Customizing the fetch client
+
+By default, this library expects a global `fetch` function is defined.
+
+If you want to use a different `fetch` function, you can either polyfill the global:
+
+```typescript nocheck
+import fetch from "my-fetch";
+
+globalThis.fetch = fetch;
+```
+
+Or pass it to the client:
+
+```typescript nocheck hidelines={1}
+import Anthropic from "@anthropic-ai/sdk";
+import fetch from "my-fetch";
+
+const client = new Anthropic({ fetch });
+```
+
+### Fetch options
+
+If you want to set custom `fetch` options without overriding the `fetch` function, you can provide a `fetchOptions` object when instantiating the client or making a request. (Request-specific options override client options.)
+
+```typescript hidelines={1..2}
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  fetchOptions: {
+    // `RequestInit` options
+  }
+});
+```
+
+### Configuring proxies
+
+To modify proxy behavior, you can provide custom `fetchOptions` that add runtime-specific proxy
+options to requests:
+
+<Tabs>
+<Tab title="Node.js">
+
+```typescript nocheck hidelines={1}
+import Anthropic from "@anthropic-ai/sdk";
+import * as undici from "undici";
+
+const proxyAgent = new undici.ProxyAgent("http://localhost:8888");
+const client = new Anthropic({
+  fetchOptions: {
+    dispatcher: proxyAgent
+  }
+});
+```
+</Tab>
+<Tab title="Bun">
+
+```typescript nocheck hidelines={1..2}
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  fetchOptions: {
+    proxy: "http://localhost:8888"
+  }
+});
+```
+</Tab>
+<Tab title="Deno">
+
+```typescript nocheck
+import Anthropic from "npm:@anthropic-ai/sdk";
+
+const httpClient = Deno.createHttpClient({ proxy: { url: "http://localhost:8888" } });
+const client = new Anthropic({
+  fetchOptions: {
+    client: httpClient
+  }
+});
+```
+</Tab>
+</Tabs>
+
+## Beta features
+
+Beta features are available before general release to get early feedback and test new functionality. You can check the availability of all of Claude's capabilities and tools in the [build with Claude overview](/docs/en/build-with-claude/overview).
+
+You can access most beta API features through the beta property of the client. To enable a particular beta feature, you need to add the appropriate [beta header](/docs/en/api/beta-headers) to the `betas` field when creating a message.
+
+For example, to use the [Files API](/docs/en/build-with-claude/files):
+
+```typescript nocheck hidelines={1..2}
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic();
+const response = await client.beta.messages.create({
+  model: "claude-opus-4-6",
+  max_tokens: 1024,
+  messages: [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Please summarize this document for me." },
+        {
+          type: "document",
+          source: {
+            type: "file",
+            file_id: "file_abc123"
+          }
+        }
+      ]
+    }
+  ],
+  betas: ["files-api-2025-04-14"]
+});
+```
+
+## Runtime support
+
+<section title="Browser usage">
+
+Enabling the `dangerouslyAllowBrowser` option can be dangerous because it exposes your secret API credentials in the client-side code. Web browsers are inherently less secure than server environments, any user with access to the browser can potentially inspect, extract, and misuse these credentials. This could lead to unauthorized access using your credentials and potentially compromise sensitive data or functionality.
+
+**When might this not be dangerous?**
+
+In certain scenarios where enabling browser support might not pose significant risks:
+
+- **Internal Tools:** If the application is used solely within a controlled internal environment where the users are trusted, the risk of credential exposure can be mitigated.
+- **Development or debugging purpose:** Enabling this feature temporarily might be acceptable, provided the credentials are short-lived, aren't also used in production environments, or are frequently rotated.
+
+</section>
+
+## Platform integrations
+
+<Note>
+For detailed platform setup guides with code examples, see:
+- [Amazon Bedrock](/docs/en/build-with-claude/claude-on-amazon-bedrock)
+- [Google Vertex AI](/docs/en/build-with-claude/claude-on-vertex-ai)
+- [Microsoft Foundry](/docs/en/build-with-claude/claude-in-microsoft-foundry)
+</Note>
+
+The TypeScript SDK supports Bedrock, Vertex AI, and Foundry through separate npm packages:
+
+- **Bedrock:** `npm install @anthropic-ai/bedrock-sdk`: Provides `AnthropicBedrock` client
+- **Vertex AI:** `npm install @anthropic-ai/vertex-sdk`: Provides `AnthropicVertex` client
+- **Foundry:** `npm install @anthropic-ai/foundry-sdk`: Provides `AnthropicFoundry` client
+
+## Semantic versioning
+
+This package generally follows [SemVer](https://semver.org/spec/v2.0.0.html) conventions, though certain backwards-incompatible changes may be released as minor versions:
+
+1. Changes that only affect static types, without breaking runtime behavior.
+2. Changes to library internals which are technically public but not intended or documented for external use. _(Please open a GitHub issue to let the maintainers know if you are relying on such internals.)_
+3. Changes that aren't expected to impact the vast majority of users in practice.
+
+Backwards-compatibility is taken seriously to ensure you can rely on a smooth upgrade experience.
+
+## Frequently asked questions
+
+See the [GitHub repository](https://github.com/anthropics/anthropic-sdk-typescript) for FAQs, issues, and community support.
+
+## Additional resources
+
+- [GitHub repository](https://github.com/anthropics/anthropic-sdk-typescript)
+- [API reference](/docs/en/api/overview)
+- [Streaming guide](/docs/en/build-with-claude/streaming)
+- [Tool use guide](/docs/en/agents-and-tools/tool-use/overview)

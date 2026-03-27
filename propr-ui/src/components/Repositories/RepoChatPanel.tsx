@@ -6,6 +6,26 @@ import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 /** Maximum progress percentage to show when execution takes longer than estimated */
 const MAX_PROGRESS_PERCENT = 95;
 
+/** Threshold for showing humorous messages (60 seconds) */
+const LONG_ESTIMATE_THRESHOLD_MS = 60000;
+
+/** Interval for rotating humorous messages (10 seconds) */
+const MESSAGE_ROTATION_INTERVAL_MS = 10000;
+
+/** Humorous messages to display when estimate is > 60 seconds and taking longer than expected */
+const HUMOROUS_MESSAGES = [
+  "It may be slow, but it's worth the wait...",
+  "Reticulating splines...",
+  "Consulting the oracle...",
+  "Teaching AI to be patient...",
+  "Brewing some digital coffee...",
+  "Counting to infinity (almost there)...",
+  "Asking the hamsters to run faster...",
+  "Polishing the response...",
+  "Good things come to those who wait...",
+  "The AI is deep in thought...",
+];
+
 /**
  * Response metadata including timing information
  */
@@ -72,6 +92,10 @@ interface ChatProgressProps {
 const ChatProgress: React.FC<ChatProgressProps> = ({ startedAt, estimatedDuration }) => {
   const [progress, setProgress] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+  const [messageIndex, setMessageIndex] = useState(0);
+
+  // Determine if this is a long estimate (> 60 seconds)
+  const isLongEstimate = estimatedDuration > LONG_ESTIMATE_THRESHOLD_MS;
 
   useEffect(() => {
     const updateProgress = () => {
@@ -93,9 +117,30 @@ const ChatProgress: React.FC<ChatProgressProps> = ({ startedAt, estimatedDuratio
     return () => clearInterval(interval);
   }, [startedAt, estimatedDuration]);
 
+  // Rotate humorous messages every 10 seconds for long estimates
+  useEffect(() => {
+    if (!isLongEstimate) return;
+
+    const rotateMessage = () => {
+      setMessageIndex(prev => (prev + 1) % HUMOROUS_MESSAGES.length);
+    };
+
+    const interval = setInterval(rotateMessage, MESSAGE_ROTATION_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [isLongEstimate]);
+
   const remaining = Math.max(0, estimatedDuration - elapsed);
   // Only show "Taking longer than expected" after exceeding estimate by 10%
   const isOverEstimate = elapsed > estimatedDuration * 1.1;
+
+  // Determine which message to show when over estimate
+  const getOverEstimateMessage = () => {
+    if (isLongEstimate) {
+      return HUMOROUS_MESSAGES[messageIndex];
+    }
+    return "Taking longer than expected...";
+  };
 
   return (
     <div className="w-full">
@@ -112,7 +157,7 @@ const ChatProgress: React.FC<ChatProgressProps> = ({ startedAt, estimatedDuratio
       {/* Progress info */}
       <div className="text-[10px] text-slate-500">
         {isOverEstimate ? (
-          <span className="text-amber-600">Taking longer than expected...</span>
+          <span className="text-amber-600">{getOverEstimateMessage()}</span>
         ) : (
           <span>~{formatDuration(remaining)} remaining</span>
         )}

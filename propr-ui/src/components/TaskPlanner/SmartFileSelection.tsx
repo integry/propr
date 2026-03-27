@@ -1,11 +1,13 @@
 import React, { useMemo, useState, useCallback } from 'react';
-import { FileCode, FileText, FileJson, File, FolderOpen, Check } from 'lucide-react';
+import { FileCode, FileText, FileJson, File, FolderOpen, Check, X } from 'lucide-react';
 import { PreviewResult } from '../../api/proprApi';
 
 interface SmartFileSelectionProps {
   smartSelection: PreviewResult['smartSelection'];
   totalTokens?: number;
   costEstimate?: number;
+  /** Callback to exclude a file from context. Receives the full file path. */
+  onExcludeFile?: (filePath: string) => void;
 }
 
 // Get appropriate icon for file type
@@ -70,9 +72,11 @@ const getDirectoryPath = (path: string): string => {
 // Component for displaying file with two lines: filename on top, path below
 interface TwoLineFileDisplayProps {
   path: string;
+  /** Repository name for external context files */
+  repository?: string;
 }
 
-const TwoLineFileDisplay: React.FC<TwoLineFileDisplayProps> = ({ path }) => {
+const TwoLineFileDisplay: React.FC<TwoLineFileDisplayProps> = ({ path, repository }) => {
   const [copied, setCopied] = useState(false);
   const fileName = getFileName(path);
   const dirPath = getDirectoryPath(path);
@@ -91,8 +95,14 @@ const TwoLineFileDisplay: React.FC<TwoLineFileDisplayProps> = ({ path }) => {
     <div
       className="flex-1 min-w-0 relative cursor-pointer group"
       onClick={handleCopy}
-      title={path}
+      title={repository ? `${repository} - ${path}` : path}
     >
+      {/* Repository name for external files */}
+      {repository && (
+        <div className="font-mono text-xs text-indigo-600 font-medium truncate mb-0.5">
+          {repository}
+        </div>
+      )}
       {/* Filename - bold */}
       <div className="font-mono text-sm font-semibold text-gray-900 truncate group-hover:text-indigo-600 transition-colors">
         {fileName}
@@ -121,7 +131,7 @@ const TwoLineFileDisplay: React.FC<TwoLineFileDisplayProps> = ({ path }) => {
   );
 };
 
-export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection, totalTokens, costEstimate }) => {
+export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection, totalTokens, costEstimate, onExcludeFile }) => {
   const { maxScore } = useMemo(() => {
     const max = Math.max(...smartSelection.map(f => f.score || 0), 1);
     return { maxScore: max };
@@ -171,26 +181,37 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
           const percentageColor = getPercentageTextColor(relevance);
           // Only show 'manual' pill, hide 'auto' pill
           const showManualPill = file.source === 'manual';
+          // Show context-repo pill for files from context repositories
+          const showContextRepoPill = file.source === 'context-repo';
+          // Only allow excluding files from the main repo (not context-repo files)
+          const canExclude = onExcludeFile && file.source !== 'context-repo';
 
           return (
             <div
               key={idx}
-              className="px-4 py-2 flex items-start gap-3 hover:bg-gray-50 transition-colors"
+              className="px-4 py-2 flex items-start gap-3 hover:bg-gray-50 transition-colors group/row"
             >
               {/* File icon - aligned to top */}
               <div className="pt-0.5">
                 {getFileIcon(file.path)}
               </div>
 
-              {/* Two-line file display */}
-              <TwoLineFileDisplay path={file.path} />
+              {/* Two-line file display with optional repository name */}
+              <TwoLineFileDisplay path={file.path} repository={file.repository} />
 
-              {/* Right side: pills and percentage (no progress bar) */}
-              <div className="flex items-start gap-3 flex-shrink-0">
+              {/* Right side: pills, percentage, and exclude button */}
+              <div className="flex items-start gap-2 flex-shrink-0">
                 {/* Manual pill (only shown if source is manual) */}
                 {showManualPill && (
                   <span className="text-xs px-1.5 py-0.5 rounded bg-gray-200 text-gray-600 mt-0.5">
                     manual
+                  </span>
+                )}
+
+                {/* Context repo pill (only shown if source is context-repo) */}
+                {showContextRepoPill && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 mt-0.5">
+                    external
                   </span>
                 )}
 
@@ -203,6 +224,20 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
                   <span className={`text-xs font-medium ${percentageColor} w-10 text-right`}>
                     {Math.round(relevance)}%
                   </span>
+                )}
+
+                {/* Exclude button - only visible on hover for non-context-repo files */}
+                {canExclude && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onExcludeFile(file.path);
+                    }}
+                    className="opacity-0 group-hover/row:opacity-100 p-0.5 rounded hover:bg-red-100 text-gray-400 hover:text-red-600 transition-all"
+                    title="Exclude from context"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 )}
               </div>
             </div>

@@ -49,7 +49,7 @@ export function enforceGranularity(plan: Plan, granularity: Granularity, correla
 
   // Merge all tasks into a single comprehensive task
   const mergedTask: PlanItem = {
-    title: plan.length > 0 ? plan[0].title : 'Comprehensive Implementation',
+    title: generateMergedTitle(plan),
     body: mergeBodies(plan),
     implementation: mergeImplementations(plan)
   };
@@ -69,6 +69,17 @@ export function enforceGranularity(plan: Plan, granularity: Granularity, correla
       message: `${originalTaskCount} tasks merged into 1 per your Single Task setting`
     }
   };
+}
+
+/**
+ * Generate a merged title that reflects all task titles in the plan.
+ * Exported for testability.
+ */
+export function generateMergedTitle(tasks: PlanItem[]): string {
+  if (tasks.length === 0) return 'Comprehensive Implementation';
+  if (tasks.length === 1) return tasks[0].title;
+  if (tasks.length === 2) return `${tasks[0].title} and ${tasks[1].title}`;
+  return `${tasks[0].title}, ${tasks[1].title}, and ${tasks.length - 2} more`;
 }
 
 /**

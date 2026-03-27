@@ -100,6 +100,13 @@ const SetupWizardContent: React.FC<{
   const handleAddManualFile = (filePath: string) => setConfig(prev => ({ ...prev, manualFiles: [...prev.manualFiles, filePath] }));
   const handleRemoveManualFile = (filePath: string) => setConfig(prev => ({ ...prev, manualFiles: prev.manualFiles.filter(f => f !== filePath) }));
 
+  const handleExcludeFile = (filePath: string) => {
+    setConfig(prev => ({
+      ...prev,
+      excludedFiles: [...prev.excludedFiles, filePath]
+    }));
+  };
+
   const isGenerating = generationPolling.isGenerating;
   const stats = contextRefresh.preview.data?.stats;
 
@@ -164,6 +171,7 @@ const SetupWizardContent: React.FC<{
           previewTrace={previewTrace}
           isGenerating={isGenerating}
           generationTrace={generationPolling.generationTrace}
+          onExcludeFile={handleExcludeFile}
         />
       </div>
 
@@ -252,7 +260,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     files: draft?.attachments ?? [],
     contextRepositories: draftContextConfig?.contextRepositories ?? [],
     generationModel: draftContextConfig?.generationModel ?? null,
-    manualFiles: draftContextConfig?.manualFiles ?? []
+    manualFiles: draftContextConfig?.manualFiles ?? [],
+    excludedFiles: draftContextConfig?.excludedFiles ?? []
   }));
 
   const [isChangingRepo, setIsChangingRepo] = useState(false);
@@ -263,7 +272,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Sync contextRepositories, generationModel, and manualFiles from draft when it loads
+  // Sync contextRepositories, generationModel, manualFiles, and excludedFiles from draft when it loads
+  // (useState initializer may run before draft is available)
   // Only update when values actually differ to prevent infinite update loops
   useEffect(() => {
     if (!draft) return;
@@ -277,6 +287,15 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
     if (draftConfig?.manualFiles?.length > 0) {
       setConfig(prev => JSON.stringify(prev.manualFiles) === JSON.stringify(draftConfig.manualFiles) ? prev : { ...prev, manualFiles: draftConfig.manualFiles });
+    }
+    if (draftConfig?.excludedFiles && draftConfig.excludedFiles.length > 0) {
+      setConfig(prev => {
+        // Compare by serializing to JSON to detect actual changes
+        const currentJson = JSON.stringify(prev.excludedFiles);
+        const newJson = JSON.stringify(draftConfig.excludedFiles);
+        if (currentJson === newJson) return prev;
+        return { ...prev, excludedFiles: draftConfig.excludedFiles };
+      });
     }
   }, [draft]);
 

@@ -70,6 +70,8 @@ export type { WorktreeResult, WorktreeInfo, FetchLatestChangesOptions, FetchLate
 export { cleanupExistingBranch, createWorktreeFromExistingBranch } from './git/worktreeCreation.js';
 export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';
 export { isGitCorruptionError, GIT_CORRUPTION_PATTERNS, getCorruptionPatternStrings } from './git/gitCorruption.js';
+export { mergeBaseIntoBranch } from './git/mergeOperations.js';
+export type { MergeOutcome, MergeResult } from './git/mergeOperations.js';
 
 export {
     issueQueue,
@@ -92,6 +94,7 @@ export type {
     AnalysisJobData,
     SystemTaskJobData,
     IndexingJobData,
+    MergeConflictJobData,
     JobData,
     JobResult,
     ClaudeResult,
@@ -99,7 +102,9 @@ export type {
     AiMetrics,
     WorkerCreateOptions,
     ProcessorFunction,
-    UnprocessedComment
+    UnprocessedComment,
+    SystemAction,
+    AutoResolveContext
 } from './queue/taskQueue.js';
 
 export { processWebhookEvent, initializeWebhookHandler } from './webhook/webhookHandler.js';
@@ -107,6 +112,8 @@ export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor,
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
+export { handlePullRequestConflictDetection, handlePushConflictDetection, handleMergeCommand } from './webhook/mergeConflictDetector.js';
+export type { ConflictDetectionOutcome, ConflictDetectionResult, HandleMergeCommandOptions } from './webhook/mergeConflictDetector.js';
 export {
     determinePRStatusUpdate,
     isTerminalStatus,
@@ -187,7 +194,9 @@ export {
     buildClaudePrompt
 } from './claude/claudeHelpers.js';
 export type { ClaudeOutput, ConversationLogEntry, ClaudeOutputResult, BuildClaudePromptOptions, DockerArgsParams, StorePromptOptions } from './claude/claudeHelpers.js';
-export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError } from './claude/docker/dockerExecutor.js';
+export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError, ensureVersionedAgentImage } from './claude/docker/dockerExecutor.js';
+export { cleanupUnusedAgentImages, listAgentImages } from './claude/docker/dockerImageManager.js';
+export type { VersionedImageBuildResult } from './claude/docker/dockerExecutor.js';
 export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 
@@ -224,10 +233,14 @@ export type {
     AgentExecutionResult,
     AgentType,
     TokenUsage as AgentTokenUsage,
-    AnalysisResult
+    AnalysisResult,
+    AnalyzeOptions
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
-export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents } from './config/configManager.js';
+export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, migrateAgentConfigs } from './config/configManager.js';
+
+// Agent version management
+export * from './agents/version/index.js';
 
 // Repository chat message persistence
 export {

@@ -1,6 +1,6 @@
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
-import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
+import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
 import { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '../utils/commentFilters.js';
 import { loadFollowupIgnoreKeywords, loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
@@ -10,6 +10,7 @@ import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
 import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './commentEventHelpers.js';
+import { handleMergeCommand } from './mergeConflictDetector.js';
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 
@@ -60,8 +61,9 @@ export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequ
     } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment deletion'); return; }
 
     correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId }, 'Comment deleted, aborting any active jobs for this PR');
-    const activeJobs = await issueQueue.getActive();
-    const waitingJobs = await issueQueue.getWaiting();
+    const queue = await getIssueQueue();
+    const activeJobs = await queue.getActive();
+    const waitingJobs = await queue.getWaiting();
     const allJobs = [...activeJobs, ...waitingJobs] as Job<PRJobData>[];
 
     for (const job of allJobs) {
@@ -99,8 +101,9 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment edit'); return; }
 
     correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId }, 'Comment edited, restarting any active jobs for this PR');
-    const activeJobs = await issueQueue.getActive();
-    const waitingJobs = await issueQueue.getWaiting();
+    const queue = await getIssueQueue();
+    const activeJobs = await queue.getActive();
+    const waitingJobs = await queue.getWaiting();
     const allJobs = [...activeJobs, ...waitingJobs] as Job<PRJobData>[];
 
     let foundJob: Job<PRJobData> | null = null;
@@ -153,6 +156,17 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const ignoreResult = checkCommentIgnore(comment.body, ignoreKeywords, correlationId);
     if (ignoreResult.shouldIgnore) return;
 
+    // Check for /merge command — triggers merge of base branch into PR branch
+    if (comment.body && /(?:^|\s)\/merge(?:\s|$)/.test(comment.body)) {
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/merge command detected, enqueuing merge job');
+        try {
+            await handleMergeCommand({ owner, repoName: repo, prNumber, redisClient, correlationId });
+        } catch (mergeError) {
+            correlatedLogger.error({ pullRequestNumber: prNumber, error: (mergeError as Error).message }, 'Failed to handle /merge command');
+        }
+        return;
+    }
+
     // Fetch PR labels early to check for processing label
     const { prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     const hasProcessingLabel = await prHasProcessingLabel(prLabels);
@@ -183,9 +197,10 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 }
 
 async function checkExistingJob(prNumber: number, owner: string, repo: string): Promise<boolean> {
-    const activeJobs = await issueQueue.getActive();
-    const waitingJobs = await issueQueue.getWaiting();
-    const delayedJobs = await issueQueue.getDelayed();
+    const queue = await getIssueQueue();
+    const activeJobs = await queue.getActive();
+    const waitingJobs = await queue.getWaiting();
+    const delayedJobs = await queue.getDelayed();
     const existingJobs = [...activeJobs, ...waitingJobs, ...delayedJobs] as Job<PRJobData>[];
     return existingJobs.some(job => job.name === 'processPullRequestComment' && job.data.pullRequestNumber === prNumber && job.data.repoOwner === owner && job.data.repoName === repo);
 }
@@ -239,7 +254,8 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
 
     try {
-        await issueQueue.add('processPullRequestComment', jobData, { jobId, delay: COMMENT_BATCH_DELAY_MS });
+        const queue = await getIssueQueue();
+        await queue.add('processPullRequestComment', jobData, { jobId, delay: COMMENT_BATCH_DELAY_MS });
         await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
         correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {

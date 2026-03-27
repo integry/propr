@@ -62,6 +62,8 @@ interface FetchConfig {
   contextRepositories: { repository: string; branch?: string }[];
   /** File paths explicitly added by the user to include in context */
   manualFiles: string[];
+  /** Files manually excluded from context by the user */
+  excludedFiles: string[];
 }
 
 interface UseContextRefreshOptions {
@@ -169,7 +171,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         compress: currentConfig.compress,
         files: allFiles.length > 0 ? allFiles : undefined,
         generationModel: currentConfig.generationModel || undefined,
-        contextRepositories: currentConfig.contextRepositories.length > 0 ? currentConfig.contextRepositories : undefined
+        contextRepositories: currentConfig.contextRepositories.length > 0 ? currentConfig.contextRepositories : undefined,
+        excludedFiles: currentConfig.excludedFiles.length > 0 ? currentConfig.excludedFiles : undefined
       }, controller.signal);
 
       lastFetchedSourceRef.current = {

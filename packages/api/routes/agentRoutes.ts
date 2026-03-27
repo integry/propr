@@ -59,7 +59,7 @@ export function createAgentRoutes() {
 
           const start = Date.now();
           try {
-            const analysisResult = await agent.analyze(prompt, context, query.model);
+            const analysisResult = await agent.analyze(prompt, { context, model: query.model });
             return {
               agentId: query.agentId,
               agentAlias: agent.config.alias,

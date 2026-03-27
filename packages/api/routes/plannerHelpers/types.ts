@@ -46,6 +46,8 @@ export interface GenerateRequestBody {
   contextRepositories?: ContextRepositoryInput[];
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
   generationModel?: string;
+  /** Files to exclude from context generation */
+  excludedFiles?: string[];
 }
 
 export interface BackgroundGenerationOptions {

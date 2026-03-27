@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   DndContext,
@@ -19,12 +19,11 @@ import {
   SortableContext,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { ListTodo, Plus, Check, Folder, X, Sparkles } from 'lucide-react';
+import { ListTodo, Plus, Check, Folder, X, Sparkles, Search } from 'lucide-react';
 import {
   TodoItemOverlay,
   CategorySection,
   CompletedItemsAccordion,
-  AddTodoInput,
   useRepoTodos,
 } from './RepoTodos';
 
@@ -41,6 +40,7 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
   const [activeId, setActiveId] = useState<UniqueIdentifier | null>(null);
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const {
     categories, todos, activeTodos, completedTodos, todosByCategory,
@@ -49,6 +49,48 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
     handleConfirmAddTodo, handleEditCategory, handleDeleteCategory, handleAddCategory,
     handleReorderTodos, handleReorderCategories, handleMoveTodoToCategory,
   } = useRepoTodos({ repositoryId });
+
+  // Filter todos based on search query
+  const filteredTodosByCategory = useMemo(() => {
+    if (!searchQuery.trim()) return todosByCategory;
+
+    const query = searchQuery.toLowerCase();
+    const filtered: typeof todosByCategory = {};
+
+    for (const [categoryId, todos] of Object.entries(todosByCategory)) {
+      const matchingTodos = todos.filter(todo =>
+        todo.content.toLowerCase().includes(query)
+      );
+      if (matchingTodos.length > 0) {
+        filtered[categoryId] = matchingTodos;
+      }
+    }
+
+    return filtered;
+  }, [todosByCategory, searchQuery]);
+
+  const filteredCompletedTodos = useMemo(() => {
+    if (!searchQuery.trim()) return completedTodos;
+
+    const query = searchQuery.toLowerCase();
+    return completedTodos.filter(todo =>
+      todo.content.toLowerCase().includes(query)
+    );
+  }, [completedTodos, searchQuery]);
+
+  // Auto-expand categories that contain matching results when searching
+  useEffect(() => {
+    if (searchQuery.trim()) {
+      const matchingCategoryIds = Object.keys(filteredTodosByCategory);
+      if (matchingCategoryIds.length > 0) {
+        setExpandedCategories(prev => {
+          const newSet = new Set(prev);
+          matchingCategoryIds.forEach(id => newSet.add(id));
+          return newSet;
+        });
+      }
+    }
+  }, [searchQuery, filteredTodosByCategory]);
 
   useEffect(() => {
     const categoryIds = new Set(['uncategorized', ...categories.map((c) => c.categoryId)]);
@@ -62,6 +104,12 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
 
   const handleAddTodo = useCallback((categoryId: string | null) => {
     setAddingToCategory(categoryId);
+    // Auto-expand the category when adding a todo
+    const expandKey = categoryId || 'uncategorized';
+    setExpandedCategories((prev) => {
+      if (prev.has(expandKey)) return prev;
+      return new Set([...prev, expandKey]);
+    });
   }, []);
 
   const onConfirmAddTodo = useCallback(async (content: string) => {
@@ -227,26 +275,37 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
             </button>
           </div>
         )}
+        <div className="mt-3 relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search to-dos..."
+            className="w-full pl-8 pr-8 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4" style={{ scrollbarWidth: 'thin', scrollbarColor: '#d1d5db transparent' }}>
         <DndContext sensors={sensors} collisionDetection={collisionDetectionStrategy} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-          {addingToCategory === null && (
-            <div className="mb-4">
-              <AddTodoInput categoryId={null} onAdd={onConfirmAddTodo} onCancel={() => setAddingToCategory(false)} />
-            </div>
-          )}
           <SortableContext items={categoryIds} strategy={verticalListSortingStrategy}>
-            {categories.map((category) => (
-              <React.Fragment key={category.categoryId}>
-                {addingToCategory === category.categoryId && (
-                  <div className="mb-2 ml-4">
-                    <AddTodoInput categoryId={category.categoryId} onAdd={onConfirmAddTodo} onCancel={() => setAddingToCategory(false)} />
-                  </div>
-                )}
+            {categories.map((category) => {
+              const categoryTodos = filteredTodosByCategory[category.categoryId] || [];
+              // Hide empty categories when searching
+              if (searchQuery.trim() && categoryTodos.length === 0) return null;
+              return (
                 <CategorySection
+                  key={category.categoryId}
                   category={category}
-                  todos={todosByCategory[category.categoryId] || []}
+                  todos={categoryTodos}
                   selectedTodoIds={selectedTodoIds}
                   onToggleSelect={handleToggleSelect}
                   onToggleComplete={handleToggleComplete}
@@ -259,26 +318,40 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
                   isExpanded={expandedCategories.has(category.categoryId)}
                   onToggleExpand={() => handleToggleCategoryExpand(category.categoryId)}
                   isSortable={true}
+                  isAddingTodo={addingToCategory === category.categoryId}
+                  onConfirmAddTodo={onConfirmAddTodo}
+                  onCancelAddTodo={() => setAddingToCategory(false)}
                 />
-              </React.Fragment>
-            ))}
+              );
+            })}
           </SortableContext>
-          <CategorySection
-            category={null}
-            todos={todosByCategory['uncategorized'] || []}
-            selectedTodoIds={selectedTodoIds}
-            onToggleSelect={handleToggleSelect}
-            onToggleComplete={handleToggleComplete}
-            onDeleteTodo={handleDeleteTodo}
-            onEditTodo={handleEditTodo}
-            onAddTodo={handleAddTodo}
-            disabled={disabled}
-            isExpanded={expandedCategories.has('uncategorized')}
-            onToggleExpand={() => handleToggleCategoryExpand('uncategorized')}
-          />
+          {(!searchQuery.trim() || (filteredTodosByCategory['uncategorized']?.length ?? 0) > 0) && (
+            <CategorySection
+              category={null}
+              todos={filteredTodosByCategory['uncategorized'] || []}
+              selectedTodoIds={selectedTodoIds}
+              onToggleSelect={handleToggleSelect}
+              onToggleComplete={handleToggleComplete}
+              onDeleteTodo={handleDeleteTodo}
+              onEditTodo={handleEditTodo}
+              onAddTodo={handleAddTodo}
+              disabled={disabled}
+              isExpanded={expandedCategories.has('uncategorized')}
+              onToggleExpand={() => handleToggleCategoryExpand('uncategorized')}
+              isAddingTodo={addingToCategory === null}
+              onConfirmAddTodo={onConfirmAddTodo}
+              onCancelAddTodo={() => setAddingToCategory(false)}
+            />
+          )}
           <DragOverlay>{activeTodo ? <TodoItemOverlay todo={activeTodo} /> : null}</DragOverlay>
         </DndContext>
-        <CompletedItemsAccordion todos={completedTodos} onToggleComplete={handleToggleComplete} onDeleteTodo={handleDeleteTodo} disabled={disabled} />
+        <CompletedItemsAccordion
+          todos={filteredCompletedTodos}
+          onToggleComplete={handleToggleComplete}
+          onDeleteTodo={handleDeleteTodo}
+          disabled={disabled}
+          forceExpand={searchQuery.trim() !== '' && filteredCompletedTodos.length > 0}
+        />
         {activeTodos.length === 0 && completedTodos.length === 0 && (
           <div className="text-center py-12">
             <ListTodo size={32} className="mx-auto text-slate-300 mb-3" />

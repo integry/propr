@@ -225,24 +225,36 @@ test('getModelHardLimit - returns max usable tokens', async (t) => {
     });
 });
 
-test('getModelHardLimit - all 16 known models', async (t) => {
+test('getModelHardLimit - all 18 known models', async (t) => {
     // All models should return 98% of their max tokens for safety
 
-    await t.test('Claude models (3 models, 200K context)', () => {
+    await t.test('Claude 4.6 models (2 models, 1M context)', () => {
+        // Claude Opus 4.6
+        const opus46Limit = getModelHardLimit('claude-opus-4-6');
+        assert.strictEqual(opus46Limit, Math.floor(1000000 * 0.98), 'Claude Opus 4.6 should return 98% of 1M');
+        assert.strictEqual(opus46Limit, 980000, 'Claude Opus 4.6 hard limit should be 980000');
+
+        // Claude Sonnet 4.6
+        const sonnet46Limit = getModelHardLimit('claude-sonnet-4-6');
+        assert.strictEqual(sonnet46Limit, Math.floor(1000000 * 0.98), 'Claude Sonnet 4.6 should return 98% of 1M');
+        assert.strictEqual(sonnet46Limit, 980000, 'Claude Sonnet 4.6 hard limit should be 980000');
+    });
+
+    await t.test('Claude 4.5 models (3 models, 200K context)', () => {
         // Claude Opus 4.5
         const opusLimit = getModelHardLimit('claude-opus-4-5-20251101');
-        assert.strictEqual(opusLimit, Math.floor(200000 * 0.98), 'Claude Opus should return 98% of 200K');
-        assert.strictEqual(opusLimit, 196000, 'Claude Opus hard limit should be 196000');
+        assert.strictEqual(opusLimit, Math.floor(200000 * 0.98), 'Claude Opus 4.5 should return 98% of 200K');
+        assert.strictEqual(opusLimit, 196000, 'Claude Opus 4.5 hard limit should be 196000');
 
         // Claude Sonnet 4.5
         const sonnetLimit = getModelHardLimit('claude-sonnet-4-5-20250929');
-        assert.strictEqual(sonnetLimit, Math.floor(200000 * 0.98), 'Claude Sonnet should return 98% of 200K');
-        assert.strictEqual(sonnetLimit, 196000, 'Claude Sonnet hard limit should be 196000');
+        assert.strictEqual(sonnetLimit, Math.floor(200000 * 0.98), 'Claude Sonnet 4.5 should return 98% of 200K');
+        assert.strictEqual(sonnetLimit, 196000, 'Claude Sonnet 4.5 hard limit should be 196000');
 
         // Claude Haiku 4.5
         const haikuLimit = getModelHardLimit('claude-haiku-4-5-20251001');
-        assert.strictEqual(haikuLimit, Math.floor(200000 * 0.98), 'Claude Haiku should return 98% of 200K');
-        assert.strictEqual(haikuLimit, 196000, 'Claude Haiku hard limit should be 196000');
+        assert.strictEqual(haikuLimit, Math.floor(200000 * 0.98), 'Claude Haiku 4.5 should return 98% of 200K');
+        assert.strictEqual(haikuLimit, 196000, 'Claude Haiku 4.5 hard limit should be 196000');
     });
 
     await t.test('Codex models (8 models, 400K context)', () => {
@@ -318,10 +330,13 @@ test('getModelHardLimit - all 16 known models', async (t) => {
         assert.strictEqual(g25FlashLiteLimit, 980000, 'Gemini 2.5 Flash Lite hard limit should be 980000');
     });
 
-    await t.test('verifies total model count is 16', () => {
-        // Model IDs for all 16 known models
+    await t.test('verifies total model count is 18', () => {
+        // Model IDs for all 18 known models
         const allKnownModels = [
-            // Claude (3)
+            // Claude 4.6 (2)
+            'claude-opus-4-6',
+            'claude-sonnet-4-6',
+            // Claude 4.5 (3)
             'claude-opus-4-5-20251101',
             'claude-sonnet-4-5-20250929',
             'claude-haiku-4-5-20251001',
@@ -342,7 +357,7 @@ test('getModelHardLimit - all 16 known models', async (t) => {
             'gemini-2.5-flash-lite',
         ];
 
-        assert.strictEqual(allKnownModels.length, 16, 'Should have exactly 16 known models');
+        assert.strictEqual(allKnownModels.length, 18, 'Should have exactly 18 known models');
 
         // Verify all models return a valid hard limit (not default)
         for (const modelId of allKnownModels) {
@@ -391,9 +406,13 @@ test('getModelHardLimit - edge cases and safety margin', async (t) => {
         assert.strictEqual(EFFECTIVE_MAX_RATIO, 0.98, 'EFFECTIVE_MAX_RATIO should be 0.98');
 
         // For each tier of models, verify the 2% buffer calculation
-        // Claude (200K): 200000 * 0.98 = 196000 (buffer: 4000 tokens)
+        // Claude 4.6 (1M): 1000000 * 0.98 = 980000 (buffer: 20000 tokens)
+        const claude46Limit = getModelHardLimit('claude-opus-4-6');
+        assert.strictEqual(1000000 - claude46Limit, 20000, 'Claude 4.6 buffer should be 20000 tokens (2%)');
+
+        // Claude 4.5 (200K): 200000 * 0.98 = 196000 (buffer: 4000 tokens)
         const claudeLimit = getModelHardLimit('claude-opus-4-5-20251101');
-        assert.strictEqual(200000 - claudeLimit, 4000, 'Claude buffer should be 4000 tokens (2%)');
+        assert.strictEqual(200000 - claudeLimit, 4000, 'Claude 4.5 buffer should be 4000 tokens (2%)');
 
         // Codex (400K): 400000 * 0.98 = 392000 (buffer: 8000 tokens)
         const codexLimit = getModelHardLimit('gpt-5.4');
@@ -407,6 +426,7 @@ test('getModelHardLimit - edge cases and safety margin', async (t) => {
     await t.test('hard limit is always less than raw model limit', () => {
         // Test a sampling of models to ensure hard limit < raw limit
         const testCases = [
+            { modelId: 'claude-opus-4-6', rawLimit: 1000000 },
             { modelId: 'claude-opus-4-5-20251101', rawLimit: 200000 },
             { modelId: 'gpt-5.4', rawLimit: 400000 },
             { modelId: 'gemini-2.5-pro', rawLimit: 1000000 },

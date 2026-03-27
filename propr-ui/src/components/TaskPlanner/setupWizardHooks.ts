@@ -35,6 +35,7 @@ export interface PlannerConfig {
   generationModel: string | null;
   /** File paths explicitly added by the user to include in context */
   manualFiles: string[];
+  excludedFiles: string[];
 }
 
 interface RepoInfoState {
@@ -218,7 +219,8 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
         contextLevel: config.contextLevel,
         compress: config.compress,
         contextRepositories: config.contextRepositories,
-        generationModel: config.generationModel || undefined
+        generationModel: config.generationModel || undefined,
+        excludedFiles: config.excludedFiles.length > 0 ? config.excludedFiles : undefined
       });
     } catch (err) {
       stopPolling();
@@ -273,7 +275,8 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
         contextLevel: config.contextLevel,
         compress: config.compress,
         contextRepositories: config.contextRepositories,
-        generationModel: config.generationModel || undefined
+        generationModel: config.generationModel || undefined,
+        excludedFiles: config.excludedFiles.length > 0 ? config.excludedFiles : undefined
       });
       // Pass the draft data via router state to avoid re-fetch and UI flicker
       // Set status to 'generating' so the UI shows the generating state immediately

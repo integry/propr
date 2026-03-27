@@ -13,7 +13,8 @@ import {
   estimateLlmDuration,
   loadSettings,
   estimateTokens,
-  REFINER_SYSTEM_PROMPT
+  REFINER_SYSTEM_PROMPT,
+  getEventPublisher
 } from '@propr/core';
 import type { Plan } from '@propr/core';
 import {
@@ -32,7 +33,7 @@ export function createGenerateHandler(db: Knex) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId, baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel } = req.body as GenerateRequestBody;
+    const { draftId, baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles } = req.body as GenerateRequestBody;
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
 
     // Validate context repositories if provided
@@ -42,6 +43,12 @@ export function createGenerateHandler(db: Knex) {
         res.status(400).json({ error: repoValidation.error });
         return;
       }
+    }
+
+    // Validate excludedFiles if provided
+    if (excludedFiles && (!Array.isArray(excludedFiles) || !excludedFiles.every(f => typeof f === 'string'))) {
+      res.status(400).json({ error: 'excludedFiles must be an array of strings' });
+      return;
     }
 
     const correlationId = generateCorrelationId();
@@ -63,7 +70,7 @@ export function createGenerateHandler(db: Knex) {
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
       const worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken });
 
-      await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel });
+      await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles });
 
       // Clear any previous abort signal to allow immediate retry after abort
       const redis = new Redis({
@@ -255,15 +262,79 @@ export function createFinalizeHandler(db: Knex) {
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
 
     const correlationId = generateCorrelationId();
+    const userId = req.user!.id;
 
+    // Atomically update draft status to 'executing' only if it's in a valid state
+    // This prevents race conditions from duplicate finalize requests
+    const RE_FINALIZABLE_STATUSES = ['review', 'approved', 'executed', 'pr_created', 'merged', 'failed'];
     try {
-      const result = await executeDraft(draftId, req.user!.id, correlationId);
-      if (result.alreadyExecuted) { res.json({ success: true, alreadyExecuted: true, issuesCreated: 0 }); return; }
-      res.json({ success: true, results: result.results, issuesCreated: result.results?.length || 0 });
+      const updated = await db('task_drafts')
+        .where({ draft_id: draftId, user_id: userId })
+        .whereIn('status', RE_FINALIZABLE_STATUSES)
+        .update({
+          status: 'executing',
+          updated_at: db.fn.now()
+        });
+
+      if (updated === 0) {
+        // Check why - either draft doesn't exist, unauthorized, or already executing
+        const draft = await db('task_drafts').where({ draft_id: draftId }).first();
+        if (!draft) {
+          res.status(404).json({ error: 'Draft not found' });
+          return;
+        }
+        if (draft.user_id !== userId) {
+          res.status(403).json({ error: 'Unauthorized' });
+          return;
+        }
+        if (draft.status === 'executing') {
+          res.status(409).json({ error: 'Draft is already being executed' });
+          return;
+        }
+        res.status(400).json({ error: `Cannot execute draft with status: ${draft.status}` });
+        return;
+      }
     } catch (error) {
-      console.error('Finalize plan error:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to execute plan' });
+      console.error('Failed to update draft status:', error);
+      res.status(500).json({ error: 'Failed to start execution' });
+      return;
     }
+
+    // Return 202 Accepted immediately - execution runs in background
+    res.status(202).json({ success: true, status: 'executing', message: 'Plan execution started' });
+
+    // Run execution in background
+    (async () => {
+      try {
+        const result = await executeDraft(draftId, userId, correlationId);
+        if (result.alreadyExecuted) {
+          console.log(`[finalize] Draft ${draftId} was already executed`);
+        } else {
+          console.log(`[finalize] Draft ${draftId} execution completed, ${result.results?.length || 0} issues created`);
+        }
+      } catch (error) {
+        console.error(`[finalize] Draft ${draftId} execution failed:`, error);
+        // Emit failure event via WebSocket
+        const eventPublisher = getEventPublisher();
+        await eventPublisher.publishDraftUpdate({
+          draftId,
+          step: 'execution',
+          status: 'failed',
+          data: {
+            error: error instanceof Error ? error.message : 'Execution failed'
+          }
+        });
+        // Update status to failed on error
+        try {
+          await db('task_drafts').where({ draft_id: draftId }).update({
+            status: 'failed',
+            updated_at: db.fn.now()
+          });
+        } catch (updateError) {
+          console.error(`[finalize] Failed to update draft status to failed:`, updateError);
+        }
+      }
+    })();
   };
 }
 

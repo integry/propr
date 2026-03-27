@@ -159,6 +159,8 @@ export interface GenerateContextPreviewOptions {
   contextRepositories?: ContextRepository[];
   /** GitHub token for cloning context repositories */
   githubToken?: string;
+  /** Files to exclude from the generated context */
+  excludedFiles?: string[];
 }
 
 export interface Base64Image {
@@ -202,10 +204,14 @@ export interface RegenerateContextParams {
   manualFiles: string[];
   draft: TaskDraft;
   contextModel?: string;
+  /** Generation model for token ratio calculation (tiktoken is accurate for OpenAI, needs adjustment for Claude) */
+  generationModel?: string;
   compress: boolean;
   previewTokenLimit: number;
   correlationId?: string;
   correlatedLogger: MinimalLogger;
+  /** Files to exclude from the generated context */
+  excludedFiles?: string[];
 }
 
 /** Result of context regeneration */

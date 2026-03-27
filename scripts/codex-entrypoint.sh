@@ -22,10 +22,25 @@ if [ -d "/home/node/.codex" ]; then
 
     # Fix ownership if running with sudo capability
     # This is crucial because Docker volume mounts often default to root ownership,
-    # but Codex running as 'node' needs to write to 'sessions' and 'history.jsonl'.
+    # but Codex running as 'node' needs to read/write config files.
     if command -v sudo >/dev/null 2>&1; then
         echo "Fixing ownership of Codex config files..."
-        sudo chown -R node:node /home/node/.codex 2>/dev/null || echo "Could not change ownership (may already be correct)"
+        # First try recursive chown
+        sudo chown -R node:node /home/node/.codex 2>/dev/null || true
+        # Also fix permissions on files that might be 600 (root-only readable)
+        sudo chmod -R u+rw /home/node/.codex 2>/dev/null || true
+
+        # For files that still aren't readable (e.g., on some volume mounts),
+        # copy them with correct permissions
+        for file in config.toml history.jsonl auth.json; do
+            if [ -f "/home/node/.codex/$file" ] && ! sudo -u node test -r "/home/node/.codex/$file" 2>/dev/null; then
+                echo "Fixing permissions for $file..."
+                sudo cp "/home/node/.codex/$file" "/tmp/codex-$file"
+                sudo chown node:node "/tmp/codex-$file"
+                sudo chmod 644 "/tmp/codex-$file"
+                sudo mv "/tmp/codex-$file" "/home/node/.codex/$file"
+            fi
+        done
     fi
 
     # Ensure necessary subdirectories exist to prevent runtime errors
@@ -94,9 +109,10 @@ if [ $# -gt 0 ]; then
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..."
         # Switch to node user and execute the command
-        # Use su instead of sudo to properly preserve stdin
+        # -E preserves environment variables (including NODE_OPTIONS for memory limit)
+        # -H sets HOME to target user's home directory (/home/node)
         cd /home/node/workspace
-        exec su -s /bin/bash node -c "cd /home/node/workspace && $*"
+        exec sudo -E -u node -H "$@"
     else
         exec "$@"
     fi

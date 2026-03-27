@@ -257,6 +257,73 @@ async function getIssueLabels(
 }
 
 /**
+ * Adds the processing label to the Epic PR when all child issues are done.
+ * This allows the Epic PR to react to CI checks and followup comments.
+ */
+async function addProcessingLabelToEpicPR(
+    repository: string,
+    epicLabel: string,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    try {
+        // Extract the Epic branch name from the label (format: base-{branchName})
+        if (!epicLabel.startsWith('base-')) {
+            log.debug({ epicLabel }, 'Invalid epic label format, skipping');
+            return;
+        }
+        const epicBranchName = epicLabel.slice(5); // Remove 'base-' prefix
+
+        const [owner, repo] = repository.split('/');
+        const octokit = await getAuthenticatedOctokit();
+
+        // Find the Epic PR
+        const epicPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+            owner,
+            repo,
+            head: `${owner}:${epicBranchName}`,
+            state: 'open'
+        });
+
+        if (epicPRs.data.length === 0) {
+            log.debug({ repository, epicBranchName }, 'No open Epic PR found');
+            return;
+        }
+
+        const epicPR = epicPRs.data[0];
+        const processingLabels = getPrimaryProcessingLabels();
+        const primaryLabel = processingLabels[0] || 'AI';
+
+        // Check if the Epic PR already has the processing label
+        const existingLabels = epicPR.labels?.map(l => typeof l === 'string' ? l : l.name) || [];
+        if (existingLabels.includes(primaryLabel)) {
+            log.debug({ repository, prNumber: epicPR.number, primaryLabel }, 'Epic PR already has processing label');
+            return;
+        }
+
+        // Add the processing label to the Epic PR
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner,
+            repo,
+            issue_number: epicPR.number,
+            labels: [primaryLabel]
+        });
+
+        log.info({
+            repository,
+            prNumber: epicPR.number,
+            label: primaryLabel
+        }, 'Added processing label to Epic PR - all child issues are done');
+
+    } catch (error) {
+        log.warn({
+            repository,
+            epicLabel,
+            error: (error as Error).message
+        }, 'Failed to add processing label to Epic PR');
+    }
+}
+
+/**
  * Triggers the next pending issue in a plan by adding processing labels.
  * Only triggers if there are no issues currently being processed or under review.
  */
@@ -293,6 +360,11 @@ export async function triggerNextPendingIssue(
         const nextPending = planIssues.find(issue => issue.status === PlanIssueStatus.PENDING);
         if (!nextPending) {
             log.debug({ draftId }, 'No more pending issues in plan');
+
+            // All issues are done - add processing label to Epic PR if present
+            if (epicLabel) {
+                await addProcessingLabelToEpicPR(repository, epicLabel, log);
+            }
             return;
         }
 

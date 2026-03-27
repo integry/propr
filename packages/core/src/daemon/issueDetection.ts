@@ -5,7 +5,7 @@ import logger from '../utils/logger.js';
 import { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
-import { issueQueue } from '../queue/taskQueue.js';
+import { getIssueQueue } from '../queue/taskQueue.js';
 import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.js';
 import type { DetectedIssue } from '../webhook/webhookHandler.js';
 
@@ -72,8 +72,9 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         triggeringLabel: triggeringLabel
     }, 'Detected eligible issue');
 
-    const activeJobs = await issueQueue.getActive();
-    const waitingJobs = await issueQueue.getWaiting();
+    const queue = await getIssueQueue();
+    const activeJobs = await queue.getActive();
+    const waitingJobs = await queue.getWaiting();
     const existingJobs = [...activeJobs, ...waitingJobs];
 
     interface JobData {
@@ -116,7 +117,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         };
 
         const addToQueueWithRetry = (): Promise<unknown> => withRetry(
-            () => issueQueue.add('processGitHubIssue', issueJob, {
+            async () => (await getIssueQueue()).add('processGitHubIssue', issueJob, {
                 jobId,
                 attempts: 3,
                 backoff: { type: 'exponential', delay: 2000 },

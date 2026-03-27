@@ -1,5 +1,5 @@
 import logger from '../../utils/logger.js';
-import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult } from '../types.js';
+import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
@@ -58,7 +58,7 @@ export class GeminiAgent implements Agent {
 
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number });
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
 
             const result = await executeDockerCommand('docker', dockerArgs, {
                 timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData,
@@ -127,15 +127,16 @@ export class GeminiAgent implements Agent {
         };
     }
 
-    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<AnalysisResult> {
+    async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
+        const { context, model, taskId, executionType } = options || {};
         const startTime = Date.now();
-        logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId }, 'Running lightweight analysis via Gemini agent...');
+        logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Gemini agent...');
         const effectiveModel = model || 'gemini-2.5-flash';
         const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
         const stdinData = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
             // Use stream-json to get token usage metrics
-            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/gemini-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, outputFormat: 'stream-json' });
+            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/gemini-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, outputFormat: 'stream-json', taskId, executionType });
             const result = await executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId });
             const executionTimeMs = Date.now() - startTime;
 
@@ -218,15 +219,20 @@ export class GeminiAgent implements Agent {
     }
 
     /** Builds Docker arguments for running Gemini in a container. */
-    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; outputFormat?: 'stream-json' | 'text' }): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, outputFormat = 'stream-json' } = params;
+    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; outputFormat?: 'stream-json' | 'text'; taskId?: string; executionType?: string }): string[] {
+        const { worktreePath, githubToken, modelName, issueNumber, outputFormat = 'stream-json', taskId, executionType } = params;
         const configPath = resolveConfigPath(this.config.configPath);
         const envVars: string[] = [];
         if (this.config.envVars) {
             for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`);
         }
+        // Generate human-readable container name
+        const timestamp = Date.now().toString(36);
+        const shortTaskId = taskId ? taskId.substring(0, 8) : timestamp;
+        const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
+        const containerName = `${this.config.alias || 'gemini'}-${taskType}-${shortTaskId}`;
         const dockerArgs: string[] = [
-            'run', '--rm', '-i', '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
+            'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
             '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'GEMINI_CLI=1', ...envVars, '-w', '/home/node/workspace',
             this.config.dockerImage, 'gemini', '--yolo', '--output-format', outputFormat

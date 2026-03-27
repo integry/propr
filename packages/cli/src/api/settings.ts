@@ -42,6 +42,12 @@ export interface SystemSettings {
    * Score threshold (0-9) for auto-followup on issues.
    */
   auto_followup_score_threshold: number;
+
+  /**
+   * When enabled, the system will automatically merge the PR base branch into
+   * contributor branches and ask an agent to resolve any conflicts.
+   */
+  auto_resolve_merge_conflicts: boolean;
 }
 
 /**
@@ -83,6 +89,12 @@ export interface UpdateSettingsOptions {
    * Score threshold (0-9) for auto-followup on issues.
    */
   auto_followup_score_threshold?: number;
+
+  /**
+   * When enabled, the system will automatically merge the PR base branch into
+   * contributor branches and ask an agent to resolve any conflicts.
+   */
+  auto_resolve_merge_conflicts?: boolean;
 }
 
 /**
@@ -115,6 +127,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "planner_context_model",
   "planner_generation_model",
   "auto_followup_score_threshold",
+  "auto_resolve_merge_conflicts",
 ];
 
 /**
@@ -135,7 +148,7 @@ export function isValidSettingKey(key: string): key is SettingKey {
  * @returns The parsed value.
  * @throws Error if the value cannot be parsed for the given key.
  */
-export function parseSettingValue(key: SettingKey, value: string): number | string | string[] {
+export function parseSettingValue(key: SettingKey, value: string): number | string | string[] | boolean {
   switch (key) {
     case "worker_concurrency":
     case "auto_followup_score_threshold": {
@@ -150,6 +163,13 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be at least 1`);
       }
       return parsed;
+    }
+    case "auto_resolve_merge_conflicts": {
+      const lower = value.toLowerCase();
+      if (lower !== "true" && lower !== "false") {
+        throw new Error(`Invalid value for ${key}: must be "true" or "false"`);
+      }
+      return lower === "true";
     }
     case "github_user_whitelist":
       // Parse comma-separated list
@@ -235,7 +255,7 @@ export async function updateSettings(
  */
 export async function updateSetting(
   key: SettingKey,
-  value: number | string | string[],
+  value: number | string | string[] | boolean,
   client?: ApiClient
 ): Promise<UpdateSettingsResponse> {
   const settings: UpdateSettingsOptions = { [key]: value };
