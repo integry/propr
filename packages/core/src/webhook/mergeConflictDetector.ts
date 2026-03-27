@@ -168,6 +168,64 @@ async function fetchPRConflictInfo(
 }
 
 /**
+ * Handles a /merge comment on a PR by enqueuing a merge conflict resolution job.
+ * This bypasses the auto_resolve_merge_conflicts setting since the user explicitly requested it.
+ * Unlike automatic detection, this does not check if the PR is actually conflicted —
+ * it will perform the merge regardless (clean or with conflicts).
+ */
+export async function handleMergeCommand(
+    owner: string,
+    repoName: string,
+    prNumber: number,
+    redisClient: Redis,
+    correlationId: string
+): Promise<ConflictDetectionResult | null> {
+    const log = logger.withCorrelation(correlationId);
+    const repository = `${owner}/${repoName}`;
+
+    const octokit = await getAuthenticatedOctokit();
+    const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner,
+        repo: repoName,
+        pull_number: prNumber,
+    });
+
+    if (pr.state !== 'open') {
+        log.info({ repository, prNumber }, '/merge command: PR is not open, skipping');
+        return null;
+    }
+
+    const jobCorrelationId = generateCorrelationId();
+    const jobData: MergeConflictJobData = {
+        pullRequestNumber: prNumber,
+        repoOwner: owner,
+        repoName,
+        headBranch: pr.head.ref,
+        baseBranch: pr.base.ref,
+        headSha: pr.head.sha,
+        baseSha: pr.base.sha,
+        triggerSource: 'comment',
+        correlationId: jobCorrelationId,
+        systemGenerated: true,
+    };
+
+    const jobId = `merge-conflict-${owner}-${repoName}-${prNumber}-${Date.now()}`;
+    const queue = await getIssueQueue();
+    await queue.add('processMergeConflict', jobData, { jobId });
+
+    log.info({
+        repository,
+        prNumber,
+        headBranch: pr.head.ref,
+        baseBranch: pr.base.ref,
+        jobId,
+        outcome: 'queued',
+    }, '/merge command: enqueued merge job');
+
+    return { outcome: 'queued', prNumber, repository };
+}
+
+/**
  * Handles pull_request events that could indicate a new merge conflict.
  * Triggers: opened, reopened, synchronize, ready_for_review
  */

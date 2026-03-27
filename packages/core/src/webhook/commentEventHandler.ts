@@ -10,6 +10,7 @@ import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
 import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './commentEventHelpers.js';
+import { handleMergeCommand } from './mergeConflictDetector.js';
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 
@@ -154,6 +155,17 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const ignoreKeywords = await loadFollowupIgnoreKeywords();
     const ignoreResult = checkCommentIgnore(comment.body, ignoreKeywords, correlationId);
     if (ignoreResult.shouldIgnore) return;
+
+    // Check for /merge command — triggers merge of base branch into PR branch
+    if (comment.body && /(?:^|\s)\/merge(?:\s|$)/.test(comment.body)) {
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/merge command detected, enqueuing merge job');
+        try {
+            await handleMergeCommand(owner, repo, prNumber, redisClient, correlationId);
+        } catch (mergeError) {
+            correlatedLogger.error({ pullRequestNumber: prNumber, error: (mergeError as Error).message }, 'Failed to handle /merge command');
+        }
+        return;
+    }
 
     // Fetch PR labels early to check for processing label
     const { prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
