@@ -253,38 +253,47 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     await clearIndexingProgress(fullName);
 
   } catch (error) {
-    const repoName = options.fullName || path.basename(repoPath);
-    const errorBranch = options.branch || 'HEAD';
-
-    // Always clear the cancellation flag and progress
-    await clearIndexingCancellation(repoName);
-    await clearIndexingProgress(repoName);
-
-    // Handle user-initiated cancellation
-    if (error instanceof IndexingCancelledError) {
-      correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
-      // Status already set to 'idle' by stopIndexingJob, just return without throwing
-      return;
-    }
-
-    const err = error as Error;
-    correlatedLogger.error(
-      { error: err.message, stack: err.stack, repoPath, fullName: repoName, branch: errorBranch },
-      'Repository indexing failed'
-    );
-
-    // Set status to failed
-    try {
-      await updateRepositoryStatus(repoName, 'failed', errorBranch);
-    } catch (statusError) {
-      correlatedLogger.error(
-        { error: (statusError as Error).message },
-        'Failed to update repository status to failed'
-      );
-    }
-
-    throw error;
+    await handleIndexingError(error, repoPath, options, correlatedLogger);
   }
+}
+
+async function handleIndexingError(
+  error: unknown,
+  repoPath: string,
+  options: IndexingOptions,
+  correlatedLogger: Logger
+): Promise<void> {
+  const repoName = options.fullName || path.basename(repoPath);
+  const errorBranch = options.branch || 'HEAD';
+
+  // Always clear the cancellation flag and progress
+  await clearIndexingCancellation(repoName);
+  await clearIndexingProgress(repoName);
+
+  // Handle user-initiated cancellation
+  if (error instanceof IndexingCancelledError) {
+    correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
+    // Status already set to 'idle' by stopIndexingJob, just return without throwing
+    return;
+  }
+
+  const err = error as Error;
+  correlatedLogger.error(
+    { error: err.message, stack: err.stack, repoPath, fullName: repoName, branch: errorBranch },
+    'Repository indexing failed'
+  );
+
+  // Set status to failed
+  try {
+    await updateRepositoryStatus(repoName, 'failed', errorBranch);
+  } catch (statusError) {
+    correlatedLogger.error(
+      { error: (statusError as Error).message },
+      'Failed to update repository status to failed'
+    );
+  }
+
+  throw error;
 }
 
 // --- Phase A: Setup & Staleness Check ---
