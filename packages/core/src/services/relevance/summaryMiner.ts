@@ -203,31 +203,35 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       correlatedLogger.info({ count: filesToDelete.length }, 'Deleted summaries for removed files');
     }
 
-    if (filesToProcess.length === 0) {
+    if (filesToProcess.length === 0 && filesToDelete.length === 0) {
       correlatedLogger.info('No files need processing, all summaries up to date');
       await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage });
       return;
     }
 
-    correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
+    let batchResult = { filesProcessed: 0, failedBatches: 0, totalBatches: 0 };
 
-    // Initialize progress tracking
-    await initIndexingProgress(fullName, filesToProcess.length);
+    if (filesToProcess.length > 0) {
+      correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
 
-    // Phase B: Batch Summarization
-    const batchResult = await processBatches({
-      repoPath,
-      fullName,
-      files: filesToProcess,
-      agent,
-      log: correlatedLogger,
-      modelOverride,
-      customPrompt: settings.custom_prompt,
-      branch
-    });
+      // Initialize progress tracking
+      await initIndexingProgress(fullName, filesToProcess.length);
 
-    // Phase C: Directory Aggregation (only if some files were processed)
-    if (batchResult.filesProcessed > 0) {
+      // Phase B: Batch Summarization
+      batchResult = await processBatches({
+        repoPath,
+        fullName,
+        files: filesToProcess,
+        agent,
+        log: correlatedLogger,
+        modelOverride,
+        customPrompt: settings.custom_prompt,
+        branch
+      });
+    }
+
+    // Phase C: Directory Aggregation (if files were processed or deleted)
+    if (batchResult.filesProcessed > 0 || filesToDelete.length > 0) {
       await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, branch });
     }
 
@@ -249,38 +253,47 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     await clearIndexingProgress(fullName);
 
   } catch (error) {
-    const repoName = options.fullName || path.basename(repoPath);
-    const errorBranch = options.branch || 'HEAD';
-
-    // Always clear the cancellation flag and progress
-    await clearIndexingCancellation(repoName);
-    await clearIndexingProgress(repoName);
-
-    // Handle user-initiated cancellation
-    if (error instanceof IndexingCancelledError) {
-      correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
-      // Status already set to 'idle' by stopIndexingJob, just return without throwing
-      return;
-    }
-
-    const err = error as Error;
-    correlatedLogger.error(
-      { error: err.message, stack: err.stack, repoPath, fullName: repoName, branch: errorBranch },
-      'Repository indexing failed'
-    );
-
-    // Set status to failed
-    try {
-      await updateRepositoryStatus(repoName, 'failed', errorBranch);
-    } catch (statusError) {
-      correlatedLogger.error(
-        { error: (statusError as Error).message },
-        'Failed to update repository status to failed'
-      );
-    }
-
-    throw error;
+    await handleIndexingError(error, repoPath, options, correlatedLogger);
   }
+}
+
+async function handleIndexingError(
+  error: unknown,
+  repoPath: string,
+  options: IndexingOptions,
+  correlatedLogger: Logger
+): Promise<void> {
+  const repoName = options.fullName || path.basename(repoPath);
+  const errorBranch = options.branch || 'HEAD';
+
+  // Always clear the cancellation flag and progress
+  await clearIndexingCancellation(repoName);
+  await clearIndexingProgress(repoName);
+
+  // Handle user-initiated cancellation
+  if (error instanceof IndexingCancelledError) {
+    correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
+    // Status already set to 'idle' by stopIndexingJob, just return without throwing
+    return;
+  }
+
+  const err = error as Error;
+  correlatedLogger.error(
+    { error: err.message, stack: err.stack, repoPath, fullName: repoName, branch: errorBranch },
+    'Repository indexing failed'
+  );
+
+  // Set status to failed
+  try {
+    await updateRepositoryStatus(repoName, 'failed', errorBranch);
+  } catch (statusError) {
+    correlatedLogger.error(
+      { error: (statusError as Error).message },
+      'Failed to update repository status to failed'
+    );
+  }
+
+  throw error;
 }
 
 // --- Phase A: Setup & Staleness Check ---
@@ -429,10 +442,14 @@ async function identifyStaleFiles(
 async function deleteFileSummaries(paths: string[], branch: string): Promise<void> {
   if (paths.length === 0) return;
 
-  await db('file_summaries')
-    .whereIn('path', paths)
-    .andWhere({ branch })
-    .delete();
+  const CHUNK_SIZE = 500;
+  for (let i = 0; i < paths.length; i += CHUNK_SIZE) {
+    const chunk = paths.slice(i, i + CHUNK_SIZE);
+    await db('file_summaries')
+      .whereIn('path', chunk)
+      .andWhere({ branch })
+      .delete();
+  }
 }
 
 // --- Phase D: Repository Status Updates ---
@@ -516,7 +533,9 @@ export async function clearRepositorySummaries(fullName: string, branch: string 
     .delete();
 
   await db('directory_summaries')
-    .where('path', 'like', `${fullName}/%`)
+    .where(function() {
+      this.where('path', 'like', `${fullName}/%`).orWhere('path', fullName);
+    })
     .andWhere({ branch })
     .delete();
 

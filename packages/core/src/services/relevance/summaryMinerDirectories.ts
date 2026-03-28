@@ -52,8 +52,8 @@ export async function aggregateDirectories(
   }
 
   // Extract unique directories and sort by depth (deepest first)
-  const directories = extractDirectories(fileSummaries.map(f => f.path));
-  const sortedDirs = directories.sort((a, b) => {
+  const directories = new Set(extractDirectories(fileSummaries.map(f => f.path)));
+  const sortedDirs = Array.from(directories).sort((a, b) => {
     const depthA = a.split('/').length;
     const depthB = b.split('/').length;
     return depthB - depthA; // Deepest first
@@ -71,6 +71,28 @@ export async function aggregateDirectories(
     await aggregateSingleDirectory({ dirPath: dir, fileSummaries, dirSummaryCache, agent, log, modelOverride, branch });
     // Update progress after each directory
     await updateDirectoryProgress(fullName);
+  }
+
+  // Clean up stale directory summaries
+  const existingDirs = await db('directory_summaries')
+    .where('path', 'like', `${fullName}/%`)
+    .andWhere({ branch })
+    .select('path');
+
+  const dirsToDelete = existingDirs
+    .map((d: { path: string }) => d.path)
+    .filter((p: string) => !directories.has(p));
+
+  if (dirsToDelete.length > 0) {
+    const CHUNK_SIZE = 500;
+    for (let i = 0; i < dirsToDelete.length; i += CHUNK_SIZE) {
+      const chunk = dirsToDelete.slice(i, i + CHUNK_SIZE);
+      await db('directory_summaries')
+        .whereIn('path', chunk)
+        .andWhere({ branch })
+        .delete();
+    }
+    log.info({ count: dirsToDelete.length }, 'Deleted stale directory summaries');
   }
 
   log.info({ directoryCount: sortedDirs.length }, 'Directory aggregation complete');

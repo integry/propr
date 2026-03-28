@@ -48,7 +48,8 @@ const inFlightPreviews = new Map<string, Promise<PreviewResult>>();
  * Generate a unique key for tracking in-flight requests.
  * Based on draftId and content-affecting parameters.
  */
-function getInFlightKey(draftId: string, prompt: string, baseBranch: string, compress: boolean, files: string[] | undefined): string {
+function getInFlightKey(params: { draftId: string; prompt: string; baseBranch: string; compress: boolean; files: string[] | undefined }): string {
+  const { draftId, prompt, baseBranch, compress, files } = params;
   // Use a simplified hash of content-affecting parameters
   const filesKey = files?.sort().join(',') || '';
   return `${draftId}:${prompt.length}:${baseBranch}:${compress}:${filesKey.length}`;
@@ -339,7 +340,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   // Generate key for in-flight tracking
-  const inFlightKey = getInFlightKey(draftId, prompt, baseBranch, compress, files);
+  const inFlightKey = getInFlightKey({ draftId, prompt, baseBranch, compress, files });
 
   // Check if there's already an in-flight request for this draft with same content
   const existingRequest = inFlightPreviews.get(inFlightKey);
