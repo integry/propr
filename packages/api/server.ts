@@ -30,6 +30,7 @@ import {
   createRepoChatRoutes,
   createRepoImprovementsRoutes,
   createRepoTodoRoutes,
+  createUserRepoPreferencesRoutes,
   attachmentUpload
 } from './routes/index.js';
 import { checkAndExecuteDelayedReindex } from './routes/configHelpers.js';
@@ -183,6 +184,7 @@ function setupRoutes(): void {
   const repoChatRoutes = createRepoChatRoutes();
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
+  const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
 
   app.get('/api/status', statusRoutes.getStatus);
   app.get('/api/tasks', taskRoutes.getTasks);
@@ -317,6 +319,10 @@ function setupRoutes(): void {
   app.put('/api/repos/todos/:todoId', repoTodoRoutes.updateTodo);
   app.delete('/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo);
   app.post('/api/repos/todos/reorder', repoTodoRoutes.reorderTodos);
+
+  // User-specific repository preferences endpoints
+  app.get('/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences);
+  app.post('/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences);
 
   setupWebhookRoute();
 }

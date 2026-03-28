@@ -133,14 +133,46 @@ describe("ProPR CLI E2E", {
       }
       console.log(`    Triggering indexing...`);
       await triggerIndexing(REPO!, { fullReindex: true }, client);
+      const observedPhases = new Set<string>();
       for (let i = 0; i < 60; i++) {
         await sleep(5000);
         const c = await getIndexingStatus(REPO!, client);
         const st = c.repositories[0];
-        if (st?.indexing_status === "completed") return;
+        if (st?.progress?.phase) observedPhases.add(st.progress.phase);
+        if (st?.indexing_status === "completed") {
+          console.log(`    Indexing completed. Observed phases: ${Array.from(observedPhases).join(", ") || "none"}`);
+          return;
+        }
         if (st?.indexing_status === "failed") assert.fail("Indexing failed");
       }
       assert.fail("Indexing timed out");
+    });
+
+    it("indexing status has commit info after completion", async () => {
+      const s = await getIndexingStatus(REPO!, client);
+      const st = s.repositories[0];
+      assert.ok(st, "Repository not found in indexing status");
+      assert.strictEqual(st.indexing_status, "completed");
+      assert.ok(st.last_indexed_at, "Expected last_indexed_at after indexing");
+      assert.ok(st.last_indexed_hash, "Expected last_indexed_hash after indexing");
+      console.log(`    Indexed at: ${st.last_indexed_at}, hash: ${st.last_indexed_hash?.substring(0, 8)}`);
+    });
+
+    it("incremental reindex completes without errors", { timeout: 300_000 }, async () => {
+      console.log(`    Triggering incremental reindex...`);
+      const trigger = await triggerIndexing(REPO!, { fullReindex: false }, client);
+      assert.ok(trigger.success, `Trigger failed: ${trigger.error}`);
+      for (let i = 0; i < 60; i++) {
+        await sleep(5000);
+        const c = await getIndexingStatus(REPO!, client);
+        const st = c.repositories[0];
+        if (st?.indexing_status === "completed") {
+          console.log(`    Incremental reindex completed`);
+          return;
+        }
+        if (st?.indexing_status === "failed") assert.fail("Incremental reindex failed");
+      }
+      assert.fail("Incremental reindex timed out");
     });
   });
 
