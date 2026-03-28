@@ -1,39 +1,25 @@
 // API for fetching system data from backend
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
-interface SystemStatus {
-  daemon: string;
-  workers: { id: number; status: string }[];
-  redis: string;
-  githubAuth: string;
-  claudeAuth: string;
-}
+// Re-export all types for backward compatibility
+export * from './proprTypes';
 
-interface StatusResponse {
-  daemon: string;
-  workerCount?: number;
-  redis: string;
-  githubAuth: string;
-  claudeAuth: string;
-}
+import type {
+  SystemStatus, StatusResponse, TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
+  GetTasksOptions, MonitoredRepo, RepoConfigResponse, RepoBranchesResponse,
+  StopExecutionResponse, DeleteTaskResponse, AgentConfig, RevertParams,
+  RevertPreviewResponse, SummarizationSettings, TriggerReindexAllResponse, PostFollowupResponse
+} from './proprTypes';
 
-interface TaskAnalysisResponse {
-  analysis: unknown | null;
-  message?: string;
-}
+export type { UserRepoPreferences } from './userRepoPreferencesApi';
 
-// Helper function to handle API responses and auth
 export const handleApiResponse = async (response: Response): Promise<Response> => {
   if (response.status === 401) {
-    if (window.location.pathname === '/login') {
-      throw new Error('Authentication required');
-    }
+    if (window.location.pathname === '/login') throw new Error('Authentication required');
     window.location.href = '/login';
     throw new Error('Authentication required');
   }
-  if (!response.ok) {
-    throw new Error(`API request failed: ${response.status}`);
-  }
+  if (!response.ok) throw new Error(`API request failed: ${response.status}`);
   return response;
 };
 
@@ -42,94 +28,46 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
   await handleApiResponse(response);
   const data: StatusResponse = await response.json();
   const workers: { id: number; status: string }[] = [];
-  for (let i = 0; i < (data.workerCount || 0); i++) {
-    workers.push({ id: i + 1, status: 'active' });
-  }
+  for (let i = 0; i < (data.workerCount || 0); i++) workers.push({ id: i + 1, status: 'active' });
   return {
     daemon: data.daemon === 'running' ? 'Running' : 'Stopped',
-    workers: workers,
+    workers,
     redis: data.redis === 'connected' ? 'Connected' : 'Disconnected',
     githubAuth: data.githubAuth === 'connected' ? 'Authenticated' : 'Failed',
     claudeAuth: data.claudeAuth === 'connected' ? 'Authenticated' : 'Failed',
   };
 };
 
-interface QueueStats {
-  active: number;
-  waiting: number;
-  completed: number;
-  failed: number;
-  delayed: number;
-  paused: number;
-}
-
-interface GeneratingPlansResponse {
-  count: number;
-}
-
 export const getQueueStats = async (): Promise<QueueStats> => {
   const [queueResponse, generatingPlansResponse] = await Promise.all([
     fetch(`${API_BASE_URL}/api/queue/stats`, { credentials: 'include' }),
     fetch(`${API_BASE_URL}/api/stats/generating-plans`, { credentials: 'include' }).catch(() => null)
   ]);
-
   await handleApiResponse(queueResponse);
   const queueStats: QueueStats = await queueResponse.json();
-
-  // Add generating plans count to active tasks if fetch succeeded
   let generatingCount = 0;
   if (generatingPlansResponse && generatingPlansResponse.ok) {
     try {
       const generatingPlans: GeneratingPlansResponse = await generatingPlansResponse.json();
       generatingCount = generatingPlans.count || 0;
-    } catch {
-      // Ignore JSON parsing errors
-    }
+    } catch { /* ignore */ }
   }
-
-  return {
-    ...queueStats,
-    active: queueStats.active + generatingCount
-  };
+  return { ...queueStats, active: queueStats.active + generatingCount };
 };
 
-export interface GetTasksOptions {
-  status?: string;
-  limit?: number;
-  offset?: number;
-  repository?: string;
-  search?: string;
-  /** Filter to only include tasks that need review (completed or failed) */
-  forReview?: boolean;
-  /** Exclude tasks where plan_issue_status is 'merged' */
-  excludeMerged?: boolean;
-}
-
 export const getTasks = async (
-  statusOrOptions: string | GetTasksOptions = 'all',
-  limit = 50,
-  offset = 0,
-  repository = 'all',
-  search = ''
+  statusOrOptions: string | GetTasksOptions = 'all', limit = 50, offset = 0, repository = 'all', search = ''
 ): Promise<unknown> => {
-  // Support both old signature (positional args) and new options object
   let options: GetTasksOptions;
-  if (typeof statusOrOptions === 'object') {
-    options = statusOrOptions;
-  } else {
-    options = { status: statusOrOptions, limit, offset, repository, search };
-  }
-
+  if (typeof statusOrOptions === 'object') options = statusOrOptions;
+  else options = { status: statusOrOptions, limit, offset, repository, search };
   const params = new URLSearchParams({
-    status: options.status || 'all',
-    limit: (options.limit ?? 50).toString(),
-    offset: (options.offset ?? 0).toString(),
-    repository: options.repository || 'all'
+    status: options.status || 'all', limit: (options.limit ?? 50).toString(),
+    offset: (options.offset ?? 0).toString(), repository: options.repository || 'all'
   });
   if (options.search) params.append('search', options.search);
   if (options.forReview) params.append('forReview', 'true');
   if (options.excludeMerged) params.append('excludeMerged', 'true');
-
   const response = await fetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
@@ -154,20 +92,6 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
   return response.json();
 };
 
-export interface MonitoredRepo {
-  id: string;
-  name: string;
-  enabled: boolean;
-  alias?: string;
-  baseBranch?: string;
-  starred?: boolean;
-  hidden?: boolean;
-}
-
-export interface RepoConfigResponse {
-  repos_to_monitor: MonitoredRepo[];
-}
-
 export const getRepoConfig = async (): Promise<RepoConfigResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/config/repos`, { credentials: 'include' });
   await handleApiResponse(response);
@@ -188,11 +112,6 @@ export const getAvailableGithubRepos = async (): Promise<unknown> => {
   await handleApiResponse(response);
   return response.json();
 };
-
-export interface RepoBranchesResponse {
-  branches: string[];
-  defaultBranch: string;
-}
 
 export const getRepoBranches = async (owner: string, repo: string): Promise<RepoBranchesResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`, { credentials: 'include' });
@@ -308,33 +227,16 @@ export const updatePrimaryProcessingLabels = async (primaryLabels: string[]): Pr
   return response.json();
 };
 
-export interface StopExecutionResponse {
-  success: boolean;
-  containerStopped: boolean;
-  containerId?: string;
-  message?: string;
-}
-
 export const stopTaskExecution = async (taskId: string): Promise<StopExecutionResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/stop`, { method: 'POST', credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
-export interface DeleteTaskResponse {
-  error?: string;
-  message?: string;
-  currentState?: string;
-}
-
 export const deleteTask = async (taskId: string, force?: boolean): Promise<void> => {
-  const url = force
-    ? `${API_BASE_URL}/api/tasks/${taskId}?force=true`
-    : `${API_BASE_URL}/api/tasks/${taskId}`;
+  const url = force ? `${API_BASE_URL}/api/tasks/${taskId}?force=true` : `${API_BASE_URL}/api/tasks/${taskId}`;
   const response = await fetch(url, { method: 'DELETE', credentials: 'include' });
-  if (response.status === 204) {
-    return; // Success, no content
-  }
+  if (response.status === 204) return;
   if (response.status === 400) {
     const data: DeleteTaskResponse = await response.json();
     throw new Error(data.message || data.error || 'Cannot delete task in active state');
@@ -396,4 +298,5 @@ export * from './repoChatApi';
 export * from './repoImprovementsApi';
 export * from './tasks';
 export * from './repoTodosApi';
+export * from './userRepoPreferencesApi';
 export * from './revertApi';

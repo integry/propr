@@ -15,14 +15,12 @@ interface ApprovedPlanViewProps {
   onRefetch?: () => void;
 }
 
-// Original Prompt Popover Component - styled like Step 2 (Review Plan)
 interface OriginalPromptPopoverProps {
   prompt: string;
 }
 
 const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt }) => {
   const [isOpen, setIsOpen] = useState(false);
-
   return (
     <div className="relative">
       <button
@@ -39,12 +37,7 @@ const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt })
       <AnimatePresence>
         {isOpen && (
           <>
-            {/* Backdrop */}
-            <div
-              className="fixed inset-0 z-40"
-              onClick={() => setIsOpen(false)}
-            />
-            {/* Popover */}
+            <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
             <motion.div
               initial={{ opacity: 0, y: -10, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -54,10 +47,7 @@ const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt })
             >
               <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
                 <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Original Prompt</span>
-                <button
-                  onClick={() => setIsOpen(false)}
-                  className="p-1 hover:bg-gray-200 rounded transition-colors"
-                >
+                <button onClick={() => setIsOpen(false)} className="p-1 hover:bg-gray-200 rounded transition-colors">
                   <X size={14} className="text-gray-400" />
                 </button>
               </div>
@@ -204,13 +194,11 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({
   );
 };
 
-
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRefetch }) => {
   const navigate = useNavigate();
   const { addToast } = useToast();
 
-  // State to hold issues data for footer stats
-  const [issues, setIssues] = useState<PlanIssue[]>([]);
+  const [issues, _setIssues] = useState<PlanIssue[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -218,15 +206,30 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const [isRevising, setIsRevising] = useState(false);
   const [isPaused, setIsPaused] = useState(draft.paused || false);
   const [isPauseLoading, setIsPauseLoading] = useState(false);
-
-  // Epic PR options state
   const [useEpic, setUseEpic] = useState(false);
   const [autoMerge, setAutoMerge] = useState(false);
 
-  // Plan name: prefer draft.name, fall back to initial_prompt
   const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
+  const repository = draft.repository || '';
+  const baseBranch = draft.context_config?.baseBranch || 'main';
+  const repoUrl = draft.repository ? `https://github.com/${draft.repository}/issues` : null;
 
-  // Handle delete plan confirmation
+  const tasks: PlanTask[] = useMemo(() => {
+    let planJson = draft.plan_json;
+    if (typeof planJson === 'string') {
+      try { planJson = JSON.parse(planJson); } catch { return []; }
+    }
+    return Array.isArray(planJson) ? planJson : [];
+  }, [draft.plan_json]);
+
+  const footerStats = useMemo(() => ({
+    total: issues.length,
+    merged: issues.filter(i => i.status === 'merged').length,
+    underReview: issues.filter(i => i.status === 'pr_open' || i.status === 'pr_review').length,
+    pending: issues.filter(i => i.status === 'pending').length,
+    processing: issues.filter(i => i.status === 'processing' || i.status === 'refinement_processing').length,
+  }), [issues]);
+
   const handleDeletePlanConfirm = useCallback(async () => {
     setIsDeleting(true);
     try {
@@ -241,7 +244,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     }
   }, [draft.draft_id, addToast, navigate]);
 
-  // Handle pause/resume toggle
   const handlePauseResume = useCallback(async () => {
     setIsPauseLoading(true);
     try {
@@ -261,7 +263,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     }
   }, [draft.draft_id, isPaused, addToast]);
 
-  // Handle revise plan confirmation
   const handleRevisePlanConfirm = useCallback(async () => {
     setIsRevising(true);
     try {
@@ -279,49 +280,11 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     }
   }, [draft.draft_id, addToast, onRefetch]);
 
-  // Defensively ensure plan_json is an array
-  const tasks: PlanTask[] = useMemo(() => {
-    let planJson = draft.plan_json;
-    if (typeof planJson === 'string') {
-      try { planJson = JSON.parse(planJson); } catch { return []; }
-    }
-    return Array.isArray(planJson) ? planJson : [];
-  }, [draft.plan_json]);
-
-  // Extract repository URL from draft
-  const repoUrl = draft.repository ? `https://github.com/${draft.repository}/issues` : null;
-
-  // Extract repository and branch info
-  const repository = draft.repository || '';
-  const baseBranch = draft.context_config?.baseBranch || 'main';
-
-  // Callback to receive issues from PlanIssuesManager
-  const handleIssuesChange = useCallback((updatedIssues: PlanIssue[]) => {
-    setIssues(updatedIssues);
-  }, []);
-
-  // Compute footer stats from issues (actual data, not tasks)
-  const footerStats = useMemo(() => {
-    const total = issues.length;
-    const merged = issues.filter(i => i.status === 'merged').length;
-    const underReview = issues.filter(i => i.status === 'pr_open' || i.status === 'pr_review').length;
-    const pending = issues.filter(i => i.status === 'pending').length;
-    const processing = issues.filter(i => i.status === 'processing' || i.status === 'refinement_processing').length;
-    return { total, merged, underReview, pending, processing };
-  }, [issues]);
-
-  // Handle refresh from footer
   const handleRefresh = useCallback(() => {
     setRefreshKey(prev => prev + 1);
   }, []);
-
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="h-full bg-white overflow-hidden flex flex-col"
-    >
-      {/* Pro Studio Header - Anchored with gray background */}
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
           <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
@@ -329,14 +292,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
           </h1>
           {draft.status === 'merged' && (
             <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1 flex-shrink-0">
-              <GitMerge size={12} />
-              <span className="hidden sm:inline">Merged</span>
+              <GitMerge size={12} /><span className="hidden sm:inline">Merged</span>
             </span>
           )}
           {isPaused && (
             <span className="px-2 py-1 rounded text-xs font-medium bg-orange-100 text-orange-700 flex items-center gap-1 flex-shrink-0">
-              <Pause size={12} />
-              <span className="hidden sm:inline">Paused</span>
+              <Pause size={12} /><span className="hidden sm:inline">Paused</span>
             </span>
           )}
           <div className="hidden md:flex items-center gap-2 text-sm flex-shrink-0">
@@ -350,9 +311,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
           {draft.initial_prompt && (
             <>
               <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
-              <div className="hidden lg:block">
-                <OriginalPromptPopover prompt={draft.initial_prompt} />
-              </div>
+              <div className="hidden lg:block"><OriginalPromptPopover prompt={draft.initial_prompt} /></div>
             </>
           )}
         </div>
@@ -370,7 +329,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         />
       </div>
 
-      {/* Single-Pane Action Dashboard */}
       <div className="flex-1 overflow-auto p-4">
         <PlanIssuesManager
           draftId={draft.draft_id}
@@ -387,19 +345,8 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
 
       <PlanFooterStats stats={footerStats} onRefresh={handleRefresh} />
 
-      <DeletePlanDialog
-        isOpen={showDeleteDialog}
-        onClose={() => setShowDeleteDialog(false)}
-        onConfirm={handleDeletePlanConfirm}
-        isLoading={isDeleting}
-      />
-
-      <RevisePlanDialog
-        isOpen={showReviseDialog}
-        onClose={() => setShowReviseDialog(false)}
-        onConfirm={handleRevisePlanConfirm}
-        isLoading={isRevising}
-      />
+      <DeletePlanDialog isOpen={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} onConfirm={handleDeletePlanConfirm} isLoading={isDeleting} />
+      <RevisePlanDialog isOpen={showReviseDialog} onClose={() => setShowReviseDialog(false)} onConfirm={handleRevisePlanConfirm} isLoading={isRevising} />
     </motion.div>
   );
 };

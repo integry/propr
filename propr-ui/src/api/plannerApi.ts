@@ -77,9 +77,7 @@ export const createDraft = async (repository: string, prompt: string, options?: 
 };
 
 export const getDraft = async (id: string): Promise<PlannerDraft> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${id}`, {
-    credentials: 'include'
-  });
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${id}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
@@ -138,9 +136,7 @@ export const previewContext = async (options: PreviewOptions, signal?: AbortSign
 };
 
 export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${id}`, {
-    credentials: 'include'
-  });
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${id}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
@@ -186,15 +182,9 @@ export const getDrafts = async (options: GetDraftsOptions = {}): Promise<Paginat
   if (options.search && options.search.trim()) params.append('search', options.search.trim());
   if (options.status && options.status !== 'all') params.append('status', options.status);
   if (options.excludeStatuses) params.append('excludeStatuses', options.excludeStatuses);
-
   const queryString = params.toString();
-  const url = queryString
-    ? `${API_BASE_URL}/api/planner/drafts?${queryString}`
-    : `${API_BASE_URL}/api/planner/drafts`;
-
-  const response = await fetch(url, {
-    credentials: 'include'
-  });
+  const url = queryString ? `${API_BASE_URL}/api/planner/drafts?${queryString}` : `${API_BASE_URL}/api/planner/drafts`;
+  const response = await fetch(url, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
@@ -226,9 +216,7 @@ export const getDraftRepositories = async (): Promise<RepositoriesResponse> => {
 };
 
 export const getRepositoryInfo = async (draftId: string): Promise<RepositoryInfo> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/repository-info`, {
-    credentials: 'include'
-  });
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/repository-info`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
