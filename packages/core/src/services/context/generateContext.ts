@@ -27,7 +27,7 @@ function getTokenRatio(modelId?: string): number {
 }
 
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
-  const { repoPath, filesToInclude, tokenLimit, correlationId, includeFullDirectoryStructure = true, compress = false, modelId } = options;
+  const { repoPath, filesToInclude, priorityFiles, tokenLimit, correlationId, includeFullDirectoryStructure = true, compress = false, modelId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   // Convert model token limit to tiktoken limit based on model type
@@ -152,9 +152,22 @@ export async function generateContext(options: ContextGenerationOptions): Promis
     // Check if result exceeds token limit and needs truncation
     if (result.totalTokens > tiktokenLimit) {
       // Use provided files or extract from result if not specified
-      const filesForOptimization = (filesToInclude && filesToInclude.length > 0)
-        ? filesToInclude
-        : Object.keys(result.fileTokenCounts || {});
+      // When priorityFiles are provided, order them first so the optimizer
+      // keeps the most relevant files and removes non-priority files first
+      let filesForOptimization: string[];
+      if (filesToInclude && filesToInclude.length > 0) {
+        filesForOptimization = filesToInclude;
+      } else {
+        const allPackedFiles = Object.keys(result.fileTokenCounts || {});
+        if (priorityFiles && priorityFiles.length > 0) {
+          const prioritySet = new Set(priorityFiles);
+          const priorityOrdered = priorityFiles.filter(f => allPackedFiles.includes(f));
+          const nonPriority = allPackedFiles.filter(f => !prioritySet.has(f));
+          filesForOptimization = [...priorityOrdered, ...nonPriority];
+        } else {
+          filesForOptimization = allPackedFiles;
+        }
+      }
 
       if (filesForOptimization.length > 0) {
         correlatedLogger.info(

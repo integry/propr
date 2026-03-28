@@ -113,9 +113,11 @@ export async function regenerateContext(params: RegenerateContextParams): Promis
     fileCount: combinedFiles.length
   });
 
-  const filesToInclude = compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined);
-  const priorityFiles = compress ? combinedFiles : undefined;
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId, modelId: generationModel });
+  // Always include all repo files, using relevance-detected files as priority.
+  // This lets the token budget dictate how many files fit, rather than artificially
+  // limiting to only the relevance-detected files.
+  const priorityFiles = combinedFiles.length > 0 ? combinedFiles : undefined;
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: undefined, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId, modelId: generationModel });
 
   const smartSummaryBudget = Math.floor(previewTokenLimit * 0.1);
   const smartSummaryResult = await buildSummaryContext({ tokenBudget: smartSummaryBudget, priorityPaths: combinedFiles, repoName: draft.repository as string, correlationId });

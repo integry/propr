@@ -414,10 +414,12 @@ async function generateContextPreviewInternal(options: GenerateContextPreviewOpt
   const reservedOverheadTiktokens = Math.ceil((attachmentTokens + smartSummaryTokens) / TIKTOKEN_TO_CLAUDE_RATIO);
   const fileSelectionLimit = Math.max(0, targetTokenLimit - reservedOverheadTiktokens);
 
+  // Use priority-based selection: relevance-detected files first, then fill remaining
+  // budget with other repo files. This lets token budget dictate the file count.
   const simulatedSelection = selectFilesWithinLimit(
     filteredFileTokenCounts, fileSelectionLimit,
-    compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined),
-    compress ? combinedFiles : undefined
+    undefined,
+    combinedFiles.length > 0 ? combinedFiles : undefined
   );
 
   const simulatedIncludedFiles = simulatedSelection.selectedFiles;
