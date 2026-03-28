@@ -40,6 +40,9 @@ export const getStatusBadge = (status: string): string => {
     case 'executed':
       // Active Teal: Brand color for "Issues Created" - should be the "light" on the row
       return 'bg-teal-100 text-teal-700';
+    case 'executing':
+      // Creating issues in progress
+      return 'bg-yellow-100 text-yellow-800';
     case 'pr_created':
       return 'bg-cyan-100 text-cyan-800';
     case 'review':
@@ -61,6 +64,8 @@ export const getStatusLabel = (status: string): string => {
       return '✓ Merged';
     case 'executed':
       return 'Issues created';
+    case 'executing':
+      return 'Creating issues';
     case 'pr_created':
       return 'PR Created';
     case 'review':
@@ -84,6 +89,8 @@ export const getStatusIcon = (status: string): React.ReactNode => {
     case 'executed':
       // Active Teal icon to match the badge
       return <CheckCircle size={12} className="text-teal-600" />;
+    case 'executing':
+      return <Loader2 size={12} className="text-yellow-600 animate-spin" />;
     case 'pr_created':
       return <GitPullRequestArrow size={12} className="text-cyan-600" />;
     case 'review':
