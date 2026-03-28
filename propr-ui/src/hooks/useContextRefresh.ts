@@ -366,8 +366,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
 
     const prevSettings = prevViewSettingsRef.current;
 
-    // Check what changed
-    const granularityChanged = prevSettings !== null && prevSettings.granularity !== currentViewSettings.granularity;
+    // Check what changed (granularity doesn't affect context, only plan generation)
     const contextLevelChanged = prevSettings !== null && prevSettings.contextLevel !== currentViewSettings.contextLevel;
     const modelChanged = prevSettings !== null && prevSettings.generationModel !== currentViewSettings.generationModel;
 
@@ -379,18 +378,19 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
 
     // Handle context level changes locally if we have cached data
     const fullData = fullPreviewDataRef.current;
-    if (contextLevelChanged && !granularityChanged && !modelChanged && fullData?.fileTokenCounts) {
+    if (contextLevelChanged && !modelChanged && fullData?.fileTokenCounts) {
       const modelMaxTokens = fullData.stats.modelMaxContextTokens || DEFAULT_MODEL_MAX_TOKENS;
       const simulatedData = simulateContextLevel(fullData, config.contextLevel, modelMaxTokens);
       setPreview(prev => ({ ...prev, data: simulatedData }));
       return;
     }
 
-    // For granularity or model changes, fetch from server
-    if (granularityChanged || modelChanged) {
+    // Granularity changes don't affect context - only plan generation
+    // Only model changes need server refresh (different context window)
+    if (modelChanged) {
       fetchPreview();
     }
-  }, [config.granularity, config.contextLevel, config.generationModel, initialSyncDone, fetchPreview]);
+  }, [config.contextLevel, config.generationModel, initialSyncDone, fetchPreview]);
 
   // Timer expiry - auto-fetch when countdown ends (only if not paused and countdown was started)
   // Note: countdownStarted ensures we don't auto-fetch when context becomes stale but countdown hasn't begun
