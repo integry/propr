@@ -7,9 +7,6 @@ import type { LogFn } from 'pino';
 import type { ContextLevel } from '../../config/modelLimits.js';
 import type { Attachment } from '../attachmentService.js';
 
-/** Number of most relevant files to include summaries for */
-export const RELEVANT_SUMMARY_COUNT = 100;
-
 /** Reserved overhead for system prompts, XML structure, etc. */
 export const RESERVED_OVERHEAD_TOKENS = 5000;
 

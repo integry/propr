@@ -284,7 +284,6 @@ async function performSummaryScoring(
       .sort(([, a], [, b]) =>
         (b.rawScores.git + b.rawScores.path) - (a.rawScores.git + a.rawScores.path)
       )
-      .slice(0, 50)
       .map(([path]) => path);
 
     const summaryTimeoutPromise = new Promise<SemanticFileScore[]>((_, reject) => {
