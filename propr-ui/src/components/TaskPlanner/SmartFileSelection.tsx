@@ -40,7 +40,7 @@ const getFileIcon = (path: string): React.ReactNode => {
 
 // Calculate relevance percentage from score (assuming score is 0-100)
 const getRelevancePercentage = (score?: number): number => {
-  if (score === undefined) return 50;
+  if (score === undefined || score === null) return 0;
   return Math.min(100, Math.max(0, score));
 };
 
@@ -177,7 +177,7 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
         scrollbarColor: '#d1d5db #f3f4f6'
       }}>
         {smartSelection.map((file, idx) => {
-          const relevance = getRelevancePercentage(file.score ? (file.score / maxScore) * 100 : 50);
+          const relevance = getRelevancePercentage(file.score != null ? (file.score / maxScore) * 100 : undefined);
           const percentageColor = getPercentageTextColor(relevance);
           // Only show 'manual' pill, hide 'auto' pill
           const showManualPill = file.source === 'manual';
