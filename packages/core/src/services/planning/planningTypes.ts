@@ -136,6 +136,8 @@ export interface PreviewResult {
   stats: PreviewStats;
   smartSelection: SmartFileSelection[];
   warnings: string[];
+  /** Token counts per file for client-side context level simulation */
+  fileTokenCounts?: Record<string, number>;
 }
 
 export interface GenerateContextPreviewOptions {
