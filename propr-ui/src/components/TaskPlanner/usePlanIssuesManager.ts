@@ -51,9 +51,13 @@ interface UsePlanIssuesManagerProps {
   useEpic?: boolean;
   /** Whether to auto-merge individual PRs into the Epic PR */
   autoMerge?: boolean;
+  /** Current draft status - used to initialize progress when 'executing' */
+  draftStatus?: string;
+  /** Callback when issue creation completes successfully */
+  onCreationComplete?: (createdCount: number, failedCount: number) => void;
 }
 
-export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge }: UsePlanIssuesManagerProps) {
+export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete }: UsePlanIssuesManagerProps) {
   const [issues, setIssues] = useState<PlanIssue[]>([]);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,11 +77,22 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   const { onTaskUpdate, onDraftUpdate, subscribeToDraft, unsubscribeFromDraft, isConnected } = useSocket();
 
   // Issue creation progress state (tracked via WebSocket DRAFT_UPDATE events)
-  const [issueCreationProgress, setIssueCreationProgress] = useState<IssueCreationProgress>({
-    status: 'idle',
-    createdCount: 0,
-    totalCount: 0,
-    failedCount: 0
+  // Initialize based on draft status - if 'executing', start with in_progress
+  const [issueCreationProgress, setIssueCreationProgress] = useState<IssueCreationProgress>(() => {
+    if (draftStatus === 'executing') {
+      return {
+        status: 'in_progress',
+        createdCount: 0,
+        totalCount: tasks.length,
+        failedCount: 0
+      };
+    }
+    return {
+      status: 'idle',
+      createdCount: 0,
+      totalCount: 0,
+      failedCount: 0
+    };
   });
 
   const issueTitles = useMemo(() => {
@@ -216,15 +231,21 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     if (status === 'in_progress' || status === 'completed' || status === 'failed') {
       setIssueCreationProgress(createProgressState(status, data));
 
-      // Refresh issues when completed or failed to show created issues
+      // Refresh issues in real-time as they're created
+      if (status === 'in_progress' && data?.lastCreatedIssue) {
+        await fetchIssues();
+      }
+
+      // Final refresh and callback when completed or failed
       if (status === 'completed' || status === 'failed') {
         await fetchIssues();
+        onRefresh?.();
         if (status === 'completed') {
-          onRefresh?.();
+          onCreationComplete?.(data?.createdCount ?? 0, data?.failedCount ?? 0);
         }
       }
     }
-  }, [draftId, fetchIssues, onRefresh]);
+  }, [draftId, fetchIssues, onRefresh, onCreationComplete]);
 
   // Reset issue creation progress when issues change (e.g., after completion)
   const resetIssueCreationProgress = useCallback(() => {

@@ -26,6 +26,10 @@ interface PlanIssuesManagerProps {
   onUseEpicChange?: (value: boolean) => void;
   /** Callback when autoMerge changes */
   onAutoMergeChange?: (value: boolean) => void;
+  /** Current draft status - used to initialize progress when 'executing' */
+  draftStatus?: string;
+  /** Callback when issue creation completes successfully */
+  onCreationComplete?: (createdCount: number, failedCount: number) => void;
 }
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
@@ -38,7 +42,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   useEpic,
   autoMerge,
   onUseEpicChange,
-  onAutoMergeChange
+  onAutoMergeChange,
+  draftStatus,
+  onCreationComplete
 }) => {
   const [showMerged, setShowMerged] = useState(false);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
@@ -82,7 +88,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleIssueMultiModelChange,
     handleRefresh,
     getUnmergedIssuesBefore,
-  } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge });
+  } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete });
 
   const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
     setPendingImplementIssue(issueNumber);
