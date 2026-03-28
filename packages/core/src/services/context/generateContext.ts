@@ -77,7 +77,8 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       truncateBase64: true,
       copyToClipboard: false,
       includeFullDirectoryStructure: includeFullDirectoryStructure,
-      tokenCountTree: false,
+      // Must be true to get fileTokenCounts for ALL files, not just top 100
+      tokenCountTree: true,
       git: {
         sortByChanges: false,
         sortByChangesMaxCommits: 100,
