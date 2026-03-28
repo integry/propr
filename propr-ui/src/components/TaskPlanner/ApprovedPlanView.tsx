@@ -283,6 +283,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const handleRefresh = useCallback(() => {
     setRefreshKey(prev => prev + 1);
   }, []);
+
+  const handleIssuesChange = useCallback((newIssues: PlanIssue[]) => {
+    _setIssues(newIssues);
+  }, []);
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
