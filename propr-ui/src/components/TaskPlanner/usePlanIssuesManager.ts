@@ -231,12 +231,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     if (status === 'in_progress' || status === 'completed' || status === 'failed') {
       setIssueCreationProgress(createProgressState(status, data));
 
-      // Refresh issues in real-time as they're created
-      if (status === 'in_progress' && data?.lastCreatedIssue) {
-        await fetchIssues();
-      }
-
-      // Final refresh and callback when completed or failed
+      // Only refresh issues when creation is done (not during - progress bar shows real-time status)
       if (status === 'completed' || status === 'failed') {
         await fetchIssues();
         onRefresh?.();
