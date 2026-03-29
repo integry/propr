@@ -86,11 +86,13 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   // Track if we've already handled completion to prevent duplicate callbacks
   const hasHandledCompletionRef = useRef(false);
+  // Track last processed event timestamp to deduplicate (server sends to room AND globally)
+  const lastEventTimestampRef = useRef<string | null>(null);
 
   // Update progress state when draftStatus changes to 'executing'
+  // Don't reset progress if we just completed (hasHandledCompletionRef is true)
   useEffect(() => {
-    if (draftStatus === 'executing' && issueCreationProgress.status === 'idle') {
-      hasHandledCompletionRef.current = false; // Reset on new execution
+    if (draftStatus === 'executing' && issueCreationProgress.status === 'idle' && !hasHandledCompletionRef.current) {
       setIssueCreationProgress({
         status: 'in_progress',
         createdCount: 0,
@@ -228,12 +230,24 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     // Only handle updates for this draft and execution step
     if (payload.draftId !== draftId || payload.step !== 'execution') return;
 
+    // Deduplicate events - server emits to room AND globally, so we receive each event twice
+    if (payload.timestamp === lastEventTimestampRef.current) {
+      console.log('[usePlanIssuesManager] Skipping duplicate draft update (same timestamp)');
+      return;
+    }
+    lastEventTimestampRef.current = payload.timestamp;
+
     console.log('[usePlanIssuesManager] Received draft update via WebSocket:', payload);
 
     const data = payload.data as ExecutionStepData | undefined;
     const status = payload.status as IssueCreationProgress['status'];
 
     if (status === 'in_progress' || status === 'completed' || status === 'failed') {
+      // Reset completion flag when a fresh execution starts (createdCount: 0)
+      if (status === 'in_progress' && (data?.createdCount ?? 0) === 0) {
+        hasHandledCompletionRef.current = false;
+      }
+
       setIssueCreationProgress(createProgressState(status, data));
 
       // Only refresh issues when creation is done (not during - progress bar shows real-time status)
