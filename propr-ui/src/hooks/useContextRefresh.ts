@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { previewContext, PreviewResult, Granularity, PlannerAttachment, SmartFileSelection } from '../api/proprApi';
 
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
@@ -390,7 +390,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     if (modelChanged) {
       fetchPreview();
     }
-  }, [config.contextLevel, config.generationModel, initialSyncDone, fetchPreview]);
+  }, [config.contextLevel, config.granularity, config.generationModel, initialSyncDone, fetchPreview]);
 
   // Timer expiry - auto-fetch when countdown ends (only if not paused and countdown was started)
   // Note: countdownStarted ensures we don't auto-fetch when context becomes stale but countdown hasn't begun
