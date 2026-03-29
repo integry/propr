@@ -150,7 +150,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     );
   }
 
-  if (issues.length === 0) {
+  // Show empty state only if no issues AND not currently creating
+  if (issues.length === 0 && issueCreationProgress.status === 'idle') {
     return (
       <div className="text-center py-8 text-gray-500">
         <AlertCircle className="mx-auto mb-2 text-gray-400" size={24} />
@@ -192,6 +193,48 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           />
         )}
       </AnimatePresence>
+
+      {/* Show tasks being created when no issues exist yet */}
+      {issues.length === 0 && issueCreationProgress.status === 'in_progress' && (
+        <div className="space-y-2">
+          {tasks.map((task, index) => {
+            const isCreated = index < issueCreationProgress.createdCount;
+            const isCreating = index === issueCreationProgress.createdCount;
+            return (
+              <div
+                key={task.id || index}
+                className={`flex items-center gap-3 p-3 rounded-lg border ${
+                  isCreated ? 'bg-green-50 border-green-200' :
+                  isCreating ? 'bg-blue-50 border-blue-200' :
+                  'bg-gray-50 border-gray-200'
+                }`}
+              >
+                <div className="flex-shrink-0">
+                  {isCreated ? (
+                    <CheckCircle size={18} className="text-green-600" />
+                  ) : isCreating ? (
+                    <Loader2 size={18} className="text-blue-600 animate-spin" />
+                  ) : (
+                    <div className="w-[18px] h-[18px] rounded-full border-2 border-gray-300" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-medium truncate ${
+                    isCreated ? 'text-green-800' :
+                    isCreating ? 'text-blue-800' :
+                    'text-gray-600'
+                  }`}>
+                    {task.title}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {isCreated ? 'Created' : isCreating ? 'Creating...' : 'Pending'}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Unified Execution Options Toolbar */}
       {pendingCount > 0 && (

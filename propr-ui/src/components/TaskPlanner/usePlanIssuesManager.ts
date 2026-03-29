@@ -77,23 +77,24 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   const { onTaskUpdate, onDraftUpdate, subscribeToDraft, unsubscribeFromDraft, isConnected } = useSocket();
 
   // Issue creation progress state (tracked via WebSocket DRAFT_UPDATE events)
-  // Initialize based on draft status - if 'executing', start with in_progress
-  const [issueCreationProgress, setIssueCreationProgress] = useState<IssueCreationProgress>(() => {
-    if (draftStatus === 'executing') {
-      return {
+  const [issueCreationProgress, setIssueCreationProgress] = useState<IssueCreationProgress>({
+    status: 'idle',
+    createdCount: 0,
+    totalCount: 0,
+    failedCount: 0
+  });
+
+  // Update progress state when draftStatus changes to 'executing'
+  useEffect(() => {
+    if (draftStatus === 'executing' && issueCreationProgress.status === 'idle') {
+      setIssueCreationProgress({
         status: 'in_progress',
         createdCount: 0,
         totalCount: tasks.length,
         failedCount: 0
-      };
+      });
     }
-    return {
-      status: 'idle',
-      createdCount: 0,
-      totalCount: 0,
-      failedCount: 0
-    };
-  });
+  }, [draftStatus, tasks.length, issueCreationProgress.status]);
 
   const issueTitles = useMemo(() => {
     const map: Record<number, string> = {};
@@ -234,7 +235,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
       // Only refresh issues when creation is done (not during - progress bar shows real-time status)
       if (status === 'completed' || status === 'failed') {
         await fetchIssues();
-        onRefresh?.();
+        // Note: Don't call onRefresh here - it causes unnecessary page refresh
+        // The fetchIssues() call above already updates the issues list
         if (status === 'completed') {
           onCreationComplete?.(data?.createdCount ?? 0, data?.failedCount ?? 0);
         }
