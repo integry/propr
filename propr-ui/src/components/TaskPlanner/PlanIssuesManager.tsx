@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle, Layers, ArrowDownToLine, Info } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, Check, AlertCircle, Layers, ArrowDownToLine, Info } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
@@ -194,45 +194,62 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         )}
       </AnimatePresence>
 
-      {/* Show tasks being created when no issues exist yet */}
+      {/* Show tasks being created when no issues exist yet - Studio Pipeline design */}
       {issues.length === 0 && issueCreationProgress.status === 'in_progress' && (
-        <div className="space-y-2">
-          {tasks.map((task, index) => {
-            const isCreated = index < issueCreationProgress.createdCount;
-            const isCreating = index === issueCreationProgress.createdCount;
-            return (
-              <div
-                key={task.id || index}
-                className={`flex items-center gap-3 p-3 rounded-lg border ${
-                  isCreated ? 'bg-green-50 border-green-200' :
-                  isCreating ? 'bg-blue-50 border-blue-200' :
-                  'bg-gray-50 border-gray-200'
-                }`}
-              >
-                <div className="flex-shrink-0">
-                  {isCreated ? (
-                    <CheckCircle size={18} className="text-green-600" />
-                  ) : isCreating ? (
-                    <Loader2 size={18} className="text-blue-600 animate-spin" />
-                  ) : (
-                    <div className="w-[18px] h-[18px] rounded-full border-2 border-gray-300" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-medium truncate ${
-                    isCreated ? 'text-green-800' :
-                    isCreating ? 'text-blue-800' :
-                    'text-gray-600'
+        <div className="relative">
+          {/* Vertical threading rail */}
+          <div
+            className="absolute left-[9px] top-3 bottom-3 w-0.5 bg-gray-200"
+            style={{ zIndex: 0 }}
+          />
+
+          {/* Compact task rows */}
+          <div className="relative" style={{ zIndex: 1 }}>
+            {tasks.map((task, index) => {
+              const isCreated = index < issueCreationProgress.createdCount;
+              const isCreating = index === issueCreationProgress.createdCount;
+              const lastCreated = issueCreationProgress.lastCreatedIssue;
+              const issueNumber = isCreated && lastCreated && index === issueCreationProgress.createdCount - 1
+                ? lastCreated.number
+                : null;
+
+              return (
+                <div
+                  key={task.id || index}
+                  className="flex items-center gap-2.5 py-1.5 group"
+                >
+                  {/* Status icon with rail connection */}
+                  <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center bg-white rounded-full">
+                    {isCreated ? (
+                      <div className="w-4 h-4 rounded-full bg-gray-100 flex items-center justify-center">
+                        <Check size={10} className="text-gray-400" strokeWidth={3} />
+                      </div>
+                    ) : isCreating ? (
+                      <Loader2 size={14} className="text-blue-600 animate-spin" />
+                    ) : (
+                      <div className="w-3 h-3 rounded-full border-2 border-gray-300 bg-white" />
+                    )}
+                  </div>
+
+                  {/* Task title - compact single line */}
+                  <span className={`flex-1 text-sm truncate ${
+                    isCreated ? 'text-gray-400' :
+                    isCreating ? 'text-blue-700 font-medium' :
+                    'text-gray-500'
                   }`}>
                     {task.title}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    {isCreated ? 'Created' : isCreating ? 'Creating...' : 'Pending'}
-                  </p>
+                  </span>
+
+                  {/* Issue number chip (right aligned) */}
+                  {issueNumber && (
+                    <span className="flex-shrink-0 px-1.5 py-0.5 bg-gray-100 rounded text-[10px] font-mono text-gray-500">
+                      #{issueNumber}
+                    </span>
+                  )}
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
 
