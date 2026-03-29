@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue, AgentModelPair } from '../../api/planIssuesApi';
 import { AgentConfig, getAgents } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
@@ -84,9 +84,13 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     failedCount: 0
   });
 
+  // Track if we've already handled completion to prevent duplicate callbacks
+  const hasHandledCompletionRef = useRef(false);
+
   // Update progress state when draftStatus changes to 'executing'
   useEffect(() => {
     if (draftStatus === 'executing' && issueCreationProgress.status === 'idle') {
+      hasHandledCompletionRef.current = false; // Reset on new execution
       setIssueCreationProgress({
         status: 'in_progress',
         createdCount: 0,
@@ -237,8 +241,16 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
         await fetchIssues();
         // Note: Don't call onRefresh here - it causes unnecessary page refresh
         // The fetchIssues() call above already updates the issues list
-        if (status === 'completed') {
+        if (status === 'completed' && !hasHandledCompletionRef.current) {
+          hasHandledCompletionRef.current = true;
           onCreationComplete?.(data?.createdCount ?? 0, data?.failedCount ?? 0);
+          // Auto-reset progress state after completion - toast already shows success
+          setIssueCreationProgress({
+            status: 'idle',
+            createdCount: 0,
+            totalCount: 0,
+            failedCount: 0
+          });
         }
       }
     }
