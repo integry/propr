@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronDown, ChevronUp, Loader2, Check, AlertCircle, Layers, ArrowDownToLine, Info } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, Check, CheckCircle, AlertCircle, Layers, ArrowDownToLine, Info } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
