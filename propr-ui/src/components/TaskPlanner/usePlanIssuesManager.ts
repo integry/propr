@@ -4,44 +4,8 @@ import { AgentConfig, getAgents } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
 import { DraftUpdatePayload } from '@propr/shared';
-
-/** Progress state for issue creation via WebSocket */
-export interface IssueCreationProgress {
-  status: 'idle' | 'in_progress' | 'completed' | 'failed';
-  createdCount: number;
-  totalCount: number;
-  failedCount: number;
-  lastCreatedIssue?: {
-    number: number;
-    url: string;
-    title: string;
-  };
-  error?: string;
-}
-
-/** Data payload for execution step updates */
-interface ExecutionStepData {
-  createdCount?: number;
-  totalCount?: number;
-  failedCount?: number;
-  lastCreatedIssue?: { number: number; url: string; title: string };
-  error?: string;
-}
-
-/** Create progress state from execution step data */
-function createProgressState(
-  status: IssueCreationProgress['status'],
-  data: ExecutionStepData | undefined
-): IssueCreationProgress {
-  return {
-    status,
-    createdCount: data?.createdCount ?? 0,
-    totalCount: data?.totalCount ?? 0,
-    failedCount: data?.failedCount ?? 0,
-    lastCreatedIssue: status === 'in_progress' ? data?.lastCreatedIssue : undefined,
-    error: status === 'failed' ? (data?.error || 'Issue creation failed') : undefined
-  };
-}
+import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, ExecutionStepData } from './planIssuesManagerUtils';
+export type { IssueCreationProgress } from './planIssuesManagerUtils';
 
 interface UsePlanIssuesManagerProps {
   draftId: string;
@@ -63,42 +27,22 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [implementingIssue, setImplementingIssue] = useState<number | null>(null);
-
   const [globalAgent, setGlobalAgent] = useState<string | null>(null);
   const [globalModel, setGlobalModel] = useState<string | null>(null);
   const [globalIsMulti, setGlobalIsMulti] = useState(false);
   const [globalSelectedModels, setGlobalSelectedModels] = useState<AgentModelPair[]>([]);
   const [applyingGlobal, setApplyingGlobal] = useState(false);
-
-  // Track per-issue multi-mode state (applied from global selection)
   const [issueMultiModeMap, setIssueMultiModeMap] = useState<Record<number, boolean>>({});
   const [issueSelectedModelsMap, setIssueSelectedModelsMap] = useState<Record<number, AgentModelPair[]>>({});
-
   const { onTaskUpdate, onDraftUpdate, subscribeToDraft, unsubscribeFromDraft, isConnected } = useSocket();
-
-  // Issue creation progress state (tracked via WebSocket DRAFT_UPDATE events)
-  const [issueCreationProgress, setIssueCreationProgress] = useState<IssueCreationProgress>({
-    status: 'idle',
-    createdCount: 0,
-    totalCount: 0,
-    failedCount: 0
-  });
-
-  // Track if we've already handled completion to prevent duplicate callbacks
+  const [issueCreationProgress, setIssueCreationProgress] = useState<IssueCreationProgress>(IDLE_PROGRESS);
   const hasHandledCompletionRef = useRef(false);
-  // Track last processed event timestamp to deduplicate (server sends to room AND globally)
   const lastEventTimestampRef = useRef<string | null>(null);
 
-  // Update progress state when draftStatus changes to 'executing'
-  // Don't reset progress if we just completed (hasHandledCompletionRef is true)
+  // Initialize progress when draftStatus changes to 'executing'
   useEffect(() => {
     if (draftStatus === 'executing' && issueCreationProgress.status === 'idle' && !hasHandledCompletionRef.current) {
-      setIssueCreationProgress({
-        status: 'in_progress',
-        createdCount: 0,
-        totalCount: tasks.length,
-        failedCount: 0
-      });
+      setIssueCreationProgress({ status: 'in_progress', createdCount: 0, totalCount: tasks.length, failedCount: 0 });
     }
   }, [draftStatus, tasks.length, issueCreationProgress.status]);
 
@@ -107,8 +51,6 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     tasks.forEach(task => { if (task.issue_number) map[task.issue_number] = task.title; });
     return map;
   }, [tasks]);
-
-  // Map issue_number to full PlanTask for expandable details
   const issueTaskMap = useMemo(() => {
     const map: Record<number, PlanTask> = {};
     tasks.forEach(task => { if (task.issue_number) map[task.issue_number] = task; });
@@ -118,10 +60,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   const issuesWithDefaults = useMemo(() => {
     const defaultAgent = agents.find(a => a.enabled);
     if (!defaultAgent) return issues;
-
     const defaultAlias = defaultAgent.alias;
     const defaultModel = defaultAgent.defaultModel ?? defaultAgent.supportedModels?.[0] ?? null;
-
     return issues.map(issue => {
       if (issue.status === 'pending' && !issue.agent_alias) {
         return { ...issue, agent_alias: defaultAlias, model_name: defaultModel };
@@ -133,9 +73,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   const { activeIssues, mergedIssues, pendingCount, hasActiveIssues, firstPendingIssueNumber, sortedIssues } = useMemo(() => {
     const active: PlanIssue[] = [], merged: PlanIssue[] = [];
     let pending = 0, hasActive = false;
-
     const sorted = [...issuesWithDefaults].sort((a, b) => a.issue_number - b.issue_number);
-
     let firstUnmergedIssueNumber: number | null = null;
     for (const issue of sorted) {
       if (issue.status !== 'merged') {
@@ -143,9 +81,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
         break;
       }
     }
-
     let firstPending: number | null = null;
-
     issuesWithDefaults.forEach(issue => {
       if (issue.status === 'merged') { merged.push(issue); }
       else {
@@ -160,8 +96,6 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
       }
     });
 
-    // When autoMerge or useEpic is enabled and there are pending issues,
-    // keep polling so the UI can detect when the next pending issue transitions to processing
     if ((autoMerge || useEpic) && pending > 0) {
       hasActive = true;
     }
@@ -169,7 +103,6 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive, firstPendingIssueNumber: firstPending, sortedIssues: sorted };
   }, [issuesWithDefaults, autoMerge, useEpic]);
 
-  // Get unmerged issues that come before a given issue number (for dependency warning)
   const getUnmergedIssuesBefore = useCallback((issueNumber: number) => {
     const unmerged: Array<{ issue_number: number; title?: string }> = [];
     for (const issue of sortedIssues) {
@@ -218,100 +151,44 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     load();
   }, [fetchIssues, fetchAgents]);
 
-  // Handle task update from WebSocket - refresh issues when any task changes
-  const handleTaskUpdate = useCallback(async () => {
-    // When any task updates, refresh issues to reflect the latest state
-    console.log('[usePlanIssuesManager] Received task update via WebSocket');
-    await fetchIssues();
-  }, [fetchIssues]);
+  const handleTaskUpdate = useCallback(async () => { await fetchIssues(); }, [fetchIssues]);
 
-  // Handle draft update from WebSocket - track issue creation progress
   const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
-    // Only handle updates for this draft and execution step
     if (payload.draftId !== draftId || payload.step !== 'execution') return;
-
-    // Deduplicate events - server emits to room AND globally, so we receive each event twice
-    if (payload.timestamp === lastEventTimestampRef.current) {
-      console.log('[usePlanIssuesManager] Skipping duplicate draft update (same timestamp)');
-      return;
-    }
+    // Deduplicate events - server emits to room AND globally
+    if (payload.timestamp === lastEventTimestampRef.current) return;
     lastEventTimestampRef.current = payload.timestamp;
-
-    console.log('[usePlanIssuesManager] Received draft update via WebSocket:', payload);
 
     const data = payload.data as ExecutionStepData | undefined;
     const status = payload.status as IssueCreationProgress['status'];
+    if (status !== 'in_progress' && status !== 'completed' && status !== 'failed') return;
 
-    if (status === 'in_progress' || status === 'completed' || status === 'failed') {
-      // Reset completion flag when a fresh execution starts (createdCount: 0)
-      if (status === 'in_progress' && (data?.createdCount ?? 0) === 0) {
-        hasHandledCompletionRef.current = false;
-      }
-
-      // Only update progress UI for in_progress - completed/failed go straight to idle
-      // (toast handles success/failure feedback, no need to show completed state)
-      if (status === 'in_progress') {
-        setIssueCreationProgress(createProgressState(status, data));
-      }
-
-      // Refresh issues and handle completion when done
-      if (status === 'completed' || status === 'failed') {
-        await fetchIssues();
-        // Refresh draft data to get updated tasks with issue_numbers for title mapping
-        onRefresh?.();
-        if (!hasHandledCompletionRef.current) {
-          hasHandledCompletionRef.current = true;
-          if (status === 'completed') {
-            onCreationComplete?.(data?.createdCount ?? 0, data?.failedCount ?? 0);
-          }
-        }
-        // Reset progress to idle - toast already shows the result
-        setIssueCreationProgress({
-          status: 'idle',
-          createdCount: 0,
-          totalCount: 0,
-          failedCount: 0
-        });
-      }
+    // Reset completion flag when a fresh execution starts
+    if (status === 'in_progress' && (data?.createdCount ?? 0) === 0) {
+      hasHandledCompletionRef.current = false;
+    }
+    if (status === 'in_progress') {
+      setIssueCreationProgress(createProgressState(status, data));
+    }
+    if (status === 'completed' || status === 'failed') {
+      await handleDraftCompletion({ data, status, hasHandledCompletionRef, fetchIssues, onRefresh, onCreationComplete });
+      setIssueCreationProgress(IDLE_PROGRESS);
     }
   }, [draftId, fetchIssues, onRefresh, onCreationComplete]);
 
-  // Reset issue creation progress when issues change (e.g., after completion)
-  const resetIssueCreationProgress = useCallback(() => {
-    setIssueCreationProgress({
-      status: 'idle',
-      createdCount: 0,
-      totalCount: 0,
-      failedCount: 0
-    });
-  }, []);
+  const resetIssueCreationProgress = useCallback(() => setIssueCreationProgress(IDLE_PROGRESS), []);
 
-  // Subscribe to WebSocket events for task updates when there are active issues
   useEffect(() => {
     if (!hasActiveIssues || !isConnected) return;
-
-    // Listen for task updates (global listener since issues can map to any task)
     const unsubscribe = onTaskUpdate(handleTaskUpdate);
-
-    return () => {
-      unsubscribe();
-    };
+    return () => { unsubscribe(); };
   }, [hasActiveIssues, isConnected, onTaskUpdate, handleTaskUpdate]);
 
-  // Subscribe to WebSocket events for draft updates (issue creation progress)
   useEffect(() => {
     if (!draftId || !isConnected) return;
-
-    // Subscribe to this specific draft's room
     subscribeToDraft(draftId);
-
-    // Listen for draft updates (issue creation progress)
     const unsubscribe = onDraftUpdate(handleDraftUpdate);
-
-    return () => {
-      unsubscribeFromDraft(draftId);
-      unsubscribe();
-    };
+    return () => { unsubscribeFromDraft(draftId); unsubscribe(); };
   }, [draftId, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, handleDraftUpdate]);
 
   const handleImplementIssue = useCallback(async (issueNumber: number, models?: AgentModelPair[]) => {
@@ -473,39 +350,16 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   }, []);
 
   return {
-    issues,
-    agents,
-    loading,
-    error,
-    clearError,
-    implementingIssue,
-    issueTitles,
-    issueTaskMap,
-    activeIssues,
-    mergedIssues,
-    pendingCount,
-    hasActiveIssues,
-    firstPendingIssueNumber,
-    globalAgent,
-    globalModel,
-    globalIsMulti,
-    globalSelectedModels,
-    applyingGlobal,
-    issueMultiModeMap,
-    issueSelectedModelsMap,
-    issueCreationProgress,
-    resetIssueCreationProgress,
-    handleImplementIssue,
-    handleGlobalAgentChange,
-    handleGlobalModelChange,
-    handleGlobalMultiToggle,
-    handleGlobalMultiModelChange,
-    handleApplyToAll,
-    handleAgentChange,
-    handleModelChange,
-    handleIssueMultiToggle,
-    handleIssueMultiModelChange,
-    handleRefresh,
-    getUnmergedIssuesBefore,
+    issues, agents, loading, error, clearError, implementingIssue,
+    issueTitles, issueTaskMap, activeIssues, mergedIssues,
+    pendingCount, hasActiveIssues, firstPendingIssueNumber,
+    globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,
+    issueMultiModeMap, issueSelectedModelsMap,
+    issueCreationProgress, resetIssueCreationProgress,
+    handleImplementIssue, handleGlobalAgentChange, handleGlobalModelChange,
+    handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
+    handleAgentChange, handleModelChange,
+    handleIssueMultiToggle, handleIssueMultiModelChange,
+    handleRefresh, getUnmergedIssuesBefore,
   };
 }
