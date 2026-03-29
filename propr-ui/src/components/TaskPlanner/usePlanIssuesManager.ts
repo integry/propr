@@ -248,24 +248,28 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
         hasHandledCompletionRef.current = false;
       }
 
-      setIssueCreationProgress(createProgressState(status, data));
+      // Only update progress UI for in_progress - completed/failed go straight to idle
+      // (toast handles success/failure feedback, no need to show completed state)
+      if (status === 'in_progress') {
+        setIssueCreationProgress(createProgressState(status, data));
+      }
 
-      // Only refresh issues when creation is done (not during - progress bar shows real-time status)
+      // Refresh issues and handle completion when done
       if (status === 'completed' || status === 'failed') {
         await fetchIssues();
-        // Note: Don't call onRefresh here - it causes unnecessary page refresh
-        // The fetchIssues() call above already updates the issues list
-        if (status === 'completed' && !hasHandledCompletionRef.current) {
+        if (!hasHandledCompletionRef.current) {
           hasHandledCompletionRef.current = true;
-          onCreationComplete?.(data?.createdCount ?? 0, data?.failedCount ?? 0);
-          // Auto-reset progress state after completion - toast already shows success
-          setIssueCreationProgress({
-            status: 'idle',
-            createdCount: 0,
-            totalCount: 0,
-            failedCount: 0
-          });
+          if (status === 'completed') {
+            onCreationComplete?.(data?.createdCount ?? 0, data?.failedCount ?? 0);
+          }
         }
+        // Reset progress to idle - toast already shows the result
+        setIssueCreationProgress({
+          status: 'idle',
+          createdCount: 0,
+          totalCount: 0,
+          failedCount: 0
+        });
       }
     }
   }, [draftId, fetchIssues, onCreationComplete]);
