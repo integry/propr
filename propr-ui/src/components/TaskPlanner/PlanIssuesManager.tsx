@@ -196,10 +196,10 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
       {/* Show tasks being created when no issues exist yet - Studio Pipeline design */}
       {issues.length === 0 && issueCreationProgress.status === 'in_progress' && (
-        <div className="relative">
-          {/* Vertical threading rail */}
+        <div className="relative pl-1">
+          {/* Vertical threading rail - aligned with visual gutter */}
           <div
-            className="absolute left-[9px] top-3 bottom-3 w-0.5 bg-gray-200"
+            className="absolute left-[13px] top-2 bottom-2 w-0.5 bg-slate-200"
             style={{ zIndex: 0 }}
           />
 
@@ -216,7 +216,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
               return (
                 <div
                   key={task.id || index}
-                  className="flex items-center gap-2.5 py-1.5 group"
+                  className="flex items-center gap-2.5 py-1 group"
                 >
                   {/* Status icon with rail connection */}
                   <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center bg-white rounded-full">
@@ -253,9 +253,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         </div>
       )}
 
-      {/* Unified Execution Options Toolbar */}
+      {/* Unified Execution Options Toolbar - Configuration Zone */}
       {pendingCount > 0 && (
-        <div className="flex flex-col gap-3 sm:gap-4 py-3 border-y border-gray-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-4">
+        <div className="flex flex-col gap-2.5 sm:gap-3 py-2.5 border-b border-slate-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-3">
           {/* Agent Assignment Row */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
             <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">
@@ -341,7 +341,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         </div>
       )}
 
-      <div className="space-y-2">
+      {/* Action Zone - Issue List */}
+      <div className="space-y-1.5">
         {activeIssues.map(issue => (
           <PlanIssueRow
             key={issue.id}

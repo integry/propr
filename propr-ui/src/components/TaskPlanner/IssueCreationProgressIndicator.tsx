@@ -23,7 +23,8 @@ export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndic
       exit={{ opacity: 0, height: 0 }}
       className="mb-3"
     >
-      <div className="flex items-center gap-3 h-8">
+      {/* Progress Strip with subtle background anchor */}
+      <div className="flex items-center gap-3 h-8 px-2.5 py-1.5 bg-slate-50 rounded-md border border-slate-100">
         {/* Status indicator */}
         <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
           {progress.status === 'in_progress' ? (
