@@ -268,7 +268,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
         }
       }
     }
-  }, [draftId, fetchIssues, onRefresh, onCreationComplete]);
+  }, [draftId, fetchIssues, onCreationComplete]);
 
   // Reset issue creation progress when issues change (e.g., after completion)
   const resetIssueCreationProgress = useCallback(() => {
