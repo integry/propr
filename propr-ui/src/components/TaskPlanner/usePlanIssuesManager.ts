@@ -257,6 +257,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
       // Refresh issues and handle completion when done
       if (status === 'completed' || status === 'failed') {
         await fetchIssues();
+        // Refresh draft data to get updated tasks with issue_numbers for title mapping
+        onRefresh?.();
         if (!hasHandledCompletionRef.current) {
           hasHandledCompletionRef.current = true;
           if (status === 'completed') {
@@ -272,7 +274,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
         });
       }
     }
-  }, [draftId, fetchIssues, onCreationComplete]);
+  }, [draftId, fetchIssues, onRefresh, onCreationComplete]);
 
   // Reset issue creation progress when issues change (e.g., after completion)
   const resetIssueCreationProgress = useCallback(() => {
