@@ -23,9 +23,10 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
 
   // Keep reducing context until it fits or we hit the minimum limit
   while (currentRepomixLimit >= 5000) {
-    const filesToInclude = config.compress ? undefined : (currentFilePaths.length > 0 ? currentFilePaths : undefined);
-    const priorityFiles = config.compress ? currentFilePaths : undefined;
-    contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: currentRepomixLimit, compress: config.compress, correlationId });
+    // Include all repo files, using relevance-detected files as priority.
+    // Token budget constraints dictate how many files fit into the prompt.
+    const priorityFiles = currentFilePaths.length > 0 ? currentFilePaths : undefined;
+    contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: undefined, priorityFiles, tokenLimit: currentRepomixLimit, compress: config.compress, correlationId });
 
     // Update currentFilePaths with whatever files were actually included after optimization
     if (contextResult.includedFiles.length < currentFilePaths.length) {

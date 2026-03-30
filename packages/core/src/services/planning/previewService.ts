@@ -100,6 +100,8 @@ interface BuildPreviewResultParams {
   warnings: string[];
   correlatedLogger: MinimalLogger;
   canUseCache: boolean;
+  /** Token counts per file for client-side context level simulation */
+  fileTokenCounts: Record<string, number>;
 }
 
 /**
@@ -110,7 +112,7 @@ function buildPreviewResult(params: BuildPreviewResultParams): PreviewResult {
     simulatedTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens,
     additionalContextFiles, additionalContextFilesIncluded, targetTokenLimit, generationModel,
     repomixContextLength, simulatedIncludedFiles, smartSelection, costEstimate, warnings,
-    correlatedLogger, canUseCache
+    correlatedLogger, canUseCache, fileTokenCounts
   } = params;
 
   const estimatedActualTokens = Math.ceil(simulatedTokens * TIKTOKEN_TO_CLAUDE_RATIO);
@@ -141,7 +143,8 @@ function buildPreviewResult(params: BuildPreviewResultParams): PreviewResult {
       attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens
     },
     smartSelection: fullSmartSelection,
-    warnings
+    warnings,
+    fileTokenCounts
   };
 }
 
@@ -414,10 +417,12 @@ async function generateContextPreviewInternal(options: GenerateContextPreviewOpt
   const reservedOverheadTiktokens = Math.ceil((attachmentTokens + smartSummaryTokens) / TIKTOKEN_TO_CLAUDE_RATIO);
   const fileSelectionLimit = Math.max(0, targetTokenLimit - reservedOverheadTiktokens);
 
+  // Use priority-based selection: relevance-detected files first, then fill remaining
+  // budget with other repo files. This lets token budget dictate the file count.
   const simulatedSelection = selectFilesWithinLimit(
     filteredFileTokenCounts, fileSelectionLimit,
-    compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined),
-    compress ? combinedFiles : undefined
+    undefined,
+    combinedFiles.length > 0 ? combinedFiles : undefined
   );
 
   const simulatedIncludedFiles = simulatedSelection.selectedFiles;
@@ -473,6 +478,7 @@ async function generateContextPreviewInternal(options: GenerateContextPreviewOpt
   return buildPreviewResult({
     simulatedTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens, additionalContextFiles,
     additionalContextFilesIncluded, targetTokenLimit, generationModel, repomixContextLength: repomixContext.length,
-    simulatedIncludedFiles, smartSelection, costEstimate, warnings, correlatedLogger, canUseCache: !!canUseCache
+    simulatedIncludedFiles, smartSelection, costEstimate, warnings, correlatedLogger, canUseCache: !!canUseCache,
+    fileTokenCounts: filteredFileTokenCounts
   });
 }

@@ -110,7 +110,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
     >
       {/* High-Density Collapsed Row - Status, Title, and Actions */}
       <div
-        className={`px-3 sm:px-4 py-2.5 ${hasExpandableContent ? 'cursor-pointer' : ''}`}
+        className={`px-3 sm:px-4 py-2 ${hasExpandableContent ? 'cursor-pointer' : ''}`}
         onClick={handleRowClick}
       >
         {/* Mobile: Stack layout, Desktop: Single line */}

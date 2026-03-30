@@ -31,6 +31,7 @@ const getStageFromStatus = (status: string | undefined): StudioStage => {
       return 'review';
     case 'approved':
     case 'executed':
+    case 'executing':
     case 'pr_created':
     case 'merged':
       return 'execute';
@@ -178,7 +179,7 @@ const getDocumentTitle = (draft: PlannerDraft | null): string => {
 };
 
 const isApprovedStatus = (status: string | undefined): boolean => {
-  return status === 'approved' || status === 'executed' || status === 'pr_created' || status === 'merged' || status === 'failed';
+  return status === 'approved' || status === 'executed' || status === 'executing' || status === 'pr_created' || status === 'merged' || status === 'failed';
 };
 
 const isReviewStatus = (status: string | undefined): boolean => {

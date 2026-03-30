@@ -1,15 +1,80 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { previewContext, PreviewResult, Granularity, PlannerAttachment } from '../api/proprApi';
+import { previewContext, PreviewResult, Granularity, PlannerAttachment, SmartFileSelection } from '../api/proprApi';
 
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;
 /** Delay before auto-refreshing context after source changes (ms) */
 const SOURCE_REFRESH_DELAY = 20000;
-/** Slider debounce delay for context level changes (ms) */
-const SLIDER_DEBOUNCE_DELAY = 300;
 const WORD_OVERLAP_THRESHOLD = 0.5;
 
+/** Tiktoken to Claude token ratio for estimation */
+const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
+/** Default model max tokens (200K for Claude) */
+const DEFAULT_MODEL_MAX_TOKENS = 200000;
+
 const extractWords = (prompt: string) => (prompt.toLowerCase().match(/\b[\w'-]+\b/g) ?? []);
+
+/**
+ * Simulate file selection for a given context level using cached fileTokenCounts.
+ * Returns the filtered smartSelection and updated stats.
+ */
+function simulateContextLevel(
+  originalData: PreviewResult,
+  contextLevel: number,
+  modelMaxTokens: number = DEFAULT_MODEL_MAX_TOKENS
+): PreviewResult {
+  const fileTokenCounts = originalData.fileTokenCounts;
+  if (!fileTokenCounts || Object.keys(fileTokenCounts).length === 0) {
+    return originalData;
+  }
+
+  // Calculate target token limit based on context level (0-100)
+  const targetTokenLimit = Math.floor(modelMaxTokens * (contextLevel / 100) * 0.98);
+  const targetTiktokenLimit = Math.floor(targetTokenLimit / TIKTOKEN_TO_CLAUDE_RATIO);
+
+  // Get the original smartSelection excluding context-repo files (those are always included)
+  const contextRepoFiles = originalData.smartSelection.filter(f => f.source === 'context-repo');
+  const repoFiles = originalData.smartSelection.filter(f => f.source !== 'context-repo');
+
+  // Sort by score descending (most relevant first), then by tokens ascending (smaller files preferred for tie-breaking)
+  const sortedFiles = [...repoFiles].sort((a, b) => {
+    const scoreDiff = (b.score ?? 0) - (a.score ?? 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    return (fileTokenCounts[a.path] ?? 0) - (fileTokenCounts[b.path] ?? 0);
+  });
+
+  // Select files that fit within the token budget
+  const selectedFiles: SmartFileSelection[] = [];
+  let currentTokens = 0;
+
+  for (const file of sortedFiles) {
+    const fileTokens = fileTokenCounts[file.path] ?? 0;
+    if (currentTokens + fileTokens <= targetTiktokenLimit) {
+      selectedFiles.push(file);
+      currentTokens += fileTokens;
+    }
+  }
+
+  // Calculate new stats
+  const estimatedActualTokens = Math.ceil(currentTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+  const attachmentTokens = originalData.stats.attachmentTokens ?? 0;
+  const totalTokens = estimatedActualTokens + attachmentTokens;
+
+  // Rough cost estimate (using Claude pricing)
+  const costEstimate = (totalTokens / 1_000_000) * 3 + (4000 / 1_000_000) * 15;
+
+  return {
+    ...originalData,
+    smartSelection: [...selectedFiles, ...contextRepoFiles],
+    stats: {
+      ...originalData.stats,
+      totalTokens,
+      fileCount: selectedFiles.length,
+      costEstimate,
+      maxTokens: Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO)
+    }
+  };
+}
 
 /**
  * Determine if a prompt change is significant enough to warrant auto-refresh.
@@ -46,6 +111,7 @@ interface SourceConfig {
   baseBranch: string;
   filesLength: number;
   compress: boolean;
+  manualFilesLength: number;
 }
 
 interface FetchConfig {
@@ -59,6 +125,8 @@ interface FetchConfig {
   generationModel: string | null;
   /** Additional repositories to include as reference context */
   contextRepositories: { repository: string; branch?: string }[];
+  /** File paths explicitly added by the user to include in context */
+  manualFiles: string[];
   /** Files manually excluded from context by the user */
   excludedFiles: string[];
 }
@@ -99,6 +167,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const justFetchedRef = useRef<boolean>(false);
   // Track loading state for use in callbacks
   const isLoadingRef = useRef<boolean>(false);
+  // Store the full preview data (at max context level) for local simulation
+  const fullPreviewDataRef = useRef<PreviewResult | null>(null);
 
   // Keep config ref up to date
   useEffect(() => { configRef.current = config; }, [config]);
@@ -154,6 +224,11 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     setPreview(prev => ({ ...prev, isLoading: true, error: null }));
 
     try {
+      // Combine attachment file names and manual file paths
+      const allFiles = [
+        ...currentConfig.files.map(f => f.originalName),
+        ...currentConfig.manualFiles
+      ];
       const result = await previewContext({
         draftId,
         prompt: currentConfig.prompt,
@@ -161,7 +236,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         granularity: currentConfig.granularity,
         contextLevel: currentConfig.contextLevel,
         compress: currentConfig.compress,
-        files: currentConfig.files.map(f => f.originalName),
+        files: allFiles.length > 0 ? allFiles : undefined,
         generationModel: currentConfig.generationModel || undefined,
         contextRepositories: currentConfig.contextRepositories.length > 0 ? currentConfig.contextRepositories : undefined,
         excludedFiles: currentConfig.excludedFiles.length > 0 ? currentConfig.excludedFiles : undefined
@@ -171,11 +246,15 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         prompt: currentConfig.prompt,
         baseBranch: currentConfig.baseBranch,
         filesLength: currentConfig.files.length,
-        compress: currentConfig.compress
+        compress: currentConfig.compress,
+        manualFilesLength: currentConfig.manualFiles.length
       };
 
       // Mark that we just fetched to prevent source change effect from re-triggering
       justFetchedRef.current = true;
+
+      // Store the full preview data for local context level simulation
+      fullPreviewDataRef.current = result;
 
       setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
     } catch (err) {
@@ -216,7 +295,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       setIsContextStale(true);
       startCountdown();
     }
-  }, [config.baseBranch, config.prompt, config.files.length, config.compress, initialSyncDone, startCountdown]);
+  }, [config.baseBranch, config.prompt, config.files.length, config.compress, config.manualFiles.length, initialSyncDone, startCountdown]);
 
   // Source changes - start countdown (unless paused)
   useEffect(() => {
@@ -235,20 +314,23 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       prompt: config.prompt,
       baseBranch: config.baseBranch,
       filesLength: config.files.length,
-      compress: config.compress
+      compress: config.compress,
+      manualFilesLength: config.manualFiles.length
     };
 
     const isStrictlyStale = !lastFetched || (
       lastFetched.prompt !== currentSource.prompt ||
       lastFetched.baseBranch !== currentSource.baseBranch ||
       lastFetched.filesLength !== currentSource.filesLength ||
-      lastFetched.compress !== currentSource.compress
+      lastFetched.compress !== currentSource.compress ||
+      lastFetched.manualFilesLength !== currentSource.manualFilesLength
     );
 
     const isSignificant = !lastFetched ||
       lastFetched.baseBranch !== currentSource.baseBranch ||
       lastFetched.filesLength !== currentSource.filesLength ||
       lastFetched.compress !== currentSource.compress ||
+      lastFetched.manualFilesLength !== currentSource.manualFilesLength ||
       isSignificantPromptChange(lastFetched.prompt, currentSource.prompt);
 
     if (!isStrictlyStale) {
@@ -270,10 +352,9 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     debounceTimerRef.current = setTimeout(() => startCountdown(), DEBOUNCE_DELAY);
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   // Note: isContextStale intentionally not in deps - we use isContextStaleRef to check without re-triggering
-  }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, isPaused, clearCountdown, startCountdown]);
+  }, [config.prompt, config.baseBranch, config.files.length, config.compress, config.manualFiles.length, initialSyncDone, isPaused, clearCountdown, startCountdown]);
 
-  // View changes - fetch immediately (granularity, contextLevel, generationModel)
-  // Only triggers when actual view settings change, not when isContextStale transitions
+  // View changes - handle context level locally, fetch for granularity/model changes
   useEffect(() => {
     if (!initialSyncDone) return;
 
@@ -285,24 +366,31 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
 
     const prevSettings = prevViewSettingsRef.current;
 
-    // Check if view settings actually changed
-    const viewSettingsChanged = prevSettings !== null && (
-      prevSettings.granularity !== currentViewSettings.granularity ||
-      prevSettings.contextLevel !== currentViewSettings.contextLevel ||
-      prevSettings.generationModel !== currentViewSettings.generationModel
-    );
+    // Check what changed (granularity doesn't affect context, only plan generation)
+    const contextLevelChanged = prevSettings !== null && prevSettings.contextLevel !== currentViewSettings.contextLevel;
+    const modelChanged = prevSettings !== null && prevSettings.generationModel !== currentViewSettings.generationModel;
 
     // Update the ref for next comparison
     prevViewSettingsRef.current = currentViewSettings;
 
-    // Only fetch if settings actually changed and context is not stale
-    // Use ref to avoid dependency on isContextStale state
-    if (!viewSettingsChanged || isContextStaleRef.current) return;
+    // If context is stale, don't do anything - wait for content refresh
+    if (isContextStaleRef.current) return;
 
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => fetchPreview(), SLIDER_DEBOUNCE_DELAY);
-    return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
-  }, [config.granularity, config.contextLevel, config.generationModel, initialSyncDone, fetchPreview]);
+    // Handle context level changes locally if we have cached data
+    const fullData = fullPreviewDataRef.current;
+    if (contextLevelChanged && !modelChanged && fullData?.fileTokenCounts) {
+      const modelMaxTokens = fullData.stats.modelMaxContextTokens || DEFAULT_MODEL_MAX_TOKENS;
+      const simulatedData = simulateContextLevel(fullData, config.contextLevel, modelMaxTokens);
+      setPreview(prev => ({ ...prev, data: simulatedData }));
+      return;
+    }
+
+    // Granularity changes don't affect context - only plan generation
+    // Only model changes need server refresh (different context window)
+    if (modelChanged) {
+      fetchPreview();
+    }
+  }, [config.contextLevel, config.granularity, config.generationModel, initialSyncDone, fetchPreview]);
 
   // Timer expiry - auto-fetch when countdown ends (only if not paused and countdown was started)
   // Note: countdownStarted ensures we don't auto-fetch when context becomes stale but countdown hasn't begun

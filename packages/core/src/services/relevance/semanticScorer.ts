@@ -326,7 +326,7 @@ Guidelines:
 - Score 50-79: Files that likely need modification or must be read
 - Score 20-49: Files that might be relevant for context
 - Only include files explicitly mentioned in the summaries
-- Maximum 50 files in your response
+- Include ALL files that have any relevance signal — do not artificially limit the count
 - Respond ONLY with valid JSON, no markdown or explanations`;
 }
 
@@ -364,7 +364,6 @@ function parseSemanticResponse(response: string): SemanticLLMResponse {
           score: Math.min(100, Math.max(0, f.score)),
           reason: typeof f.reason === 'string' ? f.reason : 'semantic match'
         }))
-        .slice(0, 50) // Enforce max 50 files
     };
   } catch (error) {
     logger.debug({ error: (error as Error).message }, 'Failed to parse semantic scoring response');

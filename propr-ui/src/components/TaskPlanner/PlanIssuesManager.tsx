@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle, Layers, ArrowDownToLine, Info } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, Check, CheckCircle, AlertCircle, Layers, ArrowDownToLine, Info } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
@@ -26,6 +26,10 @@ interface PlanIssuesManagerProps {
   onUseEpicChange?: (value: boolean) => void;
   /** Callback when autoMerge changes */
   onAutoMergeChange?: (value: boolean) => void;
+  /** Current draft status - used to initialize progress when 'executing' */
+  draftStatus?: string;
+  /** Callback when issue creation completes successfully */
+  onCreationComplete?: (createdCount: number, failedCount: number) => void;
 }
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
@@ -38,7 +42,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   useEpic,
   autoMerge,
   onUseEpicChange,
-  onAutoMergeChange
+  onAutoMergeChange,
+  draftStatus,
+  onCreationComplete
 }) => {
   const [showMerged, setShowMerged] = useState(false);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
@@ -82,7 +88,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleIssueMultiModelChange,
     handleRefresh,
     getUnmergedIssuesBefore,
-  } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge });
+  } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete });
 
   const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
     setPendingImplementIssue(issueNumber);
@@ -144,7 +150,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     );
   }
 
-  if (issues.length === 0) {
+  // Show empty state only if no issues AND not currently creating
+  if (issues.length === 0 && issueCreationProgress.status === 'idle') {
     return (
       <div className="text-center py-8 text-gray-500">
         <AlertCircle className="mx-auto mb-2 text-gray-400" size={24} />
@@ -187,9 +194,68 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         )}
       </AnimatePresence>
 
-      {/* Unified Execution Options Toolbar */}
+      {/* Show tasks being created when no issues exist yet - Studio Pipeline design */}
+      {issues.length === 0 && issueCreationProgress.status === 'in_progress' && (
+        <div className="relative pl-1">
+          {/* Vertical threading rail - aligned with visual gutter */}
+          <div
+            className="absolute left-[13px] top-2 bottom-2 w-0.5 bg-slate-200"
+            style={{ zIndex: 0 }}
+          />
+
+          {/* Compact task rows */}
+          <div className="relative" style={{ zIndex: 1 }}>
+            {tasks.map((task, index) => {
+              const isCreated = index < issueCreationProgress.createdCount;
+              const isCreating = index === issueCreationProgress.createdCount;
+              const lastCreated = issueCreationProgress.lastCreatedIssue;
+              const issueNumber = isCreated && lastCreated && index === issueCreationProgress.createdCount - 1
+                ? lastCreated.number
+                : null;
+
+              return (
+                <div
+                  key={task.id || index}
+                  className="flex items-center gap-2.5 py-1 group"
+                >
+                  {/* Status icon with rail connection */}
+                  <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center bg-white rounded-full">
+                    {isCreated ? (
+                      <div className="w-4 h-4 rounded-full bg-gray-100 flex items-center justify-center">
+                        <Check size={10} className="text-gray-400" strokeWidth={3} />
+                      </div>
+                    ) : isCreating ? (
+                      <Loader2 size={14} className="text-blue-600 animate-spin" />
+                    ) : (
+                      <div className="w-3 h-3 rounded-full border-2 border-gray-300 bg-white" />
+                    )}
+                  </div>
+
+                  {/* Task title - compact single line */}
+                  <span className={`flex-1 text-sm truncate ${
+                    isCreated ? 'text-gray-400' :
+                    isCreating ? 'text-blue-700 font-medium' :
+                    'text-gray-500'
+                  }`}>
+                    {task.title}
+                  </span>
+
+                  {/* Issue number chip (right aligned) */}
+                  {issueNumber && (
+                    <span className="flex-shrink-0 px-1.5 py-0.5 bg-gray-100 rounded text-[10px] font-mono text-gray-500">
+                      #{issueNumber}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Unified Execution Options Toolbar - Configuration Zone */}
       {pendingCount > 0 && (
-        <div className="flex flex-col gap-3 sm:gap-4 py-3 border-y border-gray-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-4">
+        <div className="flex flex-col gap-2.5 sm:gap-3 py-2.5 border-b border-slate-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-3">
           {/* Agent Assignment Row */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
             <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">
@@ -275,7 +341,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         </div>
       )}
 
-      <div className="space-y-2">
+      {/* Action Zone - Issue List */}
+      <div className="space-y-1.5">
         {activeIssues.map(issue => (
           <PlanIssueRow
             key={issue.id}

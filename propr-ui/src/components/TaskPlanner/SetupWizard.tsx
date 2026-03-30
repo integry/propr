@@ -94,23 +94,11 @@ const SetupWizardContent: React.FC<{
   });
   const canExport = computeCanExport(isNewMode, promptTrimmed, config.baseBranch);
 
-  const handleModelChange = (value: string | null) => {
-    setConfig(prev => ({ ...prev, generationModel: value }));
-  };
-
-  const handleAddContextRepo = (repo: { repository: string; branch: string }) => {
-    setConfig(prev => ({
-      ...prev,
-      contextRepositories: [...prev.contextRepositories, repo]
-    }));
-  };
-
-  const handleRemoveContextRepo = (repository: string) => {
-    setConfig(prev => ({
-      ...prev,
-      contextRepositories: prev.contextRepositories.filter(r => r.repository !== repository)
-    }));
-  };
+  const handleModelChange = (value: string | null) => setConfig(prev => ({ ...prev, generationModel: value }));
+  const handleAddContextRepo = (repo: { repository: string; branch: string }) => setConfig(prev => ({ ...prev, contextRepositories: [...prev.contextRepositories, repo] }));
+  const handleRemoveContextRepo = (repository: string) => setConfig(prev => ({ ...prev, contextRepositories: prev.contextRepositories.filter(r => r.repository !== repository) }));
+  const handleAddManualFile = (filePath: string) => setConfig(prev => ({ ...prev, manualFiles: [...prev.manualFiles, filePath] }));
+  const handleRemoveManualFile = (filePath: string) => setConfig(prev => ({ ...prev, manualFiles: prev.manualFiles.filter(f => f !== filePath) }));
 
   const handleExcludeFile = (filePath: string) => {
     setConfig(prev => ({
@@ -159,6 +147,9 @@ const SetupWizardContent: React.FC<{
           isGenerating={isGenerating}
           generationTrace={generationPolling.generationTrace}
           onAbort={generationHandlers.handleAbortGeneration}
+          manualFiles={config.manualFiles}
+          onAddManualFile={handleAddManualFile}
+          onRemoveManualFile={handleRemoveManualFile}
         />
         <SetupWizardRightPane
           contextLevel={config.contextLevel}
@@ -269,6 +260,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     files: draft?.attachments ?? [],
     contextRepositories: draftContextConfig?.contextRepositories ?? [],
     generationModel: draftContextConfig?.generationModel ?? null,
+    manualFiles: draftContextConfig?.manualFiles ?? [],
     excludedFiles: draftContextConfig?.excludedFiles ?? []
   }));
 
@@ -280,27 +272,21 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Sync contextRepositories, generationModel, and excludedFiles from draft when it loads
+  // Sync contextRepositories, generationModel, manualFiles, and excludedFiles from draft when it loads
   // (useState initializer may run before draft is available)
   // Only update when values actually differ to prevent infinite update loops
   useEffect(() => {
     if (!draft) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const draftConfig = (draft as any)?.context_config;
-    if (draftConfig?.contextRepositories && draftConfig.contextRepositories.length > 0) {
-      setConfig(prev => {
-        // Compare by serializing to JSON to detect actual changes
-        const currentJson = JSON.stringify(prev.contextRepositories);
-        const newJson = JSON.stringify(draftConfig.contextRepositories);
-        if (currentJson === newJson) return prev;
-        return { ...prev, contextRepositories: draftConfig.contextRepositories };
-      });
+    if (draftConfig?.contextRepositories?.length > 0) {
+      setConfig(prev => JSON.stringify(prev.contextRepositories) === JSON.stringify(draftConfig.contextRepositories) ? prev : { ...prev, contextRepositories: draftConfig.contextRepositories });
     }
     if (draftConfig?.generationModel) {
-      setConfig(prev => {
-        if (prev.generationModel === draftConfig.generationModel) return prev;
-        return { ...prev, generationModel: draftConfig.generationModel };
-      });
+      setConfig(prev => prev.generationModel === draftConfig.generationModel ? prev : { ...prev, generationModel: draftConfig.generationModel });
+    }
+    if (draftConfig?.manualFiles?.length > 0) {
+      setConfig(prev => JSON.stringify(prev.manualFiles) === JSON.stringify(draftConfig.manualFiles) ? prev : { ...prev, manualFiles: draftConfig.manualFiles });
     }
     if (draftConfig?.excludedFiles && draftConfig.excludedFiles.length > 0) {
       setConfig(prev => {
@@ -345,45 +331,16 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
 
   // Poll for preview trace when context preview is loading
   useEffect(() => {
-    if (!draftId || !contextRefresh.preview.isLoading) {
-      // Clear trace when not loading
-      if (!contextRefresh.preview.isLoading) {
-        setPreviewTrace(undefined);
-      }
-      return;
-    }
-
+    if (!draftId || !contextRefresh.preview.isLoading) { if (!contextRefresh.preview.isLoading) setPreviewTrace(undefined); return; }
     // Initialize with pending steps immediately to avoid UI flicker
-    // This ensures consistent UI from the start while waiting for backend to update
-    setPreviewTrace({
-      steps: [
-        { name: 'relevance', status: 'in_progress' },
-        { name: 'context', status: 'pending' }
-      ]
-    });
-
+    setPreviewTrace({ steps: [{ name: 'relevance', status: 'in_progress' }, { name: 'context', status: 'pending' }] });
     const pollTrace = async () => {
-      try {
-        const draftData = await getDraft(draftId);
-        if (draftData.generation_trace?.steps?.length) {
-          setPreviewTrace(draftData.generation_trace);
-        }
-      } catch (err) {
-        // Ignore errors during polling - this is best-effort
-        console.debug('Preview trace polling error:', err);
-      }
+      try { const draftData = await getDraft(draftId); if (draftData.generation_trace?.steps?.length) setPreviewTrace(draftData.generation_trace); }
+      catch (err) { console.debug('Preview trace polling error:', err); }
     };
-
-    // Poll after a short delay to allow backend to initialize
     const initialPollTimeout = setTimeout(pollTrace, 500);
-
-    // Set up polling interval (every 1 second)
     const intervalId = setInterval(pollTrace, 1000);
-
-    return () => {
-      clearTimeout(initialPollTimeout);
-      clearInterval(intervalId);
-    };
+    return () => { clearTimeout(initialPollTimeout); clearInterval(intervalId); };
   }, [draftId, contextRefresh.preview.isLoading]);
 
   const generationHandlers = useGenerationHandlers({
@@ -401,53 +358,26 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   });
 
   // Auto-create draft when user starts typing in new mode
-  const { isAutoCreating, autoCreateError } = useAutoDraftCreation({
-    isNewMode,
-    selectedRepo: repoLoader.selectedRepo,
-    prompt: config.prompt,
-    localFiles: fileHandling.localFiles,
-    onDraftCreated,
-    onDraftCreatedInPlace,
-    navigate,
-    todoIds
-  });
+  const { isAutoCreating, autoCreateError } = useAutoDraftCreation({ isNewMode, selectedRepo: repoLoader.selectedRepo, prompt: config.prompt, localFiles: fileHandling.localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds });
 
   useEffect(() => { if (autoCreateError) addToast({ type: 'error', message: autoCreateError }); }, [autoCreateError, addToast]);
   const autoResize = useAutoResize(textareaRef);
 
-  // Handlers
   const handleRepoChangeInEditMode = useCallback(async (newRepo: string) => {
     if (!newRepo || newRepo === draft?.repository) { setIsChangingRepo(false); return; }
-    setIsCreating(true);
-    setError(null);
-    try {
-      const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled');
-      onDraftCreated?.(newDraft.draft_id);
-      navigate(`/studio/${newDraft.draft_id}`, { replace: true });
-    } catch (err) {
-      setError((err as Error).message || 'Failed to change repository');
-      setIsCreating(false);
-      setIsChangingRepo(false);
-    }
+    setIsCreating(true); setError(null);
+    try { const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled'); onDraftCreated?.(newDraft.draft_id); navigate(`/studio/${newDraft.draft_id}`, { replace: true }); }
+    catch (err) { setError((err as Error).message || 'Failed to change repository'); setIsCreating(false); setIsChangingRepo(false); }
   }, [draft?.repository, config.prompt, onDraftCreated, navigate]);
-
   const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files?.length) { for (const file of Array.from(files)) await fileHandling.handleUpload(file); }
+    if (e.target.files?.length) { for (const file of Array.from(e.target.files)) await fileHandling.handleUpload(file); }
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [fileHandling]);
-
   const handleExportContext = useCallback(() => {
     if (!draft) return;
-    contextExport.exportContext({
-      draftId: draft.draft_id, prompt: config.prompt, baseBranch: config.baseBranch,
-      granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, files: config.files
-    });
+    contextExport.exportContext({ draftId: draft.draft_id, prompt: config.prompt, baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, files: config.files });
   }, [contextExport, draft, config]);
-
-  const handleGenerate = useCallback(async () => {
-    await (isNewMode ? handleCreateDraftAndGenerate() : generationHandlers.handleGenerateForExistingDraft());
-  }, [isNewMode, handleCreateDraftAndGenerate, generationHandlers]);
+  const handleGenerate = useCallback(async () => { await (isNewMode ? handleCreateDraftAndGenerate() : generationHandlers.handleGenerateForExistingDraft()); }, [isNewMode, handleCreateDraftAndGenerate, generationHandlers]);
 
   useEffect(() => { autoResize(); }, [config.prompt, autoResize]);
   useEffect(() => { if (generationPolling.generationError) addToast({ type: 'error', message: `Plan generation failed: ${generationPolling.generationError}` }); }, [generationPolling.generationError, addToast]);

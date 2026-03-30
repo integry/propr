@@ -31,7 +31,7 @@ export interface PlannerDraft {
   draft_id: string;
   repository: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed' | 'pr_created' | 'merged' | 'failed';
+  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed' | 'executing' | 'pr_created' | 'merged' | 'failed';
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
@@ -83,6 +83,8 @@ export interface PreviewResult {
   stats: PreviewStats;
   smartSelection: SmartFileSelection[];
   warnings: string[];
+  /** Token counts per file for client-side context level simulation */
+  fileTokenCounts?: Record<string, number>;
 }
 
 export interface PreviewOptions {
@@ -193,7 +195,7 @@ export interface DraftListItem {
   repository: string;
   name?: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining' | 'approved' | 'pr_created' | 'merged' | 'failed';
+  status: 'draft' | 'review' | 'executed' | 'executing' | 'generating' | 'refining' | 'approved' | 'pr_created' | 'merged' | 'failed';
   updated_at: string;
   created_at: string;
   issue_summary?: IssueSummary | null;

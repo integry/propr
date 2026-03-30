@@ -14,3 +14,7 @@ coverage/
 /tmp/git-processor/
 dist/
 packages/*/dist/
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
