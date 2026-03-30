@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { ListPlus, Check, ChevronDown } from 'lucide-react';
-import { createTodo } from '../api/repoTodosApi';
+import { createTodo, getCategories, RepoTodoCategory } from '../api/repoTodosApi';
 import { getRepoConfig } from '../api/proprApi';
 import { MonitoredRepo } from '../api/proprTypes';
 
@@ -12,19 +12,22 @@ interface QuickAddTodoProps {
 
 const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpenHandled }) => {
   const location = useLocation();
-  const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const [repos, setRepos] = useState<MonitoredRepo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState('');
   const [content, setContent] = useState('');
-  const [moveToPlan, setMoveToPlan] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [repoDropdownOpen, setRepoDropdownOpen] = useState(false);
+  const [categories, setCategories] = useState<RepoTodoCategory[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
+  const [lastUsedCategory, setLastUsedCategory] = useState<Record<string, string>>({});
 
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
+  const categoryDropdownRef = useRef<HTMLDivElement>(null);
 
   // Infer active repo from URL path
   const inferRepoFromUrl = useCallback((): string => {
@@ -74,6 +77,28 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     return () => document.removeEventListener('mousedown', handler);
   }, [isOpen]);
 
+  // Load categories when selected repo changes
+  useEffect(() => {
+    if (!selectedRepo) {
+      setCategories([]);
+      setSelectedCategoryId(null);
+      return;
+    }
+    getCategories(selectedRepo).then(cats => {
+      setCategories(cats);
+      // Use last used category for this repo, or default to uncategorized
+      const lastUsed = lastUsedCategory[selectedRepo];
+      if (lastUsed && cats.some(c => c.categoryId === lastUsed)) {
+        setSelectedCategoryId(lastUsed);
+      } else {
+        setSelectedCategoryId(null);
+      }
+    }).catch(() => {
+      setCategories([]);
+      setSelectedCategoryId(null);
+    });
+  }, [selectedRepo, lastUsedCategory]);
+
   // Click outside repo dropdown to close it
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -85,9 +110,19 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     return () => document.removeEventListener('mousedown', handler);
   }, [repoDropdownOpen]);
 
+  // Click outside category dropdown to close it
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (categoryDropdownRef.current && !categoryDropdownRef.current.contains(e.target as Node)) {
+        setCategoryDropdownOpen(false);
+      }
+    };
+    if (categoryDropdownOpen) document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [categoryDropdownOpen]);
+
   const resetForm = () => {
     setContent('');
-    setMoveToPlan(false);
     setShowSuccess(false);
   };
 
@@ -95,31 +130,21 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     if (!content.trim() || !selectedRepo || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      const todo = await createTodo({
+      await createTodo({
         repository: selectedRepo,
         content: content.trim(),
+        categoryId: selectedCategoryId,
       });
-      setShowSuccess(true);
-
-      if (moveToPlan) {
-        setTimeout(() => {
-          setIsOpen(false);
-          resetForm();
-          setIsSubmitting(false);
-          navigate('/studio/new', {
-            state: {
-              initialRepository: selectedRepo,
-              todoIds: [todo.todoId],
-            },
-          });
-        }, 800);
-      } else {
-        setTimeout(() => {
-          setIsOpen(false);
-          resetForm();
-          setIsSubmitting(false);
-        }, 1200);
+      // Remember last used category for this repo
+      if (selectedCategoryId) {
+        setLastUsedCategory(prev => ({ ...prev, [selectedRepo]: selectedCategoryId }));
       }
+      setShowSuccess(true);
+      setTimeout(() => {
+        setIsOpen(false);
+        resetForm();
+        setIsSubmitting(false);
+      }, 1200);
     } catch {
       setIsSubmitting(false);
     }
@@ -208,17 +233,54 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
                 }}
               />
 
+              {/* Category Selector (only when repo has categories) */}
+              {categories.length > 0 && (
+                <div className="relative" ref={categoryDropdownRef}>
+                  <button
+                    onClick={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
+                    className="flex items-center gap-1.5 px-2 py-1 bg-slate-50 border border-slate-200 hover:border-slate-300 transition-colors w-full text-left"
+                  >
+                    <span className="text-xs text-slate-700 truncate flex-1">
+                      {selectedCategoryId
+                        ? categories.find(c => c.categoryId === selectedCategoryId)?.name ?? 'Uncategorized'
+                        : 'Uncategorized'}
+                    </span>
+                    <ChevronDown className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                  </button>
+                  {categoryDropdownOpen && (
+                    <div className="absolute left-0 right-0 top-full mt-0.5 bg-white border border-slate-200 shadow-lg z-[60] max-h-[200px] overflow-y-auto">
+                      <button
+                        onClick={() => {
+                          setSelectedCategoryId(null);
+                          setCategoryDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-2 py-1.5 text-xs hover:bg-slate-50 transition-colors ${
+                          selectedCategoryId === null ? 'bg-slate-50 text-teal-700' : 'text-slate-700'
+                        }`}
+                      >
+                        Uncategorized
+                      </button>
+                      {categories.map(cat => (
+                        <button
+                          key={cat.categoryId}
+                          onClick={() => {
+                            setSelectedCategoryId(cat.categoryId);
+                            setCategoryDropdownOpen(false);
+                          }}
+                          className={`w-full text-left px-2 py-1.5 text-xs hover:bg-slate-50 transition-colors ${
+                            selectedCategoryId === cat.categoryId ? 'bg-slate-50 text-teal-700' : 'text-slate-700'
+                          }`}
+                        >
+                          {cat.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Actions Row */}
-              <div className="flex items-center justify-between pt-1 border-t border-slate-100">
-                <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={moveToPlan}
-                    onChange={e => setMoveToPlan(e.target.checked)}
-                    className="w-3.5 h-3.5 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
-                  />
-                  <span className="text-xs text-slate-500">Move to Plan immediately</span>
-                </label>
+              <div className="flex items-center justify-end pt-1 border-t border-slate-100">
                 <button
                   onClick={handleSubmit}
                   disabled={!content.trim() || !selectedRepo || isSubmitting}
