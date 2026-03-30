@@ -52,7 +52,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     }).catch(() => {});
     // Focus textarea after opening
     setTimeout(() => textareaRef.current?.focus(), 100);
-  }, [isOpen, inferRepoFromUrl]);
+  }, [isOpen, inferRepoFromUrl, selectedRepo]);
 
   // Handle external open trigger (keyboard shortcut)
   useEffect(() => {
