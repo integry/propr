@@ -129,6 +129,8 @@ export interface PreviewStats {
   modelName?: string;
   /** Full context window size of the model in tokens (e.g., 200000, 1000000) */
   modelMaxContextTokens?: number;
+  /** Estimated percentage of the 5-hour session usage this task will consume */
+  usageEstimatePercent?: number;
 }
 
 export interface PreviewResult {
