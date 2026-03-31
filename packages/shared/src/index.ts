@@ -39,5 +39,6 @@ export {
 export {
   type AgentTankConfig,
   type UsageSnapshot,
+  type UsageMetricRecord,
   type UsageMetrics,
 } from './usageTypes.js';

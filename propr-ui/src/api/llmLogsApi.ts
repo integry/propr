@@ -1,5 +1,11 @@
 import { API_BASE_URL, handleApiResponse } from './proprApi';
 
+export interface UsageMetricRecordEntry {
+  agent: string;
+  metricKey: string;
+  metricValue: number;
+}
+
 export interface LlmLogEntry {
   logId: number;
   executionType: string;
@@ -21,6 +27,7 @@ export interface LlmLogEntry {
   agentAlias: string | null;
   metadata: Record<string, unknown> | null;
   usageMetrics: Record<string, unknown> | null;
+  usageMetricRecords: UsageMetricRecordEntry[];
 }
 
 export interface LlmLogsPagination {

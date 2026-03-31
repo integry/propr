@@ -42,7 +42,7 @@
  */
 
 import logger from '../../../utils/logger.js';
-import { getStatus, calculateDelta, type AgentStatusResponse } from '../../../services/agentTankService.js';
+import { refreshAgent, getStatus, calculateDelta, type AgentStatusResponse } from '../../../services/agentTankService.js';
 
 const AGENT_TANK_URL = process.env.AGENT_TANK_URL || '';
 
@@ -54,6 +54,21 @@ export interface UsageTrackingResult<T> {
     usageMetrics: UsageTrackingMetrics | null;
 }
 
+/**
+ * A single structured usage metric record for DB storage.
+ *
+ * Each LLM call may produce multiple records — one per metric key
+ * (e.g. "session", "weeklyAll", "weeklySonnet" for Claude).
+ */
+export interface UsageMetricRecord {
+    /** The agent name (e.g. "claude", "gemini", "codex"). */
+    agent: string;
+    /** The metric key (e.g. "session", "weeklyAll", "fiveHour"). */
+    metricKey: string;
+    /** The percentage-point delta consumed by this call. */
+    metricValue: number;
+}
+
 /** Metrics captured by the usage tracking wrapper. */
 export interface UsageTrackingMetrics {
     /** Agent Tank status snapshot taken before the LLM call. */
@@ -62,6 +77,8 @@ export interface UsageTrackingMetrics {
     postCall: AgentStatusResponse;
     /** Computed numeric difference between post and pre usage values. */
     delta: Record<string, unknown>;
+    /** Structured per-metric records for DB storage. */
+    records: UsageMetricRecord[];
     /** ISO 8601 timestamp of when the metrics were captured. */
     timestamp: string;
     /** The agent name that was queried. */
@@ -79,12 +96,85 @@ export function isAgentTankEnabled(): boolean {
 }
 
 /**
+ * Extract structured metric records from an Agent Tank usage delta.
+ *
+ * Walks the delta object looking for "percent" values at the first or
+ * second nesting level and produces one record per metric key.
+ *
+ * Examples of delta shapes handled:
+ *   Claude:  { session: { percent: 16 }, weeklyAll: { percent: 4 } }
+ *   Codex:   { fiveHour: { percentUsed: 3 }, weekly: { percentUsed: 1 } }
+ *   Gemini:  { models: [...] } — array entries are mapped by model name
+ */
+export function extractMetricRecords(
+    agent: string,
+    delta: Record<string, unknown>,
+): UsageMetricRecord[] {
+    const records: UsageMetricRecord[] = [];
+
+    for (const [key, value] of Object.entries(delta)) {
+        if (value === null || value === undefined) continue;
+
+        // Direct numeric value (unlikely but handle it)
+        if (typeof value === 'number') {
+            records.push({ agent, metricKey: key, metricValue: value });
+            continue;
+        }
+
+        // Nested object — extract percent/percentUsed
+        if (typeof value === 'object' && !Array.isArray(value)) {
+            const nested = value as Record<string, unknown>;
+            const percentValue =
+                typeof nested.percent === 'number' ? nested.percent :
+                typeof nested.percentUsed === 'number' ? nested.percentUsed :
+                null;
+            if (percentValue !== null) {
+                records.push({ agent, metricKey: key, metricValue: percentValue });
+            }
+        }
+
+        // Array (Gemini models array)
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                if (item && typeof item === 'object') {
+                    const entry = item as Record<string, unknown>;
+                    const modelName = typeof entry.model === 'string' ? entry.model : key;
+                    const percentValue =
+                        typeof entry.percentUsed === 'number' ? entry.percentUsed :
+                        typeof entry.percent === 'number' ? entry.percent :
+                        null;
+                    if (percentValue !== null) {
+                        records.push({ agent, metricKey: modelName, metricValue: percentValue });
+                    }
+                }
+            }
+        }
+    }
+
+    return records;
+}
+
+/**
+ * Refresh the agent and then fetch its current status.
+ *
+ * Always calls POST /refresh/:agent first to ensure Agent Tank has the
+ * latest data, then calls GET /status/:agent to retrieve it.
+ */
+async function refreshAndGetStatus(
+    agent: string,
+    timeoutMs?: number,
+): Promise<AgentStatusResponse> {
+    await refreshAgent(agent, timeoutMs);
+    return getStatus(agent, timeoutMs);
+}
+
+/**
  * Execute an LLM call wrapped with Agent Tank usage tracking.
  *
- * 1. Fetches the current Agent Tank status for the given agent (pre-call).
+ * 1. Refreshes the agent and fetches status (pre-call).
  * 2. Runs the provided `executeFn` (the actual LLM call).
- * 3. Fetches the Agent Tank status again (post-call).
- * 4. Computes the delta between pre and post usage.
+ * 3. Refreshes the agent again and fetches status (post-call).
+ * 4. Computes the delta and extracts structured metric records.
  * 5. Returns both the execution result and the usage metrics.
  *
  * If Agent Tank is disabled or a status fetch fails, the LLM call still
@@ -106,10 +196,10 @@ export async function executeWithUsageTracking<T>(
         return { result, usageMetrics: null };
     }
 
-    // Pre-call: fetch status (best-effort)
+    // Pre-call: refresh agent and fetch status (best-effort)
     let preCall: AgentStatusResponse | null = null;
     try {
-        preCall = await getStatus(agent, timeoutMs);
+        preCall = await refreshAndGetStatus(agent, timeoutMs);
         logger.debug({ agent, preCall: preCall.usage }, 'Agent Tank pre-call status');
     } catch (err: unknown) {
         logger.warn({ agent, err }, 'Failed to fetch Agent Tank pre-call status — proceeding without tracking');
@@ -118,14 +208,14 @@ export async function executeWithUsageTracking<T>(
     // Execute the LLM call (always runs, even if pre-call failed)
     const result = await executeFn();
 
-    // Post-call: fetch status (best-effort)
+    // Post-call: refresh agent and fetch status (best-effort)
     if (preCall === null) {
         return { result, usageMetrics: null };
     }
 
     let postCall: AgentStatusResponse | null = null;
     try {
-        postCall = await getStatus(agent, timeoutMs);
+        postCall = await refreshAndGetStatus(agent, timeoutMs);
         logger.debug({ agent, postCall: postCall.usage }, 'Agent Tank post-call status');
     } catch (err: unknown) {
         logger.warn({ agent, err }, 'Failed to fetch Agent Tank post-call status');
@@ -138,15 +228,19 @@ export async function executeWithUsageTracking<T>(
         postCall.usage,
     );
 
+    // Extract structured metric records
+    const records = extractMetricRecords(agent, delta);
+
     const usageMetrics: UsageTrackingMetrics = {
         preCall,
         postCall,
         delta,
+        records,
         timestamp: new Date().toISOString(),
         agent,
     };
 
-    logger.info({ agent, delta }, 'Agent Tank usage delta computed');
+    logger.info({ agent, delta, records }, 'Agent Tank usage delta computed');
 
     return { result, usageMetrics };
 }

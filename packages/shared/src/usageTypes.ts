@@ -53,6 +53,22 @@ export interface UsageSnapshot {
 }
 
 /**
+ * A single structured usage metric record for DB storage and querying.
+ *
+ * Each LLM call produces multiple records — one per metric key
+ * (e.g. "session" and "weeklyAll" for Claude). This flat structure
+ * enables easy DB querying and report generation.
+ */
+export interface UsageMetricRecord {
+  /** The agent name (e.g. "claude", "gemini", "codex"). */
+  agent: string;
+  /** The metric key (e.g. "session", "weeklyAll", "fiveHour"). */
+  metricKey: string;
+  /** The percentage-point delta consumed by this call. */
+  metricValue: number;
+}
+
+/**
  * Tracks usage metrics for an LLM call, capturing state before and after
  * the call to compute the delta (consumption) for billing purposes.
  */
@@ -63,6 +79,8 @@ export interface UsageMetrics {
   postCall: UsageSnapshot;
   /** Computed difference (what this call consumed) */
   delta: UsageSnapshot;
+  /** Structured per-metric records for DB storage */
+  records?: UsageMetricRecord[];
   /** ISO 8601 timestamp of when the metrics were captured */
   timestamp: string;
   /** Model ID used for this call */

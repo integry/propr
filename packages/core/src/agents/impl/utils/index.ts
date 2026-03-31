@@ -22,7 +22,9 @@ export {
 
 export {
     executeWithUsageTracking,
+    extractMetricRecords,
     isAgentTankEnabled,
     type UsageTrackingResult,
-    type UsageTrackingMetrics
+    type UsageTrackingMetrics,
+    type UsageMetricRecord
 } from './usageTrackingWrapper.js';

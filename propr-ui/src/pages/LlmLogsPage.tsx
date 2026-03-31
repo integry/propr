@@ -16,7 +16,6 @@ import {
   ExpandedRowDetails,
 } from './LlmLogsPageComponents';
 import { UsageBadge } from '../components/ui/UsageBadge';
-import type { UsageMetrics } from '@propr/shared';
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -304,7 +303,7 @@ const LlmLogsPage: React.FC = () => {
                           <UsageBadge
                             tokens={(log.inputTokens || 0) + (log.outputTokens || 0)}
                             cost={log.costUsd ?? undefined}
-                            usageMetrics={log.usageMetrics as UsageMetrics | undefined}
+                            usageMetricRecords={log.usageMetricRecords}
                           />
                         </td>
                         <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700">

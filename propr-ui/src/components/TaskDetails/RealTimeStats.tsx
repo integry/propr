@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import type { UsageMetrics } from '@propr/shared';
+import type { UsageMetricRecord } from '@propr/shared';
 import { UsageBadge } from '../ui/UsageBadge';
 import { TokenUsage } from './types';
 
@@ -23,19 +23,14 @@ const RealTimeStats: React.FC<RealTimeStatsProps> = ({ tokenUsage, costUsd, allo
     return total > 0 ? total : undefined;
   }, [tokenUsage]);
 
-  const usageMetrics = useMemo<UsageMetrics | undefined>(() => {
+  const usageMetricRecords = useMemo<UsageMetricRecord[] | undefined>(() => {
     if (allowancePercent == null) return undefined;
 
-    return {
-      preCall: {},
-      postCall: {},
-      delta: {
-        providerDetails: {
-          allowancePercentUsed: allowancePercent,
-        },
-      },
-      timestamp: new Date().toISOString(),
-    };
+    return [{
+      agent: 'task',
+      metricKey: 'allowance',
+      metricValue: allowancePercent,
+    }];
   }, [allowancePercent]);
 
   const hasData = totalTokens != null || (costUsd != null && costUsd > 0) || allowancePercent != null;
@@ -48,7 +43,7 @@ const RealTimeStats: React.FC<RealTimeStatsProps> = ({ tokenUsage, costUsd, allo
     <UsageBadge
       tokens={totalTokens}
       cost={costUsd}
-      usageMetrics={usageMetrics}
+      usageMetricRecords={usageMetricRecords}
     />
   );
 };

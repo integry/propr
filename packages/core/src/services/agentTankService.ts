@@ -21,13 +21,44 @@ export interface AgentStatusResponse {
 }
 
 /**
+ * Trigger a refresh for the given agent on Agent Tank.
+ *
+ * Calls POST /refresh/:agent to ensure the daemon fetches the latest
+ * usage data before we query it. This is required because Agent Tank
+ * caches usage snapshots and may return stale data otherwise.
+ *
+ * @example
+ *   await refreshAgent('claude');
+ *   const status = await getStatus('claude');
+ */
+export async function refreshAgent(agent: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<void> {
+    const url = `${AGENT_TANK_BASE_URL}/refresh/${encodeURIComponent(agent)}`;
+    logger.info({ url, agent }, 'Triggering Agent Tank refresh');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const response = await fetch(url, { method: 'POST', signal: controller.signal });
+        if (!response.ok) {
+            throw new Error(`Agent Tank refresh returned HTTP ${response.status}: ${response.statusText}`);
+        }
+    } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+            throw new Error(`Agent Tank refresh timed out after ${timeoutMs}ms`);
+        }
+        throw err;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
  * Fetch the current status for the given agent from Agent Tank.
  *
  * @example
- *   const pre  = await getStatus('claude');
- *   // ... perform LLM call ...
- *   const post = await getStatus('claude');
- *   const delta = calculateDelta(pre.usage, post.usage);
+ *   await refreshAgent('claude');
+ *   const status = await getStatus('claude');
  */
 export async function getStatus(agent: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<AgentStatusResponse> {
     const url = `${AGENT_TANK_BASE_URL}/status/${encodeURIComponent(agent)}`;

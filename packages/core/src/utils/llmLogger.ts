@@ -10,6 +10,13 @@ import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
 import type { ExecutionType } from './llmMetrics.types.js';
 
+/** A single structured usage metric record for DB persistence. */
+export interface UsageMetricRecordEntry {
+  agent: string;
+  metricKey: string;
+  metricValue: number;
+}
+
 export interface LlmLogEntry {
   executionType: ExecutionType;
   modelName: string;
@@ -32,6 +39,8 @@ export interface LlmLogEntry {
   agentAlias?: string;
   metadata?: Record<string, unknown>;
   usageMetrics?: Record<string, unknown>;
+  /** Structured metric records (one per metric key) for the usage_metric_records table. */
+  usageMetricRecords?: UsageMetricRecordEntry[];
 }
 
 /**
@@ -113,6 +122,23 @@ export async function persistLlmLog(entry: LlmLogEntry): Promise<number | null> 
 
     const logId = typeof inserted === 'object' ? (inserted as { log_id: number }).log_id : inserted;
 
+    // Persist structured usage metric records if present
+    if (logId && entry.usageMetricRecords && entry.usageMetricRecords.length > 0) {
+      try {
+        const rows = entry.usageMetricRecords.map(r => ({
+          llm_log_id: logId,
+          agent_name: r.agent,
+          metric_key: r.metricKey,
+          metric_value: r.metricValue,
+        }));
+        await db('usage_metric_records').insert(rows);
+        logger.debug({ logId, recordCount: rows.length }, 'Usage metric records persisted');
+      } catch (recordError) {
+        const recErr = recordError as Error;
+        logger.error({ error: recErr.message, logId }, 'Failed to persist usage metric records');
+      }
+    }
+
     logger.debug({
       logId,
       executionType: entry.executionType,
@@ -159,6 +185,7 @@ export function createLlmLogFromAnalysis(params: {
   agentAlias?: string;
   metadata?: Record<string, unknown>;
   usageMetrics?: Record<string, unknown>;
+  usageMetricRecords?: UsageMetricRecordEntry[];
 }): LlmLogEntry {
   const now = new Date();
   const startTime = new Date(now.getTime() - params.executionTimeMs);
@@ -183,5 +210,6 @@ export function createLlmLogFromAnalysis(params: {
     agentAlias: params.agentAlias,
     metadata: params.metadata,
     usageMetrics: params.usageMetrics,
+    usageMetricRecords: params.usageMetricRecords,
   };
 }

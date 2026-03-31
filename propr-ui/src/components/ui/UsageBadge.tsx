@@ -1,48 +1,15 @@
 import React from 'react';
-import type { UsageMetrics } from '@propr/shared';
+import type { UsageMetricRecord } from '@propr/shared';
 
 export interface UsageBadgeProps {
   /** Total tokens consumed */
   tokens?: number;
   /** Cost in USD */
   cost?: number;
-  /** Usage metrics object (delta.providerDetails may contain percentage info) */
-  usageMetrics?: UsageMetrics;
+  /** Structured usage metric records (one per metric key) */
+  usageMetricRecords?: UsageMetricRecord[];
   /** Additional CSS classes */
   className?: string;
-}
-
-/**
- * Extracts the primary percentage delta from a nested usage metrics object.
- * Walks providerDetails looking for the first numeric "percent" field.
- */
-function extractPercentDelta(metrics: UsageMetrics): number | null {
-  const details = metrics.delta?.providerDetails;
-  if (!details) return null;
-
-  // Search one level deep for a "percent" key
-  for (const value of Object.values(details)) {
-    if (typeof value === 'number' && Object.keys(details).some(
-      k => k.toLowerCase().includes('percent')
-    )) {
-      // Direct percent value at top level
-      const percentKey = Object.keys(details).find(k => k.toLowerCase().includes('percent'));
-      if (percentKey && typeof details[percentKey] === 'number') {
-        return details[percentKey] as number;
-      }
-    }
-    // Nested object with a percent field
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const nested = value as Record<string, unknown>;
-      for (const [nestedKey, nestedVal] of Object.entries(nested)) {
-        if (nestedKey.toLowerCase().includes('percent') && typeof nestedVal === 'number') {
-          return nestedVal;
-        }
-      }
-    }
-  }
-
-  return null;
 }
 
 function formatTokens(tokens: number): string {
@@ -68,17 +35,15 @@ function formatCost(cost: number): string {
 export const UsageBadge: React.FC<UsageBadgeProps> = ({
   tokens,
   cost,
-  usageMetrics,
+  usageMetricRecords,
   className = '',
 }) => {
-  const percentDelta = usageMetrics ? extractPercentDelta(usageMetrics) : null;
-
   const hasTokens = tokens != null && tokens > 0;
   const hasCost = cost != null && cost > 0;
-  const hasPercent = percentDelta != null;
+  const hasRecords = usageMetricRecords != null && usageMetricRecords.length > 0;
 
   // Nothing to display
-  if (!hasTokens && !hasCost && !hasPercent) {
+  if (!hasTokens && !hasCost && !hasRecords) {
     return null;
   }
 
@@ -100,17 +65,19 @@ export const UsageBadge: React.FC<UsageBadgeProps> = ({
     );
   }
 
-  if (hasPercent) {
-    const sign = percentDelta! > 0 ? '+' : '';
-    parts.push(
-      <span
-        key="percent"
-        className={percentDelta! > 0 ? 'text-amber-600' : 'text-green-600'}
-        title={`${sign}${percentDelta!.toFixed(1)}% usage delta`}
-      >
-        {sign}{percentDelta!.toFixed(1)}%
-      </span>
-    );
+  if (hasRecords) {
+    for (const record of usageMetricRecords!) {
+      const sign = record.metricValue > 0 ? '+' : '';
+      parts.push(
+        <span
+          key={`${record.agent}-${record.metricKey}`}
+          className={record.metricValue > 0 ? 'text-amber-600' : 'text-green-600'}
+          title={`${record.metricKey}: ${sign}${record.metricValue.toFixed(1)}%`}
+        >
+          {record.metricKey} {sign}{record.metricValue.toFixed(1)}%
+        </span>
+      );
+    }
   }
 
   return (

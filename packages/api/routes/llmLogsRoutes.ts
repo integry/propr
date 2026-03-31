@@ -60,7 +60,19 @@ function applyLlmLogFilters<T extends Knex.QueryBuilder>(query: T, filters: LlmL
   return query;
 }
 
-function formatLlmLogRow(row: LlmLogRow): Record<string, unknown> {
+interface UsageMetricRecordRow {
+  id: number;
+  llm_log_id: number;
+  agent_name: string;
+  metric_key: string;
+  metric_value: number | string;
+  created_at: string;
+}
+
+function formatLlmLogRow(
+  row: LlmLogRow,
+  metricRecords?: UsageMetricRecordRow[],
+): Record<string, unknown> {
   let metadata: Record<string, unknown> | null = null;
   if (row.metadata) {
     try {
@@ -69,6 +81,15 @@ function formatLlmLogRow(row: LlmLogRow): Record<string, unknown> {
       // If parsing fails, keep as null
     }
   }
+
+  const formattedRecords = metricRecords
+    ? metricRecords.map(r => ({
+        agent: r.agent_name,
+        metricKey: r.metric_key,
+        metricValue: Number(r.metric_value),
+      }))
+    : [];
+
   return {
     logId: row.log_id,
     executionType: row.execution_type,
@@ -90,6 +111,7 @@ function formatLlmLogRow(row: LlmLogRow): Record<string, unknown> {
     agentAlias: row.agent_alias,
     metadata,
     usageMetrics: row.usage_metrics ? (() => { try { return JSON.parse(row.usage_metrics); } catch { return null; } })() : null,
+    usageMetricRecords: formattedRecords,
   };
 }
 
@@ -159,11 +181,29 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         applyLlmLogFilters(countQuery, filters).first() as unknown as Promise<CountRow | undefined>
       ]);
 
+      // Fetch structured usage metric records for all returned logs
+      const logIds = logs.map(l => l.log_id);
+      let metricRecordsByLogId: Record<number, UsageMetricRecordRow[]> = {};
+      if (logIds.length > 0) {
+        try {
+          const allRecords = await db('usage_metric_records')
+            .whereIn('llm_log_id', logIds)
+            .select('*') as UsageMetricRecordRow[];
+          for (const rec of allRecords) {
+            const lid = rec.llm_log_id;
+            if (!metricRecordsByLogId[lid]) metricRecordsByLogId[lid] = [];
+            metricRecordsByLogId[lid].push(rec);
+          }
+        } catch {
+          // Table may not exist yet if migration hasn't run
+        }
+      }
+
       const total = Number(countResult?.count || 0);
       const totalPages = Math.ceil(total / limit);
 
       res.json({
-        logs: logs.map(formatLlmLogRow),
+        logs: logs.map(row => formatLlmLogRow(row, metricRecordsByLogId[row.log_id])),
         pagination: {
           page,
           limit,
