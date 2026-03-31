@@ -88,6 +88,12 @@ export function useSettingsState() {
 
   const [isReindexing, setIsReindexing] = useState(false);
 
+  // Agent Tank state
+  const [agentTankSettings, setAgentTankSettings] = useState<{ enabled: boolean; url: string }>({
+    enabled: false,
+    url: 'http://localhost:3456'
+  });
+
   // Load all data with Promise.all
   useEffect(() => {
     const loadData = async () => {
@@ -386,6 +392,11 @@ export function useSettingsState() {
     performAutoSave({ settings: newSettings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords });
   }, [settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords, performAutoSave]);
 
+  // Handle Agent Tank settings changes
+  const handleAgentTankChange = useCallback((newSettings: { enabled: boolean; url: string }) => {
+    setAgentTankSettings(newSettings);
+  }, []);
+
   // Handle manual reindex trigger
   const handleReindexAll = useCallback(async () => {
     setIsReindexing(true);
@@ -425,6 +436,7 @@ export function useSettingsState() {
     agents,
     summarizationSettings,
     isReindexing,
+    agentTankSettings,
     // Setters
     setSettings,
     setPrLabel,
@@ -446,6 +458,7 @@ export function useSettingsState() {
     handleSummarizationChange,
     handleSummarizationModelChange,
     handleDefaultAgentChange,
-    handleReindexAll
+    handleReindexAll,
+    handleAgentTankChange
   };
 }
