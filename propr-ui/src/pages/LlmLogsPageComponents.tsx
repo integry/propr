@@ -31,7 +31,7 @@ export const ExpandButton: React.FC<{
 export const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
   return (
     <tr className="bg-gray-50">
-      <td colSpan={9} className="px-4 py-4">
+      <td colSpan={8} className="px-4 py-4">
         <div className="grid grid-cols-2 gap-4 text-sm">
           {/* IDs Section */}
           <div className="space-y-2">
