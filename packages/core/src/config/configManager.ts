@@ -372,6 +372,40 @@ export async function migrateAgentConfigs(): Promise<boolean> {
     }
 }
 
+// --- Agent Tank Settings ---
+
+/**
+ * Settings for Agent Tank integration (LLM usage monitoring).
+ */
+export interface AgentTankSettings {
+    enabled: boolean;
+    url: string;
+}
+
+const DEFAULT_AGENT_TANK_SETTINGS: AgentTankSettings = {
+    enabled: false,
+    url: 'http://localhost:3456'
+};
+
+/**
+ * Loads Agent Tank settings from the database.
+ * Defaults to disabled with url http://localhost:3456.
+ */
+export async function loadAgentTankSettings(): Promise<AgentTankSettings> {
+    const settings = await getConfig<AgentTankSettings>('agent_tank', DEFAULT_AGENT_TANK_SETTINGS);
+    logger.info({ agentTank: settings }, 'Successfully loaded Agent Tank settings');
+    return settings;
+}
+
+/**
+ * Saves Agent Tank settings to the database.
+ */
+export async function saveAgentTankSettings(settings: AgentTankSettings): Promise<boolean> {
+    await saveConfig('agent_tank', settings);
+    logger.info({ agentTank: settings }, 'Successfully saved Agent Tank settings');
+    return true;
+}
+
 // --- Auto Resolve Merge Conflicts ---
 
 /**
