@@ -436,6 +436,9 @@ export async function buildMetricsSection(
     return section;
 }
 
+export { buildCompletionComment } from './prCompletionComment.js';
+export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
+
 /**
  * Converts AgentExecutionResult to ClaudeCodeResponse for backwards compatibility
  * with existing post-processing code.
