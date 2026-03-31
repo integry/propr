@@ -31,6 +31,7 @@ export interface LlmLogEntry {
   repository?: string;
   agentAlias?: string;
   metadata?: Record<string, unknown>;
+  usageMetrics?: Record<string, unknown>;
 }
 
 /**
@@ -107,6 +108,7 @@ export async function persistLlmLog(entry: LlmLogEntry): Promise<number | null> 
       repository: entry.repository ?? null,
       agent_alias: entry.agentAlias ?? null,
       metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
+      usage_metrics: entry.usageMetrics ? JSON.stringify(entry.usageMetrics) : null,
     }).returning('log_id');
 
     const logId = typeof inserted === 'object' ? (inserted as { log_id: number }).log_id : inserted;
@@ -156,6 +158,7 @@ export function createLlmLogFromAnalysis(params: {
   repository?: string;
   agentAlias?: string;
   metadata?: Record<string, unknown>;
+  usageMetrics?: Record<string, unknown>;
 }): LlmLogEntry {
   const now = new Date();
   const startTime = new Date(now.getTime() - params.executionTimeMs);
@@ -179,5 +182,6 @@ export function createLlmLogFromAnalysis(params: {
     repository: params.repository,
     agentAlias: params.agentAlias,
     metadata: params.metadata,
+    usageMetrics: params.usageMetrics,
   };
 }
