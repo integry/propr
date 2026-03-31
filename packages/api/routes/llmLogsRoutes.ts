@@ -115,6 +115,29 @@ function formatLlmLogRow(
   };
 }
 
+async function fetchMetricRecordsByLogId(
+  db: Knex,
+  logIds: number[],
+): Promise<Record<number, UsageMetricRecordRow[]>> {
+  const result: Record<number, UsageMetricRecordRow[]> = {};
+  if (logIds.length === 0) return result;
+
+  try {
+    const allRecords = await db('usage_metric_records')
+      .whereIn('llm_log_id', logIds)
+      .select('*') as UsageMetricRecordRow[];
+    for (const rec of allRecords) {
+      const lid = rec.llm_log_id;
+      if (!result[lid]) result[lid] = [];
+      result[lid].push(rec);
+    }
+  } catch {
+    // Table may not exist yet if migration hasn't run
+  }
+
+  return result;
+}
+
 export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
   const { db } = deps;
 
@@ -183,21 +206,7 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
 
       // Fetch structured usage metric records for all returned logs
       const logIds = logs.map(l => l.log_id);
-      let metricRecordsByLogId: Record<number, UsageMetricRecordRow[]> = {};
-      if (logIds.length > 0) {
-        try {
-          const allRecords = await db('usage_metric_records')
-            .whereIn('llm_log_id', logIds)
-            .select('*') as UsageMetricRecordRow[];
-          for (const rec of allRecords) {
-            const lid = rec.llm_log_id;
-            if (!metricRecordsByLogId[lid]) metricRecordsByLogId[lid] = [];
-            metricRecordsByLogId[lid].push(rec);
-          }
-        } catch {
-          // Table may not exist yet if migration hasn't run
-        }
-      }
+      const metricRecordsByLogId = await fetchMetricRecordsByLogId(db, logIds);
 
       const total = Number(countResult?.count || 0);
       const totalPages = Math.ceil(total / limit);

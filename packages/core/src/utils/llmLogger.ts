@@ -84,6 +84,49 @@ async function calculateCost(entry: LlmLogEntry): Promise<number | undefined> {
 /**
  * Persists an LLM call log entry to the llm_logs table.
  */
+async function insertLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Promise<number | null> {
+  const [inserted] = await db!('llm_logs').insert({
+    execution_type: entry.executionType,
+    model_name: entry.modelName,
+    start_time: entry.startTime.toISOString(),
+    end_time: entry.endTime.toISOString(),
+    duration_ms: entry.durationMs,
+    success: entry.success,
+    input_tokens: entry.inputTokens ?? null,
+    output_tokens: entry.outputTokens ?? null,
+    estimated_input_tokens: entry.estimatedInputTokens ?? null,
+    cache_creation_input_tokens: entry.cacheCreationInputTokens ?? null,
+    cache_read_input_tokens: entry.cacheReadInputTokens ?? null,
+    cost_usd: costUsd ?? null,
+    error_message: entry.errorMessage ?? null,
+    session_id: entry.sessionId ?? null,
+    correlation_id: entry.correlationId ?? null,
+    draft_id: entry.draftId ?? null,
+    repository: entry.repository ?? null,
+    agent_alias: entry.agentAlias ?? null,
+    metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
+    usage_metrics: entry.usageMetrics ? JSON.stringify(entry.usageMetrics) : null,
+  }).returning('log_id');
+
+  return typeof inserted === 'object' ? (inserted as { log_id: number }).log_id : inserted;
+}
+
+async function persistUsageMetricRecords(logId: number, records: UsageMetricRecordEntry[]): Promise<void> {
+  try {
+    const rows = records.map(r => ({
+      llm_log_id: logId,
+      agent_name: r.agent,
+      metric_key: r.metricKey,
+      metric_value: r.metricValue,
+    }));
+    await db!('usage_metric_records').insert(rows);
+    logger.debug({ logId, recordCount: rows.length }, 'Usage metric records persisted');
+  } catch (recordError) {
+    const recErr = recordError as Error;
+    logger.error({ error: recErr.message, logId }, 'Failed to persist usage metric records');
+  }
+}
+
 export async function persistLlmLog(entry: LlmLogEntry): Promise<number | null> {
   if (!db) {
     logger.warn('Database not available, cannot persist LLM log');
@@ -91,52 +134,11 @@ export async function persistLlmLog(entry: LlmLogEntry): Promise<number | null> 
   }
 
   try {
-    // Calculate cost if not provided and we have any token usage
-    let costUsd = entry.costUsd;
-    if (costUsd === undefined) {
-      costUsd = await calculateCost(entry);
-    }
+    const costUsd = entry.costUsd ?? await calculateCost(entry);
+    const logId = await insertLlmLogRow(entry, costUsd);
 
-    const [inserted] = await db('llm_logs').insert({
-      execution_type: entry.executionType,
-      model_name: entry.modelName,
-      start_time: entry.startTime.toISOString(),
-      end_time: entry.endTime.toISOString(),
-      duration_ms: entry.durationMs,
-      success: entry.success,
-      input_tokens: entry.inputTokens ?? null,
-      output_tokens: entry.outputTokens ?? null,
-      estimated_input_tokens: entry.estimatedInputTokens ?? null,
-      cache_creation_input_tokens: entry.cacheCreationInputTokens ?? null,
-      cache_read_input_tokens: entry.cacheReadInputTokens ?? null,
-      cost_usd: costUsd ?? null,
-      error_message: entry.errorMessage ?? null,
-      session_id: entry.sessionId ?? null,
-      correlation_id: entry.correlationId ?? null,
-      draft_id: entry.draftId ?? null,
-      repository: entry.repository ?? null,
-      agent_alias: entry.agentAlias ?? null,
-      metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
-      usage_metrics: entry.usageMetrics ? JSON.stringify(entry.usageMetrics) : null,
-    }).returning('log_id');
-
-    const logId = typeof inserted === 'object' ? (inserted as { log_id: number }).log_id : inserted;
-
-    // Persist structured usage metric records if present
     if (logId && entry.usageMetricRecords && entry.usageMetricRecords.length > 0) {
-      try {
-        const rows = entry.usageMetricRecords.map(r => ({
-          llm_log_id: logId,
-          agent_name: r.agent,
-          metric_key: r.metricKey,
-          metric_value: r.metricValue,
-        }));
-        await db('usage_metric_records').insert(rows);
-        logger.debug({ logId, recordCount: rows.length }, 'Usage metric records persisted');
-      } catch (recordError) {
-        const recErr = recordError as Error;
-        logger.error({ error: recErr.message, logId }, 'Failed to persist usage metric records');
-      }
+      await persistUsageMetricRecords(logId, entry.usageMetricRecords);
     }
 
     logger.debug({

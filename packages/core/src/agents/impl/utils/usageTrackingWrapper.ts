@@ -135,23 +135,32 @@ export function extractMetricRecords(
 
         // Array (Gemini models array)
         if (Array.isArray(value)) {
-            for (const item of value) {
-                if (item && typeof item === 'object') {
-                    const entry = item as Record<string, unknown>;
-                    const modelName = typeof entry.model === 'string' ? entry.model : key;
-                    const percentValue =
-                        typeof entry.percentUsed === 'number' ? entry.percentUsed :
-                        typeof entry.percent === 'number' ? entry.percent :
-                        null;
-                    if (percentValue !== null) {
-                        records.push({ agent, metricKey: modelName, metricValue: percentValue });
-                    }
-                }
-            }
+            extractArrayMetricRecords(agent, key, value, records);
         }
     }
 
     return records;
+}
+
+function extractArrayMetricRecords(
+    agent: string,
+    key: string,
+    value: unknown[],
+    records: UsageMetricRecord[],
+): void {
+    for (const item of value) {
+        if (item && typeof item === 'object') {
+            const entry = item as Record<string, unknown>;
+            const modelName = typeof entry.model === 'string' ? entry.model : key;
+            const percentValue =
+                typeof entry.percentUsed === 'number' ? entry.percentUsed :
+                typeof entry.percent === 'number' ? entry.percent :
+                null;
+            if (percentValue !== null) {
+                records.push({ agent, metricKey: modelName, metricValue: percentValue });
+            }
+        }
+    }
 }
 
 /**
