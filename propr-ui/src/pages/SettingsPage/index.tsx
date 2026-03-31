@@ -5,6 +5,7 @@ import AIModelSelectionSection from './AIModelSelectionSection';
 import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
 import KnowledgeBaseSection from './KnowledgeBaseSection';
+import AgentTankSection from './AgentTankSection';
 import { useSettingsState } from './useSettingsState';
 import { API_BASE_URL } from '../../api/proprApi';
 
@@ -28,6 +29,7 @@ const SettingsPage: React.FC = () => {
     agents,
     summarizationSettings,
     isReindexing,
+    agentTankSettings,
     setSettings,
     setPrLabel,
     setNewWhitelistItem,
@@ -47,7 +49,8 @@ const SettingsPage: React.FC = () => {
     handleSummarizationChange,
     handleSummarizationModelChange,
     handleDefaultAgentChange,
-    handleReindexAll
+    handleReindexAll,
+    handleAgentTankChange
   } = useSettingsState();
 
   if (loading) {
@@ -91,6 +94,12 @@ const SettingsPage: React.FC = () => {
               onSettingsChange={handleSummarizationChange}
               onReindexAll={handleReindexAll}
               isReindexing={isReindexing}
+            />
+
+            <AgentTankSection
+              settings={agentTankSettings}
+              onChange={handleAgentTankChange}
+              onBlur={triggerAutoSave}
             />
           </div>
         </div>
