@@ -26,6 +26,7 @@ interface LlmLogRow {
   repository: string | null;
   agent_alias: string | null;
   metadata: string | null;
+  usage_metrics: string | null;
 }
 
 interface CountRow {
@@ -88,6 +89,7 @@ function formatLlmLogRow(row: LlmLogRow): Record<string, unknown> {
     repository: row.repository,
     agentAlias: row.agent_alias,
     metadata,
+    usageMetrics: row.usage_metrics ? (() => { try { return JSON.parse(row.usage_metrics); } catch { return null; } })() : null,
   };
 }
 
@@ -144,7 +146,7 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         'duration_ms', 'success', 'input_tokens', 'output_tokens',
         'cache_creation_input_tokens', 'cache_read_input_tokens', 'cost_usd',
         'error_message', 'session_id', 'correlation_id', 'draft_id',
-        'repository', 'agent_alias', 'metadata'
+        'repository', 'agent_alias', 'metadata', 'usage_metrics'
       );
 
       const countQuery = db('llm_logs').count('* as count');

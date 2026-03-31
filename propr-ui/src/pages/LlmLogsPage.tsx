@@ -2,11 +2,9 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getLlmLogs, LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
-import { ChevronLeft, ChevronRight, Filter, Clock, Coins, Cpu, Zap, Info } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Filter, Clock, Cpu, Zap, Info } from 'lucide-react';
 import {
   formatDuration,
-  formatCost,
-  formatTokens,
   formatTimestamp,
   formatType,
   getContextDisplay,
@@ -17,6 +15,8 @@ import {
   ExpandButton,
   ExpandedRowDetails,
 } from './LlmLogsPageComponents';
+import { UsageBadge } from '../components/ui/UsageBadge';
+import type { UsageMetrics } from '@propr/shared';
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -247,16 +247,10 @@ const LlmLogsPage: React.FC = () => {
                     <th className="hidden md:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Model
                     </th>
-                    <th className="hidden sm:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <Zap size={14} />
-                        Tokens
-                      </div>
-                    </th>
                     <th className="px-2 sm:px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <div className="flex items-center gap-1">
-                        <Coins size={14} />
-                        Cost
+                        <Zap size={14} />
+                        Usage
                       </div>
                     </th>
                     <th className="hidden md:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -306,11 +300,12 @@ const LlmLogsPage: React.FC = () => {
                         <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
                           {log.modelName || '-'}
                         </td>
-                        <td className="hidden sm:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                          {formatTokens(log.inputTokens, log.outputTokens, log.cacheCreationInputTokens, log.cacheReadInputTokens)}
-                        </td>
-                        <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap text-xs sm:text-sm text-gray-700 font-mono">
-                          {formatCost(log.costUsd)}
+                        <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">
+                          <UsageBadge
+                            tokens={(log.inputTokens || 0) + (log.outputTokens || 0)}
+                            cost={log.costUsd ?? undefined}
+                            usageMetrics={log.usageMetrics as UsageMetrics | undefined}
+                          />
                         </td>
                         <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700">
                           {formatDuration(log.durationMs)}

@@ -20,6 +20,7 @@ export interface LlmLogEntry {
   repository: string | null;
   agentAlias: string | null;
   metadata: Record<string, unknown> | null;
+  usageMetrics: Record<string, unknown> | null;
 }
 
 export interface LlmLogsPagination {
