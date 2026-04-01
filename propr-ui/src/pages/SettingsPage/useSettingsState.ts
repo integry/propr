@@ -30,21 +30,52 @@ const PROMPT_DEBOUNCE_DELAY = 800;
 const SAVE_WAIT_TIMEOUT = 5000;
 
 // Helper function to determine default agent alias
-function resolveDefaultAgentAlias(
-  savedAlias: string | undefined,
-  enabledAgents: AgentConfig[]
-): string {
-  if (savedAlias) {
-    return savedAlias;
-  }
-  if (enabledAgents.length === 0) {
-    return '';
-  }
-  // Prefer Claude agent if available
+function resolveDefaultAgentAlias(savedAlias: string | undefined, enabledAgents: AgentConfig[]): string {
+  if (savedAlias) return savedAlias;
+  if (enabledAgents.length === 0) return '';
   const claudeAgent = enabledAgents.find((a: AgentConfig) =>
     a.alias.toLowerCase() === 'claude' || a.alias.toLowerCase().includes('claude')
   );
   return claudeAgent ? claudeAgent.alias : enabledAgents[0].alias;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseLoadedData(results: any[]) {
+  const [sData, kData, ignoreData, pLabelData, pLabelsData, aData, sumData, atData] = results;
+  const settingsData = sData as {
+    worker_concurrency?: string; analysis_model_fast?: string;
+    planner_context_model?: string; planner_generation_model?: string;
+    default_agent_alias?: string; github_user_whitelist?: string[];
+    auto_followup_score_threshold?: number; auto_resolve_merge_conflicts?: boolean;
+  };
+  const agentsList = (aData as { agents?: AgentConfig[] }).agents || [];
+  const enabledAgents = agentsList.filter((a: AgentConfig) => a.enabled);
+  const whitelistRaw = settingsData.github_user_whitelist || [];
+  const summarizationData = sumData as SummarizationSettings;
+  return {
+    settings: {
+      worker_concurrency: settingsData.worker_concurrency || '',
+      analysis_model_fast: settingsData.analysis_model_fast || '',
+      planner_context_model: settingsData.planner_context_model || '',
+      planner_generation_model: settingsData.planner_generation_model || '',
+      default_agent_alias: resolveDefaultAgentAlias(settingsData.default_agent_alias, enabledAgents),
+      auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4,
+      auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false,
+    },
+    whitelist: Array.isArray(whitelistRaw) ? whitelistRaw : [],
+    keywords: (kData as { followup_keywords?: string[] }).followup_keywords || [],
+    ignoreKeywords: (ignoreData as { followup_ignore_keywords?: string[] }).followup_ignore_keywords || [],
+    prLabel: (pLabelData as { pr_label?: string }).pr_label || 'propr',
+    primaryLabels: (pLabelsData as { primary_processing_labels?: string[] }).primary_processing_labels || ['AI'],
+    agents: agentsList,
+    summarizationSettings: {
+      enabled: summarizationData.enabled || false,
+      agent_alias: summarizationData.agent_alias || '',
+      custom_prompt: summarizationData.custom_prompt,
+      default_prompt: summarizationData.default_prompt,
+    },
+    agentTankSettings: { enabled: atData.enabled || false, url: atData.url || 'http://0.0.0.0:3456' },
+  };
 }
 
 export function useSettingsState() {
@@ -106,77 +137,23 @@ export function useSettingsState() {
     const loadData = async () => {
       setLoading(true);
       try {
-        const [sData, kData, ignoreData, pLabelData, pLabelsData, aData, sumData, atData] = await Promise.all([
-          getSettings(),
-          getFollowupKeywords(),
-          getFollowupIgnoreKeywords(),
-          getPrLabel(),
-          getPrimaryProcessingLabels(),
-          getAgents(),
+        const results = await Promise.all([
+          getSettings(), getFollowupKeywords(), getFollowupIgnoreKeywords(),
+          getPrLabel(), getPrimaryProcessingLabels(), getAgents(),
           getSummarizationSettings(),
           getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }))
         ]);
-
-        // Type assertions for API responses
-        const settingsData = sData as {
-          worker_concurrency?: string;
-          analysis_model_fast?: string;
-          planner_context_model?: string;
-          planner_generation_model?: string;
-          default_agent_alias?: string;
-          github_user_whitelist?: string[];
-          auto_followup_score_threshold?: number;
-          auto_resolve_merge_conflicts?: boolean;
-        };
-        const keywordsData = kData as { followup_keywords?: string[] };
-        const ignoreKeywordsData = ignoreData as { followup_ignore_keywords?: string[] };
-        const prLabelDataTyped = pLabelData as { pr_label?: string };
-        const primaryLabelsData = pLabelsData as { primary_processing_labels?: string[] };
-        const agentsData = aData as { agents?: AgentConfig[] };
-        const summarizationData = sumData as SummarizationSettings;
-
-        // Parse Settings
-        const agentsList = agentsData.agents || [];
-        const enabledAgents = agentsList.filter((a: AgentConfig) => a.enabled);
-        const defaultAgentAlias = resolveDefaultAgentAlias(
-          settingsData.default_agent_alias,
-          enabledAgents
-        );
-
-        setSettings({
-          worker_concurrency: settingsData.worker_concurrency || '',
-          analysis_model_fast: settingsData.analysis_model_fast || '',
-          planner_context_model: settingsData.planner_context_model || '',
-          planner_generation_model: settingsData.planner_generation_model || '',
-          default_agent_alias: defaultAgentAlias,
-          auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4,
-          auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false
-        });
-
-        // Parse Whitelist
-        const whitelistRaw = settingsData.github_user_whitelist || [];
-        setWhitelist(Array.isArray(whitelistRaw) ? whitelistRaw : []);
-
-        setKeywords(keywordsData.followup_keywords || []);
-        setIgnoreKeywords(ignoreKeywordsData.followup_ignore_keywords || []);
-        setPrLabel(prLabelDataTyped.pr_label || 'propr');
-        setPrimaryLabels(primaryLabelsData.primary_processing_labels || ['AI']);
-        setAgents(agentsData.agents || []);
-        setSummarizationSettings({
-          enabled: summarizationData.enabled || false,
-          agent_alias: summarizationData.agent_alias || '',
-          custom_prompt: summarizationData.custom_prompt,
-          default_prompt: summarizationData.default_prompt
-        });
-
-        // Parse Agent Tank settings
-        setAgentTankSettings({
-          enabled: atData.enabled || false,
-          url: atData.url || 'http://0.0.0.0:3456'
-        });
-
-        // Check Agent Tank availability if enabled
-        if (atData.enabled) {
+        const parsed = parseLoadedData(results);
+        setSettings(parsed.settings);
+        setWhitelist(parsed.whitelist);
+        setKeywords(parsed.keywords);
+        setIgnoreKeywords(parsed.ignoreKeywords);
+        setPrLabel(parsed.prLabel);
+        setPrimaryLabels(parsed.primaryLabels);
+        setAgents(parsed.agents);
+        setSummarizationSettings(parsed.summarizationSettings);
+        setAgentTankSettings(parsed.agentTankSettings);
+        if (parsed.agentTankSettings.enabled) {
           setAgentTankCheckingStatus(true);
           getAgentTankStatus()
             .then(status => setAgentTankAvailable(status.available))
@@ -253,8 +230,6 @@ export function useSettingsState() {
       ]);
 
       setSaveStatus('saved');
-
-      // Clear "Saved" status after 3s
       saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err) {
       setSaveStatus('error');
