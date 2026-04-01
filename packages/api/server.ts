@@ -219,6 +219,10 @@ function setupRoutes(): void {
   app.post('/api/config/repos/stop-indexing', configRoutes.stopIndexing);
   app.post('/api/config/summarization/reindex-all', configRoutes.triggerReindexAll);
 
+  app.get('/api/config/agent-tank', configRoutes.getAgentTankSettings);
+  app.post('/api/config/agent-tank', configRoutes.postAgentTankSettings);
+  app.get('/api/config/agent-tank/status', configRoutes.getAgentTankStatus);
+
   app.get('/api/queue/stats', queueRoutes.getQueueStats);
   app.get('/api/activity', queueRoutes.getActivity);
   app.get('/api/metrics', queueRoutes.getMetrics);

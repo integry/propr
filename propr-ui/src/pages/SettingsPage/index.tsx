@@ -30,6 +30,8 @@ const SettingsPage: React.FC = () => {
     summarizationSettings,
     isReindexing,
     agentTankSettings,
+    agentTankAvailable,
+    agentTankCheckingStatus,
     setSettings,
     setPrLabel,
     setNewWhitelistItem,
@@ -100,6 +102,8 @@ const SettingsPage: React.FC = () => {
               settings={agentTankSettings}
               onChange={handleAgentTankChange}
               onBlur={triggerAutoSave}
+              isAvailable={agentTankAvailable}
+              isCheckingStatus={agentTankCheckingStatus}
             />
           </div>
         </div>

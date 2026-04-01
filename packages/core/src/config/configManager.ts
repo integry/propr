@@ -384,12 +384,12 @@ export interface AgentTankSettings {
 
 const DEFAULT_AGENT_TANK_SETTINGS: AgentTankSettings = {
     enabled: false,
-    url: 'http://localhost:3456'
+    url: 'http://0.0.0.0:3456'
 };
 
 /**
  * Loads Agent Tank settings from the database.
- * Defaults to disabled with url http://localhost:3456.
+ * Defaults to disabled with url http://0.0.0.0:3456.
  */
 export async function loadAgentTankSettings(): Promise<AgentTankSettings> {
     const settings = await getConfig<AgentTankSettings>('agent_tank', DEFAULT_AGENT_TANK_SETTINGS);

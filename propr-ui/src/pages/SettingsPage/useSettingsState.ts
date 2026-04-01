@@ -17,6 +17,11 @@ import {
   AgentConfig,
   SummarizationSettings
 } from '../../api/proprApi';
+import {
+  getAgentTankSettings,
+  updateAgentTankSettings,
+  getAgentTankStatus
+} from '../../api/revertApi';
 import { Settings } from './types';
 
 // Debounce delay for prompt changes (in milliseconds)
@@ -91,22 +96,25 @@ export function useSettingsState() {
   // Agent Tank state
   const [agentTankSettings, setAgentTankSettings] = useState<{ enabled: boolean; url: string }>({
     enabled: false,
-    url: 'http://localhost:3456'
+    url: 'http://0.0.0.0:3456'
   });
+  const [agentTankAvailable, setAgentTankAvailable] = useState<boolean | null>(null);
+  const [agentTankCheckingStatus, setAgentTankCheckingStatus] = useState(false);
 
   // Load all data with Promise.all
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
       try {
-        const [sData, kData, ignoreData, pLabelData, pLabelsData, aData, sumData] = await Promise.all([
+        const [sData, kData, ignoreData, pLabelData, pLabelsData, aData, sumData, atData] = await Promise.all([
           getSettings(),
           getFollowupKeywords(),
           getFollowupIgnoreKeywords(),
           getPrLabel(),
           getPrimaryProcessingLabels(),
           getAgents(),
-          getSummarizationSettings()
+          getSummarizationSettings(),
+          getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }))
         ]);
 
         // Type assertions for API responses
@@ -160,6 +168,21 @@ export function useSettingsState() {
           custom_prompt: summarizationData.custom_prompt,
           default_prompt: summarizationData.default_prompt
         });
+
+        // Parse Agent Tank settings
+        setAgentTankSettings({
+          enabled: atData.enabled || false,
+          url: atData.url || 'http://0.0.0.0:3456'
+        });
+
+        // Check Agent Tank availability if enabled
+        if (atData.enabled) {
+          setAgentTankCheckingStatus(true);
+          getAgentTankStatus()
+            .then(status => setAgentTankAvailable(status.available))
+            .catch(() => setAgentTankAvailable(false))
+            .finally(() => setAgentTankCheckingStatus(false));
+        }
       } catch (err) {
         setGlobalError((err as Error).message || 'Failed to load settings');
       } finally {
@@ -395,6 +418,26 @@ export function useSettingsState() {
   // Handle Agent Tank settings changes
   const handleAgentTankChange = useCallback((newSettings: { enabled: boolean; url: string }) => {
     setAgentTankSettings(newSettings);
+    setAgentTankAvailable(null);
+
+    // Save to backend
+    updateAgentTankSettings(newSettings).catch(err => {
+      console.error('Failed to save Agent Tank settings:', err);
+    });
+
+    // Check status if enabled
+    if (newSettings.enabled) {
+      setAgentTankCheckingStatus(true);
+      // Small delay to let settings propagate
+      setTimeout(() => {
+        getAgentTankStatus()
+          .then(status => setAgentTankAvailable(status.available))
+          .catch(() => setAgentTankAvailable(false))
+          .finally(() => setAgentTankCheckingStatus(false));
+      }, 500);
+    } else {
+      setAgentTankCheckingStatus(false);
+    }
   }, []);
 
   // Handle manual reindex trigger
@@ -437,6 +480,8 @@ export function useSettingsState() {
     summarizationSettings,
     isReindexing,
     agentTankSettings,
+    agentTankAvailable,
+    agentTankCheckingStatus,
     // Setters
     setSettings,
     setPrLabel,

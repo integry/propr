@@ -1,6 +1,6 @@
 import logger from '../utils/logger.js';
 
-const AGENT_TANK_BASE_URL = process.env.AGENT_TANK_URL || 'http://localhost:3456';
+const AGENT_TANK_BASE_URL = process.env.AGENT_TANK_URL || 'http://0.0.0.0:3456';
 const DEFAULT_TIMEOUT_MS = 5000;
 
 /**
@@ -8,7 +8,7 @@ const DEFAULT_TIMEOUT_MS = 5000;
  *
  * Example call:
  *   const status = await getStatus('claude');
- *   // GET http://localhost:3456/status/claude
+ *   // GET http://0.0.0.0:3456/status/claude
  *   // => { "name": "claude", "usage": { "session": { "percent": 42, ... }, ... }, ... }
  */
 export interface AgentStatusResponse {

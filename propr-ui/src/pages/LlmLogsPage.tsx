@@ -2,7 +2,8 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getLlmLogs, LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
-import { ChevronLeft, ChevronRight, Filter, Clock, Cpu, Zap, Info } from 'lucide-react';
+import { getAgentTankStatus } from '../api/revertApi';
+import { ChevronLeft, ChevronRight, Filter, Clock, Cpu, Zap, Info, X } from 'lucide-react';
 import {
   formatDuration,
   formatTimestamp,
@@ -16,6 +17,8 @@ import {
   ExpandedRowDetails,
 } from './LlmLogsPageComponents';
 import { UsageBadge } from '../components/ui/UsageBadge';
+
+const DISMISSED_AGENT_TANK_SUGGESTION_KEY = 'dismissed_agent_tank_suggestion';
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -34,6 +37,29 @@ const LlmLogsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+
+  // Agent Tank suggestion state
+  const [showAgentTankSuggestion, setShowAgentTankSuggestion] = useState(false);
+
+  useEffect(() => {
+    const dismissed = localStorage.getItem(DISMISSED_AGENT_TANK_SUGGESTION_KEY);
+    if (dismissed === 'true') return;
+    getAgentTankStatus()
+      .then(status => {
+        if (!status.available) {
+          setShowAgentTankSuggestion(true);
+        }
+      })
+      .catch(() => {
+        // If we can't check status, show the suggestion
+        setShowAgentTankSuggestion(true);
+      });
+  }, []);
+
+  const dismissAgentTankSuggestion = useCallback(() => {
+    setShowAgentTankSuggestion(false);
+    localStorage.setItem(DISMISSED_AGENT_TANK_SUGGESTION_KEY, 'true');
+  }, []);
 
   // Extract unique values for filters
   const [availableTypes, setAvailableTypes] = useState<string[]>([]);
@@ -215,6 +241,36 @@ const LlmLogsPage: React.FC = () => {
 
       {/* Scrollable Content Area */}
       <div className="flex-1 overflow-auto">
+        {/* Agent Tank Suggestion Banner */}
+        {showAgentTankSuggestion && (
+          <div className="mx-4 sm:mx-6 mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
+            <Zap size={16} className="text-amber-500 mt-0.5 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-amber-800">Track your LLM usage limits</p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Install{' '}
+                <a
+                  href="https://agenttank.io"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline font-medium hover:text-amber-900"
+                >
+                  Agent Tank
+                </a>{' '}
+                to monitor active session and rate limit usage for Claude, Gemini, and Codex CLI tools.
+                Enable it in Settings to see usage deltas per LLM call.
+              </p>
+            </div>
+            <button
+              onClick={dismissAgentTankSuggestion}
+              className="p-1 hover:bg-amber-100 rounded transition-colors flex-shrink-0"
+              title="Dismiss"
+            >
+              <X className="w-3.5 h-3.5 text-amber-400 hover:text-amber-600" />
+            </button>
+          </div>
+        )}
+
         {logs.length === 0 ? (
           <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
             <div className="mb-4">
