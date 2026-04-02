@@ -43,8 +43,7 @@
 
 import logger from '../../../utils/logger.js';
 import { refreshAgent, getStatus, calculateDelta, type AgentStatusResponse } from '../../../services/agentTankService.js';
-
-const AGENT_TANK_URL = process.env.AGENT_TANK_URL || '';
+import { loadAgentTankSettings } from '../../../config/configManager.js';
 
 /** Result returned by {@link executeWithUsageTracking}. */
 export interface UsageTrackingResult<T> {
@@ -88,11 +87,19 @@ export interface UsageTrackingMetrics {
 /**
  * Returns true when Agent Tank tracking is enabled.
  *
- * Tracking is disabled when AGENT_TANK_URL is unset, empty, or "false".
+ * Checks the database settings for the Agent Tank configuration.
+ * Tracking is disabled when enabled is false or url is empty/invalid.
  */
-export function isAgentTankEnabled(): boolean {
-    const url = AGENT_TANK_URL;
-    return url !== '' && url !== 'false' && url !== '0';
+export async function isAgentTankEnabled(): Promise<boolean> {
+    try {
+        const settings = await loadAgentTankSettings();
+        const enabled = settings.enabled && !!settings.url && settings.url !== 'false' && settings.url !== '0';
+        logger.info({ enabled, settings }, 'Agent Tank enabled check');
+        return enabled;
+    } catch (err) {
+        logger.warn({ error: (err as Error).message }, 'Failed to load Agent Tank settings, assuming disabled');
+        return false;
+    }
 }
 
 /**
@@ -199,7 +206,7 @@ export async function executeWithUsageTracking<T>(
     executeFn: () => Promise<T>,
     timeoutMs?: number,
 ): Promise<UsageTrackingResult<T>> {
-    if (!isAgentTankEnabled()) {
+    if (!(await isAgentTankEnabled())) {
         logger.debug({ agent }, 'Agent Tank disabled — skipping usage tracking');
         const result = await executeFn();
         return { result, usageMetrics: null };

@@ -1,5 +1,5 @@
 import React from 'react';
-import { TaskInfo, HistoryItem, TokenUsage } from './types';
+import { TaskInfo, HistoryItem, TokenUsage, UsageMetricRecord } from './types';
 import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit, Trash2, Zap, MessageSquarePlus } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { ProviderLogo } from '../ui/ProviderLogo';
@@ -64,6 +64,42 @@ const TokenUsageDisplay: React.FC<{ tokenUsage: TokenUsage | undefined }> = ({ t
       >
         <Zap size={12} />
         In: {formatTokenCount(inputTokens)} | Out: {formatTokenCount(outputTokens)}
+      </span>
+    </>
+  );
+};
+
+// Usage metrics display component (Agent Tank tracking)
+const UsageMetricsDisplay: React.FC<{ usageMetricRecords: UsageMetricRecord[] | undefined }> = ({ usageMetricRecords }) => {
+  if (!usageMetricRecords || usageMetricRecords.length === 0) return null;
+
+  // Find the session usage (most relevant for current task)
+  const sessionRecord = usageMetricRecords.find(r => r.metricKey === 'session');
+  const weeklyRecord = usageMetricRecords.find(r => r.metricKey === 'weeklyAll');
+
+  if (!sessionRecord && !weeklyRecord) return null;
+
+  const sessionPct = sessionRecord?.metricValue ?? 0;
+  const weeklyPct = weeklyRecord?.metricValue ?? 0;
+
+  // Build tooltip with all metrics
+  const tooltip = usageMetricRecords
+    .map(r => `${r.metricKey}: ${r.metricValue.toFixed(1)}%`)
+    .join(' | ');
+
+  return (
+    <>
+      <Divider />
+      <span
+        className="flex items-center gap-1.5 bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-xs font-medium border border-blue-100 cursor-default"
+        title={`Usage consumed: ${tooltip}`}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 20v-6M6 20V10M18 20V4" />
+        </svg>
+        {sessionPct > 0 ? `${sessionPct.toFixed(1)}% session` : ''}
+        {sessionPct > 0 && weeklyPct > 0 ? ' · ' : ''}
+        {weeklyPct > 0 ? `${weeklyPct.toFixed(1)}% weekly` : ''}
       </span>
     </>
   );
@@ -310,6 +346,7 @@ interface MetadataBarProps {
   deletingTask?: boolean;
   onDeleteTask?: () => void;
   tokenUsage?: TokenUsage;
+  usageMetricRecords?: UsageMetricRecord[];
   onFollowUp?: () => void;
 }
 
@@ -330,6 +367,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   deletingTask = false,
   onDeleteTask,
   tokenUsage,
+  usageMetricRecords,
   onFollowUp
 }) => {
   const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
@@ -364,6 +402,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
         <CommitInfoLink commitInfo={commitInfo} />
         <DurationDisplay duration={duration} />
         <TokenUsageDisplay tokenUsage={tokenUsage} />
+        <UsageMetricsDisplay usageMetricRecords={usageMetricRecords} />
         <StatsDisplay stats={stats} />
       </div>
 

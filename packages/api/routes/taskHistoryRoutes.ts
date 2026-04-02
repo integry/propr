@@ -52,7 +52,13 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
 
       const dbResult = await getHistoryFromDb(db, taskId);
       if (dbResult) {
-        res.json({ taskId, history: dbResult.history, taskInfo: dbResult.taskInfo });
+        res.json({
+          taskId,
+          history: dbResult.history,
+          taskInfo: dbResult.taskInfo,
+          usageMetrics: dbResult.usageMetrics,
+          usageMetricRecords: dbResult.usageMetricRecords
+        });
         return;
       }
       console.log(`Task ${taskId} not found in SQLite, falling back to Redis`);
@@ -84,7 +90,12 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
 async function getHistoryFromDb(
   db: Knex,
   taskId: string
-): Promise<{ history: Array<Record<string, unknown>>; taskInfo: Record<string, unknown> } | null> {
+): Promise<{
+  history: Array<Record<string, unknown>>;
+  taskInfo: Record<string, unknown>;
+  usageMetrics: Record<string, unknown> | null;
+  usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }>;
+} | null> {
   try {
     console.log(`Fetching task history from SQLite for taskId: ${taskId}`);
     const task = await db('tasks').where({ task_id: taskId }).first();
@@ -125,6 +136,38 @@ async function getHistoryFromDb(
       .where({ task_id: taskId })
       .orderBy('start_time', 'asc');
 
+    // Fetch usage metrics from llm_logs (Agent Tank tracking)
+    const llmLog = await db('llm_logs')
+      .where({ draft_id: taskId, execution_type: 'implementation' })
+      .orderBy('start_time', 'desc')
+      .first();
+
+    console.log(`[taskHistory] Fetching usage metrics for taskId: ${taskId}, llmLog found: ${!!llmLog}, has usage_metrics: ${!!llmLog?.usage_metrics}`);
+
+    let usageMetrics: Record<string, unknown> | null = null;
+    let usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }> = [];
+
+    if (llmLog) {
+      if (llmLog.usage_metrics) {
+        try {
+          usageMetrics = typeof llmLog.usage_metrics === 'string'
+            ? JSON.parse(llmLog.usage_metrics)
+            : llmLog.usage_metrics;
+        } catch (e) {
+          console.error('Failed to parse usage_metrics:', e);
+        }
+      }
+
+      // Fetch structured usage metric records
+      const records = await db('usage_metric_records')
+        .where({ llm_log_id: llmLog.log_id });
+      usageMetricRecords = records.map((r: Record<string, unknown>) => ({
+        agent: r.agent_name as string,
+        metricKey: r.metric_key as string,
+        metricValue: r.metric_value as number
+      }));
+    }
+
     const executionsByHistoryId = new Map<number, Record<string, unknown>>();
     const executionsBySessionId = new Map<string, Record<string, unknown>>();
     llmExecutions.forEach((exec: Record<string, unknown>) => {
@@ -139,9 +182,9 @@ async function getHistoryFromDb(
     const history = historyRecords.map((record: Record<string, unknown>) =>
       mapDbHistoryRecord(record, executionsByHistoryId, executionsBySessionId)
     );
-    
+
     console.log(`Fetched ${history.length} history records from SQLite for task ${taskId}`);
-    return { history, taskInfo };
+    return { history, taskInfo, usageMetrics, usageMetricRecords };
   } catch (error) {
     console.error('Error fetching task history from SQLite:', error);
     console.log('Falling back to Redis for task history...');

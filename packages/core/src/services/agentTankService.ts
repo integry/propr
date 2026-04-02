@@ -1,7 +1,20 @@
 import logger from '../utils/logger.js';
+import { loadAgentTankSettings } from '../config/configManager.js';
 
-const AGENT_TANK_BASE_URL = process.env.AGENT_TANK_URL || 'http://0.0.0.0:3456';
 const DEFAULT_TIMEOUT_MS = 5000;
+
+/**
+ * Get the Agent Tank base URL from database settings.
+ * Falls back to environment variable or default if settings unavailable.
+ */
+async function getAgentTankBaseUrl(): Promise<string> {
+    try {
+        const settings = await loadAgentTankSettings();
+        return settings.url || process.env.AGENT_TANK_URL || 'http://0.0.0.0:3456';
+    } catch {
+        return process.env.AGENT_TANK_URL || 'http://0.0.0.0:3456';
+    }
+}
 
 /**
  * Response shape from GET /status/:agent
@@ -32,7 +45,8 @@ export interface AgentStatusResponse {
  *   const status = await getStatus('claude');
  */
 export async function refreshAgent(agent: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<void> {
-    const url = `${AGENT_TANK_BASE_URL}/refresh/${encodeURIComponent(agent)}`;
+    const baseUrl = await getAgentTankBaseUrl();
+    const url = `${baseUrl}/refresh/${encodeURIComponent(agent)}`;
     logger.info({ url, agent }, 'Triggering Agent Tank refresh');
 
     const controller = new AbortController();
@@ -61,7 +75,8 @@ export async function refreshAgent(agent: string, timeoutMs: number = DEFAULT_TI
  *   const status = await getStatus('claude');
  */
 export async function getStatus(agent: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<AgentStatusResponse> {
-    const url = `${AGENT_TANK_BASE_URL}/status/${encodeURIComponent(agent)}`;
+    const baseUrl = await getAgentTankBaseUrl();
+    const url = `${baseUrl}/status/${encodeURIComponent(agent)}`;
     logger.info({ url, agent }, 'Fetching Agent Tank status');
 
     const controller = new AbortController();

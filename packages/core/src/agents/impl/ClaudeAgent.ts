@@ -28,7 +28,7 @@ import {
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, getDefaultModel } from '../../config/modelAliases.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
-import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog } from './utils/index.js';
+import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -52,6 +52,7 @@ interface PersistLogsParams {
     executionTime: number;
     correctedTokenUsage: TokenUsage | undefined;
     taskId?: string;
+    usageMetrics?: UsageTrackingMetrics | null;
 }
 
 /**
@@ -151,15 +152,19 @@ export class ClaudeAgent implements Agent {
                 taskId
             });
 
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: this.timeoutMs,
-                cwd: worktreePath,
-                onSessionId,
-                onContainerId,
-                worktreePath,
-                stdinData: prompt,
-                taskId
-            });
+            // Wrap execution with Agent Tank usage tracking
+            const { result, usageMetrics } = await executeWithUsageTracking(
+                'claude',
+                async () => executeDockerCommand('docker', dockerArgs, {
+                    timeout: this.timeoutMs,
+                    cwd: worktreePath,
+                    onSessionId,
+                    onContainerId,
+                    worktreePath,
+                    stdinData: prompt,
+                    taskId
+                })
+            );
 
             const executionTime = Date.now() - startTime;
 
@@ -181,7 +186,7 @@ export class ClaudeAgent implements Agent {
                 executionTime
             );
 
-            // Persist execution logs
+            // Persist execution logs with usage metrics
             await this.persistExecutionLogs({
                 result,
                 prompt,
@@ -191,7 +196,8 @@ export class ClaudeAgent implements Agent {
                 retryReason,
                 executionTime,
                 correctedTokenUsage,
-                taskId
+                taskId,
+                usageMetrics
             });
 
             // Log outcome and verify worktree
@@ -391,7 +397,8 @@ export class ClaudeAgent implements Agent {
             retryReason,
             executionTime,
             correctedTokenUsage,
-            taskId
+            taskId,
+            usageMetrics
         } = params;
 
         const claudeOutput = parseStreamJsonOutput(result);
@@ -406,7 +413,7 @@ export class ClaudeAgent implements Agent {
             retryReason
         });
 
-        // Persist LLM log for metrics tracking
+        // Persist LLM log for metrics tracking (including Agent Tank usage if available)
         await persistLlmLog(createLlmLogFromAnalysis({
             executionType: 'implementation',
             modelUsed,
@@ -422,7 +429,15 @@ export class ClaudeAgent implements Agent {
                 isRetry,
                 retryReason,
                 conversationId: claudeOutput.conversationId
-            }
+            },
+            usageMetrics: usageMetrics ? {
+                preCall: usageMetrics.preCall,
+                postCall: usageMetrics.postCall,
+                delta: usageMetrics.delta,
+                timestamp: usageMetrics.timestamp,
+                agent: usageMetrics.agent
+            } : undefined,
+            usageMetricRecords: usageMetrics?.records
         }));
     }
 }
