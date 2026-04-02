@@ -24,6 +24,7 @@ import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../utils/llmLogger.js';
 import type { ExecutionType, ConversationStep } from '../utils/llmMetrics.types.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
+import { executeWithUsageTracking, type UsageTrackingMetrics } from '../agents/impl/utils/index.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
@@ -71,6 +72,7 @@ export interface ClaudeCodeResponse {
     prompt?: string;
     error?: string;
     tokenUsage?: TokenUsage;
+    usageMetrics?: UsageTrackingMetrics | null;
 }
 
 export interface GenerateTaskSummaryOptions {
@@ -140,14 +142,18 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             agentAlias: 'claude'
         });
 
-        const result = await executeDockerCommand('docker', dockerArgs, {
-            timeout: CLAUDE_TIMEOUT_MS,
-            cwd: worktreePath,
-            onSessionId,
-            onContainerId,
-            worktreePath,
-            stdinData: prompt // Always pass prompt via stdin
-        });
+        // Wrap execution with Agent Tank usage tracking
+        const { result, usageMetrics } = await executeWithUsageTracking(
+            'claude',
+            async () => executeDockerCommand('docker', dockerArgs, {
+                timeout: CLAUDE_TIMEOUT_MS,
+                cwd: worktreePath,
+                onSessionId,
+                onContainerId,
+                worktreePath,
+                stdinData: prompt // Always pass prompt via stdin
+            })
+        );
 
         const executionTime = Date.now() - startTime;
         logger.info({
@@ -176,7 +182,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             commitMessage: null,
             summary: claudeOutput.finalResult?.result || null,
             prompt: prompt,
-            tokenUsage: claudeOutput.tokenUsage
+            tokenUsage: claudeOutput.tokenUsage,
+            usageMetrics
         };
 
         await storePromptInRedis({ claudeOutput, prompt, issueRef, model: response.model!, isRetry, retryReason });
@@ -383,12 +390,38 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide direct 
         { correlationId, taskId, executionType }
     );
 
+    // Persist LLM log with Agent Tank usage metrics
+    const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
+    const usageMetrics = claudeResult.usageMetrics;
+    await persistLlmLog(createLlmLogFromAnalysis({
+        executionType,
+        modelUsed: claudeResult.model ?? resolvedModel,
+        executionTimeMs: claudeResult.executionTime,
+        success: claudeResult.success,
+        tokenUsage: claudeResult.tokenUsage,
+        error: claudeResult.error,
+        sessionId: claudeResult.sessionId ?? undefined,
+        correlationId,
+        draftId: taskId,
+        repository,
+        agentAlias: 'claude',
+        usageMetrics: usageMetrics ? {
+            preCall: usageMetrics.preCall,
+            postCall: usageMetrics.postCall,
+            delta: usageMetrics.delta,
+            timestamp: usageMetrics.timestamp,
+            agent: usageMetrics.agent
+        } : undefined,
+        usageMetricRecords: usageMetrics?.records
+    }));
+
     if (claudeResult.finalResult?.result || claudeResult.summary) {
         const analysisText = (claudeResult.finalResult?.result || claudeResult.summary)!.trim();
         correlatedLogger.info({
             model,
             responseLength: analysisText.length,
-            exitCode: claudeResult.exitCode
+            exitCode: claudeResult.exitCode,
+            usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
         }, 'Lightweight LLM analysis completed via Docker');
         return analysisText;
     }

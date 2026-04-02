@@ -29,6 +29,7 @@ import {
 import { resolveModelAlias, getDefaultModel } from '../../config/modelAliases.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -286,11 +287,15 @@ export class ClaudeAgent implements Agent {
                 executionType
             });
 
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: 1800000,
-                stdinData: analysisPrompt,
-                taskId
-            });
+            // Wrap execution with Agent Tank usage tracking
+            const { result, usageMetrics } = await executeWithUsageTracking(
+                'claude',
+                async () => executeDockerCommand('docker', dockerArgs, {
+                    timeout: 1800000,
+                    stdinData: analysisPrompt,
+                    taskId
+                })
+            );
 
             const executionTimeMs = Date.now() - startTime;
             const claudeOutput = parseStreamJsonOutput(result);
@@ -313,8 +318,29 @@ export class ClaudeAgent implements Agent {
                     model: effectiveModel,
                     executionTimeMs,
                     reportedTokens: claudeOutput.tokenUsage,
-                    correctedTokens: correctedTokenUsage
+                    correctedTokens: correctedTokenUsage,
+                    usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
                 }, 'Lightweight analysis completed');
+
+                // Persist LLM log with usage metrics for analysis calls
+                await persistLlmLog(createLlmLogFromAnalysis({
+                    executionType: (executionType || 'other') as ExecutionType,
+                    modelUsed: claudeOutput.model || effectiveModel,
+                    executionTimeMs,
+                    success: true,
+                    tokenUsage: correctedTokenUsage,
+                    sessionId: claudeOutput.sessionId ?? undefined,
+                    draftId: taskId,
+                    agentAlias: this.config.alias,
+                    usageMetrics: usageMetrics ? {
+                        preCall: usageMetrics.preCall,
+                        postCall: usageMetrics.postCall,
+                        delta: usageMetrics.delta,
+                        timestamp: usageMetrics.timestamp,
+                        agent: usageMetrics.agent
+                    } : undefined,
+                    usageMetricRecords: usageMetrics?.records
+                }));
 
                 return {
                     response: analysisText,

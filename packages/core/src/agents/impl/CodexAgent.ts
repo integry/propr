@@ -16,6 +16,8 @@ import {
 } from '../../codex/codexHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -95,17 +97,20 @@ export class CodexAgent implements Agent {
                 taskId
             });
 
-            // Execute Docker command with prompt via stdin
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: this.timeoutMs,
-                cwd: worktreePath,
-                onSessionId,
-                onContainerId,
-                worktreePath,
-                stdinData: prompt,
-                taskId,
-                streamToRedis: true
-            });
+            // Wrap execution with Agent Tank usage tracking
+            const { result, usageMetrics } = await executeWithUsageTracking(
+                'codex',
+                async () => executeDockerCommand('docker', dockerArgs, {
+                    timeout: this.timeoutMs,
+                    cwd: worktreePath,
+                    onSessionId,
+                    onContainerId,
+                    worktreePath,
+                    stdinData: prompt,
+                    taskId,
+                    streamToRedis: true
+                })
+            );
 
             const executionTime = Date.now() - startTime;
 
@@ -152,7 +157,7 @@ export class CodexAgent implements Agent {
                 retryReason
             });
 
-            // Persist LLM log for visibility in the LLM Logs UI
+            // Persist LLM log for visibility in the LLM Logs UI (including Agent Tank usage if available)
             const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
             const logEntry = createLlmLogFromAnalysis({
                 executionType: 'implementation',
@@ -169,7 +174,15 @@ export class CodexAgent implements Agent {
                     isRetry,
                     retryReason,
                     conversationId: parsedOutput.conversationId
-                }
+                },
+                usageMetrics: usageMetrics ? {
+                    preCall: usageMetrics.preCall,
+                    postCall: usageMetrics.postCall,
+                    delta: usageMetrics.delta,
+                    timestamp: usageMetrics.timestamp,
+                    agent: usageMetrics.agent
+                } : undefined,
+                usageMetricRecords: usageMetrics?.records
             });
             await persistLlmLog(logEntry);
 
@@ -272,11 +285,15 @@ export class CodexAgent implements Agent {
                 executionType
             });
 
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: 1800000, // 30 minute timeout for analysis (planning tasks can take longer)
-                stdinData: analysisPrompt,
-                taskId // Pass taskId for abort signal checking
-            });
+            // Wrap execution with Agent Tank usage tracking
+            const { result, usageMetrics } = await executeWithUsageTracking(
+                'codex',
+                async () => executeDockerCommand('docker', dockerArgs, {
+                    timeout: 1800000, // 30 minute timeout for analysis (planning tasks can take longer)
+                    stdinData: analysisPrompt,
+                    taskId // Pass taskId for abort signal checking
+                })
+            );
 
             const executionTimeMs = Date.now() - startTime;
 
@@ -291,8 +308,30 @@ export class CodexAgent implements Agent {
                     model: effectiveModel,
                     executionTimeMs,
                     inputTokens: parsedOutput.tokenUsage?.input_tokens,
-                    outputTokens: parsedOutput.tokenUsage?.output_tokens
+                    outputTokens: parsedOutput.tokenUsage?.output_tokens,
+                    usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
                 }, 'Lightweight analysis completed');
+
+                // Persist LLM log with usage metrics for analysis calls
+                await persistLlmLog(createLlmLogFromAnalysis({
+                    executionType: (executionType || 'other') as ExecutionType,
+                    modelUsed: parsedOutput.model || effectiveModel,
+                    executionTimeMs,
+                    success: true,
+                    tokenUsage: parsedOutput.tokenUsage,
+                    sessionId: parsedOutput.sessionId,
+                    draftId: taskId,
+                    agentAlias: this.config.alias,
+                    usageMetrics: usageMetrics ? {
+                        preCall: usageMetrics.preCall,
+                        postCall: usageMetrics.postCall,
+                        delta: usageMetrics.delta,
+                        timestamp: usageMetrics.timestamp,
+                        agent: usageMetrics.agent
+                    } : undefined,
+                    usageMetricRecords: usageMetrics?.records
+                }));
+
                 return {
                     response: analysisText,
                     modelUsed: parsedOutput.model || effectiveModel,

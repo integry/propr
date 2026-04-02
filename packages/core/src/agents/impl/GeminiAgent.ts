@@ -9,6 +9,8 @@ import {
 } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -60,13 +62,17 @@ export class GeminiAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
 
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData,
-                taskId, streamToRedis: true
-            });
+            // Wrap execution with Agent Tank usage tracking
+            const { result, usageMetrics } = await executeWithUsageTracking(
+                'gemini',
+                async () => executeDockerCommand('docker', dockerArgs, {
+                    timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData,
+                    taskId, streamToRedis: true
+                })
+            );
 
             const executionTime = Date.now() - startTime;
-            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, isRetry, retryReason });
+            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, isRetry, retryReason, usageMetrics });
         } catch (error) {
             return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
         }
@@ -83,9 +89,9 @@ export class GeminiAgent implements Agent {
         result: { stdout: string; stderr: string; exitCode: number | null }; executionTime: number;
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined;
         prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string) => void;
-        taskId?: string; isRetry?: boolean; retryReason?: string;
+        taskId?: string; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
     }): Promise<AgentExecutionResult> {
-        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, isRetry, retryReason } = opts;
+        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, isRetry, retryReason, usageMetrics } = opts;
         logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Gemini agent execution completed');
         const { sessionId, modelUsed: parsedModel, summary, conversationLog, tokenUsage } = this.parseGeminiJsonl(result.stdout);
         if (sessionId && onSessionId) onSessionId(sessionId);
@@ -94,7 +100,7 @@ export class GeminiAgent implements Agent {
         const finalTokenUsage = (tokenUsage.input_tokens || tokenUsage.output_tokens) ? tokenUsage : undefined;
         const response: AgentExecutionResult = { success: result.exitCode === 0, executionTimeMs: executionTime, logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''), exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [], commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog, tokenUsage: finalTokenUsage };
 
-        // Persist LLM log for visibility in the LLM Logs UI
+        // Persist LLM log for visibility in the LLM Logs UI (including Agent Tank usage if available)
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
         const logEntry = createLlmLogFromAnalysis({
             executionType: 'implementation',
@@ -107,7 +113,15 @@ export class GeminiAgent implements Agent {
             draftId: taskId,
             repository,
             agentAlias: this.config.alias,
-            metadata: { isRetry, retryReason }
+            metadata: { isRetry, retryReason },
+            usageMetrics: usageMetrics ? {
+                preCall: usageMetrics.preCall,
+                postCall: usageMetrics.postCall,
+                delta: usageMetrics.delta,
+                timestamp: usageMetrics.timestamp,
+                agent: usageMetrics.agent
+            } : undefined,
+            usageMetricRecords: usageMetrics?.records
         });
         await persistLlmLog(logEntry);
 
@@ -137,7 +151,12 @@ export class GeminiAgent implements Agent {
         try {
             // Use stream-json to get token usage metrics
             const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/gemini-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, outputFormat: 'stream-json', taskId, executionType });
-            const result = await executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId });
+
+            // Wrap execution with Agent Tank usage tracking
+            const { result, usageMetrics } = await executeWithUsageTracking(
+                'gemini',
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId })
+            );
             const executionTimeMs = Date.now() - startTime;
 
             // Parse JSONL output to extract response and token usage
@@ -151,8 +170,33 @@ export class GeminiAgent implements Agent {
                     model: effectiveModel,
                     executionTimeMs,
                     inputTokens: tokenUsage.input_tokens,
-                    outputTokens: tokenUsage.output_tokens
+                    outputTokens: tokenUsage.output_tokens,
+                    usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
                 }, 'Lightweight analysis completed');
+
+                // Persist LLM log with usage metrics for analysis calls
+                await persistLlmLog(createLlmLogFromAnalysis({
+                    executionType: (executionType || 'other') as ExecutionType,
+                    modelUsed: effectiveModel,
+                    executionTimeMs,
+                    success: true,
+                    tokenUsage: (tokenUsage.input_tokens || tokenUsage.output_tokens) ? {
+                        input_tokens: tokenUsage.input_tokens,
+                        output_tokens: tokenUsage.output_tokens
+                    } : undefined,
+                    sessionId,
+                    draftId: taskId,
+                    agentAlias: this.config.alias,
+                    usageMetrics: usageMetrics ? {
+                        preCall: usageMetrics.preCall,
+                        postCall: usageMetrics.postCall,
+                        delta: usageMetrics.delta,
+                        timestamp: usageMetrics.timestamp,
+                        agent: usageMetrics.agent
+                    } : undefined,
+                    usageMetricRecords: usageMetrics?.records
+                }));
+
                 return {
                     response: analysisText,
                     modelUsed: effectiveModel,
