@@ -8,7 +8,8 @@ import {
   loadPrimaryProcessingLabels,
   getAuthenticatedOctokit,
   safeUpdateLabels,
-  logger
+  logger,
+  db
 } from '@propr/core';
 import { PlanIssueStatus } from '@propr/core';
 import type { OwnershipResult } from './plannerHelpers.js';
@@ -16,9 +17,9 @@ import {
   getLlmLabel,
   handleMultiAgentImplementation,
   handleSingleAgentImplementation,
-  handleEpicPRCreation,
   processBatchIssues,
-  type ImplementIssueContext
+  type ImplementIssueContext,
+  getOrCreateEpicLabel
 } from './planIssueHelpers.js';
 
 interface PlanIssueDeps {
@@ -74,7 +75,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
     if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
 
     try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name']);
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
@@ -83,6 +84,14 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
 
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
 
+      // Parse context_config to get stored settings
+      let contextConfig: Record<string, unknown> | null = null;
+      if (draft.context_config) {
+        contextConfig = typeof draft.context_config === 'string'
+          ? JSON.parse(draft.context_config as string)
+          : draft.context_config as Record<string, unknown>;
+      }
+
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
 
@@ -90,28 +99,39 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const implementLabel = processingLabels[0] || 'AI';
       const octokit = await getAuthenticatedOctokit();
 
-      const { models, autoMerge, useEpic } = req.body as {
+      // Use settings from request body, falling back to stored settings
+      const { models, autoMerge: reqAutoMerge, useEpic: reqUseEpic } = req.body as {
         models?: Array<{ agent_alias: string; model_name: string }>;
         autoMerge?: boolean;
         useEpic?: boolean;
       };
+      const useEpic = reqUseEpic ?? contextConfig?.useEpic ?? false;
+      const autoMerge = reqAutoMerge ?? contextConfig?.autoMerge ?? false;
 
       const correlationId = `implement-${draftId}-${issueNumber}`;
       const labelLogger = logger.withCorrelation(correlationId);
 
+      // Get existing epic label or create new one (using first pending issue number for consistency)
+      const allIssues = await getPlanIssuesByDraft(draftId);
+      const pendingIssues = allIssues.filter(i => i.status === PlanIssueStatus.PENDING);
+      const firstIssueNumber = pendingIssues.length > 0 ? pendingIssues[0].issue_number : issueNumber;
+
       const epicLabelName = useEpic
-        ? await handleEpicPRCreation({
+        ? await getOrCreateEpicLabel({
+            draftId,
             owner,
             repo,
             planName: (draft.name as string) || 'Unnamed Plan',
-            issueNumber,
+            firstIssueNumber,
+            contextConfig,
             correlationId,
-            labelLogger
+            labelLogger,
+            db
           })
         : null;
 
       const context: ImplementIssueContext = {
-        octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge: autoMerge || false, labelLogger
+        octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge: autoMerge as boolean, labelLogger
       };
 
       const result = (models && Array.isArray(models) && models.length > 0)
@@ -196,7 +216,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
     const draftId = req.params.id;
 
     try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name']);
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
@@ -205,7 +225,18 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
 
-      const { agent_alias, model_name, useEpic, autoMerge } = req.body;
+      // Parse context_config to get stored settings
+      let contextConfig: Record<string, unknown> | null = null;
+      if (draft.context_config) {
+        contextConfig = typeof draft.context_config === 'string'
+          ? JSON.parse(draft.context_config as string)
+          : draft.context_config as Record<string, unknown>;
+      }
+
+      // Use settings from request body, falling back to stored settings
+      const { agent_alias, model_name, useEpic: reqUseEpic, autoMerge: reqAutoMerge } = req.body;
+      const useEpic = reqUseEpic ?? contextConfig?.useEpic ?? false;
+      const autoMerge = reqAutoMerge ?? contextConfig?.autoMerge ?? false;
 
       if (agent_alias !== undefined || model_name !== undefined) {
         await batchUpdatePlanIssueConfig(draftId, agent_alias, model_name);
@@ -225,19 +256,23 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const correlationId = `implement-all-${draftId}`;
       const labelLogger = logger.withCorrelation(correlationId);
 
+      // Get existing epic label or create new one
       const epicLabelName = useEpic
-        ? await handleEpicPRCreation({
+        ? await getOrCreateEpicLabel({
+            draftId,
             owner,
             repo,
             planName: (draft.name as string) || 'Unnamed Plan',
-            issueNumber: pendingIssues[0].issue_number,
+            firstIssueNumber: pendingIssues[0].issue_number,
+            contextConfig,
             correlationId,
-            labelLogger
+            labelLogger,
+            db
           })
         : null;
 
       const { results, queuedCount } = await processBatchIssues({
-        octokit, owner, repo, draftId, pendingIssues, implementLabel, epicLabelName, autoMerge: autoMerge || false
+        octokit, owner, repo, draftId, pendingIssues, implementLabel, epicLabelName, autoMerge: autoMerge as boolean
       });
 
       const successCount = results.filter(r => r.success).length;
@@ -252,7 +287,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         queued: queuedCount,
         results,
         epicLabel: epicLabelName,
-        autoMergeEnabled: autoMerge || false
+        autoMergeEnabled: autoMerge as boolean
       });
     } catch (error) {
       console.error('Implement all issues error:', error);

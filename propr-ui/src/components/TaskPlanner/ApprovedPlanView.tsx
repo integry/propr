@@ -6,7 +6,7 @@ import { DraftWithPlan, deleteDraft } from '../../api/proprApi';
 import DeletePlanDialog from './DeletePlanDialog';
 import RevisePlanDialog from './RevisePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';
-import { PlanTask, reviseDraft, pauseDraft, resumeDraft } from '../../api/plannerApi';
+import { PlanTask, reviseDraft, pauseDraft, resumeDraft, updateExecutionSettings } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
 import { useToast } from '../ui/useToast';
 
@@ -206,8 +206,9 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const [isRevising, setIsRevising] = useState(false);
   const [isPaused, setIsPaused] = useState(draft.paused || false);
   const [isPauseLoading, setIsPauseLoading] = useState(false);
-  const [useEpic, setUseEpic] = useState(false);
-  const [autoMerge, setAutoMerge] = useState(false);
+  // Initialize from draft.context_config for persistence across page refreshes
+  const [useEpic, setUseEpic] = useState(draft.context_config?.useEpic ?? false);
+  const [autoMerge, setAutoMerge] = useState(draft.context_config?.autoMerge ?? false);
 
   const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
   const repository = draft.repository || '';
@@ -303,6 +304,27 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       });
     }
   }, [addToast]);
+
+  // Handler for useEpic toggle - updates local state and persists to backend
+  const handleUseEpicChange = useCallback(async (value: boolean) => {
+    setUseEpic(value);
+    try {
+      await updateExecutionSettings(draft.draft_id, { useEpic: value });
+    } catch (err) {
+      console.error('Failed to save useEpic setting:', err);
+    }
+  }, [draft.draft_id]);
+
+  // Handler for autoMerge toggle - updates local state and persists to backend
+  const handleAutoMergeChange = useCallback(async (value: boolean) => {
+    setAutoMerge(value);
+    try {
+      await updateExecutionSettings(draft.draft_id, { autoMerge: value });
+    } catch (err) {
+      console.error('Failed to save autoMerge setting:', err);
+    }
+  }, [draft.draft_id]);
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
@@ -358,8 +380,8 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
           refreshKey={refreshKey}
           useEpic={useEpic}
           autoMerge={autoMerge}
-          onUseEpicChange={setUseEpic}
-          onAutoMergeChange={setAutoMerge}
+          onUseEpicChange={handleUseEpicChange}
+          onAutoMergeChange={handleAutoMergeChange}
           draftStatus={draft.status}
           onCreationComplete={handleCreationComplete}
         />

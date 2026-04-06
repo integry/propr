@@ -273,6 +273,7 @@ function setupRoutes(): void {
   app.post('/api/planner/validate-context-repository', plannerRoutes.validateContextRepository);
   app.post('/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution);
   app.post('/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution);
+  app.patch('/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings);
 
   app.post('/api/planner/relevance', relevanceRoutes.analyzeRelevance);
 

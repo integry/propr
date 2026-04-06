@@ -174,6 +174,35 @@ export const finalizePlan = async (draftId: string): Promise<FinalizeResponse> =
   return response.json();
 };
 
+export interface UpdateExecutionSettingsOptions {
+  useEpic?: boolean;
+  autoMerge?: boolean;
+}
+
+export interface UpdateExecutionSettingsResponse {
+  success: boolean;
+  useEpic: boolean;
+  autoMerge: boolean;
+}
+
+/**
+ * Updates the execution settings (useEpic, autoMerge) for a draft.
+ * These settings are persisted in context_config and survive page refreshes.
+ */
+export const updateExecutionSettings = async (
+  draftId: string,
+  options: UpdateExecutionSettingsOptions
+): Promise<UpdateExecutionSettingsResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/execution-settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export const getDrafts = async (options: GetDraftsOptions = {}): Promise<PaginatedDraftsResponse> => {
   const params = new URLSearchParams();
   if (options.page !== undefined) params.append('page', options.page.toString());

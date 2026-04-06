@@ -475,12 +475,60 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  async function updateExecutionSettings(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    const idValidation = validateUUID(req.params.id, 'Draft ID');
+    if (!idValidation.valid) {
+      res.status(400).json({ error: idValidation.error });
+      return;
+    }
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'context_config']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const { useEpic, autoMerge } = req.body;
+
+      // Parse existing context_config
+      let existingConfig: Record<string, unknown> = {};
+      const draft = ownership.draft!;
+      if (draft.context_config) {
+        existingConfig = typeof draft.context_config === 'string'
+          ? JSON.parse(draft.context_config as string)
+          : draft.context_config as Record<string, unknown>;
+      }
+
+      // Update with new execution settings
+      const updatedConfig = {
+        ...existingConfig,
+        useEpic: useEpic !== undefined ? useEpic : existingConfig.useEpic,
+        autoMerge: autoMerge !== undefined ? autoMerge : existingConfig.autoMerge,
+      };
+
+      await db!('task_drafts').where({ draft_id: req.params.id }).update({
+        context_config: JSON.stringify(updatedConfig),
+        updated_at: db!.fn.now()
+      });
+
+      res.json({
+        success: true,
+        useEpic: updatedConfig.useEpic ?? false,
+        autoMerge: updatedConfig.autoMerge ?? false
+      });
+    } catch (error) {
+      console.error('Update execution settings error:', error);
+      res.status(500).json({ error: 'Failed to update execution settings' });
+    }
+  }
+
   return {
     listRepositories, listDrafts, createDraft, getDraft, updateDraft, deleteDraft,
     uploadAttachment, deleteAttachment, getAttachmentContent, getRepositoryInfo,
     getContextStats, previewContext, downloadContext, generate, refine, finalize,
     resetDraftToSetup, getIssues, implementIssue, updateIssue, implementAllIssues,
     validateContextRepository, abortGeneration, abortRefinement, reviseDraft,
-    pauseDraftExecution, resumeDraftExecution,
+    pauseDraftExecution, resumeDraftExecution, updateExecutionSettings,
   };
 }

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, ChevronUp, Loader2, Check, CheckCircle, AlertCircle, Layers, ArrowDownToLine, Info } from 'lucide-react';
-import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
+import { AgentModelPair, PlanIssue, implementAllIssues } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import AgentModelSelector from './AgentModelSelector';
@@ -50,6 +50,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
   const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
   const [pendingImplementModels, setPendingImplementModels] = useState<AgentModelPair[] | undefined>(undefined);
+  const [implementingAll, setImplementingAll] = useState(false);
 
   // Track if the initial merged view expansion check has run (for fully merged plans)
   const hasInitializedMergedView = useRef(false);
@@ -116,6 +117,25 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     if (pendingImplementIssue === null) return [];
     return getUnmergedIssuesBefore(pendingImplementIssue);
   }, [pendingImplementIssue, getUnmergedIssuesBefore]);
+
+  // Handler for implementing all pending issues at once
+  const handleImplementAll = useCallback(async () => {
+    if (pendingCount === 0) return;
+
+    setImplementingAll(true);
+    try {
+      await implementAllIssues(draftId, {
+        useEpic,
+        autoMerge
+      });
+      // Refresh the list to show updated statuses
+      handleRefresh();
+    } catch (err) {
+      console.error('Failed to implement all issues:', err);
+    } finally {
+      setImplementingAll(false);
+    }
+  }, [draftId, pendingCount, useEpic, autoMerge, handleRefresh]);
 
   // Report issues to parent for footer stats
   useEffect(() => {
@@ -338,6 +358,30 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
               )}
             </div>
           </div>
+
+          {/* Implement All Sequentially Button - only shown when auto-merge + epic are enabled */}
+          {pendingCount >= 2 && autoMerge && useEpic && (
+            <div className="flex items-center justify-end pt-1 border-t border-slate-200/50">
+              <button
+                onClick={handleImplementAll}
+                disabled={implementingAll || !globalAgent}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md bg-green-600 text-white shadow-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title={!globalAgent ? 'Select an agent first' : `Start sequential implementation: each issue will be processed and merged before the next one starts`}
+              >
+                {implementingAll ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    <span>Starting sequence...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle size={16} />
+                    <span>Run All Sequentially ({pendingCount})</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

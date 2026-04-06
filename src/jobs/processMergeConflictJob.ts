@@ -145,6 +145,33 @@ async function handleMergeWithAgent(options: {
         throw new Error(`Agent execution failed during conflict resolution: ${claudeResult.error || 'Unknown error'}`);
     }
 
+    // Verify no conflict markers remain in the worktree before committing
+    const { execSync } = await import('child_process');
+    try {
+        // Search for conflict markers in all files (excluding .git directory)
+        const grepResult = execSync(
+            `grep -rn "^<<<<<<<\\|^=======\\|^>>>>>>>" --include="*" . 2>/dev/null || true`,
+            { cwd: worktreeInfo.worktreePath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
+        ).trim();
+
+        if (grepResult) {
+            const markerLines = grepResult.split('\n').filter(line => line.length > 0);
+            correlatedLogger.error({
+                pullRequestNumber,
+                remainingMarkers: markerLines.length,
+                firstFewMarkers: markerLines.slice(0, 5)
+            }, 'Conflict markers still present after agent execution');
+            throw new Error(`Agent failed to resolve all merge conflicts. ${markerLines.length} conflict marker(s) still present in files.`);
+        }
+    } catch (grepError) {
+        // If the error is from our throw above, re-throw it
+        if ((grepError as Error).message?.includes('Agent failed to resolve')) {
+            throw grepError;
+        }
+        // Otherwise log and continue (grep command failed)
+        correlatedLogger.warn({ error: (grepError as Error).message }, 'Failed to verify conflict markers, continuing');
+    }
+
     // Commit any changes from conflict resolution (if agent made changes)
     const commitMessage = buildMergeConflictCommitMessage({
         baseBranch,
