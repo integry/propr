@@ -307,12 +307,10 @@ const RevertPage: React.FC = () => {
   const commentId = searchParams.get('commentId') || '';
   const owner = searchParams.get('owner') || '';
 
-  const missingParams: string[] = [];
-  if (!repo) missingParams.push('repo');
-  if (!pr) missingParams.push('pr');
-  if (!commit) missingParams.push('commit');
-  if (!commentId) missingParams.push('commentId');
-  if (!owner) missingParams.push('owner');
+  const requiredParams = { repo, pr, commit, commentId, owner };
+  const missingParams = Object.entries(requiredParams)
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
 
   useEffect(() => {
     if (missingParams.length > 0) {
