@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { AlertTriangle, RotateCcw, CheckCircle, Loader2, GitCommit, ArrowDown, Trash2, GitBranch } from 'lucide-react';
+import { AlertTriangle, RotateCcw, CheckCircle, Loader2, GitCommit, ArrowDown, Trash2, GitBranch, Copy, Check } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { revertCommit, getRevertPreview, type RevertPreviewResponse, type CommitInfo } from '../api/proprApi';
 
@@ -90,7 +90,32 @@ const LoadingView: React.FC = () => (
   </PageWrapper>
 );
 
-const SuccessView: React.FC<{ prUrl: string }> = ({ prUrl }) => (
+const CopyCommand: React.FC<{ command: string }> = ({ command }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(command);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="bg-gray-900 rounded-lg p-4 mb-6 text-left">
+      <div className="flex items-center justify-between gap-3">
+        <code className="text-sm text-gray-100 font-mono break-all">{command}</code>
+        <button
+          onClick={handleCopy}
+          className="flex-shrink-0 text-gray-400 hover:text-white transition-colors p-1 rounded"
+          title="Copy to clipboard"
+        >
+          {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const SuccessView: React.FC<{ prUrl: string; branchName?: string }> = ({ prUrl, branchName }) => (
   <PageWrapper>
     <div className="text-center">
       <div className="text-green-600 mb-4">
@@ -100,6 +125,12 @@ const SuccessView: React.FC<{ prUrl: string }> = ({ prUrl }) => (
       <p className="text-gray-600 mb-6">
         The revert has been initiated successfully. You can return to the Pull Request to verify the changes.
       </p>
+      {branchName && (
+        <div className="mb-6">
+          <p className="text-gray-600 text-sm mb-2">Update your local branch:</p>
+          <CopyCommand command={`git fetch origin ${branchName} && git reset --hard origin/${branchName}`} />
+        </div>
+      )}
       <a
         href={prUrl}
         className="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-md transition-colors"
@@ -326,7 +357,7 @@ const RevertPage: React.FC = () => {
 
   if (state === 'success') {
     const prUrl = `https://github.com/${owner}/${repo}/pull/${pr}`;
-    return <SuccessView prUrl={prUrl} />;
+    return <SuccessView prUrl={prUrl} branchName={preview?.branch} />;
   }
 
   return (
