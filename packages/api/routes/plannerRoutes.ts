@@ -55,48 +55,24 @@ import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
 
-// MIME types allowed for file uploads
 const ALLOWED_MIME_TYPES = [
-  'text/plain',
-  'text/markdown',
-  'text/csv',
-  'application/json',
-  'application/pdf',
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
+  'text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/pdf',
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
 ];
 
 const upload = multer({
   dest: uploadDir,
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    // Validate filename - prevent path traversal
-    if (file.originalname.includes('..') || file.originalname.includes('/') || file.originalname.includes('\\')) {
-      cb(new Error('Invalid filename'));
-      return;
-    }
-
-    // Validate filename length
-    if (file.originalname.length > 255) {
-      cb(new Error('Filename is too long (max 255 characters)'));
-      return;
-    }
-
-    // Validate file extension
+    if (file.originalname.includes('..') || file.originalname.includes('/') || file.originalname.includes('\\'))
+      return cb(new Error('Invalid filename'));
+    if (file.originalname.length > 255)
+      return cb(new Error('Filename is too long (max 255 characters)'));
     const ext = path.extname(file.originalname).toLowerCase();
-    if (ext && !ALLOWED_EXTENSIONS.includes(ext as typeof ALLOWED_EXTENSIONS[number])) {
-      cb(new Error(`File type not allowed. Allowed types: ${ALLOWED_EXTENSIONS.join(', ')}`));
-      return;
-    }
-
-    // Validate MIME type
-    if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
-      cb(new Error(`MIME type not allowed. Allowed types: ${ALLOWED_MIME_TYPES.join(', ')}`));
-      return;
-    }
-
+    if (ext && !ALLOWED_EXTENSIONS.includes(ext as typeof ALLOWED_EXTENSIONS[number]))
+      return cb(new Error(`File type not allowed. Allowed types: ${ALLOWED_EXTENSIONS.join(', ')}`));
+    if (!ALLOWED_MIME_TYPES.includes(file.mimetype))
+      return cb(new Error(`MIME type not allowed. Allowed types: ${ALLOWED_MIME_TYPES.join(', ')}`));
     cb(null, true);
   },
 });
@@ -113,23 +89,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   async function listRepositories(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
     try {
-      const results = await db!('task_drafts')
-        .select('repository')
-        .count('* as count')
-        .where({ user_id: req.user!.id })
-        .groupBy('repository')
-        .orderBy('repository') as { repository: string; count: number | string }[];
-
+      const results = await db!('task_drafts').select('repository').count('* as count')
+        .where({ user_id: req.user!.id }).groupBy('repository').orderBy('repository') as { repository: string; count: number | string }[];
       const repositories = results.map((row) => ({
-        repo: row.repository,
-        count: typeof row.count === 'string' ? parseInt(row.count, 10) : row.count
+        repo: row.repository, count: typeof row.count === 'string' ? parseInt(row.count, 10) : row.count
       }));
-
-      const total = repositories.reduce((sum: number, r: { count: number }) => sum + r.count, 0);
-
-      res.json({ repositories, total });
+      res.json({ repositories, total: repositories.reduce((sum: number, r: { count: number }) => sum + r.count, 0) });
     } catch (error) {
       console.error('List repositories error:', error);
       res.status(500).json({ error: 'Failed to fetch repositories' });
@@ -141,35 +107,21 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
-      // Validate pagination parameters
       const paginationResult = validatePagination(req.query.page, req.query.limit, { maxLimit: 100, defaultLimit: 10 });
-      if (!paginationResult.valid) {
-        res.status(400).json({ error: paginationResult.error });
-        return;
-      }
+      if (!paginationResult.valid) { res.status(400).json({ error: paginationResult.error }); return; }
       const { page, limit, offset } = paginationResult.params!;
 
-      // Validate repository filter
       const repoValidation = validateRepositoryFilter(req.query.repository);
-      if (!repoValidation.valid) {
-        res.status(400).json({ error: repoValidation.error });
-        return;
-      }
+      if (!repoValidation.valid) { res.status(400).json({ error: repoValidation.error }); return; }
 
       const validStatuses = ['draft', 'review', 'generating', 'refining', 'executed', 'approved', 'merged', 'pr_created'] as const;
-
-      // Validate status filter
       const statusValidation = validateEnum(req.query.status, ['all', ...validStatuses], 'Status');
-      if (!statusValidation.valid) {
-        res.status(400).json({ error: statusValidation.error });
-        return;
-      }
+      if (!statusValidation.valid) { res.status(400).json({ error: statusValidation.error }); return; }
 
       const repository = req.query.repository as string | undefined;
       const search = req.query.search as string | undefined;
       const status = req.query.status as string | undefined;
       const excludeStatuses = req.query.excludeStatuses as string | undefined;
-      // Build query with optional repository filter
       let query = db!('task_drafts').where({ user_id: req.user!.id });
 
       if (repository && repository !== 'all') {
@@ -180,7 +132,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         query = query.andWhere('status', status);
       }
 
-      // Exclude multiple statuses (comma-separated) - useful for header dropdown
       if (excludeStatuses) {
         const statusesToExclude = excludeStatuses.split(',').filter(s => (validStatuses as readonly string[]).includes(s.trim()));
         if (statusesToExclude.length > 0) {
@@ -188,10 +139,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         }
       }
 
-      // Apply search filter to name and initial_prompt with partial word matching
       const searchWords = parseSearchWords(search);
       if (searchWords.length > 0) {
-        // Match any word (partial matching) - results where ANY word matches
         query = query.andWhere(function() {
           for (const word of searchWords) {
             const wordPattern = `%${word}%`;
@@ -205,7 +154,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt', 'paused', 'paused_at')
         .orderBy('updated_at', 'desc');
 
-      // Apply relevance scoring and sorting when searching
       if (searchWords.length > 0) {
         const exactPhrase = search!.trim().toLowerCase();
         const scoredDrafts = scoreDrafts(drafts, searchWords, exactPhrase);
@@ -213,10 +161,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         drafts = removeSearchScore(scoredDrafts);
       }
 
-      // Apply pagination after scoring/sorting
       const paginatedDrafts = drafts.slice(offset, offset + limit);
-
-      // Get issue summaries for paginated drafts only
       const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
         const issues = await db!('plan_issues')
@@ -245,38 +190,23 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
     const { repository, prompt, todoIds } = req.body;
 
-    // Validate repository format
     const repoValidation = validateRepository(repository);
-    if (!repoValidation.valid) {
-      res.status(400).json({ error: repoValidation.error });
-      return;
-    }
-
-    // Validate prompt if provided
-    if (prompt !== undefined && typeof prompt !== 'string') {
-      res.status(400).json({ error: 'Prompt must be a string' });
-      return;
-    }
-
-    // Validate todoIds if provided
+    if (!repoValidation.valid) { res.status(400).json({ error: repoValidation.error }); return; }
+    if (prompt !== undefined && typeof prompt !== 'string') { res.status(400).json({ error: 'Prompt must be a string' }); return; }
     if (todoIds !== undefined && (!Array.isArray(todoIds) || !todoIds.every(id => typeof id === 'string'))) {
-      res.status(400).json({ error: 'todoIds must be an array of strings' });
-      return;
+      res.status(400).json({ error: 'todoIds must be an array of strings' }); return;
     }
 
     try {
       const draftId = crypto.randomUUID();
-      // Store full prompt as name - truncation should happen on frontend via CSS only
       const name = prompt || 'Untitled Plan';
       await db!('task_drafts')
         .insert({ draft_id: draftId, user_id: req.user!.id, repository, initial_prompt: prompt, name });
 
-      // Link todos to the newly created draft if todoIds provided
       if (Array.isArray(todoIds) && todoIds.length > 0) {
         await linkTodosToDraft(todoIds, draftId, req.user!.id);
       }
 
-      // Fetch the created draft (SQLite doesn't support returning() properly)
       const draft = await db!('task_drafts').where({ draft_id: draftId }).first();
       res.status(201).json(draft);
     } catch (error) {
@@ -289,21 +219,15 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    // Validate draft ID
     const idValidation = validateUUID(req.params.id, 'Draft ID');
-    if (!idValidation.valid) {
-      res.status(400).json({ error: idValidation.error });
-      return;
-    }
+    if (!idValidation.valid) { res.status(400).json({ error: idValidation.error }); return; }
 
     try {
       const draft = await db!('task_drafts').where({ draft_id: req.params.id }).first();
       if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
       if (draft.user_id !== req.user!.id) { res.status(403).json({ error: 'Unauthorized access to draft' }); return; }
 
-      // Parse JSON string fields before returning
       const parsedDraft = parseDraftJsonFields(draft) as Record<string, unknown> & { task_title?: string };
-      // Map name to task_title as expected by frontend
       parsedDraft.task_title = draft.name;
 
       res.json(parsedDraft);
@@ -317,12 +241,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    // Validate draft ID
     const idValidation = validateUUID(req.params.id, 'Draft ID');
-    if (!idValidation.valid) {
-      res.status(400).json({ error: idValidation.error });
-      return;
-    }
+    if (!idValidation.valid) { res.status(400).json({ error: idValidation.error }); return; }
 
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
@@ -338,9 +258,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       if (initial_prompt !== undefined) updateData.initial_prompt = initial_prompt;
 
       await db!('task_drafts').where({ draft_id: req.params.id }).update(updateData);
-      // Fetch the updated draft (SQLite doesn't support returning() properly)
       const updated = await db!('task_drafts').where({ draft_id: req.params.id }).first();
-      // Map name to task_title as expected by frontend
       if (updated) {
         const responseData: Record<string, unknown> & { task_title?: string } = { ...updated };
         responseData.task_title = updated.name;
@@ -357,14 +275,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   async function deleteDraft(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    // Validate draft ID
     const idValidation = validateUUID(req.params.id, 'Draft ID');
-    if (!idValidation.valid) {
-      res.status(400).json({ error: idValidation.error });
-      return;
-    }
-
+    if (!idValidation.valid) { res.status(400).json({ error: idValidation.error }); return; }
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
@@ -386,30 +298,16 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   async function resetDraftToSetup(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    // Validate draft ID
     const idValidation = validateUUID(req.params.id, 'Draft ID');
-    if (!idValidation.valid) {
-      res.status(400).json({ error: idValidation.error });
-      return;
-    }
-
+    if (!idValidation.valid) { res.status(400).json({ error: idValidation.error }); return; }
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'status', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-      if (ownership.draft!.status !== 'review') {
-        res.status(400).json({ error: 'Can only reset drafts that are in review status' });
-        return;
-      }
-      await db!('task_drafts').where({ draft_id: req.params.id }).update({
-        status: 'draft', plan_json: null, chat_history: null, updated_at: db!.fn.now()
-      });
+      if (ownership.draft!.status !== 'review') { res.status(400).json({ error: 'Can only reset drafts that are in review status' }); return; }
+      await db!('task_drafts').where({ draft_id: req.params.id }).update({ status: 'draft', plan_json: null, chat_history: null, updated_at: db!.fn.now() });
       const updated = await db!('task_drafts').where({ draft_id: req.params.id }).first();
-
-      // Parse JSON fields and add task_title
       const parsedDraft = parseDraftJsonFields(updated) as Record<string, unknown> & { task_title?: string };
       parsedDraft.task_title = updated.name;
-
       res.json(parsedDraft);
     } catch (error) {
       console.error('Reset draft to setup error:', error);
@@ -433,74 +331,40 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const abortRefinement = createAbortRefinementHandler(db);
   const reviseDraft = createReviseDraftHandler(db);
 
-  async function pauseDraftExecution(req: Request, res: Response): Promise<void> {
+  async function draftPauseAction(req: Request, res: Response, action: 'pause' | 'resume'): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const result = await pauseDraft(req.params.id);
-      if (!result.success) {
-        res.status(400).json({ error: result.error });
-        return;
-      }
-
+      const result = action === 'pause' ? await pauseDraft(req.params.id) : await resumeDraft(req.params.id);
+      if (!result.success) { res.status(400).json({ error: result.error }); return; }
       res.json({ paused: result.paused, pausedAt: result.pausedAt });
     } catch (error) {
-      console.error('Pause draft error:', error);
-      res.status(500).json({ error: 'Failed to pause draft execution' });
+      console.error(`${action} draft error:`, error);
+      res.status(500).json({ error: `Failed to ${action} draft execution` });
     }
   }
-
-  async function resumeDraftExecution(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(db, req.user?.id);
-    if (!check.valid) { sendCheckError(res, check); return; }
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const result = await resumeDraft(req.params.id);
-      if (!result.success) {
-        res.status(400).json({ error: result.error });
-        return;
-      }
-
-      res.json({ paused: result.paused, pausedAt: result.pausedAt });
-    } catch (error) {
-      console.error('Resume draft error:', error);
-      res.status(500).json({ error: 'Failed to resume draft execution' });
-    }
-  }
+  const pauseDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'pause');
+  const resumeDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'resume');
 
   async function updateExecutionSettings(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     const idValidation = validateUUID(req.params.id, 'Draft ID');
-    if (!idValidation.valid) {
-      res.status(400).json({ error: idValidation.error });
-      return;
-    }
+    if (!idValidation.valid) { res.status(400).json({ error: idValidation.error }); return; }
 
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const { useEpic, autoMerge } = req.body;
-
-      // Parse existing context_config
-      let existingConfig: Record<string, unknown> = {};
       const draft = ownership.draft!;
-      if (draft.context_config) {
-        existingConfig = typeof draft.context_config === 'string'
-          ? JSON.parse(draft.context_config as string)
-          : draft.context_config as Record<string, unknown>;
-      }
+      const existingConfig: Record<string, unknown> = draft.context_config
+        ? (typeof draft.context_config === 'string' ? JSON.parse(draft.context_config as string) : draft.context_config as Record<string, unknown>)
+        : {};
 
-      // Update with new execution settings
       const updatedConfig = {
         ...existingConfig,
         useEpic: useEpic !== undefined ? useEpic : existingConfig.useEpic,

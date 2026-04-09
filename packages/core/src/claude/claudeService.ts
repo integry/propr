@@ -33,11 +33,7 @@ const CLAUDE_CONFIG_PATH: string = process.env.CLAUDE_CONFIG_PATH || path.join(o
 const CLAUDE_MAX_TURNS: number = parseInt(process.env.CLAUDE_MAX_TURNS || '1000', 10);
 const CLAUDE_TIMEOUT_MS: number = parseInt(process.env.CLAUDE_TIMEOUT_MS || '300000', 10);
 
-/**
- * @deprecated Use AgentRegistry and Agent.executeTask() instead.
- * This function is maintained for backward compatibility.
- */
-
+/** @deprecated Use AgentRegistry and Agent.executeTask() instead. */
 export interface ExecuteClaudeCodeOptions {
     worktreePath: string;
     issueRef: IssueRef;
@@ -91,37 +87,19 @@ export interface RunLightweightLLMAnalysisOptions {
     worktreePath: string;
     githubToken: string;
     issueRef: IssueRef;
-    taskId?: string; // For abort signal checking (e.g., draftId for planning)
-    executionType?: ExecutionType; // Type of execution for metrics tracking (defaults to 'other')
-    metadata?: Record<string, unknown>; // Optional metadata to include in LLM logs (e.g., granularity, contextLevel)
+    taskId?: string;
+    executionType?: ExecutionType;
+    metadata?: Record<string, unknown>;
 }
 
-
-/**
- * Executes Claude Code in a Docker container.
- *
- * @deprecated This function is maintained for backward compatibility.
- * New code should use AgentRegistry to get an agent and call executeTask() directly:
- *
- * ```typescript
- * const registry = AgentRegistry.getInstance();
- * await registry.ensureInitialized();
- * const agent = registry.getDefaultAgent();
- * const result = await agent.executeTask(options);
- * ```
- */
+/** @deprecated Use AgentRegistry.getDefaultAgent().executeTask() instead. */
 export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Promise<ClaudeCodeResponse> {
     const { worktreePath, issueRef, githubToken, customPrompt, isRetry = false, retryReason, branchName, modelName, issueDetails, onSessionId, onContainerId } = options;
     const startTime = Date.now();
 
-    logger.info({
-        issueNumber: issueRef.number,
-        repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-        worktreePath,
-        dockerImage: CLAUDE_DOCKER_IMAGE,
-        isRetry,
-        retryReason
-    }, isRetry ? 'Starting Claude Code execution (RETRY)...' : 'Starting Claude Code execution...');
+    const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
+    logger.info({ issueNumber: issueRef.number, repository: repo, worktreePath, isRetry },
+        isRetry ? 'Starting Claude Code execution (RETRY)' : 'Starting Claude Code execution');
 
     try {
         const prompt = buildClaudePrompt({ customPrompt, issueRef, branchName, modelName, issueDetails, isRetry, retryReason });
@@ -129,20 +107,10 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
         const dockerArgs = buildDockerArgs({
-            worktreePath,
-            githubToken,
-            prompt,
-            modelName,
-            issueNumber: issueRef.number,
-            CLAUDE_DOCKER_IMAGE,
-            CLAUDE_CONFIG_PATH,
-            CLAUDE_MAX_TURNS,
-            systemPrompt: options.systemPrompt,
-            tools: options.tools,
-            agentAlias: 'claude'
+            worktreePath, githubToken, prompt, modelName, issueNumber: issueRef.number,
+            CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS,
+            systemPrompt: options.systemPrompt, tools: options.tools, agentAlias: 'claude'
         });
-
-        // Wrap execution with Agent Tank usage tracking
         const { result, usageMetrics } = await executeWithUsageTracking(
             'claude',
             async () => executeDockerCommand('docker', dockerArgs, {
@@ -156,14 +124,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         );
 
         const executionTime = Date.now() - startTime;
-        logger.info({
-            issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            executionTime,
-            outputLength: result.stdout?.length || 0,
-            success: result.exitCode === 0,
-            exitCode: result.exitCode
-        }, 'Claude Code execution completed');
+        logger.info({ issueNumber: issueRef.number, executionTime, exitCode: result.exitCode }, 'Claude Code execution completed');
 
         const claudeOutput = parseStreamJsonOutput(result);
         const response: ClaudeCodeResponse = {
@@ -189,13 +150,9 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         await storePromptInRedis({ claudeOutput, prompt, issueRef, model: response.model!, isRetry, retryReason });
 
         if (!response.success) {
-            logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr }, 'Claude Code execution failed');
+            logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode }, 'Claude Code execution failed');
         } else {
-            logger.info({
-                issueNumber: issueRef.number,
-                conversationTurns: response.conversationLog?.length || 0,
-                model: response.model
-            }, 'Claude Code execution succeeded');
+            logger.info({ issueNumber: issueRef.number, model: response.model }, 'Claude Code execution succeeded');
             verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
         }
 
@@ -207,22 +164,11 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
 
         const executionTime = Date.now() - startTime;
         const err = error as Error;
-        logger.error({
-            issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            executionTime,
-            error: err.message
-        }, 'Error during Claude Code execution');
-
+        logger.error({ issueNumber: issueRef.number, executionTime, error: err.message }, 'Error during Claude Code execution');
         return {
-            success: false,
-            error: err.message,
-            executionTime,
-            output: null,
+            success: false, error: err.message, executionTime, output: null,
             logs: (error as { stderr?: string }).stderr || err.message,
-            modifiedFiles: [],
-            commitMessage: null,
-            summary: null
+            modifiedFiles: [], commitMessage: null, summary: null
         };
     }
 }
@@ -233,72 +179,29 @@ const LIGHTWEIGHT_TOOLS = '';
 export async function generateTaskSummary(options: GenerateTaskSummaryOptions): Promise<string> {
     const { summaryRequest, worktreePath, githubToken, issueRef, correlationId, modelAlias = 'haiku' } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
-    correlatedLogger.info({ modelAlias, issueRef: issueRef.number }, 'Generating task summary via Docker executor...');
-
+    correlatedLogger.info({ modelAlias, issueRef: issueRef.number }, 'Generating task summary');
     const model = resolveModelAlias(modelAlias);
-
-    const summaryPrompt = `Please provide a one-sentence summary for the following request, focusing on the main action. Your output must be ONLY the summary string itself, with no other text.
-
-REQUEST:
-${summaryRequest}
-
-CRITICAL: Do not modify any files. Do not run any commands. Only output the summary.`;
+    const summaryPrompt = `Please provide a one-sentence summary for the following request, focusing on the main action. Your output must be ONLY the summary string itself, with no other text.\n\nREQUEST:\n${summaryRequest}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only output the summary.`;
 
     try {
         const claudeResult = await executeClaudeCode({
-            worktreePath: worktreePath,
-            issueRef: issueRef,
-            githubToken: githubToken,
-            customPrompt: summaryPrompt,
-            branchName: 'summary-generation',
-            modelName: model,
-            systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT,
-            tools: LIGHTWEIGHT_TOOLS
+            worktreePath, issueRef, githubToken, customPrompt: summaryPrompt,
+            branchName: 'summary-generation', modelName: model,
+            systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT, tools: LIGHTWEIGHT_TOOLS
         });
-
-        // Record metrics for title generation
-        await recordLLMMetrics(
-            {
-                model: claudeResult.model ?? model,
-                success: claudeResult.success,
-                executionTime: claudeResult.executionTime,
-                sessionId: claudeResult.sessionId,
-                conversationId: claudeResult.conversationId,
-                conversationLog: claudeResult.conversationLog as unknown as ConversationStep[],
-                tokenUsage: claudeResult.tokenUsage,
-                finalResult: claudeResult.finalResult ? {
-                    num_turns: claudeResult.conversationLog?.length ?? 0,
-                    cost_usd: undefined
-                } : null,
-                error: claudeResult.error
-            },
-            issueRef,
-            {
-                correlationId,
-                executionType: 'title-generation'
-            }
-        );
+        await recordLLMMetrics(buildLlmMetricsPayload(claudeResult, model), issueRef, { correlationId, executionType: 'title-generation' });
 
         if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
             const rawSummary = claudeResult.finalResult?.result || claudeResult.summary;
-            // Clean up the summary:
-            // 1. Split by newline and take the first line (to exclude explanations)
-            // 2. Remove leading markdown header characters (# symbols) and optional following whitespace
-            // 3. Remove surrounding quotes
-            // 4. Trim whitespace
-            const summary = rawSummary!
-                .split('\n')[0]
-                .replace(/^#+\s*/, '')
-                .replace(/^"|"$/g, '')
-                .trim();
+            // Clean: first line only, strip markdown headers and surrounding quotes
+            const summary = rawSummary!.split('\n')[0].replace(/^#+\s*/, '').replace(/^"|"$/g, '').trim();
             correlatedLogger.info({ summary, model }, 'Successfully generated task summary');
             return summary;
         }
-
         throw new Error(`Invalid summary response from Claude execution: ${claudeResult.error}`);
     } catch (error) {
         const err = error as Error;
-        correlatedLogger.error({ error: err.message, model, promptLength: summaryPrompt.length }, 'Failed to generate task summary');
+        correlatedLogger.error({ error: err.message, model }, 'Failed to generate task summary');
         throw error;
     }
 }
@@ -317,11 +220,39 @@ function parseAgentModelFormat(model: string, correlatedLogger: ReturnType<typeo
     if (model && model.includes(':')) {
         const parts = model.split(':');
         const agentAlias = parts[0];
-        const modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
-        correlatedLogger.info({ model, agentAlias, modelOverride }, 'Parsed agent:model format for lightweight analysis');
+        const modelOverride = parts.slice(1).join(':');
+        correlatedLogger.info({ model, agentAlias, modelOverride }, 'Parsed agent:model format');
         return { agentAlias, modelOverride, effectiveModel: modelOverride };
     }
     return { effectiveModel: model };
+}
+
+function buildLlmMetricsPayload(claudeResult: ClaudeCodeResponse, fallbackModel: string) {
+    return {
+        model: claudeResult.model ?? fallbackModel,
+        success: claudeResult.success,
+        executionTime: claudeResult.executionTime,
+        sessionId: claudeResult.sessionId,
+        conversationId: claudeResult.conversationId,
+        conversationLog: claudeResult.conversationLog as unknown as ConversationStep[],
+        tokenUsage: claudeResult.tokenUsage,
+        finalResult: claudeResult.finalResult ? {
+            num_turns: claudeResult.conversationLog?.length ?? 0,
+            cost_usd: undefined
+        } : null,
+        error: claudeResult.error
+    };
+}
+
+function mapUsageMetrics(usageMetrics: UsageTrackingMetrics | null | undefined) {
+    if (!usageMetrics) return undefined;
+    return {
+        preCall: usageMetrics.preCall,
+        postCall: usageMetrics.postCall,
+        delta: usageMetrics.delta,
+        timestamp: usageMetrics.timestamp,
+        agent: usageMetrics.agent
+    };
 }
 
 interface AgentExecutionParams {
@@ -356,43 +287,18 @@ async function executeClaudeAnalysis(
 ): Promise<string> {
     const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, executionType = 'other', model } = options;
 
-    const analysisPrompt = `${prompt}
-
-CRITICAL: Do not modify any files. Do not run any commands. Only provide direct output.`;
-
     const claudeResult = await executeClaudeCode({
-        worktreePath: worktreePath,
-        issueRef: issueRef,
-        githubToken: githubToken,
-        customPrompt: analysisPrompt,
+        worktreePath, issueRef, githubToken,
+        customPrompt: `${prompt}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide direct output.`,
         branchName: 'analysis-generation',
         modelName: resolvedModel,
         systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT,
         tools: LIGHTWEIGHT_TOOLS
     });
 
-    await recordLLMMetrics(
-        {
-            model: claudeResult.model ?? resolvedModel,
-            success: claudeResult.success,
-            executionTime: claudeResult.executionTime,
-            sessionId: claudeResult.sessionId,
-            conversationId: claudeResult.conversationId,
-            conversationLog: claudeResult.conversationLog as unknown as ConversationStep[],
-            tokenUsage: claudeResult.tokenUsage,
-            finalResult: claudeResult.finalResult ? {
-                num_turns: claudeResult.conversationLog?.length ?? 0,
-                cost_usd: undefined
-            } : null,
-            error: claudeResult.error
-        },
-        issueRef,
-        { correlationId, taskId, executionType }
-    );
+    await recordLLMMetrics(buildLlmMetricsPayload(claudeResult, resolvedModel), issueRef, { correlationId, taskId, executionType });
 
-    // Persist LLM log with Agent Tank usage metrics
     const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
-    const usageMetrics = claudeResult.usageMetrics;
     await persistLlmLog(createLlmLogFromAnalysis({
         executionType,
         modelUsed: claudeResult.model ?? resolvedModel,
@@ -401,39 +307,19 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide direct 
         tokenUsage: claudeResult.tokenUsage,
         error: claudeResult.error,
         sessionId: claudeResult.sessionId ?? undefined,
-        correlationId,
-        draftId: taskId,
-        repository,
+        correlationId, draftId: taskId, repository,
         agentAlias: 'claude',
-        usageMetrics: usageMetrics ? {
-            preCall: usageMetrics.preCall,
-            postCall: usageMetrics.postCall,
-            delta: usageMetrics.delta,
-            timestamp: usageMetrics.timestamp,
-            agent: usageMetrics.agent
-        } : undefined,
-        usageMetricRecords: usageMetrics?.records
+        usageMetrics: mapUsageMetrics(claudeResult.usageMetrics),
+        usageMetricRecords: claudeResult.usageMetrics?.records
     }));
 
-    if (claudeResult.finalResult?.result || claudeResult.summary) {
-        const analysisText = (claudeResult.finalResult?.result || claudeResult.summary)!.trim();
-        correlatedLogger.info({
-            model,
-            responseLength: analysisText.length,
-            exitCode: claudeResult.exitCode,
-            usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
-        }, 'Lightweight LLM analysis completed via Docker');
+    const analysisText = (claudeResult.finalResult?.result || claudeResult.summary)?.trim();
+    if (analysisText) {
+        correlatedLogger.info({ model, responseLength: analysisText.length, exitCode: claudeResult.exitCode }, 'Lightweight LLM analysis completed via Docker');
         return analysisText;
     }
 
-    correlatedLogger.error({
-        exitCode: claudeResult.exitCode,
-        rawOutputLength: claudeResult.rawOutput?.length,
-        rawOutputPreview: claudeResult.rawOutput?.substring(0, 500),
-        logs: claudeResult.logs?.substring(0, 500),
-        finalResult: claudeResult.finalResult
-    }, 'Claude execution did not produce valid result');
-
+    correlatedLogger.error({ exitCode: claudeResult.exitCode, rawOutputLength: claudeResult.rawOutput?.length }, 'Claude execution did not produce valid result');
     throw new Error(`Invalid analysis response from Claude execution: ${claudeResult.error || 'No result returned'}`);
 }
 
@@ -447,38 +333,18 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
         try {
             const analysisResult = await tryExecuteWithAgent({ agentAlias, modelOverride, prompt, taskId, executionType, correlatedLogger });
             if (analysisResult !== null) {
-                // Persist LLM log to the new llm_logs table
                 const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
-                // Calculate estimated input tokens from prompt (reliable for single-turn operations)
-                const estimatedInputTokens = estimateTokens(prompt);
-                const logEntry = createLlmLogFromAnalysis({
-                    executionType,
-                    modelUsed: analysisResult.modelUsed,
-                    executionTimeMs: analysisResult.executionTimeMs,
-                    success: analysisResult.success,
-                    tokenUsage: analysisResult.tokenUsage,
-                    estimatedInputTokens,
-                    error: analysisResult.error,
-                    sessionId: analysisResult.sessionId,
-                    correlationId,
-                    draftId: taskId, // taskId is the draftId for planning calls
-                    repository,
-                    agentAlias,
-                    metadata,
-                });
-                await persistLlmLog(logEntry);
-
+                await persistLlmLog(createLlmLogFromAnalysis({
+                    executionType, modelUsed: analysisResult.modelUsed,
+                    executionTimeMs: analysisResult.executionTimeMs, success: analysisResult.success,
+                    tokenUsage: analysisResult.tokenUsage, estimatedInputTokens: estimateTokens(prompt),
+                    error: analysisResult.error, sessionId: analysisResult.sessionId,
+                    correlationId, draftId: taskId, repository, agentAlias, metadata,
+                }));
                 if (!analysisResult.success) {
                     throw new Error(analysisResult.error || 'Agent analysis failed');
                 }
-
-                correlatedLogger.info({
-                    agentAlias,
-                    model: analysisResult.modelUsed,
-                    responseLength: analysisResult.response.length,
-                    executionTimeMs: analysisResult.executionTimeMs
-                }, 'Agent lightweight analysis completed with log persisted');
-
+                correlatedLogger.info({ agentAlias, model: analysisResult.modelUsed, responseLength: analysisResult.response.length }, 'Agent analysis completed');
                 return analysisResult.response;
             }
         } catch (agentError) {

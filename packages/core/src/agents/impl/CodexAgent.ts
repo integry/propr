@@ -16,7 +16,7 @@ import {
 } from '../../codex/codexHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
-import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import { executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 // Re-export UsageLimitError for convenience
@@ -40,64 +40,30 @@ export class CodexAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const {
-            worktreePath,
-            issueRef,
-            prompt: customPrompt,
-            model,
-            systemPrompt,
-            isRetry = false,
-            retryReason,
-            branchName,
-            issueDetails,
-            onSessionId,
-            onContainerId,
-            githubToken,
-            taskId
-        } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
+            isRetry = false, retryReason, branchName, issueDetails,
+            onSessionId, onContainerId, githubToken, taskId } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
-
+        const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
         logger.info({
-            issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            worktreePath,
-            dockerImage: this.config.dockerImage,
-            agentAlias: this.config.alias,
-            isRetry,
-            retryReason
+            issueNumber: issueRef.number, repository: repo, worktreePath,
+            dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason
         }, isRetry ? 'Starting Codex agent execution (RETRY)...' : 'Starting Codex agent execution...');
 
         try {
-            // Build comprehensive prompt using helpers
             const prompt = buildCodexPrompt({
-                customPrompt,
-                issueRef,
-                branchName,
-                modelName: effectiveModel,
-                issueDetails,
-                isRetry,
-                retryReason,
-                systemPrompt
+                customPrompt, issueRef, branchName, modelName: effectiveModel,
+                issueDetails, isRetry, retryReason, systemPrompt
             });
-
-            // Set worktree ownership for container compatibility
             await setWorktreeOwnership(worktreePath, issueRef.number);
-
-            // Verify worktree structure before execution
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-
-            // Build Docker arguments using agent config
             const dockerArgs = this.buildDockerArgs({
-                worktreePath,
-                githubToken,
-                modelName: effectiveModel,
-                issueNumber: issueRef.number,
-                taskId
+                worktreePath, githubToken, modelName: effectiveModel,
+                issueNumber: issueRef.number, taskId
             });
 
-            // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
                 async () => executeDockerCommand('docker', dockerArgs, {
@@ -113,19 +79,12 @@ export class CodexAgent implements Agent {
             );
 
             const executionTime = Date.now() - startTime;
-
-            // Parse the NDJSON output using the helper
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
             logger.info({
-                issueNumber: issueRef.number,
-                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-                executionTime,
-                outputLength: result.stdout?.length || 0,
-                success: result.exitCode === 0,
-                exitCode: result.exitCode,
-                agentAlias: this.config.alias,
-                sessionId: parsedOutput.sessionId
+                issueNumber: issueRef.number, repository: repo, executionTime,
+                outputLength: result.stdout?.length || 0, exitCode: result.exitCode,
+                agentAlias: this.config.alias, sessionId: parsedOutput.sessionId
             }, 'Codex agent execution completed');
 
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
@@ -147,61 +106,28 @@ export class CodexAgent implements Agent {
                 tokenUsage: parsedOutput.tokenUsage
             };
 
-            // Store prompt in Redis for audit trail
-            await storeCodexPromptInRedis({
-                codexOutput: parsedOutput,
-                prompt,
-                issueRef,
-                model: modelUsed,
-                isRetry,
-                retryReason
-            });
+            await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt, issueRef, model: modelUsed, isRetry, retryReason });
 
-            // Persist LLM log for visibility in the LLM Logs UI (including Agent Tank usage if available)
-            const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
             const logEntry = createLlmLogFromAnalysis({
-                executionType: 'implementation',
-                modelUsed,
-                executionTimeMs: executionTime,
-                success: response.success,
+                executionType: 'implementation', modelUsed,
+                executionTimeMs: executionTime, success: response.success,
                 tokenUsage: parsedOutput.tokenUsage,
                 error: response.success ? undefined : (parsedOutput.error || 'Execution failed'),
-                sessionId: parsedOutput.sessionId,
-                draftId: taskId,
-                repository,
+                sessionId: parsedOutput.sessionId, draftId: taskId,
+                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
                 agentAlias: this.config.alias,
-                metadata: {
-                    isRetry,
-                    retryReason,
-                    conversationId: parsedOutput.conversationId
-                },
-                usageMetrics: usageMetrics ? {
-                    preCall: usageMetrics.preCall,
-                    postCall: usageMetrics.postCall,
-                    delta: usageMetrics.delta,
-                    timestamp: usageMetrics.timestamp,
-                    agent: usageMetrics.agent
-                } : undefined,
-                usageMetricRecords: usageMetrics?.records
+                metadata: { isRetry, retryReason, conversationId: parsedOutput.conversationId },
+                ...this.formatUsageMetrics(usageMetrics)
             });
             await persistLlmLog(logEntry);
 
             if (!response.success) {
                 logger.error({
-                    issueNumber: issueRef.number,
-                    exitCode: result.exitCode,
-                    stderr: result.stderr,
-                    agentAlias: this.config.alias,
-                    error: parsedOutput.error
+                    issueNumber: issueRef.number, exitCode: result.exitCode,
+                    stderr: result.stderr, agentAlias: this.config.alias, error: parsedOutput.error
                 }, 'Codex agent execution failed');
             } else {
-                logger.info({
-                    issueNumber: issueRef.number,
-                    model: modelUsed,
-                    agentAlias: this.config.alias
-                }, 'Codex agent execution succeeded');
-
-                // Verify worktree state after successful execution
+                logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Codex agent execution succeeded');
                 verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
             }
 
@@ -216,184 +142,143 @@ export class CodexAgent implements Agent {
             }
 
             logger.error({
-                issueNumber: issueRef.number,
-                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-                executionTime,
-                error: err.message,
-                agentAlias: this.config.alias
+                issueNumber: issueRef.number, repository: repo,
+                executionTime, error: err.message, agentAlias: this.config.alias
             }, 'Error during Codex agent execution');
 
-            return {
-                success: false,
-                error: err.message,
-                executionTimeMs: executionTime,
+            return { success: false, error: err.message, executionTimeMs: executionTime,
                 logs: (error as { stderr?: string }).stderr || err.message,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: undefined,
-                modelUsed: effectiveModel || 'unknown'
-            };
+                modifiedFiles: [], commitMessage: null, summary: undefined,
+                modelUsed: effectiveModel || 'unknown' };
         }
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
         const { context, model, taskId, executionType } = options || {};
         const startTime = Date.now();
-        logger.info({
-            agentAlias: this.config.alias,
-            promptLength: prompt.length,
-            hasContext: !!context,
-            requestedModel: model,
-            taskId,
-            executionType
-        }, 'Running lightweight analysis via Codex agent...');
-
-        // Use provided model or Codex's default model (null = use Codex's config default)
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
-        const analysisPrompt = context
-            ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`
-            : `${prompt}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`;
+        logger.info({
+            agentAlias: this.config.alias, promptLength: prompt.length,
+            hasContext: !!context, requestedModel: model, taskId, executionType
+        }, 'Running lightweight analysis via Codex agent...');
 
-        // Ensure analysis workspace exists as a git repo (Codex requires this)
-        // Must be writable by node user (UID 1000) inside the container
-        const analysisWorkspace = '/tmp/codex-analysis';
-        try {
-            if (!fs.existsSync(analysisWorkspace)) {
-                fs.mkdirSync(analysisWorkspace, { recursive: true });
-            }
-            if (!fs.existsSync(`${analysisWorkspace}/.git`)) {
-                execSync('git init', { cwd: analysisWorkspace, stdio: 'pipe' });
-                execSync('git config user.email "codex@propr.dev"', { cwd: analysisWorkspace, stdio: 'pipe' });
-                execSync('git config user.name "Codex Analysis"', { cwd: analysisWorkspace, stdio: 'pipe' });
-            }
-            // Ensure node user (1000) can write to the directory
-            execSync(`chown -R 1000:1000 ${analysisWorkspace}`, { stdio: 'pipe' });
-        } catch (initError) {
-            logger.warn({ error: (initError as Error).message }, 'Failed to initialize analysis workspace git repo');
-        }
+        const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+        const analysisWorkspace = this.ensureAnalysisWorkspace();
 
         try {
-            // Use JSON output to get token usage metrics
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
-                issueNumber: 0,
-                jsonOutput: true, // Use JSON output to capture token usage
-                taskId,
-                executionType
+                issueNumber: 0, jsonOutput: true, taskId, executionType
             });
 
-            // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
                 async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: 1800000, // 30 minute timeout for analysis (planning tasks can take longer)
-                    stdinData: analysisPrompt,
-                    taskId // Pass taskId for abort signal checking
+                    timeout: 1800000, stdinData: analysisPrompt, taskId
                 })
             );
 
             const executionTimeMs = Date.now() - startTime;
-
-            // Parse JSON output to extract response and token usage
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
             if (result.exitCode === 0 || parsedOutput.result) {
-                const analysisText = (parsedOutput.result || '').trim();
-                logger.info({
-                    agentAlias: this.config.alias,
-                    responseLength: analysisText.length,
-                    model: effectiveModel,
-                    executionTimeMs,
-                    inputTokens: parsedOutput.tokenUsage?.input_tokens,
-                    outputTokens: parsedOutput.tokenUsage?.output_tokens,
-                    usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
-                }, 'Lightweight analysis completed');
-
-                // Persist LLM log with usage metrics for analysis calls
-                await persistLlmLog(createLlmLogFromAnalysis({
-                    executionType: (executionType || 'other') as ExecutionType,
-                    modelUsed: parsedOutput.model || effectiveModel,
-                    executionTimeMs,
-                    success: true,
-                    tokenUsage: parsedOutput.tokenUsage,
-                    sessionId: parsedOutput.sessionId,
-                    draftId: taskId,
-                    agentAlias: this.config.alias,
-                    usageMetrics: usageMetrics ? {
-                        preCall: usageMetrics.preCall,
-                        postCall: usageMetrics.postCall,
-                        delta: usageMetrics.delta,
-                        timestamp: usageMetrics.timestamp,
-                        agent: usageMetrics.agent
-                    } : undefined,
-                    usageMetricRecords: usageMetrics?.records
-                }));
-
-                return {
-                    response: analysisText,
-                    modelUsed: parsedOutput.model || effectiveModel,
-                    executionTimeMs,
-                    success: true,
-                    tokenUsage: parsedOutput.tokenUsage,
-                    sessionId: parsedOutput.sessionId
-                };
+                return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId });
             }
 
             const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
-            return {
-                response: '',
-                modelUsed: effectiveModel,
-                executionTimeMs,
-                success: false,
-                error: `Analysis failed: ${errorMsg}`
-            };
+            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}` };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
-            logger.error({
-                agentAlias: this.config.alias,
-                error: err.message,
-                executionTimeMs
-            }, 'Lightweight analysis failed');
-            return {
-                response: '',
-                modelUsed: effectiveModel,
-                executionTimeMs,
-                success: false,
-                error: err.message
-            };
+            logger.error({ agentAlias: this.config.alias, error: err.message, executionTimeMs }, 'Lightweight analysis failed');
+            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message };
         }
     }
 
-    async healthCheck(): Promise<boolean> {
-        logger.debug({
-            agentAlias: this.config.alias,
-            dockerImage: this.config.dockerImage
-        }, 'Running health check for Codex agent...');
-
+    /**
+     * Ensures the analysis workspace directory exists as a git repo writable by the container node user.
+     */
+    private ensureAnalysisWorkspace(): string {
+        const workspace = '/tmp/codex-analysis';
         try {
-            const result = await executeDockerCommand('docker', [
-                'images', '-q', this.config.dockerImage
-            ], { timeout: 10000 });
+            if (!fs.existsSync(workspace)) fs.mkdirSync(workspace, { recursive: true });
+            if (!fs.existsSync(`${workspace}/.git`)) {
+                execSync('git init', { cwd: workspace, stdio: 'pipe' });
+                execSync('git config user.email "codex@propr.dev"', { cwd: workspace, stdio: 'pipe' });
+                execSync('git config user.name "Codex Analysis"', { cwd: workspace, stdio: 'pipe' });
+            }
+            execSync(`chown -R 1000:1000 ${workspace}`, { stdio: 'pipe' });
+        } catch (initError) {
+            logger.warn({ error: (initError as Error).message }, 'Failed to initialize analysis workspace git repo');
+        }
+        return workspace;
+    }
 
+    /**
+     * Builds a successful AnalysisResult from parsed output, logging and persisting the LLM log.
+     */
+    private async buildAnalysisSuccess(opts: {
+        parsedOutput: ReturnType<typeof parseCodexStreamOutput>;
+        effectiveModel: string; executionTimeMs: number;
+        usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
+        executionType?: string; taskId?: string;
+    }): Promise<AnalysisResult> {
+        const { parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId } = opts;
+        const analysisText = (parsedOutput.result || '').trim();
+        logger.info({
+            agentAlias: this.config.alias, responseLength: analysisText.length,
+            model: effectiveModel, executionTimeMs,
+            inputTokens: parsedOutput.tokenUsage?.input_tokens,
+            outputTokens: parsedOutput.tokenUsage?.output_tokens,
+            usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
+        }, 'Lightweight analysis completed');
+
+        await persistLlmLog(createLlmLogFromAnalysis({
+            executionType: (executionType || 'other') as ExecutionType,
+            modelUsed: parsedOutput.model || effectiveModel, executionTimeMs,
+            success: true, tokenUsage: parsedOutput.tokenUsage,
+            sessionId: parsedOutput.sessionId, draftId: taskId,
+            agentAlias: this.config.alias,
+            ...this.formatUsageMetrics(usageMetrics)
+        }));
+
+        return {
+            response: analysisText, modelUsed: parsedOutput.model || effectiveModel,
+            executionTimeMs, success: true,
+            tokenUsage: parsedOutput.tokenUsage, sessionId: parsedOutput.sessionId
+        };
+    }
+
+    /**
+     * Formats Agent Tank usage metrics into the shape expected by createLlmLogFromAnalysis.
+     */
+    private formatUsageMetrics(usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics']) {
+        if (!usageMetrics) return {};
+        return {
+            usageMetrics: {
+                preCall: usageMetrics.preCall, postCall: usageMetrics.postCall,
+                delta: usageMetrics.delta, timestamp: usageMetrics.timestamp,
+                agent: usageMetrics.agent
+            },
+            usageMetricRecords: usageMetrics.records
+        };
+    }
+
+    async healthCheck(): Promise<boolean> {
+        const { alias: agentAlias } = this.config;
+        const dockerImage = this.config.dockerImage;
+        logger.debug({ agentAlias, dockerImage }, 'Running health check for Codex agent...');
+        try {
+            const result = await executeDockerCommand('docker', ['images', '-q', dockerImage], { timeout: 10000 });
             const imageExists = !!result.stdout.trim();
-
-            logger.info({
-                agentAlias: this.config.alias,
-                dockerImage: this.config.dockerImage,
-                imageExists
-            }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
-
+            logger.info({ agentAlias, dockerImage, imageExists }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
             return imageExists;
         } catch (error) {
-            const err = error as Error;
-            logger.error({
-                agentAlias: this.config.alias,
-                error: err.message
-            }, 'Health check failed with error');
+            logger.error({ agentAlias, error: (error as Error).message }, 'Health check failed with error');
             return false;
         }
     }
@@ -469,24 +354,12 @@ export class CodexAgent implements Agent {
         // Add model if specified
         if (modelName) {
             const codexIndex = dockerArgs.indexOf('codex');
-            // Assuming CLI supports --model argument for override
             dockerArgs.splice(codexIndex + 2, 0, '--model', modelName);
-            logger.info({
-                issueNumber,
-                requestedModel: modelName,
-                agentAlias: this.config.alias
-            }, 'Using specific model for Codex agent execution');
+            logger.info({ issueNumber, requestedModel: modelName, agentAlias: this.config.alias }, 'Using specific model for Codex agent execution');
         } else {
-            logger.debug({
-                issueNumber,
-                agentAlias: this.config.alias
-            }, 'No model specified, Codex agent will use default');
+            logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Codex agent will use default');
         }
-
-        logger.info({
-            issueNumber,
-            agentAlias: this.config.alias
-        }, 'Docker args built for Codex agent');
+        logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Codex agent');
 
         return dockerArgs;
     }
