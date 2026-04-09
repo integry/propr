@@ -103,10 +103,43 @@ export async function isAgentTankEnabled(): Promise<boolean> {
 }
 
 /**
+ * Map of raw Agent Tank metric keys to human-readable labels.
+ *
+ * Keys not in this map are title-cased automatically
+ * (e.g. "fiveHour" → "Five Hour").
+ */
+const METRIC_KEY_LABELS: Record<string, string> = {
+    session: 'Session',
+    weeklyAll: 'Weekly',
+    weeklySonnet: 'Sonnet',
+    weeklyOpus: 'Opus',
+    weeklyHaiku: 'Haiku',
+    fiveHour: 'Five Hour',
+    weekly: 'Weekly',
+    daily: 'Daily',
+    monthly: 'Monthly',
+};
+
+/**
+ * Convert a raw metric key to a human-readable label.
+ *
+ * Uses the lookup table first, then falls back to splitting camelCase
+ * and title-casing each word (e.g. "someMetric" → "Some Metric").
+ */
+export function humanizeMetricKey(key: string): string {
+    if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
+    // Split camelCase and title-case each word
+    return key
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/^./, c => c.toUpperCase());
+}
+
+/**
  * Extract structured metric records from an Agent Tank usage delta.
  *
  * Walks the delta object looking for "percent" values at the first or
  * second nesting level and produces one record per metric key.
+ * Records with a 0% delta are excluded (nothing consumed).
  *
  * Examples of delta shapes handled:
  *   Claude:  { session: { percent: 16 }, weeklyAll: { percent: 4 } }
@@ -122,9 +155,13 @@ export function extractMetricRecords(
     for (const [key, value] of Object.entries(delta)) {
         if (value === null || value === undefined) continue;
 
+        const label = humanizeMetricKey(key);
+
         // Direct numeric value (unlikely but handle it)
         if (typeof value === 'number') {
-            records.push({ agent, metricKey: key, metricValue: value });
+            if (value !== 0) {
+                records.push({ agent, metricKey: label, metricValue: value });
+            }
             continue;
         }
 
@@ -135,8 +172,8 @@ export function extractMetricRecords(
                 typeof nested.percent === 'number' ? nested.percent :
                 typeof nested.percentUsed === 'number' ? nested.percentUsed :
                 null;
-            if (percentValue !== null) {
-                records.push({ agent, metricKey: key, metricValue: percentValue });
+            if (percentValue !== null && percentValue !== 0) {
+                records.push({ agent, metricKey: label, metricValue: percentValue });
             }
         }
 
@@ -158,13 +195,14 @@ function extractArrayMetricRecords(
     for (const item of value) {
         if (item && typeof item === 'object') {
             const entry = item as Record<string, unknown>;
-            const modelName = typeof entry.model === 'string' ? entry.model : key;
+            const rawName = typeof entry.model === 'string' ? entry.model : key;
+            const label = humanizeMetricKey(rawName);
             const percentValue =
                 typeof entry.percentUsed === 'number' ? entry.percentUsed :
                 typeof entry.percent === 'number' ? entry.percent :
                 null;
-            if (percentValue !== null) {
-                records.push({ agent, metricKey: modelName, metricValue: percentValue });
+            if (percentValue !== null && percentValue !== 0) {
+                records.push({ agent, metricKey: label, metricValue: percentValue });
             }
         }
     }

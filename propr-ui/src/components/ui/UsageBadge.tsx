@@ -67,6 +67,8 @@ export const UsageBadge: React.FC<UsageBadgeProps> = ({
 
   if (hasRecords) {
     for (const record of usageMetricRecords!) {
+      // Skip 0% metrics — nothing consumed
+      if (record.metricValue === 0) continue;
       const sign = record.metricValue > 0 ? '+' : '';
       parts.push(
         <span
