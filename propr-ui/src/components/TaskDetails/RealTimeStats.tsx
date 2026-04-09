@@ -28,7 +28,7 @@ const RealTimeStats: React.FC<RealTimeStatsProps> = ({ tokenUsage, costUsd, allo
 
     return [{
       agent: 'task',
-      metricKey: 'allowance',
+      metricKey: 'Allowance',
       metricValue: allowancePercent,
     }];
   }, [allowancePercent]);

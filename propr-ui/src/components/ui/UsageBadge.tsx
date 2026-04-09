@@ -1,6 +1,32 @@
 import React from 'react';
 import type { UsageMetricRecord } from '@propr/shared';
 
+/**
+ * Map of raw Agent Tank metric keys to human-readable labels.
+ */
+const METRIC_KEY_LABELS: Record<string, string> = {
+  session: 'Session',
+  weeklyAll: 'Weekly',
+  weeklySonnet: 'Sonnet',
+  weeklyOpus: 'Opus',
+  weeklyHaiku: 'Haiku',
+  fiveHour: 'Five Hour',
+  weekly: 'Weekly',
+  daily: 'Daily',
+  monthly: 'Monthly',
+  allowance: 'Allowance',
+};
+
+function humanizeMetricKey(key: string): string {
+  if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
+  // Already humanized (starts with uppercase) — return as-is
+  if (/^[A-Z]/.test(key)) return key;
+  // Split camelCase and title-case each word
+  return key
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/^./, c => c.toUpperCase());
+}
+
 export interface UsageBadgeProps {
   /** Total tokens consumed */
   tokens?: number;
@@ -74,9 +100,9 @@ export const UsageBadge: React.FC<UsageBadgeProps> = ({
         <span
           key={`${record.agent}-${record.metricKey}`}
           className={record.metricValue > 0 ? 'text-amber-600' : 'text-green-600'}
-          title={`${record.metricKey}: ${sign}${record.metricValue.toFixed(1)}%`}
+          title={`${humanizeMetricKey(record.metricKey)}: ${sign}${record.metricValue.toFixed(1)}%`}
         >
-          {record.metricKey} {sign}{record.metricValue.toFixed(1)}%
+          {humanizeMetricKey(record.metricKey)} {sign}{record.metricValue.toFixed(1)}%
         </span>
       );
     }

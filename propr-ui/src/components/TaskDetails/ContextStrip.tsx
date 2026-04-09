@@ -178,22 +178,41 @@ const TokenUsageChip: React.FC<{ tokenUsage: TokenUsage }> = ({ tokenUsage }) =>
   );
 };
 
+// Map of raw Agent Tank metric keys to human-readable labels
+const METRIC_KEY_LABELS: Record<string, string> = {
+  session: 'Session', weeklyAll: 'Weekly', weeklySonnet: 'Sonnet',
+  weeklyOpus: 'Opus', weeklyHaiku: 'Haiku', fiveHour: 'Five Hour',
+  weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly',
+};
+
+function humanizeMetricKey(key: string): string {
+  if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
+  if (/^[A-Z]/.test(key)) return key;
+  return key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
+}
+
+// Match a metric record by raw or humanized key
+function findMetricRecord(records: UsageMetricRecord[], rawKey: string): UsageMetricRecord | undefined {
+  const humanized = METRIC_KEY_LABELS[rawKey] || rawKey;
+  return records.find(r => r.metricKey === rawKey || r.metricKey === humanized);
+}
+
 // Usage metrics chip component (Agent Tank tracking)
 const UsageMetricsChip: React.FC<{ usageMetricRecords: UsageMetricRecord[] }> = ({ usageMetricRecords }) => {
   if (!usageMetricRecords || usageMetricRecords.length === 0) return null;
 
   // Find the session usage (most relevant for current task)
-  const sessionRecord = usageMetricRecords.find(r => r.metricKey === 'session');
-  const weeklyRecord = usageMetricRecords.find(r => r.metricKey === 'weeklyAll');
+  const sessionRecord = findMetricRecord(usageMetricRecords, 'session');
+  const weeklyRecord = findMetricRecord(usageMetricRecords, 'weeklyAll');
 
   if (!sessionRecord && !weeklyRecord) return null;
 
   const sessionPct = sessionRecord?.metricValue ?? 0;
   const weeklyPct = weeklyRecord?.metricValue ?? 0;
 
-  // Build tooltip with all metrics
+  // Build tooltip with all metrics using human-readable labels
   const tooltip = usageMetricRecords
-    .map(r => `${r.metricKey}: ${r.metricValue.toFixed(1)}%`)
+    .map(r => `${humanizeMetricKey(r.metricKey)}: ${r.metricValue.toFixed(1)}%`)
     .join(' | ');
 
   // Only show if there's actual usage
