@@ -5,7 +5,7 @@ import { Knex } from 'knex';
 import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import { RequestError } from '@octokit/request-error';
-import { refreshGitHubTokenIfNeeded } from '../auth';
+import { refreshGitHubTokenIfNeeded } from '../auth.js';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
