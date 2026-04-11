@@ -78,7 +78,7 @@ export function setupAuth(app: Express): void {
         clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
         callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
     },
-    (accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) => {
+    function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
         // Here you would find or create a user in your database.
         // For now, we'll just pass the profile through.
         console.log('User authenticated:', profile.username);
