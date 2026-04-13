@@ -2,6 +2,7 @@ import path from 'path';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { getIndexingProgress } from '../services/relevance/indexingCancellation.js';
+import { MODEL_INFO_MAP } from '@propr/shared';
 
 // --- Interfaces ---
 
@@ -355,6 +356,20 @@ export async function migrateAgentConfigs(): Promise<boolean> {
                         agentAlias: agent.alias,
                         addedModels: missingModels
                     }, 'Added Claude 4.6 models to agent');
+                }
+            }
+
+            // Migration 3: Remove deprecated models that no longer exist in modelDefinitions
+            if (agent.supportedModels) {
+                const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
+                const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
+                if (removedModels.length > 0) {
+                    agent.supportedModels = validModels;
+                    migrated = true;
+                    logger.info({
+                        agentAlias: agent.alias,
+                        removedModels
+                    }, 'Removed deprecated models from agent');
                 }
             }
         }
