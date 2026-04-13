@@ -136,6 +136,29 @@ export const refreshAgentTank = async (): Promise<{ success: boolean; error?: st
   return response.json();
 };
 
+export interface AgentTankDetectResponse {
+  detected: boolean;
+  url?: string;
+  reason?: string;
+}
+
+export const detectAgentTank = async (): Promise<AgentTankDetectResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank/detect`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const enableAgentTank = async (url: string): Promise<{ success: boolean }> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: true, url }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export interface PostFollowupResponse { success: boolean; message: string; }
 export const postTaskFollowup = async (taskId: string, body: string): Promise<PostFollowupResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/followup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }), credentials: 'include' });

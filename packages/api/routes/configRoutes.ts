@@ -426,6 +426,39 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
   }
 
+  async function getAgentTankDetect(_req: Request, res: Response): Promise<void> {
+    const DEFAULT_URL = 'http://host.docker.internal:3456';
+    try {
+      const settings = await configManager.loadAgentTankSettings();
+      // If already enabled, no need to detect
+      if (settings.enabled) {
+        res.json({ detected: false, reason: 'already_enabled' });
+        return;
+      }
+      // Try to detect Agent Tank at default URL
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2000);
+      try {
+        const response = await fetch(`${DEFAULT_URL}/status`, { signal: controller.signal });
+        clearTimeout(timer);
+        if (response.ok) {
+          const data = await response.json();
+          // Check if we got valid agent data
+          const hasAgents = data && typeof data === 'object' && Object.keys(data).length > 0;
+          res.json({ detected: hasAgents, url: DEFAULT_URL });
+        } else {
+          res.json({ detected: false });
+        }
+      } catch {
+        clearTimeout(timer);
+        res.json({ detected: false });
+      }
+    } catch (error) {
+      console.error('Error in /api/config/agent-tank/detect GET:', error);
+      res.json({ detected: false });
+    }
+  }
+
   async function getAgentTankUsage(_req: Request, res: Response): Promise<void> {
     try {
       const settings = await configManager.loadAgentTankSettings();
@@ -524,6 +557,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     postAgentTankSettings,
     getAgentTankStatus,
     getAgentTankUsage,
-    postAgentTankRefresh
+    postAgentTankRefresh,
+    getAgentTankDetect
   };
 }

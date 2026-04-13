@@ -87,38 +87,46 @@ export function extractModelFromLabels(labels: Array<{ name: string }>, currentL
 }
 
 export async function fetchAllComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, repoOwner: string, repoName: string, pullRequestNumber: number): Promise<PRComment[]> {
-    // Fetch the last 100 comments (most recent) - sufficient for validation and processing
-    // For issue comments, we need to calculate the last page since there's no sort parameter
-    const firstPageResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100, page: 1,
-        mediaType: { format: 'full' }
-    });
+    // Fetch ALL issue comments with pagination
+    const issueComments: PRComment[] = [];
+    let page = 1;
+    let hasMoreIssueComments = true;
 
-    let issueComments = firstPageResp.data as PRComment[];
-    // Check Link header for last page - if more than 100 comments, fetch the last page
-    const linkHeader = (firstPageResp.headers as Record<string, string | undefined>).link;
-    if (linkHeader && linkHeader.includes('rel="last"')) {
-        const lastPageMatch = linkHeader.match(/page=(\d+)>; rel="last"/);
-        if (lastPageMatch) {
-            const lastPage = parseInt(lastPageMatch[1], 10);
-            if (lastPage > 1) {
-                const lastPageResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                    owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100, page: lastPage,
-                    mediaType: { format: 'full' }
-                });
-                issueComments = lastPageResp.data as PRComment[];
-            }
-        }
+    while (hasMoreIssueComments) {
+        const resp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100, page,
+            mediaType: { format: 'full' }
+        });
+        const pageComments = resp.data as PRComment[];
+        issueComments.push(...pageComments);
+
+        // Check if there are more pages
+        const linkHeader = (resp.headers as Record<string, string | undefined>).link;
+        hasMoreIssueComments = Boolean(linkHeader && linkHeader.includes('rel="next"'));
+        page++;
     }
 
-    // Review comments support direction parameter - get newest first
-    const reviewCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
-        owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100,
-        sort: 'created', direction: 'desc',
-        mediaType: { format: 'full' }
-    });
+    // Fetch ALL review comments with pagination
+    const reviewComments: PRComment[] = [];
+    page = 1;
+    let hasMoreReviewComments = true;
 
-    return [...issueComments, ...(reviewCommentsResp.data as PRComment[])];
+    while (hasMoreReviewComments) {
+        const resp = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
+            owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100, page,
+            sort: 'created', direction: 'desc',
+            mediaType: { format: 'full' }
+        });
+        const pageComments = resp.data as PRComment[];
+        reviewComments.push(...pageComments);
+
+        // Check if there are more pages
+        const linkHeader = (resp.headers as Record<string, string | undefined>).link;
+        hasMoreReviewComments = Boolean(linkHeader && linkHeader.includes('rel="next"'));
+        page++;
+    }
+
+    return [...issueComments, ...reviewComments];
 }
 
 export interface CommitMessageOptions {
