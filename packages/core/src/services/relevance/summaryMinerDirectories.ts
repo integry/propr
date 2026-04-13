@@ -118,16 +118,14 @@ export async function aggregateDirectories(
 
       // Save results and update cache
       for (const result of results) {
-        if (result.summary) {
-          const dirInfo = batch.find(d => d.dirPath === result.dirPath);
-          if (dirInfo) {
-            await saveDirectorySummary(result.dirPath, result.summary, dirInfo.newHash, branch);
-            dirSummaryCache.set(result.dirPath, result.summary);
-          }
+        const dirInfo = result.summary ? batch.find(d => d.dirPath === result.dirPath) : null;
+        if (dirInfo && result.summary) {
+          await saveDirectorySummary(result.dirPath, result.summary, dirInfo.newHash, branch);
+          dirSummaryCache.set(result.dirPath, result.summary);
         }
         dirsProcessed++;
-        await updateDirectoryProgress(fullName);
       }
+      await updateDirectoryProgress(fullName);
     }
   }
 
@@ -327,7 +325,7 @@ interface DirectoryResult {
  * Processes a batch of directories in a single LLM call
  */
 async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Promise<DirectoryResult[]> {
-  const { directories, agent, log, modelOverride, branch, fullName } = options;
+  const { directories, agent, log, modelOverride, fullName } = options;
 
   if (directories.length === 0) {
     return [];
