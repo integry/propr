@@ -1,5 +1,6 @@
 import { simpleGit, SimpleGit } from 'simple-git';
 import path from 'path';
+import fs from 'fs/promises';
 import type { Logger } from 'pino';
 import logger, { generateCorrelationId } from '../../utils/logger.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
@@ -89,6 +90,28 @@ const EXCLUDED_PATHS = [
   'obj/'
 ];
 
+/**
+ * Common icon file names to check for in the repository root.
+ * Listed in order of priority - first match wins.
+ */
+const COMMON_ICON_FILES = [
+  'logo.png',
+  'logo.svg',
+  'icon.png',
+  'icon.svg',
+  'favicon.png',
+  'favicon.svg',
+  'favicon.ico',
+  'logo.jpg',
+  'logo.jpeg',
+  'icon.jpg',
+  'icon.jpeg',
+  'app-icon.png',
+  'app-icon.svg',
+  'brand.png',
+  'brand.svg'
+];
+
 // --- Helper Functions ---
 
 interface AgentSetupResult {
@@ -125,6 +148,25 @@ async function setupAgent(settings: { agent_alias?: string }): Promise<AgentSetu
   const effectiveModel = modelOverride || agent.config.defaultModel;
 
   return { agent, modelOverride, effectiveModel };
+}
+
+/**
+ * Discovers an icon file in the repository root by checking common icon file names.
+ * Returns the path to the first matching icon file, or null if none found.
+ */
+async function discoverRepoIcon(repoPath: string, log: Logger): Promise<string | null> {
+  for (const iconFile of COMMON_ICON_FILES) {
+    const iconPath = path.join(repoPath, iconFile);
+    try {
+      await fs.access(iconPath);
+      log.info({ iconPath: iconFile }, 'Discovered repository icon');
+      return iconFile;
+    } catch {
+      // File doesn't exist, continue to next
+    }
+  }
+  log.debug('No repository icon found in common locations');
+  return null;
 }
 
 // --- Main Export ---
@@ -167,6 +209,9 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     // Phase A: Setup & Staleness Check
     correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
 
+    // 0. Discover repository icon (early, so we can include it in status updates)
+    const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
+
     // 1. Check if summarization is enabled
     const settings = await loadSummarizationSettings();
     if (!settings.enabled) {
@@ -205,7 +250,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     if (filesToProcess.length === 0 && filesToDelete.length === 0) {
       correlatedLogger.info('No files need processing, all summaries up to date');
-      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage });
+      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
       return;
     }
 
@@ -244,8 +289,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {
-      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage });
-      correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, ...batchResult }, 'Repository indexing completed successfully');
+      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+      correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
     }
 
     // Clear cancellation flag and progress on successful completion
@@ -461,10 +506,11 @@ export async function updateRepositoryStatus(
   fullName: string,
   status: 'idle' | 'indexing' | 'completed' | 'failed',
   branch: string = 'HEAD',
-  commitInfo?: { hash?: string; message?: string }
+  commitInfo?: { hash?: string; message?: string; iconPath?: string | null }
 ): Promise<void> {
   const lastIndexedHash = commitInfo?.hash;
   const lastIndexedCommitMessage = commitInfo?.message;
+  const iconPath = commitInfo?.iconPath;
   const updateData: Record<string, unknown> = {
     indexing_status: status,
     updated_at: db.fn.now()
@@ -478,6 +524,9 @@ export async function updateRepositoryStatus(
     if (lastIndexedCommitMessage) {
       updateData.last_indexed_commit_message = lastIndexedCommitMessage;
     }
+    if (iconPath !== undefined) {
+      updateData.icon_path = iconPath;
+    }
   }
 
   await db('repositories')
@@ -489,6 +538,7 @@ export async function updateRepositoryStatus(
       updated_at: db.fn.now(),
       last_indexed_hash: lastIndexedHash || null,
       last_indexed_commit_message: lastIndexedCommitMessage || null,
+      icon_path: iconPath || null,
       ...(status === 'completed' ? { last_indexed_at: db.fn.now() } : {})
     })
     .onConflict(['full_name', 'branch'])

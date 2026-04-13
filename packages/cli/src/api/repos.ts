@@ -87,6 +87,11 @@ export interface RepositoryIndexingStatus {
   last_indexed_commit_message: string | null;
 
   /**
+   * Path to the repository's icon file discovered during indexing.
+   */
+  icon_path: string | null;
+
+  /**
    * Progress information if indexing is in progress.
    */
   progress?: RepositoryIndexingProgress;
