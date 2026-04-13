@@ -19,6 +19,7 @@ export interface RepositoryIndexingStatus {
   last_indexed_at: string | null;
   last_indexed_hash: string | null;
   last_indexed_commit_message: string | null;
+  icon_path?: string | null;
   progress?: RepositoryIndexingProgress;
 }
 

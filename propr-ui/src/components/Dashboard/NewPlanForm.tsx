@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { X, Paperclip, Loader2, Image, FolderGit2 } from 'lucide-react';
+import { RepositorySelector } from '../RepositorySelector';
 
 export interface Repo {
   name: string;
   enabled: boolean;
   baseBranch?: string;
+  starred?: boolean;
+  iconPath?: string | null;
 }
 
 // Component for displaying file preview with image thumbnails
@@ -201,24 +204,16 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
       <div className="space-y-4">
         {/* Repository Select - Always visible */}
         <div className="flex flex-col sm:flex-row gap-4 items-stretch sm:items-end">
-          <div className="flex-shrink-0 w-full sm:w-64">
+          <div className="flex-shrink-0 w-full sm:w-72">
             <label className="block text-sm font-medium text-gray-700 mb-2">Repository</label>
-            <select
-              value={selectedRepo}
-              onChange={(e) => onRepoChange(e.target.value)}
-              className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            <RepositorySelector
+              repos={repos}
+              selectedRepo={selectedRepo}
+              onRepoChange={onRepoChange}
               disabled={repos.length === 0}
-            >
-              {repos.length === 0 ? (
-                <option value="">No repositories configured</option>
-              ) : (
-                repos.map(repo => (
-                  <option key={repo.name} value={repo.name}>
-                    {repo.baseBranch ? `${repo.name} (${repo.baseBranch})` : repo.name}
-                  </option>
-                ))
-              )}
-            </select>
+              placeholder="Select a repository"
+              variant="default"
+            />
           </div>
           {/* Compact Input - visible when collapsed */}
           {!shouldBeExpanded && (
