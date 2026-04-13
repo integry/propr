@@ -87,16 +87,38 @@ export function extractModelFromLabels(labels: Array<{ name: string }>, currentL
 }
 
 export async function fetchAllComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, repoOwner: string, repoName: string, pullRequestNumber: number): Promise<PRComment[]> {
-    // Use request for mediaType support - paginate doesn't support it well
-    const issueCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100,
-        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+    // Fetch the last 100 comments (most recent) - sufficient for validation and processing
+    // For issue comments, we need to calculate the last page since there's no sort parameter
+    const firstPageResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100, page: 1,
+        mediaType: { format: 'full' }
     });
+
+    let issueComments = firstPageResp.data as PRComment[];
+    // Check Link header for last page - if more than 100 comments, fetch the last page
+    const linkHeader = (firstPageResp.headers as Record<string, string | undefined>).link;
+    if (linkHeader && linkHeader.includes('rel="last"')) {
+        const lastPageMatch = linkHeader.match(/page=(\d+)>; rel="last"/);
+        if (lastPageMatch) {
+            const lastPage = parseInt(lastPageMatch[1], 10);
+            if (lastPage > 1) {
+                const lastPageResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                    owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100, page: lastPage,
+                    mediaType: { format: 'full' }
+                });
+                issueComments = lastPageResp.data as PRComment[];
+            }
+        }
+    }
+
+    // Review comments support direction parameter - get newest first
     const reviewCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
         owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100,
-        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+        sort: 'created', direction: 'desc',
+        mediaType: { format: 'full' }
     });
-    return [...(issueCommentsResp.data as PRComment[]), ...(reviewCommentsResp.data as PRComment[])];
+
+    return [...issueComments, ...(reviewCommentsResp.data as PRComment[])];
 }
 
 export interface CommitMessageOptions {

@@ -15,6 +15,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     command: npm run daemon
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
@@ -45,6 +47,8 @@ services:
         soft: 65536
         hard: 65536
     command: npm run worker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./logs:/usr/src/app/logs
       - ./repos:/usr/src/app/repos
@@ -68,6 +72,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     command: npm run analysis-worker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
@@ -88,6 +94,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     command: npm run indexing-worker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
