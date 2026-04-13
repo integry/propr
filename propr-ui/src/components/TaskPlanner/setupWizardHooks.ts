@@ -14,13 +14,20 @@ import {
   AgentConfig
 } from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
+import { getUserRepoPreferences, UserRepoPreferences } from '../../api/userRepoPreferencesApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { resizeImage } from './imageUtils';
 import { IndexedRepository } from './ContextRepositoriesSection';
 import { constructDraftWithPlan } from './useAutoDraftCreation';
 export { useAutoDraftCreation, constructDraftWithPlan } from './useAutoDraftCreation';
 
-interface Repo { name: string; enabled: boolean; baseBranch?: string; }
+export interface Repo {
+  name: string;
+  enabled: boolean;
+  baseBranch?: string;
+  starred?: boolean;
+  iconPath?: string | null;
+}
 
 import type { Granularity } from '../../api/proprApi';
 
@@ -45,10 +52,33 @@ interface RepoInfoState {
 }
 
 async function loadRepositories(savedLastRepository: string | undefined): Promise<{ repos: Repo[]; selectedRepo: string }> {
-  const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
-  const validRepos = (data.repos_to_monitor || [])
+  // Fetch repo config, user preferences, and indexing statuses in parallel
+  const [repoData, userPrefs, indexingData] = await Promise.all([
+    getRepoConfig() as Promise<{ repos_to_monitor?: unknown[] }>,
+    getUserRepoPreferences().catch(() => ({} as UserRepoPreferences)),
+    getRepositoriesIndexingStatus().catch(() => ({ repositories: [] as RepositoryIndexingStatus[] }))
+  ]);
+
+  // Build a lookup map for indexing statuses by full_name
+  const indexingMap = new Map<string, RepositoryIndexingStatus>();
+  for (const status of indexingData.repositories || []) {
+    indexingMap.set(status.full_name, status);
+  }
+
+  const validRepos = (repoData.repos_to_monitor || [])
     .filter((r): r is { name: string; enabled?: boolean; baseBranch?: string } => typeof r === 'object' && r !== null && 'name' in r && typeof (r as { name: unknown }).name === 'string')
-    .map(r => ({ name: r.name, enabled: r.enabled !== false, baseBranch: r.baseBranch }));
+    .map(r => {
+      const prefs = userPrefs[r.name];
+      const indexingStatus = indexingMap.get(r.name);
+      return {
+        name: r.name,
+        enabled: r.enabled !== false,
+        baseBranch: r.baseBranch,
+        starred: prefs?.starred || false,
+        iconPath: indexingStatus?.icon_path || null
+      };
+    });
+
   const enabledRepos = validRepos.filter(r => r.enabled);
   const selectedRepo = (savedLastRepository && enabledRepos.some(r => r.name === savedLastRepository)) ? savedLastRepository : (enabledRepos[0]?.name || '');
   return { repos: enabledRepos, selectedRepo };
