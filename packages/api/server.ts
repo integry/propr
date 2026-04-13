@@ -222,6 +222,8 @@ function setupRoutes(): void {
   app.get('/api/config/agent-tank', configRoutes.getAgentTankSettings);
   app.post('/api/config/agent-tank', configRoutes.postAgentTankSettings);
   app.get('/api/config/agent-tank/status', configRoutes.getAgentTankStatus);
+  app.get('/api/config/agent-tank/usage', configRoutes.getAgentTankUsage);
+  app.post('/api/config/agent-tank/refresh', configRoutes.postAgentTankRefresh);
 
   app.get('/api/queue/stats', queueRoutes.getQueueStats);
   app.get('/api/activity', queueRoutes.getActivity);
