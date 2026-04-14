@@ -223,6 +223,44 @@ describe('ensureEpicPR', () => {
             assert.strictEqual(capturedDraft, true);
         });
 
+        test('falls back to non-draft PR when drafts are not supported', async () => {
+            resetMocks();
+            const draftAttempts: boolean[] = [];
+            mockOctokit.request.mock.mockImplementation(async (endpoint: string, params?: Record<string, unknown>) => {
+                if (endpoint.includes('GET /repos') && endpoint.includes('git/ref')) {
+                    return { data: { object: { sha: 'sha123' } } };
+                }
+                if (endpoint.includes('POST /repos') && endpoint.includes('git/refs')) {
+                    return { data: { ref: 'refs/heads/test-branch' } };
+                }
+                if (endpoint.includes('POST /repos') && endpoint.includes('labels')) {
+                    return { data: { name: 'base-test-branch' } };
+                }
+                if (endpoint.includes('POST /repos') && endpoint.includes('pulls')) {
+                    const draft = (params as { draft: boolean })?.draft;
+                    draftAttempts.push(draft);
+                    if (draft === true) {
+                        const err = new Error('Draft pull requests are not supported in this repository.') as Error & { status: number };
+                        err.status = 422;
+                        throw err;
+                    }
+                    return { data: { number: 7, html_url: 'https://github.com/o/r/pull/7' } };
+                }
+                return { data: {} };
+            });
+
+            const result = await ensureEpicPR({
+                owner: 'owner',
+                repoName: 'repo',
+                firstIssueId: 1,
+                planName: 'Test'
+            });
+
+            assert.deepStrictEqual(draftAttempts, [true, false], 'Should try draft first, then retry without draft');
+            assert.strictEqual(result.success, true);
+            assert.strictEqual(result.prNumber, 7);
+        });
+
         test('creates PR with correct title', async () => {
             resetMocks();
             let capturedTitle: string | undefined;
