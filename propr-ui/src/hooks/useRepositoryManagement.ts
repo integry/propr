@@ -66,7 +66,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       ]);
       const rawRepos = repoData.repos_to_monitor || [];
       setUserRepoPrefs(prefs);
-      const seenNames = new Set<string>();
+      const seenKeys = new Set<string>();
       const validRepos: Repo[] = rawRepos
         .map((repo: unknown): Repo | null => {
           if (typeof repo === 'string') {
@@ -88,8 +88,11 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
         })
         .filter((repo): repo is Repo => {
           if (repo === null) return false;
-          if (seenNames.has(repo.name)) return false;
-          seenNames.add(repo.name);
+          // Use composite key: name + baseBranch to preserve legitimate
+          // entries that share a name but differ by branch.
+          const key = repo.baseBranch ? `${repo.name}:${repo.baseBranch}` : repo.name;
+          if (seenKeys.has(key)) return false;
+          seenKeys.add(key);
           return true;
         });
       setRepos(validRepos);
