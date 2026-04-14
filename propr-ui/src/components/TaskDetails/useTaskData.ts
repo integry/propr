@@ -10,7 +10,8 @@ import {
   HistoryItem,
   TaskInfo,
   LiveDetails,
-  AnalysisData
+  AnalysisData,
+  UsageMetricRecord
 } from './types';
 import { useToast } from '../ui/useToast';
 import { useSocket } from '../../contexts/useSocket';
@@ -19,6 +20,7 @@ import { TaskUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 export const useTaskData = (taskId: string | undefined) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [taskInfo, setTaskInfo] = useState<TaskInfo | null>(null);
+  const [usageMetricRecords, setUsageMetricRecords] = useState<UsageMetricRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [liveDetails, setLiveDetails] = useState<LiveDetails>({ events: [], todos: [], currentTask: null });
@@ -42,6 +44,7 @@ export const useTaskData = (taskId: string | undefined) => {
       const data = await getTaskHistory(taskId);
       setHistory(data.history || []);
       setTaskInfo(data.taskInfo || null);
+      setUsageMetricRecords(data.usageMetricRecords || []);
       return data;
     } catch (err) {
       console.error('Error fetching task history:', err);
@@ -237,6 +240,7 @@ export const useTaskData = (taskId: string | undefined) => {
   return {
     history,
     taskInfo,
+    usageMetricRecords,
     loading,
     error,
     liveDetails,

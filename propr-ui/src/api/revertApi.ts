@@ -69,6 +69,96 @@ export const triggerReindexAll = async (): Promise<TriggerReindexAllResponse> =>
   return response.json();
 };
 
+// Agent Tank settings API
+export interface AgentTankSettingsResponse { enabled: boolean; url: string; }
+export interface AgentTankStatusResponse { available: boolean; reason?: string; }
+
+export const getAgentTankSettings = async (): Promise<AgentTankSettingsResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const updateAgentTankSettings = async (settings: { enabled: boolean; url: string }): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings), credentials: 'include'
+  });
+  await handleApiResponse(response);
+};
+
+export const getAgentTankStatus = async (): Promise<AgentTankStatusResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank/status`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+// Agent Tank usage data types
+export interface AgentUsageMetric {
+  label?: string;
+  percent: number;
+  resetsIn?: string;
+  resetsAt?: string;
+}
+
+export interface AgentUsageData {
+  name: string;
+  usage: {
+    session?: AgentUsageMetric;
+    weeklyAll?: AgentUsageMetric;
+    weeklySonnet?: AgentUsageMetric;
+    weekly?: AgentUsageMetric;
+    models?: Array<{ model: string; percentUsed: number; resetsIn?: string }>;
+    fiveHour?: { percentUsed: number; resetsIn?: string };
+  } | null;
+  error?: string | null;
+  isRefreshing?: boolean;
+}
+
+export interface AgentTankUsageResponse {
+  enabled: boolean;
+  agents?: Record<string, AgentUsageData>;
+  error?: string;
+}
+
+export const getAgentTankUsage = async (): Promise<AgentTankUsageResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank/usage`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const refreshAgentTank = async (): Promise<{ success: boolean; error?: string }> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank/refresh`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export interface AgentTankDetectResponse {
+  detected: boolean;
+  url?: string;
+  reason?: string;
+}
+
+export const detectAgentTank = async (): Promise<AgentTankDetectResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank/detect`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const enableAgentTank = async (url: string): Promise<{ success: boolean }> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: true, url }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export interface PostFollowupResponse { success: boolean; message: string; }
 export const postTaskFollowup = async (taskId: string, body: string): Promise<PostFollowupResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/followup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }), credentials: 'include' });

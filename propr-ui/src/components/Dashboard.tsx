@@ -8,6 +8,7 @@ import TopModels from './TopModels';
 import TaskList from './TaskList';
 import ActivitySparkline from './ActivitySparkline';
 import { OnboardingWidget } from './Dashboard/OnboardingWidget';
+import AgentTankDetectionBanner from './AgentTankDetectionBanner';
 import { getQueueStats } from '../api/proprApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
 import { Loader2, ChevronRight } from 'lucide-react';
@@ -189,6 +190,11 @@ const Dashboard: React.FC = () => {
           <OnboardingWidget hasAgents={hasAgents} hasRepos={hasRepos} hasTasks={hasTasks} />
         </div>
       )}
+
+      {/* Agent Tank Detection Banner - shown when detected but not enabled */}
+      <div className="px-6 pt-4">
+        <AgentTankDetectionBanner />
+      </div>
 
       {/* Main Content - Studio Split Layout */}
       <div className="flex flex-col lg:flex-row">

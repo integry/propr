@@ -134,7 +134,7 @@ export { generatePlan, refinePlan, generateContextPreview, checkoutBranch, Plann
 export type { GeneratePlanOptions, RefinePlanOptions, RefinePlanResult, RefinePlanEstimation, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';
 export { pauseDraft, resumeDraft, isDraftPaused, getDraftPauseState } from './services/taskPlanning/draftPauseResume.js';
 export type { PauseResumeResult } from './services/taskPlanning/draftPauseResume.js';
-export { estimateLlmDuration } from './utils/llmEstimation.js';
+export { estimateLlmDuration, estimateUsagePercent } from './utils/llmEstimation.js';
 export type { EstimationResult, EstimationOptions } from './utils/llmEstimation.js';
 export type { Base64Image, ContextRepository } from './services/planningHelpers.js';
 export { executeDraft, ensureEpicPR, generateEpicBranchName, isEpicBranch, EPIC_BRANCH_PATTERN } from './services/taskExecutionService.js';

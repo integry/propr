@@ -281,6 +281,36 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
 }
 
 /**
+ * Heuristic usage-percent estimator.
+ *
+ * Estimates what fraction of a 5-hour session window a single plan-generation
+ * task will consume based on its token count. The estimate is modelled on
+ * Claude Max subscription limits observed via Agent Tank:
+ *
+ *   - A 5-hour session window allows roughly 4 000 000 tokens of mixed I/O.
+ *   - Each plan-generation call uses `inputTokens` input and an estimated
+ *     output equal to ~20 % of the input (capped at a reasonable ceiling).
+ *
+ * The returned value is a percentage (0–100). It intentionally rounds *up*
+ * so the user never under-estimates cost.
+ */
+
+/** Approximate total token budget per 5-hour session window */
+const SESSION_TOKEN_BUDGET = 4_000_000;
+
+/** Assumed ratio of output tokens to input tokens for plan generation */
+const OUTPUT_TO_INPUT_RATIO = 0.2;
+
+export function estimateUsagePercent(inputTokens: number): number {
+  if (inputTokens <= 0) return 0;
+  const estimatedOutputTokens = Math.round(inputTokens * OUTPUT_TO_INPUT_RATIO);
+  const totalTokens = inputTokens + estimatedOutputTokens;
+  const percent = (totalTokens / SESSION_TOKEN_BUDGET) * 100;
+  // Round up to one decimal, clamp to 0–100
+  return Math.min(100, Math.round(percent * 10) / 10);
+}
+
+/**
  * Format duration for display (e.g., "1m 30s").
  * Exported for use in frontend utilities.
  */

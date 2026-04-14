@@ -219,6 +219,13 @@ function setupRoutes(): void {
   app.post('/api/config/repos/stop-indexing', configRoutes.stopIndexing);
   app.post('/api/config/summarization/reindex-all', configRoutes.triggerReindexAll);
 
+  app.get('/api/config/agent-tank', configRoutes.getAgentTankSettings);
+  app.post('/api/config/agent-tank', configRoutes.postAgentTankSettings);
+  app.get('/api/config/agent-tank/status', configRoutes.getAgentTankStatus);
+  app.get('/api/config/agent-tank/usage', configRoutes.getAgentTankUsage);
+  app.post('/api/config/agent-tank/refresh', configRoutes.postAgentTankRefresh);
+  app.get('/api/config/agent-tank/detect', configRoutes.getAgentTankDetect);
+
   app.get('/api/queue/stats', queueRoutes.getQueueStats);
   app.get('/api/activity', queueRoutes.getActivity);
   app.get('/api/metrics', queueRoutes.getMetrics);
@@ -269,6 +276,7 @@ function setupRoutes(): void {
   app.post('/api/planner/validate-context-repository', plannerRoutes.validateContextRepository);
   app.post('/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution);
   app.post('/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution);
+  app.patch('/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings);
 
   app.post('/api/planner/relevance', relevanceRoutes.analyzeRelevance);
 

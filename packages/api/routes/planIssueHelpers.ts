@@ -207,6 +207,60 @@ export async function handleEpicPRCreation(params: EpicPRParams): Promise<string
   return null;
 }
 
+export interface GetOrCreateEpicLabelParams {
+  draftId: string;
+  owner: string;
+  repo: string;
+  planName: string;
+  firstIssueNumber: number;
+  contextConfig: Record<string, unknown> | null;
+  correlationId: string;
+  labelLogger: ReturnType<typeof logger.withCorrelation>;
+  db: typeof import('@propr/core').db;
+}
+
+/**
+ * Gets the existing epic label from context_config or creates a new one if needed.
+ * Stores the epic label back to context_config for reuse by subsequent issues.
+ */
+export async function getOrCreateEpicLabel(params: GetOrCreateEpicLabelParams): Promise<string | null> {
+  const { draftId, owner, repo, planName, firstIssueNumber, contextConfig, correlationId, labelLogger, db } = params;
+
+  // Check if epic label already exists in context_config
+  if (contextConfig?.epicLabel && typeof contextConfig.epicLabel === 'string') {
+    labelLogger.info({ epicLabel: contextConfig.epicLabel }, 'Using existing epic label from draft');
+    return contextConfig.epicLabel;
+  }
+
+  // Create new epic PR and label
+  const epicLabelName = await handleEpicPRCreation({
+    owner,
+    repo,
+    planName,
+    issueNumber: firstIssueNumber,
+    correlationId,
+    labelLogger
+  });
+
+  // Store the epic label in context_config for reuse
+  if (epicLabelName && db) {
+    try {
+      const updatedConfig = { ...contextConfig, epicLabel: epicLabelName };
+      await db('task_drafts')
+        .where({ draft_id: draftId })
+        .update({
+          context_config: JSON.stringify(updatedConfig),
+          updated_at: db.fn.now()
+        });
+      labelLogger.info({ draftId, epicLabel: epicLabelName }, 'Stored epic label in draft context_config');
+    } catch (err) {
+      labelLogger.warn({ error: (err as Error).message }, 'Failed to store epic label in context_config');
+    }
+  }
+
+  return epicLabelName;
+}
+
 export async function processIssueForImplementation(params: ProcessIssueParams): Promise<{ issueNumber: number; success: boolean; error?: string }> {
   const { octokit, owner, repo, draftId, issue, implementLabel, epicLabelName, autoMerge } = params;
 

@@ -205,6 +205,7 @@ const TaskDetails: React.FC = () => {
                 commitInfo={commitInfo}
                 duration={totalDuration}
                 tokenUsage={tokenUsage}
+                usageMetricRecords={taskData.usageMetricRecords}
                 mobileRepoOnly={true}
               />
               <ActionBar
@@ -228,6 +229,7 @@ const TaskDetails: React.FC = () => {
               commitInfo={commitInfo}
               duration={totalDuration}
               tokenUsage={tokenUsage}
+              usageMetricRecords={taskData.usageMetricRecords}
               mobileMetadataOnly={true}
             />
           </div>
@@ -241,6 +243,7 @@ const TaskDetails: React.FC = () => {
               commitInfo={commitInfo}
               duration={totalDuration}
               tokenUsage={tokenUsage}
+              usageMetricRecords={taskData.usageMetricRecords}
             />
             <ActionBar
               currentStatus={derivedData.currentStatus}

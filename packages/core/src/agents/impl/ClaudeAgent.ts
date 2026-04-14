@@ -28,7 +28,8 @@ import {
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, getDefaultModel } from '../../config/modelAliases.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
-import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog } from './utils/index.js';
+import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -52,6 +53,7 @@ interface PersistLogsParams {
     executionTime: number;
     correctedTokenUsage: TokenUsage | undefined;
     taskId?: string;
+    usageMetrics?: UsageTrackingMetrics | null;
 }
 
 /**
@@ -151,15 +153,19 @@ export class ClaudeAgent implements Agent {
                 taskId
             });
 
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: this.timeoutMs,
-                cwd: worktreePath,
-                onSessionId,
-                onContainerId,
-                worktreePath,
-                stdinData: prompt,
-                taskId
-            });
+            // Wrap execution with Agent Tank usage tracking
+            const { result, usageMetrics } = await executeWithUsageTracking(
+                'claude',
+                async () => executeDockerCommand('docker', dockerArgs, {
+                    timeout: this.timeoutMs,
+                    cwd: worktreePath,
+                    onSessionId,
+                    onContainerId,
+                    worktreePath,
+                    stdinData: prompt,
+                    taskId
+                })
+            );
 
             const executionTime = Date.now() - startTime;
 
@@ -181,7 +187,7 @@ export class ClaudeAgent implements Agent {
                 executionTime
             );
 
-            // Persist execution logs
+            // Persist execution logs with usage metrics
             await this.persistExecutionLogs({
                 result,
                 prompt,
@@ -191,7 +197,8 @@ export class ClaudeAgent implements Agent {
                 retryReason,
                 executionTime,
                 correctedTokenUsage,
-                taskId
+                taskId,
+                usageMetrics
             });
 
             // Log outcome and verify worktree
@@ -280,11 +287,15 @@ export class ClaudeAgent implements Agent {
                 executionType
             });
 
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: 1800000,
-                stdinData: analysisPrompt,
-                taskId
-            });
+            // Wrap execution with Agent Tank usage tracking
+            const { result, usageMetrics } = await executeWithUsageTracking(
+                'claude',
+                async () => executeDockerCommand('docker', dockerArgs, {
+                    timeout: 1800000,
+                    stdinData: analysisPrompt,
+                    taskId
+                })
+            );
 
             const executionTimeMs = Date.now() - startTime;
             const claudeOutput = parseStreamJsonOutput(result);
@@ -307,8 +318,29 @@ export class ClaudeAgent implements Agent {
                     model: effectiveModel,
                     executionTimeMs,
                     reportedTokens: claudeOutput.tokenUsage,
-                    correctedTokens: correctedTokenUsage
+                    correctedTokens: correctedTokenUsage,
+                    usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
                 }, 'Lightweight analysis completed');
+
+                // Persist LLM log with usage metrics for analysis calls
+                await persistLlmLog(createLlmLogFromAnalysis({
+                    executionType: (executionType || 'other') as ExecutionType,
+                    modelUsed: claudeOutput.model || effectiveModel,
+                    executionTimeMs,
+                    success: true,
+                    tokenUsage: correctedTokenUsage,
+                    sessionId: claudeOutput.sessionId ?? undefined,
+                    draftId: taskId,
+                    agentAlias: this.config.alias,
+                    usageMetrics: usageMetrics ? {
+                        preCall: usageMetrics.preCall,
+                        postCall: usageMetrics.postCall,
+                        delta: usageMetrics.delta,
+                        timestamp: usageMetrics.timestamp,
+                        agent: usageMetrics.agent
+                    } : undefined,
+                    usageMetricRecords: usageMetrics?.records
+                }));
 
                 return {
                     response: analysisText,
@@ -391,7 +423,8 @@ export class ClaudeAgent implements Agent {
             retryReason,
             executionTime,
             correctedTokenUsage,
-            taskId
+            taskId,
+            usageMetrics
         } = params;
 
         const claudeOutput = parseStreamJsonOutput(result);
@@ -406,7 +439,7 @@ export class ClaudeAgent implements Agent {
             retryReason
         });
 
-        // Persist LLM log for metrics tracking
+        // Persist LLM log for metrics tracking (including Agent Tank usage if available)
         await persistLlmLog(createLlmLogFromAnalysis({
             executionType: 'implementation',
             modelUsed,
@@ -422,7 +455,15 @@ export class ClaudeAgent implements Agent {
                 isRetry,
                 retryReason,
                 conversationId: claudeOutput.conversationId
-            }
+            },
+            usageMetrics: usageMetrics ? {
+                preCall: usageMetrics.preCall,
+                postCall: usageMetrics.postCall,
+                delta: usageMetrics.delta,
+                timestamp: usageMetrics.timestamp,
+                agent: usageMetrics.agent
+            } : undefined,
+            usageMetricRecords: usageMetrics?.records
         }));
     }
 }
