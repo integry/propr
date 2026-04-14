@@ -1,13 +1,7 @@
-import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import { AgentModelPair } from '../../api/planIssuesApi';
+export { getModelDisplayName } from '../../utils/modelDisplay';
 
 export type AgentModelPairWithDisplay = AgentModelPair & { displayName: string };
-
-// Get display name for model
-export const getModelDisplayName = (modelId: string): string => {
-  const modelInfo = MODEL_INFO_MAP[modelId];
-  return modelInfo?.name || modelId;
-};
 
 const getSelectBaseClass = (compact: boolean): string =>
   compact ? 'text-xs px-2 py-1 pr-6' : 'text-sm px-3 py-1.5 pr-8';

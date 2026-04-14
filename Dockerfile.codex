@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     iptables \
+    ripgrep \
     sudo \
     procps \
     && rm -rf /var/lib/apt/lists/*
@@ -28,7 +29,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 # CLI version argument - can be overridden at build time
-ARG CLI_VERSION=latest
+ARG CLI_VERSION=0.120.0
 
 # Install OpenAI Codex CLI globally
 RUN npm install -g @openai/codex@${CLI_VERSION}

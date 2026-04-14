@@ -93,12 +93,13 @@ if [ -d "/home/node/workspace" ]; then
         fi
     else
         echo "Warning: Running as UID $current_uid instead of expected 1000"
-        # Try to ensure the user owns the workspace
-        if sudo chown -R node:node /home/node/workspace 2>/dev/null; then
-            echo "Workspace permissions set"
-        else
-            echo "Workspace permissions already set (sudo not available in restricted container)"
-        fi
+        # Do not recursively chown the bind-mounted workspace. On hosts using
+        # Docker user namespace remapping this can rewrite ownership on the host
+        # repo (for example to nobody:nogroup) and trip Git's safe-directory
+        # protections. The container can still execute the command as node; if
+        # the mount is not writable enough, fail there rather than mutating host
+        # ownership implicitly.
+        echo "Skipping workspace chown to avoid mutating host bind-mount ownership"
     fi
 fi
 

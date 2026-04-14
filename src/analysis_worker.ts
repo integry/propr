@@ -173,19 +173,21 @@ async function checkAndTriggerAutoFollowup(
         // Generate the follow-up comment
         const commentBody = generateFollowupComment(parsedReport);
 
-        // Post the comment to GitHub
+        // Post the comment to GitHub and capture the comment ID
         const octokit = await getAuthenticatedOctokit();
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        const commentResponse = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner,
             repo: repoName,
             issue_number: targetNumber,
             body: commentBody
         });
+        const commentId = commentResponse.data.id;
 
         correlatedLogger.info({
             executionId,
             repository: task.repository,
             targetNumber,
+            commentId,
             score,
             threshold
         }, 'Posted auto-followup comment to GitHub');
@@ -194,7 +196,7 @@ async function checkAndTriggerAutoFollowup(
         // The webhook filters bot comments, so we queue directly
         const followupCorrelationId = generateCorrelationId();
         const unprocessedComment: UnprocessedComment = {
-            id: 0,
+            id: commentId,
             body: commentBody,
             author: 'system',
             type: 'issue'

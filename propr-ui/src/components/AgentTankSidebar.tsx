@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { getAgentTankUsage, refreshAgentTank, AgentTankUsageResponse, AgentUsageData } from '../api/revertApi';
 import { ProviderLogo } from './ui/ProviderLogo';
+import { getModelDisplayName } from '../utils/modelDisplay';
 
 // Refresh interval in milliseconds (60 seconds)
 const REFRESH_INTERVAL = 60000;
@@ -57,7 +58,7 @@ function getAllMetrics(agent: AgentUsageData): UsageMetric[] {
   if (agent.usage.models) {
     for (const model of agent.usage.models) {
       metrics.push({
-        label: model.model,
+        label: getModelDisplayName(model.model, { compactGemini: true }),
         percent: model.percentUsed,
         resetsIn: model.resetsIn
       });
@@ -99,7 +100,7 @@ interface MetricRowProps {
 const MetricRow: React.FC<MetricRowProps> = ({ metric, compact = false }) => (
   <div className={`flex items-center justify-between ${compact ? 'py-0.5' : 'py-1'}`}>
     <span
-      className="text-[10px] text-gray-500 truncate max-w-[60px]"
+      className="text-[10px] text-gray-500 truncate max-w-[100px]"
       title={metric.resetsIn ? `Resets in ${metric.resetsIn}` : metric.label}
     >
       {metric.label}
