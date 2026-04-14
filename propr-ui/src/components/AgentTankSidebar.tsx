@@ -100,7 +100,7 @@ interface MetricRowProps {
 const MetricRow: React.FC<MetricRowProps> = ({ metric, compact = false }) => (
   <div className={`flex items-center justify-between ${compact ? 'py-0.5' : 'py-1'}`}>
     <span
-      className="text-[10px] text-gray-500 truncate max-w-[60px]"
+      className="text-[10px] text-gray-500 truncate max-w-[100px]"
       title={metric.resetsIn ? `Resets in ${metric.resetsIn}` : metric.label}
     >
       {metric.label}
