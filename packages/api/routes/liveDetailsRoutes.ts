@@ -151,6 +151,38 @@ interface PendingSubagent {
   startTimestamp: string;
 }
 
+// Extract text from Claude content blocks (e.g., Agent/Task tool results)
+interface ContentBlock {
+  type: string;
+  text?: string;
+  content?: string;
+}
+
+function extractTextFromContentBlocks(content: unknown): string | null {
+  if (!Array.isArray(content)) return null;
+  if (content.length === 0) return null;
+
+  // Check if it looks like a content blocks array
+  const first = content[0] as ContentBlock;
+  if (typeof first !== 'object' || first === null || !('type' in first)) {
+    return null;
+  }
+
+  const textParts = content
+    .map((block: ContentBlock) => {
+      if (block.type === 'text' && block.text) {
+        return block.text;
+      }
+      if (block.content) {
+        return block.content;
+      }
+      return '';
+    })
+    .filter(Boolean);
+
+  return textParts.length > 0 ? textParts.join('\n\n') : null;
+}
+
 async function parseConversationFile(conversationPath: string): Promise<ConversationResult> {
   const conversationContent = await fs.readFile(conversationPath, 'utf8');
   const lines = conversationContent.trim().split('\n').filter(line => line.trim());
@@ -301,11 +333,21 @@ function parseUserContent(
         const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
         const durationSecs = Math.round(durationMs / 1000);
 
-        // Add a summary thought event for the subagent
+        // Extract the actual text content from the subagent's result
+        const subagentOutputText = extractTextFromContentBlocks(content.content);
+
+        // Add a summary thought event for the subagent with its output
         const subagentIcon = getSubagentIcon(subagent.subagentType);
+        const summaryHeader = `${subagentIcon} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`;
+
+        // Include the subagent's output text if available
+        const thoughtContent = subagentOutputText
+          ? `${summaryHeader}\n\n${subagentOutputText}`
+          : summaryHeader;
+
         events.push({
           type: 'thought',
-          content: `${subagentIcon} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`,
+          content: thoughtContent,
           timestamp,
           isSubagentSummary: true
         });

@@ -93,6 +93,43 @@ export const isNoisyTool = (toolName: string): boolean => {
   return ['read', 'glob', 'grep', 'todowrite'].includes(name);
 };
 
+// Check if an object is a Claude content block (has type and text/content properties)
+interface ContentBlock {
+  type: string;
+  text?: string;
+  content?: string;
+}
+
+const isContentBlockArray = (value: unknown): value is ContentBlock[] => {
+  if (!Array.isArray(value)) return false;
+  if (value.length === 0) return false;
+  // Check if first element looks like a content block
+  const first = value[0];
+  return (
+    typeof first === 'object' &&
+    first !== null &&
+    'type' in first &&
+    typeof first.type === 'string' &&
+    ('text' in first || 'content' in first)
+  );
+};
+
+// Extract text from Claude content block arrays (e.g., Agent/Task tool results)
+const extractTextFromContentBlocks = (blocks: ContentBlock[]): string => {
+  return blocks
+    .map(block => {
+      if (block.type === 'text' && block.text) {
+        return block.text;
+      }
+      if (block.content) {
+        return block.content;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n');
+};
+
 export const formatToolResult = (result: string | object | undefined): string => {
   let resultText: string;
   if (typeof result === 'string') {
@@ -101,6 +138,9 @@ export const formatToolResult = (result: string | object | undefined): string =>
     resultText = '(undefined)';
   } else if (result === null) {
     resultText = '(null)';
+  } else if (isContentBlockArray(result)) {
+    // Handle Claude content block arrays (e.g., from Agent/Task tool results)
+    resultText = extractTextFromContentBlocks(result);
   } else {
     try {
       resultText = JSON.stringify(result, null, 2);
