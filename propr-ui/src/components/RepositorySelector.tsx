@@ -124,16 +124,14 @@ const FilterInput: React.FC<{
   </div>
 );
 
-// Repository list with sections
+// Repository list with sections - uses flat array to avoid React Fragment reconciliation issues
 const RepoList: React.FC<{
   starredRepos: RepoOption[];
   otherRepos: RepoOption[];
   selectedRepo: string;
   onSelect: (name: string) => void;
 }> = ({ starredRepos, otherRepos, selectedRepo, onSelect }) => {
-  const hasNoRepos = starredRepos.length === 0 && otherRepos.length === 0;
-
-  if (hasNoRepos) {
+  if (starredRepos.length === 0 && otherRepos.length === 0) {
     return (
       <div className="px-3 py-4 text-sm text-gray-500 text-center">
         No repositories found
@@ -141,32 +139,37 @@ const RepoList: React.FC<{
     );
   }
 
-  return (
-    <>
-      {starredRepos.length > 0 && (
-        <>
-          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">
-            Starred
-          </div>
-          {starredRepos.map(repo => (
-            <RepoItem key={repo.name} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
-          ))}
-        </>
-      )}
-      {otherRepos.length > 0 && (
-        <>
-          {starredRepos.length > 0 && (
-            <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">
-              All Repositories
-            </div>
-          )}
-          {otherRepos.map(repo => (
-            <RepoItem key={repo.name} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
-          ))}
-        </>
-      )}
-    </>
-  );
+  const items: React.ReactNode[] = [];
+
+  if (starredRepos.length > 0) {
+    items.push(
+      <div key="section-starred" className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">
+        Starred
+      </div>
+    );
+    for (const repo of starredRepos) {
+      items.push(
+        <RepoItem key={`starred-${repo.name}`} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
+      );
+    }
+  }
+
+  if (otherRepos.length > 0) {
+    if (starredRepos.length > 0) {
+      items.push(
+        <div key="section-all" className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">
+          All Repositories
+        </div>
+      );
+    }
+    for (const repo of otherRepos) {
+      items.push(
+        <RepoItem key={`other-${repo.name}`} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
+      );
+    }
+  }
+
+  return <>{items}</>;
 };
 
 // Breadcrumb variant trigger button
@@ -307,7 +310,10 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   }, [starredRepos, otherRepos, handleSelect]);
 
   const handleToggle = useCallback(() => {
-    if (!disabled) setIsOpen(prev => !prev);
+    if (!disabled) {
+      setIsOpen(prev => !prev);
+      setFilter('');
+    }
   }, [disabled]);
 
   if (isLoading) {
