@@ -12,6 +12,8 @@ interface GitHubUser {
     email: string | null;
     avatarUrl: string | null;
     accessToken: string;
+    refreshToken?: string;
+    tokenExpiresAt?: number;
 }
 
 declare global {
@@ -24,6 +26,8 @@ declare global {
             email: string | null;
             avatarUrl: string | null;
             accessToken: string;
+            refreshToken?: string;
+            tokenExpiresAt?: number;
         }
     }
 }
@@ -55,11 +59,12 @@ export function setupAuth(app: Express): void {
         secret: process.env.SESSION_SECRET || 'your-secret-key-here',
         resave: false,
         saveUninitialized: false,
+        rolling: true, // Extend session expiration on each request
         cookie: {
             // Always secure since gitfix.dev uses HTTPS
             secure: true,
             httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000, // 24 hours
+            maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
             // Set domain to .gitfix.dev to share cookies across all subdomains
             domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
             sameSite: 'lax'
@@ -73,17 +78,26 @@ export function setupAuth(app: Express): void {
         clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
         callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
     },
-    (accessToken: string, refreshToken: string, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) => {
+    // eslint-disable-next-line max-params
+    function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
         // Here you would find or create a user in your database.
         // For now, we'll just pass the profile through.
         console.log('User authenticated:', profile.username);
+
+        // Calculate token expiration time (expires_in is in seconds)
+        const tokenExpiresAt = params.expires_in
+            ? Date.now() + (params.expires_in * 1000)
+            : undefined;
+
         const user: GitHubUser = {
             id: profile.id,
             username: profile.username || '',
             displayName: profile.displayName,
             email: profile.emails && profile.emails[0] ? profile.emails[0].value : null,
             avatarUrl: profile.photos && profile.photos[0] ? profile.photos[0].value : null,
-            accessToken: accessToken
+            accessToken: accessToken,
+            refreshToken: refreshToken || undefined,
+            tokenExpiresAt: tokenExpiresAt
         };
         return done(null, user);
     }));
@@ -231,9 +245,104 @@ async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
     }
 }
 
-export function ensureAuthenticated(req: Request, res: Response, next: NextFunction): void {
+// Time buffer before token expiration to trigger proactive refresh (5 minutes)
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
+/**
+ * Refreshes the GitHub OAuth token if it's within 5 minutes of expiration.
+ * Returns true if the token was refreshed successfully, false otherwise.
+ */
+export async function refreshGitHubTokenIfNeeded(req: Request, force: boolean = false): Promise<boolean> {
+    const user = req.user;
+    if (!user || !user.refreshToken) {
+        return false;
+    }
+
+    // Check if token needs refresh (within 5 minutes of expiration or forced)
+    const now = Date.now();
+    const needsRefresh = force || (user.tokenExpiresAt && (user.tokenExpiresAt - now) < TOKEN_REFRESH_BUFFER_MS);
+
+    if (!needsRefresh) {
+        return false;
+    }
+
+    console.log(`Refreshing GitHub token for user ${user.username} (force=${force})`);
+
+    try {
+        const response = await fetch('https://github.com/login/oauth/access_token', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                client_id: process.env.GH_OAUTH_CLIENT_ID,
+                client_secret: process.env.GH_OAUTH_CLIENT_SECRET,
+                grant_type: 'refresh_token',
+                refresh_token: user.refreshToken,
+            }),
+        });
+
+        if (!response.ok) {
+            console.error(`GitHub token refresh failed with status ${response.status}`);
+            return false;
+        }
+
+        const data = await response.json() as {
+            access_token?: string;
+            refresh_token?: string;
+            expires_in?: number;
+            error?: string;
+            error_description?: string;
+        };
+
+        if (data.error) {
+            console.error(`GitHub token refresh error: ${data.error} - ${data.error_description}`);
+            return false;
+        }
+
+        if (!data.access_token) {
+            console.error('GitHub token refresh response missing access_token');
+            return false;
+        }
+
+        // Update the user's session with the new tokens
+        user.accessToken = data.access_token;
+        if (data.refresh_token) {
+            user.refreshToken = data.refresh_token;
+        }
+        if (data.expires_in) {
+            user.tokenExpiresAt = Date.now() + (data.expires_in * 1000);
+        }
+
+        // Save the updated session
+        await new Promise<void>((resolve, reject) => {
+            req.session.save((err) => {
+                if (err) {
+                    console.error('Error saving session after token refresh:', err);
+                    reject(err);
+                } else {
+                    console.log(`Successfully refreshed GitHub token for user ${user.username}`);
+                    resolve();
+                }
+            });
+        });
+
+        return true;
+    } catch (error) {
+        console.error('Error refreshing GitHub token:', error);
+        return false;
+    }
+}
+
+export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {
     // Session-based auth (Passport)
     if (req.isAuthenticated()) {
+        // Proactively refresh token in background if needed
+        // Don't block the request, let it continue while refresh happens
+        refreshGitHubTokenIfNeeded(req).catch((err) => {
+            console.error('Background token refresh failed:', err);
+        });
         return next();
     }
 
@@ -244,18 +353,17 @@ export function ensureAuthenticated(req: Request, res: Response, next: NextFunct
     if (bearerEnabled && authHeader?.startsWith('Bearer ')) {
         const token = authHeader.slice(7);
 
-        validateGitHubToken(token)
-            .then((user) => {
-                if (user) {
-                    // Populate req.user so downstream handlers work the same way
-                    (req as Request & { user: GitHubUser }).user = user;
-                    return next();
-                }
-                res.status(401).json({ error: 'Unauthorized: invalid token' });
-            })
-            .catch(() => {
-                res.status(401).json({ error: 'Unauthorized: token validation failed' });
-            });
+        try {
+            const user = await validateGitHubToken(token);
+            if (user) {
+                // Populate req.user so downstream handlers work the same way
+                (req as Request & { user: GitHubUser }).user = user;
+                return next();
+            }
+            res.status(401).json({ error: 'Unauthorized: invalid token' });
+        } catch {
+            res.status(401).json({ error: 'Unauthorized: token validation failed' });
+        }
         return;
     }
 
