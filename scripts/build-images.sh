@@ -52,6 +52,7 @@ IMAGES=(
   "app|docker/Dockerfile.app.prod|."
   "ui|propr-ui/Dockerfile|."
   "docs|docs/Dockerfile|./docs"
+  "agent-base|docker/Dockerfile.agent-base|."
   "agent-claude|Dockerfile.claude|."
   "agent-codex|Dockerfile.codex|."
   "agent-gemini|Dockerfile.gemini|."
@@ -122,6 +123,11 @@ build_image() {
   local -a build_args=()
   if [[ -n "$PLATFORM" ]]; then
     build_args+=("--platform" "$PLATFORM")
+  fi
+
+  # Agent images extend propr/agent-base — pin to this build's version.
+  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini ]]; then
+    build_args+=("--build-arg" "BASE_TAG=$VERSION")
   fi
 
   echo ""

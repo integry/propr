@@ -1,69 +1,32 @@
-# Dockerfile for Gemini CLI execution environment
-# Based on the Claude Code processor setup for secure AI code execution
+# Gemini CLI agent image. Extends propr/agent-base (alpine + common tooling).
+# The CLI is installed at build time and exercised with --version as a smoke
+# test so binary-loading regressions fail the build rather than leaking into
+# user runtime.
+#
+# Note: agent-base includes GNU coreutils, which is required for Gemini's
+# `#!/usr/bin/env -S node` shebang (BusyBox env doesn't support -S).
 
-FROM node:20-slim
+# BASE_TAG must match the exact version of propr/agent-base built alongside
+# this agent image. scripts/build-images.sh passes it automatically; a direct
+# `docker build` must pass --build-arg BASE_TAG=<version>.
+ARG BASE_TAG
+FROM propr/agent-base:${BASE_TAG}
 
-# Install required system dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    ca-certificates \
-    iptables \
-    sudo \
-    procps \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install GitHub CLI
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-    && apt-get update \
-    && apt-get install gh -y \
-    && rm -rf /var/lib/apt/lists/*
-
-# Use the existing node user (UID 1000) and give it sudo privileges
-RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-
-# CLI version argument - can be overridden at build time
 ARG CLI_VERSION=latest
 
-# Install Gemini CLI globally
-RUN npm install -g @google/gemini-cli@${CLI_VERSION}
-
-# Increase Node.js memory limit for large prompts/responses
-ENV NODE_OPTIONS="--max-old-space-size=8192"
-
-# Create workspace directory only - Gemini config will be mounted at runtime
-RUN mkdir -p /home/node/workspace && \
-    chown -R node:node /home/node
-
-# Copy firewall initialization script
-COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
-RUN chmod +x /usr/local/bin/init-firewall.sh
-
-# Switch to non-root user
-USER node
-WORKDIR /home/node/workspace
-
-# Set up Git configuration for the container user
-RUN git config --global user.name "Gemini Code Bot" && \
-    git config --global user.email "gemini-bot@google.com" && \
-    git config --global init.defaultBranch main && \
-    git config --global --add safe.directory '*'
-
-# Third-party notices (gemini-cli is Apache-2.0; NOTICE preservation required).
 USER root
-COPY NOTICE /usr/share/licenses/propr/NOTICE
-COPY THIRD_PARTY_LICENSES.md /usr/share/licenses/propr/THIRD_PARTY_LICENSES.md
+RUN npm install -g @google/gemini-cli@${CLI_VERSION}
+RUN gemini --version
 USER node
 
-# Copy gh wrapper script
-COPY --chown=node:node scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
-RUN chmod +x /usr/local/bin/gh-wrapper
+RUN git config --global user.name "ProPR Gemini Bot" \
+    && git config --global user.email "gemini-bot@propr.dev" \
+    && git config --global init.defaultBranch main \
+    && git config --global --add safe.directory '*'
 
-# Create entrypoint script for Gemini
 COPY --chown=node:node scripts/gemini-entrypoint.sh /home/node/gemini-entrypoint.sh
+USER root
 RUN chmod +x /home/node/gemini-entrypoint.sh
+USER node
 
-# Set default entrypoint
 ENTRYPOINT ["/home/node/gemini-entrypoint.sh"]

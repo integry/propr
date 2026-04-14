@@ -1,0 +1,58 @@
+# Shared base for propr/agent-* images.
+#
+# Contains everything common to Claude / Codex / Gemini agent containers:
+# system tools, GitHub CLI, firewall script, gh wrapper, third-party notices.
+# Each concrete agent image extends this with one `npm install -g` and its
+# own entrypoint.
+#
+# Alpine (musl) has been verified to boot all three CLIs (claude, codex, gemini
+# with coreutils providing GNU env). See git history for the empirical test.
+#
+# Build:
+#   docker build -f docker/Dockerfile.agent-base -t propr/agent-base .
+
+FROM node:20-alpine
+
+# System dependencies:
+#   git, curl, ca-certificates — source + network
+#   sudo                        — entrypoints fix ownership before dropping privs
+#   iptables                    — optional firewall init
+#   procps                      — ps/top used by some CLI internals
+#   coreutils                   — GNU env: Gemini's shebang uses `env -S`
+#                                 which BusyBox env doesn't support
+#   github-cli                  — gh command
+#   tini                        — PID 1 for clean signal handling
+RUN apk add --no-cache \
+    git \
+    curl \
+    ca-certificates \
+    sudo \
+    iptables \
+    procps \
+    coreutils \
+    github-cli \
+    tini
+
+# node:20-alpine already has a `node` user (UID 1000). Grant it passwordless sudo
+# for the entrypoint scripts that need to adjust file ownership before dropping privs.
+RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Workspace that agents check out code into.
+RUN mkdir -p /home/node/workspace && chown -R node:node /home/node
+
+# Shared helper scripts.
+COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/gh-wrapper
+
+# Third-party notices (required by bundled Apache-2.0 and proprietary components).
+COPY NOTICE /usr/share/licenses/propr/NOTICE
+COPY THIRD_PARTY_LICENSES.md /usr/share/licenses/propr/THIRD_PARTY_LICENSES.md
+
+# Roomy heap for large prompts/responses.
+ENV NODE_OPTIONS="--max-old-space-size=8192"
+
+USER node
+WORKDIR /home/node/workspace
+
+ENTRYPOINT ["/sbin/tini", "--"]
