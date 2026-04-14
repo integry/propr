@@ -330,6 +330,12 @@ export class CodexAgent implements Agent {
             '-i', // Allow stdin for piping prompt
             '--name', containerName,
             '--security-opt', 'no-new-privileges',
+            // Docker's default seccomp profile often blocks the namespace syscalls
+            // bubblewrap needs inside the container.
+            '--security-opt', 'seccomp=unconfined',
+            // Ubuntu/Debian hosts often apply an AppArmor profile that blocks
+            // the user namespace and mount operations bubblewrap needs.
+            '--security-opt', 'apparmor=unconfined',
             '--cap-add', 'CHOWN',
             '--network', 'bridge',
             '--user', '0:0', // Start as root; entrypoint drops to node after permission fixes
@@ -344,9 +350,9 @@ export class CodexAgent implements Agent {
             // Codex CLI arguments
             'codex', 'exec',
             ...(jsonOutput ? ['--json'] : []), // Output NDJSON events (for task execution) or plain text (for analysis)
-            '--full-auto',               // Skip manual approvals
+            '--dangerously-bypass-approvals-and-sandbox', // Docker is the outer isolation boundary on this host
+            '--config', 'features.multi_agent=false', // Nested Codex subagents fail under Docker on this host
             '--skip-git-repo-check',     // Allow running outside git repos (for analysis workspace)
-            '--sandbox', 'workspace-write', // Allow file edits in workspace
             '--cd', '/home/node/workspace', // Set working directory
             '-'                          // Read prompt from stdin
         ];

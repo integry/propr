@@ -93,7 +93,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
     npmPackage: '@openai/codex',
-    defaultCliVersion: '0.116.0'
+    defaultCliVersion: '0.120.0'
   },
   gemini: {
     dockerImage: 'gemini-cli:latest',
