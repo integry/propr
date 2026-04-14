@@ -124,7 +124,7 @@ const FilterInput: React.FC<{
   </div>
 );
 
-// Repository list with sections - uses flat array to avoid React Fragment reconciliation issues
+// Repository list with sections
 const RepoList: React.FC<{
   starredRepos: RepoOption[];
   otherRepos: RepoOption[];
@@ -139,37 +139,32 @@ const RepoList: React.FC<{
     );
   }
 
-  const items: React.ReactNode[] = [];
-
-  if (starredRepos.length > 0) {
-    items.push(
-      <div key="section-starred" className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">
-        Starred
-      </div>
-    );
-    for (const repo of starredRepos) {
-      items.push(
-        <RepoItem key={`starred-${repo.name}`} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
-      );
-    }
-  }
-
-  if (otherRepos.length > 0) {
-    if (starredRepos.length > 0) {
-      items.push(
-        <div key="section-all" className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">
-          All Repositories
-        </div>
-      );
-    }
-    for (const repo of otherRepos) {
-      items.push(
-        <RepoItem key={`other-${repo.name}`} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
-      );
-    }
-  }
-
-  return <>{items}</>;
+  return (
+    <>
+      {starredRepos.length > 0 && (
+        <>
+          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">
+            Starred
+          </div>
+          {starredRepos.map(repo => (
+            <RepoItem key={repo.name} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
+          ))}
+        </>
+      )}
+      {otherRepos.length > 0 && (
+        <>
+          {starredRepos.length > 0 && (
+            <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">
+              All Repositories
+            </div>
+          )}
+          {otherRepos.map(repo => (
+            <RepoItem key={repo.name} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
+          ))}
+        </>
+      )}
+    </>
+  );
 };
 
 // Breadcrumb variant trigger button
@@ -282,10 +277,17 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     }
   }, [isOpen]);
 
-  // Filter and sort repos: starred first, then alphabetical
+  // Deduplicate and filter repos: starred first, then alphabetical
   const { starredRepos, otherRepos } = useMemo(() => {
     const lowerFilter = filter.toLowerCase();
-    const filtered = repos.filter(repo => repo.name.toLowerCase().includes(lowerFilter));
+    // Deduplicate by repo name to prevent duplicate items from data source
+    const seen = new Set<string>();
+    const unique = repos.filter(repo => {
+      if (seen.has(repo.name)) return false;
+      seen.add(repo.name);
+      return true;
+    });
+    const filtered = unique.filter(repo => repo.name.toLowerCase().includes(lowerFilter));
     const starred = filtered.filter(r => r.starred).sort((a, b) => a.name.localeCompare(b.name));
     const others = filtered.filter(r => !r.starred).sort((a, b) => a.name.localeCompare(b.name));
     return { starredRepos: starred, otherRepos: others };
@@ -311,8 +313,10 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   const handleToggle = useCallback(() => {
     if (!disabled) {
-      setIsOpen(prev => !prev);
-      setFilter('');
+      setIsOpen(prev => {
+        if (!prev) setFilter('');
+        return !prev;
+      });
     }
   }, [disabled]);
 

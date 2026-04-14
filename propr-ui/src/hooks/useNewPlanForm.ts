@@ -43,7 +43,13 @@ export function useNewPlanForm(): UseNewPlanFormReturn {
         const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
         const rawRepos = data.repos_to_monitor || [];
         const validRepos = transformRepoData(rawRepos);
-        const enabledRepos = validRepos.filter((r: Repo) => r.enabled);
+        // Deduplicate by name, then filter to enabled repos
+        const seen = new Set<string>();
+        const enabledRepos = validRepos.filter((r: Repo) => {
+          if (!r.enabled || seen.has(r.name)) return false;
+          seen.add(r.name);
+          return true;
+        });
         setRepos(enabledRepos);
         setSelectedRepo(getInitialSelectedRepo(enabledRepos));
       } catch (err) {
