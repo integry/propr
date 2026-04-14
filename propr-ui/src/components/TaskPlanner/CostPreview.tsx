@@ -1,5 +1,5 @@
 import React from 'react';
-import { Loader2, DollarSign, Zap, Info, BookOpen, RefreshCw, Clock, Pause, Play } from 'lucide-react';
+import { Loader2, DollarSign, Zap, Info, BookOpen, RefreshCw, Clock, Pause, Play, Activity } from 'lucide-react';
 import { PreviewResult, ContextRepository, GenerationTrace } from '../../api/proprApi';
 import { GenerationProgress } from './GenerationProgress';
 
@@ -265,6 +265,13 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
           <div className="text-sm text-gray-500">
             <span className="font-medium">{stats.totalTokens.toLocaleString()}</span> tokens
           </div>
+          {stats.usageEstimatePercent != null && stats.usageEstimatePercent > 0 && (
+            <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
+              <Activity className="w-3.5 h-3.5" />
+              <span className="font-medium">~{stats.usageEstimatePercent}%</span>
+              <span className="text-amber-500 hidden sm:inline">session usage</span>
+            </div>
+          )}
         </div>
 
         {smartSelection.length > 0 && (

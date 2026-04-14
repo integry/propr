@@ -19,3 +19,12 @@ export {
     buildDockerArgs,
     type DockerArgsParams
 } from './dockerArgsBuilder.js';
+
+export {
+    executeWithUsageTracking,
+    extractMetricRecords,
+    isAgentTankEnabled,
+    type UsageTrackingResult,
+    type UsageTrackingMetrics,
+    type UsageMetricRecord
+} from './usageTrackingWrapper.js';

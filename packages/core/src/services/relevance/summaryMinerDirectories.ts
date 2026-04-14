@@ -112,7 +112,6 @@ export async function aggregateDirectories(
         agent,
         log,
         modelOverride,
-        branch,
         fullName
       });
 
@@ -312,7 +311,6 @@ interface ProcessDirectoryBatchOptions {
   agent: Agent;
   log: Logger;
   modelOverride?: string;
-  branch: string;
   fullName: string;
 }
 

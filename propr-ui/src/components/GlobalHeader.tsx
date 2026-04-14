@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ScrollText } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
 import AIActivityMonitor from './AIActivityMonitor';
+import QuickAddTodo from './QuickAddTodo';
 import { useHeaderStats } from '../hooks/useHeaderStats';
 import {
   SystemHealth,
@@ -26,6 +27,7 @@ interface GlobalHeaderProps {
 const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon }) => {
   const navigate = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
 
   // Use the centralized header stats hook
   const {
@@ -43,12 +45,18 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
     navigate('/studio/new');
   }, [navigate]);
 
-  // Keyboard shortcut for search (Cmd+K / Ctrl+K)
+  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd+K / Ctrl+K for search
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         searchInputRef.current?.focus();
+      }
+      // Alt+T for quick add to-do
+      if (e.altKey && e.key === 't') {
+        e.preventDefault();
+        setQuickAddOpen(true);
       }
     };
 
@@ -101,8 +109,12 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         </div>
       </div>
 
-      {/* New AI Plan Bay - Full height partition */}
-      <div className="hidden md:flex items-center px-4">
+      {/* Quick Add To-Do + New Plan Bay */}
+      <div className="hidden md:flex items-center gap-2 px-4">
+        <QuickAddTodo
+          externalOpen={quickAddOpen}
+          onExternalOpenHandled={() => setQuickAddOpen(false)}
+        />
         <button
           onClick={handleNewPlan}
           className="flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors"

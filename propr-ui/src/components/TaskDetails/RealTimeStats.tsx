@@ -1,11 +1,51 @@
-import React from 'react';
+import React, { useMemo } from 'react';
+import type { UsageMetricRecord } from '@propr/shared';
+import { UsageBadge } from '../ui/UsageBadge';
+import { TokenUsage } from './types';
 
-const RealTimeStats: React.FC = () => (
-  <div className="p-4 bg-white rounded-lg border border-gray-200">
-    <h4 className="text-lg font-semibold text-gray-900 mb-4">Real-time Stats</h4>
-    <p className="text-gray-500">Files Added: N/A (Placeholder)</p>
-    <p className="text-gray-500">Lines Changed: N/A (Placeholder)</p>
-  </div>
-);
+export interface RealTimeStatsProps {
+  /** Aggregated token usage across all agent loop turns */
+  tokenUsage?: TokenUsage;
+  /** Total cost in USD for the task */
+  costUsd?: number;
+  /** Percentage of allowance consumed (0-100) */
+  allowancePercent?: number;
+}
+
+const RealTimeStats: React.FC<RealTimeStatsProps> = ({ tokenUsage, costUsd, allowancePercent }) => {
+  const totalTokens = useMemo(() => {
+    if (!tokenUsage) return undefined;
+    const input = (tokenUsage.input_tokens ?? 0) +
+      (tokenUsage.cache_creation_input_tokens ?? 0) +
+      (tokenUsage.cache_read_input_tokens ?? 0);
+    const output = tokenUsage.output_tokens ?? 0;
+    const total = input + output;
+    return total > 0 ? total : undefined;
+  }, [tokenUsage]);
+
+  const usageMetricRecords = useMemo<UsageMetricRecord[] | undefined>(() => {
+    if (allowancePercent == null) return undefined;
+
+    return [{
+      agent: 'task',
+      metricKey: 'Allowance',
+      metricValue: allowancePercent,
+    }];
+  }, [allowancePercent]);
+
+  const hasData = totalTokens != null || (costUsd != null && costUsd > 0) || allowancePercent != null;
+
+  if (!hasData) {
+    return null;
+  }
+
+  return (
+    <UsageBadge
+      tokens={totalTokens}
+      cost={costUsd}
+      usageMetricRecords={usageMetricRecords}
+    />
+  );
+};
 
 export default RealTimeStats;

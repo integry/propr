@@ -12,6 +12,7 @@ import { PlanningFailedError } from './planningErrors.js';
 import { updateTrace } from './traceService.js';
 import { buildFullContext, buildSmartSelection, getModelDisplayInfo } from './contextBuilders.js';
 import { regenerateContext } from './contextRegeneration.js';
+import { estimateUsagePercent } from '../../utils/llmEstimation.js';
 import {
   computeContentHash,
   parseDraftAttachments,
@@ -135,12 +136,15 @@ function buildPreviewResult(params: BuildPreviewResultParams): PreviewResult {
     totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens
   }, 'Context preview completed');
 
+  const usageEstimatePercent = estimateUsagePercent(totalTokens);
+
   return {
     success: true,
     stats: {
       totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContextLength,
       fileCount: simulatedIncludedFiles.length, contextRepoFileCount: additionalContextFiles,
-      attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens
+      attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens,
+      usageEstimatePercent
     },
     smartSelection: fullSmartSelection,
     warnings,

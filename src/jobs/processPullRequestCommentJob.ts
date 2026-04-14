@@ -132,18 +132,10 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
         mediaType: { format: 'full' }  // Get body_html with signed image URLs
     }) as PRData;
     const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]';
-    // Use request for mediaType support - paginate doesn't support it well
-    const prCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100,
-        mediaType: { format: 'full' }  // Get body_html with signed image URLs
-    });
-    const prCommentsForValidation = prCommentsResp.data as PRComment[];
-    const reviewCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
-        owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100,
-        mediaType: { format: 'full' }  // Get body_html with signed image URLs
-    });
-    const reviewCommentsForValidation = reviewCommentsResp.data as PRComment[];
-    const allCommentsForValidation = [...prCommentsForValidation, ...reviewCommentsForValidation];
+    // Fetch ALL comments with pagination to handle PRs with 100+ comments
+    const allCommentsForValidation = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
+    // Separate issue comments for unprocessed detection (issue comments are first in the array from fetchAllComments)
+    const prCommentsForValidation = allCommentsForValidation.filter(c => !('diff_hunk' in c));
     const validatedComments = await validateAndFilterComments(commentsToProcess, allCommentsForValidation, pullRequestNumber, correlatedLogger);
     if (validatedComments.length === 0) return { skip: true, reason: 'all_comments_deleted' };
     if (!prData.data.labels.some(label => label.name === PR_LABEL)) return { skip: true, reason: 'missing_required_label' };

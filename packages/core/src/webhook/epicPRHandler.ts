@@ -1,6 +1,7 @@
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { isEpicBranch, EPIC_BRANCH_PATTERN } from '../services/taskExecutionService.js';
+import { createEpicPRWithDraftFallback } from '../services/epicPRService.js';
 import { db } from '../db/connection.js';
 import { getPlanIssuesByDraft, type PlanIssue } from '../config/planIssueManager.js';
 import type { PullRequestEvent } from '@octokit/webhooks-types';
@@ -244,14 +245,13 @@ export async function handleEpicPRCreationOnMerge(
         }
 
         // Create the Epic PR
-        const prResponse = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
+        const prResponse = await createEpicPRWithDraftFallback(octokit, {
             owner,
             repo,
             title,
             head: baseBranch,
             base: defaultBranch,
-            body,
-            draft: true
+            body
         });
 
         correlatedLogger.info({

@@ -2,6 +2,43 @@ import crypto from 'crypto';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 
+type OctokitLike = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+
+interface CreatePROptions {
+  owner: string;
+  repo: string;
+  title: string;
+  head: string;
+  base: string;
+  body: string;
+}
+
+/**
+ * Create a PR as draft when supported, falling back to ready-for-review on
+ * GitHub Free private repos where drafts are unavailable.
+ */
+export async function createEpicPRWithDraftFallback(
+  octokit: OctokitLike,
+  opts: CreatePROptions
+): Promise<{ data: { number: number; html_url: string } }> {
+  try {
+    return await octokit.request('POST /repos/{owner}/{repo}/pulls', {
+      ...opts,
+      draft: true
+    });
+  } catch (err) {
+    const e = err as Error & { status?: number; message?: string };
+    const msg = e.message ?? '';
+    if (e.status === 422 && /draft.*not supported/i.test(msg)) {
+      return await octokit.request('POST /repos/{owner}/{repo}/pulls', {
+        ...opts,
+        draft: false
+      });
+    }
+    throw err;
+  }
+}
+
 export interface EpicPRResult {
   success: boolean;
   prNumber?: number;
@@ -185,14 +222,13 @@ export async function ensureEpicPR(options: EnsureEpicPROptions): Promise<EpicPR
     let prUrl: string;
 
     try {
-      const prResponse = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
+      const prResponse = await createEpicPRWithDraftFallback(octokit, {
         owner,
         repo: repoName,
         title: `[Epic] ${planName}`,
         head: branchName,
         base: baseBranch,
-        body: `## Epic PR\n\nThis PR aggregates all changes for: **${planName}**\n\nChild PRs should target the \`${branchName}\` branch using the \`${labelName}\` label.\n\n---\n*Created by ProPR AI Planner*`,
-        draft: true
+        body: `## Epic PR\n\nThis PR aggregates all changes for: **${planName}**\n\nChild PRs should target the \`${branchName}\` branch using the \`${labelName}\` label.\n\n---\n*Created by ProPR AI Planner*`
       });
       prNumber = prResponse.data.number;
       prUrl = prResponse.data.html_url;

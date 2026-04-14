@@ -7,6 +7,7 @@ import { useSystemReadiness } from '../hooks/useSystemReadiness';
 import { useToast } from './ui/useToast';
 import { HomeIcon, SettingsIcon, MenuIcon, CloseIcon } from './icons/LayoutIcons';
 import GlobalHeader from './GlobalHeader';
+import AgentTankSidebar from './AgentTankSidebar';
 import { useSocket } from '../contexts/useSocket';
 import { QueueStatsUpdatePayload, IndexingUpdatePayload, DraftUpdatePayload } from '@propr/shared';
 
@@ -199,41 +200,44 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <CloseIcon className="w-6 h-6" />
           </button>
         </div>
-        <nav className="flex flex-col gap-1 overflow-y-auto h-[calc(100%-3rem)] sm:h-[calc(100%-4rem)]">
-          {navigation.map((item) => (
-            <Link
-              key={item.name}
-              to={item.href}
-              className={`flex items-center px-4 py-3 text-sm font-medium transition-all duration-200 border-r-2 ${
-                isActive(item.href)
-                  ? 'bg-red-50 text-primary-600 border-primary-600 font-medium'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 border-transparent'
-              }`}
-            >
-              <item.icon className="w-5 h-5 mr-3" />
-              {item.name}
-              {item.name === 'Tasks' && displayTaskCount > 0 && (
-                <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
-                  {displayTaskCount}
-                </span>
-              )}
-              {item.name === 'Tasks' && displayTaskCount === 0 && !hasTasks && hasAgents && hasRepos && (
-                <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No tasks created yet" />
-              )}
-              {item.name === 'Plans' && generatingPlansCount > 0 && (
-                <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
-                  {generatingPlansCount}
-                </span>
-              )}
-              {item.name === 'Repositories' && !hasRepos && (
-                <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No repositories configured" />
-              )}
-              {item.name === 'Coding Agents' && !hasAgents && (
-                <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No AI agents configured" />
-              )}
-            </Link>
-          ))}
-        </nav>
+        <div className="flex flex-col h-[calc(100%-3rem)] sm:h-[calc(100%-4rem)]">
+          <nav className="flex flex-col gap-1 overflow-y-auto flex-1">
+            {navigation.map((item) => (
+              <Link
+                key={item.name}
+                to={item.href}
+                className={`flex items-center px-4 py-3 text-sm font-medium transition-all duration-200 border-r-2 ${
+                  isActive(item.href)
+                    ? 'bg-red-50 text-primary-600 border-primary-600 font-medium'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 border-transparent'
+                }`}
+              >
+                <item.icon className="w-5 h-5 mr-3" />
+                {item.name}
+                {item.name === 'Tasks' && displayTaskCount > 0 && (
+                  <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
+                    {displayTaskCount}
+                  </span>
+                )}
+                {item.name === 'Tasks' && displayTaskCount === 0 && !hasTasks && hasAgents && hasRepos && (
+                  <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No tasks created yet" />
+                )}
+                {item.name === 'Plans' && generatingPlansCount > 0 && (
+                  <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
+                    {generatingPlansCount}
+                  </span>
+                )}
+                {item.name === 'Repositories' && !hasRepos && (
+                  <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No repositories configured" />
+                )}
+                {item.name === 'Coding Agents' && !hasAgents && (
+                  <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No AI agents configured" />
+                )}
+              </Link>
+            ))}
+          </nav>
+          <AgentTankSidebar />
+        </div>
       </aside>
 
       {/* Main content wrapper */}
