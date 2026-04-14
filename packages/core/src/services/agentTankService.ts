@@ -1,7 +1,8 @@
 import logger from '../utils/logger.js';
 import { loadAgentTankSettings } from '../config/configManager.js';
 
-const DEFAULT_TIMEOUT_MS = 5000;
+// Refresh can take 15-20 seconds when CLI agent needs cold start
+const DEFAULT_TIMEOUT_MS = 25000;
 
 /**
  * Get the Agent Tank base URL from database settings.
