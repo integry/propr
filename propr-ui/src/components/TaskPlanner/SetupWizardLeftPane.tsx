@@ -6,7 +6,7 @@ import { GenerationProgress } from './GenerationProgress';
 import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
 import { ManualFileSelector } from './ManualFileSelector';
 
-interface Repo { name: string; enabled: boolean; baseBranch?: string; }
+interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 
 // Extracted: Attachments section
 const AttachmentsSection: React.FC<{
@@ -161,7 +161,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   <div className="w-full md:w-[65%] h-auto md:h-full flex flex-col">
     {/* Header with repo/branch - Toolbar border for alignment with right pane */}
     <div className="px-4 py-2 md:px-6 md:py-3 border-b border-gray-300">
-      <div className="flex items-center gap-1.5 sm:gap-2 text-sm overflow-hidden">
+      <div className="flex items-center gap-1.5 sm:gap-2 text-sm">
         {isNewMode ? (
           <NewModeHeader
             reposLoading={reposLoading}

@@ -1,5 +1,6 @@
 import { simpleGit, SimpleGit } from 'simple-git';
 import path from 'path';
+import fs from 'fs/promises';
 import type { Logger } from 'pino';
 import logger, { generateCorrelationId } from '../../utils/logger.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
@@ -11,6 +12,7 @@ import {
   aggregateDirectories
 } from './summaryMinerHelpers.js';
 import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, clearIndexingProgress } from './indexingCancellation.js';
+import { updateRepositoryStatus } from './summaryMinerQueries.js';
 
 // Re-export metrics functions and types for external access
 export {
@@ -89,6 +91,43 @@ const EXCLUDED_PATHS = [
   'obj/'
 ];
 
+/**
+ * Common icon file paths to check for in the repository.
+ * Includes both root-level and subdirectory locations.
+ * Listed in order of priority - first match wins.
+ */
+const COMMON_ICON_FILES = [
+  'public/apple-touch-icon.png',
+  'apple-touch-icon.png',
+  'public/favicon.svg',
+  'favicon.svg',
+  'public/favicon.png',
+  'public/icon.png',
+  'public/logo.png',
+  'favicon.png',
+  'app/icon.png',
+  'src/app/icon.png',
+  'public/favicon.ico',
+  'favicon.ico',
+  'app/favicon.ico',
+  'static/favicon.ico',
+  'src-tauri/icons/icon.png',
+  'assets/icon.png',
+  'src/assets/icon.png',
+  'logo.png',
+  'logo.svg',
+  'icon.png',
+  'icon.svg',
+  'logo.jpg',
+  'logo.jpeg',
+  'icon.jpg',
+  'icon.jpeg',
+  'app-icon.png',
+  'app-icon.svg',
+  'brand.png',
+  'brand.svg'
+];
+
 // --- Helper Functions ---
 
 interface AgentSetupResult {
@@ -125,6 +164,26 @@ async function setupAgent(settings: { agent_alias?: string }): Promise<AgentSetu
   const effectiveModel = modelOverride || agent.config.defaultModel;
 
   return { agent, modelOverride, effectiveModel };
+}
+
+/**
+ * Discovers an icon file in the repository by checking common icon file locations.
+ * Checks both root-level and subdirectory paths (e.g., public/, app/, assets/).
+ * Returns the relative path to the first matching icon file, or null if none found.
+ */
+async function discoverRepoIcon(repoPath: string, log: Logger): Promise<string | null> {
+  for (const iconFile of COMMON_ICON_FILES) {
+    const iconPath = path.join(repoPath, iconFile);
+    try {
+      await fs.access(iconPath);
+      log.info({ iconPath: iconFile }, 'Discovered repository icon');
+      return iconFile;
+    } catch {
+      // File doesn't exist, continue to next
+    }
+  }
+  log.debug('No repository icon found in common locations');
+  return null;
 }
 
 // --- Main Export ---
@@ -167,6 +226,9 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     // Phase A: Setup & Staleness Check
     correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
 
+    // 0. Discover repository icon (early, so we can include it in status updates)
+    const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
+
     // 1. Check if summarization is enabled
     const settings = await loadSummarizationSettings();
     if (!settings.enabled) {
@@ -205,7 +267,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     if (filesToProcess.length === 0 && filesToDelete.length === 0) {
       correlatedLogger.info('No files need processing, all summaries up to date');
-      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage });
+      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
       return;
     }
 
@@ -244,8 +306,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {
-      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage });
-      correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, ...batchResult }, 'Repository indexing completed successfully');
+      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+      correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
     }
 
     // Clear cancellation flag and progress on successful completion
@@ -452,92 +514,6 @@ async function deleteFileSummaries(paths: string[], branch: string): Promise<voi
   }
 }
 
-// --- Phase D: Repository Status Updates ---
-
-/**
- * Updates the repository indexing status
- */
-export async function updateRepositoryStatus(
-  fullName: string,
-  status: 'idle' | 'indexing' | 'completed' | 'failed',
-  branch: string = 'HEAD',
-  commitInfo?: { hash?: string; message?: string }
-): Promise<void> {
-  const lastIndexedHash = commitInfo?.hash;
-  const lastIndexedCommitMessage = commitInfo?.message;
-  const updateData: Record<string, unknown> = {
-    indexing_status: status,
-    updated_at: db.fn.now()
-  };
-
-  if (status === 'completed') {
-    updateData.last_indexed_at = db.fn.now();
-    if (lastIndexedHash) {
-      updateData.last_indexed_hash = lastIndexedHash;
-    }
-    if (lastIndexedCommitMessage) {
-      updateData.last_indexed_commit_message = lastIndexedCommitMessage;
-    }
-  }
-
-  await db('repositories')
-    .insert({
-      full_name: fullName,
-      branch,
-      indexing_status: status,
-      created_at: db.fn.now(),
-      updated_at: db.fn.now(),
-      last_indexed_hash: lastIndexedHash || null,
-      last_indexed_commit_message: lastIndexedCommitMessage || null,
-      ...(status === 'completed' ? { last_indexed_at: db.fn.now() } : {})
-    })
-    .onConflict(['full_name', 'branch'])
-    .merge(updateData);
-}
-
 // --- Utility Exports ---
-
-/**
- * Gets the summary for a specific file
- */
-export async function getFileSummary(filePath: string, branch: string = 'HEAD'): Promise<FileSummary | null> {
-  const result = await db('file_summaries').where({ path: filePath, branch }).first();
-  return result || null;
-}
-
-/**
- * Gets the summary for a specific directory
- */
-export async function getDirectorySummary(dirPath: string, branch: string = 'HEAD'): Promise<DirectorySummary | null> {
-  const result = await db('directory_summaries').where({ path: dirPath, branch }).first();
-  return result || null;
-}
-
-/**
- * Gets all file summaries for a repository
- */
-export async function getRepositorySummaries(fullName: string, branch: string = 'HEAD'): Promise<FileSummary[]> {
-  return db('file_summaries')
-    .where('path', 'like', `${fullName}/%`)
-    .andWhere({ branch })
-    .orderBy('path');
-}
-
-/**
- * Clears all summaries for a repository (for re-indexing)
- */
-export async function clearRepositorySummaries(fullName: string, branch: string = 'HEAD'): Promise<void> {
-  await db('file_summaries')
-    .where('path', 'like', `${fullName}/%`)
-    .andWhere({ branch })
-    .delete();
-
-  await db('directory_summaries')
-    .where(function() {
-      this.where('path', 'like', `${fullName}/%`).orWhere('path', fullName);
-    })
-    .andWhere({ branch })
-    .delete();
-
-  await updateRepositoryStatus(fullName, 'idle', branch);
-}
+export { updateRepositoryStatus };
+export { getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries } from './summaryMinerQueries.js';

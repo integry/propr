@@ -66,6 +66,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       ]);
       const rawRepos = repoData.repos_to_monitor || [];
       setUserRepoPrefs(prefs);
+      const seenKeys = new Set<string>();
       const validRepos: Repo[] = rawRepos
         .map((repo: unknown): Repo | null => {
           if (typeof repo === 'string') {
@@ -85,7 +86,15 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
           }
           return null;
         })
-        .filter((repo): repo is Repo => repo !== null);
+        .filter((repo): repo is Repo => {
+          if (repo === null) return false;
+          // Use composite key: name + baseBranch to preserve legitimate
+          // entries that share a name but differ by branch.
+          const key = repo.baseBranch ? `${repo.name}:${repo.baseBranch}` : repo.name;
+          if (seenKeys.has(key)) return false;
+          seenKeys.add(key);
+          return true;
+        });
       setRepos(validRepos);
     } catch (err) {
       setError((err as Error).message || 'Failed to load repositories');

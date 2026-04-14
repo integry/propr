@@ -1,7 +1,8 @@
-import React from 'react';
-import { ChevronDown, Github } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { ChevronDown } from 'lucide-react';
+import { RepositorySelector, RepoOption } from '../RepositorySelector';
 
-interface Repo { name: string; enabled: boolean; baseBranch?: string; }
+interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 
 // Helper to format repository name with bold repo part
 export const FormatRepoName: React.FC<{ repository: string }> = ({ repository }) => {
@@ -36,26 +37,14 @@ export const NewModeHeader: React.FC<{
     <>
       {/* Repository selector - breadcrumb style */}
       <div className="relative inline-flex items-center max-w-[55%] sm:max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 mr-1 sm:mr-1.5 flex-shrink-0" />
-        <select
-          value={selectedRepo}
-          onChange={(e) => onRepoChange?.(e.target.value)}
-          className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full"
+        <RepositorySelector
+          repos={repos as RepoOption[]}
+          selectedRepo={selectedRepo}
+          onRepoChange={(repo) => onRepoChange?.(repo)}
           disabled={repos.length === 0}
-          title="Select repository"
-        >
-          {repos.length === 0 ? (
-            <option value="">No repositories available</option>
-          ) : (
-            <>
-              <option value="">Select repository</option>
-              {repos.map(repo => (
-                <option key={repo.name} value={repo.name}>{repo.name}</option>
-              ))}
-            </>
-          )}
-        </select>
-        <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
+          variant="breadcrumb"
+          placeholder="Select repository"
+        />
       </div>
       {/* Show branch selector when repo is selected */}
       {selectedRepo && (
@@ -106,35 +95,28 @@ export const EditModeHeader: React.FC<{
   onRepoChange: (repo: string) => void;
   reposLoading: boolean;
 }> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange, repos, onRepoChange, reposLoading }) => {
-  // Ensure the current repository is always in the options list
-  const repoOptions = repos.length > 0 ? repos : (repository ? [{ name: repository, enabled: true }] : []);
-  // Add the current repository to the list if it's not already there
-  const hasCurrentRepo = repoOptions.some(r => r.name === repository);
-  const finalRepoOptions = hasCurrentRepo || !repository ? repoOptions : [{ name: repository, enabled: true }, ...repoOptions];
+  // Ensure the current repository is always in the options list.
+  // Memoize to maintain stable array identity across renders and prevent
+  // unnecessary re-renders of RepositorySelector's internal useMemo.
+  const finalRepoOptions = useMemo(() => {
+    const options = repos.length > 0 ? repos : (repository ? [{ name: repository, enabled: true }] : []);
+    const hasCurrentRepo = options.some(r => r.name === repository);
+    return hasCurrentRepo || !repository ? options : [{ name: repository, enabled: true }, ...options];
+  }, [repos, repository]);
 
   return (
     <>
       {/* Repository - always clickable dropdown styled as breadcrumb */}
       <div className="relative inline-flex items-center max-w-[55%] sm:max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 mr-1 sm:mr-1.5 flex-shrink-0" />
-        <select
-          value={repository}
-          onChange={(e) => onRepoChange(e.target.value)}
-          className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full"
+        <RepositorySelector
+          repos={finalRepoOptions as RepoOption[]}
+          selectedRepo={repository}
+          onRepoChange={onRepoChange}
           disabled={reposLoading}
-          title="Click to change repository"
-        >
-          {reposLoading ? (
-            <option value="">Loading...</option>
-          ) : finalRepoOptions.length === 0 ? (
-            <option value="">No repositories available</option>
-          ) : (
-            finalRepoOptions.map(repo => (
-              <option key={repo.name} value={repo.name}>{repo.name}</option>
-            ))
-          )}
-        </select>
-        <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
+          isLoading={reposLoading}
+          variant="breadcrumb"
+          placeholder="Select repository"
+        />
       </div>
       <span className="text-gray-400 flex-shrink-0">/</span>
       {/* Branch selector - breadcrumb style */}

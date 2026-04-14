@@ -123,8 +123,8 @@ export async function aggregateDirectories(
           dirSummaryCache.set(result.dirPath, result.summary);
         }
         dirsProcessed++;
-        await updateDirectoryProgress(fullName);
       }
+      await updateDirectoryProgress(fullName);
     }
   }
 
