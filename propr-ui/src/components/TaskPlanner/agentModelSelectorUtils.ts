@@ -1,5 +1,5 @@
 import { AgentModelPair } from '../../api/planIssuesApi';
-import { getModelDisplayName } from '../../utils/modelDisplay';
+export { getModelDisplayName } from '../../utils/modelDisplay';
 
 export type AgentModelPairWithDisplay = AgentModelPair & { displayName: string };
 
