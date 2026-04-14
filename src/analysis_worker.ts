@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
 import { createWorker, ANALYSIS_QUEUE_NAME, issueQueue } from '@propr/core';
-import type { AnalysisJobData, JobResult, IssueJobData } from '@propr/core';
+import type { AnalysisJobData, JobResult, IssueJobData, CommentJobData, UnprocessedComment } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
@@ -190,32 +190,57 @@ async function checkAndTriggerAutoFollowup(
             threshold
         }, 'Posted auto-followup comment to GitHub');
 
-        // Queue the issue for reprocessing by adding a job to issueQueue
-        // This bypasses the usual bot filter since the comment triggers reprocessing
+        // Queue for reprocessing - use correct job type based on PR vs issue
         const followupCorrelationId = generateCorrelationId();
-        const jobData: IssueJobData = {
-            repoOwner,
-            repoName,
-            number: targetNumber,
-            repository: task.repository,
-            correlationId: followupCorrelationId,
-            title: `Auto-followup for issue #${targetNumber}`,
-            subtitle: `Triggered by low implementation score (${score}/${threshold})`
-        };
+        const isPR = Boolean(task.pr_number);
 
-        await issueQueue.add('autoFollowupJob', jobData, {
-            priority: 5, // Medium priority
-            removeOnComplete: true
-        });
+        if (isPR) {
+            // For PRs, queue as a PR comment job
+            const unprocessedComment: UnprocessedComment = {
+                id: 0, // No specific comment ID - this is an auto-followup
+                body: commentBody,
+                author: 'system',
+                type: 'issue'
+            };
+            const jobData: CommentJobData = {
+                pullRequestNumber: targetNumber,
+                comments: [unprocessedComment],
+                repoOwner,
+                repoName,
+                correlationId: followupCorrelationId,
+                title: `Auto-followup for PR #${targetNumber}`,
+                subtitle: `Triggered by low implementation score (${score}/${threshold})`
+            };
+            await issueQueue.add('processPullRequestComment', jobData, {
+                priority: 5,
+                removeOnComplete: true
+            });
+        } else {
+            // For issues, queue as an issue job
+            const jobData: IssueJobData = {
+                repoOwner,
+                repoName,
+                number: targetNumber,
+                repository: task.repository,
+                correlationId: followupCorrelationId,
+                title: `Auto-followup for issue #${targetNumber}`,
+                subtitle: `Triggered by low implementation score (${score}/${threshold})`
+            };
+            await issueQueue.add('processGitHubIssue', jobData, {
+                priority: 5,
+                removeOnComplete: true
+            });
+        }
 
         correlatedLogger.info({
             executionId,
             repository: task.repository,
             targetNumber,
+            isPR,
             followupCorrelationId,
             score,
             threshold
-        }, 'Queued auto-followup job to issueQueue');
+        }, 'Queued auto-followup job');
 
     } catch (error) {
         const err = error as Error;
