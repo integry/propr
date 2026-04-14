@@ -92,17 +92,32 @@ const EXCLUDED_PATHS = [
 ];
 
 /**
- * Common icon file names to check for in the repository root.
+ * Common icon file paths to check for in the repository.
+ * Includes both root-level and subdirectory locations.
  * Listed in order of priority - first match wins.
  */
 const COMMON_ICON_FILES = [
+  'public/apple-touch-icon.png',
+  'apple-touch-icon.png',
+  'public/favicon.svg',
+  'favicon.svg',
+  'public/favicon.png',
+  'public/icon.png',
+  'public/logo.png',
+  'favicon.png',
+  'app/icon.png',
+  'src/app/icon.png',
+  'public/favicon.ico',
+  'favicon.ico',
+  'app/favicon.ico',
+  'static/favicon.ico',
+  'src-tauri/icons/icon.png',
+  'assets/icon.png',
+  'src/assets/icon.png',
   'logo.png',
   'logo.svg',
   'icon.png',
   'icon.svg',
-  'favicon.png',
-  'favicon.svg',
-  'favicon.ico',
   'logo.jpg',
   'logo.jpeg',
   'icon.jpg',
@@ -152,8 +167,9 @@ async function setupAgent(settings: { agent_alias?: string }): Promise<AgentSetu
 }
 
 /**
- * Discovers an icon file in the repository root by checking common icon file names.
- * Returns the path to the first matching icon file, or null if none found.
+ * Discovers an icon file in the repository by checking common icon file locations.
+ * Checks both root-level and subdirectory paths (e.g., public/, app/, assets/).
+ * Returns the relative path to the first matching icon file, or null if none found.
  */
 async function discoverRepoIcon(repoPath: string, log: Logger): Promise<string | null> {
   for (const iconFile of COMMON_ICON_FILES) {
