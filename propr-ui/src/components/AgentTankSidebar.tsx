@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { getAgentTankUsage, refreshAgentTank, AgentTankUsageResponse, AgentUsageData } from '../api/revertApi';
 import { ProviderLogo } from './ui/ProviderLogo';
+import { getModelDisplayName } from '../utils/modelDisplay';
 
 // Refresh interval in milliseconds (60 seconds)
 const REFRESH_INTERVAL = 60000;
@@ -57,7 +58,7 @@ function getAllMetrics(agent: AgentUsageData): UsageMetric[] {
   if (agent.usage.models) {
     for (const model of agent.usage.models) {
       metrics.push({
-        label: model.model,
+        label: getModelDisplayName(model.model, { compactGemini: true }),
         percent: model.percentUsed,
         resetsIn: model.resetsIn
       });
