@@ -5,6 +5,7 @@ import { Knex } from 'knex';
 import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import { RequestError } from '@octokit/request-error';
+import { refreshGitHubTokenIfNeeded } from '../auth.js';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
@@ -27,12 +28,28 @@ function isAuthError(error: unknown): boolean {
 }
 
 /**
- * Handle GitHub authentication errors by clearing session and returning proper response
+ * Handle GitHub authentication errors by attempting token refresh before clearing session
  */
 async function handleAuthError(req: Request, res: Response): Promise<void> {
-  console.warn('GitHub token expired or revoked, clearing session for re-authentication');
+  console.warn('GitHub token expired or revoked, attempting token refresh');
 
-  // Clear the session to force re-login
+  // Try to refresh the token before logging out
+  const refreshed = await refreshGitHubTokenIfNeeded(req, true);
+
+  if (refreshed) {
+    // Token was successfully refreshed, tell client to retry
+    console.log('Token refresh successful, client should retry');
+    res.status(401).json({
+      error: 'Token refreshed',
+      code: 'TOKEN_REFRESHED',
+      message: 'Your GitHub token has been refreshed. Please retry your request.'
+    });
+    return;
+  }
+
+  // Token refresh failed, clear the session to force re-login
+  console.warn('Token refresh failed, clearing session for re-authentication');
+
   await new Promise<void>((resolve) => {
     req.logout((err) => {
       if (err) console.error('Error during logout:', err);
