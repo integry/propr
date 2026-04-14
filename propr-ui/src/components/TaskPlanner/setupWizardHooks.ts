@@ -65,8 +65,14 @@ async function loadRepositories(savedLastRepository: string | undefined): Promis
     indexingMap.set(status.full_name, status);
   }
 
+  const seenNames = new Set<string>();
   const validRepos = (repoData.repos_to_monitor || [])
     .filter((r): r is { name: string; enabled?: boolean; baseBranch?: string } => typeof r === 'object' && r !== null && 'name' in r && typeof (r as { name: unknown }).name === 'string')
+    .filter(r => {
+      if (seenNames.has(r.name)) return false;
+      seenNames.add(r.name);
+      return true;
+    })
     .map(r => {
       const prefs = userPrefs[r.name];
       const indexingStatus = indexingMap.get(r.name);

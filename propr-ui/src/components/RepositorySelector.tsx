@@ -277,10 +277,17 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     }
   }, [isOpen]);
 
-  // Filter and sort repos: starred first, then alphabetical
+  // Deduplicate repos by name (same repo can appear with different branches),
+  // then filter and sort: starred first, then alphabetical
   const { starredRepos, otherRepos } = useMemo(() => {
+    const seen = new Set<string>();
+    const unique = repos.filter(repo => {
+      if (seen.has(repo.name)) return false;
+      seen.add(repo.name);
+      return true;
+    });
     const lowerFilter = filter.toLowerCase();
-    const filtered = repos.filter(repo => repo.name.toLowerCase().includes(lowerFilter));
+    const filtered = unique.filter(repo => repo.name.toLowerCase().includes(lowerFilter));
     const starred = filtered.filter(r => r.starred).sort((a, b) => a.name.localeCompare(b.name));
     const others = filtered.filter(r => !r.starred).sort((a, b) => a.name.localeCompare(b.name));
     return { starredRepos: starred, otherRepos: others };
