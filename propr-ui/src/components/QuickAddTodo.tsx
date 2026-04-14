@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useLocation } from 'react-router-dom';
-import { ListPlus, Check, ChevronDown } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { ListPlus, Check, ChevronDown, ExternalLink } from 'lucide-react';
 import { createTodo, getCategories, RepoTodoCategory } from '../api/repoTodosApi';
 import { getRepoConfig } from '../api/proprApi';
 import { MonitoredRepo } from '../api/proprTypes';
@@ -12,6 +12,7 @@ interface QuickAddTodoProps {
 
 const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpenHandled }) => {
   const location = useLocation();
+  const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const [repos, setRepos] = useState<MonitoredRepo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState('');
@@ -280,7 +281,21 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
               )}
 
               {/* Actions Row */}
-              <div className="flex items-center justify-end pt-1 border-t border-slate-100">
+              <div className="flex items-center justify-between pt-1 border-t border-slate-100">
+                <button
+                  onClick={() => {
+                    if (selectedRepo) {
+                      setIsOpen(false);
+                      resetForm();
+                      navigate('/repositories', { state: { selectRepo: selectedRepo, activeTab: 'todos' } });
+                    }
+                  }}
+                  disabled={!selectedRepo}
+                  className="flex items-center gap-1 text-xs text-slate-500 hover:text-teal-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  <span>View Todos</span>
+                </button>
                 <button
                   onClick={handleSubmit}
                   disabled={!content.trim() || !selectedRepo || isSubmitting}

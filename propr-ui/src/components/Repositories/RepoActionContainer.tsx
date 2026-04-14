@@ -45,13 +45,19 @@ export interface RepoActionContainerProps {
     alias?: string;
     baseBranch?: string;
   } | null;
+  initialTab?: ActionTab;
 }
 
-const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo }) => {
-  const [activeTab, setActiveTab] = useState<ActionTab>('chat');
+const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo, initialTab }) => {
+  const [activeTab, setActiveTab] = useState<ActionTab>(initialTab || 'chat');
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+
+  // Switch tab when initialTab changes (e.g. from navigation state)
+  useEffect(() => {
+    if (initialTab) setActiveTab(initialTab);
+  }, [initialTab]);
 
   // Load persisted messages when repository changes
   useEffect(() => {

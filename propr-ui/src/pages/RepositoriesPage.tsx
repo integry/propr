@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { GripVertical, ArrowLeft } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
@@ -11,6 +12,7 @@ import { RepositoryListContent } from '../components/RepositoryListContent';
 
 const RepositoriesPage: React.FC = () => {
   useDocumentTitle('Repositories');
+  const location = useLocation();
 
   const {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
@@ -24,6 +26,23 @@ const RepositoriesPage: React.FC = () => {
   const [newBaseBranch, setNewBaseBranch] = useState<string>('');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
+  const [navActiveTab, setNavActiveTab] = useState<'chat' | 'improve' | 'browse' | 'todos' | undefined>(undefined);
+
+  // Handle navigation state from QuickAddTodo "View Todos" link
+  useEffect(() => {
+    const state = location.state as { selectRepo?: string; activeTab?: string } | null;
+    if (state?.selectRepo && repos.length > 0) {
+      const match = repos.find(r => r.name === state.selectRepo);
+      if (match) {
+        setSelectedRepoId(match.id);
+        if (state.activeTab === 'todos') {
+          setNavActiveTab('todos');
+        }
+      }
+      // Clear navigation state so it doesn't re-trigger
+      window.history.replaceState({}, '');
+    }
+  }, [location.state, repos]);
 
   const handleOpenModal = () => {
     setNewRepo('');
@@ -81,7 +100,7 @@ const RepositoriesPage: React.FC = () => {
               </span>
             </div>
             <div className="flex-1 min-h-0">
-              <RepoActionContainer selectedRepo={selectedRepo} />
+              <RepoActionContainer selectedRepo={selectedRepo} initialTab={navActiveTab} />
             </div>
           </div>
         ) : (
@@ -141,7 +160,7 @@ const RepositoriesPage: React.FC = () => {
           <Panel defaultSize={60} minSize={30}>
             <div className="h-full bg-[#F8FAFC] flex flex-col">
               <div className="flex-1 min-h-0">
-                <RepoActionContainer selectedRepo={selectedRepo || null} />
+                <RepoActionContainer selectedRepo={selectedRepo || null} initialTab={navActiveTab} />
               </div>
             </div>
           </Panel>
