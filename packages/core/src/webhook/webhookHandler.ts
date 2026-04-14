@@ -51,8 +51,8 @@ const ENABLE_PREVIEW_ROUTING = process.env.ENABLE_PREVIEW_ROUTING === 'true';
 // PROCESSOR_LABEL: The label that designates a ProPR PR as the active processor.
 const PROCESSOR_LABEL = process.env.PROCESSOR_LABEL || 'preview-env';
 // PROPR_REPO: The ProPR repository in 'owner/repo' format. Label events from this repo
-// trigger processor assignment changes.
-const PROPR_REPO = process.env.PROPR_REPO || 'integry/gitfix';
+// trigger processor assignment changes. Default to the renamed repository.
+const PROPR_REPO = process.env.PROPR_REPO || 'integry/propr';
 // processorPrNumber: Dynamically tracks which ProPR PR has the 'preview-env' label.
 // When set, all webhooks are forwarded to that PR's preview instance.
 // When null, webhooks are processed by the main instance.
