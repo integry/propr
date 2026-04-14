@@ -75,7 +75,8 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPOSITORY" ]; then
         echo "Warning: Could not get PR branch, using current code"
     else
         echo "PR Branch: $PR_BRANCH"
-        echo "PR SHA: ${PR_SHA:0:8}"
+        PR_SHA_SHORT=$(printf '%s' "$PR_SHA" | cut -c1-8)
+        echo "PR SHA: $PR_SHA_SHORT"
 
         mkdir -p "$PR_CHECKOUT_BASE"
 
