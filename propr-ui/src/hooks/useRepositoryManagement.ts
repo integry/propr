@@ -66,6 +66,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       ]);
       const rawRepos = repoData.repos_to_monitor || [];
       setUserRepoPrefs(prefs);
+      const seenNames = new Set<string>();
       const validRepos: Repo[] = rawRepos
         .map((repo: unknown): Repo | null => {
           if (typeof repo === 'string') {
@@ -85,7 +86,12 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
           }
           return null;
         })
-        .filter((repo): repo is Repo => repo !== null);
+        .filter((repo): repo is Repo => {
+          if (repo === null) return false;
+          if (seenNames.has(repo.name)) return false;
+          seenNames.add(repo.name);
+          return true;
+        });
       setRepos(validRepos);
     } catch (err) {
       setError((err as Error).message || 'Failed to load repositories');

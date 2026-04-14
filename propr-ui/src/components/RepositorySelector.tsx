@@ -313,7 +313,10 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   const handleToggle = useCallback(() => {
     if (!disabled) {
-      setIsOpen(prev => !prev);
+      setIsOpen(prev => {
+        if (prev) setFilter('');
+        return !prev;
+      });
     }
   }, [disabled]);
 

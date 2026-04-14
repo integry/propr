@@ -114,7 +114,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
       const repos = await configManager.loadMonitoredReposRaw();
-      res.json({ repos_to_monitor: repos });
+      // Deduplicate by name to prevent duplicate entries from reaching the frontend
+      const seen = new Set<string>();
+      const uniqueRepos = repos.filter(r => {
+        if (seen.has(r.name)) return false;
+        seen.add(r.name);
+        return true;
+      });
+      res.json({ repos_to_monitor: uniqueRepos });
     } catch (error) {
       console.error('Error in /api/config/repos GET:', error);
       res.status(500).json({ error: 'Failed to load repository configuration' });
