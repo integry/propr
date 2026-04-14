@@ -1,0 +1,29 @@
+# Orchestrator image that replaces docker-compose for prod deployments.
+# It uses the mounted docker socket to pull and run the other Propr images.
+#
+# Build:
+#   docker build -f docker/Dockerfile.launcher -t propr/launcher .
+#
+# Run:
+#   docker run --rm \
+#     -v /var/run/docker.sock:/var/run/docker.sock \
+#     -v $PWD/.env:/app/.env:ro \
+#     -v $PWD/data:/app/data \
+#     -v $PWD/logs:/app/logs \
+#     -v $PWD/repos:/app/repos \
+#     propr/launcher:<version>
+
+FROM node:20-alpine
+
+RUN apk add --no-cache docker-cli tini
+
+WORKDIR /app
+
+COPY docker/launcher/package.json ./package.json
+COPY docker/launcher/entrypoint.mjs ./entrypoint.mjs
+COPY docker/launcher/manifest.json ./manifest.json
+
+# No npm deps — entrypoint uses only Node stdlib + docker CLI via child_process.
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "/app/entrypoint.mjs"]

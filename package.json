@@ -46,7 +46,10 @@
     "compose:dev": "./scripts/compose.sh dev",
     "compose:down": "./scripts/compose.sh down",
     "compose:logs": "./scripts/compose.sh logs",
-    "compose:build": "./scripts/compose.sh build"
+    "compose:build": "./scripts/compose.sh build",
+    "images:build": "./scripts/build-images.sh",
+    "images:build:push": "./scripts/build-images.sh --push",
+    "start:prod": "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD/.env:/app/.env:ro -v $PWD/data:/app/data -v $PWD/logs:/app/logs -v $PWD/repos:/app/repos propr/launcher:latest"
   },
   "keywords": [],
   "author": "",

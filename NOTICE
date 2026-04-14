@@ -1,0 +1,98 @@
+Propr — Third-Party Software Notice
+====================================
+
+Propr is distributed as a set of Docker images that include third-party
+software. This notice summarizes those components, their licenses, and the
+obligations attached to them. Full license texts are reproduced in
+THIRD_PARTY_LICENSES.md.
+
+Propr itself is licensed under the terms specified in LICENSE (root of this
+repository). The bundled components below retain their own upstream licenses.
+
+End-user responsibility
+-----------------------
+Users of Propr must supply their own API credentials for Anthropic, OpenAI,
+and/or Google AI services. Use of those APIs (and of the CLI tools that
+connect to them) is governed by each provider's own terms of service:
+
+  - Anthropic: https://www.anthropic.com/legal/commercial-terms
+  - OpenAI:    https://openai.com/policies/terms-of-use
+  - Google AI: https://ai.google.dev/terms
+
+By running Propr with your own credentials, you accept those upstream
+terms. Propr does not act as a reseller or intermediary.
+
+
+Bundled third-party components
+------------------------------
+
+1. @anthropic-ai/claude-code
+   License:    Proprietary — Anthropic Commercial Terms of Service
+   Upstream:   https://www.npmjs.com/package/@anthropic-ai/claude-code
+   Distributed unmodified. Source: "© Anthropic PBC. All rights reserved.
+   Use is subject to Anthropic's Commercial Terms of Service."
+
+2. @anthropic-ai/sdk
+   License:    MIT
+   Upstream:   https://github.com/anthropics/anthropic-sdk-typescript
+   Copyright (c) 2023 Anthropic, PBC.
+
+3. @openai/codex
+   License:    Apache License 2.0
+   Upstream:   https://github.com/openai/codex
+   Copyright (c) OpenAI. Licensed under the Apache License, Version 2.0.
+
+4. @google/gemini-cli
+   License:    Apache License 2.0
+   Upstream:   https://github.com/google-gemini/gemini-cli
+   Copyright (c) Google LLC. Licensed under the Apache License, Version 2.0.
+
+5. GitHub CLI (gh)
+   License:    MIT
+   Upstream:   https://github.com/cli/cli
+   Installed from the official distribution at cli.github.com.
+
+6. Alpine Linux base image and system packages (git, curl, jq, sudo,
+   docker-cli, tini, ca-certificates, iptables, procps, python3, make, g++)
+   Various open-source licenses. See the Alpine packages database for
+   per-package details: https://pkgs.alpinelinux.org/
+
+7. Node.js 20 runtime
+   License:    MIT (Node.js itself) plus various licenses for bundled
+               components (V8, libuv, OpenSSL, etc.)
+   Upstream:   https://nodejs.org/
+
+
+npm dependencies of the Propr application
+-----------------------------------------
+The Propr application image bundles its Node.js production dependencies.
+A license summary produced by `license-checker --production --summary`:
+
+  MIT: 244
+  ISC: 15
+  Apache-2.0: 8
+  BSD-3-Clause: 4
+  LGPL-3.0-or-later: 1
+  BSD-2-Clause: 1
+  Others (0BSD, dual-licensed): ~6
+
+Full per-package attribution is in THIRD_PARTY_LICENSES.md, generated at
+build time. To reproduce locally:
+
+  npx license-checker --production --json > THIRD_PARTY_LICENSES.json
+
+
+Redistribution
+--------------
+Propr's Docker images are published for self-hosting. The bundling of the
+third-party components above is done under the following premises:
+
+  - Each component is redistributed unmodified.
+  - End users of the resulting Propr stack bring their own credentials
+    and accept the upstream providers' terms of service directly.
+  - No repackaging, rebranding, or circumvention of upstream billing or
+    authentication occurs.
+
+If you are an upstream maintainer who wishes to object to or clarify the
+inclusion of your component in Propr, please open an issue at the Propr
+repository.

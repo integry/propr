@@ -55,6 +55,12 @@ RUN git config --global user.name "Codex Bot" && \
     git config --global init.defaultBranch main && \
     git config --global --add safe.directory '*'
 
+# Third-party notices (codex CLI is Apache-2.0; NOTICE preservation required).
+USER root
+COPY NOTICE /usr/share/licenses/propr/NOTICE
+COPY THIRD_PARTY_LICENSES.md /usr/share/licenses/propr/THIRD_PARTY_LICENSES.md
+USER node
+
 # Copy gh wrapper script
 COPY --chown=node:node scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
 RUN chmod +x /usr/local/bin/gh-wrapper

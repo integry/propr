@@ -1,0 +1,82 @@
+# Multi-stage prod build for the Propr application image.
+# Single image runs daemon, worker, analysis-worker, indexing-worker, or api
+# depending on the command passed at runtime.
+#
+# Build from the monorepo root:
+#   docker build -f docker/Dockerfile.app.prod -t propr/app .
+
+# --- Stage 1: builder ---------------------------------------------------------
+FROM node:20-alpine AS builder
+
+WORKDIR /build
+
+RUN apk add --no-cache python3 make g++ git
+
+# Copy workspace manifests first so npm ci layer caches when source changes.
+COPY package*.json ./
+COPY packages/shared/package*.json ./packages/shared/
+COPY packages/core/package*.json ./packages/core/
+COPY packages/api/package*.json ./packages/api/
+
+# Install all deps (incl. dev) so we can compile TypeScript.
+RUN npm ci --include=dev --ignore-scripts
+
+# Copy everything needed to build.
+COPY tsconfig.json ./
+COPY src ./src
+COPY config ./config
+COPY scripts ./scripts
+COPY knexfile.ts ./
+COPY packages/shared ./packages/shared
+COPY packages/core ./packages/core
+COPY packages/api ./packages/api
+
+# Build workspace packages in dependency order, then root.
+RUN cd packages/shared && npm run build \
+    && cd ../core && npm run build \
+    && cd ../.. && npm run build
+
+# Drop dev dependencies. Native bindings (better-sqlite3) stay built from the
+# install step above — we keep build toolchain in this stage so any rebuilds
+# during prune succeed.
+RUN npm prune --omit=dev
+
+
+# --- Stage 2: runtime ---------------------------------------------------------
+FROM node:20-alpine AS runtime
+
+WORKDIR /usr/src/app
+
+# Runtime-only packages. No python/make/g++ — native modules were built in stage 1.
+#   git      — simple-git operations
+#   sudo     — worktree ownership changes
+#   docker-cli — spawning agent containers via mounted docker socket
+#   curl/jq  — deploy-pr.sh script
+RUN apk add --no-cache git sudo docker-cli curl jq tini \
+    && mkdir -p /tmp/git-processor
+
+# Copy built artifacts and pruned dependencies from the builder.
+COPY --from=builder /build/node_modules ./node_modules
+COPY --from=builder /build/package*.json ./
+COPY --from=builder /build/dist ./dist
+COPY --from=builder /build/packages/shared/package.json ./packages/shared/
+COPY --from=builder /build/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /build/packages/core/package.json ./packages/core/
+COPY --from=builder /build/packages/core/dist ./packages/core/dist
+COPY --from=builder /build/packages/api/package.json ./packages/api/
+
+# Third-party notices (required by bundled Apache-2.0 and proprietary components).
+COPY NOTICE /usr/share/licenses/propr/NOTICE
+COPY THIRD_PARTY_LICENSES.md /usr/share/licenses/propr/THIRD_PARTY_LICENSES.md
+
+ENV NODE_ENV=production
+
+# Use tini as PID 1 so SIGTERM propagates cleanly to node.
+ENTRYPOINT ["/sbin/tini", "--"]
+
+# Default command: daemon. Override at `docker run` for worker / api / etc.
+#   docker run propr/app node dist/src/worker.js
+#   docker run propr/app node dist/src/analysis_worker.js
+#   docker run propr/app node dist/src/indexing_worker.js
+#   docker run propr/app node dist/packages/api/server.js
+CMD ["node", "dist/src/daemon.js"]
