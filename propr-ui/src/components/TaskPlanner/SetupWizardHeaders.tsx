@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { RepositorySelector, RepoOption } from '../RepositorySelector';
 
@@ -95,11 +95,14 @@ export const EditModeHeader: React.FC<{
   onRepoChange: (repo: string) => void;
   reposLoading: boolean;
 }> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange, repos, onRepoChange, reposLoading }) => {
-  // Ensure the current repository is always in the options list
-  const repoOptions = repos.length > 0 ? repos : (repository ? [{ name: repository, enabled: true }] : []);
-  // Add the current repository to the list if it's not already there
-  const hasCurrentRepo = repoOptions.some(r => r.name === repository);
-  const finalRepoOptions = hasCurrentRepo || !repository ? repoOptions : [{ name: repository, enabled: true }, ...repoOptions];
+  // Ensure the current repository is always in the options list.
+  // Memoize to maintain stable array identity across renders and prevent
+  // unnecessary re-renders of RepositorySelector's internal useMemo.
+  const finalRepoOptions = useMemo(() => {
+    const options = repos.length > 0 ? repos : (repository ? [{ name: repository, enabled: true }] : []);
+    const hasCurrentRepo = options.some(r => r.name === repository);
+    return hasCurrentRepo || !repository ? options : [{ name: repository, enabled: true }, ...options];
+  }, [repos, repository]);
 
   return (
     <>

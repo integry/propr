@@ -277,17 +277,10 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     }
   }, [isOpen]);
 
-  // Deduplicate and filter repos: starred first, then alphabetical
+  // Filter and sort repos: starred first, then alphabetical
   const { starredRepos, otherRepos } = useMemo(() => {
     const lowerFilter = filter.toLowerCase();
-    // Deduplicate by repo name to prevent duplicate items from data source
-    const seen = new Set<string>();
-    const unique = repos.filter(repo => {
-      if (seen.has(repo.name)) return false;
-      seen.add(repo.name);
-      return true;
-    });
-    const filtered = unique.filter(repo => repo.name.toLowerCase().includes(lowerFilter));
+    const filtered = repos.filter(repo => repo.name.toLowerCase().includes(lowerFilter));
     const starred = filtered.filter(r => r.starred).sort((a, b) => a.name.localeCompare(b.name));
     const others = filtered.filter(r => !r.starred).sort((a, b) => a.name.localeCompare(b.name));
     return { starredRepos: starred, otherRepos: others };
@@ -313,10 +306,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   const handleToggle = useCallback(() => {
     if (!disabled) {
-      setIsOpen(prev => {
-        if (!prev) setFilter('');
-        return !prev;
-      });
+      setIsOpen(prev => !prev);
     }
   }, [disabled]);
 

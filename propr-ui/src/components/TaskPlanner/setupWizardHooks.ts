@@ -79,13 +79,7 @@ async function loadRepositories(savedLastRepository: string | undefined): Promis
       };
     });
 
-  // Deduplicate by name to prevent duplicate entries from reaching the UI
-  const seen = new Set<string>();
-  const enabledRepos = validRepos.filter(r => {
-    if (!r.enabled || seen.has(r.name)) return false;
-    seen.add(r.name);
-    return true;
-  });
+  const enabledRepos = validRepos.filter(r => r.enabled);
   const selectedRepo = (savedLastRepository && enabledRepos.some(r => r.name === savedLastRepository)) ? savedLastRepository : (enabledRepos[0]?.name || '');
   return { repos: enabledRepos, selectedRepo };
 }
