@@ -316,9 +316,91 @@ console.log(config.github.appId);
 console.log(config.logging.level);
 ```
 
-## Docker Compose Setup
+## Production Docker Images
 
-The project includes a complete Docker Compose configuration for running all services in containers. This simplifies development and deployment by managing ProPR, Redis, and the UI in a unified environment.
+For self-hosted production deployments, ProPR ships as a set of pre-built Docker
+images orchestrated by a single umbrella `propr/launcher` image. This replaces
+`docker-compose` for install-time scenarios and installs in one command.
+
+### Quick install
+
+```bash
+# Start the full stack from pre-built images
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v $PWD/.env:/app/.env:ro \
+  -v $PWD/data:/app/data \
+  -v $PWD/logs:/app/logs \
+  -v $PWD/repos:/app/repos \
+  -p 4000:4000 -p 5173:5173 \
+  propr/launcher:latest
+```
+
+The launcher pulls redis + app + ui images on first run and orchestrates them
+via the mounted docker socket. See `.env.example` for required configuration.
+
+### Images published
+
+| Image | Contents | Size |
+|---|---|---|
+| `propr/launcher` | Orchestrator that spawns the stack | ~170 MB |
+| `propr/app` | Server (daemon / workers / api, command selects role) | ~525 MB |
+| `propr/ui` | Web UI static bundle | ~225 MB |
+| `propr/docs` | Docusaurus site (optional) | ~215 MB |
+| `propr/agent-base` | Shared base for agent images | ~220 MB |
+| `propr/agent-claude` | Claude Code execution container | ~315 MB |
+| `propr/agent-codex` | OpenAI Codex execution container | ~470 MB |
+| `propr/agent-gemini` | Google Gemini CLI execution container | ~380 MB |
+
+Images are also mirrored to `ghcr.io/proprdev/propr-*` (no rate limits for
+unauthenticated pulls).
+
+### Building locally
+
+```bash
+npm run images:build          # build all images, no push
+npm run images:build:push     # build + push to Docker Hub + GHCR (requires login)
+npm run images:smoke          # run the smoke test against locally built images
+```
+
+The smoke test boots the full stack from the built images with fake
+credentials, confirms the API responds to `/health`, and checks no container
+crashes on startup. It's the first-line defense for catching broken images
+before release.
+
+### Running integration tests against the stack
+
+Full end-to-end tests in `test/e2e.test.ts` hit a running ProPR API with real
+GitHub credentials. To run them against a launcher-started stack:
+
+```bash
+# 1. Start the prod stack (see Quick install above)
+
+# 2. Point the test harness at it
+export PROPR_E2E_API_URL=http://localhost:4000
+export PROPR_E2E_REPO=your-test-org/your-test-repo
+export PROPR_E2E_TOKEN=$(gh auth token)   # or a GitHub PAT
+npm run test:e2e
+```
+
+The test suite creates plans, triggers agent runs, and verifies end-to-end
+behavior. Expect it to take several minutes and to consume real API credits.
+Use `PROPR_E2E_SKIP_SLOW=1` to skip long-running agent invocations during
+quick validation.
+
+### Third-party notices
+
+Bundled third-party software attributions are preserved inside each image at
+`/usr/share/licenses/propr/`. See `NOTICE` and `THIRD_PARTY_LICENSES.md` in
+the repo root for the offline copies. End users must supply their own API
+credentials for Anthropic, OpenAI, and/or Google and accept those providers'
+terms of service independently.
+
+## Docker Compose Setup (development)
+
+For local development, `docker-compose` builds images from source and runs
+the stack with hot-reload-friendly volumes. Use this for iterating on code;
+use the production images above for real deployments.
 
 ### Docker Compose Commands
 
