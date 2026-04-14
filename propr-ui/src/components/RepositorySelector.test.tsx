@@ -131,36 +131,32 @@ describe('RepositorySelector', () => {
     expect(screen.getByText('No repositories found')).toBeInTheDocument();
   });
 
-  // Regression: duplicate repos in input must be deduplicated in display
-  it('deduplicates repos with the same name', () => {
-    const duplicateRepos: RepoOption[] = [
-      { name: 'integry/forex', enabled: true, starred: true },
-      { name: 'integry/forex', enabled: true, starred: false },
+  // Regression: repos with same name but different branches must be preserved
+  it('preserves repos with same name but different baseBranch', () => {
+    const branchRepos: RepoOption[] = [
+      { name: 'integry/forex', enabled: true, baseBranch: 'main' },
       { name: 'integry/forex', enabled: true, baseBranch: 'develop' },
       { name: 'org/other-repo', enabled: true },
     ];
     const { container } = render(
-      <RepositorySelector repos={duplicateRepos} selectedRepo="integry/forex" onRepoChange={vi.fn()} />
+      <RepositorySelector repos={branchRepos} selectedRepo="integry/forex" onRepoChange={vi.fn()} />
     );
-    // Click the trigger button (first button in the container)
     const trigger = container.querySelector('button')!;
     fireEvent.click(trigger);
     const items = getVisibleRepoButtons();
-    // Should show exactly 2 unique repos, not 4
-    expect(items).toHaveLength(2);
+    // All 3 entries should be shown (2 forex with different branches + 1 other)
+    expect(items).toHaveLength(3);
   });
 
-  // Regression: duplicate repos must stay deduplicated after repeated filtering
-  it('does not multiply duplicate repos after repeated filtering', () => {
-    const duplicateRepos: RepoOption[] = [
-      { name: 'integry/forex', enabled: true, starred: true },
-      { name: 'integry/forex', enabled: true },
-      { name: 'integry/forex', enabled: true },
-      { name: 'integry/propr', enabled: true },
+  // Regression: branch-specific repos must survive repeated filtering
+  it('does not lose or multiply branch-specific repos after repeated filtering', () => {
+    const branchRepos: RepoOption[] = [
+      { name: 'integry/forex', enabled: true, baseBranch: 'main', starred: true },
+      { name: 'integry/forex', enabled: true, baseBranch: 'develop' },
       { name: 'integry/propr', enabled: true },
     ];
     const { container } = render(
-      <RepositorySelector repos={duplicateRepos} selectedRepo="integry/forex" onRepoChange={vi.fn()} />
+      <RepositorySelector repos={branchRepos} selectedRepo="integry/forex" onRepoChange={vi.fn()} />
     );
     const trigger = container.querySelector('button')!;
     fireEvent.click(trigger);
@@ -175,7 +171,27 @@ describe('RepositorySelector', () => {
     }
 
     const items = getVisibleRepoButtons();
-    // Should show exactly 2 unique repos regardless of duplicates in input
+    // Should show all 3 entries (2 forex branches + 1 propr)
+    expect(items).toHaveLength(3);
+  });
+
+  // Regression: filtering should correctly filter branch-specific entries by name
+  it('filters all branch variants of a repo by name', () => {
+    const branchRepos: RepoOption[] = [
+      { name: 'integry/forex', enabled: true, baseBranch: 'main' },
+      { name: 'integry/forex', enabled: true, baseBranch: 'develop' },
+      { name: 'integry/propr', enabled: true },
+    ];
+    const { container } = render(
+      <RepositorySelector repos={branchRepos} selectedRepo="integry/forex" onRepoChange={vi.fn()} />
+    );
+    const trigger = container.querySelector('button')!;
+    fireEvent.click(trigger);
+    const input = screen.getByPlaceholderText('Filter repositories...');
+
+    fireEvent.change(input, { target: { value: 'forex' } });
+    const items = getVisibleRepoButtons();
+    // Both forex entries (main and develop) should appear
     expect(items).toHaveLength(2);
   });
 

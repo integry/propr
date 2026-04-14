@@ -3,7 +3,6 @@ import { Repo } from './NewPlanForm';
 
 // Helper function to transform raw repository data into Repo objects
 export const transformRepoData = (rawRepos: unknown[]): Repo[] => {
-  const seen = new Set<string>();
   return rawRepos
     .map((repo: unknown) => {
       if (typeof repo === 'string') {
@@ -20,12 +19,7 @@ export const transformRepoData = (rawRepos: unknown[]): Repo[] => {
       }
       return null;
     })
-    .filter((repo): repo is Repo => {
-      if (repo === null || repo.name === undefined) return false;
-      if (seen.has(repo.name)) return false;
-      seen.add(repo.name);
-      return true;
-    });
+    .filter((repo): repo is Repo => repo !== null && repo.name !== undefined);
 };
 
 // Helper function to determine initial selected repository

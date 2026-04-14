@@ -124,6 +124,11 @@ const FilterInput: React.FC<{
   </div>
 );
 
+// Generate a stable unique key for a repo entry.
+// Repos with the same name but different baseBranch are distinct entries.
+const repoKey = (repo: RepoOption): string =>
+  repo.baseBranch ? `${repo.name}:${repo.baseBranch}` : repo.name;
+
 // Repository list with sections
 const RepoList: React.FC<{
   starredRepos: RepoOption[];
@@ -147,7 +152,7 @@ const RepoList: React.FC<{
             Starred
           </div>
           {starredRepos.map(repo => (
-            <RepoItem key={repo.name} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
+            <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
           ))}
         </>
       )}
@@ -159,7 +164,7 @@ const RepoList: React.FC<{
             </div>
           )}
           {otherRepos.map(repo => (
-            <RepoItem key={repo.name} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
+            <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
           ))}
         </>
       )}
@@ -277,17 +282,11 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     }
   }, [isOpen]);
 
-  // Deduplicate repos by name (same repo can appear with different branches),
-  // then filter and sort: starred first, then alphabetical
+  // Filter and sort repos: starred first, then alphabetical.
+  // Repos with the same name but different branches are preserved as distinct entries.
   const { starredRepos, otherRepos } = useMemo(() => {
-    const seen = new Set<string>();
-    const unique = repos.filter(repo => {
-      if (seen.has(repo.name)) return false;
-      seen.add(repo.name);
-      return true;
-    });
     const lowerFilter = filter.toLowerCase();
-    const filtered = unique.filter(repo => repo.name.toLowerCase().includes(lowerFilter));
+    const filtered = repos.filter(repo => repo.name.toLowerCase().includes(lowerFilter));
     const starred = filtered.filter(r => r.starred).sort((a, b) => a.name.localeCompare(b.name));
     const others = filtered.filter(r => !r.starred).sort((a, b) => a.name.localeCompare(b.name));
     return { starredRepos: starred, otherRepos: others };
