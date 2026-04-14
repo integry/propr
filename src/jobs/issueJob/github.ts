@@ -41,12 +41,25 @@ export async function fetchIssueComments(
   correlatedLogger: Logger
 ): Promise<IssueComment[]> {
   try {
-    // Use request for mediaType support - paginate doesn't support it well
-    const commentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-      owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, per_page: 100,
-      mediaType: { format: 'full' }  // Get body_html with signed image URLs
-    });
-    const allComments = commentsResp.data as IssueComment[];
+    // Fetch ALL comments with pagination to handle issues with 100+ comments
+    const allComments: IssueComment[] = [];
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      const commentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, per_page: 100, page,
+        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+      });
+      const pageComments = commentsResp.data as IssueComment[];
+      allComments.push(...pageComments);
+
+      // Check if there are more pages
+      const linkHeader = (commentsResp.headers as Record<string, string | undefined>).link;
+      hasMore = Boolean(linkHeader && linkHeader.includes('rel="next"'));
+      page++;
+    }
+
     return allComments.filter(comment => {
       const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type);
       return !filterResult.shouldFilter;

@@ -34,3 +34,11 @@ export {
   type QueueStatsData,
   type EventPayload,
 } from './events.js';
+
+// Export usage configuration and metrics types
+export {
+  type AgentTankConfig,
+  type UsageSnapshot,
+  type UsageMetricRecord,
+  type UsageMetrics,
+} from './usageTypes.js';

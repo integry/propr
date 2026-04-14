@@ -14,6 +14,7 @@ import {
 import type { CliVersionType, AgentType } from '@propr/core';
 import { withConfigLock, validateAgentsConfig } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
+import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -50,6 +51,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   };
 
   const indexingRoutes = createIndexingRoutes({ redisClient, publishConfigUpdate, logActivityHelper });
+  const agentTankRoutes = createAgentTankRoutes();
 
   async function getFollowupKeywords(_req: Request, res: Response): Promise<void> {
     try {
@@ -413,6 +415,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     getRepositoriesIndexingStatus: indexingRoutes.getRepositoriesIndexingStatus,
     triggerIndexing: indexingRoutes.triggerIndexing,
     triggerReindexAll: indexingRoutes.triggerReindexAll,
-    stopIndexing: indexingRoutes.stopIndexing
+    stopIndexing: indexingRoutes.stopIndexing,
+    getAgentTankSettings: agentTankRoutes.getAgentTankSettings,
+    postAgentTankSettings: agentTankRoutes.postAgentTankSettings,
+    getAgentTankStatus: agentTankRoutes.getAgentTankStatus,
+    getAgentTankUsage: agentTankRoutes.getAgentTankUsage,
+    postAgentTankRefresh: agentTankRoutes.postAgentTankRefresh,
+    getAgentTankDetect: agentTankRoutes.getAgentTankDetect
   };
 }

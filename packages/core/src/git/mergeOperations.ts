@@ -34,34 +34,36 @@ export async function mergeBaseIntoBranch(
 
         // Attempt the merge
         logger.info({ worktreePath, baseBranch }, 'Merging base branch into current branch');
+        let mergeError: Error | null = null;
         try {
             await git.raw(['merge', `origin/${baseBranch}`, '--no-edit']);
+        } catch (err) {
+            mergeError = err as Error;
+        }
 
-            logger.info({ worktreePath, baseBranch }, 'Merge completed cleanly');
-            return { outcome: 'clean' };
-        } catch (mergeError) {
-            const errorMessage = (mergeError as Error).message || '';
+        // ALWAYS check git status for conflicts - don't rely solely on exception messages
+        // simple-git may not always throw when merge has conflicts
+        const status = await git.status();
+        const conflictedFiles = status.conflicted || [];
 
-            // Check if the error is due to merge conflicts
-            if (errorMessage.includes('CONFLICT') || errorMessage.includes('Automatic merge failed')) {
-                // Get the list of conflicted files
-                const status = await git.status();
-                const conflictedFiles = status.conflicted || [];
+        if (conflictedFiles.length > 0) {
+            logger.info({
+                worktreePath,
+                baseBranch,
+                conflictedFiles,
+                conflictCount: conflictedFiles.length,
+                hadMergeError: !!mergeError
+            }, 'Merge resulted in conflicts');
 
-                logger.info({
-                    worktreePath,
-                    baseBranch,
-                    conflictedFiles,
-                    conflictCount: conflictedFiles.length
-                }, 'Merge resulted in conflicts');
+            return {
+                outcome: 'conflicts',
+                conflictedFiles
+            };
+        }
 
-                return {
-                    outcome: 'conflicts',
-                    conflictedFiles
-                };
-            }
-
-            // Not a conflict error - this is a genuine failure
+        // If merge threw an error but no conflicts detected, it's a genuine failure
+        if (mergeError) {
+            const errorMessage = mergeError.message || '';
             logger.error({ worktreePath, baseBranch, error: errorMessage }, 'Merge failed unexpectedly');
 
             // Abort the failed merge to leave worktree in a clean state
@@ -76,6 +78,9 @@ export async function mergeBaseIntoBranch(
                 error: errorMessage
             };
         }
+
+        logger.info({ worktreePath, baseBranch }, 'Merge completed cleanly');
+        return { outcome: 'clean' };
     } catch (error) {
         const errorMessage = (error as Error).message || 'Unknown error';
         logger.error({ worktreePath, baseBranch, error: errorMessage }, 'Failed to execute merge operation');

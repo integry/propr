@@ -76,6 +76,8 @@ export interface PreviewStats {
   maxTokens?: number;
   modelName?: string;
   modelMaxContextTokens?: number;
+  /** Estimated percentage of the 5-hour session usage this task will consume */
+  usageEstimatePercent?: number;
 }
 
 export interface PreviewResult {
@@ -146,6 +148,12 @@ export interface DraftContextConfig {
   generationModel?: string;
   /** Files manually excluded from context by the user */
   excludedFiles?: string[];
+  /** Whether to create an Epic PR to collect all issue PRs */
+  useEpic?: boolean;
+  /** Whether to auto-merge individual PRs into the Epic PR */
+  autoMerge?: boolean;
+  /** The epic label name (e.g., "base-478-epic-name-abc") - stored after first creation */
+  epicLabel?: string;
 }
 
 export interface RefinementResult {

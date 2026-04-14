@@ -1,5 +1,5 @@
 import React from 'react';
-import { TaskInfo, TokenUsage } from './types';
+import { TaskInfo, TokenUsage, UsageMetricRecord } from './types';
 import { ExternalLink, GitPullRequest, GitCommit, Zap } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { ProviderLogo } from '../ui/ProviderLogo';
@@ -178,6 +178,61 @@ const TokenUsageChip: React.FC<{ tokenUsage: TokenUsage }> = ({ tokenUsage }) =>
   );
 };
 
+// Map of raw Agent Tank metric keys to human-readable labels
+const METRIC_KEY_LABELS: Record<string, string> = {
+  session: 'Session', weeklyAll: 'Weekly', weeklySonnet: 'Sonnet',
+  weeklyOpus: 'Opus', weeklyHaiku: 'Haiku', fiveHour: 'Five Hour',
+  weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly',
+};
+
+function humanizeMetricKey(key: string): string {
+  if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
+  if (/^[A-Z]/.test(key)) return key;
+  return key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
+}
+
+// Match a metric record by raw or humanized key
+function findMetricRecord(records: UsageMetricRecord[], rawKey: string): UsageMetricRecord | undefined {
+  const humanized = METRIC_KEY_LABELS[rawKey] || rawKey;
+  return records.find(r => r.metricKey === rawKey || r.metricKey === humanized);
+}
+
+// Usage metrics chip component (Agent Tank tracking)
+const UsageMetricsChip: React.FC<{ usageMetricRecords: UsageMetricRecord[] }> = ({ usageMetricRecords }) => {
+  if (!usageMetricRecords || usageMetricRecords.length === 0) return null;
+
+  // Find the session usage (most relevant for current task)
+  const sessionRecord = findMetricRecord(usageMetricRecords, 'session');
+  const weeklyRecord = findMetricRecord(usageMetricRecords, 'weeklyAll');
+
+  if (!sessionRecord && !weeklyRecord) return null;
+
+  const sessionPct = sessionRecord?.metricValue ?? 0;
+  const weeklyPct = weeklyRecord?.metricValue ?? 0;
+
+  // Build tooltip with all metrics using human-readable labels
+  const tooltip = usageMetricRecords
+    .map(r => `${humanizeMetricKey(r.metricKey)}: ${r.metricValue.toFixed(1)}%`)
+    .join(' | ');
+
+  // Only show if there's actual usage
+  if (sessionPct === 0 && weeklyPct === 0) return null;
+
+  return (
+    <span
+      className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-mono text-xs"
+      title={`Usage consumed: ${tooltip}`}
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 20v-6M6 20V10M18 20V4" />
+      </svg>
+      {sessionPct > 0 && `${sessionPct.toFixed(1)}%`}
+      {sessionPct > 0 && weeklyPct > 0 && '/'}
+      {weeklyPct > 0 && `${weeklyPct.toFixed(1)}%`}
+    </span>
+  );
+};
+
 interface ContextStripProps {
   taskInfo: TaskInfo | null;
   modelName: string;
@@ -185,6 +240,7 @@ interface ContextStripProps {
   commitInfo?: { shortHash: string; url: string };
   duration?: number | null;
   tokenUsage?: TokenUsage;
+  usageMetricRecords?: UsageMetricRecord[];
   /** Mobile only: Show only the repository name link */
   mobileRepoOnly?: boolean;
   /** Mobile only: Show only the metadata (PR, issue, model, etc.) without repo name */
@@ -198,6 +254,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   commitInfo,
   duration,
   tokenUsage,
+  usageMetricRecords,
   mobileRepoOnly,
   mobileMetadataOnly,
 }) => {
@@ -240,6 +297,12 @@ const ContextStrip: React.FC<ContextStripProps> = ({
             <TokenUsageChip tokenUsage={tokenUsage} />
           </>
         )}
+        {usageMetricRecords && usageMetricRecords.length > 0 && (
+          <>
+            <Dot />
+            <UsageMetricsChip usageMetricRecords={usageMetricRecords} />
+          </>
+        )}
       </div>
     );
   }
@@ -268,6 +331,12 @@ const ContextStrip: React.FC<ContextStripProps> = ({
           <>
             <Dot />
             <TokenUsageChip tokenUsage={tokenUsage} />
+          </>
+        )}
+        {usageMetricRecords && usageMetricRecords.length > 0 && (
+          <>
+            <Dot />
+            <UsageMetricsChip usageMetricRecords={usageMetricRecords} />
           </>
         )}
       </div>

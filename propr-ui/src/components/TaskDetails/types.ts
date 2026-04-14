@@ -5,6 +5,20 @@ export interface TokenUsage {
   cache_read_input_tokens?: number | null;
 }
 
+export interface UsageMetricRecord {
+  agent: string;
+  metricKey: string;
+  metricValue: number;
+}
+
+export interface UsageMetrics {
+  preCall?: Record<string, unknown>;
+  postCall?: Record<string, unknown>;
+  delta?: Record<string, unknown>;
+  timestamp?: string;
+  agent?: string;
+}
+
 export interface HistoryItemMetadata {
   model?: string;
   pr?: { url?: string; number?: number };
