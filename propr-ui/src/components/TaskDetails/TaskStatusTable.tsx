@@ -6,37 +6,45 @@ import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest
 interface TaskStatusTableProps {
   history: HistoryItem[];
   compact?: boolean;
+  commandMode?: 'default' | 'review' | 'fix';
 }
 
-const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[]): string => {
+const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
   const stateUpper = item.state?.toUpperCase();
+  const isReview = commandMode === 'review';
+  const isFix = commandMode === 'fix';
 
   if (stateUpper === 'PENDING') return 'Task Queued';
-  if (stateUpper === 'PROCESSING') return 'Analyzing Request';
+  if (stateUpper === 'PROCESSING') return isReview ? 'Preparing Review' : 'Analyzing Request';
   if (stateUpper === 'CLAUDE_EXECUTION' || stateUpper === 'CLAUDE_EXECUTION_STARTED') {
-    return getClaudeExecutionLabel(item, index, history);
+    return getClaudeExecutionLabel(item, index, history, commandMode);
   }
-  if (stateUpper === 'CLAUDE_EXECUTION_COMPLETED') return 'Implementation Completed';
+  if (stateUpper === 'CLAUDE_EXECUTION_COMPLETED') return isReview ? 'Review Completed' : isFix ? 'Fix Completed' : 'Implementation Completed';
   if (stateUpper === 'POST_PROCESSING') return 'Creating Pull Request';
-  if (stateUpper === 'COMPLETED') return 'Task Completed';
+  if (stateUpper === 'COMPLETED') return isReview ? 'Review Completed' : 'Task Completed';
   if (stateUpper === 'FAILED') return 'Task Failed';
   if (stateUpper === 'CANCELLED') return 'Task Cancelled';
 
   return item.state?.replace(/_/g, ' ').toLowerCase() || '';
 };
 
-const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: HistoryItem[]): string => {
+const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
+  const isReview = commandMode === 'review';
+  const isFix = commandMode === 'fix';
   const claudeCount = history.slice(0, index + 1).filter(h => {
     const s = h.state?.toUpperCase();
     return s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED';
   }).length;
 
-  if (item.reason?.toLowerCase().includes('completed')) return 'Implementation Completed';
+  const actionLabel = isReview ? 'Reviewing' : isFix ? 'Applying Fix' : 'Implementing Changes';
+  const completedLabel = isReview ? 'Review Completed' : isFix ? 'Fix Completed' : 'Implementation Completed';
+
+  if (item.reason?.toLowerCase().includes('completed')) return completedLabel;
   if (item.reason?.toLowerCase().includes('started')) {
-    return claudeCount === 1 ? 'Implementing Changes' : `Retry Implementation ${claudeCount}`;
+    return claudeCount === 1 ? actionLabel : `Retry ${actionLabel} ${claudeCount}`;
   }
   if (item.metadata?.description) return item.metadata.description;
-  return claudeCount === 1 ? 'Implementing Changes' : `Retry Implementation ${claudeCount}`;
+  return claudeCount === 1 ? actionLabel : `Retry ${actionLabel} ${claudeCount}`;
 };
 
 const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boolean; isCancelled: boolean }> = ({
@@ -108,8 +116,9 @@ const TimelineContent: React.FC<{
   maxDurationIndex: number;
   isRunning: boolean;
   compact?: boolean;
-}> = ({ item, index, history, maxDurationIndex, isRunning, compact }) => {
-  const displayLabel = getDisplayLabel(item, index, history);
+  commandMode?: string;
+}> = ({ item, index, history, maxDurationIndex, isRunning, compact, commandMode }) => {
+  const displayLabel = getDisplayLabel(item, index, history, commandMode);
   const prInfo = item.metadata?.pr || item.metadata?.pullRequest;
   const isCompleted = item.state?.toUpperCase() === 'COMPLETED';
 
@@ -158,7 +167,8 @@ const TaskTimelineItem: React.FC<{
   maxDurationIndex: number;
   isLast: boolean;
   compact?: boolean;
-}> = ({ item, index, history, maxDurationIndex, isLast, compact }) => {
+  commandMode?: string;
+}> = ({ item, index, history, maxDurationIndex, isLast, compact, commandMode }) => {
   const stateUpper = item.state?.toUpperCase() || '';
   const isCompletedState = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(stateUpper);
   const isRunning = isLast && !isCompletedState;
@@ -200,13 +210,14 @@ const TaskTimelineItem: React.FC<{
           maxDurationIndex={maxDurationIndex}
           isRunning={isRunning}
           compact={compact}
+          commandMode={commandMode}
         />
       </div>
     </React.Fragment>
   );
 };
 
-const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = false }) => {
+const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = false, commandMode }) => {
   // Pre-calculate durations to find the longest one for highlighting
   const { itemsWithDuration, maxDurationIndex, startDate } = useMemo(() => {
     if (!history || history.length === 0) {
@@ -255,6 +266,7 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = fa
             maxDurationIndex={maxDurationIndex}
             isLast={index === itemsWithDuration.length - 1}
             compact={compact}
+            commandMode={commandMode}
           />
         ))}
       </div>

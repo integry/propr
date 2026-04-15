@@ -15,7 +15,7 @@ const getSubtitle = (taskInfo: TaskInfo): string => {
   return `Initial implementation for Issue #${taskInfo.number}`;
 };
 
-const getStatusInfo = (status: string): { icon: React.ReactNode; label: string; color: string; bgColor: string } => {
+const getStatusInfo = (status: string, commandMode?: string): { icon: React.ReactNode; label: string; color: string; bgColor: string } => {
   const normalizedStatus = status?.toUpperCase() || '';
 
   if (normalizedStatus === 'COMPLETED') {
@@ -57,7 +57,7 @@ const getStatusInfo = (status: string): { icon: React.ReactNode; label: string; 
   if (normalizedStatus === 'CLAUDE_EXECUTION' || normalizedStatus === 'CLAUDE_EXECUTION_STARTED') {
     return {
       icon: <Play className="h-4 w-4 text-blue-600 animate-pulse" />,
-      label: 'Implementing',
+      label: commandMode === 'review' ? 'Reviewing' : commandMode === 'fix' ? 'Fixing' : 'Implementing',
       color: 'text-blue-700',
       bgColor: 'bg-blue-50'
     };
@@ -66,7 +66,7 @@ const getStatusInfo = (status: string): { icon: React.ReactNode; label: string; 
   if (normalizedStatus === 'CLAUDE_EXECUTION_COMPLETED') {
     return {
       icon: <CheckCircle2 className="h-4 w-4 text-green-600" />,
-      label: 'Implementation Done',
+      label: commandMode === 'review' ? 'Review Done' : commandMode === 'fix' ? 'Fix Done' : 'Implementation Done',
       color: 'text-green-700',
       bgColor: 'bg-green-50'
     };
@@ -111,7 +111,7 @@ const getCommandModeBadge = (commandMode?: string): { icon: React.ReactNode; lab
 };
 
 const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
-  const statusInfo = getStatusInfo(currentStatus);
+  const statusInfo = getStatusInfo(currentStatus, taskInfo?.commandMode);
   const commandModeBadge = getCommandModeBadge(taskInfo?.commandMode);
 
   return (
