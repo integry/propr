@@ -158,21 +158,23 @@ export function extractMetricRecords(
         const label = humanizeMetricKey(key);
 
         // Direct numeric value (unlikely but handle it)
+        // Only record positive values (actual consumption, not limit resets)
         if (typeof value === 'number') {
-            if (value !== 0) {
+            if (value > 0) {
                 records.push({ agent, metricKey: label, metricValue: value });
             }
             continue;
         }
 
         // Nested object — extract percent/percentUsed
+        // Only record positive values (negative means old usage aged out)
         if (typeof value === 'object' && !Array.isArray(value)) {
             const nested = value as Record<string, unknown>;
             const percentValue =
                 typeof nested.percent === 'number' ? nested.percent :
                 typeof nested.percentUsed === 'number' ? nested.percentUsed :
                 null;
-            if (percentValue !== null && percentValue !== 0) {
+            if (percentValue !== null && percentValue > 0) {
                 records.push({ agent, metricKey: label, metricValue: percentValue });
             }
         }
@@ -201,7 +203,8 @@ function extractArrayMetricRecords(
                 typeof entry.percentUsed === 'number' ? entry.percentUsed :
                 typeof entry.percent === 'number' ? entry.percent :
                 null;
-            if (percentValue !== null && percentValue !== 0) {
+            // Only record positive values (actual consumption)
+            if (percentValue !== null && percentValue > 0) {
                 records.push({ agent, metricKey: label, metricValue: percentValue });
             }
         }
