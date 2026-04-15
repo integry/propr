@@ -459,6 +459,7 @@ export async function ensureVersionedAgentImage(
             'build',
             '-f', dockerfile,
             '--build-arg', `CLI_VERSION=${cliVersion}`,
+            '--build-arg', 'BASE_TAG=latest',
             '-t', imageTag,
             basePath
         ], {
