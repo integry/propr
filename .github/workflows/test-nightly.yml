@@ -33,7 +33,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
@@ -45,6 +45,11 @@ jobs:
 
       - name: Install Dependencies
         run: npm ci
+
+      - name: Build workspace packages
+        run: |
+          npm run build --workspace=packages/shared
+          npm run build --workspace=packages/core
 
       - name: Run Full Test Suite
         id: full_tests
