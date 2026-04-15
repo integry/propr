@@ -27,6 +27,8 @@ import {
 } from './prCommentJobUtils.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
+import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
+import type { AIReviewComment } from './reviewCommentGatherer.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
@@ -164,6 +166,17 @@ interface ExecuteProcessingParams {
     state: ProcessingState;
 }
 
+function formatReviewCommentsSection(reviewComments: AIReviewComment[]): string {
+    if (reviewComments.length === 0) return '';
+
+    let section = `**AI Review Comments (unprocessed — please address these findings):**\n\n`;
+    for (const comment of reviewComments) {
+        section += `---\n**Review by:** @${comment.author} (Comment ID: ${comment.id})\n`;
+        section += `${comment.body}\n---\n\n`;
+    }
+    return section;
+}
+
 function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     if (currentState && TERMINAL_STATES.includes(currentState.state)) {
@@ -182,6 +195,18 @@ interface UndoContextParams {
     repoName: string;
     pullRequestNumber: number;
     branchName: string;
+}
+
+async function persistCommitHash(taskId: string, commitHash: string | undefined, correlatedLogger: Logger): Promise<void> {
+    if (!commitHash) return;
+    try {
+        await db('tasks')
+            .where({ task_id: taskId })
+            .update({ commit_hash: commitHash });
+        correlatedLogger.info({ taskId, commitHash }, 'Saved commit hash to tasks table');
+    } catch (dbError) {
+        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
+    }
 }
 
 function buildUndoContext(params: UndoContextParams) {
@@ -218,6 +243,15 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
     const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
 
+    // Gather unprocessed AI review comments only for /fix mode
+    const isFixMode = job.data.commandMode === 'fix';
+    const unprocessedReviewComments = isFixMode
+        ? await gatherUnprocessedReviewComments(allComments, {
+            repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger,
+        })
+        : [];
+    const reviewCommentsSection = formatReviewCommentsSection(unprocessedReviewComments);
+
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
         body: `🔄 **Starting work on follow-up changes** requested by ${state.authorsText}\n\nI'll analyze the ${state.unprocessedComments.length} request${state.unprocessedComments.length > 1 ? 's' : ''} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${state.unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`,
@@ -244,7 +278,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     job.data.subtitle = summaryTitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
 
-    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
+    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, reviewCommentsSection });
 
     const { claudeResult, agentType } = await resolveAndExecuteAgent({
         llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
@@ -277,22 +311,21 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const completionComment = await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
 
+    // Mark consumed AI review comments as processed so later /fix runs skip them
+    if (unprocessedReviewComments.length > 0) {
+        await markReviewCommentsProcessed(
+            unprocessedReviewComments.map(c => c.id),
+            { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger },
+        );
+    }
+
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
         historyMetadata: { githubComment: { url: completionComment.data.html_url, body: completionComment.data.body } }
     });
 
     // Persist commit hash to database for historic diff exploration
-    if (commitResult?.commitHash) {
-        try {
-            await db('tasks')
-                .where({ task_id: taskId })
-                .update({ commit_hash: commitResult.commitHash });
-            correlatedLogger.info({ taskId, commitHash: commitResult.commitHash }, 'Saved commit hash to tasks table');
-        } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
-        }
-    }
+    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
 
     return { status: 'complete', commit: commitResult?.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }

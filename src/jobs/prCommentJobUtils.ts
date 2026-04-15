@@ -168,21 +168,23 @@ export interface PromptOptions {
     repoOwner: string;
     repoName: string;
     commentCount: number;
+    /** Formatted section of AI review comments gathered for /fix */
+    reviewCommentsSection?: string;
 }
 
 export function buildPrompt(options: PromptOptions): string {
-    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount } = options;
+    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, reviewCommentsSection } = options;
     return `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
 
 **New Request${commentCount > 1 ? 's' : ''}:**
 ${combinedCommentBody.replace(/^/gm, '> ')}
-
+${reviewCommentsSection ? `\n${reviewCommentsSection}\n` : ''}
 ${commentHistory}${originalTaskSpec}
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
 - Analyze the existing code on this branch and the comment history provided above.
-- Implement ONLY the changes requested in the **New Request(s)** section.
+- Implement ONLY the changes requested in the **New Request(s)** section${reviewCommentsSection ? ' and the **AI Review Comments** section' : ''}.
 - DO NOT commit your changes - the system will handle the commit for you
 - DO NOT create a new pull request
 - The repository is ${repoOwner}/${repoName}
