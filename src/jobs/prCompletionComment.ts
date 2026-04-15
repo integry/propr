@@ -9,6 +9,7 @@ export interface CommentContext {
     authorsText: string;
     undoContext?: UndoLinkContext;
     taskUrl?: string;
+    consumedReviewCommentIds?: number[];
 }
 
 export interface UndoLinkContext {
@@ -45,7 +46,7 @@ export async function buildCompletionComment(
     commentContext: CommentContext,
     claudeResult: ClaudeCodeResponse
 ): Promise<string> {
-    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl } = commentContext;
+    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds } = commentContext;
 
     const cleanBody = (text: string) => {
         return text
@@ -63,6 +64,10 @@ export async function buildCompletionComment(
                 prCommentBody += `- Comment ${index + 1} by @${comment.author} (ID: ${String(comment.id)}✓)\n`;
             });
             prCommentBody += '\n';
+        }
+
+        if (consumedReviewCommentIds && consumedReviewCommentIds.length > 0) {
+            prCommentBody += `> Addressed ${consumedReviewCommentIds.length} AI review comment${consumedReviewCommentIds.length > 1 ? 's' : ''} (IDs: ${consumedReviewCommentIds.join(', ')})\n\n`;
         }
 
         if (changesSummary) {

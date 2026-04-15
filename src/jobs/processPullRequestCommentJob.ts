@@ -260,7 +260,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
     const repoUrl = getRepoUrl({ repoOwner, repoName });
 
-    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting PR comment processing' });
+    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+        reason: 'Starting PR comment processing',
+        historyMetadata: { commandMode: job.data.commandMode || 'default' }
+    });
     await ensureGitRepository(correlatedLogger);
     state.localRepoPath = await ensureRepoCloned({ repoUrl, owner: repoOwner, repoName, authToken: githubToken.token });
 
@@ -307,7 +310,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     }
 
     const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
-    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl }, state.claudeResult);
+    const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
+    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult);
     const completionComment = await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
 
@@ -321,7 +325,13 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
-        historyMetadata: { githubComment: { url: completionComment.data.html_url, body: completionComment.data.body } }
+        historyMetadata: {
+            commandMode: job.data.commandMode || 'default',
+            githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
+            ...(unprocessedReviewComments.length > 0 && {
+                consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id),
+            }),
+        }
     });
 
     // Persist commit hash to database for historic diff exploration

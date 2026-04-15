@@ -167,7 +167,10 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
     const taskUrl = `${webUiUrl}/tasks/${taskId}`;
 
-    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting review processing' });
+    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+        reason: 'Starting review processing',
+        historyMetadata: { commandMode: 'review' }
+    });
 
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
@@ -272,6 +275,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',
         historyMetadata: {
+            commandMode: 'review',
             reviewResults: reviewResults.map(r => ({
                 model: r.assignment.model,
                 label: r.assignment.label,

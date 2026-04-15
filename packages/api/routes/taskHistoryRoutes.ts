@@ -76,7 +76,7 @@ async function getHistoryFromDb(
     if (!task || historyRecords.length === 0) return null;
 
     const [repoOwner, repoName] = (task.repository as string).split('/');
-    const { title, subtitle, pullRequestNumber, issueNumber } = parseJobData(task.initial_job_data);
+    const { title, subtitle, pullRequestNumber, issueNumber, commandMode } = parseJobData(task.initial_job_data);
     const isPr = task.task_type === 'pr-comment' || taskId.startsWith('pr-comments-batch-') || !!pullRequestNumber;
 
     const taskInfo: Record<string, unknown> = {
@@ -91,6 +91,7 @@ async function getHistoryFromDb(
     };
 
     if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
+    if (commandMode) taskInfo.commandMode = commandMode;
 
     const llmExecutions = await db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc');
     const llmLog = await db('llm_logs')
@@ -135,8 +136,8 @@ function extractIssueNumberFromTitle(title: string | null | undefined): number |
   return issueMatch ? parseInt(issueMatch[1], 10) : null;
 }
 
-function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null } {
-  let title = null, subtitle = null, pullRequestNumber = null, issueNumber = null;
+function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null; commandMode: string | null } {
+  let title = null, subtitle = null, pullRequestNumber = null, issueNumber = null, commandMode = null;
   if (initialJobData) {
     try {
       const jobData = typeof initialJobData === 'string' ? JSON.parse(initialJobData) : initialJobData;
@@ -145,11 +146,12 @@ function parseJobData(initialJobData: unknown): { title: string | null; subtitle
       subtitle = jobData.subtitle || null;
       pullRequestNumber = jobData.pullRequestNumber || ref?.pullRequestNumber || null;
       issueNumber = jobData.issueNumber || ref?.issueNumber || null;
+      commandMode = jobData.commandMode || null;
       if (!title && ref) title = ref.title;
       if (!issueNumber && title) issueNumber = extractIssueNumberFromTitle(title);
     } catch (e) { console.error('Failed to parse initial_job_data', e); }
   }
-  return { title, subtitle, pullRequestNumber, issueNumber };
+  return { title, subtitle, pullRequestNumber, issueNumber, commandMode };
 }
 
 function mapDbHistoryRecord(
@@ -235,6 +237,13 @@ async function getHistoryFromRedis(
         const issueNumber = ref.issueNumber as number | null | undefined
           || extractIssueNumberFromTitle(ref.title as string | null | undefined);
         if (issueNumber) taskInfo.issueNumber = issueNumber;
+      }
+      // Extract commandMode from history metadata if available
+      const historyWithMode = (state.history || []).find(
+        h => (h.metadata as Record<string, unknown>)?.commandMode
+      );
+      if (historyWithMode) {
+        taskInfo.commandMode = (historyWithMode.metadata as Record<string, unknown>).commandMode;
       }
     }
     return { history, taskInfo };

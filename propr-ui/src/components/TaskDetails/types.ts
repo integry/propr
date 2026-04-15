@@ -26,6 +26,8 @@ export interface HistoryItemMetadata {
   description?: string;
   commitResult?: { commitHash?: string; commitMessage?: string };
   tokenUsage?: TokenUsage;
+  commandMode?: 'default' | 'review' | 'fix';
+  consumedReviewCommentIds?: number[];
 }
 
 export interface HistoryItem {
@@ -48,6 +50,7 @@ export interface TaskInfo {
   modelName?: string;
   model?: string;
   llmProvider?: string;
+  commandMode?: 'default' | 'review' | 'fix';
 }
 
 export interface PromptData {
