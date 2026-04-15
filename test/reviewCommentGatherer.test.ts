@@ -243,4 +243,154 @@ describe('gatherUnprocessedReviewComments logic', () => {
         const result = gather(comments, []);
         assert.strictEqual(result.length, 0);
     });
+
+    test('returns many unprocessed comments when none are processed', () => {
+        const comments = [
+            makeComment({ id: 1 }),
+            makeComment({ id: 2 }),
+            makeComment({ id: 3 }),
+            makeComment({ id: 4 }),
+            makeComment({ id: 5 }),
+        ];
+        const result = gather(comments, []);
+        assert.strictEqual(result.length, 5);
+        assert.deepStrictEqual(result.map(r => r.id), [1, 2, 3, 4, 5]);
+    });
+
+    test('duplicate fix runs do not reconsume already-processed comments', () => {
+        const comments = [
+            makeComment({ id: 10 }),
+            makeComment({ id: 20 }),
+            makeComment({ id: 30 }),
+        ];
+        // First /fix run processes comments 10 and 20
+        const firstRun = gather(comments, []);
+        assert.strictEqual(firstRun.length, 3);
+        const processedAfterFirst = firstRun.map(r => String(r.id));
+
+        // Second /fix run with 10 and 20 already processed
+        const secondRun = gather(comments, processedAfterFirst);
+        assert.strictEqual(secondRun.length, 0, 'No comments should remain after all are processed');
+    });
+
+    test('partial processing leaves remaining comments for next run', () => {
+        const comments = [
+            makeComment({ id: 10 }),
+            makeComment({ id: 20 }),
+            makeComment({ id: 30 }),
+        ];
+        // First /fix only processes comment 10
+        const secondRun = gather(comments, ['10']);
+        assert.strictEqual(secondRun.length, 2);
+        assert.deepStrictEqual(secondRun.map(r => r.id), [20, 30]);
+
+        // Third run processes 10 and 20
+        const thirdRun = gather(comments, ['10', '20']);
+        assert.strictEqual(thirdRun.length, 1);
+        assert.strictEqual(thirdRun[0].id, 30);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// extractReviewModel — model extraction from marker
+// ---------------------------------------------------------------------------
+
+const REVIEW_COMMENT_MARKER_RE_EXTRACT = /<!-- propr:ai-review model="([^"]+)"(?: [^>]*)? -->/;
+
+function extractReviewModel(body: string): string | null {
+    const match = body.match(REVIEW_COMMENT_MARKER_RE_EXTRACT);
+    return match ? match[1] : null;
+}
+
+describe('extractReviewModel', () => {
+    test('extracts model from standard marker', () => {
+        const body = 'Some review content\n<!-- propr:ai-review model="claude-opus-4-1" -->';
+        assert.strictEqual(extractReviewModel(body), 'claude-opus-4-1');
+    });
+
+    test('extracts model from error marker', () => {
+        const body = '❌ Failed\n<!-- propr:ai-review model="gpt-54" error="true" -->';
+        assert.strictEqual(extractReviewModel(body), 'gpt-54');
+    });
+
+    test('returns null for non-review comment', () => {
+        assert.strictEqual(extractReviewModel('Just a regular comment'), null);
+    });
+
+    test('returns null for empty body', () => {
+        assert.strictEqual(extractReviewModel(''), null);
+    });
+
+    test('extracts model with complex name', () => {
+        const body = '<!-- propr:ai-review model="gemini-3-pro-preview-2025-01" -->';
+        assert.strictEqual(extractReviewModel(body), 'gemini-3-pro-preview-2025-01');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// formatReviewCommentsSection — formatting for /fix prompt inclusion
+// ---------------------------------------------------------------------------
+
+interface AIReviewComment {
+    id: number;
+    body: string;
+    author: string;
+    created_at: string;
+}
+
+function formatReviewCommentsSection(reviewComments: AIReviewComment[]): string {
+    if (reviewComments.length === 0) return '';
+
+    let section = `**AI Review Comments (unprocessed — please address these findings):**\n\n`;
+    for (const comment of reviewComments) {
+        section += `---\n**Review by:** @${comment.author} (Comment ID: ${comment.id})\n`;
+        section += `${comment.body}\n---\n\n`;
+    }
+    return section;
+}
+
+describe('formatReviewCommentsSection', () => {
+    test('returns empty string for zero comments', () => {
+        assert.strictEqual(formatReviewCommentsSection([]), '');
+    });
+
+    test('formats a single review comment', () => {
+        const comments: AIReviewComment[] = [{
+            id: 42,
+            body: 'Missing null check on line 10.',
+            author: 'propr-bot',
+            created_at: new Date().toISOString(),
+        }];
+        const result = formatReviewCommentsSection(comments);
+        assert.ok(result.includes('AI Review Comments'));
+        assert.ok(result.includes('@propr-bot'));
+        assert.ok(result.includes('Comment ID: 42'));
+        assert.ok(result.includes('Missing null check on line 10.'));
+    });
+
+    test('formats multiple review comments', () => {
+        const comments: AIReviewComment[] = [
+            { id: 10, body: 'Finding A', author: 'bot-a', created_at: new Date().toISOString() },
+            { id: 20, body: 'Finding B', author: 'bot-b', created_at: new Date().toISOString() },
+            { id: 30, body: 'Finding C', author: 'bot-c', created_at: new Date().toISOString() },
+        ];
+        const result = formatReviewCommentsSection(comments);
+        assert.ok(result.includes('Comment ID: 10'));
+        assert.ok(result.includes('Comment ID: 20'));
+        assert.ok(result.includes('Comment ID: 30'));
+        assert.ok(result.includes('Finding A'));
+        assert.ok(result.includes('Finding B'));
+        assert.ok(result.includes('Finding C'));
+    });
+
+    test('includes author mentions with @ prefix', () => {
+        const comments: AIReviewComment[] = [{
+            id: 1,
+            body: 'test',
+            author: 'my-review-bot',
+            created_at: new Date().toISOString(),
+        }];
+        const result = formatReviewCommentsSection(comments);
+        assert.ok(result.includes('@my-review-bot'));
+    });
 });
