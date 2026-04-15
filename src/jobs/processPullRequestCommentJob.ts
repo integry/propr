@@ -9,22 +9,24 @@ import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitC
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
 import { createLogFiles } from '@propr/core';
-import { UsageLimitError, generateTaskSummary, AgentRegistry, resolveLlmLabel } from '@propr/core';
+import { UsageLimitError, AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, loadSettings, db } from '@propr/core';
+import { getDefaultModel, db } from '@propr/core';
 import { loadPrLabel } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
-    buildCommentHistory, createSessionIdCallbackForPR, createContainerIdCallbackForPR, updateTaskTitleForPR, buildCompletionComment
+    buildCommentHistory, updateTaskTitleForPR, buildCompletionComment
 } from './prCommentJobHelpers.js';
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
-    handleJobError, cleanupJob, pickUpPendingComments, toClaudeResult, agentResultToClaudeResponse
+    handleJobError, cleanupJob, pickUpPendingComments, toClaudeResult
 } from './prCommentJobUtils.js';
+import { executeReviewProcessing } from './prCommentReviewJob.js';
+import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
@@ -153,128 +155,6 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
     return { skip: false, prData, validatedComments, unprocessedComments, llm, prCommentsForValidation };
 }
 
-interface SummaryTitleOptions {
-    combinedCommentBody: string;
-    worktreeInfo: WorktreeInfo;
-    githubToken: GitHubToken;
-    pullRequestNumber: number;
-    repoOwner: string;
-    repoName: string;
-    correlationId: string;
-    taskId: string;
-    correlatedLogger: Logger;
-}
-
-async function generateSummaryTitle(options: SummaryTitleOptions): Promise<string> {
-    const { combinedCommentBody, worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger } = options;
-    try {
-        const summaryRequest = `Summarize this change request in one sentence, focusing on the main action: ${combinedCommentBody}`;
-        const title = await generateTaskSummary({ summaryRequest, worktreePath: worktreeInfo.worktreePath, githubToken: githubToken.token, issueRef: { number: pullRequestNumber, repoOwner, repoName }, correlationId, modelAlias: 'haiku' });
-        correlatedLogger.info({ taskId, summaryTitle: title }, 'Generated AI summary for follow-up task');
-        return title;
-    } catch (summaryError) {
-        correlatedLogger.warn({ taskId, error: (summaryError as Error).message }, 'Failed to generate AI summary, falling back to truncation.');
-        if (combinedCommentBody) {
-            const firstLine = combinedCommentBody.split('\n')[0].replace(/[^a-zA-Z0-9 ]/g, '').trim();
-            return "Follow-up: " + firstLine.substring(0, 75) + (firstLine.length > 75 ? '...' : '');
-        }
-        return `Follow-up: PR #${pullRequestNumber}`;
-    }
-}
-
-/**
- * Resolves the default agent and model from settings, with fallback to registry default.
- */
-async function resolveDefaultAgentAndModel(
-    registry: AgentRegistry,
-    correlatedLogger: Logger
-): Promise<{ resolvedAlias: string; resolvedModel: string }> {
-    // First, try to use the configured default agent from settings
-    try {
-        const settings = await loadSettings();
-        if (settings.default_agent_alias) {
-            const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
-            if (configuredAgent && configuredAgent.config.enabled) {
-                const resolvedAlias = settings.default_agent_alias as string;
-                const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
-                correlatedLogger.debug({ configuredDefaultAgent: resolvedAlias, defaultModel: resolvedModel }, 'Using default agent from settings');
-                return { resolvedAlias, resolvedModel };
-            }
-        }
-    } catch (settingsError) {
-        correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
-    }
-
-    // Fallback to registry default
-    const defaultAgent = registry.getDefaultAgent();
-    const resolvedAlias = defaultAgent?.config.alias || 'claude';
-    const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
-    correlatedLogger.debug({ fallbackAgent: resolvedAlias, fallbackModel: resolvedModel }, 'Using fallback default agent');
-    return { resolvedAlias, resolvedModel };
-}
-
-interface AgentExecutionParams {
-    llm: string | null | undefined;
-    worktreePath: string;
-    branchName: string;
-    prompt: string;
-    pullRequestNumber: number;
-    repoOwner: string;
-    repoName: string;
-    taskId: string;
-    stateManager: WorkerStateManager;
-    correlatedLogger: Logger;
-    githubToken: string;
-}
-
-async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
-    const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken } = params;
-
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    let agentAlias: string;
-    let modelToUse: string;
-
-    if (llm) {
-        // LLM was specified (from PR label or job data) - resolve it
-        const resolution = await resolveLlmLabel(llm);
-        agentAlias = resolution.agentAlias;
-        modelToUse = resolution.model;
-    } else {
-        // No LLM specified - use default agent from settings, with fallback
-        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-        agentAlias = resolvedAlias;
-        modelToUse = resolvedModel;
-    }
-
-    const agent = registry.getAgentByAlias(agentAlias);
-
-    if (!agent) {
-        throw new Error(`Agent not found for alias: ${agentAlias}`);
-    }
-
-    correlatedLogger.info({
-        agentAlias,
-        agentType: agent.config.type,
-        model: modelToUse,
-        pullRequestNumber
-    }, 'Executing PR comment task with agent');
-
-    const agentResult = await agent.executeTask({
-        worktreePath,
-        issueRef: { number: pullRequestNumber, repoOwner, repoName },
-        prompt,
-        model: modelToUse,
-        githubToken,
-        branchName,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: modelToUse, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
-    });
-
-    return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
-}
-
 interface ExecuteProcessingParams {
     job: Job<CommentJobData>;
     context: PRJobContext;
@@ -368,7 +248,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     const { claudeResult, agentType } = await resolveAndExecuteAgent({
         llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
-        pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId
+        pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient
     });
     state.claudeResult = claudeResult;
 
@@ -461,6 +341,10 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
 
     try {
+        // Branch early for review mode — read-only analysis, no commits or pushes
+        if (job.data.commandMode === 'review') {
+            return await executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments });
+        }
         return await executeProcessing({ job, context, llm, taskId, stateManager, state });
     } catch (error) {
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
