@@ -28,23 +28,51 @@ interface PRComment {
     created_at: string;
 }
 
-interface GatherOptions {
+export interface GatherOptions {
     repoOwner: string;
     repoName: string;
     pullRequestNumber: number;
     redisClient: Redis;
     correlatedLogger: Logger;
+    /** Maximum age of review comments to include, in milliseconds. Defaults to 7 days. */
+    maxAgeMs?: number;
+}
+
+/** Default max age: 7 days */
+const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+
+/**
+ * RegExp matching the error variant of the AI review marker.
+ * Uses the structured marker format rather than a brittle substring check.
+ */
+const ERROR_MARKER_RE = /<!-- propr:ai-review [^>]*error="true"[^>]* -->/;
+
+/**
+ * Strip machine-readable markers and the /fix instruction tip from a review
+ * comment body so the implementation prompt only contains actionable content.
+ */
+export function stripReviewBoilerplate(body: string): string {
+    // Remove the HTML marker comment
+    let cleaned = body.replace(/\n?<!-- propr:ai-review [^>]* -->/g, '');
+    // Remove the /fix tip blockquote section
+    cleaned = cleaned.replace(/\n?---\n> 💡 \*\*Tip:\*\* Comment `\/fix`[^\n]*(?:\n[^\n]*`\/fix[^\n]*)*/g, '');
+    return cleaned.trimEnd();
 }
 
 /**
- * Scan all PR comments and return AI review comments that have not yet been
- * processed by a prior /fix run.
+ * Scan all PR comments and return recent AI review comments that have not yet
+ * been processed by a prior /fix run.
+ *
+ * "Recent" is defined by `maxAgeMs` (default 7 days) — older review comments
+ * are excluded to keep the implementation prompt focused on current feedback.
  */
 export async function gatherUnprocessedReviewComments(
     allComments: PRComment[],
     options: GatherOptions,
 ): Promise<AIReviewComment[]> {
-    const { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger } = options;
+    const { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger, maxAgeMs = DEFAULT_MAX_AGE_MS } = options;
+
+    const cutoff = Date.now() - maxAgeMs;
 
     // 1. Filter to AI review comments using the structured marker.
     const aiReviewComments = allComments.filter(c => c.body && isReviewComment(c.body));
@@ -65,20 +93,25 @@ export async function gatherUnprocessedReviewComments(
         processedIds = new Set();
     }
 
-    // 3. Return only comments not yet processed.
+    // 3. Return only recent comments not yet processed.
     const unprocessed: AIReviewComment[] = [];
     for (const comment of aiReviewComments) {
         if (processedIds.has(String(comment.id))) {
             correlatedLogger.debug({ pullRequestNumber, commentId: comment.id }, 'AI review comment already processed, skipping');
             continue;
         }
-        // Skip error review comments (they have error="true" in the marker)
-        if (comment.body!.includes('error="true"')) {
+        // Skip error review comments using the structured marker regex
+        if (ERROR_MARKER_RE.test(comment.body!)) {
+            continue;
+        }
+        // Skip comments older than the recency cutoff
+        if (new Date(comment.created_at).getTime() < cutoff) {
+            correlatedLogger.debug({ pullRequestNumber, commentId: comment.id }, 'AI review comment too old, skipping');
             continue;
         }
         unprocessed.push({
             id: comment.id,
-            body: comment.body!,
+            body: stripReviewBoilerplate(comment.body!),
             author: comment.user.login,
             created_at: comment.created_at,
         });

@@ -231,10 +231,13 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
     const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
 
-    // Gather unprocessed AI review comments for /fix mode (also included for default mode)
-    const unprocessedReviewComments = await gatherUnprocessedReviewComments(allComments, {
-        repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger,
-    });
+    // Gather unprocessed AI review comments only for /fix mode
+    const isFixMode = job.data.commandMode === 'fix';
+    const unprocessedReviewComments = isFixMode
+        ? await gatherUnprocessedReviewComments(allComments, {
+            repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger,
+        })
+        : [];
     const reviewCommentsSection = formatReviewCommentsSection(unprocessedReviewComments);
 
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
