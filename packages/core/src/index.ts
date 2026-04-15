@@ -51,8 +51,8 @@ export type {
     GetPlanIssuesOptions,
     PaginatedPlanIssuesResult
 } from './config/planIssueManager.js';
-export { resolveModelAlias, getDefaultModel, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, getOpenRouterId, resolveCustomLabel, getAllCustomLabels, findMatchingModel } from './config/modelAliases.js';
-export type { LlmLabelResolution } from './config/modelAliases.js';
+export { resolveModelAlias, getDefaultModel, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, getOpenRouterId, resolveCustomLabel, getAllCustomLabels, findMatchingModel, resolveReviewModels, ReviewModelResolutionError } from './config/modelAliases.js';
+export type { LlmLabelResolution, ReviewAssignment } from './config/modelAliases.js';
 export { CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS, ALL_MODELS, AGENT_MODELS, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
 export type { AgentType as ModelAgentType, ModelInfo } from './config/modelDefinitions.js';
 export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL, MIN_CONTEXT_LEVEL, MAX_CONTEXT_LEVEL, EFFECTIVE_MAX_RATIO, MODEL_LIMITS } from './config/modelLimits.js';
