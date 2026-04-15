@@ -142,7 +142,7 @@ export class GeminiAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, executionType } = options || {};
+        const { context, model, taskId, executionType, correlationId, repository, metadata } = options || {};
         const startTime = Date.now();
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Gemini agent...');
         const effectiveModel = model || 'gemini-2.5-flash';
@@ -186,6 +186,9 @@ export class GeminiAgent implements Agent {
                     } : undefined,
                     sessionId,
                     draftId: taskId,
+                    correlationId,
+                    repository,
+                    metadata,
                     agentAlias: this.config.alias,
                     usageMetrics: usageMetrics ? {
                         preCall: usageMetrics.preCall,
