@@ -215,7 +215,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             const analysisResult = await agent.analyze(reviewPrompt, {
                 model,
                 taskId,
-                executionType: 'review',
+                executionType: 'pr-review',
             });
 
             correlatedLogger.info({
