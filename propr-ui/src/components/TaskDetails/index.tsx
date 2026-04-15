@@ -92,6 +92,15 @@ const TaskDetails: React.FC = () => {
     return { shortHash, url };
   }, [taskData.history, taskData.taskInfo]);
 
+  // Extract consumed review comment IDs from history metadata
+  const consumedReviewCommentIds = useMemo(() => {
+    if (!taskData.history || taskData.history.length === 0) return undefined;
+    const historyWithIds = taskData.history.find(
+      item => item.metadata?.consumedReviewCommentIds?.length
+    );
+    return historyWithIds?.metadata?.consumedReviewCommentIds;
+  }, [taskData.history]);
+
   // Extract token usage - prefer live details for active tasks, otherwise from history
   const tokenUsage = useMemo(() => {
     // First check live details (for active tasks)
@@ -182,6 +191,7 @@ const TaskDetails: React.FC = () => {
   }
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
+  const sectionLabel = taskData.taskInfo?.commandMode === 'review' ? 'REVIEW' : taskData.taskInfo?.commandMode === 'fix' ? 'FIX' : 'IMPLEMENTATION';
 
   return (
     <div className="h-full flex flex-col bg-white">
@@ -278,7 +288,7 @@ const TaskDetails: React.FC = () => {
           {/* Right Pane Header (70%) - IMPLEMENTATION label aligned with TIMELINE - hidden on mobile since it stacks vertically */}
           <div className="hidden lg:flex flex-1 px-4 items-center gap-3">
             <div className="py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
-              IMPLEMENTATION
+              {sectionLabel}
             </div>
             {parsedAnalysis?.implementation_critique_score !== undefined && (
               <GeometricScorePill score={parsedAnalysis.implementation_critique_score} />
@@ -294,7 +304,22 @@ const TaskDetails: React.FC = () => {
           <div className="w-full lg:w-[30%] flex-shrink-0 lg:overflow-y-auto scrollbar-stealth border-b lg:border-b-0 lg:border-r border-gray-200">
             <div className="p-3 lg:p-4 space-y-2">
               {/* Compact Status Timeline */}
-              <TaskStatusTable history={taskData.history} compact={true} />
+              <TaskStatusTable history={taskData.history} compact={true} commandMode={taskData.taskInfo?.commandMode} />
+
+              {/* Review/Fix context info */}
+              {taskData.taskInfo?.commandMode === 'review' && derivedData.currentStatus === 'COMPLETED' && !derivedData.prInfo && (
+                <div className="bg-indigo-50 border border-indigo-100 rounded-md px-3 py-2 text-xs text-indigo-700">
+                  This was a review-only run — no file changes or PR expected.
+                </div>
+              )}
+              {consumedReviewCommentIds && consumedReviewCommentIds.length > 0 && (
+                <div className="bg-amber-50 border border-amber-100 rounded-md px-3 py-2 text-xs text-amber-700">
+                  Addressed {consumedReviewCommentIds.length} review comment{consumedReviewCommentIds.length > 1 ? 's' : ''}{' '}
+                  <span className="font-mono text-[10px] text-amber-600">
+                    (IDs: {consumedReviewCommentIds.join(', ')})
+                  </span>
+                </div>
+              )}
 
               {/* Execution Rail - unified task sequence with vertical threading */}
               <ExecutionRail
@@ -322,7 +347,7 @@ const TaskDetails: React.FC = () => {
             {/* Mobile IMPLEMENTATION header - shown only on mobile */}
             <div className="lg:hidden flex-shrink-0 px-4 py-2 border-b border-slate-200 flex items-center gap-3">
               <div className="text-xs font-bold uppercase tracking-widest text-slate-500">
-                IMPLEMENTATION
+                {sectionLabel}
               </div>
               {parsedAnalysis?.implementation_critique_score !== undefined && (
                 <GeometricScorePill score={parsedAnalysis.implementation_critique_score} />
