@@ -91,6 +91,14 @@ async function getPrLabel(): Promise<string> {
 async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext> {
     const { pullRequestNumber, commentId, commentBody, commentAuthor, comments, branchName: jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
+
+    // Normalize missing commandMode to 'default' for backward compatibility
+    if (!job.data.commandMode) {
+        job.data.commandMode = 'default';
+    }
+
+    correlatedLogger.debug({ commandMode: job.data.commandMode, hasCommandMeta: !!job.data.commandMeta }, 'Normalized command mode for PR comment job');
+
     const PR_LABEL = await getPrLabel();
     const isBatchJob = !!comments && Array.isArray(comments);
     let commentsToProcess: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];

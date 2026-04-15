@@ -51,6 +51,12 @@ export interface CommentJobData {
     autoResolveContext?: AutoResolveContext;
     /** Structured slash-command metadata (e.g. /review, /fix) */
     commandMeta?: CommandMeta;
+    /** Flattened command mode for queue serialization; defaults to 'default' when absent */
+    commandMode?: 'default' | 'review' | 'fix';
+    /** Requested model labels for /review commands */
+    requestedModels?: string[];
+    /** Extra instructions from the slash command body */
+    commandInstructions?: string;
 }
 
 export interface UnprocessedComment {

@@ -261,7 +261,15 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
     const { branchName, prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     if (!llm && prLabels.length > 0) llm = extractLlmFromLabels(prLabels, MODEL_LABEL_PATTERN, prNumber, correlatedLogger);
 
-    const jobData: CommentJobData = { pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(), ...(commandMeta ? { commandMeta } : {}) };
+    const jobData: CommentJobData = {
+        pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
+        ...(commandMeta ? {
+            commandMeta,
+            commandMode: commandMeta.mode === 'review' || commandMeta.mode === 'fix' ? commandMeta.mode : 'default',
+            requestedModels: commandMeta.mode === 'review' ? commandMeta.models : undefined,
+            commandInstructions: 'instructions' in commandMeta ? commandMeta.instructions : undefined,
+        } : {}),
+    };
     const timestamp = Date.now();
     const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
