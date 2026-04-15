@@ -331,60 +331,70 @@ export async function buildClaudeDockerImage(): Promise<boolean> {
  * @returns true if image exists or was built successfully, false otherwise
  */
 export async function ensureAgentDockerImage(agentType: string, dockerImage: string): Promise<boolean> {
-    const dockerfile = AGENT_DOCKERFILES[agentType];
-
-    if (!dockerfile) {
-        logger.error({ agentType, dockerImage }, 'Unknown agent type, cannot determine Dockerfile');
-        return false;
-    }
-
-    logger.info({ agentType, dockerImage, dockerfile }, 'Ensuring agent Docker image exists...');
+    logger.info({ agentType, dockerImage }, 'Ensuring agent Docker image exists...');
 
     try {
-        // Check if image already exists
-        const checkResult = await executeDockerCommand('docker', [
-            'images', '-q', dockerImage
-        ]);
-
+        // Already cached locally?
+        const checkResult = await executeDockerCommand('docker', ['images', '-q', dockerImage]);
         if (checkResult.stdout.trim()) {
             logger.info({ agentType, dockerImage }, 'Agent Docker image already exists');
             return true;
         }
 
-        // Image doesn't exist, build it
-        logger.info({ agentType, dockerImage, dockerfile }, 'Building agent Docker image...');
+        // Not cached — try pulling from a registry. In production this is the
+        // only path that works since the build context (Dockerfile + source)
+        // isn't available inside the worker container.
+        logger.info({ agentType, dockerImage }, 'Pulling agent Docker image from registry...');
+        const pullResult = await executeDockerCommand('docker', ['pull', dockerImage], { timeout: 600000 });
+        if (pullResult.exitCode === 0) {
+            logger.info({ agentType, dockerImage }, 'Agent Docker image pulled');
+            return true;
+        }
+        logger.warn({
+            agentType,
+            dockerImage,
+            stderr: pullResult.stderr
+        }, 'Agent Docker image pull failed; will try local build as fallback');
 
+        // Fallback: build from source. Only works in dev where the repo is mounted.
+        const dockerfile = AGENT_DOCKERFILES[agentType];
+        if (!dockerfile) {
+            logger.error({ agentType, dockerImage }, 'Unknown agent type and pull failed');
+            return false;
+        }
+        if (!fs.existsSync(dockerfile)) {
+            logger.error({
+                agentType,
+                dockerImage,
+                dockerfile
+            }, 'Pull failed and Dockerfile not available for local build — ensure the image is published or run from a dev checkout');
+            return false;
+        }
+
+        logger.info({ agentType, dockerImage, dockerfile }, 'Building agent Docker image locally...');
         const buildResult = await executeDockerCommand('docker', [
             'build',
             '-f', dockerfile,
             '-t', dockerImage,
             '.'
-        ], {
-            timeout: 600000 // 10 minute timeout for build
-        });
+        ], { timeout: 600000 });
 
         if (buildResult.exitCode === 0) {
             logger.info({ agentType, dockerImage }, 'Agent Docker image built successfully');
             return true;
-        } else {
-            logger.error({
-                agentType,
-                dockerImage,
-                dockerfile,
-                exitCode: buildResult.exitCode,
-                stderr: buildResult.stderr
-            }, 'Failed to build agent Docker image');
-            return false;
         }
-
-    } catch (error) {
-        const err = error as Error;
         logger.error({
             agentType,
             dockerImage,
             dockerfile,
-            error: err.message
-        }, 'Error ensuring agent Docker image');
+            exitCode: buildResult.exitCode,
+            stderr: buildResult.stderr
+        }, 'Failed to build agent Docker image');
+        return false;
+
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ agentType, dockerImage, error: err.message }, 'Error ensuring agent Docker image');
         return false;
     }
 }

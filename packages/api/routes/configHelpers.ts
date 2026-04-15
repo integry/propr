@@ -1,6 +1,6 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
-import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges } from '@propr/core';
+import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
 
 interface AgentConfig {
@@ -83,10 +83,11 @@ export async function queueResummarizationForAllRepos(): Promise<number> {
  * Returns true if successfully queued, false if already queued or failed.
  */
 async function queueResummarizationForRepo(repoFullName: string, token: string): Promise<boolean> {
+  const queue = await getIndexingQueue();
   const [owner, name] = repoFullName.split('/');
 
   // Check if job already queued
-  const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
+  const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
   const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repoFullName);
   if (alreadyQueued) {
     return false;
@@ -116,7 +117,7 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
 
   // Queue the indexing job with fullReindex to apply new prompt
   const correlationId = generateCorrelationId();
-  await indexingQueue.add(
+  await queue.add(
     'indexRepository',
     {
       repository: repoFullName,
@@ -274,7 +275,8 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   }
 
   // Check if job already queued
-  const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
+  const queue = await getIndexingQueue();
+  const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
   const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repository);
   if (alreadyQueued) {
     return { success: false, error: 'Indexing job already queued for this repository' };
@@ -307,7 +309,7 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   }
 
   const correlationId = generateCorrelationId();
-  const job = await indexingQueue.add(
+  const job = await queue.add(
     'indexRepository',
     { repository, repoPath, correlationId, priority: 'high', fullReindex, baseBranch },
     { jobId: `index-${repository.replace('/', '-')}-${Date.now()}`, priority: 1 }
@@ -323,7 +325,8 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
  */
 export async function stopIndexingJob(repository: string, branch?: string): Promise<{ success: boolean; message?: string }> {
   try {
-    const jobs = await indexingQueue.getJobs(['active', 'waiting', 'delayed']);
+    const queue = await getIndexingQueue();
+    const jobs = await queue.getJobs(['active', 'waiting', 'delayed']);
     // Find job matching both repository and branch (if specified)
     const job = jobs.find((j: { data: IndexingJobData }) => {
       if (j.data.repository !== repository) return false;
