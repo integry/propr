@@ -87,9 +87,10 @@ export function buildReviewComment(
 
     // --- /fix instructions ---
     comment += `\n\n---\n`;
-    comment += `> 💡 **Tip:** Comment \`/fix\` on this PR to have the AI automatically implement the changes suggested in this review. `;
-    comment += `The \`/fix\` command gathers all unprocessed AI review comments and applies the requested fixes in a single pass. `;
-    comment += `You can also add extra instructions, e.g. \`/fix only address the critical findings\`.\n`;
+    comment += `> 💡 **Next step:** Comment \`/fix\` on this PR to have the AI automatically implement the suggestions above.\n`;
+    comment += `> The \`/fix\` command gathers all unprocessed AI review comments and applies fixes in a single pass.\n`;
+    comment += `> You can edit or delete review comments before running \`/fix\` to control which suggestions are applied.\n`;
+    comment += `> Add extra instructions if needed, e.g. \`/fix only address the critical findings\`.\n`;
 
     // --- Machine-readable marker ---
     comment += `\n<!-- propr:ai-review model="${effectiveModel}" -->`;

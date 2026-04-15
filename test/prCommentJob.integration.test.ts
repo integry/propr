@@ -2396,7 +2396,7 @@ function isReviewCommentInt(body: string): boolean {
 
 function stripReviewBoilerplateInt(body: string): string {
     let cleaned = body.replace(/\n?<!-- propr:ai-review [^>]* -->/g, '');
-    cleaned = cleaned.replace(/\n?---\n> 💡 \*\*Tip:\*\* Comment `\/fix`[^\n]*(?:\n[^\n]*`\/fix[^\n]*)*/g, '');
+    cleaned = cleaned.replace(/\n?---\n(?:> 💡 \*\*(?:Tip|Next step):\*\*[^\n]*\n?)*/g, '');
     return cleaned.trimEnd();
 }
 

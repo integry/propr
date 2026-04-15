@@ -88,7 +88,9 @@ export async function buildCompletionComment(
             prCommentBody += `\n\n[View Task Execution](${taskUrl})`;
         }
 
-        prCommentBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
+        prCommentBody += `\n\n---\n`;
+        prCommentBody += `> 💡 **Tip:** Use \`/review\` to request a new AI code review, or \`/fix\` to apply suggestions from existing review comments.\n\n`;
+        prCommentBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return prCommentBody;
     } else {
@@ -105,7 +107,9 @@ export async function buildCompletionComment(
             noChangesBody += `\n\n[View Task Execution](${taskUrl})`;
         }
 
-        noChangesBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
+        noChangesBody += `\n\n---\n`;
+        noChangesBody += `> 💡 **Tip:** Use \`/review\` to request a new AI code review, or \`/fix\` to apply suggestions from existing review comments.\n\n`;
+        noChangesBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return noChangesBody;
     }
