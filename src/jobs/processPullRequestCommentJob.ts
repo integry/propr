@@ -197,6 +197,18 @@ interface UndoContextParams {
     branchName: string;
 }
 
+async function persistCommitHash(taskId: string, commitHash: string | undefined, correlatedLogger: Logger): Promise<void> {
+    if (!commitHash) return;
+    try {
+        await db('tasks')
+            .where({ task_id: taskId })
+            .update({ commit_hash: commitHash });
+        correlatedLogger.info({ taskId, commitHash }, 'Saved commit hash to tasks table');
+    } catch (dbError) {
+        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
+    }
+}
+
 function buildUndoContext(params: UndoContextParams) {
     const { commitResult, unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName } = params;
     const instructionCommentId = unprocessedComments.length > 0 ? unprocessedComments[0].id : 0;
@@ -313,16 +325,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
 
     // Persist commit hash to database for historic diff exploration
-    if (commitResult?.commitHash) {
-        try {
-            await db('tasks')
-                .where({ task_id: taskId })
-                .update({ commit_hash: commitResult.commitHash });
-            correlatedLogger.info({ taskId, commitHash: commitResult.commitHash }, 'Saved commit hash to tasks table');
-        } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
-        }
-    }
+    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
 
     return { status: 'complete', commit: commitResult?.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
