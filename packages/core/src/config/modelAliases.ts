@@ -293,6 +293,94 @@ function findMatchingModel(shortName: string, config: AgentConfig): string | nul
     return null;
 }
 
+/**
+ * A single concrete review assignment: agent/model pair with display label.
+ */
+export interface ReviewAssignment {
+    /** Agent alias (e.g., "claude", "gemini", "codex") */
+    agentAlias: string;
+    /** Resolved model ID (e.g., "claude-opus-4-6", "gemini-3-pro-preview") */
+    model: string;
+    /** Display-friendly label for review comments (e.g., "Claude Opus 4.6", "Gemini Pro") */
+    displayLabel: string;
+}
+
+/**
+ * Error thrown when a requested review model cannot be resolved to an enabled agent/model pair.
+ */
+export class ReviewModelResolutionError extends Error {
+    /** The token(s) that could not be resolved */
+    unresolvedTokens: string[];
+
+    constructor(unresolvedTokens: string[]) {
+        const tokenList = unresolvedTokens.map(t => `"${t}"`).join(', ');
+        super(`Unable to resolve review model(s): ${tokenList}. No matching enabled agent/model found.`);
+        this.name = 'ReviewModelResolutionError';
+        this.unresolvedTokens = unresolvedTokens;
+    }
+}
+
+/**
+ * Resolves an array of `/review` model arguments into concrete, deduplicated review assignments.
+ *
+ * Each requested label is resolved via `resolveLlmLabel`. The results are deduplicated by
+ * agent+model pair, and validated against the agent registry to ensure the resolved agent
+ * is actually enabled with the resolved model in its supported list.
+ *
+ * @param requestedLabels - Normalized model labels (llm- prefix already stripped)
+ * @returns Array of unique ReviewAssignment objects
+ * @throws ReviewModelResolutionError if any label cannot be resolved to a valid enabled agent/model
+ */
+async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAssignment[]> {
+    if (!requestedLabels || requestedLabels.length === 0) {
+        return [];
+    }
+
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const seen = new Map<string, ReviewAssignment>(); // key: "agentAlias:model"
+    const unresolvedTokens: string[] = [];
+
+    for (const label of requestedLabels) {
+        const resolution = await resolveLlmLabel(label);
+
+        // Validate that the resolved agent exists and is enabled
+        const agent = registry.getAgentByAlias(resolution.agentAlias);
+        if (!agent) {
+            unresolvedTokens.push(label);
+            continue;
+        }
+
+        // Check that the resolved model is in the agent's supported models
+        // (resolveLlmLabel step 5 fallback can produce arbitrary model strings)
+        const modelSupported = agent.config.supportedModels.some(
+            m => m.toLowerCase() === resolution.model.toLowerCase()
+        );
+        if (!modelSupported) {
+            unresolvedTokens.push(label);
+            continue;
+        }
+
+        const dedupeKey = `${resolution.agentAlias}:${resolution.model}`.toLowerCase();
+        if (!seen.has(dedupeKey)) {
+            const modelInfo = MODEL_INFO_MAP[resolution.model];
+            const displayLabel = modelInfo?.name || getModelShortName(resolution.model);
+            seen.set(dedupeKey, {
+                agentAlias: resolution.agentAlias,
+                model: resolution.model,
+                displayLabel,
+            });
+        }
+    }
+
+    if (unresolvedTokens.length > 0) {
+        throw new ReviewModelResolutionError(unresolvedTokens);
+    }
+
+    return Array.from(seen.values());
+}
+
 export {
     MODEL_ALIASES,
     DEFAULT_MODEL_ALIAS,
@@ -302,5 +390,6 @@ export {
     resolveLlmLabel,
     resolveCustomLabel,
     getAllCustomLabels,
-    findMatchingModel
+    findMatchingModel,
+    resolveReviewModels
 };
