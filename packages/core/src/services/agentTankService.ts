@@ -140,6 +140,50 @@ export function calculateDelta(
             if (Object.keys(nested).length > 0) {
                 result[key] = nested;
             }
+        } else if (Array.isArray(postVal) && Array.isArray(preVal)) {
+            // Handle arrays of model objects (Gemini usage structure)
+            const arrayDelta = calculateArrayDelta(preVal, postVal);
+            if (arrayDelta.length > 0) {
+                result[key] = arrayDelta;
+            }
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Compute delta for arrays of model usage objects.
+ * Matches items by 'model' property and computes percentUsed delta.
+ */
+function calculateArrayDelta(
+    pre: unknown[],
+    post: unknown[],
+): Array<{ model: string; percentUsed: number }> {
+    const result: Array<{ model: string; percentUsed: number }> = [];
+
+    // Build a map of pre values by model name
+    const preMap = new Map<string, number>();
+    for (const item of pre) {
+        if (item && typeof item === 'object') {
+            const obj = item as Record<string, unknown>;
+            if (typeof obj.model === 'string' && typeof obj.percentUsed === 'number') {
+                preMap.set(obj.model, obj.percentUsed);
+            }
+        }
+    }
+
+    // Compute delta for each post item
+    for (const item of post) {
+        if (item && typeof item === 'object') {
+            const obj = item as Record<string, unknown>;
+            if (typeof obj.model === 'string' && typeof obj.percentUsed === 'number') {
+                const prePercent = preMap.get(obj.model) ?? 0;
+                const delta = obj.percentUsed - prePercent;
+                if (delta !== 0) {
+                    result.push({ model: obj.model, percentUsed: delta });
+                }
+            }
         }
     }
 
