@@ -410,12 +410,6 @@ async function executeReviewProcessing(params: ExecuteProcessingParams): Promise
     const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
     const taskUrl = `${webUiUrl}/tasks/${taskId}`;
 
-    // Post starting comment
-    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-        body: `🔍 **Starting code review** requested by ${state.authorsText}\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${state.unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`,
-    });
-
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting review processing' });
 
     // Collect PR context for review prompt
@@ -508,38 +502,21 @@ async function executeReviewProcessing(params: ExecuteProcessingParams): Promise
         }
     }
 
-    // Record LLM metrics for each review
+    // Record LLM metrics for each review (both successful and failed)
     for (const result of reviewResults) {
-        if (result.analysisResult.success) {
-            const metricsResult: Parameters<typeof recordLLMMetrics>[0] = {
-                success: true,
-                model: result.analysisResult.modelUsed,
-                executionTime: result.analysisResult.executionTimeMs,
-                sessionId: result.analysisResult.sessionId || null,
-                tokenUsage: result.analysisResult.tokenUsage,
-            };
-            await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId });
-        }
+        const metricsResult: Parameters<typeof recordLLMMetrics>[0] = {
+            success: result.analysisResult.success,
+            model: result.analysisResult.modelUsed || result.assignment.model,
+            executionTime: result.analysisResult.executionTimeMs,
+            sessionId: result.analysisResult.sessionId || null,
+            tokenUsage: result.analysisResult.tokenUsage,
+            ...(result.analysisResult.success ? {} : { error: result.analysisResult.error || result.error }),
+        };
+        await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId });
     }
 
-    // Update starting work comment with summary
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
     const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
-    let summaryBody = `✅ **Code review completed** for ${state.authorsText}\n\n`;
-    summaryBody += `Posted ${successCount} review comment${successCount !== 1 ? 's' : ''}`;
-    if (failCount > 0) summaryBody += ` (${failCount} failed)`;
-    summaryBody += '.\n\n';
-    if (reviewResults.some(r => r.commentUrl)) {
-        summaryBody += reviewResults.filter(r => r.commentUrl).map(r => `- [${r.assignment.label} review](${r.commentUrl})`).join('\n');
-        summaryBody += '\n\n';
-    }
-    summaryBody += `[View Task](${taskUrl})`;
-    summaryBody += `\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${state.unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
-
-    await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-        owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id,
-        body: summaryBody,
-    });
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',
