@@ -81,6 +81,7 @@ export interface JobResult {
     pullRequestNumber?: number;
     reviewsPosted?: number;
     reviewsFailed?: number;
+    [key: string]: unknown;
 }
 
 function buildReviewPrompt(options: {
