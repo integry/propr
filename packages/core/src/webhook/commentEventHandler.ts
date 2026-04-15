@@ -11,6 +11,8 @@ import type { Redis } from 'ioredis';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
 import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './commentEventHelpers.js';
 import { handleMergeCommand } from './mergeConflictDetector.js';
+import { parseSlashCommand, buildCommandMeta } from './slashCommandParser.js';
+import type { CommandMeta } from './slashCommandParser.js';
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 
@@ -32,7 +34,7 @@ interface PRJobData extends CommentJobData {
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
 interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[] }
-interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string }
+interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 
@@ -156,14 +158,25 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const ignoreResult = checkCommentIgnore(comment.body, ignoreKeywords, correlationId);
     if (ignoreResult.shouldIgnore) return;
 
-    // Check for /merge command — triggers merge of base branch into PR branch
-    if (comment.body && /(?:^|\s)\/merge(?:\s|$)/.test(comment.body)) {
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/merge command detected, enqueuing merge job');
-        try {
-            await handleMergeCommand({ owner, repoName: repo, prNumber, redisClient, correlationId });
-        } catch (mergeError) {
-            correlatedLogger.error({ pullRequestNumber: prNumber, error: (mergeError as Error).message }, 'Failed to handle /merge command');
+    // Parse slash commands (/merge, /review, /fix) before generic follow-up logic
+    const parsedCommand = parseSlashCommand(comment.body);
+    if (parsedCommand) {
+        const commandMeta = buildCommandMeta(parsedCommand);
+
+        // /merge — triggers merge of base branch into PR branch (existing behavior)
+        if (commandMeta.mode === 'merge') {
+            correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/merge command detected, enqueuing merge job');
+            try {
+                await handleMergeCommand({ owner, repoName: repo, prNumber, redisClient, correlationId });
+            } catch (mergeError) {
+                correlatedLogger.error({ pullRequestNumber: prNumber, error: (mergeError as Error).message }, 'Failed to handle /merge command');
+            }
+            return;
         }
+
+        // /review and /fix — enqueue with structured command metadata
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
+        await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
         return;
     }
 
@@ -233,7 +246,7 @@ async function getPRBranchAndLabels(eventType: CommentEventType, payload: IssueC
 
 async function enqueueNewCommentJob(comment: { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
-    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$' } = options;
+    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     let llm: string | null = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? extractLlmFromKeywords(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : null;
@@ -248,7 +261,7 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
     const { branchName, prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     if (!llm && prLabels.length > 0) llm = extractLlmFromLabels(prLabels, MODEL_LABEL_PATTERN, prNumber, correlatedLogger);
 
-    const jobData: CommentJobData = { pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId() };
+    const jobData: CommentJobData = { pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(), ...(commandMeta ? { commandMeta } : {}) };
     const timestamp = Date.now();
     const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
