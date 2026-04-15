@@ -46,6 +46,19 @@ ai-fix/{issueId}-{title}-{timestamp}-{model}-{random}
 ### Model Selection
 Automatic model detection from issue labels with support for multi-model processing on the same issue.
 
+## PR Slash Commands
+
+### AI Code Review (`/review`)
+Request AI code reviews directly from PR comments. Each requested model posts its own review comment without modifying code. Supports model selection and multiline focus instructions.
+
+### Automated Fixes (`/fix`)
+Gathers unprocessed AI review comments and applies suggested changes in a single pass. Users can edit or delete review comments before running `/fix` to control which suggestions are implemented.
+
+### Base Branch Merge (`/merge`)
+Merges the target base branch into the PR branch with automatic conflict resolution.
+
+See the [PR Slash Commands](./pr-commands.md) documentation for full usage details and examples.
+
 ## Robust Git Management
 
 ### Isolated Worktrees
