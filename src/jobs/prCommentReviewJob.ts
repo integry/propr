@@ -16,6 +16,8 @@ import {
 import {
     buildCombinedComment, fetchAllComments
 } from './prCommentJobUtils.js';
+import { buildReviewPrompt } from './reviewPromptBuilder.js';
+import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
 import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
@@ -82,70 +84,6 @@ export interface JobResult {
     reviewsPosted?: number;
     reviewsFailed?: number;
     [key: string]: unknown;
-}
-
-function buildReviewPrompt(options: {
-    pullRequestNumber: number;
-    combinedCommentBody: string;
-    commentHistory: string;
-    originalTaskSpec: string;
-    repoOwner: string;
-    repoName: string;
-    instructions?: string;
-}): string {
-    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, repoOwner, repoName, instructions } = options;
-    const prompt = `You are reviewing pull request #${pullRequestNumber} in ${repoOwner}/${repoName}.
-
-**PR Comment History and Context:**
-${commentHistory}${originalTaskSpec}
-
-**Review Request:**
-${combinedCommentBody}
-
-${instructions ? `**Additional Review Instructions:**\n${instructions}\n\n` : ''}**YOUR TASK:**
-Perform a thorough code review of this pull request. Provide:
-
-1. **Overall Assessment** — A brief summary of the PR's purpose and quality.
-2. **Findings** — List specific issues, concerns, or suggestions organized by severity:
-   - 🔴 **Critical** — Bugs, security issues, data loss risks
-   - 🟡 **Warning** — Performance concerns, potential edge cases, maintainability issues
-   - 🟢 **Suggestion** — Style improvements, minor optimizations, best practices
-3. **Score** — Rate the PR on a scale of 1-10 with a brief justification.
-
-Be constructive and specific. Reference file names and line numbers when possible.
-Do NOT modify any files. This is a read-only review.`;
-
-    return prompt;
-}
-
-function buildReviewComment(assignment: ReviewAssignment, analysisResult: AnalysisResult, taskUrl?: string): string {
-    const { model, label } = assignment;
-    const { response, executionTimeMs, tokenUsage, modelUsed } = analysisResult;
-
-    const formatDuration = (ms: number): string => {
-        const seconds = Math.floor(ms / 1000);
-        const m = Math.floor(seconds / 60);
-        const s = seconds % 60;
-        return m === 0 ? `${s}s` : `${m}m ${s}s`;
-    };
-
-    let comment = `## 🔍 AI Code Review — ${label}\n\n`;
-    comment += response;
-    comment += `\n\n---\n### 🤖 Review Details\n\n`;
-    comment += `* **Model:** ${modelUsed || model}\n`;
-    comment += `* **Time:** ${formatDuration(executionTimeMs)}\n`;
-    if (tokenUsage) {
-        const total = (tokenUsage.input_tokens || 0) + (tokenUsage.output_tokens || 0);
-        if (total > 0) {
-            comment += `* **Tokens:** ${total.toLocaleString()} (${(tokenUsage.input_tokens || 0).toLocaleString()} in / ${(tokenUsage.output_tokens || 0).toLocaleString()} out)\n`;
-        }
-    }
-    if (taskUrl) {
-        comment += `\n[View Task](${taskUrl})`;
-    }
-    comment += `\n\n<!-- propr:ai-review model="${modelUsed || model}" -->`;
-
-    return comment;
 }
 
 async function resolveDefaultAgentAndModel(
@@ -287,7 +225,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
 
             const reviewCommentBody = analysisResult.success
                 ? buildReviewComment(assignment, analysisResult, taskUrl)
-                : `## 🔍 AI Code Review — ${label}\n\n❌ **Review failed:** ${analysisResult.error || 'Unknown error'}\n\n<!-- propr:ai-review model="${model}" error="true" -->`;
+                : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
 
             const reviewComment = await state.octokit!.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
@@ -302,7 +240,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             try {
                 await state.octokit!.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                     owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                    body: `## 🔍 AI Code Review — ${label}\n\n❌ **Review failed:** ${errorMsg}\n\n<!-- propr:ai-review model="${model}" error="true" -->`,
+                    body: buildReviewErrorComment(label, model, errorMsg),
                 });
             } catch (commentError) {
                 correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post review error comment');
