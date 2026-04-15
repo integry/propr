@@ -214,11 +214,19 @@ async function enqueueAnalysisTask(
 }
 
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string): Promise<void> {
-    if (!taskId) return;
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage } = metrics;
+
+    // Check if taskId exists in tasks table (drafts won't exist)
+    // Use null for task_id if it doesn't exist (FK allows null now)
+    let effectiveTaskId: string | null = null;
+    if (taskId) {
+        const taskExists = await db('tasks').where({ task_id: taskId }).first();
+        effectiveTaskId = taskExists ? taskId : null;
+    }
+
     try {
         const executionData = {
-            task_id: taskId, session_id: sessionId, conversation_id: conversationId,
+            task_id: effectiveTaskId, session_id: sessionId, conversation_id: conversationId,
             start_time: new Date(Date.now() - executionTimeMs).toISOString(),
             end_time: new Date().toISOString(), duration_ms: executionTimeMs,
             model_name: model, success: success, num_turns: numTurns, cost_usd: costUsd,
@@ -232,9 +240,13 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
 
-        await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId });
-        logger.debug({ correlationId, taskId, executionId }, 'LLM metrics persisted to database');
-        await enqueueAnalysisTask(taskId, executionId, sessionId, correlationId);
+        await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
+        logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'LLM metrics persisted to database');
+
+        // Only enqueue analysis task if we have a valid task
+        if (effectiveTaskId) {
+            await enqueueAnalysisTask(effectiveTaskId, executionId, sessionId, correlationId);
+        }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
     }
