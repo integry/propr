@@ -66,6 +66,7 @@ export type ExecutionType =
     | 'task-analysis'
     | 'repo-chat'
     | 'repo-improvements'
+    | 'pr-review'
     | 'other';
 
 export interface RecordMetricsOptions {
