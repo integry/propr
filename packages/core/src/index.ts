@@ -112,6 +112,8 @@ export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor,
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
+export { parseSlashCommand, buildCommandMeta } from './webhook/slashCommandParser.js';
+export type { ParsedSlashCommand, SlashCommandName, CommandMeta, ReviewCommandMeta, FixCommandMeta, MergeCommandMeta } from './webhook/slashCommandParser.js';
 export { handlePullRequestConflictDetection, handlePushConflictDetection, handleMergeCommand } from './webhook/mergeConflictDetector.js';
 export type { ConflictDetectionOutcome, ConflictDetectionResult, HandleMergeCommandOptions } from './webhook/mergeConflictDetector.js';
 export {
