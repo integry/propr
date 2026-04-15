@@ -23,6 +23,7 @@ FROM node:20-alpine
 #   github-cli                  — gh command
 #   tini                        — PID 1 for clean signal handling
 RUN apk add --no-cache \
+    bash \
     git \
     curl \
     ca-certificates \

@@ -329,12 +329,19 @@ images orchestrated by a single umbrella `propr/launcher` image. This replaces
 docker run --rm \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v $PWD/.env:/app/.env:ro \
-  -v $PWD/data:/app/data \
-  -v $PWD/logs:/app/logs \
-  -v $PWD/repos:/app/repos \
-  -p 4000:4000 -p 5173:5173 \
+  -e PROPR_ENV_FILE=$PWD/.env \
+  -e PROPR_DATA_DIR=$PWD/data \
+  -e PROPR_LOGS_DIR=$PWD/logs \
+  -e PROPR_REPOS_DIR=$PWD/repos \
+  -e HOST_CLAUDE_DIR=$HOME/.claude \
+  -e HOST_CODEX_DIR=$HOME/.codex \
+  -e HOST_GEMINI_DIR=$HOME/.gemini \
   propr/launcher:latest
 ```
+
+Paths are passed as host paths (not mounted into the launcher) because the
+launcher uses the host docker daemon via the mounted socket to spawn sibling
+containers — any `-v` values it passes need to resolve on the host.
 
 The launcher pulls redis + app + ui images on first run and orchestrates them
 via the mounted docker socket. See `.env.example` for required configuration.
