@@ -215,14 +215,6 @@ async function enqueueAnalysisTask(
 
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string): Promise<void> {
     if (!taskId) return;
-
-    // Check if task exists in database (draft IDs won't exist in tasks table)
-    const taskExists = await db('tasks').where({ task_id: taskId }).first();
-    if (!taskExists) {
-        logger.debug({ correlationId, taskId }, 'Skipping LLM metrics persistence - task not found (likely a draft)');
-        return;
-    }
-
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage } = metrics;
     try {
         const executionData = {
