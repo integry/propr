@@ -197,6 +197,71 @@ interface UndoContextParams {
     branchName: string;
 }
 
+function getWebUiUrl(): string {
+    return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
+}
+
+function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: UnprocessedComment[], taskUrl: string): string {
+    const plural = unprocessedComments.length > 1 ? 's' : '';
+    const commentIds = unprocessedComments.map(c => String(c.id) + '✓').join(', ');
+    return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${plural}: ${commentIds}_`;
+}
+
+interface PostExecutionParams {
+    state: ProcessingState;
+    job: Job<CommentJobData>;
+    taskId: string;
+    stateManager: WorkerStateManager;
+    context: PRJobContext;
+    unprocessedReviewComments: AIReviewComment[];
+    llm: string | null | undefined;
+}
+
+async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string }> {
+    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm } = params;
+    const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
+
+    if (!state.claudeResult!.success) throw new Error(`Agent execution failed: ${state.claudeResult!.error || 'Unknown error'}`);
+
+    const changesSummary = state.claudeResult!.summary || state.claudeResult!.finalResult?.result || '';
+    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber, claudeResult: state.claudeResult!, llm, authorsText: state.authorsText });
+    const commitResult = await commitChanges(state.worktreeInfo!.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Follow-up changes' });
+
+    if (commitResult) {
+        const repoUrl = getRepoUrl({ repoOwner, repoName });
+        const githubToken = await state.octokit!.auth({ type: "installation" }) as GitHubToken;
+        await pushBranch(state.worktreeInfo!.worktreePath, state.worktreeInfo!.branchName, { repoUrl, authToken: githubToken.token });
+    }
+
+    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo!.branchName });
+    const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
+    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult!);
+    const completionComment = await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
+    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
+
+    if (unprocessedReviewComments.length > 0) {
+        await markReviewCommentsProcessed(
+            unprocessedReviewComments.map(c => c.id),
+            { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger },
+        );
+    }
+
+    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
+        reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
+        historyMetadata: {
+            commandMode: job.data.commandMode || 'default',
+            githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
+            ...(unprocessedReviewComments.length > 0 && {
+                consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id),
+            }),
+        }
+    });
+
+    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
+
+    return { commitHash: commitResult?.commitHash };
+}
+
 async function persistCommitHash(taskId: string, commitHash: string | undefined, correlatedLogger: Logger): Promise<void> {
     if (!commitHash) return;
     try {
@@ -235,8 +300,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
 
-    const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
-    const taskUrl = `${webUiUrl}/tasks/${taskId}`;
+    const taskUrl = `${getWebUiUrl()}/tasks/${taskId}`;
 
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
@@ -254,13 +318,16 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-        body: `🔄 **Starting work on follow-up changes** requested by ${state.authorsText}\n\nI'll analyze the ${state.unprocessedComments.length} request${state.unprocessedComments.length > 1 ? 's' : ''} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${state.unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`,
+        body: buildStartingWorkCommentBody(state.authorsText, state.unprocessedComments, taskUrl),
     });
 
     const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
     const repoUrl = getRepoUrl({ repoOwner, repoName });
 
-    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting PR comment processing' });
+    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+        reason: 'Starting PR comment processing',
+        historyMetadata: { commandMode: job.data.commandMode || 'default' }
+    });
     await ensureGitRepository(correlatedLogger);
     state.localRepoPath = await ensureRepoCloned({ repoUrl, owner: repoOwner, repoName, authToken: githubToken.token });
 
@@ -296,38 +363,12 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         historyMetadata: { sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, model: state.claudeResult.model }
     });
 
-    if (!state.claudeResult.success) throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
+    const postResult = await handlePostExecution(
+        { state, job, taskId, stateManager, context, unprocessedReviewComments, llm },
+        taskUrl,
+    );
 
-    const changesSummary = state.claudeResult.summary || state.claudeResult.finalResult?.result || '';
-    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
-    const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Follow-up changes' });
-
-    if (commitResult) {
-        await pushBranch(state.worktreeInfo.worktreePath, state.worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
-    }
-
-    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
-    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl }, state.claudeResult);
-    const completionComment = await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
-    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
-
-    // Mark consumed AI review comments as processed so later /fix runs skip them
-    if (unprocessedReviewComments.length > 0) {
-        await markReviewCommentsProcessed(
-            unprocessedReviewComments.map(c => c.id),
-            { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger },
-        );
-    }
-
-    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
-        historyMetadata: { githubComment: { url: completionComment.data.html_url, body: completionComment.data.body } }
-    });
-
-    // Persist commit hash to database for historic diff exploration
-    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
-
-    return { status: 'complete', commit: commitResult?.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
+    return { status: 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
 
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
