@@ -5,6 +5,7 @@ import { handleError } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getDefaultModel, resolveLlmLabel } from '@propr/core';
 import { issueQueue, type IssueJobData } from '@propr/core';
+import { checkAndMigrateRepository } from '@propr/core';
 import { Redis } from 'ioredis';
 
 const AI_PRIMARY_TAG = process.env.AI_PRIMARY_TAG || 'AI';
@@ -85,6 +86,21 @@ export async function fetchIssuesForRepo(
     if (!owner || !repo) {
         correlatedLogger.warn({ repo: repoFullName }, 'Invalid repository format. Skipping.');
         return [];
+    }
+
+    // Check for repository rename and migrate DB references if needed
+    try {
+        const renameResult = await checkAndMigrateRepository(repoFullName);
+        if (renameResult.detected && renameResult.newName) {
+            correlatedLogger.info({
+                oldName: renameResult.oldName,
+                newName: renameResult.newName,
+                migrated: renameResult.migrated
+            }, 'Repository rename detected and migrated during polling');
+        }
+    } catch (renameCheckError) {
+        // Non-fatal: continue with polling even if rename check fails
+        correlatedLogger.debug({ error: (renameCheckError as Error).message }, 'Repository rename check failed');
     }
 
     const fetchWithRetry = () => withRetry(

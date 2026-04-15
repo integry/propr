@@ -70,9 +70,10 @@ export function buildDockerArgs(
         ? ['-v', `${claudeJsonPath}:/home/node/.claude.json:rw`]
         : [];
 
-    // Generate human-readable container name
+    // Generate human-readable container name with unique suffix
+    // Use LAST 8 chars of taskId (part of correlationId UUID) for uniqueness
     const timestamp = Date.now().toString(36);
-    const shortTaskId = taskId ? taskId.substring(0, 8) : timestamp;
+    const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = `${config.alias || config.type}-${taskType}-${shortTaskId}`;
 

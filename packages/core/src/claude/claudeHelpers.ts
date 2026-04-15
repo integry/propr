@@ -233,10 +233,12 @@ export function verifyWorktreePostExecution(
 export function buildDockerArgs(params: DockerArgsParams): string[] {
     const { worktreePath, githubToken, modelName, issueNumber, CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS, systemPrompt, tools, taskId, agentAlias } = params;
 
-    // Generate human-readable container name
+    // Generate human-readable container name with unique suffix
+    // TaskId format: {repo}-{issue}-{agent}-{model}-{correlationId}
+    // Use the LAST 8 chars of taskId (part of correlationId UUID) for uniqueness
     const timestamp = Date.now().toString(36);
-    const shortTaskId = taskId ? taskId.substring(0, 8) : timestamp;
-    const containerName = `${agentAlias || 'claude'}-issue-${issueNumber}-${shortTaskId}`;
+    const shortId = taskId ? taskId.slice(-8) : timestamp;
+    const containerName = `${agentAlias || 'claude'}-issue-${issueNumber}-${shortId}`;
 
     // Always use stdin for prompt to avoid E2BIG errors with large prompts
     const dockerArgs: string[] = [

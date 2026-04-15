@@ -50,6 +50,21 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         return;
     }
 
+    // Deduplicate rapid-fire webhook events (e.g., multiple labels added at once)
+    // Use Redis SET NX with TTL to ensure only one job is queued per issue within the window
+    const dedupeKey = `issue:dedup:${issue.repoOwner}:${issue.repoName}:${issue.number}`;
+    const dedupeTTL = 30; // seconds - enough time for label events to consolidate
+    const acquired = await redisClient.set(dedupeKey, correlationId, 'EX', dedupeTTL, 'NX');
+
+    if (!acquired) {
+        correlatedLogger.debug({
+            issueNumber: issue.number,
+            repository: repoFullName,
+            dedupeKey
+        }, 'Issue processing already triggered recently, skipping duplicate');
+        return;
+    }
+
     const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl));
 
     if (!triggeringLabel) {

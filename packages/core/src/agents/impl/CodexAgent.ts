@@ -320,7 +320,7 @@ export class CodexAgent implements Agent {
 
         // Generate human-readable container name
         const timestamp = Date.now().toString(36);
-        const shortTaskId = taskId ? taskId.substring(0, 8) : timestamp;
+        const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
         const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const containerName = `${this.config.alias || 'codex'}-${taskType}-${shortTaskId}`;
 

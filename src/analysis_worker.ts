@@ -120,6 +120,18 @@ async function checkAndTriggerAutoFollowup(
             return;
         }
 
+        // Skip auto-followup if there was no diff to review
+        // The critique is meaningless without actual code changes to analyze
+        const critique = parsedReport.implementation_critique || '';
+        if (critique.toLowerCase().includes('no local commit diff') ||
+            critique.toLowerCase().includes('no diff was available')) {
+            correlatedLogger.info({
+                executionId,
+                score
+            }, 'Skipping auto-followup - no local commit diff was available for critique');
+            return;
+        }
+
         correlatedLogger.info({
             executionId,
             score,

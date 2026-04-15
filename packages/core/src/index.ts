@@ -295,3 +295,16 @@ export type {
     UpdateTodoParams,
     BatchReorderItem
 } from './services/repoTodosService.js';
+
+// Repository migration (rename/move detection)
+export {
+    detectRepositoryRename,
+    migrateRepositoryReferences,
+    checkAndMigrateRepository,
+    detectRenameFromResponse,
+    scheduleRepositoryRenameCheck
+} from './services/repositoryMigrationService.js';
+export type {
+    RepositoryRenameResult,
+    MigrationResult
+} from './services/repositoryMigrationService.js';
