@@ -166,14 +166,23 @@ export function extractMetricRecords(
             continue;
         }
 
-        // Nested object — extract percent/percentUsed
-        // Only record positive values (negative means old usage aged out)
+        // Nested object — extract consumption metric
+        // For percentLeft: negate the delta (decrease = positive consumption)
+        // For percent/percentUsed: use directly (increase = positive consumption)
         if (typeof value === 'object' && !Array.isArray(value)) {
             const nested = value as Record<string, unknown>;
-            const percentValue =
-                typeof nested.percent === 'number' ? nested.percent :
-                typeof nested.percentUsed === 'number' ? nested.percentUsed :
-                null;
+            let percentValue: number | null = null;
+
+            if (typeof nested.percentLeft === 'number') {
+                // percentLeft decreases when consuming, so negate the delta
+                percentValue = -nested.percentLeft;
+            } else if (typeof nested.percent === 'number') {
+                percentValue = nested.percent;
+            } else if (typeof nested.percentUsed === 'number') {
+                percentValue = nested.percentUsed;
+            }
+
+            // Only record positive consumption
             if (percentValue !== null && percentValue > 0) {
                 records.push({ agent, metricKey: label, metricValue: percentValue });
             }
