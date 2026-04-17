@@ -50,8 +50,23 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         return;
     }
 
+    // Check for processing labels BEFORE acquiring dedup lock
+    // This ensures invalid events don't block subsequent valid events
+    const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl));
+
+    if (!triggeringLabel) {
+        correlatedLogger.info({
+            issueNumber: issue.number,
+            repository: repoFullName,
+            issueLabels: issue.labels,
+            expectedLabels: primaryProcessingLabels
+        }, 'Issue does not have any primary processing label, skipping');
+        return;
+    }
+
     // Deduplicate rapid-fire webhook events (e.g., multiple labels added at once)
     // Use Redis SET NX with TTL to ensure only one job is queued per issue within the window
+    // This runs AFTER label validation to prevent invalid events from blocking valid ones
     const dedupeKey = `issue:dedup:${issue.repoOwner}:${issue.repoName}:${issue.number}`;
     const dedupeTTL = 30; // seconds - enough time for label events to consolidate
     const acquired = await redisClient.set(dedupeKey, correlationId, 'EX', dedupeTTL, 'NX');
@@ -62,18 +77,6 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             repository: repoFullName,
             dedupeKey
         }, 'Issue processing already triggered recently, skipping duplicate');
-        return;
-    }
-
-    const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl));
-
-    if (!triggeringLabel) {
-        correlatedLogger.info({
-            issueNumber: issue.number,
-            repository: repoFullName,
-            issueLabels: issue.labels,
-            expectedLabels: primaryProcessingLabels
-        }, 'Issue does not have any primary processing label, skipping');
         return;
     }
 
