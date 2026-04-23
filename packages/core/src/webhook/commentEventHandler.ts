@@ -278,7 +278,12 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
 
     try {
         const queue = await getIssueQueue();
-        await queue.add('processPullRequestComment', jobData, { jobId, delay: COMMENT_BATCH_DELAY_MS });
+        await queue.add('processPullRequestComment', jobData, {
+            jobId,
+            delay: COMMENT_BATCH_DELAY_MS,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
+        });
         await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
         correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {
