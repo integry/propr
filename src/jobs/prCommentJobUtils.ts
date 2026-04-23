@@ -139,20 +139,12 @@ export interface CommitMessageOptions {
 
 export function buildCommitMessage(options: CommitMessageOptions): string {
     const { changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText } = options;
-    let commitDetails = '';
-    if (changesSummary) {
-        const lines = changesSummary.split('\n');
-        const changeLines = lines.filter(line => line.trim().startsWith('-') || line.trim().startsWith('*') || line.trim().startsWith('•') || line.match(/^\d+\./)).slice(0, 10);
-        if (changeLines.length > 0) {
-            commitDetails = '\n\nKey changes:\n' + changeLines.join('\n');
-        }
-    }
 
     const commentReferences = unprocessedComments.map(c => `Comment by: @${c.author} (ID: ${c.id})`).join('\n');
 
     return `feat(ai): ${changesSummary ? changesSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
 
-${changesSummary ? changesSummary : `Implemented changes requested by ${authorsText}`}${commitDetails}
+${changesSummary ? changesSummary : `Implemented changes requested by ${authorsText}`}
 
 PR: #${pullRequestNumber}
 ${commentReferences}
