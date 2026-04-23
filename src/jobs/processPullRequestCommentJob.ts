@@ -14,8 +14,8 @@ import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, db } from '@propr/core';
-import { loadPrLabel } from '@propr/core';
+import { getDefaultModel, loadSettings, db } from '@propr/core';
+import { loadPrimaryProcessingLabels } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
     buildCommentHistory, updateTaskTitleForPR, buildCompletionComment
@@ -51,7 +51,7 @@ interface PRJobContext {
     llm: string | null | undefined;
     correlationId: string;
     correlatedLogger: Logger;
-    PR_LABEL: string;
+    primaryProcessingLabels: string[];
     isBatchJob: boolean;
     commentsToProcess: UnprocessedComment[];
 }
@@ -83,13 +83,19 @@ interface ProcessingState {
     startingWorkComment: { data: { id: number; html_url: string } } | null;
 }
 
-async function getPrLabel(): Promise<string> {
+async function getPrimaryLabels(): Promise<string[]> {
     try {
-        if (process.env.CONFIG_REPO) return await loadPrLabel();
+        if (process.env.CONFIG_REPO) return await loadPrimaryProcessingLabels();
     } catch (error) {
-        logger.warn({ error: (error as Error).message }, 'Failed to load PR label from config, using fallback');
+        logger.warn({ error: (error as Error).message }, 'Failed to load primary processing labels from config, using fallback');
     }
-    return process.env.PR_LABEL || 'propr';
+    // Fallback to environment variable or default
+    const envLabels = process.env.PRIMARY_PROCESSING_LABELS;
+    if (envLabels) {
+        return envLabels.split(',').map(l => l.trim()).filter(l => l);
+    }
+    // Final fallback to PR_LABEL for backwards compatibility
+    return [process.env.PR_LABEL || 'propr'];
 }
 
 async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext> {
@@ -103,11 +109,11 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
 
     correlatedLogger.debug({ commandMode: job.data.commandMode, hasCommandMeta: !!job.data.commandMeta }, 'Normalized command mode for PR comment job');
 
-    const PR_LABEL = await getPrLabel();
+    const primaryProcessingLabels = await getPrimaryLabels();
     const isBatchJob = !!comments && Array.isArray(comments);
     let commentsToProcess: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
     commentsToProcess = await pickUpPendingComments(commentsToProcess, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
-    return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, PR_LABEL, isBatchJob, commentsToProcess };
+    return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess };
 }
 
 async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
@@ -138,7 +144,7 @@ async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
 }
 
 async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }): Promise<ValidationResult> {
-    const { commentsToProcess, pullRequestNumber, repoOwner, repoName, PR_LABEL, correlatedLogger, llm: initialLlm } = context;
+    const { commentsToProcess, pullRequestNumber, repoOwner, repoName, primaryProcessingLabels, correlatedLogger, llm: initialLlm } = context;
     const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
         owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
         mediaType: { format: 'full' }  // Get body_html with signed image URLs
@@ -150,7 +156,8 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
     const prCommentsForValidation = allCommentsForValidation.filter(c => !('diff_hunk' in c));
     const validatedComments = await validateAndFilterComments(commentsToProcess, allCommentsForValidation, pullRequestNumber, correlatedLogger);
     if (validatedComments.length === 0) return { skip: true, reason: 'all_comments_deleted' };
-    if (!prData.data.labels.some(label => label.name === PR_LABEL)) return { skip: true, reason: 'missing_required_label' };
+    // Check if PR has ANY of the primary processing labels (e.g., 'AI' or 'gitfix')
+    if (!prData.data.labels.some(label => primaryProcessingLabels.includes(label.name))) return { skip: true, reason: 'missing_required_label' };
     const llm = extractModelFromLabels(prData.data.labels, initialLlm, pullRequestNumber, correlatedLogger);
     const unprocessedComments = filterUnprocessedComments(validatedComments, prCommentsForValidation, botUsername, { pullRequestNumber, correlatedLogger });
     if (unprocessedComments.length === 0) return { skip: true, reason: 'already_processed' };

@@ -158,21 +158,32 @@ export function extractMetricRecords(
         const label = humanizeMetricKey(key);
 
         // Direct numeric value (unlikely but handle it)
+        // Only record positive values (actual consumption, not limit resets)
         if (typeof value === 'number') {
-            if (value !== 0) {
+            if (value > 0) {
                 records.push({ agent, metricKey: label, metricValue: value });
             }
             continue;
         }
 
-        // Nested object — extract percent/percentUsed
+        // Nested object — extract consumption metric
+        // For percentLeft: negate the delta (decrease = positive consumption)
+        // For percent/percentUsed: use directly (increase = positive consumption)
         if (typeof value === 'object' && !Array.isArray(value)) {
             const nested = value as Record<string, unknown>;
-            const percentValue =
-                typeof nested.percent === 'number' ? nested.percent :
-                typeof nested.percentUsed === 'number' ? nested.percentUsed :
-                null;
-            if (percentValue !== null && percentValue !== 0) {
+            let percentValue: number | null = null;
+
+            if (typeof nested.percentLeft === 'number') {
+                // percentLeft decreases when consuming, so negate the delta
+                percentValue = -nested.percentLeft;
+            } else if (typeof nested.percent === 'number') {
+                percentValue = nested.percent;
+            } else if (typeof nested.percentUsed === 'number') {
+                percentValue = nested.percentUsed;
+            }
+
+            // Only record positive consumption
+            if (percentValue !== null && percentValue > 0) {
                 records.push({ agent, metricKey: label, metricValue: percentValue });
             }
         }
@@ -201,7 +212,8 @@ function extractArrayMetricRecords(
                 typeof entry.percentUsed === 'number' ? entry.percentUsed :
                 typeof entry.percent === 'number' ? entry.percent :
                 null;
-            if (percentValue !== null && percentValue !== 0) {
+            // Only record positive values (actual consumption)
+            if (percentValue !== null && percentValue > 0) {
                 records.push({ agent, metricKey: label, metricValue: percentValue });
             }
         }

@@ -94,6 +94,12 @@ export interface AnalyzeOptions {
     taskId?: string;
     /** Type of execution for container naming (e.g., 'plan-generation', 'context-analysis') */
     executionType?: string;
+    /** Correlation ID for log tracking */
+    correlationId?: string;
+    /** Repository in owner/repo format */
+    repository?: string;
+    /** Additional metadata to include in logs */
+    metadata?: Record<string, unknown>;
 }
 
 export interface AgentExecutionResult {

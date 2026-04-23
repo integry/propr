@@ -1,5 +1,6 @@
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
+import { db } from '../db/connection.js';
 
 export interface MergePROptions {
     owner: string;
@@ -322,5 +323,59 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
             error: (error as Error).message
         }, 'Failed to check linked issue labels');
         return false;
+    }
+}
+
+/**
+ * Terminal task states - tasks in these states are considered complete
+ */
+const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'];
+
+/**
+ * Checks if there are any active (non-terminal) tasks for a given PR.
+ * This is used to prevent auto-merge while a followup task is still running.
+ */
+export async function hasActiveTasksForPR(
+    repository: string,
+    prNumber: number
+): Promise<{ hasActive: boolean; activeTasks: Array<{ taskId: string; state: string }> }> {
+    try {
+        // Find tasks associated with this PR that are not in a terminal state
+        // A task is active if its latest state is not terminal
+        const activeTasks = await db('tasks')
+            .select('tasks.task_id', 'task_history.state')
+            .leftJoin('task_history', function() {
+                this.on('tasks.task_id', '=', 'task_history.task_id')
+                    .andOn('task_history.history_id', '=', db.raw(`(
+                        SELECT MAX(history_id) FROM task_history th2
+                        WHERE th2.task_id = tasks.task_id
+                    )`));
+            })
+            .where('tasks.repository', repository)
+            .where('tasks.pr_number', prNumber)
+            .whereNotIn('task_history.state', TERMINAL_TASK_STATES);
+
+        const result = {
+            hasActive: activeTasks.length > 0,
+            activeTasks: activeTasks.map(t => ({ taskId: t.task_id, state: t.state }))
+        };
+
+        if (result.hasActive) {
+            logger.info({
+                repository,
+                prNumber,
+                activeTasks: result.activeTasks
+            }, 'Found active tasks for PR');
+        }
+
+        return result;
+    } catch (error) {
+        logger.warn({
+            repository,
+            prNumber,
+            error: (error as Error).message
+        }, 'Failed to check for active tasks');
+        // On error, assume no active tasks to avoid blocking legitimate merges
+        return { hasActive: false, activeTasks: [] };
     }
 }

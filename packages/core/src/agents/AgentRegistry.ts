@@ -197,6 +197,15 @@ export class AgentRegistry {
      * Uses versioned image if version config is present, otherwise uses default.
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
+        // Prefer the user-configured dockerImage (pull-first, build fallback).
+        // This matters for production images like propr/agent-claude:latest —
+        // the versioned-build path below tries to build local Dockerfile tags
+        // (propr-claude:2.1.85-<hash>) which only works in dev checkouts.
+        if (config.dockerImage && await ensureAgentDockerImage(config.type, config.dockerImage)) {
+            return true;
+        }
+
+        // Fallback: versioned build (dev flow) — requires Dockerfile on disk.
         if (config.cliVersionType && config.cliVersionResolved) {
             const contentHash = computeContentHash(config.type as AgentType);
             const result = await ensureVersionedAgentImage(
@@ -209,7 +218,7 @@ export class AgentRegistry {
             }
             return result.success;
         }
-        return ensureAgentDockerImage(config.type, config.dockerImage);
+        return false;
     }
 
     /**

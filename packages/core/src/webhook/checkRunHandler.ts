@@ -10,6 +10,7 @@ import {
     areAllChecksPassing,
     getPRAutoMergeInfo,
     linkedIssueHasAutoMergeLabel,
+    hasActiveTasksForPR,
     type MergePROptions,
     type MergePRResult,
     type PRAutoMergeInfo
@@ -159,6 +160,19 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void
     const allChecksPassing = await areAllChecksPassing(owner, repoName, headSha);
     if (!allChecksPassing) {
         log.debug({ owner, repoName, prNumber }, 'Not all checks are passing yet, skipping merge');
+        return;
+    }
+
+    // Check for active tasks (e.g., followup processing) before merging
+    const repository = `${owner}/${repoName}`;
+    const { hasActive, activeTasks } = await hasActiveTasksForPR(repository, prNumber);
+    if (hasActive) {
+        log.info({
+            owner,
+            repoName,
+            prNumber,
+            activeTasks
+        }, 'Skipping auto-merge - active tasks in progress for this PR');
         return;
     }
 

@@ -16,6 +16,8 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import { loadPrLabel } from '../config/configManager.js';
 import { isDraftPaused } from '../services/taskPlanning/draftPauseResume.js';
+import { migrateRepositoryReferences } from '../services/repositoryMigrationService.js';
+import { db } from '../db/connection.js';
 import type {
     IssuesEvent,
     IssueCommentEvent,
@@ -37,6 +39,34 @@ export async function handlePlanIssueStatusUpdate(
     const issueNumber = payload.issue.number;
 
     try {
+        // Check for repository rename: if we have this issue under a different repo name, migrate
+        try {
+            const mismatchedRecord = await db('plan_issues')
+                .where('issue_number', issueNumber)
+                .whereNot('repository', repository)
+                .first();
+
+            if (mismatchedRecord) {
+                const oldRepository = mismatchedRecord.repository;
+                log.warn({
+                    currentRepository: repository,
+                    oldRepository,
+                    issueNumber
+                }, 'Repository rename detected from issue webhook - initiating migration');
+
+                const result = await migrateRepositoryReferences(oldRepository, repository);
+                log.info({
+                    oldRepository,
+                    currentRepository: repository,
+                    tablesUpdated: result.tablesUpdated,
+                    rowsAffected: result.rowsAffected,
+                    success: result.success
+                }, 'Repository migration completed from issue webhook');
+            }
+        } catch (renameError) {
+            log.debug({ error: (renameError as Error).message }, 'Repository rename check failed (non-fatal)');
+        }
+
         const planIssue = await findPlanIssueByRepoAndNumber(repository, issueNumber);
         if (!planIssue) return;
 
@@ -172,6 +202,82 @@ async function handleMergedPRNextIssueTrigger(
 export { determinePRStatusUpdate } from './statusMachine.js';
 
 /**
+ * Checks if there are database records with old repository names that need migration.
+ * This detects repository renames by checking if we have plan_issues for issue numbers
+ * that exist in the webhook's repository but are stored under a different repo name.
+ *
+ * Example: If webhook comes from 'integry/propr' for issue #1351, but our DB has
+ * plan_issues for issue #1351 under 'integry/gitfix', we migrate all records.
+ */
+async function checkAndMigrateRepositoryFromWebhook(
+    currentRepository: string,
+    issueOrPrNumber: number,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    try {
+        // Check if we have a plan_issue for this issue number under a DIFFERENT repository
+        const mismatchedRecord = await db('plan_issues')
+            .where('issue_number', issueOrPrNumber)
+            .whereNot('repository', currentRepository)
+            .first();
+
+        if (!mismatchedRecord) {
+            // Also check by PR number
+            const mismatchedByPR = await db('plan_issues')
+                .where('pr_number', issueOrPrNumber)
+                .whereNot('repository', currentRepository)
+                .first();
+
+            if (!mismatchedByPR) {
+                return; // No mismatch found
+            }
+
+            // Found mismatch by PR number
+            const oldRepository = mismatchedByPR.repository;
+            log.warn({
+                currentRepository,
+                oldRepository,
+                prNumber: issueOrPrNumber
+            }, 'Repository rename detected from webhook (by PR number) - initiating migration');
+
+            const result = await migrateRepositoryReferences(oldRepository, currentRepository);
+            log.info({
+                oldRepository,
+                currentRepository,
+                tablesUpdated: result.tablesUpdated,
+                rowsAffected: result.rowsAffected,
+                success: result.success
+            }, 'Repository migration completed from webhook detection');
+            return;
+        }
+
+        const oldRepository = mismatchedRecord.repository;
+        log.warn({
+            currentRepository,
+            oldRepository,
+            issueNumber: issueOrPrNumber
+        }, 'Repository rename detected from webhook - initiating migration');
+
+        const result = await migrateRepositoryReferences(oldRepository, currentRepository);
+        log.info({
+            oldRepository,
+            currentRepository,
+            tablesUpdated: result.tablesUpdated,
+            rowsAffected: result.rowsAffected,
+            success: result.success
+        }, 'Repository migration completed from webhook detection');
+
+    } catch (error) {
+        // Non-fatal: log and continue processing
+        log.debug({
+            currentRepository,
+            issueOrPrNumber,
+            error: (error as Error).message
+        }, 'Repository rename check failed (non-fatal)');
+    }
+}
+
+/**
  * Handles PR events to track PR associations with plan issues.
  */
 export async function handlePlanPRUpdate(
@@ -184,6 +290,18 @@ export async function handlePlanPRUpdate(
     const action = payload.action;
 
     try {
+        // Check for repository rename before processing
+        // Extract issue number from PR body if it references one
+        const prBody = payload.pull_request.body || '';
+        const issueRefMatch = prBody.match(/(?:fixes|closes|resolves|fix|close|resolve)\s*#(\d+)/i);
+        const referencedIssue = issueRefMatch ? parseInt(issueRefMatch[1], 10) : null;
+
+        // Check both PR number and referenced issue number for potential renames
+        await checkAndMigrateRepositoryFromWebhook(repository, prNumber, log);
+        if (referencedIssue) {
+            await checkAndMigrateRepositoryFromWebhook(repository, referencedIssue, log);
+        }
+
         const prTitle = payload.pull_request.title || '';
         if (prTitle.startsWith('[Epic]')) {
             if (action === 'opened') {

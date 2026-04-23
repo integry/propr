@@ -18,8 +18,9 @@ COPY packages/shared/package*.json ./packages/shared/
 COPY packages/core/package*.json ./packages/core/
 COPY packages/api/package*.json ./packages/api/
 
-# Install all deps (incl. dev) so we can compile TypeScript.
-RUN npm ci --include=dev --ignore-scripts
+# Install all deps (incl. dev) so we can compile TypeScript. Postinstall
+# scripts must run — better-sqlite3 rebuilds its native binding here.
+RUN npm ci --include=dev
 
 # Copy everything needed to build.
 COPY tsconfig.json ./

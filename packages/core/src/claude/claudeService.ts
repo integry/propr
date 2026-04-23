@@ -261,11 +261,14 @@ interface AgentExecutionParams {
     prompt: string;
     taskId?: string;
     executionType?: string;
+    correlationId?: string;
+    repository?: string;
+    metadata?: Record<string, unknown>;
     correlatedLogger: ReturnType<typeof logger.withCorrelation>;
 }
 
 async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<AnalysisResult | null> {
-    const { agentAlias, modelOverride, prompt, taskId, executionType, correlatedLogger } = params;
+    const { agentAlias, modelOverride, prompt, taskId, executionType, correlationId, repository, metadata, correlatedLogger } = params;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
@@ -277,7 +280,7 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
 
     const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
     correlatedLogger.info({ agentAlias, resolvedModel, taskId, executionType }, 'Using agent-specific lightweight LLM analysis');
-    return await agent.analyze(prompt, { model: resolvedModel, taskId, executionType });
+    return await agent.analyze(prompt, { model: resolvedModel, taskId, executionType, correlationId, repository, metadata });
 }
 
 async function executeClaudeAnalysis(
@@ -331,16 +334,13 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
 
     if (agentAlias) {
         try {
-            const analysisResult = await tryExecuteWithAgent({ agentAlias, modelOverride, prompt, taskId, executionType, correlatedLogger });
+            const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
+            // Pass all logging fields to agent - agent handles persistence internally
+            const analysisResult = await tryExecuteWithAgent({
+                agentAlias, modelOverride, prompt, taskId, executionType,
+                correlationId, repository, metadata, correlatedLogger
+            });
             if (analysisResult !== null) {
-                const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
-                await persistLlmLog(createLlmLogFromAnalysis({
-                    executionType, modelUsed: analysisResult.modelUsed,
-                    executionTimeMs: analysisResult.executionTimeMs, success: analysisResult.success,
-                    tokenUsage: analysisResult.tokenUsage, estimatedInputTokens: estimateTokens(prompt),
-                    error: analysisResult.error, sessionId: analysisResult.sessionId,
-                    correlationId, draftId: taskId, repository, agentAlias, metadata,
-                }));
                 if (!analysisResult.success) {
                     throw new Error(analysisResult.error || 'Agent analysis failed');
                 }
