@@ -204,6 +204,7 @@ async function handleMergeWithAgent(options: {
         baseBranch,
         headBranch: branchName,
         conflictedFiles,
+        resolutionSummary: claudeResult.summary,
         model: claudeResult.model || resolvedModel,
         executionTimeMs: claudeResult.executionTime,
         taskUrl,

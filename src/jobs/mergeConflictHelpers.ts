@@ -32,7 +32,10 @@ ${hasKnownConflicts ? `**Known Conflicted Files:**\n${fileList}\n` : ''}
    - If both sides modified the same logic, prefer the PR's intent but ensure compatibility.
    - Remove ALL conflict markers after resolving.
 3. Verify the code is syntactically correct after resolution.
-4. Provide a brief summary of what conflicts were found and how they were resolved.
+4. **IMPORTANT:** Provide a detailed summary that includes:
+   - What each conflict was about (e.g., "Both branches modified the user validation logic")
+   - How you resolved it (e.g., "Combined both changes by keeping the new validation from main while preserving the error messages from the PR")
+   - Why you chose this resolution approach
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
@@ -85,11 +88,12 @@ export function buildMergeConflictComment(options: {
     baseBranch: string;
     headBranch: string;
     conflictedFiles?: string[];
+    resolutionSummary?: string | null;
     model?: string;
     executionTimeMs?: number;
     taskUrl?: string;
 }): string {
-    const { wasCleanMerge, commitHash, baseBranch, headBranch, conflictedFiles, model, executionTimeMs, taskUrl } = options;
+    const { wasCleanMerge, commitHash, baseBranch, headBranch, conflictedFiles, resolutionSummary, model, executionTimeMs, taskUrl } = options;
 
     const shortHash = commitHash ? commitHash.substring(0, 7) : 'unknown';
 
@@ -119,15 +123,19 @@ export function buildMergeConflictComment(options: {
     let comment = `🔀 **Resolved merge conflicts** from \`${baseBranch}\` into \`${headBranch}\` in commit ${shortHash}\n\n`;
 
     if (conflictedFiles && conflictedFiles.length > 0) {
-        comment += `### Resolved Conflicts\n\n`;
+        comment += `### Conflicting Files\n\n`;
         comment += conflictedFiles.map(f => `- \`${f}\``).join('\n');
         comment += '\n\n';
     }
 
-    comment += `An AI agent resolved the merge conflicts while preserving the PR intent.\n`;
+    if (resolutionSummary) {
+        comment += `### Resolution Summary\n\n${resolutionSummary}\n\n`;
+    } else {
+        comment += `An AI agent resolved the merge conflicts while preserving the PR intent.\n\n`;
+    }
 
     if (model || executionTimeMs) {
-        comment += `\n---\n### 🤖 Resolution Details\n\n`;
+        comment += `---\n### 🤖 Resolution Details\n\n`;
         if (model) comment += `* **Model:** ${model}\n`;
         if (executionTimeMs) {
             const seconds = Math.floor(executionTimeMs / 1000);
