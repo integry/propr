@@ -4,7 +4,7 @@
 
 import { Job } from 'bullmq';
 import {
-  logger, generateCorrelationId, getStateManager, loadSettings, resolveLlmLabel, AgentRegistry
+  logger, generateCorrelationId, getStateManager, loadSettings, resolveLlmLabel, AgentRegistry, NoDefaultModelConfiguredError
 } from '@propr/core';
 import type { IssueJobData, Agent } from '@propr/core';
 import type { JobContext } from './types.js';
@@ -68,7 +68,10 @@ export async function initializeJobContext(job: Job<IssueJobData>): Promise<JobC
 
   // Get model if still missing (use agent's default model)
   const agent = registry.getAgentByAlias(agentAlias);
-  modelName = modelName || agent?.config.defaultModel || DEFAULT_MODEL_NAME;
+  modelName = modelName || agent?.config.defaultModel || DEFAULT_MODEL_NAME || undefined;
+  if (!modelName) {
+    throw new NoDefaultModelConfiguredError();
+  }
 
   const taskId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentAlias}-${modelName}-${correlationId}`;
 

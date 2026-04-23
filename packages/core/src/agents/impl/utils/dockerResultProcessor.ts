@@ -8,7 +8,6 @@
 import { AgentExecutionResult, TokenUsage } from '../../types.js';
 import { ExecutionResult } from '../../../claude/docker/dockerExecutor.js';
 import { parseStreamJsonOutput } from '../../../claude/claudeHelpers.js';
-import { getDefaultModel } from '../../../config/modelAliases.js';
 import { getCorrectedTokenUsage, ensurePromptInConversationLog } from './tokenUtils.js';
 
 /**
@@ -66,7 +65,7 @@ export function processDockerResult(
     const claudeOutput = parseStreamJsonOutput(result);
 
     // Determine the actual model used (from output or fallback to requested/default)
-    const modelUsed = claudeOutput.model || effectiveModel || getDefaultModel();
+    const modelUsed = claudeOutput.model || effectiveModel || 'unknown';
 
     // Ensure the initial prompt is included in the conversation log
     const fullConversationLog = ensurePromptInConversationLog(

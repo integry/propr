@@ -14,7 +14,7 @@ import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { MergeConflictJobData, JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, loadSettings, db } from '@propr/core';
+import { getDefaultModel, loadSettings, db, NoDefaultModelConfiguredError } from '@propr/core';
 import { cleanupWorktree } from '@propr/core';
 import {
     createSessionIdCallbackForPR,
@@ -30,7 +30,7 @@ import {
     buildMergeConflictComment,
 } from './mergeConflictHelpers.js';
 
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -55,16 +55,23 @@ async function resolveDefaultAgentAndModel(
             if (configuredAgent && configuredAgent.config.enabled) {
                 const resolvedAlias = settings.default_agent_alias as string;
                 const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
+                if (!resolvedModel) {
+                    throw new NoDefaultModelConfiguredError();
+                }
                 return { resolvedAlias, resolvedModel };
             }
         }
     } catch (settingsError) {
+        if (settingsError instanceof NoDefaultModelConfiguredError) throw settingsError;
         correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
     }
 
     const defaultAgent = registry.getDefaultAgent();
     const resolvedAlias = defaultAgent?.config.alias || 'claude';
     const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
+    if (!resolvedModel) {
+        throw new NoDefaultModelConfiguredError();
+    }
     return { resolvedAlias, resolvedModel };
 }
 
@@ -270,6 +277,9 @@ async function resolveModelForTask(): Promise<string> {
         }
     } catch {
         // Keep default
+    }
+    if (!DEFAULT_MODEL_NAME) {
+        throw new NoDefaultModelConfiguredError();
     }
     return DEFAULT_MODEL_NAME;
 }

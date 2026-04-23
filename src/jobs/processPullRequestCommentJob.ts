@@ -14,7 +14,7 @@ import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, db } from '@propr/core';
+import { getDefaultModel, db, NoDefaultModelConfiguredError } from '@propr/core';
 import { loadPrimaryProcessingLabels } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
@@ -30,7 +30,7 @@ import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUt
 import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -384,7 +384,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
     // Resolve model name early for task state tracking
-    let modelName = DEFAULT_MODEL_NAME;
+    let modelName: string | null = DEFAULT_MODEL_NAME;
     if (llm) {
         try {
             const resolution = await resolveLlmLabel(llm);
@@ -404,6 +404,9 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         } catch {
             // Keep DEFAULT_MODEL_NAME if registry fails
         }
+    }
+    if (!modelName) {
+        throw new NoDefaultModelConfiguredError();
     }
 
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
