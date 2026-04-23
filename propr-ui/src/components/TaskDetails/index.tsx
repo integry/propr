@@ -329,8 +329,8 @@ const TaskDetails: React.FC = () => {
               )}
             </div>
             {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
-            {/* Hidden (not unmounted) when Execution Log is expanded to preserve state */}
-            <div className={`flex-1 flex flex-col min-h-0 min-w-0 lg:overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'hidden'}`}>
+            {/* Remains visible when Execution Log is expanded so both logs can share vertical space */}
+            <div className="flex-1 flex flex-col min-h-0 min-w-0 lg:overflow-hidden">
               {/* Single scrollable area for Implementation Analysis + Thinking Log */}
               {/* On mobile: no overflow (parent scrolls); On desktop: independent scroll */}
               <div className="flex-1 lg:overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
