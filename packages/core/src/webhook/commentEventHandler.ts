@@ -265,6 +265,8 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
         pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
         ...(commandMeta ? {
             commandMeta,
+            // 'merge' commands are handled separately above and never reach here;
+            // map to 'default' defensively to satisfy the CommentJobData type constraint
             commandMode: commandMeta.mode === 'review' || commandMeta.mode === 'fix' ? commandMeta.mode : 'default',
             requestedModels: commandMeta.mode === 'review' ? commandMeta.models : undefined,
             commandInstructions: 'instructions' in commandMeta ? commandMeta.instructions : undefined,

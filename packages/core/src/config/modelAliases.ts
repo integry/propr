@@ -333,7 +333,15 @@ export class ReviewModelResolutionError extends Error {
  */
 async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAssignment[]> {
     if (!requestedLabels || requestedLabels.length === 0) {
-        return [];
+        // Default to the default model when /review is called with no arguments
+        const defaultModel = getDefaultModel();
+        const defaultAgent = AgentRegistry.getInstance().getDefaultAgent();
+        const modelInfo = MODEL_INFO_MAP[defaultModel];
+        return [{
+            agentAlias: defaultAgent?.config.alias || 'default',
+            model: defaultModel,
+            displayLabel: modelInfo?.name || getModelShortName(defaultModel),
+        }];
     }
 
     const registry = AgentRegistry.getInstance();
