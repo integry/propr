@@ -23,7 +23,6 @@ import {
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../utils/llmLogger.js';
 import type { ExecutionType, ConversationStep } from '../utils/llmMetrics.types.js';
-import { estimateTokens } from '../utils/tokenCalculation.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from '../agents/impl/utils/index.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };

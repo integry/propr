@@ -106,39 +106,48 @@ async function calculateCost(entry: LlmLogEntry): Promise<number | undefined> {
   return undefined;
 }
 
-/**
- * Persists an LLM call log entry to the llm_logs table.
- */
-async function insertLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Promise<number | null> {
-  const [inserted] = await db!('llm_logs').insert({
+/** Coerce undefined to null for DB columns. */
+function n<T>(value: T | undefined): T | null {
+  return value ?? null;
+}
+
+function buildLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Record<string, unknown> {
+  const ref = entry.workRef;
+  return {
     execution_type: entry.executionType,
     model_name: entry.modelName,
     start_time: entry.startTime.toISOString(),
     end_time: entry.endTime.toISOString(),
     duration_ms: entry.durationMs,
     success: entry.success,
-    input_tokens: entry.inputTokens ?? null,
-    output_tokens: entry.outputTokens ?? null,
-    estimated_input_tokens: entry.estimatedInputTokens ?? null,
-    cache_creation_input_tokens: entry.cacheCreationInputTokens ?? null,
-    cache_read_input_tokens: entry.cacheReadInputTokens ?? null,
-    cost_usd: costUsd ?? null,
-    error_message: entry.errorMessage ?? null,
-    session_id: entry.sessionId ?? null,
-    correlation_id: entry.correlationId ?? null,
-    draft_id: entry.draftId ?? null,
-    repository: entry.repository ?? null,
-    agent_alias: entry.agentAlias ?? null,
+    input_tokens: n(entry.inputTokens),
+    output_tokens: n(entry.outputTokens),
+    estimated_input_tokens: n(entry.estimatedInputTokens),
+    cache_creation_input_tokens: n(entry.cacheCreationInputTokens),
+    cache_read_input_tokens: n(entry.cacheReadInputTokens),
+    cost_usd: n(costUsd),
+    error_message: n(entry.errorMessage),
+    session_id: n(entry.sessionId),
+    correlation_id: n(entry.correlationId),
+    draft_id: n(entry.draftId),
+    repository: n(entry.repository),
+    agent_alias: n(entry.agentAlias),
     metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
     usage_metrics: entry.usageMetrics ? JSON.stringify(entry.usageMetrics) : null,
-    work_type: entry.workRef?.workType ?? null,
-    task_id: entry.workRef?.taskId ?? null,
-    task_number: entry.workRef?.taskNumber ?? null,
-    plan_draft_id: entry.workRef?.planDraftId ?? null,
-    plan_issue_id: entry.workRef?.planIssueId ?? null,
-    work_repository: entry.workRef?.workRepository ?? null,
-  }).returning('log_id');
+    work_type: n(ref?.workType),
+    task_id: n(ref?.taskId),
+    task_number: n(ref?.taskNumber),
+    plan_draft_id: n(ref?.planDraftId),
+    plan_issue_id: n(ref?.planIssueId),
+    work_repository: n(ref?.workRepository),
+  };
+}
 
+/**
+ * Persists an LLM call log entry to the llm_logs table.
+ */
+async function insertLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Promise<number | null> {
+  const [inserted] = await db!('llm_logs').insert(buildLlmLogRow(entry, costUsd)).returning('log_id');
   return typeof inserted === 'object' ? (inserted as { log_id: number }).log_id : inserted;
 }
 
@@ -192,6 +201,36 @@ export async function persistLlmLog(entry: LlmLogEntry): Promise<number | null> 
     }, 'Failed to persist LLM log to database');
     return null;
   }
+}
+
+/**
+ * Builds a WorkReference for analysis calls based on execution type and task context.
+ */
+export function buildAnalysisWorkRef(executionType: string | undefined, taskId: string | undefined, repository: string | undefined): WorkReference {
+  const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
+  return {
+    workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
+    taskId: isPlan ? undefined : taskId,
+    planDraftId: isPlan ? taskId : undefined,
+    workRepository: repository,
+  };
+}
+
+/**
+ * Formats usage metrics from Agent Tank tracking into a plain object for persistence.
+ */
+export function formatUsageMetrics(usageMetrics: { preCall: unknown; postCall: unknown; delta: unknown; timestamp: unknown; agent: unknown; records?: UsageMetricRecordEntry[] } | null | undefined): { metrics?: Record<string, unknown>; records?: UsageMetricRecordEntry[] } {
+  if (!usageMetrics) return {};
+  return {
+    metrics: {
+      preCall: usageMetrics.preCall,
+      postCall: usageMetrics.postCall,
+      delta: usageMetrics.delta,
+      timestamp: usageMetrics.timestamp,
+      agent: usageMetrics.agent,
+    },
+    records: usageMetrics.records,
+  };
 }
 
 /**

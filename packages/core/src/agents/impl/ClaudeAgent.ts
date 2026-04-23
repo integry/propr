@@ -27,7 +27,7 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, getDefaultModel } from '../../config/modelAliases.js';
-import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
@@ -323,7 +323,7 @@ export class ClaudeAgent implements Agent {
                 }, 'Lightweight analysis completed');
 
                 // Persist LLM log with usage metrics for analysis calls
-                const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
+                const usage = formatUsageMetrics(usageMetrics);
                 await persistLlmLog(createLlmLogFromAnalysis({
                     executionType: (executionType || 'other') as ExecutionType,
                     modelUsed: claudeOutput.model || effectiveModel,
@@ -336,20 +336,9 @@ export class ClaudeAgent implements Agent {
                     repository,
                     metadata,
                     agentAlias: this.config.alias,
-                    usageMetrics: usageMetrics ? {
-                        preCall: usageMetrics.preCall,
-                        postCall: usageMetrics.postCall,
-                        delta: usageMetrics.delta,
-                        timestamp: usageMetrics.timestamp,
-                        agent: usageMetrics.agent
-                    } : undefined,
-                    usageMetricRecords: usageMetrics?.records,
-                    workRef: {
-                        workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
-                        taskId: isPlan ? undefined : taskId,
-                        planDraftId: isPlan ? taskId : undefined,
-                        workRepository: repository,
-                    },
+                    usageMetrics: usage.metrics,
+                    usageMetricRecords: usage.records,
+                    workRef: buildAnalysisWorkRef(executionType, taskId, repository),
                 }));
 
                 return {

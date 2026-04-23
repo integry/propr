@@ -8,7 +8,7 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
-import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import fs from 'fs';
@@ -181,36 +181,26 @@ export class GeminiAgent implements Agent {
                 }, 'Lightweight analysis completed');
 
                 // Persist LLM log with usage metrics for analysis calls
-                const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
+                const usage = formatUsageMetrics(usageMetrics);
+                const geminiTokenUsage = (tokenUsage.input_tokens || tokenUsage.output_tokens) ? {
+                    input_tokens: tokenUsage.input_tokens,
+                    output_tokens: tokenUsage.output_tokens
+                } : undefined;
                 await persistLlmLog(createLlmLogFromAnalysis({
                     executionType: (executionType || 'other') as ExecutionType,
                     modelUsed: effectiveModel,
                     executionTimeMs,
                     success: true,
-                    tokenUsage: (tokenUsage.input_tokens || tokenUsage.output_tokens) ? {
-                        input_tokens: tokenUsage.input_tokens,
-                        output_tokens: tokenUsage.output_tokens
-                    } : undefined,
+                    tokenUsage: geminiTokenUsage,
                     sessionId,
                     draftId: taskId,
                     correlationId,
                     repository,
                     metadata,
                     agentAlias: this.config.alias,
-                    usageMetrics: usageMetrics ? {
-                        preCall: usageMetrics.preCall,
-                        postCall: usageMetrics.postCall,
-                        delta: usageMetrics.delta,
-                        timestamp: usageMetrics.timestamp,
-                        agent: usageMetrics.agent
-                    } : undefined,
-                    usageMetricRecords: usageMetrics?.records,
-                    workRef: {
-                        workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
-                        taskId: isPlan ? undefined : taskId,
-                        planDraftId: isPlan ? taskId : undefined,
-                        workRepository: repository,
-                    },
+                    usageMetrics: usage.metrics,
+                    usageMetricRecords: usage.records,
+                    workRef: buildAnalysisWorkRef(executionType, taskId, repository),
                 }));
 
                 return {
