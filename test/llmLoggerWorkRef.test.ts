@@ -22,6 +22,22 @@ describe('WorkReference type shape', () => {
     assert.strictEqual(ref.workRepository, 'integry/propr');
     assert.strictEqual(ref.planDraftId, undefined);
     assert.strictEqual(ref.planIssueId, undefined);
+    assert.strictEqual(ref.prNumber, undefined);
+  });
+
+  it('accepts a PR follow-up work reference with prNumber', () => {
+    const ref: WorkReference = {
+      workType: 'task',
+      taskId: 'pr-comment-99',
+      taskNumber: 99,
+      prNumber: 99,
+      workRepository: 'integry/propr',
+    };
+    assert.strictEqual(ref.workType, 'task');
+    assert.strictEqual(ref.taskId, 'pr-comment-99');
+    assert.strictEqual(ref.taskNumber, 99);
+    assert.strictEqual(ref.prNumber, 99);
+    assert.strictEqual(ref.workRepository, 'integry/propr');
   });
 
   it('accepts a plan-linked work reference', () => {
@@ -50,6 +66,7 @@ describe('WorkReference type shape', () => {
     const ref: WorkReference = {};
     assert.strictEqual(ref.workType, undefined);
     assert.strictEqual(ref.taskId, undefined);
+    assert.strictEqual(ref.prNumber, undefined);
     assert.strictEqual(ref.planDraftId, undefined);
     assert.strictEqual(ref.workRepository, undefined);
   });

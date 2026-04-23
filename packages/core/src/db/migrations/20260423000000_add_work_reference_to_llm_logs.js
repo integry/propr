@@ -18,6 +18,7 @@ export async function up(knex) {
     table.text('work_type').nullable();
     table.text('task_id').nullable();
     table.integer('task_number').nullable();
+    table.integer('pr_number').nullable();
     table.text('plan_draft_id').nullable();
     table.integer('plan_issue_id').nullable();
     table.text('work_repository').nullable();
@@ -26,6 +27,7 @@ export async function up(knex) {
     table.index('work_type', 'idx_llm_logs_work_type');
     table.index('task_id', 'idx_llm_logs_task_id');
     table.index('task_number', 'idx_llm_logs_task_number');
+    table.index('pr_number', 'idx_llm_logs_pr_number');
     table.index('plan_draft_id', 'idx_llm_logs_plan_draft_id');
     table.index('plan_issue_id', 'idx_llm_logs_plan_issue_id');
     table.index('work_repository', 'idx_llm_logs_work_repository');
@@ -46,6 +48,7 @@ export async function down(knex) {
     table.dropIndex('work_type', 'idx_llm_logs_work_type');
     table.dropIndex('task_id', 'idx_llm_logs_task_id');
     table.dropIndex('task_number', 'idx_llm_logs_task_number');
+    table.dropIndex('pr_number', 'idx_llm_logs_pr_number');
     table.dropIndex('plan_draft_id', 'idx_llm_logs_plan_draft_id');
     table.dropIndex('plan_issue_id', 'idx_llm_logs_plan_issue_id');
     table.dropIndex('work_repository', 'idx_llm_logs_work_repository');
@@ -53,6 +56,7 @@ export async function down(knex) {
     table.dropColumn('work_type');
     table.dropColumn('task_id');
     table.dropColumn('task_number');
+    table.dropColumn('pr_number');
     table.dropColumn('plan_draft_id');
     table.dropColumn('plan_issue_id');
     table.dropColumn('work_repository');

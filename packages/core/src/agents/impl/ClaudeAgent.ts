@@ -27,7 +27,7 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, getDefaultModel } from '../../config/modelAliases.js';
-import { persistLlmLog, createLlmLogFromAnalysis, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
@@ -53,6 +53,7 @@ interface PersistLogsParams {
     executionTime: number;
     correctedTokenUsage: TokenUsage | undefined;
     taskId?: string;
+    prNumber?: number;
     usageMetrics?: UsageTrackingMetrics | null;
 }
 
@@ -109,7 +110,8 @@ export class ClaudeAgent implements Agent {
             onContainerId,
             githubToken,
             tools,
-            taskId
+            taskId,
+            prNumber
         } = options;
 
         const startTime = Date.now();
@@ -198,6 +200,7 @@ export class ClaudeAgent implements Agent {
                 executionTime,
                 correctedTokenUsage,
                 taskId,
+                prNumber,
                 usageMetrics
             });
 
@@ -423,6 +426,7 @@ export class ClaudeAgent implements Agent {
             executionTime,
             correctedTokenUsage,
             taskId,
+            prNumber,
             usageMetrics
         } = params;
 
@@ -464,12 +468,7 @@ export class ClaudeAgent implements Agent {
                 agent: usageMetrics.agent
             } : undefined,
             usageMetricRecords: usageMetrics?.records,
-            workRef: {
-                workType: 'task',
-                taskId,
-                taskNumber: issueRef.number,
-                workRepository: repository,
-            },
+            workRef: buildTaskWorkRef(taskId, issueRef.number, repository, prNumber),
         }));
     }
 }

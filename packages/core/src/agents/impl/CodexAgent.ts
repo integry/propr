@@ -15,7 +15,7 @@ import {
     storeCodexPromptInRedis
 } from '../../codex/codexHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
-import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
@@ -42,7 +42,7 @@ export class CodexAgent implements Agent {
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, taskId } = options;
+            onSessionId, onContainerId, githubToken, taskId, prNumber } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -118,12 +118,7 @@ export class CodexAgent implements Agent {
                 agentAlias: this.config.alias,
                 metadata: { isRetry, retryReason, conversationId: parsedOutput.conversationId },
                 ...this.formatUsageMetrics(usageMetrics),
-                workRef: {
-                    workType: 'task',
-                    taskId,
-                    taskNumber: issueRef.number,
-                    workRepository: repo,
-                },
+                workRef: buildTaskWorkRef(taskId, issueRef.number, repo, prNumber),
             });
             await persistLlmLog(logEntry);
 
@@ -244,7 +239,6 @@ export class CodexAgent implements Agent {
             usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
         }, 'Lightweight analysis completed');
 
-        const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
         await persistLlmLog(createLlmLogFromAnalysis({
             executionType: (executionType || 'other') as ExecutionType,
             modelUsed: parsedOutput.model || effectiveModel, executionTimeMs,
@@ -253,12 +247,7 @@ export class CodexAgent implements Agent {
             correlationId, repository, metadata,
             agentAlias: this.config.alias,
             ...this.formatUsageMetrics(usageMetrics),
-            workRef: {
-                workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
-                taskId: isPlan ? undefined : taskId,
-                planDraftId: isPlan ? taskId : undefined,
-                workRepository: repository,
-            },
+            workRef: buildAnalysisWorkRef(executionType, taskId, repository),
         }));
 
         return {

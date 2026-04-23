@@ -25,6 +25,8 @@ export interface WorkReference {
   taskId?: string;
   /** The GitHub issue number the task is associated with. */
   taskNumber?: number;
+  /** The GitHub PR number when this call is part of a PR follow-up. */
+  prNumber?: number;
   /** The plan / draft ID that owns this LLM call. */
   planDraftId?: string;
   /** The specific plan-issue row within a draft. */
@@ -137,6 +139,7 @@ function buildLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Record
     work_type: n(ref?.workType),
     task_id: n(ref?.taskId),
     task_number: n(ref?.taskNumber),
+    pr_number: n(ref?.prNumber),
     plan_draft_id: n(ref?.planDraftId),
     plan_issue_id: n(ref?.planIssueId),
     work_repository: n(ref?.workRepository),
@@ -201,6 +204,25 @@ export async function persistLlmLog(entry: LlmLogEntry): Promise<number | null> 
     }, 'Failed to persist LLM log to database');
     return null;
   }
+}
+
+/**
+ * Builds a WorkReference for task execution (implementation) calls.
+ * Used by all agent executeTask() methods to avoid duplicating inline workRef construction.
+ */
+export function buildTaskWorkRef(
+  taskId: string | undefined,
+  taskNumber: number,
+  repository: string,
+  prNumber?: number,
+): WorkReference {
+  return {
+    workType: 'task',
+    taskId,
+    taskNumber,
+    prNumber,
+    workRepository: repository,
+  };
 }
 
 /**
