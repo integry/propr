@@ -199,13 +199,15 @@ export async function ensureEpicPR(options: EnsureEpicPROptions): Promise<EpicPR
     }
 
     // Step 3: Create the base label for child PRs
+    // GitHub label descriptions have a 100 character limit
+    const labelDescription = `Base branch label for Epic: ${planName}`.slice(0, 100);
     try {
       await octokit.request('POST /repos/{owner}/{repo}/labels', {
         owner,
         repo: repoName,
         name: labelName,
         color: '0e8a16', // Green color for epic labels
-        description: `Base branch label for Epic: ${planName}`
+        description: labelDescription
       });
       correlatedLogger.info({ labelName }, 'Epic label created');
     } catch (labelError) {
