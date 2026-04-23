@@ -103,7 +103,18 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
 }
 
 function getDefaultModel(): ModelId {
-    return MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
+    // Prefer the configured default agent's model from settings
+    try {
+        const registry = AgentRegistry.getInstance();
+        const defaultAgent = registry.getDefaultAgent();
+        if (defaultAgent?.config.defaultModel) {
+            return defaultAgent.config.defaultModel;
+        }
+    } catch {
+        // Registry not initialized yet, fall back to static default
+    }
+    // Fall back to env var, then static alias
+    return process.env.DEFAULT_CLAUDE_MODEL || MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
 }
 
 /**
