@@ -173,16 +173,6 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         historyMetadata: { commandMode: 'review' }
     });
 
-    // Post "starting review" comment immediately so user knows we're working on it
-    const commentIds = state.unprocessedComments.map(c => String(c.id)).join(', ');
-    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner,
-        repo: repoName,
-        issue_number: pullRequestNumber,
-        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request changes...\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${commentIds}_`,
-    });
-    correlatedLogger.info({ pullRequestNumber, commentId: state.startingWorkComment.data.id }, 'Posted starting review comment');
-
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
@@ -199,6 +189,17 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const assignments = await resolveReviewAssignments(requestedModels, llm, correlatedLogger);
 
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
+
+    // Post "starting review" comment with model information
+    const commentIds = state.unprocessedComments.map(c => String(c.id)).join(', ');
+    const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
+    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: repoOwner,
+        repo: repoName,
+        issue_number: pullRequestNumber,
+        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${commentIds}_`,
+    });
+    correlatedLogger.info({ pullRequestNumber, commentId: state.startingWorkComment.data.id }, 'Posted starting review comment');
 
     job.data.title = `Review: ${prData!.data.title}`;
     job.data.subtitle = `Code review with ${assignments.map(a => a.label).join(', ')}`;
