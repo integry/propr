@@ -10,6 +10,29 @@ import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
 import type { ExecutionType } from './llmMetrics.types.js';
 
+/** Discriminator for the kind of work an LLM call belongs to. */
+export type WorkType = 'task' | 'plan' | 'repository';
+
+/**
+ * Normalized work-reference that every LLM call can carry.
+ * At least one field should be set so the log row can be traced
+ * back to a task, plan, or repository-scoped workflow.
+ */
+export interface WorkReference {
+  /** Discriminator: task execution, plan generation/refinement, or repo-level work. */
+  workType?: WorkType;
+  /** The internal task ID (e.g. BullMQ job id). */
+  taskId?: string;
+  /** The GitHub issue number the task is associated with. */
+  taskNumber?: number;
+  /** The plan / draft ID that owns this LLM call. */
+  planDraftId?: string;
+  /** The specific plan-issue row within a draft. */
+  planIssueId?: number;
+  /** owner/repo for the work context. */
+  workRepository?: string;
+}
+
 /** A single structured usage metric record for DB persistence. */
 export interface UsageMetricRecordEntry {
   agent: string;
@@ -41,6 +64,8 @@ export interface LlmLogEntry {
   usageMetrics?: Record<string, unknown>;
   /** Structured metric records (one per metric key) for the usage_metric_records table. */
   usageMetricRecords?: UsageMetricRecordEntry[];
+  /** Normalized work-reference fields for tracing this call to a task, plan, or repo. */
+  workRef?: WorkReference;
 }
 
 /**
@@ -106,6 +131,12 @@ async function insertLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined):
     agent_alias: entry.agentAlias ?? null,
     metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
     usage_metrics: entry.usageMetrics ? JSON.stringify(entry.usageMetrics) : null,
+    work_type: entry.workRef?.workType ?? null,
+    task_id: entry.workRef?.taskId ?? null,
+    task_number: entry.workRef?.taskNumber ?? null,
+    plan_draft_id: entry.workRef?.planDraftId ?? null,
+    plan_issue_id: entry.workRef?.planIssueId ?? null,
+    work_repository: entry.workRef?.workRepository ?? null,
   }).returning('log_id');
 
   return typeof inserted === 'object' ? (inserted as { log_id: number }).log_id : inserted;
@@ -188,6 +219,7 @@ export function createLlmLogFromAnalysis(params: {
   metadata?: Record<string, unknown>;
   usageMetrics?: Record<string, unknown>;
   usageMetricRecords?: UsageMetricRecordEntry[];
+  workRef?: WorkReference;
 }): LlmLogEntry {
   const now = new Date();
   const startTime = new Date(now.getTime() - params.executionTimeMs);
@@ -213,5 +245,6 @@ export function createLlmLogFromAnalysis(params: {
     metadata: params.metadata,
     usageMetrics: params.usageMetrics,
     usageMetricRecords: params.usageMetricRecords,
+    workRef: params.workRef,
   };
 }
