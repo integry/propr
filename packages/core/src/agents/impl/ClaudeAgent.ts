@@ -323,6 +323,7 @@ export class ClaudeAgent implements Agent {
                 }, 'Lightweight analysis completed');
 
                 // Persist LLM log with usage metrics for analysis calls
+                const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
                 await persistLlmLog(createLlmLogFromAnalysis({
                     executionType: (executionType || 'other') as ExecutionType,
                     modelUsed: claudeOutput.model || effectiveModel,
@@ -342,7 +343,13 @@ export class ClaudeAgent implements Agent {
                         timestamp: usageMetrics.timestamp,
                         agent: usageMetrics.agent
                     } : undefined,
-                    usageMetricRecords: usageMetrics?.records
+                    usageMetricRecords: usageMetrics?.records,
+                    workRef: {
+                        workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
+                        taskId: isPlan ? undefined : taskId,
+                        planDraftId: isPlan ? taskId : undefined,
+                        workRepository: repository,
+                    },
                 }));
 
                 return {
@@ -443,6 +450,7 @@ export class ClaudeAgent implements Agent {
         });
 
         // Persist LLM log for metrics tracking (including Agent Tank usage if available)
+        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
         await persistLlmLog(createLlmLogFromAnalysis({
             executionType: 'implementation',
             modelUsed,
@@ -452,7 +460,7 @@ export class ClaudeAgent implements Agent {
             error: claudeOutput.success ? undefined : (result.stderr || 'Execution failed'),
             sessionId: claudeOutput.sessionId ?? undefined,
             draftId: taskId,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
+            repository,
             agentAlias: this.config.alias,
             metadata: {
                 isRetry,
@@ -466,7 +474,13 @@ export class ClaudeAgent implements Agent {
                 timestamp: usageMetrics.timestamp,
                 agent: usageMetrics.agent
             } : undefined,
-            usageMetricRecords: usageMetrics?.records
+            usageMetricRecords: usageMetrics?.records,
+            workRef: {
+                workType: 'task',
+                taskId,
+                taskNumber: issueRef.number,
+                workRepository: repository,
+            },
         }));
     }
 }

@@ -25,16 +25,27 @@ export async function up(knex) {
     // Indexes for the main lookup paths
     table.index('work_type', 'idx_llm_logs_work_type');
     table.index('task_id', 'idx_llm_logs_task_id');
+    table.index('task_number', 'idx_llm_logs_task_number');
     table.index('plan_draft_id', 'idx_llm_logs_plan_draft_id');
     table.index('plan_issue_id', 'idx_llm_logs_plan_issue_id');
     table.index('work_repository', 'idx_llm_logs_work_repository');
   });
+
+  // Add CHECK constraint for valid work_type values
+  await knex.raw(`
+    ALTER TABLE llm_logs
+    ADD CONSTRAINT chk_llm_logs_work_type
+    CHECK (work_type IS NULL OR work_type IN ('task', 'plan', 'repository'))
+  `);
 }
 
 export async function down(knex) {
+  await knex.raw('ALTER TABLE llm_logs DROP CONSTRAINT IF EXISTS chk_llm_logs_work_type');
+
   await knex.schema.alterTable('llm_logs', (table) => {
     table.dropIndex('work_type', 'idx_llm_logs_work_type');
     table.dropIndex('task_id', 'idx_llm_logs_task_id');
+    table.dropIndex('task_number', 'idx_llm_logs_task_number');
     table.dropIndex('plan_draft_id', 'idx_llm_logs_plan_draft_id');
     table.dropIndex('plan_issue_id', 'idx_llm_logs_plan_issue_id');
     table.dropIndex('work_repository', 'idx_llm_logs_work_repository');

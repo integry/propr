@@ -121,7 +121,13 @@ export class GeminiAgent implements Agent {
                 timestamp: usageMetrics.timestamp,
                 agent: usageMetrics.agent
             } : undefined,
-            usageMetricRecords: usageMetrics?.records
+            usageMetricRecords: usageMetrics?.records,
+            workRef: {
+                workType: 'task',
+                taskId,
+                taskNumber: issueRef.number,
+                workRepository: repository,
+            },
         });
         await persistLlmLog(logEntry);
 
@@ -175,6 +181,7 @@ export class GeminiAgent implements Agent {
                 }, 'Lightweight analysis completed');
 
                 // Persist LLM log with usage metrics for analysis calls
+                const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
                 await persistLlmLog(createLlmLogFromAnalysis({
                     executionType: (executionType || 'other') as ExecutionType,
                     modelUsed: effectiveModel,
@@ -197,7 +204,13 @@ export class GeminiAgent implements Agent {
                         timestamp: usageMetrics.timestamp,
                         agent: usageMetrics.agent
                     } : undefined,
-                    usageMetricRecords: usageMetrics?.records
+                    usageMetricRecords: usageMetrics?.records,
+                    workRef: {
+                        workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
+                        taskId: isPlan ? undefined : taskId,
+                        planDraftId: isPlan ? taskId : undefined,
+                        workRepository: repository,
+                    },
                 }));
 
                 return {
