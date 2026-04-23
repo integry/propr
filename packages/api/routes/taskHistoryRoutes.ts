@@ -240,10 +240,10 @@ async function getHistoryFromRedis(
       }
       // Extract commandMode from history metadata if available
       const historyWithMode = (state.history || []).find(
-        h => (h.metadata as Record<string, unknown>)?.commandMode
+        h => h.metadata && typeof h.metadata === 'object' && 'commandMode' in h.metadata
       );
-      if (historyWithMode) {
-        taskInfo.commandMode = (historyWithMode.metadata as Record<string, unknown>).commandMode;
+      if (historyWithMode && historyWithMode.metadata && typeof historyWithMode.metadata === 'object' && 'commandMode' in historyWithMode.metadata) {
+        taskInfo.commandMode = (historyWithMode.metadata as Record<string, string>).commandMode;
       }
     }
     return { history, taskInfo };

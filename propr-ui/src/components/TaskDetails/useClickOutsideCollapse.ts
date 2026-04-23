@@ -5,6 +5,8 @@ export function useClickOutsideCollapse(
   onCollapse: () => void,
 ) {
   const ref = useRef<HTMLDivElement>(null);
+  const onCollapseRef = useRef(onCollapse);
+  onCollapseRef.current = onCollapse;
 
   useEffect(() => {
     if (collapsed) return;
@@ -12,7 +14,7 @@ export function useClickOutsideCollapse(
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (ref.current && !ref.current.contains(target)) {
-        onCollapse();
+        onCollapseRef.current();
       }
     };
 
@@ -24,7 +26,7 @@ export function useClickOutsideCollapse(
       clearTimeout(timeoutId);
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [collapsed, onCollapse]);
+  }, [collapsed]);
 
   return ref;
 }

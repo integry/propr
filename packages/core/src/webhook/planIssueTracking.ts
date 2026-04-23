@@ -295,16 +295,7 @@ export async function handlePlanPRUpdate(
             return;
         }
 
-        let planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
-
-        if (!planIssue && action === 'opened') {
-            const prBody = payload.pull_request.body || '';
-            const issueRefs = prBody.match(/(?:fixes|closes|resolves|fix|close|resolve)\s*#(\d+)/gi);
-            if (issueRefs) {
-                planIssue = await linkPRToReferencedPlanIssue(issueRefs, repository, prNumber, log);
-            }
-        }
-
+        const planIssue = await findOrLinkPlanIssue(payload, repository, prNumber, log);
         if (!planIssue) return;
 
         const newStatus = determinePRStatusUpdate(action, payload.pull_request.merged ?? false, planIssue.status);
@@ -324,6 +315,29 @@ export async function handlePlanPRUpdate(
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
     }
+}
+
+/**
+ * Attempts to find or link a plan issue for the given PR.
+ * Uses payload.action internally to determine if linking should be attempted.
+ */
+async function findOrLinkPlanIssue(
+    payload: PullRequestEvent,
+    repository: string,
+    prNumber: number,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<Awaited<ReturnType<typeof findPlanIssueByRepoAndPR>>> {
+    let planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
+
+    if (!planIssue && payload.action === 'opened') {
+        const prBody = payload.pull_request.body || '';
+        const issueRefs = prBody.match(/(?:fixes|closes|resolves|fix|close|resolve)\s*#(\d+)/gi);
+        if (issueRefs) {
+            planIssue = await linkPRToReferencedPlanIssue(issueRefs, repository, prNumber, log);
+        }
+    }
+
+    return planIssue;
 }
 
 /**
