@@ -23,7 +23,6 @@ import {
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../utils/llmLogger.js';
 import type { ExecutionType, ConversationStep } from '../utils/llmMetrics.types.js';
-import { estimateTokens } from '../utils/tokenCalculation.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from '../agents/impl/utils/index.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
@@ -302,6 +301,7 @@ async function executeClaudeAnalysis(
     await recordLLMMetrics(buildLlmMetricsPayload(claudeResult, resolvedModel), issueRef, { correlationId, taskId, executionType });
 
     const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
+    const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
     await persistLlmLog(createLlmLogFromAnalysis({
         executionType,
         modelUsed: claudeResult.model ?? resolvedModel,
@@ -313,7 +313,13 @@ async function executeClaudeAnalysis(
         correlationId, draftId: taskId, repository,
         agentAlias: 'claude',
         usageMetrics: mapUsageMetrics(claudeResult.usageMetrics),
-        usageMetricRecords: claudeResult.usageMetrics?.records
+        usageMetricRecords: claudeResult.usageMetrics?.records,
+        workRef: {
+            workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
+            taskId: isPlan ? undefined : taskId,
+            planDraftId: isPlan ? taskId : undefined,
+            workRepository: repository,
+        },
     }));
 
     const analysisText = (claudeResult.finalResult?.result || claudeResult.summary)?.trim();

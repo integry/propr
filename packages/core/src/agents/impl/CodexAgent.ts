@@ -117,7 +117,13 @@ export class CodexAgent implements Agent {
                 repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
                 agentAlias: this.config.alias,
                 metadata: { isRetry, retryReason, conversationId: parsedOutput.conversationId },
-                ...this.formatUsageMetrics(usageMetrics)
+                ...this.formatUsageMetrics(usageMetrics),
+                workRef: {
+                    workType: 'task',
+                    taskId,
+                    taskNumber: issueRef.number,
+                    workRepository: repo,
+                },
             });
             await persistLlmLog(logEntry);
 
@@ -238,6 +244,7 @@ export class CodexAgent implements Agent {
             usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
         }, 'Lightweight analysis completed');
 
+        const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
         await persistLlmLog(createLlmLogFromAnalysis({
             executionType: (executionType || 'other') as ExecutionType,
             modelUsed: parsedOutput.model || effectiveModel, executionTimeMs,
@@ -245,7 +252,13 @@ export class CodexAgent implements Agent {
             sessionId: parsedOutput.sessionId, draftId: taskId,
             correlationId, repository, metadata,
             agentAlias: this.config.alias,
-            ...this.formatUsageMetrics(usageMetrics)
+            ...this.formatUsageMetrics(usageMetrics),
+            workRef: {
+                workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
+                taskId: isPlan ? undefined : taskId,
+                planDraftId: isPlan ? taskId : undefined,
+                workRepository: repository,
+            },
         }));
 
         return {

@@ -202,6 +202,10 @@ export async function scoreSemanticRelevance(
           correlationId,
           agentAlias: agent.config.alias,
           metadata: { callType: 'semantic_scoring', chunkIndex: index },
+          workRef: {
+            workType: 'repository',
+            workRepository: repoName,
+          },
         });
         await persistLlmLog(logEntry);
 
@@ -243,6 +247,10 @@ export async function scoreSemanticRelevance(
           correlationId,
           agentAlias: agent.config.alias,
           metadata: { callType: 'semantic_scoring', chunkIndex: index },
+          workRef: {
+            workType: 'repository',
+            workRepository: repoName,
+          },
         });
         await persistLlmLog(logEntry);
 

@@ -162,6 +162,9 @@ export async function extractKeywordsWithLLM(
       correlationId,
       agentAlias: agent.config.alias,
       metadata: { callType: 'keyword_extraction' },
+      workRef: {
+        workType: 'repository',
+      },
     });
     await persistLlmLog(logEntry);
   }

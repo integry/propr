@@ -16,8 +16,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import { loadPrLabel } from '../config/configManager.js';
 import { isDraftPaused } from '../services/taskPlanning/draftPauseResume.js';
-import { migrateRepositoryReferences } from '../services/repositoryMigrationService.js';
-import { db } from '../db/connection.js';
+import { checkAndMigrateRepositoryFromWebhook, getIssueLabels, addProcessingLabelToEpicPR } from './planIssueTrackingHelpers.js';
 import type {
     IssuesEvent,
     IssueCommentEvent,
@@ -40,32 +39,7 @@ export async function handlePlanIssueStatusUpdate(
 
     try {
         // Check for repository rename: if we have this issue under a different repo name, migrate
-        try {
-            const mismatchedRecord = await db('plan_issues')
-                .where('issue_number', issueNumber)
-                .whereNot('repository', repository)
-                .first();
-
-            if (mismatchedRecord) {
-                const oldRepository = mismatchedRecord.repository;
-                log.warn({
-                    currentRepository: repository,
-                    oldRepository,
-                    issueNumber
-                }, 'Repository rename detected from issue webhook - initiating migration');
-
-                const result = await migrateRepositoryReferences(oldRepository, repository);
-                log.info({
-                    oldRepository,
-                    currentRepository: repository,
-                    tablesUpdated: result.tablesUpdated,
-                    rowsAffected: result.rowsAffected,
-                    success: result.success
-                }, 'Repository migration completed from issue webhook');
-            }
-        } catch (renameError) {
-            log.debug({ error: (renameError as Error).message }, 'Repository rename check failed (non-fatal)');
-        }
+        await checkAndMigrateRepositoryFromWebhook(repository, issueNumber, log);
 
         const planIssue = await findPlanIssueByRepoAndNumber(repository, issueNumber);
         if (!planIssue) return;
@@ -202,82 +176,6 @@ async function handleMergedPRNextIssueTrigger(
 export { determinePRStatusUpdate } from './statusMachine.js';
 
 /**
- * Checks if there are database records with old repository names that need migration.
- * This detects repository renames by checking if we have plan_issues for issue numbers
- * that exist in the webhook's repository but are stored under a different repo name.
- *
- * Example: If webhook comes from 'integry/propr' for issue #1351, but our DB has
- * plan_issues for issue #1351 under 'integry/gitfix', we migrate all records.
- */
-async function checkAndMigrateRepositoryFromWebhook(
-    currentRepository: string,
-    issueOrPrNumber: number,
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
-    try {
-        // Check if we have a plan_issue for this issue number under a DIFFERENT repository
-        const mismatchedRecord = await db('plan_issues')
-            .where('issue_number', issueOrPrNumber)
-            .whereNot('repository', currentRepository)
-            .first();
-
-        if (!mismatchedRecord) {
-            // Also check by PR number
-            const mismatchedByPR = await db('plan_issues')
-                .where('pr_number', issueOrPrNumber)
-                .whereNot('repository', currentRepository)
-                .first();
-
-            if (!mismatchedByPR) {
-                return; // No mismatch found
-            }
-
-            // Found mismatch by PR number
-            const oldRepository = mismatchedByPR.repository;
-            log.warn({
-                currentRepository,
-                oldRepository,
-                prNumber: issueOrPrNumber
-            }, 'Repository rename detected from webhook (by PR number) - initiating migration');
-
-            const result = await migrateRepositoryReferences(oldRepository, currentRepository);
-            log.info({
-                oldRepository,
-                currentRepository,
-                tablesUpdated: result.tablesUpdated,
-                rowsAffected: result.rowsAffected,
-                success: result.success
-            }, 'Repository migration completed from webhook detection');
-            return;
-        }
-
-        const oldRepository = mismatchedRecord.repository;
-        log.warn({
-            currentRepository,
-            oldRepository,
-            issueNumber: issueOrPrNumber
-        }, 'Repository rename detected from webhook - initiating migration');
-
-        const result = await migrateRepositoryReferences(oldRepository, currentRepository);
-        log.info({
-            oldRepository,
-            currentRepository,
-            tablesUpdated: result.tablesUpdated,
-            rowsAffected: result.rowsAffected,
-            success: result.success
-        }, 'Repository migration completed from webhook detection');
-
-    } catch (error) {
-        // Non-fatal: log and continue processing
-        log.debug({
-            currentRepository,
-            issueOrPrNumber,
-            error: (error as Error).message
-        }, 'Repository rename check failed (non-fatal)');
-    }
-}
-
-/**
  * Handles PR events to track PR associations with plan issues.
  */
 export async function handlePlanPRUpdate(
@@ -331,113 +229,18 @@ export async function handlePlanPRUpdate(
         }
 
         // When a PR is merged, trigger the next pending issue in the same plan
-        // Only if the merged issue had auto-merge enabled (indicated by auto-merge label)
-        // Check both newStatus and current status to handle race conditions where status was already updated
-        const isMerged = newStatus === PlanIssueStatus.MERGED || (action === 'closed' && payload.pull_request.merged && planIssue.status === PlanIssueStatus.MERGED);
-        if (isMerged && planIssue.draft_id) {
-            await handleMergedPRNextIssueTrigger(repository, planIssue.issue_number, planIssue.draft_id, log);
-        } else if (isMerged) {
-            log.warn({ repository, prNumber, hasDraftId: !!planIssue.draft_id }, 'Merged but cannot trigger next issue - missing draft_id');
+        // Check both newStatus and current status to handle race conditions
+        const isMerged = newStatus === PlanIssueStatus.MERGED
+            || (action === 'closed' && payload.pull_request.merged === true && planIssue.status === PlanIssueStatus.MERGED);
+        if (isMerged) {
+            if (planIssue.draft_id) {
+                await handleMergedPRNextIssueTrigger(repository, planIssue.issue_number, planIssue.draft_id, log);
+            } else {
+                log.warn({ repository, prNumber }, 'Merged but cannot trigger next issue - missing draft_id');
+            }
         }
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
-    }
-}
-
-/**
- * Gets all labels from an issue.
- */
-async function getIssueLabels(
-    repository: string,
-    issueNumber: number,
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<string[]> {
-    try {
-        const [owner, repo] = repository.split('/');
-        const octokit = await getAuthenticatedOctokit();
-
-        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-            owner,
-            repo,
-            issue_number: issueNumber
-        });
-
-        const labels = response.data.labels as Array<{ name: string } | string>;
-        return labels.map(label => typeof label === 'string' ? label : label.name);
-    } catch (error) {
-        log.warn({
-            repository,
-            issueNumber,
-            error: (error as Error).message
-        }, 'Failed to get issue labels');
-        return [];
-    }
-}
-
-/**
- * Adds the processing label to the Epic PR when all child issues are done.
- * This allows the Epic PR to react to CI checks and followup comments.
- */
-async function addProcessingLabelToEpicPR(
-    repository: string,
-    epicLabel: string,
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
-    try {
-        // Extract the Epic branch name from the label (format: base-{branchName})
-        if (!epicLabel.startsWith('base-')) {
-            log.debug({ epicLabel }, 'Invalid epic label format, skipping');
-            return;
-        }
-        const epicBranchName = epicLabel.slice(5); // Remove 'base-' prefix
-
-        const [owner, repo] = repository.split('/');
-        const octokit = await getAuthenticatedOctokit();
-
-        // Find the Epic PR
-        const epicPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-            owner,
-            repo,
-            head: `${owner}:${epicBranchName}`,
-            state: 'open'
-        });
-
-        if (epicPRs.data.length === 0) {
-            log.debug({ repository, epicBranchName }, 'No open Epic PR found');
-            return;
-        }
-
-        const epicPR = epicPRs.data[0];
-        const processingLabels = getPrimaryProcessingLabels();
-        const primaryLabel = processingLabels[0] || 'AI';
-
-        // Check if the Epic PR already has the processing label
-        const existingLabels = epicPR.labels?.map(l => typeof l === 'string' ? l : l.name) || [];
-        if (existingLabels.includes(primaryLabel)) {
-            log.debug({ repository, prNumber: epicPR.number, primaryLabel }, 'Epic PR already has processing label');
-            return;
-        }
-
-        // Add the processing label to the Epic PR
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner,
-            repo,
-            issue_number: epicPR.number,
-            labels: [primaryLabel]
-        });
-
-        log.info({
-            repository,
-            prNumber: epicPR.number,
-            label: primaryLabel
-        }, 'Added processing label to Epic PR - all child issues are done');
-
-    } catch (error) {
-        log.warn({
-            repository,
-            epicLabel,
-            error: (error as Error).message
-        }, 'Failed to add processing label to Epic PR');
     }
 }
 

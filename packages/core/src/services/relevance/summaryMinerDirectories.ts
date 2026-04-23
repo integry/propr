@@ -390,6 +390,10 @@ async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Pro
     repository: fullName,
     agentAlias: agent.config.alias,
     metadata: { directoryCount: directories.length, phase: 'directory_aggregation' },
+    workRef: {
+      workType: 'repository',
+      workRepository: fullName,
+    },
   });
   await persistLlmLog(logEntry);
 
