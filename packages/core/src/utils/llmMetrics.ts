@@ -213,8 +213,8 @@ async function enqueueAnalysisTask(
     }
 }
 
-async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string, executionType?: string): Promise<void> {
-    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage } = metrics;
+async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<void> {
+    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, correlationId, executionType } = metrics;
 
     // Check if taskId exists in tasks table (drafts won't exist)
     // Use null for task_id if it doesn't exist (FK allows null now)
@@ -321,7 +321,7 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
                 cache_creation_input_tokens: cumulativeTokens.cacheCreationTokens,
                 cache_read_input_tokens: cumulativeTokens.cacheReadTokens
             };
-            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage }, correlationId, executionType);
+            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage, correlationId, executionType });
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');

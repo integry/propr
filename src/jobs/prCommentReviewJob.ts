@@ -154,6 +154,126 @@ async function resolveReviewAssignments(
     return assignments;
 }
 
+interface RunReviewsContext {
+    registry: AgentRegistry;
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    taskId: string;
+    taskUrl: string;
+    combinedCommentBody: string;
+    commentHistory: string;
+    originalTaskSpec: string;
+    commandInstructions?: string;
+    prDiff: string;
+    correlatedLogger: Logger;
+}
+
+async function runSingleReview(
+    assignment: ReviewAssignment,
+    ctx: RunReviewsContext
+): Promise<ReviewResult> {
+    const { registry, octokit, pullRequestNumber, repoOwner, repoName, taskId, taskUrl, correlatedLogger } = ctx;
+    const { agentAlias, model, label } = assignment;
+    correlatedLogger.info({ pullRequestNumber, agentAlias, model, label }, 'Starting review analysis');
+
+    const agent = registry.getAgentByAlias(agentAlias);
+    if (!agent) {
+        const errorMsg = `Agent not found for alias: ${agentAlias}`;
+        correlatedLogger.error({ agentAlias }, errorMsg);
+        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg };
+    }
+
+    const reviewPrompt = buildReviewPrompt({
+        pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
+        originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions, prDiff: ctx.prDiff,
+    });
+
+    try {
+        const analysisResult = await agent.analyze(reviewPrompt, { model, taskId, executionType: 'pr-review' });
+        correlatedLogger.info({
+            pullRequestNumber, model: analysisResult.modelUsed, success: analysisResult.success,
+            executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,
+        }, 'Review analysis completed');
+
+        const reviewCommentBody = analysisResult.success
+            ? buildReviewComment(assignment, analysisResult, taskUrl)
+            : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
+
+        const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
+        });
+
+        return { assignment, analysisResult, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt };
+    } catch (reviewError) {
+        const errorMsg = (reviewError as Error).message;
+        correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
+
+        try {
+            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
+                body: buildReviewErrorComment(label, model, errorMsg),
+            });
+        } catch (commentError) {
+            correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post review error comment');
+        }
+
+        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg, prompt: reviewPrompt };
+    }
+}
+
+async function recordReviewMetrics(
+    reviewResults: ReviewResult[],
+    issueRef: { pullRequestNumber: number; repoOwner: string; repoName: string; correlationId: string; taskId: string }
+): Promise<void> {
+    const { pullRequestNumber, repoOwner, repoName, correlationId, taskId } = issueRef;
+    for (const result of reviewResults) {
+        const timestamp = new Date().toISOString();
+        const conversationLog = [
+            { type: 'user', timestamp, message: { content: [{ type: 'text', text: result.prompt || 'Review prompt not captured' }] } },
+            { type: 'assistant', timestamp, message: { content: [{ type: 'text', text: result.analysisResult.response || result.error || 'No response' }] } },
+        ];
+
+        const metricsResult: Parameters<typeof recordLLMMetrics>[0] = {
+            success: result.analysisResult.success,
+            model: result.analysisResult.modelUsed || result.assignment.model,
+            executionTime: result.analysisResult.executionTimeMs,
+            sessionId: result.analysisResult.sessionId || null,
+            tokenUsage: result.analysisResult.tokenUsage,
+            conversationLog,
+            ...(result.analysisResult.success ? {} : { error: result.analysisResult.error || result.error }),
+        };
+        await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId, executionType: 'pr-review' });
+    }
+}
+
+async function updateReviewCompletionComment(
+    state: ProcessingState, reviewResults: ReviewResult[],
+    options: { repoOwner: string; repoName: string; taskUrl: string; correlatedLogger: Logger }
+): Promise<void> {
+    const { repoOwner, repoName, taskUrl, correlatedLogger } = options;
+    if (!state.startingWorkComment) return;
+
+    const successCount = reviewResults.filter(r => r.analysisResult.success).length;
+    const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
+
+    try {
+        const reviewLinks = reviewResults.filter(r => r.commentUrl).map(r => `- [${r.assignment.label}](${r.commentUrl})`).join('\n');
+        const statusEmoji = failCount === 0 ? '✅' : '⚠️';
+        const statusText = failCount === 0
+            ? `Posted ${successCount} review${successCount > 1 ? 's' : ''}`
+            : `Posted ${successCount} review${successCount > 1 ? 's' : ''}, ${failCount} failed`;
+
+        await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+            owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id,
+            body: `${statusEmoji} **AI Code Review Complete** requested by ${state.authorsText}\n\n${statusText}:\n${reviewLinks}\n\n[View Task Details](${taskUrl})`,
+        });
+    } catch (updateError) {
+        correlatedLogger.warn({ error: (updateError as Error).message }, 'Failed to update starting review comment');
+    }
+}
+
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments } = params;
     let { llm } = params;
@@ -185,7 +305,6 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
     const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
 
-    // Fetch the PR diff for code review
     correlatedLogger.info({ pullRequestNumber }, 'Fetching PR diff for review');
     const prFiles = await fetchPRFiles(state.octokit, repoOwner, repoName, pullRequestNumber);
     const prDiff = formatPRDiff(prFiles);
@@ -194,16 +313,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const requestedModels = job.data.requestedModels;
     const commandInstructions = job.data.commandInstructions;
     const assignments = await resolveReviewAssignments(requestedModels, llm, correlatedLogger);
-
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
 
-    // Post "starting review" comment with model information
     const commentIds = state.unprocessedComments.map(c => String(c.id)).join(', ');
     const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner,
-        repo: repoName,
-        issue_number: pullRequestNumber,
+        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
         body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${commentIds}_`,
     });
     correlatedLogger.info({ pullRequestNumber, commentId: state.startingWorkComment.data.id }, 'Posted starting review comment');
@@ -215,154 +330,34 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
+    const reviewCtx: RunReviewsContext = {
+        registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
+        taskId, taskUrl, combinedCommentBody, commentHistory,
+        originalTaskSpec: linkedIssueResult.context || '', commandInstructions, prDiff, correlatedLogger,
+    };
+
     const reviewResults: ReviewResult[] = [];
-
     for (const assignment of assignments) {
-        const { agentAlias, model, label } = assignment;
-        correlatedLogger.info({ pullRequestNumber, agentAlias, model, label }, 'Starting review analysis');
-
-        const agent = registry.getAgentByAlias(agentAlias);
-        if (!agent) {
-            const errorMsg = `Agent not found for alias: ${agentAlias}`;
-            correlatedLogger.error({ agentAlias }, errorMsg);
-            reviewResults.push({ assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg });
-            continue;
-        }
-
-        const reviewPrompt = buildReviewPrompt({
-            pullRequestNumber,
-            combinedCommentBody,
-            commentHistory,
-            originalTaskSpec: linkedIssueResult.context || '',
-            repoOwner,
-            repoName,
-            instructions: commandInstructions,
-            prDiff,
-        });
-
-        try {
-            const analysisResult = await agent.analyze(reviewPrompt, {
-                model,
-                taskId,
-                executionType: 'pr-review',
-            });
-
-            correlatedLogger.info({
-                pullRequestNumber, model: analysisResult.modelUsed, success: analysisResult.success,
-                executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,
-            }, 'Review analysis completed');
-
-            const reviewCommentBody = analysisResult.success
-                ? buildReviewComment(assignment, analysisResult, taskUrl)
-                : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
-
-            const reviewComment = await state.octokit!.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: reviewCommentBody,
-            });
-
-            // Store prompt with result for task details display
-            reviewResults.push({
-                assignment,
-                analysisResult,
-                commentUrl: reviewComment.data.html_url,
-                prompt: reviewPrompt,
-            });
-        } catch (reviewError) {
-            const errorMsg = (reviewError as Error).message;
-            correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
-
-            try {
-                await state.octokit!.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                    owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                    body: buildReviewErrorComment(label, model, errorMsg),
-                });
-            } catch (commentError) {
-                correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post review error comment');
-            }
-
-            reviewResults.push({
-                assignment,
-                analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg },
-                error: errorMsg,
-                prompt: reviewPrompt,
-            });
-        }
+        reviewResults.push(await runSingleReview(assignment, reviewCtx));
     }
 
-    for (const result of reviewResults) {
-        // Synthesize a conversation log for task details display
-        const timestamp = new Date().toISOString();
-        const conversationLog = [
-            {
-                type: 'user',
-                timestamp,
-                message: {
-                    content: [{ type: 'text', text: result.prompt || 'Review prompt not captured' }],
-                },
-            },
-            {
-                type: 'assistant',
-                timestamp,
-                message: {
-                    content: [{ type: 'text', text: result.analysisResult.response || result.error || 'No response' }],
-                },
-            },
-        ];
-
-        const metricsResult: Parameters<typeof recordLLMMetrics>[0] = {
-            success: result.analysisResult.success,
-            model: result.analysisResult.modelUsed || result.assignment.model,
-            executionTime: result.analysisResult.executionTimeMs,
-            sessionId: result.analysisResult.sessionId || null,
-            tokenUsage: result.analysisResult.tokenUsage,
-            conversationLog,
-            ...(result.analysisResult.success ? {} : { error: result.analysisResult.error || result.error }),
-        };
-        await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId, executionType: 'pr-review' });
-    }
+    await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });
+    await updateReviewCompletionComment(state, reviewResults, { repoOwner, repoName, taskUrl, correlatedLogger });
 
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
     const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
-
-    // Update starting comment to indicate completion
-    if (state.startingWorkComment) {
-        try {
-            const reviewLinks = reviewResults
-                .filter(r => r.commentUrl)
-                .map(r => `- [${r.assignment.label}](${r.commentUrl})`)
-                .join('\n');
-            const statusEmoji = failCount === 0 ? '✅' : '⚠️';
-            const statusText = failCount === 0
-                ? `Posted ${successCount} review${successCount > 1 ? 's' : ''}`
-                : `Posted ${successCount} review${successCount > 1 ? 's' : ''}, ${failCount} failed`;
-
-            await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-                owner: repoOwner,
-                repo: repoName,
-                comment_id: state.startingWorkComment.data.id,
-                body: `${statusEmoji} **AI Code Review Complete** requested by ${state.authorsText}\n\n${statusText}:\n${reviewLinks}\n\n[View Task Details](${taskUrl})`,
-            });
-        } catch (updateError) {
-            correlatedLogger.warn({ error: (updateError as Error).message }, 'Failed to update starting review comment');
-        }
-    }
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',
         historyMetadata: {
             commandMode: 'review',
             reviewResults: reviewResults.map(r => ({
-                model: r.assignment.model,
-                label: r.assignment.label,
-                success: r.analysisResult.success,
-                commentUrl: r.commentUrl,
-                error: r.error,
+                model: r.assignment.model, label: r.assignment.label,
+                success: r.analysisResult.success, commentUrl: r.commentUrl, error: r.error,
             })),
         },
     });
 
     correlatedLogger.info({ pullRequestNumber, successCount, failCount, totalReviews: assignments.length }, 'Review processing completed');
-
     return { status: 'complete', pullRequestNumber, reviewsPosted: successCount, reviewsFailed: failCount };
 }

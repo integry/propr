@@ -117,6 +117,8 @@ export interface PersistMetrics {
     numTurns: number;
     costUsd: number;
     tokenUsage?: TokenUsage;
+    correlationId?: string;
+    executionType?: string;
 }
 
 export interface ConversationDetailParams {
