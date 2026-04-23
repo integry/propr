@@ -14,6 +14,8 @@ export interface ReviewPromptOptions {
     repoOwner: string;
     repoName: string;
     instructions?: string;
+    /** Formatted PR diff from fetchPRFiles + formatPRDiff */
+    prDiff?: string;
 }
 
 /**
@@ -36,13 +38,18 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         repoOwner,
         repoName,
         instructions,
+        prDiff,
     } = options;
+
+    const diffSection = prDiff
+        ? `\n**PR Diff (Code Changes):**\n${prDiff}\n`
+        : '';
 
     const prompt = `You are reviewing pull request #${pullRequestNumber} in ${repoOwner}/${repoName}.
 
 **PR Comment History and Context:**
 ${commentHistory}${originalTaskSpec}
-
+${diffSection}
 **Review Request:**
 ${combinedCommentBody}
 

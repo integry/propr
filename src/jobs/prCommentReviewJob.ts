@@ -14,7 +14,7 @@ import {
     buildCommentHistory, updateTaskTitleForPR
 } from './prCommentJobHelpers.js';
 import {
-    buildCombinedComment, fetchAllComments
+    buildCombinedComment, fetchAllComments, fetchPRFiles, formatPRDiff
 } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
@@ -177,6 +177,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
     const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
 
+    // Fetch the PR diff for code review
+    correlatedLogger.info({ pullRequestNumber }, 'Fetching PR diff for review');
+    const prFiles = await fetchPRFiles(state.octokit, repoOwner, repoName, pullRequestNumber);
+    const prDiff = formatPRDiff(prFiles);
+    correlatedLogger.info({ pullRequestNumber, fileCount: prFiles.length, diffLength: prDiff.length }, 'Fetched PR diff');
+
     const requestedModels = job.data.requestedModels;
     const commandInstructions = job.data.commandInstructions;
     const assignments = await resolveReviewAssignments(requestedModels, llm, correlatedLogger);
@@ -212,6 +218,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             repoOwner,
             repoName,
             instructions: commandInstructions,
+            prDiff,
         });
 
         try {
