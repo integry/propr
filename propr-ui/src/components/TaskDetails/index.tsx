@@ -229,8 +229,9 @@ const TaskDetails: React.FC = () => {
               score={score}
               className="lg:hidden flex-shrink-0 px-4 py-2 border-b border-slate-200 flex items-center gap-3"
             />
-            {/* Scrollable Content Area */}
-            <div className={`flex-1 flex flex-col min-h-0 min-w-0 lg:overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'hidden'}`}>
+            {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
+            {/* Remains visible when Execution Log is expanded so both logs can share vertical space */}
+            <div className="flex-1 flex flex-col min-h-0 min-w-0 lg:overflow-hidden">
               <div className="flex-1 lg:overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
                 {(taskData.analysis || taskData.analysisLoading || thinkingLog.extractedSummary) && (
                   <ResultOverview
