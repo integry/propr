@@ -42,8 +42,8 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
     } = options;
 
     const diffSection = prDiff
-        ? `\n**PR Diff (Code Changes):**\n${prDiff}\n`
-        : '';
+        ? `\n**PR Diff (Current Code Changes):**\nThis diff shows the CURRENT state of all changes in this PR. Base your review on this actual code, not on what earlier comments may have mentioned.\n\n${prDiff}\n`
+        : '\n**Note:** No diff available. Review based on available context only.\n';
 
     const prompt = `You are reviewing pull request #${pullRequestNumber} in ${repoOwner}/${repoName}.
 
@@ -53,8 +53,10 @@ ${diffSection}
 **Review Request:**
 ${combinedCommentBody}
 
-${instructions ? `**Additional Review Instructions:**\n${instructions}\n\n` : ''}**YOUR TASK:**
-Perform a thorough code review of this pull request. Your response MUST contain exactly the following three sections with the headers shown below. Do not omit any section.
+${instructions ? `**Additional Review Instructions:**\n${instructions}\n\n` : ''}**IMPORTANT:** The comment history above may reference issues that have since been fixed in subsequent commits. Always verify against the actual PR diff shown above before reporting an issue. If an earlier comment mentions a problem but the diff shows it has been addressed, do NOT report it as a current issue.
+
+**YOUR TASK:**
+Perform a thorough code review of this pull request based on the CURRENT diff. Your response MUST contain exactly the following three sections with the headers shown below. Do not omit any section.
 
 ## Overall Evaluation
 Provide a concise summary of the PR's purpose, approach, and overall quality. State whether the PR is ready to merge, needs minor changes, or needs significant rework.
