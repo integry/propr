@@ -39,7 +39,7 @@ export async function buildMetricsSection(
     authorsText: string,
     isAnalysis = false
 ): Promise<string> {
-    const modelId = claudeResult.model || llm || getDefaultModel();
+    const modelId = claudeResult.model || llm || getDefaultModel() || 'unknown';
     const modelDisplayName = getModelName(modelId);
     const executionTime = claudeResult.executionTime ? formatDuration(claudeResult.executionTime) : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;

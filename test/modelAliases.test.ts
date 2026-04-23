@@ -1,6 +1,6 @@
 import { test, after, mock, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, ALL_MODELS, findMatchingModel, getModelShortName, resolveReviewModels, ReviewModelResolutionError } from '@propr/core';
+import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, resolveLlmLabel, ALL_MODELS, findMatchingModel, getModelShortName, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from '@propr/core';
 import type { ReviewAssignment } from '@propr/core';
 import { AgentRegistry } from '@propr/core';
 import type { AgentConfig } from '@propr/core';
@@ -27,15 +27,21 @@ test('Model Aliases Configuration', async (t) => {
         assert.strictEqual(resolveModelAlias('custom-model-id'), 'custom-model-id');
     });
 
-    await t.test('should use default model when no model specified', () => {
-        const defaultModel = resolveModelAlias(null);
-        assert.strictEqual(defaultModel, 'claude-sonnet-4-6');
-        assert.strictEqual(defaultModel, MODEL_ALIASES[DEFAULT_MODEL_ALIAS]);
+    await t.test('should throw NoDefaultModelConfiguredError when no model specified and no agent configured', () => {
+        assert.throws(
+            () => resolveModelAlias(null),
+            (err: any) => {
+                assert.ok(err instanceof NoDefaultModelConfiguredError, 'Should throw NoDefaultModelConfiguredError');
+                assert.ok(err.message.includes('No default AI model configured'), 'Error message should be descriptive');
+                return true;
+            }
+        );
     });
 
-    await t.test('getDefaultModel should return sonnet as default', () => {
-        assert.strictEqual(getDefaultModel(), 'claude-sonnet-4-6');
-        assert.strictEqual(DEFAULT_MODEL_ALIAS, 'sonnet');
+    await t.test('getDefaultModel should return null when no agent configured', () => {
+        // Without any configured agent or env var, getDefaultModel returns null
+        const result = getDefaultModel();
+        assert.strictEqual(result, null, 'Should return null when no default model is configured');
     });
 
     await t.test('should handle explicit version aliases', () => {
@@ -591,9 +597,12 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         );
     });
 
-    await t.test('empty input returns empty array', async () => {
+    await t.test('empty input uses default model from configured agent', async () => {
+        // With a mock default agent configured, empty labels should use its default model
         const results = await resolveReviewModels([]);
-        assert.strictEqual(results.length, 0);
+        assert.strictEqual(results.length, 1, 'Should return one assignment using default model');
+        assert.strictEqual(results[0].agentAlias, 'claude');
+        assert.strictEqual(results[0].model, 'claude-sonnet-4-6');
     });
 
     await t.test('family shorthands resolve correctly', async () => {

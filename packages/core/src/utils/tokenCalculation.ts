@@ -265,7 +265,7 @@ function getEncoder(): Tiktoken {
  * This is free and accurate, unlike tiktoken which can be off by 30%+ for code.
  * Falls back to tiktoken if the API call fails.
  */
-export async function countTokens(text: string, model: string = getDefaultModel()): Promise<number> {
+export async function countTokens(text: string, model: string = getDefaultModel() || 'claude-sonnet-4-6'): Promise<number> {
     if (!text) return 0;
 
     try {

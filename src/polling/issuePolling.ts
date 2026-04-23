@@ -3,7 +3,7 @@ import { generateCorrelationId } from '@propr/core';
 import type { Logger } from 'pino';
 import { handleError } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
-import { getDefaultModel, resolveLlmLabel } from '@propr/core';
+import { getDefaultModel, resolveLlmLabel, NoDefaultModelConfiguredError } from '@propr/core';
 import { issueQueue, type IssueJobData } from '@propr/core';
 import { checkAndMigrateRepository } from '@propr/core';
 import { Redis } from 'ioredis';
@@ -13,7 +13,7 @@ const AI_EXCLUDE_TAGS_PROCESSING = process.env.AI_EXCLUDE_TAGS_PROCESSING || 'AI
 const AI_DONE_TAG = process.env.AI_DONE_TAG || 'AI-done';
 const AI_WAITING_TAG = process.env.AI_WAITING_TAG || 'AI-waiting';
 const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -165,6 +165,9 @@ export async function fetchIssuesForRepo(
             // If no LLM labels found, use default config
             let targetConfigs = identifiedConfigs;
             if (identifiedConfigs.length === 0) {
+                if (!DEFAULT_MODEL_NAME) {
+                    throw new NoDefaultModelConfiguredError();
+                }
                 const defaultResolution = await resolveLlmLabel(DEFAULT_MODEL_NAME);
                 targetConfigs = [{
                     agent: defaultResolution.agentAlias,

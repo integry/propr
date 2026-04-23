@@ -136,7 +136,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             conversationLog: claudeOutput.conversationLog || [],
             sessionId: claudeOutput.sessionId,
             conversationId: claudeOutput.conversationId,
-            model: claudeOutput.model || process.env.CLAUDE_MODEL || getDefaultModel(),
+            model: claudeOutput.model || process.env.CLAUDE_MODEL || getDefaultModel() || 'unknown',
             finalResult: claudeOutput.finalResult,
             modifiedFiles: [],
             commitMessage: null,

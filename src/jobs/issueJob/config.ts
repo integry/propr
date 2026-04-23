@@ -12,7 +12,7 @@ export const redisClient = new Redis({
   enableReadyCheck: false,
 });
 
-export const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+export const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 export async function getPrimaryProcessingLabels(): Promise<string[]> {
   try {

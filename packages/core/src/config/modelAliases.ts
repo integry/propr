@@ -86,12 +86,26 @@ function getOpenRouterId(internalModelId: ModelId): string {
     return modelInfo?.openRouterId ?? internalModelId;
 }
 
-// Default model to use when none specified
-const DEFAULT_MODEL_ALIAS: ModelAlias = 'sonnet';
+/**
+ * Error thrown when no default model is configured.
+ * Users must configure at least one AI agent with a default model.
+ */
+export class NoDefaultModelConfiguredError extends Error {
+    constructor() {
+        super(
+            'No default AI model configured. Please go to the AI Agents screen and set up at least one AI agent with a default model.'
+        );
+        this.name = 'NoDefaultModelConfiguredError';
+    }
+}
 
 function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     if (!modelNameOrAlias) {
-        return MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
+        const defaultModel = getDefaultModel();
+        if (!defaultModel) {
+            throw new NoDefaultModelConfiguredError();
+        }
+        return defaultModel;
     }
 
     const lowerCaseModel = modelNameOrAlias.toLowerCase();
@@ -102,8 +116,13 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     return modelNameOrAlias;
 }
 
-function getDefaultModel(): ModelId {
-    // Prefer the configured default agent's model from settings
+function getDefaultModel(): ModelId | null {
+    // Try env var first (explicit user configuration)
+    if (process.env.DEFAULT_CLAUDE_MODEL) {
+        return process.env.DEFAULT_CLAUDE_MODEL;
+    }
+
+    // Try the configured default agent's model from settings
     try {
         const registry = AgentRegistry.getInstance();
         const defaultAgent = registry.getDefaultAgent();
@@ -111,10 +130,11 @@ function getDefaultModel(): ModelId {
             return defaultAgent.config.defaultModel;
         }
     } catch {
-        // Registry not initialized yet, fall back to static default
+        // Registry not initialized yet
     }
-    // Fall back to env var, then static alias
-    return process.env.DEFAULT_CLAUDE_MODEL || MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
+
+    // No default model configured - return null for clear failure
+    return null;
 }
 
 /**
@@ -346,6 +366,9 @@ async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAss
     if (!requestedLabels || requestedLabels.length === 0) {
         // Default to the default model when /review is called with no arguments
         const defaultModel = getDefaultModel();
+        if (!defaultModel) {
+            throw new NoDefaultModelConfiguredError();
+        }
         const defaultAgent = AgentRegistry.getInstance().getDefaultAgent();
         const modelInfo = MODEL_INFO_MAP[defaultModel];
         return [{
@@ -402,7 +425,6 @@ async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAss
 
 export {
     MODEL_ALIASES,
-    DEFAULT_MODEL_ALIAS,
     resolveModelAlias,
     getDefaultModel,
     getOpenRouterId,

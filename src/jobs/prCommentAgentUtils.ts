@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import { AgentRegistry, resolveLlmLabel, generateTaskSummary } from '@propr/core';
-import { getDefaultModel, loadSettings } from '@propr/core';
+import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError } from '@propr/core';
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
@@ -8,7 +8,7 @@ import { createSessionIdCallbackForPR, createContainerIdCallbackForPR } from './
 import { agentResultToClaudeResponse } from './prCommentJobUtils.js';
 import type { Redis } from 'ioredis';
 
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 interface GitHubToken { token: string }
 
@@ -52,17 +52,24 @@ async function resolveDefaultAgentAndModel(
             if (configuredAgent && configuredAgent.config.enabled) {
                 const resolvedAlias = settings.default_agent_alias as string;
                 const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
+                if (!resolvedModel) {
+                    throw new NoDefaultModelConfiguredError();
+                }
                 correlatedLogger.debug({ configuredDefaultAgent: resolvedAlias, defaultModel: resolvedModel }, 'Using default agent from settings');
                 return { resolvedAlias, resolvedModel };
             }
         }
     } catch (settingsError) {
+        if (settingsError instanceof NoDefaultModelConfiguredError) throw settingsError;
         correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
     }
 
     const defaultAgent = registry.getDefaultAgent();
     const resolvedAlias = defaultAgent?.config.alias || 'claude';
     const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
+    if (!resolvedModel) {
+        throw new NoDefaultModelConfiguredError();
+    }
     correlatedLogger.debug({ fallbackAgent: resolvedAlias, fallbackModel: resolvedModel }, 'Using fallback default agent');
     return { resolvedAlias, resolvedModel };
 }
