@@ -213,7 +213,7 @@ async function enqueueAnalysisTask(
     }
 }
 
-async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string): Promise<void> {
+async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string, executionType?: string): Promise<void> {
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage } = metrics;
 
     // Check if taskId exists in tasks table (drafts won't exist)
@@ -243,9 +243,12 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
         logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'LLM metrics persisted to database');
 
-        // Only enqueue analysis task if we have a valid task
-        if (effectiveTaskId) {
+        // Only enqueue analysis task if we have a valid task and it's not a review task
+        // Reviews are read-only and don't produce commits to analyze
+        if (effectiveTaskId && executionType !== 'pr-review') {
             await enqueueAnalysisTask(effectiveTaskId, executionId, sessionId, correlationId);
+        } else if (executionType === 'pr-review') {
+            logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'Skipping analysis queue for pr-review execution (read-only)');
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
@@ -279,7 +282,7 @@ function logConversationDebug(claudeResult: ClaudeResult | null, correlationId?:
  * @param options - Additional options including jobType, correlationId, taskId, and executionType
  */
 export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
-    const { jobType = 'issue', correlationId, taskId = null } = options;
+    const { jobType = 'issue', correlationId, taskId = null, executionType } = options;
     const metricsRedis = new Redis(connectionOptions);
     logger.info({
         correlationId, taskId, hasClaudeResult: !!claudeResult,
@@ -318,7 +321,7 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
                 cache_creation_input_tokens: cumulativeTokens.cacheCreationTokens,
                 cache_read_input_tokens: cumulativeTokens.cacheReadTokens
             };
-            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage }, correlationId);
+            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage }, correlationId, executionType);
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');

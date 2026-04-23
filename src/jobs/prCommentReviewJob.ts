@@ -312,7 +312,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             conversationLog,
             ...(result.analysisResult.success ? {} : { error: result.analysisResult.error || result.error }),
         };
-        await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId });
+        await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId, executionType: 'pr-review' });
     }
 
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
