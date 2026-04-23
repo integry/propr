@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getLlmLogs, LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
 import { getAgentTankStatus } from '../api/revertApi';
-import { ChevronLeft, ChevronRight, Filter, Clock, Cpu, Zap, Info, X } from 'lucide-react';
+import { Filter, Clock, Cpu, Zap, Info, X } from 'lucide-react';
 import {
   formatDuration,
   formatTimestamp,
@@ -17,6 +17,7 @@ import {
   StatusIcon,
   ExpandButton,
   ExpandedRowDetails,
+  PaginationFooter,
 } from './LlmLogsPageComponents';
 import { UsageBadge } from '../components/ui/UsageBadge';
 
@@ -418,34 +419,14 @@ const LlmLogsPage: React.FC = () => {
 
       {/* Anchored Footer - compact on mobile */}
       {logs.length > 0 && totalPages > 1 && pagination && (
-        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
-          <div className="flex items-center justify-between px-4 sm:px-6 py-2 sm:py-4 gap-2">
-            <span className="text-xs sm:text-sm text-gray-600">
-              <span className="hidden sm:inline">Showing </span>{(currentPage - 1) * DEFAULT_PAGE_SIZE + 1}-{Math.min(currentPage * DEFAULT_PAGE_SIZE, pagination.total)}<span className="hidden sm:inline"> of {pagination.total} entries</span>
-            </span>
-            <div className="flex items-center gap-1 sm:gap-2">
-              <button
-                onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
-                disabled={!pagination.hasPreviousPage || loading}
-                className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <ChevronLeft size={14} className="sm:w-4 sm:h-4" />
-                <span className="hidden sm:inline">Previous</span>
-              </button>
-              <span className="text-xs sm:text-sm text-gray-600 px-1">
-                {currentPage}/{totalPages}
-              </span>
-              <button
-                onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
-                disabled={!pagination.hasNextPage || loading}
-                className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <span className="hidden sm:inline">Next</span>
-                <ChevronRight size={14} className="sm:w-4 sm:h-4" />
-              </button>
-            </div>
-          </div>
-        </div>
+        <PaginationFooter
+          currentPage={currentPage}
+          totalPages={totalPages}
+          pageSize={DEFAULT_PAGE_SIZE}
+          pagination={pagination}
+          loading={loading}
+          onPageChange={handlePageChange}
+        />
       )}
     </div>
   );
