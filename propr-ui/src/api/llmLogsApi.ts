@@ -28,6 +28,13 @@ export interface LlmLogEntry {
   metadata: Record<string, unknown> | null;
   usageMetrics: Record<string, unknown> | null;
   usageMetricRecords: UsageMetricRecordEntry[];
+  workType: 'task' | 'plan' | 'repository' | null;
+  taskId: string | null;
+  taskNumber: number | null;
+  prNumber: number | null;
+  planDraftId: string | null;
+  planIssueId: number | null;
+  workRepository: string | null;
 }
 
 export interface LlmLogsPagination {
@@ -52,6 +59,7 @@ export interface LlmLogsParams {
   success?: boolean;
   draft_id?: string;
   agent_alias?: string;
+  work_type?: string;
 }
 
 export const getLlmLogs = async (params: LlmLogsParams = {}): Promise<LlmLogsResponse> => {
@@ -77,6 +85,9 @@ export const getLlmLogs = async (params: LlmLogsParams = {}): Promise<LlmLogsRes
   }
   if (params.agent_alias) {
     queryParams.append('agent_alias', params.agent_alias);
+  }
+  if (params.work_type) {
+    queryParams.append('work_type', params.work_type);
   }
 
   const queryString = queryParams.toString();

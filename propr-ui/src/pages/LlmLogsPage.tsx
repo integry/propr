@@ -9,6 +9,8 @@ import {
   formatTimestamp,
   formatType,
   getContextDisplay,
+  getWorkReferenceDisplay,
+  getWorkTypeLabel,
   hasDetailedInfo,
 } from './llmLogsUtils';
 import {
@@ -30,6 +32,7 @@ const LlmLogsPage: React.FC = () => {
   const typeFilter = searchParams.get('type') || 'all';
   const modelFilter = searchParams.get('model') || 'all';
   const statusFilter = searchParams.get('status') || 'all';
+  const workTypeFilter = searchParams.get('work_type') || 'all';
   const currentPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
 
   const [logs, setLogs] = useState<LlmLogEntry[]>([]);
@@ -98,6 +101,9 @@ const LlmLogsPage: React.FC = () => {
       if (statusFilter !== 'all') {
         params.success = statusFilter === 'success';
       }
+      if (workTypeFilter !== 'all') {
+        params.work_type = workTypeFilter;
+      }
 
       const data = await getLlmLogs(params as Parameters<typeof getLlmLogs>[0]);
       setLogs(data.logs);
@@ -123,7 +129,7 @@ const LlmLogsPage: React.FC = () => {
         setLoading(false);
       }
     }
-  }, [typeFilter, modelFilter, statusFilter]);
+  }, [typeFilter, modelFilter, statusFilter, workTypeFilter]);
 
   // Initial load and when filters change
   useEffect(() => {
@@ -141,6 +147,10 @@ const LlmLogsPage: React.FC = () => {
 
   const handleStatusFilterChange = (value: string) => {
     updateSearchParams({ status: value, page: '1' });
+  };
+
+  const handleWorkTypeFilterChange = (value: string) => {
+    updateSearchParams({ work_type: value, page: '1' });
   };
 
   const handlePageChange = (newPage: number) => {
@@ -206,6 +216,18 @@ const LlmLogsPage: React.FC = () => {
               <option value="all">All Status</option>
               <option value="success">Success</option>
               <option value="failed">Failed</option>
+            </select>
+
+            {/* Work Type Filter */}
+            <select
+              value={workTypeFilter}
+              onChange={(e) => handleWorkTypeFilterChange(e.target.value)}
+              className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+            >
+              <option value="all">All Work</option>
+              <option value="task">Tasks</option>
+              <option value="plan">Plans</option>
+              <option value="repository">Repository</option>
             </select>
 
             {/* Type Filter - hidden on mobile */}
@@ -296,7 +318,7 @@ const LlmLogsPage: React.FC = () => {
                     <th className="hidden sm:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <div className="flex items-center gap-1">
                         <Info size={14} />
-                        Context
+                        Work Ref
                       </div>
                     </th>
                     <th className="hidden md:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -348,9 +370,24 @@ const LlmLogsPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="hidden sm:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700">
-                          <span title={log.repository || log.draftId || log.sessionId || undefined}>
-                            {getContextDisplay(log)}
-                          </span>
+                          {log.workType ? (
+                            <div className="flex items-center gap-1.5">
+                              <span className={`inline-block px-1.5 py-0.5 text-xs font-medium rounded ${
+                                log.workType === 'task' ? 'bg-blue-100 text-blue-800' :
+                                log.workType === 'plan' ? 'bg-purple-100 text-purple-800' :
+                                'bg-gray-100 text-gray-800'
+                              }`}>
+                                {getWorkTypeLabel(log.workType)}
+                              </span>
+                              <span className="truncate max-w-[200px]" title={getWorkReferenceDisplay(log)}>
+                                {getWorkReferenceDisplay(log)}
+                              </span>
+                            </div>
+                          ) : (
+                            <span title={log.repository || log.draftId || log.sessionId || undefined}>
+                              {getContextDisplay(log)}
+                            </span>
+                          )}
                         </td>
                         <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
                           {log.modelName || '-'}

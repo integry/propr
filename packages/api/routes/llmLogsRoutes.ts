@@ -27,6 +27,13 @@ interface LlmLogRow {
   agent_alias: string | null;
   metadata: string | null;
   usage_metrics: string | null;
+  work_type: string | null;
+  task_id: string | null;
+  task_number: number | null;
+  pr_number: number | null;
+  plan_draft_id: string | null;
+  plan_issue_id: number | null;
+  work_repository: string | null;
 }
 
 interface CountRow {
@@ -39,6 +46,7 @@ interface LlmLogFilters {
   success?: boolean;
   draftId?: string;
   agentAlias?: string;
+  workType?: string;
 }
 
 function applyLlmLogFilters<T extends Knex.QueryBuilder>(query: T, filters: LlmLogFilters): T {
@@ -56,6 +64,9 @@ function applyLlmLogFilters<T extends Knex.QueryBuilder>(query: T, filters: LlmL
   }
   if (filters.agentAlias) {
     query = query.where('agent_alias', filters.agentAlias) as T;
+  }
+  if (filters.workType) {
+    query = query.where('work_type', filters.workType) as T;
   }
   return query;
 }
@@ -112,6 +123,13 @@ function formatLlmLogRow(
     metadata,
     usageMetrics: row.usage_metrics ? (() => { try { return JSON.parse(row.usage_metrics); } catch { return null; } })() : null,
     usageMetricRecords: formattedRecords,
+    workType: row.work_type || null,
+    taskId: row.task_id || null,
+    taskNumber: row.task_number ?? null,
+    prNumber: row.pr_number ?? null,
+    planDraftId: row.plan_draft_id || null,
+    planIssueId: row.plan_issue_id ?? null,
+    workRepository: row.work_repository || null,
   };
 }
 
@@ -157,6 +175,13 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
       const success = req.query.success as string | undefined;
       const draftId = req.query.draft_id as string | undefined;
       const agentAlias = req.query.agent_alias as string | undefined;
+      const workType = req.query.work_type as string | undefined;
+
+      // Validate work_type if provided
+      if (workType && !['task', 'plan', 'repository'].includes(workType)) {
+        res.status(400).json({ error: 'work_type must be one of: task, plan, repository' });
+        return;
+      }
 
       // Validate draft_id if provided
       if (draftId) {
@@ -182,7 +207,8 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         model,
         success: success !== undefined ? (success === 'true' || success === '1') : undefined,
         draftId,
-        agentAlias
+        agentAlias,
+        workType,
       };
 
       // Build and execute queries
@@ -191,7 +217,9 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         'duration_ms', 'success', 'input_tokens', 'output_tokens',
         'cache_creation_input_tokens', 'cache_read_input_tokens', 'cost_usd',
         'error_message', 'session_id', 'correlation_id', 'draft_id',
-        'repository', 'agent_alias', 'metadata', 'usage_metrics'
+        'repository', 'agent_alias', 'metadata', 'usage_metrics',
+        'work_type', 'task_id', 'task_number', 'pr_number',
+        'plan_draft_id', 'plan_issue_id', 'work_repository'
       );
 
       const countQuery = db('llm_logs').count('* as count');

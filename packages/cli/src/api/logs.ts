@@ -105,6 +105,41 @@ export interface LlmLogEntry {
    * Additional metadata for the execution.
    */
   metadata: Record<string, unknown> | null;
+
+  /**
+   * Work type discriminator: 'task', 'plan', or 'repository'.
+   */
+  workType: 'task' | 'plan' | 'repository' | null;
+
+  /**
+   * Internal task ID (e.g., BullMQ job id).
+   */
+  taskId: string | null;
+
+  /**
+   * GitHub issue number for the task.
+   */
+  taskNumber: number | null;
+
+  /**
+   * GitHub PR number for PR follow-up work.
+   */
+  prNumber: number | null;
+
+  /**
+   * Plan/draft ID that owns this call.
+   */
+  planDraftId: string | null;
+
+  /**
+   * Specific plan-issue row within a draft.
+   */
+  planIssueId: number | null;
+
+  /**
+   * Repository in owner/repo format for work context.
+   */
+  workRepository: string | null;
 }
 
 /**
@@ -195,6 +230,11 @@ export interface ListLlmLogsOptions {
    * Filter by agent alias.
    */
   agentAlias?: string;
+
+  /**
+   * Filter by work type ('task', 'plan', or 'repository').
+   */
+  workType?: string;
 }
 
 /**
@@ -245,6 +285,9 @@ export async function listLlmLogs(
   }
   if (options.agentAlias !== undefined) {
     params.agent_alias = options.agentAlias;
+  }
+  if (options.workType !== undefined) {
+    params.work_type = options.workType;
   }
 
   const response = await apiClient.get<ListLlmLogsResponse>("/api/llm-logs", {
