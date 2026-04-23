@@ -33,6 +33,7 @@ export interface ReviewResult {
     analysisResult: AnalysisResult;
     commentUrl?: string;
     error?: string;
+    prompt?: string;
 }
 
 interface PRData { data: { head: { ref: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
@@ -172,6 +173,16 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         historyMetadata: { commandMode: 'review' }
     });
 
+    // Post "starting review" comment immediately so user knows we're working on it
+    const commentIds = state.unprocessedComments.map(c => String(c.id)).join(', ');
+    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: repoOwner,
+        repo: repoName,
+        issue_number: pullRequestNumber,
+        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request changes...\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${commentIds}_`,
+    });
+    correlatedLogger.info({ pullRequestNumber, commentId: state.startingWorkComment.data.id }, 'Posted starting review comment');
+
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
@@ -242,7 +253,13 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 body: reviewCommentBody,
             });
 
-            reviewResults.push({ assignment, analysisResult, commentUrl: reviewComment.data.html_url });
+            // Store prompt with result for task details display
+            reviewResults.push({
+                assignment,
+                analysisResult,
+                commentUrl: reviewComment.data.html_url,
+                prompt: reviewPrompt,
+            });
         } catch (reviewError) {
             const errorMsg = (reviewError as Error).message;
             correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
@@ -260,17 +277,38 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 assignment,
                 analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg },
                 error: errorMsg,
+                prompt: reviewPrompt,
             });
         }
     }
 
     for (const result of reviewResults) {
+        // Synthesize a conversation log for task details display
+        const timestamp = new Date().toISOString();
+        const conversationLog = [
+            {
+                type: 'user',
+                timestamp,
+                message: {
+                    content: [{ type: 'text', text: result.prompt || 'Review prompt not captured' }],
+                },
+            },
+            {
+                type: 'assistant',
+                timestamp,
+                message: {
+                    content: [{ type: 'text', text: result.analysisResult.response || result.error || 'No response' }],
+                },
+            },
+        ];
+
         const metricsResult: Parameters<typeof recordLLMMetrics>[0] = {
             success: result.analysisResult.success,
             model: result.analysisResult.modelUsed || result.assignment.model,
             executionTime: result.analysisResult.executionTimeMs,
             sessionId: result.analysisResult.sessionId || null,
             tokenUsage: result.analysisResult.tokenUsage,
+            conversationLog,
             ...(result.analysisResult.success ? {} : { error: result.analysisResult.error || result.error }),
         };
         await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId });
@@ -278,6 +316,29 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
 
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
     const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
+
+    // Update starting comment to indicate completion
+    if (state.startingWorkComment) {
+        try {
+            const reviewLinks = reviewResults
+                .filter(r => r.commentUrl)
+                .map(r => `- [${r.assignment.label}](${r.commentUrl})`)
+                .join('\n');
+            const statusEmoji = failCount === 0 ? '✅' : '⚠️';
+            const statusText = failCount === 0
+                ? `Posted ${successCount} review${successCount > 1 ? 's' : ''}`
+                : `Posted ${successCount} review${successCount > 1 ? 's' : ''}, ${failCount} failed`;
+
+            await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+                owner: repoOwner,
+                repo: repoName,
+                comment_id: state.startingWorkComment.data.id,
+                body: `${statusEmoji} **AI Code Review Complete** requested by ${state.authorsText}\n\n${statusText}:\n${reviewLinks}\n\n[View Task Details](${taskUrl})`,
+            });
+        } catch (updateError) {
+            correlatedLogger.warn({ error: (updateError as Error).message }, 'Failed to update starting review comment');
+        }
+    }
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',
