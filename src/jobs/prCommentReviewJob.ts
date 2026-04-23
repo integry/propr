@@ -45,7 +45,7 @@ export interface PRJobContext {
     llm: string | null | undefined;
     correlationId: string;
     correlatedLogger: Logger;
-    PR_LABEL: string;
+    primaryProcessingLabels: string[];
     isBatchJob: boolean;
     commentsToProcess: UnprocessedComment[];
 }
