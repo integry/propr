@@ -44,6 +44,7 @@ function buildInsertRow(entry: LlmLogEntry, costUsd: number | undefined): Record
     work_type: entry.workRef?.workType ?? null,
     task_id: entry.workRef?.taskId ?? null,
     task_number: entry.workRef?.taskNumber ?? null,
+    pr_number: entry.workRef?.prNumber ?? null,
     plan_draft_id: entry.workRef?.planDraftId ?? null,
     plan_issue_id: entry.workRef?.planIssueId ?? null,
     work_repository: entry.workRef?.workRepository ?? null,
@@ -51,7 +52,7 @@ function buildInsertRow(entry: LlmLogEntry, costUsd: number | undefined): Record
 }
 
 /** All work-reference DB columns that the migration adds. */
-const WORK_REF_COLUMNS = ['work_type', 'task_id', 'task_number', 'plan_draft_id', 'plan_issue_id', 'work_repository'] as const;
+const WORK_REF_COLUMNS = ['work_type', 'task_id', 'task_number', 'pr_number', 'plan_draft_id', 'plan_issue_id', 'work_repository'] as const;
 
 function makeEntry(overrides: Partial<LlmLogEntry> = {}): LlmLogEntry {
   return {
@@ -248,8 +249,8 @@ describe('persistLlmLog insert mapping — all DB columns present', () => {
       'correlation_id', 'cost_usd', 'draft_id', 'duration_ms', 'end_time',
       'error_message', 'estimated_input_tokens', 'execution_type', 'input_tokens',
       'metadata', 'model_name', 'output_tokens', 'plan_draft_id', 'plan_issue_id',
-      'repository', 'session_id', 'start_time', 'success', 'task_id', 'task_number',
-      'usage_metrics', 'work_repository', 'work_type',
+      'pr_number', 'repository', 'session_id', 'start_time', 'success', 'task_id',
+      'task_number', 'usage_metrics', 'work_repository', 'work_type',
     ].sort();
 
     assert.deepStrictEqual(columns, expectedColumns);

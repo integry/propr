@@ -59,6 +59,9 @@ export interface AgentTaskOptions {
 
     // Task ID for abort signal checking
     taskId?: string;
+
+    /** PR number when this is a PR follow-up task (distinct from issueRef.number) */
+    prNumber?: number;
 }
 
 export interface TokenUsage {
