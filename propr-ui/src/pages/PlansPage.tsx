@@ -4,6 +4,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem, getDraftRepositories } from '../api/proprApi';
 import { Filter, Search, X } from 'lucide-react';
+import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
 
@@ -44,6 +45,22 @@ const PlansPage: React.FC = () => {
   }, [navigate]);
 
   const totalPages = useMemo(() => Math.ceil(totalDrafts / DEFAULT_PAGE_SIZE), [totalDrafts]);
+
+  // Build repo options for the shared RepositorySelector
+  const repoFilterOptions: RepoOption[] = useMemo(() => {
+    const allOption: RepoOption = {
+      name: 'all',
+      enabled: true,
+      displayName: 'All Repos',
+      count: totalAllDrafts,
+    };
+    const repoOptions: RepoOption[] = allRepositories.map(({ repo, count }) => ({
+      name: repo,
+      enabled: true,
+      count,
+    }));
+    return [allOption, ...repoOptions];
+  }, [allRepositories, totalAllDrafts]);
 
   // Fetch all repositories for the filter dropdown
   const loadAllRepositories = useCallback(async () => {
@@ -320,18 +337,13 @@ const PlansPage: React.FC = () => {
                 <option value="merged">Merged</option>
               </select>
               {allRepositories.length > 1 && (
-                <select
-                  value={repoFilter}
-                  onChange={(e) => handleFilterChange(e.target.value)}
-                  className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 max-w-[120px] sm:max-w-none truncate"
-                >
-                  <option value="all">All Repos ({totalAllDrafts})</option>
-                  {allRepositories.map(({ repo, count }) => (
-                    <option key={repo} value={repo}>
-                      {repo} ({count})
-                    </option>
-                  ))}
-                </select>
+                <RepositorySelector
+                  repos={repoFilterOptions}
+                  selectedRepo={repoFilter}
+                  onRepoChange={handleFilterChange}
+                  variant="default"
+                  className="w-[160px] sm:w-[220px]"
+                />
               )}
             </div>
           </div>
