@@ -8,6 +8,12 @@ export interface RepoOption {
   baseBranch?: string;
   starred?: boolean;
   iconPath?: string | null;
+  /** Custom label shown instead of the owner/repo name. */
+  displayName?: string;
+  /** Count badge rendered next to the label. */
+  count?: number;
+  /** Extra text to match when filtering (searched alongside name and displayName). */
+  searchText?: string;
 }
 
 interface RepositorySelectorProps {
@@ -88,8 +94,13 @@ const RepoItem: React.FC<{
   >
     <RepoIcon repoName={repo.name} iconPath={repo.iconPath} />
     <span className="flex-1 truncate text-sm font-mono">
-      <FormatRepoName name={repo.name} />
+      {repo.displayName ? repo.displayName : <FormatRepoName name={repo.name} />}
     </span>
+    {repo.count !== undefined && (
+      <span className="inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0">
+        {repo.count}
+      </span>
+    )}
     {repo.starred && (
       <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 flex-shrink-0" />
     )}
@@ -200,7 +211,9 @@ const BreadcrumbTrigger: React.FC<{
         <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />
       )}
       <span className="truncate">
-        {selectedRepo ? selectedRepo.split('/')[1] || selectedRepo : (reposCount === 0 ? 'No repositories' : placeholder)}
+        {selectedRepoData?.displayName
+          ? selectedRepoData.displayName
+          : selectedRepo ? selectedRepo.split('/')[1] || selectedRepo : (reposCount === 0 ? 'No repositories' : placeholder)}
       </span>
     </button>
     <ChevronDown className={`w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none transition-transform ${isOpen ? 'rotate-180' : ''}`} />
@@ -226,10 +239,17 @@ const DefaultTrigger: React.FC<{
       <>
         <RepoIcon repoName={selectedRepoData.name} iconPath={selectedRepoData.iconPath} />
         <span className="flex-1 text-left truncate text-sm">
-          {selectedRepoData.baseBranch
-            ? `${selectedRepoData.name} (${selectedRepoData.baseBranch})`
-            : selectedRepoData.name}
+          {selectedRepoData.displayName
+            ? selectedRepoData.displayName
+            : selectedRepoData.baseBranch
+              ? `${selectedRepoData.name} (${selectedRepoData.baseBranch})`
+              : selectedRepoData.name}
         </span>
+        {selectedRepoData.count !== undefined && (
+          <span className="inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0">
+            {selectedRepoData.count}
+          </span>
+        )}
         {selectedRepoData.starred && (
           <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 flex-shrink-0" />
         )}
@@ -312,7 +332,11 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   // Repos with the same name but different branches are preserved as distinct entries.
   const { starredRepos, otherRepos } = useMemo(() => {
     const lowerFilter = filter.toLowerCase();
-    const filtered = repos.filter(repo => repo.name.toLowerCase().includes(lowerFilter));
+    const filtered = repos.filter(repo =>
+      repo.name.toLowerCase().includes(lowerFilter) ||
+      (repo.displayName && repo.displayName.toLowerCase().includes(lowerFilter)) ||
+      (repo.searchText && repo.searchText.toLowerCase().includes(lowerFilter))
+    );
     const starred = filtered.filter(r => r.starred).sort((a, b) => a.name.localeCompare(b.name));
     const others = filtered.filter(r => !r.starred).sort((a, b) => a.name.localeCompare(b.name));
     return { starredRepos: starred, otherRepos: others };
