@@ -26,7 +26,7 @@ import {
     buildClaudePrompt,
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
-import { resolveModelAlias, getDefaultModel, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
