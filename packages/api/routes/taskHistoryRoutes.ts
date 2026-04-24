@@ -239,11 +239,11 @@ async function getHistoryFromRedis(
         if (issueNumber) taskInfo.issueNumber = issueNumber;
       }
       // Extract commandMode from history metadata if available
-      const historyWithMode = (state.history || []).find(
+      const commandMode = (state.history || []).find(
         h => h.metadata && typeof h.metadata === 'object' && 'commandMode' in h.metadata
-      );
-      if (historyWithMode && historyWithMode.metadata && typeof historyWithMode.metadata === 'object' && 'commandMode' in historyWithMode.metadata) {
-        taskInfo.commandMode = (historyWithMode.metadata as Record<string, string>).commandMode;
+      )?.metadata as Record<string, string> | undefined;
+      if (commandMode?.commandMode) {
+        taskInfo.commandMode = commandMode.commandMode;
       }
     }
     return { history, taskInfo };

@@ -26,7 +26,7 @@ import {
     buildClaudePrompt,
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
-import { resolveModelAlias } from '../../config/modelAliases.js';
+import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -115,7 +115,7 @@ export class ClaudeAgent implements Agent {
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         if (!effectiveModel) {
-            throw new Error('No default AI model configured. Please go to the AI Agents screen and set up at least one AI agent with a default model.');
+            throw new NoDefaultModelConfiguredError();
         }
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
