@@ -1,6 +1,6 @@
 import React from 'react';
 import { TaskInfo } from './types';
-import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench } from 'lucide-react';
 
 interface TaskHeaderProps {
   taskInfo: TaskInfo | null;
@@ -15,7 +15,7 @@ const getSubtitle = (taskInfo: TaskInfo): string => {
   return `Initial implementation for Issue #${taskInfo.number}`;
 };
 
-const getStatusInfo = (status: string): { icon: React.ReactNode; label: string; color: string; bgColor: string } => {
+const getStatusInfo = (status: string, commandMode?: string): { icon: React.ReactNode; label: string; color: string; bgColor: string } => {
   const normalizedStatus = status?.toUpperCase() || '';
 
   if (normalizedStatus === 'COMPLETED') {
@@ -57,7 +57,7 @@ const getStatusInfo = (status: string): { icon: React.ReactNode; label: string; 
   if (normalizedStatus === 'CLAUDE_EXECUTION' || normalizedStatus === 'CLAUDE_EXECUTION_STARTED') {
     return {
       icon: <Play className="h-4 w-4 text-blue-600 animate-pulse" />,
-      label: 'Implementing',
+      label: commandMode === 'review' ? 'Reviewing' : commandMode === 'fix' ? 'Fixing' : 'Implementing',
       color: 'text-blue-700',
       bgColor: 'bg-blue-50'
     };
@@ -66,7 +66,7 @@ const getStatusInfo = (status: string): { icon: React.ReactNode; label: string; 
   if (normalizedStatus === 'CLAUDE_EXECUTION_COMPLETED') {
     return {
       icon: <CheckCircle2 className="h-4 w-4 text-green-600" />,
-      label: 'Implementation Done',
+      label: commandMode === 'review' ? 'Review Done' : commandMode === 'fix' ? 'Fix Done' : 'Implementation Done',
       color: 'text-green-700',
       bgColor: 'bg-green-50'
     };
@@ -90,17 +90,44 @@ const getStatusInfo = (status: string): { icon: React.ReactNode; label: string; 
   };
 };
 
+const getCommandModeBadge = (commandMode?: string): { icon: React.ReactNode; label: string; color: string; bgColor: string } | null => {
+  if (commandMode === 'review') {
+    return {
+      icon: <Eye className="h-3.5 w-3.5" />,
+      label: 'Review',
+      color: 'text-indigo-700',
+      bgColor: 'bg-indigo-50',
+    };
+  }
+  if (commandMode === 'fix') {
+    return {
+      icon: <Wrench className="h-3.5 w-3.5" />,
+      label: 'Fix',
+      color: 'text-amber-700',
+      bgColor: 'bg-amber-50',
+    };
+  }
+  return null;
+};
+
 const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
-  const statusInfo = getStatusInfo(currentStatus);
+  const statusInfo = getStatusInfo(currentStatus, taskInfo?.commandMode);
+  const commandModeBadge = getCommandModeBadge(taskInfo?.commandMode);
 
   return (
     <div className="flex flex-col gap-1.5">
       {/* Status badge - inline pill */}
-      <div className="flex items-center">
+      <div className="flex items-center gap-2">
         <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${statusInfo.bgColor} ${statusInfo.color}`}>
           {statusInfo.icon}
           {statusInfo.label}
         </span>
+        {commandModeBadge && (
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${commandModeBadge.bgColor} ${commandModeBadge.color}`}>
+            {commandModeBadge.icon}
+            {commandModeBadge.label}
+          </span>
+        )}
       </div>
       {/* Title */}
       <h2 className="text-base sm:text-lg font-semibold text-gray-900 leading-tight break-words">

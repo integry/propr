@@ -14,7 +14,7 @@ import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { MergeConflictJobData, JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, loadSettings, db } from '@propr/core';
+import { getDefaultModel, loadSettings, db, NoDefaultModelConfiguredError } from '@propr/core';
 import { cleanupWorktree } from '@propr/core';
 import {
     createSessionIdCallbackForPR,
@@ -28,9 +28,10 @@ import {
     buildConflictResolutionPrompt,
     buildMergeConflictCommitMessage,
     buildMergeConflictComment,
+    updateMergeTaskWithPRInfo,
 } from './mergeConflictHelpers.js';
 
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -55,16 +56,23 @@ async function resolveDefaultAgentAndModel(
             if (configuredAgent && configuredAgent.config.enabled) {
                 const resolvedAlias = settings.default_agent_alias as string;
                 const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
+                if (!resolvedModel) {
+                    throw new NoDefaultModelConfiguredError();
+                }
                 return { resolvedAlias, resolvedModel };
             }
         }
     } catch (settingsError) {
+        if (settingsError instanceof NoDefaultModelConfiguredError) throw settingsError;
         correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
     }
 
     const defaultAgent = registry.getDefaultAgent();
     const resolvedAlias = defaultAgent?.config.alias || 'claude';
     const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
+    if (!resolvedModel) {
+        throw new NoDefaultModelConfiguredError();
+    }
     return { resolvedAlias, resolvedModel };
 }
 
@@ -204,6 +212,7 @@ async function handleMergeWithAgent(options: {
         baseBranch,
         headBranch: branchName,
         conflictedFiles,
+        resolutionSummary: claudeResult.summary,
         model: claudeResult.model || resolvedModel,
         executionTimeMs: claudeResult.executionTime,
         taskUrl,
@@ -270,79 +279,12 @@ async function resolveModelForTask(): Promise<string> {
     } catch {
         // Keep default
     }
+    if (!DEFAULT_MODEL_NAME) {
+        throw new NoDefaultModelConfiguredError();
+    }
     return DEFAULT_MODEL_NAME;
 }
 
-async function updateMergeTaskWithPRInfo(options: {
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
-    stateManager: WorkerStateManager;
-    taskId: string;
-    pullRequestNumber: number;
-    repoOwner: string;
-    repoName: string;
-    baseBranch: string;
-    headBranch: string;
-    correlatedLogger: Logger;
-}): Promise<void> {
-    const { octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger } = options;
-
-    const graphqlResponse = await octokit.graphql<{
-        repository: {
-            pullRequest: {
-                title: string;
-                closingIssuesReferences: {
-                    nodes: Array<{ number: number; title: string }>;
-                };
-            };
-        };
-    }>(`
-        query($owner: String!, $repo: String!, $prNumber: Int!) {
-            repository(owner: $owner, name: $repo) {
-                pullRequest(number: $prNumber) {
-                    title
-                    closingIssuesReferences(first: 1) {
-                        nodes {
-                            number
-                            title
-                        }
-                    }
-                }
-            }
-        }
-    `, { owner: repoOwner, repo: repoName, prNumber: pullRequestNumber });
-
-    const prTitle = graphqlResponse.repository.pullRequest.title;
-    const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
-    const linkedIssueNumber = linkedIssues.length > 0 ? linkedIssues[0].number : null;
-    const taskTitle = `Merge: ${prTitle}`;
-    const taskSubtitle = `Merging ${baseBranch} into ${headBranch}`;
-
-    if (linkedIssueNumber) {
-        correlatedLogger.info({ taskId, pullRequestNumber, linkedIssueNumber }, 'Found linked issue via GraphQL for merge task');
-    }
-
-    await db('tasks').where({ task_id: taskId }).update({
-        pr_number: pullRequestNumber,
-        initial_job_data: JSON.stringify({
-            pullRequestNumber, repoOwner, repoName,
-            title: taskTitle, subtitle: taskSubtitle,
-            baseBranch, headBranch, type: 'merge_conflict',
-            ...(linkedIssueNumber && { issueNumber: linkedIssueNumber }),
-        }),
-    });
-
-    const state = await stateManager.getTaskState(taskId);
-    if (state) {
-        state.issueRef = {
-            ...state.issueRef,
-            pullRequestNumber, title: taskTitle, subtitle: taskSubtitle,
-            ...(linkedIssueNumber && { issueNumber: linkedIssueNumber }),
-        };
-        await redisClient.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
-    }
-
-    correlatedLogger.info({ taskId, prTitle, taskTitle, linkedIssueNumber }, 'Updated merge task with PR title and linked issue');
-}
 
 async function handleMergeJobError(error: Error, options: {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -429,7 +371,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         startingCommentId = (startingComment as { data: { id: number } }).data.id;
 
         try {
-            await updateMergeTaskWithPRInfo({ octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger });
+            await updateMergeTaskWithPRInfo({ octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient });
         } catch (prError) {
             correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR info for merge task');
         }

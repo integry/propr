@@ -1,5 +1,9 @@
+import type { Logger } from 'pino';
 import type { WorktreeInfo } from '@propr/core';
 import type { AutoResolveContext } from '@propr/core';
+import { getAuthenticatedOctokit } from '@propr/core';
+import type { WorkerStateManager } from '@propr/core';
+import { db } from '@propr/core';
 
 /**
  * Builds a prompt that instructs the agent to check for and resolve any merge conflicts
@@ -32,7 +36,10 @@ ${hasKnownConflicts ? `**Known Conflicted Files:**\n${fileList}\n` : ''}
    - If both sides modified the same logic, prefer the PR's intent but ensure compatibility.
    - Remove ALL conflict markers after resolving.
 3. Verify the code is syntactically correct after resolution.
-4. Provide a brief summary of what conflicts were found and how they were resolved.
+4. **IMPORTANT:** Provide a detailed summary that includes:
+   - What each conflict was about (e.g., "Both branches modified the user validation logic")
+   - How you resolved it (e.g., "Combined both changes by keeping the new validation from main while preserving the error messages from the PR")
+   - Why you chose this resolution approach
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
@@ -85,11 +92,12 @@ export function buildMergeConflictComment(options: {
     baseBranch: string;
     headBranch: string;
     conflictedFiles?: string[];
+    resolutionSummary?: string | null;
     model?: string;
     executionTimeMs?: number;
     taskUrl?: string;
 }): string {
-    const { wasCleanMerge, commitHash, baseBranch, headBranch, conflictedFiles, model, executionTimeMs, taskUrl } = options;
+    const { wasCleanMerge, commitHash, baseBranch, headBranch, conflictedFiles, resolutionSummary, model, executionTimeMs, taskUrl } = options;
 
     const shortHash = commitHash ? commitHash.substring(0, 7) : 'unknown';
 
@@ -119,15 +127,19 @@ export function buildMergeConflictComment(options: {
     let comment = `🔀 **Resolved merge conflicts** from \`${baseBranch}\` into \`${headBranch}\` in commit ${shortHash}\n\n`;
 
     if (conflictedFiles && conflictedFiles.length > 0) {
-        comment += `### Resolved Conflicts\n\n`;
+        comment += `### Conflicting Files\n\n`;
         comment += conflictedFiles.map(f => `- \`${f}\``).join('\n');
         comment += '\n\n';
     }
 
-    comment += `An AI agent resolved the merge conflicts while preserving the PR intent.\n`;
+    if (resolutionSummary) {
+        comment += `### Resolution Summary\n\n${resolutionSummary}\n\n`;
+    } else {
+        comment += `An AI agent resolved the merge conflicts while preserving the PR intent.\n\n`;
+    }
 
     if (model || executionTimeMs) {
-        comment += `\n---\n### 🤖 Resolution Details\n\n`;
+        comment += `---\n### 🤖 Resolution Details\n\n`;
         if (model) comment += `* **Model:** ${model}\n`;
         if (executionTimeMs) {
             const seconds = Math.floor(executionTimeMs / 1000);
@@ -182,4 +194,76 @@ export function mergeConflictJobToCommentJob(mergeJob: {
             triggerSource: mergeJob.triggerSource,
         },
     };
+}
+
+export async function updateMergeTaskWithPRInfo(options: {
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+    stateManager: WorkerStateManager;
+    taskId: string;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    baseBranch: string;
+    headBranch: string;
+    correlatedLogger: Logger;
+    redisClient: { setex: (key: string, ttl: number, value: string) => Promise<unknown> };
+}): Promise<void> {
+    const { octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient } = options;
+
+    const graphqlResponse = await octokit.graphql<{
+        repository: {
+            pullRequest: {
+                title: string;
+                closingIssuesReferences: {
+                    nodes: Array<{ number: number; title: string }>;
+                };
+            };
+        };
+    }>(`
+        query($owner: String!, $repo: String!, $prNumber: Int!) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $prNumber) {
+                    title
+                    closingIssuesReferences(first: 1) {
+                        nodes {
+                            number
+                            title
+                        }
+                    }
+                }
+            }
+        }
+    `, { owner: repoOwner, repo: repoName, prNumber: pullRequestNumber });
+
+    const prTitle = graphqlResponse.repository.pullRequest.title;
+    const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
+    const linkedIssueNumber = linkedIssues.length > 0 ? linkedIssues[0].number : null;
+    const taskTitle = `Merge: ${prTitle}`;
+    const taskSubtitle = `Merging ${baseBranch} into ${headBranch}`;
+
+    if (linkedIssueNumber) {
+        correlatedLogger.info({ taskId, pullRequestNumber, linkedIssueNumber }, 'Found linked issue via GraphQL for merge task');
+    }
+
+    await db('tasks').where({ task_id: taskId }).update({
+        pr_number: pullRequestNumber,
+        initial_job_data: JSON.stringify({
+            pullRequestNumber, repoOwner, repoName,
+            title: taskTitle, subtitle: taskSubtitle,
+            baseBranch, headBranch, type: 'merge_conflict',
+            ...(linkedIssueNumber && { issueNumber: linkedIssueNumber }),
+        }),
+    });
+
+    const state = await stateManager.getTaskState(taskId);
+    if (state) {
+        state.issueRef = {
+            ...state.issueRef,
+            pullRequestNumber, title: taskTitle, subtitle: taskSubtitle,
+            ...(linkedIssueNumber && { issueNumber: linkedIssueNumber }),
+        };
+        await redisClient.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
+    }
+
+    correlatedLogger.info({ taskId, prTitle, taskTitle, linkedIssueNumber }, 'Updated merge task with PR title and linked issue');
 }

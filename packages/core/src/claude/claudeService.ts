@@ -23,7 +23,6 @@ import {
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../utils/llmLogger.js';
 import type { ExecutionType, ConversationStep } from '../utils/llmMetrics.types.js';
-import { estimateTokens } from '../utils/tokenCalculation.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from '../agents/impl/utils/index.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
@@ -137,7 +136,10 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             conversationLog: claudeOutput.conversationLog || [],
             sessionId: claudeOutput.sessionId,
             conversationId: claudeOutput.conversationId,
-            model: claudeOutput.model || process.env.CLAUDE_MODEL || getDefaultModel(),
+            model: claudeOutput.model || process.env.CLAUDE_MODEL || getDefaultModel() || (() => {
+                logger.error('No default model configured - using sentinel value "unconfigured". Configure an AI agent with a default model in the dashboard.');
+                return 'unconfigured';
+            })(),
             finalResult: claudeOutput.finalResult,
             modifiedFiles: [],
             commitMessage: null,

@@ -66,6 +66,7 @@ export type ExecutionType =
     | 'task-analysis'
     | 'repo-chat'
     | 'repo-improvements'
+    | 'pr-review'
     | 'other';
 
 export interface RecordMetricsOptions {
@@ -116,6 +117,8 @@ export interface PersistMetrics {
     numTurns: number;
     costUsd: number;
     tokenUsage?: TokenUsage;
+    correlationId?: string;
+    executionType?: ExecutionType;
 }
 
 export interface ConversationDetailParams {

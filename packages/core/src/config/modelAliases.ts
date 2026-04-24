@@ -86,12 +86,26 @@ function getOpenRouterId(internalModelId: ModelId): string {
     return modelInfo?.openRouterId ?? internalModelId;
 }
 
-// Default model to use when none specified
-const DEFAULT_MODEL_ALIAS: ModelAlias = 'sonnet';
+/**
+ * Error thrown when no default model is configured.
+ * Users must configure at least one AI agent with a default model.
+ */
+export class NoDefaultModelConfiguredError extends Error {
+    constructor() {
+        super(
+            'No default AI model configured. Please go to the AI Agents screen and set up at least one AI agent with a default model.'
+        );
+        this.name = 'NoDefaultModelConfiguredError';
+    }
+}
 
 function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     if (!modelNameOrAlias) {
-        return MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
+        const defaultModel = getDefaultModel();
+        if (!defaultModel) {
+            throw new NoDefaultModelConfiguredError();
+        }
+        return defaultModel;
     }
 
     const lowerCaseModel = modelNameOrAlias.toLowerCase();
@@ -102,8 +116,77 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     return modelNameOrAlias;
 }
 
-function getDefaultModel(): ModelId {
-    return MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
+/**
+ * Selects the preferred default model for an agent type when no explicit default is set.
+ * Preference rules:
+ * - Claude: prefer Opus, then Sonnet (skip Haiku)
+ * - Gemini: prefer Pro models (skip Flash)
+ * - Codex (OpenAI): prefer GPT (skip mini/spark variants)
+ */
+function getPreferredModelForAgent(config: AgentConfig): string | null {
+    const models = config.supportedModels;
+    if (!models || models.length === 0) return null;
+
+    const lowerModels = models.map(m => m.toLowerCase());
+
+    switch (config.type) {
+        case 'claude': {
+            // Prefer Opus, then Sonnet
+            const opus = models.find((_m, i) => lowerModels[i].includes('opus'));
+            if (opus) return opus;
+            const sonnet = models.find((_m, i) => lowerModels[i].includes('sonnet'));
+            if (sonnet) return sonnet;
+            break;
+        }
+        case 'gemini': {
+            // Prefer Pro (not Flash)
+            const pro = models.find((_m, i) => lowerModels[i].includes('pro'));
+            if (pro) return pro;
+            break;
+        }
+        case 'codex': {
+            // Prefer GPT (not mini, not spark)
+            const gpt = models.find((_m, i) =>
+                lowerModels[i].startsWith('gpt') &&
+                !lowerModels[i].includes('mini') &&
+                !lowerModels[i].includes('spark')
+            );
+            if (gpt) return gpt;
+            break;
+        }
+    }
+
+    // Ultimate fallback: first supported model
+    return models[0];
+}
+
+function getDefaultModel(): ModelId | null {
+    // Try env var first (explicit user configuration)
+    if (process.env.DEFAULT_CLAUDE_MODEL) {
+        return process.env.DEFAULT_CLAUDE_MODEL;
+    }
+
+    // Try the configured default agent's model from settings
+    try {
+        const registry = AgentRegistry.getInstance();
+        const defaultAgent = registry.getDefaultAgent();
+        if (defaultAgent) {
+            // Use the agent's explicit default model if set
+            if (defaultAgent.config.defaultModel) {
+                return defaultAgent.config.defaultModel;
+            }
+            // Otherwise auto-select the preferred model for this agent type
+            const preferred = getPreferredModelForAgent(defaultAgent.config);
+            if (preferred) {
+                return preferred;
+            }
+        }
+    } catch {
+        // Registry not initialized yet
+    }
+
+    // No default model configured - return null for clear failure
+    return null;
 }
 
 /**
@@ -204,7 +287,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         if (agent.config.alias.toLowerCase() === lowerLabel) {
             return {
                 agentAlias: agent.config.alias,
-                model: agent.config.defaultModel || agent.config.supportedModels[0]
+                model: agent.config.defaultModel || getPreferredModelForAgent(agent.config) || agent.config.supportedModels[0]
             };
         }
     }
@@ -217,7 +300,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
             const matchedModel = findMatchingModel(modelPart, agent.config);
             return {
                 agentAlias: agent.config.alias,
-                model: matchedModel || agent.config.defaultModel || agent.config.supportedModels[0]
+                model: matchedModel || agent.config.defaultModel || getPreferredModelForAgent(agent.config) || agent.config.supportedModels[0]
             };
         }
     }
@@ -293,14 +376,119 @@ function findMatchingModel(shortName: string, config: AgentConfig): string | nul
     return null;
 }
 
+/**
+ * A single concrete review assignment: agent/model pair with display label.
+ */
+export interface ReviewAssignment {
+    /** Agent alias (e.g., "claude", "gemini", "codex") */
+    agentAlias: string;
+    /** Resolved model ID (e.g., "claude-opus-4-6", "gemini-3-pro-preview") */
+    model: string;
+    /** Display-friendly label for review comments (e.g., "Claude Opus 4.6", "Gemini Pro") */
+    displayLabel: string;
+}
+
+/**
+ * Error thrown when a requested review model cannot be resolved to an enabled agent/model pair.
+ */
+export class ReviewModelResolutionError extends Error {
+    /** The token(s) that could not be resolved */
+    unresolvedTokens: string[];
+
+    constructor(unresolvedTokens: string[]) {
+        const tokenList = unresolvedTokens.map(t => `"${t}"`).join(', ');
+        super(`Unable to resolve review model(s): ${tokenList}. No matching enabled agent/model found.`);
+        this.name = 'ReviewModelResolutionError';
+        this.unresolvedTokens = unresolvedTokens;
+    }
+}
+
+/**
+ * Resolves an array of `/review` model arguments into concrete, deduplicated review assignments.
+ *
+ * Each requested label is resolved via `resolveLlmLabel`. The results are deduplicated by
+ * agent+model pair, and validated against the agent registry to ensure the resolved agent
+ * is actually enabled with the resolved model in its supported list.
+ *
+ * @param requestedLabels - Normalized model labels (llm- prefix already stripped)
+ * @returns Array of unique ReviewAssignment objects
+ * @throws ReviewModelResolutionError if any label cannot be resolved to a valid enabled agent/model
+ */
+async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAssignment[]> {
+    if (!requestedLabels || requestedLabels.length === 0) {
+        // Default to the default model when /review is called with no arguments
+        const defaultModel = getDefaultModel();
+        if (!defaultModel) {
+            throw new NoDefaultModelConfiguredError();
+        }
+        const registry = AgentRegistry.getInstance();
+        await registry.ensureInitialized();
+        const defaultAgent = registry.getDefaultAgent();
+        if (!defaultAgent) {
+            throw new NoDefaultModelConfiguredError();
+        }
+        const modelInfo = MODEL_INFO_MAP[defaultModel];
+        return [{
+            agentAlias: defaultAgent.config.alias,
+            model: defaultModel,
+            displayLabel: modelInfo?.name || getModelShortName(defaultModel),
+        }];
+    }
+
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const seen = new Map<string, ReviewAssignment>(); // key: "agentAlias:model"
+    const unresolvedTokens: string[] = [];
+
+    for (const label of requestedLabels) {
+        const resolution = await resolveLlmLabel(label);
+
+        // Validate that the resolved agent exists and is enabled
+        const agent = registry.getAgentByAlias(resolution.agentAlias);
+        if (!agent || !agent.config.enabled) {
+            unresolvedTokens.push(label);
+            continue;
+        }
+
+        // Check that the resolved model is in the agent's supported models
+        // (resolveLlmLabel step 5 fallback can produce arbitrary model strings)
+        const modelSupported = agent.config.supportedModels.some(
+            m => m.toLowerCase() === resolution.model.toLowerCase()
+        );
+        if (!modelSupported) {
+            unresolvedTokens.push(label);
+            continue;
+        }
+
+        const dedupeKey = `${resolution.agentAlias}:${resolution.model}`.toLowerCase();
+        if (!seen.has(dedupeKey)) {
+            const modelInfo = MODEL_INFO_MAP[resolution.model];
+            const displayLabel = modelInfo?.name || getModelShortName(resolution.model);
+            seen.set(dedupeKey, {
+                agentAlias: resolution.agentAlias,
+                model: resolution.model,
+                displayLabel,
+            });
+        }
+    }
+
+    if (unresolvedTokens.length > 0) {
+        throw new ReviewModelResolutionError(unresolvedTokens);
+    }
+
+    return Array.from(seen.values());
+}
+
 export {
     MODEL_ALIASES,
-    DEFAULT_MODEL_ALIAS,
     resolveModelAlias,
     getDefaultModel,
+    getPreferredModelForAgent,
     getOpenRouterId,
     resolveLlmLabel,
     resolveCustomLabel,
     getAllCustomLabels,
-    findMatchingModel
+    findMatchingModel,
+    resolveReviewModels
 };

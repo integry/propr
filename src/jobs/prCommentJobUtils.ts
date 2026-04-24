@@ -6,7 +6,7 @@ import { getAuthenticatedOctokit } from '@propr/core';
 import { cleanupWorktree } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { formatResetTime } from '@propr/core';
-import type { ClaudeCodeResponse, AgentExecutionResult } from '@propr/core';
+import type { ClaudeCodeResponse } from '@propr/core';
 import type { ClaudeResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment } from '@propr/core';
@@ -30,7 +30,7 @@ export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     };
 }
 
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+const DEFAULT_MODEL_NAME: string | null = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || String(5 * 60 * 1000), 10);
 const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || String(2 * 60 * 1000), 10);
 const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
@@ -139,24 +139,16 @@ export interface CommitMessageOptions {
 
 export function buildCommitMessage(options: CommitMessageOptions): string {
     const { changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText } = options;
-    let commitDetails = '';
-    if (changesSummary) {
-        const lines = changesSummary.split('\n');
-        const changeLines = lines.filter(line => line.trim().startsWith('-') || line.trim().startsWith('*') || line.trim().startsWith('•') || line.match(/^\d+\./)).slice(0, 10);
-        if (changeLines.length > 0) {
-            commitDetails = '\n\nKey changes:\n' + changeLines.join('\n');
-        }
-    }
 
     const commentReferences = unprocessedComments.map(c => `Comment by: @${c.author} (ID: ${c.id})`).join('\n');
 
     return `feat(ai): ${changesSummary ? changesSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
 
-${changesSummary ? changesSummary : `Implemented changes requested by ${authorsText}`}${commitDetails}
+${changesSummary ? changesSummary : `Implemented changes requested by ${authorsText}`}
 
 PR: #${pullRequestNumber}
 ${commentReferences}
-Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
+Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME || 'unconfigured'}`;
 }
 
 export interface PromptOptions {
@@ -168,21 +160,23 @@ export interface PromptOptions {
     repoOwner: string;
     repoName: string;
     commentCount: number;
+    /** Formatted section of AI review comments gathered for /fix */
+    reviewCommentsSection?: string;
 }
 
 export function buildPrompt(options: PromptOptions): string {
-    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount } = options;
+    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, reviewCommentsSection } = options;
     return `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
 
 **New Request${commentCount > 1 ? 's' : ''}:**
 ${combinedCommentBody.replace(/^/gm, '> ')}
-
+${reviewCommentsSection ? `\n${reviewCommentsSection}\n` : ''}
 ${commentHistory}${originalTaskSpec}
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
 - Analyze the existing code on this branch and the comment history provided above.
-- Implement ONLY the changes requested in the **New Request(s)** section.
+- Implement ONLY the changes requested in the **New Request(s)** section${reviewCommentsSection ? ' and the **AI Review Comments** section' : ''}.
 - DO NOT commit your changes - the system will handle the commit for you
 - DO NOT create a new pull request
 - The repository is ${repoOwner}/${repoName}
@@ -409,28 +403,4 @@ export async function pickUpPendingComments(commentsToProcess: UnprocessedCommen
 
 export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
-
-/**
- * Converts AgentExecutionResult to ClaudeCodeResponse for backwards compatibility
- * with existing post-processing code.
- */
-export function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeResponse {
-    return {
-        success: result.success,
-        model: result.modelUsed,
-        executionTime: result.executionTimeMs,
-        output: null,
-        sessionId: result.sessionId || null,
-        conversationId: result.conversationId,
-        finalResult: result.summary ? { type: 'result', result: result.summary } : null,
-        rawOutput: result.rawOutput,
-        summary: result.summary || null,
-        logs: result.logs,
-        exitCode: result.exitCode ?? null,
-        error: result.error,
-        modifiedFiles: result.modifiedFiles,
-        commitMessage: result.commitMessage || null,
-        conversationLog: result.conversationLog,
-        tokenUsage: result.tokenUsage
-    };
-}
+export { PRFile, fetchPRFiles, formatPRDiff, agentResultToClaudeResponse } from './prFileUtils.js';

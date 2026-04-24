@@ -1,7 +1,7 @@
 import type { ClaudeCodeResponse, ClaudeResult } from '@propr/core';
 import { getDetailedUsageStats, calculateCostWithCachePricing } from '@propr/core';
 import type { DetailedUsageStats } from '@propr/core';
-import { getModelName, getModelPricing, getOpenRouterId } from '@propr/core';
+import { getModelName, getModelPricing, getOpenRouterId, getDefaultModel } from '@propr/core';
 
 function formatDuration(ms: number): string {
     const seconds = Math.floor(ms / 1000);
@@ -39,8 +39,7 @@ export async function buildMetricsSection(
     authorsText: string,
     isAnalysis = false
 ): Promise<string> {
-    const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
-    const modelId = claudeResult.model || llm || defaultModel;
+    const modelId = claudeResult.model || llm || getDefaultModel() || 'unknown';
     const modelDisplayName = getModelName(modelId);
     const executionTime = claudeResult.executionTime ? formatDuration(claudeResult.executionTime) : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;

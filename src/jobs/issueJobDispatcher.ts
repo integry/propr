@@ -9,10 +9,8 @@ import type { RepoValidationResult } from '@propr/core';
 
 type RepoValidation = RepoValidationResult;
 import { issueQueue, type IssueJobData, type JobResult } from '@propr/core';
-import { getDefaultModel, resolveLlmLabel, loadSettings, resolveCustomLabel, getAllCustomLabels } from '@propr/core';
+import { getDefaultModel, resolveLlmLabel, loadSettings, resolveCustomLabel, getAllCustomLabels, NoDefaultModelConfiguredError } from '@propr/core';
 import { AgentRegistry } from '@propr/core';
-
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
 interface CurrentIssueData {
     data: {
@@ -152,10 +150,15 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         if (agentModelsToProcess.length === 0) {
             // No LLM or custom labels - use default agent from settings
             const { agentAlias, modelToUse } = await resolveDefaultAgentForDispatcher(correlatedLogger);
+            const resolvedModel = modelToUse || process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+
+            if (!resolvedModel) {
+                throw new NoDefaultModelConfiguredError();
+            }
 
             agentModelsToProcess.push({
                 agentAlias,
-                model: modelToUse || DEFAULT_MODEL_NAME,
+                model: resolvedModel,
                 label: null
             });
         }
