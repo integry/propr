@@ -1,12 +1,12 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createDraft, uploadAttachment } from '../api/proprApi';
 import { getInitialSelectedRepo, Repo } from '../components/Dashboard/index';
 import { resizeImage } from '../components/TaskPlanner/imageUtils';
-import { fetchEnabledRepos } from '../utils/repoHelpers';
 
 export interface UseNewPlanFormReturn {
   repos: Repo[];
+  handleReposLoaded: (repos: Repo[]) => void;
   selectedRepo: string;
   setSelectedRepo: (repo: string) => void;
   prompt: string;
@@ -37,16 +37,10 @@ export function useNewPlanForm(): UseNewPlanFormReturn {
   const [isFormExpanded, setIsFormExpanded] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load repositories for NewPlanForm
-  useEffect(() => {
-    fetchEnabledRepos()
-      .then(enabledRepos => {
-        setRepos(enabledRepos);
-        setSelectedRepo(getInitialSelectedRepo(enabledRepos));
-      })
-      .catch(err => {
-        console.error('Failed to load repositories:', err);
-      });
+  // Called by RepositorySelector when repos are loaded internally
+  const handleReposLoaded = useCallback((enabledRepos: Repo[]) => {
+    setRepos(enabledRepos);
+    setSelectedRepo(getInitialSelectedRepo(enabledRepos));
   }, []);
 
   const handleStartPlanning = useCallback(async () => {
@@ -123,6 +117,7 @@ export function useNewPlanForm(): UseNewPlanFormReturn {
 
   return {
     repos,
+    handleReposLoaded,
     selectedRepo,
     setSelectedRepo,
     prompt,

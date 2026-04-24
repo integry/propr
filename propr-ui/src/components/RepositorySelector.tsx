@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Search, Star, ChevronDown, X, Github, Loader2 } from 'lucide-react';
+import { fetchEnabledRepos } from '../utils/repoHelpers';
 
 export interface RepoOption {
   name: string;
@@ -10,9 +11,12 @@ export interface RepoOption {
 }
 
 interface RepositorySelectorProps {
-  repos: RepoOption[];
+  /** When omitted, the component fetches repos internally via fetchEnabledRepos(). */
+  repos?: RepoOption[];
   selectedRepo: string;
   onRepoChange: (repo: string) => void;
+  /** Called when repos are loaded internally (only fires when repos prop is omitted). */
+  onReposLoaded?: (repos: RepoOption[]) => void;
   disabled?: boolean;
   isLoading?: boolean;
   placeholder?: string;
@@ -243,9 +247,10 @@ const DefaultTrigger: React.FC<{
 );
 
 export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
-  repos,
+  repos: externalRepos,
   selectedRepo,
   onRepoChange,
+  onReposLoaded,
   disabled = false,
   isLoading = false,
   placeholder = 'Select repository',
@@ -256,6 +261,27 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   const [filter, setFilter] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Internal repo fetching when repos prop is not provided
+  const [internalRepos, setInternalRepos] = useState<RepoOption[]>([]);
+  const [internalLoading, setInternalLoading] = useState(false);
+  const onReposLoadedRef = useRef(onReposLoaded);
+  onReposLoadedRef.current = onReposLoaded;
+
+  useEffect(() => {
+    if (externalRepos !== undefined) return;
+    setInternalLoading(true);
+    fetchEnabledRepos()
+      .then(loaded => {
+        setInternalRepos(loaded);
+        onReposLoadedRef.current?.(loaded);
+      })
+      .catch(() => {})
+      .finally(() => setInternalLoading(false));
+  }, [externalRepos !== undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const repos = externalRepos ?? internalRepos;
+  const effectiveLoading = isLoading || (externalRepos === undefined && internalLoading);
 
   // Handle click outside to close dropdown
   useEffect(() => {
@@ -319,7 +345,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     }
   }, [disabled]);
 
-  if (isLoading) {
+  if (effectiveLoading) {
     return (
       <div className={`flex items-center gap-2 text-gray-400 text-sm ${className}`}>
         <Loader2 className="w-4 h-4 animate-spin" />

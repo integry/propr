@@ -4,7 +4,6 @@ import { ListPlus, Check, ChevronDown, ExternalLink } from 'lucide-react';
 import { createTodo, getCategories, RepoTodoCategory } from '../api/repoTodosApi';
 import RepositorySelector, { RepoOption } from './RepositorySelector';
 import { getPlannerSettings, savePlannerSettings } from '../hooks/usePlannerSettings';
-import { fetchEnabledRepos } from '../utils/repoHelpers';
 
 interface QuickAddTodoProps {
   externalOpen?: boolean;
@@ -15,7 +14,6 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
   const location = useLocation();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
-  const [repos, setRepos] = useState<RepoOption[]>([]);
   const [selectedRepo, setSelectedRepo] = useState('');
   const [content, setContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -38,34 +36,34 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     return '';
   }, [location.pathname]);
 
-  // Load repos when popover opens
-  useEffect(() => {
-    if (!isOpen) return;
-    fetchEnabledRepos().then(enabledRepos => {
-      setRepos(enabledRepos);
-      const inferred = inferRepoFromUrl();
-      if (inferred) {
-        const match = enabledRepos.find(r => r.name === inferred);
-        if (match) setSelectedRepo(match.name);
-        else if (enabledRepos.length > 0) setSelectedRepo(enabledRepos[0].name);
-      } else if (enabledRepos.length > 0) {
-        // Validate current selection still exists in the repo list
-        const currentStillValid = selectedRepo && enabledRepos.some(r => r.name === selectedRepo);
-        if (!currentStillValid) {
-          // Use last used repository from planner settings, fallback to first repo
-          const settings = getPlannerSettings();
-          const lastRepo = settings.lastRepository;
-          if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) {
-            setSelectedRepo(lastRepo);
-          } else {
-            setSelectedRepo(enabledRepos[0].name);
-          }
+  // Handle repos loaded by RepositorySelector
+  const handleReposLoaded = useCallback((enabledRepos: RepoOption[]) => {
+    if (enabledRepos.length === 0) return;
+    const inferred = inferRepoFromUrl();
+    if (inferred) {
+      const match = enabledRepos.find(r => r.name === inferred);
+      if (match) setSelectedRepo(match.name);
+      else setSelectedRepo(enabledRepos[0].name);
+    } else {
+      const currentStillValid = selectedRepo && enabledRepos.some(r => r.name === selectedRepo);
+      if (!currentStillValid) {
+        const settings = getPlannerSettings();
+        const lastRepo = settings.lastRepository;
+        if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) {
+          setSelectedRepo(lastRepo);
+        } else {
+          setSelectedRepo(enabledRepos[0].name);
         }
       }
-    }).catch(() => {});
-    // Focus textarea after opening
-    setTimeout(() => textareaRef.current?.focus(), 100);
-  }, [isOpen, inferRepoFromUrl, selectedRepo]);
+    }
+  }, [inferRepoFromUrl, selectedRepo]);
+
+  // Focus textarea when popover opens
+  useEffect(() => {
+    if (isOpen) {
+      setTimeout(() => textareaRef.current?.focus(), 100);
+    }
+  }, [isOpen]);
 
   // Handle external open trigger (keyboard shortcut)
   useEffect(() => {
@@ -188,10 +186,9 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
             <div className="p-3 space-y-3">
               {/* Repository Selector */}
               <RepositorySelector
-                repos={repos}
                 selectedRepo={selectedRepo}
                 onRepoChange={handleRepoChange}
-                disabled={repos.length === 0}
+                onReposLoaded={handleReposLoaded}
                 placeholder="Select repo..."
                 variant="default"
               />

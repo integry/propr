@@ -5,7 +5,7 @@ import { getUserRepoPreferences, UserRepoPreferences } from '../api/userRepoPref
 
 /**
  * Fetches enabled repositories with their preferences (starred) and indexing status (iconPath).
- * Used by QuickAddTodo and useNewPlanForm to avoid duplicating fetch/merge/map logic.
+ * Used internally by RepositorySelector when no repos prop is provided.
  */
 export async function fetchEnabledRepos(): Promise<RepoOption[]> {
   const [repoData, userPrefs, indexingData] = await Promise.all([
