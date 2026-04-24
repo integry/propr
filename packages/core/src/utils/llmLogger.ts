@@ -113,9 +113,8 @@ function n<T>(value: T | undefined): T | null {
   return value ?? null;
 }
 
-function buildLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Record<string, unknown> {
-  const ref = entry.workRef;
-  return {
+function buildLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined, hasWorkRefColumns: boolean): Record<string, unknown> {
+  const row: Record<string, unknown> = {
     execution_type: entry.executionType,
     model_name: entry.modelName,
     start_time: entry.startTime.toISOString(),
@@ -136,21 +135,41 @@ function buildLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Record
     agent_alias: n(entry.agentAlias),
     metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
     usage_metrics: entry.usageMetrics ? JSON.stringify(entry.usageMetrics) : null,
-    work_type: n(ref?.workType),
-    task_id: n(ref?.taskId),
-    task_number: n(ref?.taskNumber),
-    pr_number: n(ref?.prNumber),
-    plan_draft_id: n(ref?.planDraftId),
-    plan_issue_id: n(ref?.planIssueId),
-    work_repository: n(ref?.workRepository),
   };
+
+  if (hasWorkRefColumns) {
+    const ref = entry.workRef;
+    row.work_type = n(ref?.workType);
+    row.task_id = n(ref?.taskId);
+    row.task_number = n(ref?.taskNumber);
+    row.pr_number = n(ref?.prNumber);
+    row.plan_draft_id = n(ref?.planDraftId);
+    row.plan_issue_id = n(ref?.planIssueId);
+    row.work_repository = n(ref?.workRepository);
+  }
+
+  return row;
+}
+
+/** Cache for whether work-reference columns exist (checked once per process). */
+let _hasWorkRefColumns: boolean | null = null;
+
+async function checkWorkRefColumns(): Promise<boolean> {
+  if (_hasWorkRefColumns !== null) return _hasWorkRefColumns;
+  try {
+    _hasWorkRefColumns = await db!.schema.hasColumn('llm_logs', 'work_type');
+  } catch {
+    _hasWorkRefColumns = false;
+  }
+  return _hasWorkRefColumns;
 }
 
 /**
  * Persists an LLM call log entry to the llm_logs table.
  */
 async function insertLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Promise<number | null> {
-  const [inserted] = await db!('llm_logs').insert(buildLlmLogRow(entry, costUsd)).returning('log_id');
+  const hasWorkRef = await checkWorkRefColumns();
+  const [inserted] = await db!('llm_logs').insert(buildLlmLogRow(entry, costUsd, hasWorkRef)).returning('log_id');
   return typeof inserted === 'object' ? (inserted as { log_id: number }).log_id : inserted;
 }
 

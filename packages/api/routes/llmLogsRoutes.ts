@@ -211,25 +211,40 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         workType,
       };
 
+      // Check if work-reference columns exist (migration may not have run yet)
+      const hasWorkRefColumns = await db.schema.hasColumn('llm_logs', 'work_type');
+
       // Build and execute queries
-      const baseQuery = db('llm_logs').select(
+      const baseColumns = [
         'log_id', 'execution_type', 'model_name', 'start_time', 'end_time',
         'duration_ms', 'success', 'input_tokens', 'output_tokens',
         'cache_creation_input_tokens', 'cache_read_input_tokens', 'cost_usd',
         'error_message', 'session_id', 'correlation_id', 'draft_id',
         'repository', 'agent_alias', 'metadata', 'usage_metrics',
+      ];
+      const workRefColumns = [
         'work_type', 'task_id', 'task_number', 'pr_number',
-        'plan_draft_id', 'plan_issue_id', 'work_repository'
-      );
+        'plan_draft_id', 'plan_issue_id', 'work_repository',
+      ];
+      const selectColumns = hasWorkRefColumns
+        ? [...baseColumns, ...workRefColumns]
+        : baseColumns;
+
+      const baseQuery = db('llm_logs').select(...selectColumns);
 
       const countQuery = db('llm_logs').count('* as count');
 
+      // Only apply work_type filter if the column exists
+      const effectiveFilters = hasWorkRefColumns
+        ? filters
+        : { ...filters, workType: undefined };
+
       const [logs, countResult] = await Promise.all([
-        applyLlmLogFilters(baseQuery, filters)
+        applyLlmLogFilters(baseQuery, effectiveFilters)
           .orderBy('start_time', 'desc')
           .limit(limit)
           .offset(offset) as unknown as Promise<LlmLogRow[]>,
-        applyLlmLogFilters(countQuery, filters).first() as unknown as Promise<CountRow | undefined>
+        applyLlmLogFilters(countQuery, effectiveFilters).first() as unknown as Promise<CountRow | undefined>
       ]);
 
       // Fetch structured usage metric records for all returned logs
