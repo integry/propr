@@ -102,6 +102,16 @@ Consider using additional AI code review tools as a first pass to identify poten
 
 These tools can help identify issues that human reviewers might miss, but should complement, not replace, human judgment.
 
+## Using `/fix` to Apply Review Feedback
+
+ProPR AI review comments include a `/fix` instruction at the bottom. Instead of manually implementing review suggestions, you can:
+
+1. **Review the AI comments** — read through the findings from each model.
+2. **Edit or delete comments** — remove suggestions you disagree with, or refine them.
+3. **Comment `/fix`** — ProPR gathers all unprocessed AI review comments and applies the fixes automatically.
+
+This workflow lets you use AI reviews as actionable instructions rather than just informational feedback. See the [PR Slash Commands](./pr-commands.md) documentation for full details.
+
 ## Feedback Process
 
 ### Providing Feedback

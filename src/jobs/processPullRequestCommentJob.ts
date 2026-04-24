@@ -9,24 +9,28 @@ import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitC
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
 import { createLogFiles } from '@propr/core';
-import { UsageLimitError, generateTaskSummary, AgentRegistry, resolveLlmLabel } from '@propr/core';
+import { UsageLimitError, AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, loadSettings, db } from '@propr/core';
+import { getDefaultModel, db, NoDefaultModelConfiguredError } from '@propr/core';
 import { loadPrimaryProcessingLabels } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
-    buildCommentHistory, createSessionIdCallbackForPR, createContainerIdCallbackForPR, updateTaskTitleForPR, buildCompletionComment
+    buildCommentHistory, updateTaskTitleForPR, buildCompletionComment
 } from './prCommentJobHelpers.js';
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
-    handleJobError, cleanupJob, pickUpPendingComments, toClaudeResult, agentResultToClaudeResponse
+    handleJobError, cleanupJob, pickUpPendingComments, toClaudeResult
 } from './prCommentJobUtils.js';
+import { executeReviewProcessing } from './prCommentReviewJob.js';
+import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
+import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
+import type { AIReviewComment } from './reviewCommentGatherer.js';
 
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -97,6 +101,14 @@ async function getPrimaryLabels(): Promise<string[]> {
 async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext> {
     const { pullRequestNumber, commentId, commentBody, commentAuthor, comments, branchName: jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
+
+    // Normalize missing commandMode to 'default' for backward compatibility
+    if (!job.data.commandMode) {
+        job.data.commandMode = 'default';
+    }
+
+    correlatedLogger.debug({ commandMode: job.data.commandMode, hasCommandMeta: !!job.data.commandMeta }, 'Normalized command mode for PR comment job');
+
     const primaryProcessingLabels = await getPrimaryLabels();
     const isBatchJob = !!comments && Array.isArray(comments);
     let commentsToProcess: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
@@ -152,129 +164,6 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
     return { skip: false, prData, validatedComments, unprocessedComments, llm, prCommentsForValidation };
 }
 
-interface SummaryTitleOptions {
-    combinedCommentBody: string;
-    worktreeInfo: WorktreeInfo;
-    githubToken: GitHubToken;
-    pullRequestNumber: number;
-    repoOwner: string;
-    repoName: string;
-    correlationId: string;
-    taskId: string;
-    correlatedLogger: Logger;
-}
-
-async function generateSummaryTitle(options: SummaryTitleOptions): Promise<string> {
-    const { combinedCommentBody, worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger } = options;
-    try {
-        const summaryRequest = `Summarize this change request in one sentence, focusing on the main action: ${combinedCommentBody}`;
-        const title = await generateTaskSummary({ summaryRequest, worktreePath: worktreeInfo.worktreePath, githubToken: githubToken.token, issueRef: { number: pullRequestNumber, repoOwner, repoName }, correlationId, modelAlias: 'haiku' });
-        correlatedLogger.info({ taskId, summaryTitle: title }, 'Generated AI summary for follow-up task');
-        return title;
-    } catch (summaryError) {
-        correlatedLogger.warn({ taskId, error: (summaryError as Error).message }, 'Failed to generate AI summary, falling back to truncation.');
-        if (combinedCommentBody) {
-            const firstLine = combinedCommentBody.split('\n')[0].replace(/[^a-zA-Z0-9 ]/g, '').trim();
-            return "Follow-up: " + firstLine.substring(0, 75) + (firstLine.length > 75 ? '...' : '');
-        }
-        return `Follow-up: PR #${pullRequestNumber}`;
-    }
-}
-
-/**
- * Resolves the default agent and model from settings, with fallback to registry default.
- */
-async function resolveDefaultAgentAndModel(
-    registry: AgentRegistry,
-    correlatedLogger: Logger
-): Promise<{ resolvedAlias: string; resolvedModel: string }> {
-    // First, try to use the configured default agent from settings
-    try {
-        const settings = await loadSettings();
-        if (settings.default_agent_alias) {
-            const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
-            if (configuredAgent && configuredAgent.config.enabled) {
-                const resolvedAlias = settings.default_agent_alias as string;
-                const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
-                correlatedLogger.debug({ configuredDefaultAgent: resolvedAlias, defaultModel: resolvedModel }, 'Using default agent from settings');
-                return { resolvedAlias, resolvedModel };
-            }
-        }
-    } catch (settingsError) {
-        correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
-    }
-
-    // Fallback to registry default
-    const defaultAgent = registry.getDefaultAgent();
-    const resolvedAlias = defaultAgent?.config.alias || 'claude';
-    const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
-    correlatedLogger.debug({ fallbackAgent: resolvedAlias, fallbackModel: resolvedModel }, 'Using fallback default agent');
-    return { resolvedAlias, resolvedModel };
-}
-
-interface AgentExecutionParams {
-    llm: string | null | undefined;
-    worktreePath: string;
-    branchName: string;
-    prompt: string;
-    pullRequestNumber: number;
-    repoOwner: string;
-    repoName: string;
-    taskId: string;
-    stateManager: WorkerStateManager;
-    correlatedLogger: Logger;
-    githubToken: string;
-}
-
-async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
-    const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken } = params;
-
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    let agentAlias: string;
-    let modelToUse: string;
-
-    if (llm) {
-        // LLM was specified (from PR label or job data) - resolve it
-        const resolution = await resolveLlmLabel(llm);
-        agentAlias = resolution.agentAlias;
-        modelToUse = resolution.model;
-    } else {
-        // No LLM specified - use default agent from settings, with fallback
-        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-        agentAlias = resolvedAlias;
-        modelToUse = resolvedModel;
-    }
-
-    const agent = registry.getAgentByAlias(agentAlias);
-
-    if (!agent) {
-        throw new Error(`Agent not found for alias: ${agentAlias}`);
-    }
-
-    correlatedLogger.info({
-        agentAlias,
-        agentType: agent.config.type,
-        model: modelToUse,
-        pullRequestNumber
-    }, 'Executing PR comment task with agent');
-
-    const agentResult = await agent.executeTask({
-        worktreePath,
-        issueRef: { number: pullRequestNumber, repoOwner, repoName },
-        prompt,
-        model: modelToUse,
-        githubToken,
-        branchName,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: modelToUse, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
-        prNumber: pullRequestNumber,
-    });
-
-    return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
-}
-
 interface ExecuteProcessingParams {
     job: Job<CommentJobData>;
     context: PRJobContext;
@@ -282,6 +171,17 @@ interface ExecuteProcessingParams {
     taskId: string;
     stateManager: WorkerStateManager;
     state: ProcessingState;
+}
+
+function formatReviewCommentsSection(reviewComments: AIReviewComment[]): string {
+    if (reviewComments.length === 0) return '';
+
+    let section = `**AI Review Comments (unprocessed — please address these findings):**\n\n`;
+    for (const comment of reviewComments) {
+        section += `---\n**Review by:** @${comment.author} (Comment ID: ${comment.id})\n`;
+        section += `${comment.body}\n---\n\n`;
+    }
+    return section;
 }
 
 function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
@@ -302,6 +202,83 @@ interface UndoContextParams {
     repoName: string;
     pullRequestNumber: number;
     branchName: string;
+}
+
+function getWebUiUrl(): string {
+    return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
+}
+
+function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: UnprocessedComment[], taskUrl: string): string {
+    const plural = unprocessedComments.length > 1 ? 's' : '';
+    const commentIds = unprocessedComments.map(c => String(c.id) + '✓').join(', ');
+    return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${plural}: ${commentIds}_`;
+}
+
+interface PostExecutionParams {
+    state: ProcessingState;
+    job: Job<CommentJobData>;
+    taskId: string;
+    stateManager: WorkerStateManager;
+    context: PRJobContext;
+    unprocessedReviewComments: AIReviewComment[];
+    llm: string | null | undefined;
+}
+
+async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string }> {
+    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm } = params;
+    const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
+
+    if (!state.claudeResult!.success) throw new Error(`Agent execution failed: ${state.claudeResult!.error || 'Unknown error'}`);
+
+    const changesSummary = state.claudeResult!.summary || state.claudeResult!.finalResult?.result || '';
+    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber, claudeResult: state.claudeResult!, llm, authorsText: state.authorsText });
+    const commitResult = await commitChanges(state.worktreeInfo!.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Follow-up changes' });
+
+    if (commitResult) {
+        const repoUrl = getRepoUrl({ repoOwner, repoName });
+        const githubToken = await state.octokit!.auth({ type: "installation" }) as GitHubToken;
+        await pushBranch(state.worktreeInfo!.worktreePath, state.worktreeInfo!.branchName, { repoUrl, authToken: githubToken.token });
+    }
+
+    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo!.branchName });
+    const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
+    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult!);
+    const completionComment = await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
+    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
+
+    if (unprocessedReviewComments.length > 0) {
+        await markReviewCommentsProcessed(
+            unprocessedReviewComments.map(c => c.id),
+            { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger },
+        );
+    }
+
+    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
+        reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
+        historyMetadata: {
+            commandMode: job.data.commandMode || 'default',
+            githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
+            ...(unprocessedReviewComments.length > 0 && {
+                consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id),
+            }),
+        }
+    });
+
+    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
+
+    return { commitHash: commitResult?.commitHash };
+}
+
+async function persistCommitHash(taskId: string, commitHash: string | undefined, correlatedLogger: Logger): Promise<void> {
+    if (!commitHash) return;
+    try {
+        await db('tasks')
+            .where({ task_id: taskId })
+            .update({ commit_hash: commitHash });
+        correlatedLogger.info({ taskId, commitHash }, 'Saved commit hash to tasks table');
+    } catch (dbError) {
+        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
+    }
 }
 
 function buildUndoContext(params: UndoContextParams) {
@@ -330,23 +307,34 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
 
-    const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
-    const taskUrl = `${webUiUrl}/tasks/${taskId}`;
+    const taskUrl = `${getWebUiUrl()}/tasks/${taskId}`;
 
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
     const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
 
+    // Gather unprocessed AI review comments only for /fix mode
+    const isFixMode = job.data.commandMode === 'fix';
+    const unprocessedReviewComments = isFixMode
+        ? await gatherUnprocessedReviewComments(allComments, {
+            repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger,
+        })
+        : [];
+    const reviewCommentsSection = formatReviewCommentsSection(unprocessedReviewComments);
+
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-        body: `🔄 **Starting work on follow-up changes** requested by ${state.authorsText}\n\nI'll analyze the ${state.unprocessedComments.length} request${state.unprocessedComments.length > 1 ? 's' : ''} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${state.unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`,
+        body: buildStartingWorkCommentBody(state.authorsText, state.unprocessedComments, taskUrl),
     });
 
     const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
     const repoUrl = getRepoUrl({ repoOwner, repoName });
 
-    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting PR comment processing' });
+    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+        reason: 'Starting PR comment processing',
+        historyMetadata: { commandMode: job.data.commandMode || 'default' }
+    });
     await ensureGitRepository(correlatedLogger);
     state.localRepoPath = await ensureRepoCloned({ repoUrl, owner: repoOwner, repoName, authToken: githubToken.token });
 
@@ -364,11 +352,11 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     job.data.subtitle = summaryTitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
 
-    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
+    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, reviewCommentsSection });
 
     const { claudeResult, agentType } = await resolveAndExecuteAgent({
         llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
-        pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId
+        pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient
     });
     state.claudeResult = claudeResult;
 
@@ -382,39 +370,12 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         historyMetadata: { sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, model: state.claudeResult.model }
     });
 
-    if (!state.claudeResult.success) throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
+    const postResult = await handlePostExecution(
+        { state, job, taskId, stateManager, context, unprocessedReviewComments, llm },
+        taskUrl,
+    );
 
-    const changesSummary = state.claudeResult.summary || state.claudeResult.finalResult?.result || '';
-    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
-    const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Follow-up changes' });
-
-    if (commitResult) {
-        await pushBranch(state.worktreeInfo.worktreePath, state.worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
-    }
-
-    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
-    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl }, state.claudeResult);
-    const completionComment = await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
-    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
-
-    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
-        historyMetadata: { githubComment: { url: completionComment.data.html_url, body: completionComment.data.body } }
-    });
-
-    // Persist commit hash to database for historic diff exploration
-    if (commitResult?.commitHash) {
-        try {
-            await db('tasks')
-                .where({ task_id: taskId })
-                .update({ commit_hash: commitResult.commitHash });
-            correlatedLogger.info({ taskId, commitHash: commitResult.commitHash }, 'Saved commit hash to tasks table');
-        } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
-        }
-    }
-
-    return { status: 'complete', commit: commitResult?.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
+    return { status: 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
 
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
@@ -423,7 +384,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
     // Resolve model name early for task state tracking
-    let modelName = DEFAULT_MODEL_NAME;
+    let modelName: string | null = DEFAULT_MODEL_NAME;
     if (llm) {
         try {
             const resolution = await resolveLlmLabel(llm);
@@ -444,6 +405,9 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
             // Keep DEFAULT_MODEL_NAME if registry fails
         }
     }
+    if (!modelName) {
+        throw new NoDefaultModelConfiguredError();
+    }
 
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();
@@ -461,6 +425,10 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
 
     try {
+        // Branch early for review mode — read-only analysis, no commits or pushes
+        if (job.data.commandMode === 'review') {
+            return await executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments });
+        }
         return await executeProcessing({ job, context, llm, taskId, stateManager, state });
     } catch (error) {
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });

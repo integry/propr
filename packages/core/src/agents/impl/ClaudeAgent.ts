@@ -26,7 +26,7 @@ import {
     buildClaudePrompt,
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
-import { resolveModelAlias, getDefaultModel } from '../../config/modelAliases.js';
+import { resolveModelAlias, getDefaultModel, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -115,7 +115,10 @@ export class ClaudeAgent implements Agent {
         } = options;
 
         const startTime = Date.now();
-        const effectiveModel = model || this.config.defaultModel || getDefaultModel();
+        const effectiveModel = model || this.config.defaultModel;
+        if (!effectiveModel) {
+            throw new NoDefaultModelConfiguredError();
+        }
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
         logger.info({
@@ -244,7 +247,7 @@ export class ClaudeAgent implements Agent {
                 modifiedFiles: [],
                 commitMessage: null,
                 summary: undefined,
-                modelUsed: this.config.defaultModel || getDefaultModel()
+                modelUsed: this.config.defaultModel || 'unknown'
             };
         }
     }

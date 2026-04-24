@@ -1,6 +1,7 @@
 import { test, after, mock, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, ALL_MODELS, findMatchingModel, getModelShortName } from '@propr/core';
+import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, resolveLlmLabel, ALL_MODELS, findMatchingModel, getModelShortName, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from '@propr/core';
+import type { ReviewAssignment } from '@propr/core';
 import { AgentRegistry } from '@propr/core';
 import type { AgentConfig } from '@propr/core';
 
@@ -26,15 +27,21 @@ test('Model Aliases Configuration', async (t) => {
         assert.strictEqual(resolveModelAlias('custom-model-id'), 'custom-model-id');
     });
 
-    await t.test('should use default model when no model specified', () => {
-        const defaultModel = resolveModelAlias(null);
-        assert.strictEqual(defaultModel, 'claude-sonnet-4-6');
-        assert.strictEqual(defaultModel, MODEL_ALIASES[DEFAULT_MODEL_ALIAS]);
+    await t.test('should throw NoDefaultModelConfiguredError when no model specified and no agent configured', () => {
+        assert.throws(
+            () => resolveModelAlias(null),
+            (err: any) => {
+                assert.ok(err instanceof NoDefaultModelConfiguredError, 'Should throw NoDefaultModelConfiguredError');
+                assert.ok(err.message.includes('No default AI model configured'), 'Error message should be descriptive');
+                return true;
+            }
+        );
     });
 
-    await t.test('getDefaultModel should return sonnet as default', () => {
-        assert.strictEqual(getDefaultModel(), 'claude-sonnet-4-6');
-        assert.strictEqual(DEFAULT_MODEL_ALIAS, 'sonnet');
+    await t.test('getDefaultModel should return null when no agent configured', () => {
+        // Without any configured agent or env var, getDefaultModel returns null
+        const result = getDefaultModel();
+        assert.strictEqual(result, null, 'Should return null when no default model is configured');
     });
 
     await t.test('should handle explicit version aliases', () => {
@@ -478,6 +485,180 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
             );
         }
     });
+});
+
+test('resolveReviewModels - multi-model /review resolution', async (t) => {
+    // Mock agent configurations for testing
+    const mockAgentConfigs = [
+        {
+            config: {
+                id: 'claude-agent-1',
+                type: 'claude' as const,
+                alias: 'claude',
+                enabled: true,
+                supportedModels: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                defaultModel: 'claude-sonnet-4-6'
+            }
+        },
+        {
+            config: {
+                id: 'gemini-agent-1',
+                type: 'gemini' as const,
+                alias: 'gemini',
+                enabled: true,
+                supportedModels: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3-pro-preview'],
+                defaultModel: 'gemini-2.5-pro'
+            }
+        },
+        {
+            config: {
+                id: 'codex-agent-1',
+                type: 'codex' as const,
+                alias: 'codex',
+                enabled: true,
+                supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+                defaultModel: 'gpt-5.4'
+            }
+        }
+    ];
+
+    // Setup mock before tests
+    const registry = AgentRegistry.getInstance();
+
+    const originalGetAllAgents = registry.getAllAgents.bind(registry);
+    const originalGetDefaultAgent = registry.getDefaultAgent.bind(registry);
+    const originalEnsureInitialized = registry.ensureInitialized.bind(registry);
+    const originalGetAgentByAlias = registry.getAgentByAlias.bind(registry);
+
+    registry.getAllAgents = () => mockAgentConfigs as any;
+    registry.getDefaultAgent = () => mockAgentConfigs[0] as any;
+    registry.ensureInitialized = async () => { /* no-op for tests */ };
+    registry.getAgentByAlias = (alias: string) => {
+        return mockAgentConfigs.find(a => a.config.alias === alias) as any;
+    };
+
+    await t.test('/review claude resolves to exactly one enabled Claude agent/model pair', async () => {
+        const results = await resolveReviewModels(['claude']);
+        assert.strictEqual(results.length, 1, 'Should resolve to exactly one assignment');
+        assert.strictEqual(results[0].agentAlias, 'claude');
+        assert.strictEqual(results[0].model, 'claude-sonnet-4-6', 'Should use default Claude model');
+        assert.ok(results[0].displayLabel, 'Should have a display label');
+    });
+
+    await t.test('/review with two distinct models resolves to two assignments', async () => {
+        const results = await resolveReviewModels(['gemini-3-pro-preview', 'gpt-5.4']);
+        assert.strictEqual(results.length, 2, 'Should resolve to two assignments');
+
+        const agentAliases = results.map(r => r.agentAlias);
+        assert.ok(agentAliases.includes('gemini'), 'Should include gemini agent');
+        assert.ok(agentAliases.includes('codex'), 'Should include codex agent');
+    });
+
+    await t.test('/review llm-gemini-3-pro-preview gpt-54 resolves correctly (llm- prefix handled upstream)', async () => {
+        // The slash command parser strips "llm-" prefix, so we test with the stripped versions
+        const results = await resolveReviewModels(['gemini-pro-preview', 'codex-gpt54']);
+        assert.strictEqual(results.length, 2, 'Should resolve to two assignments');
+    });
+
+    await t.test('duplicate aliases resolve once', async () => {
+        const results = await resolveReviewModels(['claude', 'claude']);
+        assert.strictEqual(results.length, 1, 'Duplicate should be deduplicated to one');
+        assert.strictEqual(results[0].agentAlias, 'claude');
+    });
+
+    await t.test('equivalent model references deduplicate', async () => {
+        // "gemini" and "gemini" both resolve to the same default model
+        const results = await resolveReviewModels(['gemini', 'gemini']);
+        assert.strictEqual(results.length, 1, 'Same model via same alias should deduplicate');
+    });
+
+    await t.test('unknown labels fail fast with clear error', async () => {
+        await assert.rejects(
+            () => resolveReviewModels(['nonexistent-xyz']),
+            (err: any) => {
+                assert.ok(err instanceof ReviewModelResolutionError, 'Should throw ReviewModelResolutionError');
+                assert.ok(err.unresolvedTokens.includes('nonexistent-xyz'), 'Should identify the unresolved token');
+                assert.ok(err.message.includes('nonexistent-xyz'), 'Error message should contain the token');
+                return true;
+            }
+        );
+    });
+
+    await t.test('partial failure reports all unresolved tokens', async () => {
+        await assert.rejects(
+            () => resolveReviewModels(['claude', 'unknown-model-1', 'unknown-model-2']),
+            (err: any) => {
+                assert.ok(err instanceof ReviewModelResolutionError);
+                assert.strictEqual(err.unresolvedTokens.length, 2, 'Should report both unresolved tokens');
+                assert.ok(err.unresolvedTokens.includes('unknown-model-1'));
+                assert.ok(err.unresolvedTokens.includes('unknown-model-2'));
+                return true;
+            }
+        );
+    });
+
+    await t.test('empty input uses default model from configured agent', async () => {
+        // With a mock default agent configured, empty labels should use its default model
+        const results = await resolveReviewModels([]);
+        assert.strictEqual(results.length, 1, 'Should return one assignment using default model');
+        assert.strictEqual(results[0].agentAlias, 'claude');
+        assert.strictEqual(results[0].model, 'claude-sonnet-4-6');
+    });
+
+    await t.test('family shorthands resolve correctly', async () => {
+        // claude -> default enabled Claude agent/model
+        const claudeResults = await resolveReviewModels(['claude']);
+        assert.strictEqual(claudeResults[0].agentAlias, 'claude');
+        assert.strictEqual(claudeResults[0].model, 'claude-sonnet-4-6');
+
+        // gemini -> default enabled Gemini agent/model
+        const geminiResults = await resolveReviewModels(['gemini']);
+        assert.strictEqual(geminiResults[0].agentAlias, 'gemini');
+        assert.strictEqual(geminiResults[0].model, 'gemini-2.5-pro');
+
+        // codex -> default enabled Codex agent/model
+        const codexResults = await resolveReviewModels(['codex']);
+        assert.strictEqual(codexResults[0].agentAlias, 'codex');
+        assert.strictEqual(codexResults[0].model, 'gpt-5.4');
+    });
+
+    await t.test('assignments include display-friendly labels', async () => {
+        const results = await resolveReviewModels(['claude', 'gemini', 'codex']);
+        assert.strictEqual(results.length, 3);
+
+        for (const result of results) {
+            assert.ok(result.displayLabel, `Assignment for ${result.agentAlias} should have displayLabel`);
+            assert.notStrictEqual(result.displayLabel, '', 'Display label should not be empty');
+        }
+
+        // Verify specific display labels
+        const claudeAssignment = results.find(r => r.agentAlias === 'claude');
+        assert.strictEqual(claudeAssignment?.displayLabel, 'Claude Sonnet 4.6');
+
+        const geminiAssignment = results.find(r => r.agentAlias === 'gemini');
+        assert.strictEqual(geminiAssignment?.displayLabel, 'Gemini 2.5 Pro');
+
+        const codexAssignment = results.find(r => r.agentAlias === 'codex');
+        assert.strictEqual(codexAssignment?.displayLabel, 'GPT-5.4');
+    });
+
+    await t.test('ReviewAssignment has correct shape', async () => {
+        const results = await resolveReviewModels(['claude']);
+        const assignment = results[0];
+
+        assert.ok('agentAlias' in assignment, 'Should have agentAlias');
+        assert.ok('model' in assignment, 'Should have model');
+        assert.ok('displayLabel' in assignment, 'Should have displayLabel');
+        assert.strictEqual(typeof assignment.agentAlias, 'string');
+        assert.strictEqual(typeof assignment.model, 'string');
+        assert.strictEqual(typeof assignment.displayLabel, 'string');
+    });
+
+    // Restore original methods
+    registry.getAllAgents = originalGetAllAgents;
+    registry.getDefaultAgent = originalGetDefaultAgent;
+    registry.ensureInitialized = originalEnsureInitialized;
+    registry.getAgentByAlias = originalGetAgentByAlias;
 });
 
 // Force exit due to module-level initialization in @propr/core

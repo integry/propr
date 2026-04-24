@@ -1,6 +1,7 @@
 // Task queue type definitions
 import type { Job } from 'bullmq';
 import type { ConversationStep, TokenUsage } from '../utils/llmMetrics.types.js';
+import type { CommandMeta } from '../webhook/slashCommandParser.js';
 
 export interface IssueJobData {
     repoOwner: string;
@@ -48,6 +49,14 @@ export interface CommentJobData {
     subtitle?: string;
     systemAction?: SystemAction;
     autoResolveContext?: AutoResolveContext;
+    /** Structured slash-command metadata (e.g. /review, /fix) */
+    commandMeta?: CommandMeta;
+    /** Flattened command mode for queue serialization; defaults to 'default' when absent */
+    commandMode?: 'default' | 'review' | 'fix';
+    /** Requested model labels for /review commands */
+    requestedModels?: string[];
+    /** Extra instructions from the slash command body */
+    commandInstructions?: string;
 }
 
 export interface UnprocessedComment {

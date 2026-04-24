@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getEncoding, Tiktoken } from "js-tiktoken";
+import { getDefaultModel } from '../config/modelAliases.js';
+import logger from './logger.js';
 
 interface MessageUsage {
     input_tokens?: number;
@@ -264,8 +266,18 @@ function getEncoder(): Tiktoken {
  * This is free and accurate, unlike tiktoken which can be off by 30%+ for code.
  * Falls back to tiktoken if the API call fails.
  */
-export async function countTokens(text: string, model: string = 'claude-sonnet-4-5'): Promise<number> {
+export async function countTokens(text: string, model?: string): Promise<number> {
     if (!text) return 0;
+
+    if (!model) {
+        const defaultModel = getDefaultModel();
+        if (!defaultModel) {
+            // Fall back to tiktoken estimation when no model is configured
+            logger.warn('No default model configured for token counting - falling back to tiktoken estimation (may be inaccurate by 30%+)');
+            return estimateTokens(text);
+        }
+        model = defaultModel;
+    }
 
     try {
         const response = await getAnthropicClient().messages.countTokens({

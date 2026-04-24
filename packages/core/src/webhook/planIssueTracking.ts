@@ -4,19 +4,16 @@ import {
     findPlanIssueByRepoAndPR,
     updatePlanIssueStatus,
     linkPRToPlanIssue,
-    updatePlanIssueByPR,
-    getPlanIssuesByDraft
+    updatePlanIssueByPR
 } from '../config/planIssueManager.js';
 import {
     determinePRStatusUpdate,
-    isInProgressStatus,
     PlanIssueStatus
 } from './statusMachine.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import { loadPrLabel } from '../config/configManager.js';
-import { isDraftPaused } from '../services/taskPlanning/draftPauseResume.js';
-import { checkAndMigrateRepositoryFromWebhook, getIssueLabels, addProcessingLabelToEpicPR } from './planIssueTrackingHelpers.js';
+import { checkAndMigrateRepositoryFromWebhook } from './planIssueTrackingHelpers.js';
+import { handleMergedPRNextIssueTrigger } from './planIssueTrigger.js';
 import type {
     IssuesEvent,
     IssueCommentEvent,
@@ -148,32 +145,30 @@ async function handleEpicPROpened(
  * Handles triggering the next pending issue after a PR is merged.
  * Checks if epic PR has pending checks and defers if necessary.
  */
-async function handleMergedPRNextIssueTrigger(
-    repository: string,
-    issueNumber: number,
-    draftId: string,
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
-    const issueLabels = await getIssueLabels(repository, issueNumber, log);
-    const hasAutoMerge = issueLabels.includes('auto-merge');
-    log.info({ repository, issueNumber, issueLabels, hasAutoMerge }, 'Checking auto-merge for next issue trigger');
-
-    if (!hasAutoMerge) {
-        log.info({ repository, issueNumber }, 'Skipping next issue trigger - no auto-merge label');
-        return;
-    }
-
-    // Find epic label to pass to next issue (format: base-{epicBranchName})
-    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
-
-    // Trigger next issue immediately - no need to wait for Epic PR checks since:
-    // 1. Child issues can start processing independently
-    // 2. triggerNextPendingIssue already guards against triggering while issues are in progress
-    await triggerNextPendingIssue(draftId, repository, epicLabel, log);
-}
-
 // Re-export from statusMachine for backwards compatibility
 export { determinePRStatusUpdate } from './statusMachine.js';
+// Re-export from planIssueTrigger for backwards compatibility
+export { triggerNextPendingIssue } from './planIssueTrigger.js';
+
+/**
+ * Checks for repository renames by inspecting the PR body for issue references
+ * and migrating database records if needed.
+ */
+async function checkRenamesFromPRBody(
+    payload: PullRequestEvent,
+    repository: string,
+    prNumber: number,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    const prBody = payload.pull_request.body || '';
+    const issueRefMatch = prBody.match(/(?:fixes|closes|resolves|fix|close|resolve)\s*#(\d+)/i);
+    const referencedIssue = issueRefMatch ? parseInt(issueRefMatch[1], 10) : null;
+
+    await checkAndMigrateRepositoryFromWebhook(repository, prNumber, log);
+    if (referencedIssue) {
+        await checkAndMigrateRepositoryFromWebhook(repository, referencedIssue, log);
+    }
+}
 
 /**
  * Handles PR events to track PR associations with plan issues.
@@ -188,17 +183,7 @@ export async function handlePlanPRUpdate(
     const action = payload.action;
 
     try {
-        // Check for repository rename before processing
-        // Extract issue number from PR body if it references one
-        const prBody = payload.pull_request.body || '';
-        const issueRefMatch = prBody.match(/(?:fixes|closes|resolves|fix|close|resolve)\s*#(\d+)/i);
-        const referencedIssue = issueRefMatch ? parseInt(issueRefMatch[1], 10) : null;
-
-        // Check both PR number and referenced issue number for potential renames
-        await checkAndMigrateRepositoryFromWebhook(repository, prNumber, log);
-        if (referencedIssue) {
-            await checkAndMigrateRepositoryFromWebhook(repository, referencedIssue, log);
-        }
+        await checkRenamesFromPRBody(payload, repository, prNumber, log);
 
         const prTitle = payload.pull_request.title || '';
         if (prTitle.startsWith('[Epic]')) {
@@ -208,21 +193,11 @@ export async function handlePlanPRUpdate(
             return;
         }
 
-        let planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
-
-        if (!planIssue && action === 'opened') {
-            const prBody = payload.pull_request.body || '';
-            const issueRefs = prBody.match(/(?:fixes|closes|resolves|fix|close|resolve)\s*#(\d+)/gi);
-            if (issueRefs) {
-                planIssue = await linkPRToReferencedPlanIssue(issueRefs, repository, prNumber, log);
-            }
-        }
-
+        const planIssue = await findOrLinkPlanIssue(payload, repository, prNumber, log);
         if (!planIssue) return;
 
         const newStatus = determinePRStatusUpdate(action, payload.pull_request.merged ?? false, planIssue.status);
 
-        // Update status if there's a new status to set
         if (newStatus) {
             await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
             log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
@@ -232,12 +207,10 @@ export async function handlePlanPRUpdate(
         // Check both newStatus and current status to handle race conditions
         const isMerged = newStatus === PlanIssueStatus.MERGED
             || (action === 'closed' && payload.pull_request.merged === true && planIssue.status === PlanIssueStatus.MERGED);
-        if (isMerged) {
-            if (planIssue.draft_id) {
-                await handleMergedPRNextIssueTrigger(repository, planIssue.issue_number, planIssue.draft_id, log);
-            } else {
-                log.warn({ repository, prNumber }, 'Merged but cannot trigger next issue - missing draft_id');
-            }
+        if (isMerged && planIssue.draft_id) {
+            await handleMergedPRNextIssueTrigger(repository, planIssue.issue_number, planIssue.draft_id, log);
+        } else if (isMerged) {
+            log.warn({ repository, prNumber, hasDraftId: !!planIssue.draft_id }, 'Merged but cannot trigger next issue - missing draft_id');
         }
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
@@ -245,88 +218,26 @@ export async function handlePlanPRUpdate(
 }
 
 /**
- * Triggers the next pending issue in a plan by adding processing labels.
- * Only triggers if there are no issues currently being processed or under review.
+ * Attempts to find or link a plan issue for the given PR.
+ * Uses payload.action internally to determine if linking should be attempted.
  */
-export async function triggerNextPendingIssue(
-    draftId: string,
+async function findOrLinkPlanIssue(
+    payload: PullRequestEvent,
     repository: string,
-    epicLabel: string | undefined,
+    prNumber: number,
     log: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
-    try {
-        // Check if the draft is paused - if so, don't trigger the next issue
-        const paused = await isDraftPaused(draftId);
-        if (paused) {
-            log.info({ draftId }, 'Skipping next issue trigger - draft execution is paused');
-            return;
+): Promise<Awaited<ReturnType<typeof findPlanIssueByRepoAndPR>>> {
+    let planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
+
+    if (!planIssue && payload.action === 'opened') {
+        const prBody = payload.pull_request.body || '';
+        const issueRefs = prBody.match(/(?:fixes|closes|resolves|fix|close|resolve)\s*#(\d+)/gi);
+        if (issueRefs) {
+            planIssue = await linkPRToReferencedPlanIssue(issueRefs, repository, prNumber, log);
         }
-
-        // Get all issues in the same plan
-        const planIssues = await getPlanIssuesByDraft(draftId);
-
-        // Check if there are any issues currently in progress (processing or under_review)
-        // These statuses indicate an active PR or processing that hasn't completed yet
-        const hasInProgressIssue = planIssues.some(issue => isInProgressStatus(issue.status));
-        if (hasInProgressIssue) {
-            const inProgressIssues = planIssues.filter(issue => isInProgressStatus(issue.status));
-            log.debug({
-                draftId,
-                inProgressIssues: inProgressIssues.map(i => ({ number: i.issue_number, status: i.status }))
-            }, 'Skipping next issue trigger - there are issues still in progress');
-            return;
-        }
-
-        // Find the next pending issue
-        const nextPending = planIssues.find(issue => issue.status === PlanIssueStatus.PENDING);
-        if (!nextPending) {
-            log.debug({ draftId }, 'No more pending issues in plan');
-
-            // All issues are done - add processing label to Epic PR if present
-            if (epicLabel) {
-                await addProcessingLabelToEpicPR(repository, epicLabel, log);
-            }
-            return;
-        }
-
-        const [owner, repo] = repository.split('/');
-        const processingLabels = getPrimaryProcessingLabels();
-        const primaryLabel = processingLabels[0] || 'AI';
-
-        // Build labels list: processing label, auto-merge, and epic label if present
-        const labelsToAdd = [primaryLabel, 'auto-merge'];
-        if (epicLabel) {
-            labelsToAdd.push(epicLabel);
-        }
-
-        log.info({
-            draftId,
-            nextIssueNumber: nextPending.issue_number,
-            labels: labelsToAdd
-        }, 'Triggering next pending issue in plan');
-
-        const octokit = await getAuthenticatedOctokit();
-
-        // Add the processing labels to trigger the issue
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner,
-            repo,
-            issue_number: nextPending.issue_number,
-            labels: labelsToAdd
-        });
-
-        log.info({
-            draftId,
-            issueNumber: nextPending.issue_number,
-            labels: labelsToAdd
-        }, 'Added processing labels to next pending issue');
-
-    } catch (error) {
-        log.warn({
-            draftId,
-            error: (error as Error).message
-        }, 'Failed to trigger next pending issue');
     }
+
+    return planIssue;
 }
 
 /**

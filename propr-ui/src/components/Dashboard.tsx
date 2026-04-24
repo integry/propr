@@ -8,6 +8,7 @@ import TopModels from './TopModels';
 import TaskList from './TaskList';
 import ActivitySparkline from './ActivitySparkline';
 import { OnboardingWidget } from './Dashboard/OnboardingWidget';
+import { NoDefaultModelAlert } from './Dashboard/NoDefaultModelAlert';
 import AgentTankDetectionBanner from './AgentTankDetectionBanner';
 import { getQueueStats } from '../api/proprApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
@@ -114,7 +115,7 @@ const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
 
   // System readiness state for onboarding
-  const { hasAgents, hasRepos, hasTasks, isLoading: readinessLoading } = useSystemReadiness();
+  const { hasAgents, hasDefaultModel, hasRepos, hasTasks, isLoading: readinessLoading } = useSystemReadiness();
   const showOnboarding = !readinessLoading && (!hasAgents || !hasRepos || !hasTasks);
 
   // Lifted state for KPIs
@@ -184,6 +185,13 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="bg-white min-h-full">
+      {/* Error alert when no AI agent is configured */}
+      {!readinessLoading && (!hasAgents || !hasDefaultModel) && (
+        <div className="px-6 pt-6">
+          <NoDefaultModelAlert hasAgents={hasAgents} hasDefaultModel={hasDefaultModel} />
+        </div>
+      )}
+
       {/* Onboarding Widget - shown when setup is incomplete */}
       {showOnboarding && (
         <div className="px-6 pt-6">

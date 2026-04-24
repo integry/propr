@@ -32,6 +32,7 @@ export {
   type TodoItem,
   type TokenUsageInfo,
   type QueueStatsData,
+  type CommandMode,
   type EventPayload,
 } from './events.js';
 

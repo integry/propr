@@ -136,6 +136,9 @@ export interface QueueStatsUpdatePayload {
   timestamp: string;
 }
 
+/** Command mode for slash-command-driven tasks */
+export type CommandMode = 'default' | 'review' | 'fix';
+
 /** Union type for all event payloads */
 export type EventPayload =
   | TaskUpdatePayload

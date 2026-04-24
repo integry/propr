@@ -114,6 +114,8 @@ export interface TaskHistoryMetadata {
     url: string;
   };
   error?: string;
+  commandMode?: 'default' | 'review' | 'fix';
+  consumedReviewCommentIds?: number[];
   [key: string]: unknown;
 }
 
@@ -151,6 +153,7 @@ export interface TaskInfo {
   modelName: string | null;
   issueNumber?: number;
   comments?: unknown[];
+  commandMode?: 'default' | 'review' | 'fix';
 }
 
 /**

@@ -58,7 +58,7 @@ export const formatTimestamp = (timestamp: string | null): string => {
 // Format execution type for display
 export const formatType = (type: string): string => {
   return type
-    .split('_')
+    .split(/[-_]/)
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
 };

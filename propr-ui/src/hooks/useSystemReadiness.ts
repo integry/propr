@@ -8,6 +8,8 @@ import { getAgents, getRepoConfig, getTasks, AgentConfig, MonitoredRepo } from '
 export interface SystemReadinessState {
   /** Whether at least one enabled agent is configured */
   hasAgents: boolean;
+  /** Whether at least one enabled agent has a default model configured */
+  hasDefaultModel: boolean;
   /** Whether at least one repository is configured for monitoring */
   hasRepos: boolean;
   /** Whether at least one task exists (GitHub issues with ProPR processing labels or created via Plans) */
@@ -20,6 +22,7 @@ export interface SystemReadinessState {
 
 export function useSystemReadiness(): SystemReadinessState {
   const [hasAgents, setHasAgents] = useState<boolean>(false);
+  const [hasDefaultModel, setHasDefaultModel] = useState<boolean>(false);
   const [hasRepos, setHasRepos] = useState<boolean>(false);
   const [hasTasks, setHasTasks] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -47,6 +50,9 @@ export function useSystemReadiness(): SystemReadinessState {
       const agents: AgentConfig[] = agentsResponse.agents || [];
       const enabledAgents = agents.filter((agent) => agent.enabled);
       setHasAgents(enabledAgents.length > 0);
+
+      // Check if at least one enabled agent has a default model configured
+      setHasDefaultModel(enabledAgents.some((agent) => !!agent.defaultModel));
 
       // Check if at least one repository is configured
       const repos: MonitoredRepo[] = repoConfigResponse.repos_to_monitor || [];
@@ -79,6 +85,7 @@ export function useSystemReadiness(): SystemReadinessState {
 
   return {
     hasAgents,
+    hasDefaultModel,
     hasRepos,
     hasTasks,
     isLoading,
