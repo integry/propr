@@ -11,7 +11,6 @@ interface FiltersProps {
   repoFilter: string;
   setRepoFilter: (repo: string) => void;
   availableRepos: RepoOption[];
-  reposLoading: boolean;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
 }
@@ -24,7 +23,6 @@ export const Filters: React.FC<FiltersProps> = ({
   repoFilter,
   setRepoFilter,
   availableRepos,
-  reposLoading,
   searchQuery,
   setSearchQuery
 }) => {
