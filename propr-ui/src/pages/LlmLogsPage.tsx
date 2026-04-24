@@ -130,7 +130,7 @@ const LlmLogsPage: React.FC = () => {
         setLoading(false);
       }
     }
-  }, [typeFilter, modelFilter, statusFilter, workTypeFilter, currentPage]);
+  }, [typeFilter, modelFilter, statusFilter, workTypeFilter]);
 
   // Initial load and when filters/page change
   useEffect(() => {
