@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getTasks, getRepositoryStats } from '../api/proprApi';
 import { useSocket } from '../contexts/useSocket';
+import type { RepoOption } from './RepositorySelector';
 import type { TaskListProps, LoadConfig } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
@@ -56,7 +57,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [availableRepos, setAvailableRepos] = useState<string[]>([]);
+  const [availableRepos, setAvailableRepos] = useState<RepoOption[]>([]);
   const [reposLoading, setReposLoading] = useState<boolean>(true);
 
   const [totalTasks, setTotalTasks] = useState<number>(0);
@@ -111,11 +112,25 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         setReposLoading(true);
         const data = await getRepositoryStats();
 
-        // Extract repository names from stats (repos with task history)
-        const reposWithHistory = (data.repositories || []).map(r => r.repository);
+        const repos = data.repositories || [];
+        const totalCount = repos.reduce((sum, r) => sum + r.total, 0);
 
-        // Sort alphabetically and include "all" option at the beginning
-        setAvailableRepos(['all', ...reposWithHistory.sort()]);
+        const allOption: RepoOption = {
+          name: 'all',
+          enabled: true,
+          displayName: 'All Repos',
+          count: totalCount,
+        };
+
+        const repoOptions: RepoOption[] = repos
+          .sort((a, b) => a.repository.localeCompare(b.repository))
+          .map(r => ({
+            name: r.repository,
+            enabled: true,
+            count: r.total,
+          }));
+
+        setAvailableRepos([allOption, ...repoOptions]);
       } catch (err) {
         console.error('Error fetching repositories:', err);
       } finally {

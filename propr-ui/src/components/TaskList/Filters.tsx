@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Filter, Search, X } from 'lucide-react';
+import { RepositorySelector, type RepoOption } from '../RepositorySelector';
 
 interface FiltersProps {
   hideFilters?: boolean;
@@ -9,7 +10,7 @@ interface FiltersProps {
   setFilter: (filter: string) => void;
   repoFilter: string;
   setRepoFilter: (repo: string) => void;
-  availableRepos: string[];
+  availableRepos: RepoOption[];
   reposLoading: boolean;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
@@ -73,24 +74,15 @@ export const Filters: React.FC<FiltersProps> = ({
                 <option value="waiting">Waiting</option>
               </select>
 
-              {/* Repository filter - only show if multiple repos */}
-              {availableRepos.length > 2 && (
-                <select
-                  value={repoFilter}
-                  onChange={(e) => setRepoFilter(e.target.value)}
-                  disabled={reposLoading}
-                  className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:opacity-50 max-w-[120px] sm:max-w-none truncate"
-                >
-                  {reposLoading ? (
-                    <option value="all">Loading...</option>
-                  ) : (
-                    availableRepos.map(repo => (
-                      <option key={repo} value={repo}>
-                        {repo === 'all' ? 'All Repos' : repo}
-                      </option>
-                    ))
-                  )}
-                </select>
+              {/* Repository filter - only show if multiple repos (more than just "All Repos") */}
+              {availableRepos.length > 1 && (
+                <RepositorySelector
+                  repos={availableRepos}
+                  selectedRepo={repoFilter}
+                  onRepoChange={setRepoFilter}
+                  variant="default"
+                  className="w-[160px] sm:w-[220px]"
+                />
               )}
             </div>
           </>
