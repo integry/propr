@@ -40,7 +40,11 @@ export function useNewPlanForm(): UseNewPlanFormReturn {
   // Called by RepositorySelector when repos are loaded internally
   const handleReposLoaded = useCallback((enabledRepos: Repo[]) => {
     setRepos(enabledRepos);
-    setSelectedRepo(getInitialSelectedRepo(enabledRepos));
+    setSelectedRepo(prev => {
+      // Only initialize if current selection is empty or no longer valid
+      if (prev && enabledRepos.some(r => r.name === prev)) return prev;
+      return getInitialSelectedRepo(enabledRepos);
+    });
   }, []);
 
   const handleStartPlanning = useCallback(async () => {

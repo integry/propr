@@ -38,22 +38,21 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
 
   // Handle repos loaded by RepositorySelector
   const handleReposLoaded = useCallback((enabledRepos: RepoOption[]) => {
-    if (enabledRepos.length === 0) return;
-    const inferred = inferRepoFromUrl();
-    if (inferred) {
-      const match = enabledRepos.find(r => r.name === inferred);
-      if (match) setSelectedRepo(match.name);
-      else setSelectedRepo(enabledRepos[0].name);
-    } else {
-      const currentStillValid = selectedRepo && enabledRepos.some(r => r.name === selectedRepo);
-      if (!currentStillValid) {
-        const settings = getPlannerSettings();
-        const lastRepo = settings.lastRepository;
-        if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) {
-          setSelectedRepo(lastRepo);
-        } else {
-          setSelectedRepo(enabledRepos[0].name);
-        }
+    if (enabledRepos.length === 0) {
+      setSelectedRepo('');
+      return;
+    }
+    const currentStillValid = selectedRepo && enabledRepos.some(r => r.name === selectedRepo);
+    if (!currentStillValid) {
+      // Priority: lastRepository from settings > URL inference > first repo
+      const settings = getPlannerSettings();
+      const lastRepo = settings.lastRepository;
+      if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) {
+        setSelectedRepo(lastRepo);
+      } else {
+        const inferred = inferRepoFromUrl();
+        const match = inferred && enabledRepos.find(r => r.name === inferred);
+        setSelectedRepo(match ? match.name : enabledRepos[0].name);
       }
     }
   }, [inferRepoFromUrl, selectedRepo]);
