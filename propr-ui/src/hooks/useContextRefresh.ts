@@ -169,6 +169,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const isLoadingRef = useRef<boolean>(false);
   // Store the full preview data (at max context level) for local simulation
   const fullPreviewDataRef = useRef<PreviewResult | null>(null);
+  // Track whether we've auto-paused after the first successful context fetch
+  const hasAutoPausedRef = useRef<boolean>(false);
 
   // Keep config ref up to date
   useEffect(() => { configRef.current = config; }, [config]);
@@ -257,6 +259,12 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       fullPreviewDataRef.current = result;
 
       setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
+
+      // Auto-pause after the first successful context fetch
+      if (!hasAutoPausedRef.current) {
+        hasAutoPausedRef.current = true;
+        setIsPaused(true);
+      }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
       const errorMessage = (err as Error).message || 'Failed to fetch preview';
