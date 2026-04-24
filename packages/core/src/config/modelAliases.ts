@@ -1,6 +1,7 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS } from './modelDefinitions.js';
+import logger from '../utils/logger.js';
 
 export type ModelAlias = string;
 export type ModelId = string;
@@ -116,6 +117,50 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     return modelNameOrAlias;
 }
 
+/**
+ * Selects the preferred default model for an agent type when no explicit default is set.
+ * Preference rules:
+ * - Claude: prefer Opus, then Sonnet (skip Haiku)
+ * - Gemini: prefer Pro models (skip Flash)
+ * - Codex/OpenAI: prefer GPT (skip mini/spark variants)
+ */
+function getPreferredModelForAgent(config: AgentConfig): string | null {
+    const models = config.supportedModels;
+    if (!models || models.length === 0) return null;
+
+    const lowerModels = models.map(m => m.toLowerCase());
+
+    switch (config.type) {
+        case 'claude': {
+            // Prefer Opus, then Sonnet
+            const opus = models.find((_m, i) => lowerModels[i].includes('opus'));
+            if (opus) return opus;
+            const sonnet = models.find((_m, i) => lowerModels[i].includes('sonnet'));
+            if (sonnet) return sonnet;
+            break;
+        }
+        case 'gemini': {
+            // Prefer Pro (not Flash)
+            const pro = models.find((_m, i) => lowerModels[i].includes('pro'));
+            if (pro) return pro;
+            break;
+        }
+        case 'codex': {
+            // Prefer GPT (not mini, not spark)
+            const gpt = models.find((_m, i) =>
+                lowerModels[i].startsWith('gpt') &&
+                !lowerModels[i].includes('mini') &&
+                !lowerModels[i].includes('spark')
+            );
+            if (gpt) return gpt;
+            break;
+        }
+    }
+
+    // Ultimate fallback: first supported model
+    return models[0];
+}
+
 function getDefaultModel(): ModelId | null {
     // Try env var first (explicit user configuration)
     if (process.env.DEFAULT_CLAUDE_MODEL) {
@@ -126,8 +171,16 @@ function getDefaultModel(): ModelId | null {
     try {
         const registry = AgentRegistry.getInstance();
         const defaultAgent = registry.getDefaultAgent();
-        if (defaultAgent?.config.defaultModel) {
-            return defaultAgent.config.defaultModel;
+        if (defaultAgent) {
+            // Use the agent's explicit default model if set
+            if (defaultAgent.config.defaultModel) {
+                return defaultAgent.config.defaultModel;
+            }
+            // Otherwise auto-select the preferred model for this agent type
+            const preferred = getPreferredModelForAgent(defaultAgent.config);
+            if (preferred) {
+                return preferred;
+            }
         }
     } catch {
         // Registry not initialized yet
@@ -235,7 +288,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         if (agent.config.alias.toLowerCase() === lowerLabel) {
             return {
                 agentAlias: agent.config.alias,
-                model: agent.config.defaultModel || agent.config.supportedModels[0]
+                model: agent.config.defaultModel || getPreferredModelForAgent(agent.config) || agent.config.supportedModels[0]
             };
         }
     }
@@ -248,7 +301,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
             const matchedModel = findMatchingModel(modelPart, agent.config);
             return {
                 agentAlias: agent.config.alias,
-                model: matchedModel || agent.config.defaultModel || agent.config.supportedModels[0]
+                model: matchedModel || agent.config.defaultModel || getPreferredModelForAgent(agent.config) || agent.config.supportedModels[0]
             };
         }
     }
@@ -432,6 +485,7 @@ export {
     MODEL_ALIASES,
     resolveModelAlias,
     getDefaultModel,
+    getPreferredModelForAgent,
     getOpenRouterId,
     resolveLlmLabel,
     resolveCustomLabel,

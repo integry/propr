@@ -136,7 +136,10 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             conversationLog: claudeOutput.conversationLog || [],
             sessionId: claudeOutput.sessionId,
             conversationId: claudeOutput.conversationId,
-            model: claudeOutput.model || process.env.CLAUDE_MODEL || getDefaultModel() || 'unknown',
+            model: claudeOutput.model || process.env.CLAUDE_MODEL || getDefaultModel() || (() => {
+                logger.warn('No default model configured - model field will be empty. Configure an AI agent with a default model.');
+                return 'unconfigured';
+            })(),
             finalResult: claudeOutput.finalResult,
             modifiedFiles: [],
             commitMessage: null,

@@ -20,6 +20,7 @@ export class AgentRegistry {
     private static instance: AgentRegistry;
     private agents: Map<string, Agent> = new Map(); // Map by ID
     private agentsByAlias: Map<string, Agent> = new Map(); // Map by Alias
+    private defaultAgentAlias: string | null = null; // From settings.default_agent_alias
     private initialized = false;
 
     private constructor() {
@@ -48,6 +49,14 @@ export class AgentRegistry {
             await configManager.migrateAgentConfigs();
 
             const configs = await configManager.loadAgents();
+
+            // Load the default_agent_alias from settings
+            try {
+                const settings = await configManager.loadSettings();
+                this.defaultAgentAlias = (settings as Record<string, unknown>).default_agent_alias as string || null;
+            } catch {
+                this.defaultAgentAlias = null;
+            }
 
             // Clear existing maps
             this.agents.clear();
@@ -143,10 +152,22 @@ export class AgentRegistry {
     }
 
     /**
-     * Gets the default agent (first available or 'default' alias).
+     * Gets the default agent based on settings, then fallback to 'default' alias or first available.
+     * Resolution order:
+     * 1. settings.default_agent_alias (configured in UI)
+     * 2. Agent with 'default' alias
+     * 3. First available (enabled) agent
      */
     getDefaultAgent(): Agent | undefined {
-        // First try to get agent with 'default' alias
+        // First try the configured default agent from settings
+        if (this.defaultAgentAlias) {
+            const configuredAgent = this.agentsByAlias.get(this.defaultAgentAlias);
+            if (configuredAgent) {
+                return configuredAgent;
+            }
+        }
+
+        // Then try to get agent with 'default' alias
         const defaultAgent = this.agentsByAlias.get('default');
         if (defaultAgent) {
             return defaultAgent;
@@ -154,6 +175,20 @@ export class AgentRegistry {
 
         // Otherwise return the first available agent
         return this.getAllAgents()[0];
+    }
+
+    /**
+     * Sets the default agent alias (used when syncing from settings).
+     */
+    setDefaultAgentAlias(alias: string | null): void {
+        this.defaultAgentAlias = alias;
+    }
+
+    /**
+     * Gets the current default agent alias from the registry's cached settings.
+     */
+    getDefaultAgentAlias(): string | null {
+        return this.defaultAgentAlias;
     }
 
     /**

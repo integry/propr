@@ -371,6 +371,31 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         console.error('Warning: Failed to refresh agent registry:', refreshError);
       }
 
+      // Sync default_agent_alias: ensure it points to a valid enabled agent
+      try {
+        const settings = await configManager.loadSettings();
+        const currentDefault = (settings as Record<string, unknown>).default_agent_alias as string | undefined;
+        const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
+
+        let newDefault = currentDefault;
+        if (enabledAgents.length === 0) {
+          // No enabled agents - clear default
+          newDefault = undefined;
+        } else if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) {
+          // Current default is missing or points to a removed/disabled agent - set to first enabled
+          newDefault = enabledAgents[0].alias;
+        }
+
+        if (newDefault !== currentDefault) {
+          await configManager.saveSettings({ default_agent_alias: newDefault } as Record<string, unknown>);
+          // Update the registry's cached alias
+          const registry = AgentRegistry.getInstance();
+          registry.setDefaultAgentAlias(newDefault || null);
+        }
+      } catch (syncError) {
+        console.error('Warning: Failed to sync default agent alias:', syncError);
+      }
+
       await publishConfigUpdate('agents_update');
       await logActivityHelper(`Updated agents configuration (${processedAgents.length} agents)`, 'agents-update', 'agents_updated', req.user?.username);
 
