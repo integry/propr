@@ -13,6 +13,9 @@ import type { ExecutionType } from './llmMetrics.types.js';
 /** Discriminator for the kind of work an LLM call belongs to. */
 export type WorkType = 'task' | 'plan' | 'repository';
 
+/** Canonical list of valid WorkType values, shared across layers. */
+export const WORK_TYPES: readonly WorkType[] = ['task', 'plan', 'repository'] as const;
+
 /**
  * Normalized work-reference that every LLM call can carry.
  * At least one field should be set so the log row can be traced

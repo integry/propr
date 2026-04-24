@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { validatePagination, validateUUID, validateBoolean } from './validation.js';
+import { WORK_TYPES } from '@propr/core';
 
 interface LlmLogsRoutesDeps {
   db: Knex;
@@ -159,6 +160,21 @@ async function fetchMetricRecordsByLogId(
 export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
   const { db } = deps;
 
+  /** Process-wide cache for work-ref column existence. Only caches `true`
+   *  so a process started before the migration will re-check until it lands. */
+  let hasWorkRefColumnsCache = false;
+
+  async function checkWorkRefColumns(): Promise<boolean> {
+    if (hasWorkRefColumnsCache) return true;
+    try {
+      const result = await db.schema.hasColumn('llm_logs', 'work_type');
+      if (result) hasWorkRefColumnsCache = true;
+      return result;
+    } catch {
+      return false;
+    }
+  }
+
   async function getLlmLogs(req: Request, res: Response): Promise<void> {
     try {
       // Validate pagination parameters
@@ -178,8 +194,8 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
       const workType = req.query.work_type as string | undefined;
 
       // Validate work_type if provided
-      if (workType && !['task', 'plan', 'repository'].includes(workType)) {
-        res.status(400).json({ error: 'work_type must be one of: task, plan, repository' });
+      if (workType && !(WORK_TYPES as readonly string[]).includes(workType)) {
+        res.status(400).json({ error: `work_type must be one of: ${WORK_TYPES.join(', ')}` });
         return;
       }
 
@@ -211,8 +227,8 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         workType,
       };
 
-      // Check if work-reference columns exist (migration may not have run yet)
-      const hasWorkRefColumns = await db.schema.hasColumn('llm_logs', 'work_type');
+      // Check if work-reference columns exist (cached after first successful check)
+      const hasWorkRefColumns = await checkWorkRefColumns();
 
       // Build and execute queries
       const baseColumns = [

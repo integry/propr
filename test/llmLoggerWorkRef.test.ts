@@ -1,86 +1,121 @@
 /**
  * Tests for normalized work-reference fields on LlmLogEntry.
  *
- * These tests verify the type shape, the createLlmLogFromAnalysis helper,
- * and the insert row mapping without requiring a real database.
+ * These tests exercise production helpers: buildLlmLogRow, buildTaskWorkRef,
+ * buildAnalysisWorkRef, and createLlmLogFromAnalysis — verifying actual
+ * output rather than hand-written object shapes.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import type { WorkReference, WorkType, LlmLogEntry } from '../packages/core/src/utils/llmLogger.js';
+import {
+  buildLlmLogRow,
+  buildTaskWorkRef,
+  buildAnalysisWorkRef,
+  createLlmLogFromAnalysis,
+  WORK_TYPES,
+} from '../packages/core/src/utils/llmLogger.js';
+import type { WorkReference, LlmLogEntry } from '../packages/core/src/utils/llmLogger.js';
 
-describe('WorkReference type shape', () => {
-  it('accepts a task-linked work reference', () => {
-    const ref: WorkReference = {
-      workType: 'task',
-      taskId: 'job-123',
-      taskNumber: 42,
-      workRepository: 'integry/propr',
-    };
-    assert.strictEqual(ref.workType, 'task');
-    assert.strictEqual(ref.taskId, 'job-123');
-    assert.strictEqual(ref.taskNumber, 42);
-    assert.strictEqual(ref.workRepository, 'integry/propr');
-    assert.strictEqual(ref.planDraftId, undefined);
-    assert.strictEqual(ref.planIssueId, undefined);
-    assert.strictEqual(ref.prNumber, undefined);
-  });
+/* ------------------------------------------------------------------ */
+/*  WORK_TYPES constant                                                */
+/* ------------------------------------------------------------------ */
 
-  it('accepts a PR follow-up work reference with prNumber', () => {
-    const ref: WorkReference = {
-      workType: 'task',
-      taskId: 'pr-comment-99',
-      taskNumber: 99,
-      prNumber: 99,
-      workRepository: 'integry/propr',
-    };
-    assert.strictEqual(ref.workType, 'task');
-    assert.strictEqual(ref.taskId, 'pr-comment-99');
-    assert.strictEqual(ref.taskNumber, 99);
-    assert.strictEqual(ref.prNumber, 99);
-    assert.strictEqual(ref.workRepository, 'integry/propr');
-  });
-
-  it('accepts a plan-linked work reference', () => {
-    const ref: WorkReference = {
-      workType: 'plan',
-      planDraftId: 'draft-abc',
-      planIssueId: 7,
-      workRepository: 'integry/propr',
-    };
-    assert.strictEqual(ref.workType, 'plan');
-    assert.strictEqual(ref.planDraftId, 'draft-abc');
-    assert.strictEqual(ref.planIssueId, 7);
-    assert.strictEqual(ref.taskId, undefined);
-  });
-
-  it('accepts a repository-only work reference', () => {
-    const ref: WorkReference = {
-      workType: 'repository',
-      workRepository: 'integry/propr',
-    };
-    assert.strictEqual(ref.workType, 'repository');
-    assert.strictEqual(ref.workRepository, 'integry/propr');
-  });
-
-  it('accepts a completely empty work reference', () => {
-    const ref: WorkReference = {};
-    assert.strictEqual(ref.workType, undefined);
-    assert.strictEqual(ref.taskId, undefined);
-    assert.strictEqual(ref.prNumber, undefined);
-    assert.strictEqual(ref.planDraftId, undefined);
-    assert.strictEqual(ref.workRepository, undefined);
-  });
-
-  it('work type only allows valid values', () => {
-    const validTypes: WorkType[] = ['task', 'plan', 'repository'];
-    for (const wt of validTypes) {
-      const ref: WorkReference = { workType: wt };
-      assert.ok(validTypes.includes(ref.workType!));
-    }
+describe('WORK_TYPES constant', () => {
+  it('contains exactly the three expected work types', () => {
+    assert.deepStrictEqual([...WORK_TYPES], ['task', 'plan', 'repository']);
   });
 });
 
-describe('LlmLogEntry with workRef', () => {
+/* ------------------------------------------------------------------ */
+/*  buildTaskWorkRef                                                   */
+/* ------------------------------------------------------------------ */
+
+describe('buildTaskWorkRef', () => {
+  it('builds a task work reference with all fields', () => {
+    const ref = buildTaskWorkRef('job-123', 42, 'integry/propr', 99);
+    assert.deepStrictEqual(ref, {
+      workType: 'task',
+      taskId: 'job-123',
+      taskNumber: 42,
+      prNumber: 99,
+      workRepository: 'integry/propr',
+    });
+  });
+
+  it('builds a task work reference without prNumber', () => {
+    const ref = buildTaskWorkRef('job-456', 10, 'integry/propr');
+    assert.strictEqual(ref.workType, 'task');
+    assert.strictEqual(ref.taskId, 'job-456');
+    assert.strictEqual(ref.taskNumber, 10);
+    assert.strictEqual(ref.prNumber, undefined);
+    assert.strictEqual(ref.workRepository, 'integry/propr');
+  });
+
+  it('handles undefined taskId', () => {
+    const ref = buildTaskWorkRef(undefined, 5, 'integry/propr');
+    assert.strictEqual(ref.workType, 'task');
+    assert.strictEqual(ref.taskId, undefined);
+    assert.strictEqual(ref.taskNumber, 5);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  buildAnalysisWorkRef                                               */
+/* ------------------------------------------------------------------ */
+
+describe('buildAnalysisWorkRef', () => {
+  it('returns plan workType for plan-generation', () => {
+    const ref = buildAnalysisWorkRef('plan-generation', 'draft-abc', 'integry/propr');
+    assert.strictEqual(ref.workType, 'plan');
+    assert.strictEqual(ref.planDraftId, 'draft-abc');
+    assert.strictEqual(ref.taskId, undefined);
+    assert.strictEqual(ref.workRepository, 'integry/propr');
+  });
+
+  it('returns plan workType for plan-refinement', () => {
+    const ref = buildAnalysisWorkRef('plan-refinement', 'draft-xyz', 'integry/propr');
+    assert.strictEqual(ref.workType, 'plan');
+    assert.strictEqual(ref.planDraftId, 'draft-xyz');
+  });
+
+  it('returns task workType when taskId is present', () => {
+    const ref = buildAnalysisWorkRef('implementation', 'job-1', 'integry/propr', { taskNumber: 7 });
+    assert.strictEqual(ref.workType, 'task');
+    assert.strictEqual(ref.taskId, 'job-1');
+    assert.strictEqual(ref.taskNumber, 7);
+    assert.strictEqual(ref.planDraftId, undefined);
+  });
+
+  it('returns task workType when only taskNumber is present', () => {
+    const ref = buildAnalysisWorkRef('implementation', undefined, 'integry/propr', { taskNumber: 3 });
+    assert.strictEqual(ref.workType, 'task');
+    assert.strictEqual(ref.taskNumber, 3);
+  });
+
+  it('returns repository workType when no task context', () => {
+    const ref = buildAnalysisWorkRef('repo-chat', undefined, 'integry/propr');
+    assert.strictEqual(ref.workType, 'repository');
+    assert.strictEqual(ref.taskId, undefined);
+    assert.strictEqual(ref.taskNumber, undefined);
+    assert.strictEqual(ref.workRepository, 'integry/propr');
+  });
+
+  it('passes prNumber through for non-plan types', () => {
+    const ref = buildAnalysisWorkRef('implementation', 'job-1', 'integry/propr', { taskNumber: 5, prNumber: 88 });
+    assert.strictEqual(ref.prNumber, 88);
+  });
+
+  it('does not pass prNumber for plan types', () => {
+    const ref = buildAnalysisWorkRef('plan-generation', 'draft-1', 'integry/propr', { prNumber: 88 });
+    assert.strictEqual(ref.prNumber, undefined);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  buildLlmLogRow                                                     */
+/* ------------------------------------------------------------------ */
+
+describe('buildLlmLogRow', () => {
   function makeEntry(overrides: Partial<LlmLogEntry> = {}): LlmLogEntry {
     return {
       executionType: 'implementation',
@@ -93,66 +128,109 @@ describe('LlmLogEntry with workRef', () => {
     };
   }
 
-  it('entry without workRef has undefined workRef', () => {
-    const entry = makeEntry();
-    assert.strictEqual(entry.workRef, undefined);
-  });
-
-  it('entry carries task work reference alongside legacy fields', () => {
+  it('includes work-ref columns when hasWorkRefColumns is true', () => {
     const entry = makeEntry({
-      draftId: 'legacy-draft',
-      repository: 'integry/propr',
       workRef: {
         workType: 'task',
-        taskId: 'job-999',
-        taskNumber: 55,
+        taskId: 'job-42',
+        taskNumber: 10,
+        prNumber: 55,
         workRepository: 'integry/propr',
       },
     });
-    // Legacy fields intact
-    assert.strictEqual(entry.draftId, 'legacy-draft');
-    assert.strictEqual(entry.repository, 'integry/propr');
-    // New fields
-    assert.strictEqual(entry.workRef?.workType, 'task');
-    assert.strictEqual(entry.workRef?.taskId, 'job-999');
-    assert.strictEqual(entry.workRef?.taskNumber, 55);
+    const row = buildLlmLogRow(entry, 0.05, true);
+    assert.strictEqual(row.work_type, 'task');
+    assert.strictEqual(row.task_id, 'job-42');
+    assert.strictEqual(row.task_number, 10);
+    assert.strictEqual(row.pr_number, 55);
+    assert.strictEqual(row.work_repository, 'integry/propr');
+    assert.strictEqual(row.plan_draft_id, null);
+    assert.strictEqual(row.plan_issue_id, null);
   });
 
-  it('entry carries plan work reference', () => {
+  it('omits work-ref columns when hasWorkRefColumns is false', () => {
+    const entry = makeEntry({
+      workRef: { workType: 'task', taskId: 'job-42' },
+    });
+    const row = buildLlmLogRow(entry, undefined, false);
+    assert.strictEqual(row.work_type, undefined);
+    assert.strictEqual(row.task_id, undefined);
+    assert.strictEqual(row.execution_type, 'implementation');
+  });
+
+  it('maps plan workRef to correct columns', () => {
     const entry = makeEntry({
       workRef: {
         workType: 'plan',
-        planDraftId: 'draft-xyz',
-        planIssueId: 3,
+        planDraftId: 'draft-abc',
+        planIssueId: 7,
+        workRepository: 'integry/propr',
       },
     });
-    assert.strictEqual(entry.workRef?.workType, 'plan');
-    assert.strictEqual(entry.workRef?.planDraftId, 'draft-xyz');
-    assert.strictEqual(entry.workRef?.planIssueId, 3);
+    const row = buildLlmLogRow(entry, undefined, true);
+    assert.strictEqual(row.work_type, 'plan');
+    assert.strictEqual(row.plan_draft_id, 'draft-abc');
+    assert.strictEqual(row.plan_issue_id, 7);
+    assert.strictEqual(row.task_id, null);
+    assert.strictEqual(row.task_number, null);
+  });
+
+  it('maps undefined workRef to all-null columns', () => {
+    const entry = makeEntry(); // no workRef
+    const row = buildLlmLogRow(entry, undefined, true);
+    assert.strictEqual(row.work_type, null);
+    assert.strictEqual(row.task_id, null);
+    assert.strictEqual(row.task_number, null);
+    assert.strictEqual(row.plan_draft_id, null);
+    assert.strictEqual(row.plan_issue_id, null);
+    assert.strictEqual(row.work_repository, null);
+  });
+
+  it('preserves standard columns regardless of work-ref flag', () => {
+    const entry = makeEntry({
+      inputTokens: 100,
+      outputTokens: 50,
+      sessionId: 'sess-1',
+      draftId: 'legacy-draft',
+      repository: 'integry/propr',
+    });
+    const row = buildLlmLogRow(entry, 0.01, false);
+    assert.strictEqual(row.execution_type, 'implementation');
+    assert.strictEqual(row.model_name, 'test-model');
+    assert.strictEqual(row.input_tokens, 100);
+    assert.strictEqual(row.output_tokens, 50);
+    assert.strictEqual(row.session_id, 'sess-1');
+    assert.strictEqual(row.draft_id, 'legacy-draft');
+    assert.strictEqual(row.repository, 'integry/propr');
+    assert.strictEqual(row.cost_usd, 0.01);
   });
 });
 
-describe('createLlmLogFromAnalysis with workRef', () => {
-  // Dynamic import to avoid needing mock.module for internal deps.
-  // createLlmLogFromAnalysis is a pure function that builds an object,
-  // so it doesn't need DB or logger at import time — but the module
-  // imports them. We test the shape separately from persistence.
+/* ------------------------------------------------------------------ */
+/*  createLlmLogFromAnalysis                                           */
+/* ------------------------------------------------------------------ */
 
-  it('workRef structure is correctly typed on LlmLogEntry', () => {
-    // This test validates compile-time correctness of the interface.
-    const entry: LlmLogEntry = {
+describe('createLlmLogFromAnalysis', () => {
+  it('creates a complete LlmLogEntry with workRef', () => {
+    const entry = createLlmLogFromAnalysis({
       executionType: 'plan-generation',
-      modelName: 'claude-opus-4-6',
-      startTime: new Date(),
-      endTime: new Date(),
-      durationMs: 5000,
+      modelUsed: 'claude-opus-4-6',
+      executionTimeMs: 5000,
       success: true,
+      tokenUsage: { input_tokens: 200, output_tokens: 100 },
+      repository: 'integry/propr',
       workRef: {
         workType: 'plan',
         planDraftId: 'draft-001',
         workRepository: 'integry/propr',
       },
-    };
+    });
+    assert.strictEqual(entry.executionType, 'plan-generation');
+    assert.strictEqual(entry.modelName, 'claude-opus-4-6');
+    assert.strictEqual(entry.durationMs, 5000);
+    assert.strictEqual(entry.success, true);
+    assert.strictEqual(entry.inputTokens, 200);
+    assert.strictEqual(entry.outputTokens, 100);
     assert.deepStrictEqual(entry.workRef, {
       workType: 'plan',
       planDraftId: 'draft-001',
@@ -160,92 +238,58 @@ describe('createLlmLogFromAnalysis with workRef', () => {
     });
   });
 
-  it('partial workRef with only workType is valid', () => {
-    const entry: LlmLogEntry = {
+  it('creates entry without workRef when not provided', () => {
+    const entry = createLlmLogFromAnalysis({
       executionType: 'repo-chat',
-      modelName: 'claude-opus-4-6',
-      startTime: new Date(),
-      endTime: new Date(),
-      durationMs: 1000,
+      modelUsed: 'test-model',
+      executionTimeMs: 1000,
       success: true,
-      workRef: { workType: 'repository' },
-    };
-    assert.strictEqual(entry.workRef?.workType, 'repository');
-    assert.strictEqual(entry.workRef?.taskId, undefined);
-    assert.strictEqual(entry.workRef?.planDraftId, undefined);
-  });
-});
-
-describe('Insert row mapping', () => {
-  it('maps workRef fields to snake_case DB columns', () => {
-    // Simulate the mapping done in insertLlmLogRow
-    const workRef: WorkReference = {
-      workType: 'task',
-      taskId: 'job-42',
-      taskNumber: 10,
-      planDraftId: undefined,
-      planIssueId: undefined,
-      workRepository: 'integry/propr',
-    };
-
-    const dbRow = {
-      work_type: workRef.workType ?? null,
-      task_id: workRef.taskId ?? null,
-      task_number: workRef.taskNumber ?? null,
-      plan_draft_id: workRef.planDraftId ?? null,
-      plan_issue_id: workRef.planIssueId ?? null,
-      work_repository: workRef.workRepository ?? null,
-    };
-
-    assert.strictEqual(dbRow.work_type, 'task');
-    assert.strictEqual(dbRow.task_id, 'job-42');
-    assert.strictEqual(dbRow.task_number, 10);
-    assert.strictEqual(dbRow.plan_draft_id, null);
-    assert.strictEqual(dbRow.plan_issue_id, null);
-    assert.strictEqual(dbRow.work_repository, 'integry/propr');
+    });
+    assert.strictEqual(entry.workRef, undefined);
+    assert.strictEqual(entry.executionType, 'repo-chat');
   });
 
-  it('maps null workRef to all-null columns', () => {
-    const workRef: WorkReference | undefined = undefined;
+  it('sets startTime and endTime based on executionTimeMs', () => {
+    const before = Date.now();
+    const entry = createLlmLogFromAnalysis({
+      executionType: 'implementation',
+      modelUsed: 'test-model',
+      executionTimeMs: 3000,
+      success: true,
+    });
+    const after = Date.now();
 
-    const dbRow = {
-      work_type: workRef?.workType ?? null,
-      task_id: workRef?.taskId ?? null,
-      task_number: workRef?.taskNumber ?? null,
-      plan_draft_id: workRef?.planDraftId ?? null,
-      plan_issue_id: workRef?.planIssueId ?? null,
-      work_repository: workRef?.workRepository ?? null,
-    };
-
-    assert.strictEqual(dbRow.work_type, null);
-    assert.strictEqual(dbRow.task_id, null);
-    assert.strictEqual(dbRow.task_number, null);
-    assert.strictEqual(dbRow.plan_draft_id, null);
-    assert.strictEqual(dbRow.plan_issue_id, null);
-    assert.strictEqual(dbRow.work_repository, null);
+    assert.ok(entry.endTime.getTime() >= before);
+    assert.ok(entry.endTime.getTime() <= after);
+    assert.strictEqual(entry.endTime.getTime() - entry.startTime.getTime(), 3000);
   });
 
-  it('maps plan-only workRef correctly', () => {
-    const workRef: WorkReference = {
-      workType: 'plan',
-      planDraftId: 'draft-abc',
-      planIssueId: 7,
-    };
+  it('passes through error, sessionId, correlationId, metadata', () => {
+    const entry = createLlmLogFromAnalysis({
+      executionType: 'implementation',
+      modelUsed: 'test-model',
+      executionTimeMs: 100,
+      success: false,
+      error: 'something failed',
+      sessionId: 'sess-1',
+      correlationId: 'corr-1',
+      metadata: { key: 'value' },
+    });
+    assert.strictEqual(entry.errorMessage, 'something failed');
+    assert.strictEqual(entry.sessionId, 'sess-1');
+    assert.strictEqual(entry.correlationId, 'corr-1');
+    assert.deepStrictEqual(entry.metadata, { key: 'value' });
+  });
 
-    const dbRow = {
-      work_type: workRef.workType ?? null,
-      task_id: workRef.taskId ?? null,
-      task_number: workRef.taskNumber ?? null,
-      plan_draft_id: workRef.planDraftId ?? null,
-      plan_issue_id: workRef.planIssueId ?? null,
-      work_repository: workRef.workRepository ?? null,
-    };
-
-    assert.strictEqual(dbRow.work_type, 'plan');
-    assert.strictEqual(dbRow.task_id, null);
-    assert.strictEqual(dbRow.task_number, null);
-    assert.strictEqual(dbRow.plan_draft_id, 'draft-abc');
-    assert.strictEqual(dbRow.plan_issue_id, 7);
-    assert.strictEqual(dbRow.work_repository, null);
+  it('passes through usageMetricRecords', () => {
+    const records = [{ agent: 'claude', metricKey: 'tokens', metricValue: 500 }];
+    const entry = createLlmLogFromAnalysis({
+      executionType: 'implementation',
+      modelUsed: 'test-model',
+      executionTimeMs: 100,
+      success: true,
+      usageMetricRecords: records,
+    });
+    assert.deepStrictEqual(entry.usageMetricRecords, records);
   });
 });
