@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ListPlus, Check, ChevronDown, ExternalLink } from 'lucide-react';
 import { createTodo, getCategories, RepoTodoCategory } from '../api/repoTodosApi';
-import { getRepoConfig } from '../api/proprApi';
-import { MonitoredRepo } from '../api/proprTypes';
+import RepositorySelector, { RepoOption } from './RepositorySelector';
+import { getPlannerSettings, savePlannerSettings } from '../hooks/usePlannerSettings';
 
 interface QuickAddTodoProps {
   externalOpen?: boolean;
@@ -14,12 +14,10 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
   const location = useLocation();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
-  const [repos, setRepos] = useState<MonitoredRepo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState('');
   const [content, setContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
-  const [repoDropdownOpen, setRepoDropdownOpen] = useState(false);
   const [categories, setCategories] = useState<RepoTodoCategory[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
@@ -27,7 +25,6 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
 
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const repoDropdownRef = useRef<HTMLDivElement>(null);
   const categoryDropdownRef = useRef<HTMLDivElement>(null);
 
   // Infer active repo from URL path
@@ -39,24 +36,33 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     return '';
   }, [location.pathname]);
 
-  // Load repos when popover opens
-  useEffect(() => {
-    if (!isOpen) return;
-    getRepoConfig().then(data => {
-      const enabledRepos = data.repos_to_monitor.filter(r => r.enabled);
-      setRepos(enabledRepos);
-      const inferred = inferRepoFromUrl();
-      if (inferred) {
-        const match = enabledRepos.find(r => r.name === inferred);
-        if (match) setSelectedRepo(match.name);
-        else if (enabledRepos.length > 0) setSelectedRepo(enabledRepos[0].name);
-      } else if (enabledRepos.length > 0 && !selectedRepo) {
-        setSelectedRepo(enabledRepos[0].name);
+  // Handle repos loaded by RepositorySelector
+  const handleReposLoaded = useCallback((enabledRepos: RepoOption[]) => {
+    if (enabledRepos.length === 0) {
+      setSelectedRepo('');
+      return;
+    }
+    const currentStillValid = selectedRepo && enabledRepos.some(r => r.name === selectedRepo);
+    if (!currentStillValid) {
+      // Priority: lastRepository from settings > URL inference > first repo
+      const settings = getPlannerSettings();
+      const lastRepo = settings.lastRepository;
+      if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) {
+        setSelectedRepo(lastRepo);
+      } else {
+        const inferred = inferRepoFromUrl();
+        const match = inferred && enabledRepos.find(r => r.name === inferred);
+        setSelectedRepo(match ? match.name : enabledRepos[0].name);
       }
-    }).catch(() => {});
-    // Focus textarea after opening
-    setTimeout(() => textareaRef.current?.focus(), 100);
-  }, [isOpen, inferRepoFromUrl, selectedRepo]);
+    }
+  }, [inferRepoFromUrl, selectedRepo]);
+
+  // Focus textarea when popover opens
+  useEffect(() => {
+    if (isOpen) {
+      setTimeout(() => textareaRef.current?.focus(), 100);
+    }
+  }, [isOpen]);
 
   // Handle external open trigger (keyboard shortcut)
   useEffect(() => {
@@ -100,17 +106,6 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     });
   }, [selectedRepo, lastUsedCategory]);
 
-  // Click outside repo dropdown to close it
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (repoDropdownRef.current && !repoDropdownRef.current.contains(e.target as Node)) {
-        setRepoDropdownOpen(false);
-      }
-    };
-    if (repoDropdownOpen) document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [repoDropdownOpen]);
-
   // Click outside category dropdown to close it
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -151,9 +146,9 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     }
   };
 
-  const getRepoDisplayName = (name: string): string => {
-    const parts = name.split('/');
-    return parts.length > 1 ? parts[1] : name;
+  const handleRepoChange = (repo: string) => {
+    setSelectedRepo(repo);
+    savePlannerSettings({ lastRepository: repo });
   };
 
   return (
@@ -189,35 +184,13 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
             /* Form */
             <div className="p-3 space-y-3">
               {/* Repository Selector */}
-              <div className="relative" ref={repoDropdownRef}>
-                <button
-                  onClick={() => setRepoDropdownOpen(!repoDropdownOpen)}
-                  className="flex items-center gap-1.5 px-2 py-1 bg-slate-50 border border-slate-200 hover:border-slate-300 transition-colors w-full text-left"
-                >
-                  <span className="text-xs font-mono text-slate-700 truncate flex-1">
-                    {selectedRepo ? getRepoDisplayName(selectedRepo) : 'Select repo...'}
-                  </span>
-                  <ChevronDown className="w-3 h-3 text-slate-400 flex-shrink-0" />
-                </button>
-                {repoDropdownOpen && repos.length > 0 && (
-                  <div className="absolute left-0 right-0 top-full mt-0.5 bg-white border border-slate-200 shadow-lg z-[60] max-h-[200px] overflow-y-auto">
-                    {repos.map(repo => (
-                      <button
-                        key={repo.id}
-                        onClick={() => {
-                          setSelectedRepo(repo.name);
-                          setRepoDropdownOpen(false);
-                        }}
-                        className={`w-full text-left px-2 py-1.5 text-xs font-mono hover:bg-slate-50 transition-colors ${
-                          selectedRepo === repo.name ? 'bg-slate-50 text-teal-700' : 'text-slate-700'
-                        }`}
-                      >
-                        {repo.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <RepositorySelector
+                selectedRepo={selectedRepo}
+                onRepoChange={handleRepoChange}
+                onReposLoaded={handleReposLoaded}
+                placeholder="Select repo..."
+                variant="default"
+              />
 
               {/* Textarea */}
               <textarea

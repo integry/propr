@@ -1,11 +1,12 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getRepoConfig, createDraft, uploadAttachment } from '../api/proprApi';
-import { transformRepoData, getInitialSelectedRepo, Repo } from '../components/Dashboard/index';
+import { createDraft, uploadAttachment } from '../api/proprApi';
+import { getInitialSelectedRepo, Repo } from '../components/Dashboard/index';
 import { resizeImage } from '../components/TaskPlanner/imageUtils';
 
 export interface UseNewPlanFormReturn {
   repos: Repo[];
+  handleReposLoaded: (repos: Repo[]) => void;
   selectedRepo: string;
   setSelectedRepo: (repo: string) => void;
   prompt: string;
@@ -36,21 +37,14 @@ export function useNewPlanForm(): UseNewPlanFormReturn {
   const [isFormExpanded, setIsFormExpanded] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load repositories for NewPlanForm
-  useEffect(() => {
-    const loadRepos = async () => {
-      try {
-        const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
-        const rawRepos = data.repos_to_monitor || [];
-        const validRepos = transformRepoData(rawRepos);
-        const enabledRepos = validRepos.filter((r: Repo) => r.enabled);
-        setRepos(enabledRepos);
-        setSelectedRepo(getInitialSelectedRepo(enabledRepos));
-      } catch (err) {
-        console.error('Failed to load repositories:', err);
-      }
-    };
-    loadRepos();
+  // Called by RepositorySelector when repos are loaded internally
+  const handleReposLoaded = useCallback((enabledRepos: Repo[]) => {
+    setRepos(enabledRepos);
+    setSelectedRepo(prev => {
+      // Only initialize if current selection is empty or no longer valid
+      if (prev && enabledRepos.some(r => r.name === prev)) return prev;
+      return getInitialSelectedRepo(enabledRepos);
+    });
   }, []);
 
   const handleStartPlanning = useCallback(async () => {
@@ -127,6 +121,7 @@ export function useNewPlanForm(): UseNewPlanFormReturn {
 
   return {
     repos,
+    handleReposLoaded,
     selectedRepo,
     setSelectedRepo,
     prompt,

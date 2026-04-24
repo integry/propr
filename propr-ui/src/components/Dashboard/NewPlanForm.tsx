@@ -69,6 +69,7 @@ const FilePreview: React.FC<{
 
 export interface NewPlanFormProps {
   repos: Repo[];
+  onReposLoaded?: (repos: Repo[]) => void;
   selectedRepo: string;
   onRepoChange: (repo: string) => void;
   prompt: string;
@@ -88,6 +89,7 @@ export interface NewPlanFormProps {
 
 export const NewPlanForm: React.FC<NewPlanFormProps> = ({
   repos,
+  onReposLoaded,
   selectedRepo,
   onRepoChange,
   prompt,
@@ -207,10 +209,9 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
           <div className="flex-shrink-0 w-full sm:w-72">
             <label className="block text-sm font-medium text-gray-700 mb-2">Repository</label>
             <RepositorySelector
-              repos={repos}
               selectedRepo={selectedRepo}
               onRepoChange={onRepoChange}
-              disabled={repos.length === 0}
+              onReposLoaded={onReposLoaded}
               placeholder="Select a repository"
               variant="default"
             />
