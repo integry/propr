@@ -307,6 +307,7 @@ async function executeClaudeAnalysis(
 
     const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
     const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
+    const taskNumber = isPlan ? undefined : issueRef?.number;
     await persistLlmLog(createLlmLogFromAnalysis({
         executionType,
         modelUsed: claudeResult.model ?? resolvedModel,
@@ -322,6 +323,7 @@ async function executeClaudeAnalysis(
         workRef: {
             workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
             taskId: isPlan ? undefined : taskId,
+            taskNumber,
             planDraftId: isPlan ? taskId : undefined,
             workRepository: repository,
         },

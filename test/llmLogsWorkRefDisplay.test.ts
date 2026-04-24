@@ -2,15 +2,18 @@
  * Tests for work-reference display helpers in the LLM logs UI.
  *
  * Validates getWorkReferenceDisplay, getWorkTypeLabel, and hasDetailedInfo
- * when work-reference fields are present.
+ * by importing the real production implementations.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
+import {
+  getWorkReferenceDisplay,
+  getWorkTypeLabel,
+  hasDetailedInfo,
+  WorkRefFields,
+} from '../propr-ui/src/pages/llmLogsDisplayUtils.js';
 
-// Re-implement the display helpers here to test without bundler/JSX deps.
-// These mirror the logic in propr-ui/src/pages/llmLogsUtils.ts.
-
-interface LlmLogEntry {
+interface LlmLogEntry extends WorkRefFields {
   logId: number;
   executionType: string;
   modelName: string | null;
@@ -23,13 +26,7 @@ interface LlmLogEntry {
   cacheCreationInputTokens: number | null;
   cacheReadInputTokens: number | null;
   costUsd: number | null;
-  errorMessage: string | null;
-  sessionId: string | null;
-  correlationId: string | null;
-  draftId: string | null;
-  repository: string | null;
   agentAlias: string | null;
-  metadata: Record<string, unknown> | null;
   usageMetrics: Record<string, unknown> | null;
   usageMetricRecords: { agent: string; metricKey: string; metricValue: number }[];
   workType: 'task' | 'plan' | 'repository' | null;
@@ -73,56 +70,6 @@ function makeLog(overrides: Partial<LlmLogEntry> = {}): LlmLogEntry {
     workRepository: null,
     ...overrides,
   };
-}
-
-// Mirror of getWorkReferenceDisplay from llmLogsUtils.ts
-function getWorkReferenceDisplay(log: LlmLogEntry): string {
-  if (!log.workType) return '-';
-
-  const parts: string[] = [];
-  const repo = log.workRepository || log.repository || '';
-
-  if (log.workType === 'task') {
-    if (log.taskNumber) {
-      parts.push(`Issue #${log.taskNumber}`);
-    }
-    if (log.prNumber) {
-      parts.push(`PR #${log.prNumber}`);
-    }
-    if (parts.length === 0 && log.taskId) {
-      parts.push(`Task ${log.taskId.substring(0, 8)}`);
-    }
-  } else if (log.workType === 'plan') {
-    if (log.planIssueId) {
-      parts.push(`Plan Issue #${log.planIssueId}`);
-    } else if (log.planDraftId) {
-      parts.push(`Draft ${log.planDraftId.substring(0, 8)}`);
-    }
-  } else if (log.workType === 'repository') {
-    if (repo) {
-      return repo;
-    }
-    return 'Repository analysis';
-  }
-
-  if (parts.length === 0) return '-';
-  if (repo && log.workType !== 'repository') {
-    return `${repo} · ${parts.join(', ')}`;
-  }
-  return parts.join(', ');
-}
-
-function getWorkTypeLabel(workType: string | null): string {
-  switch (workType) {
-    case 'task': return 'Task';
-    case 'plan': return 'Plan';
-    case 'repository': return 'Repo';
-    default: return '-';
-  }
-}
-
-function hasDetailedInfo(log: LlmLogEntry): boolean {
-  return !!(log.metadata || log.draftId || log.sessionId || log.correlationId || log.errorMessage || log.workType);
 }
 
 describe('getWorkReferenceDisplay', () => {
