@@ -1,10 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getRepoConfig, createDraft, uploadAttachment } from '../api/proprApi';
+import { createDraft, uploadAttachment } from '../api/proprApi';
 import { getInitialSelectedRepo, Repo } from '../components/Dashboard/index';
-import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
-import { getUserRepoPreferences, UserRepoPreferences } from '../api/userRepoPreferencesApi';
 import { resizeImage } from '../components/TaskPlanner/imageUtils';
+import { fetchEnabledRepos } from '../utils/repoHelpers';
 
 export interface UseNewPlanFormReturn {
   repos: Repo[];
@@ -40,40 +39,14 @@ export function useNewPlanForm(): UseNewPlanFormReturn {
 
   // Load repositories for NewPlanForm
   useEffect(() => {
-    const loadRepos = async () => {
-      try {
-        const [repoData, userPrefs, indexingData] = await Promise.all([
-          getRepoConfig() as Promise<{ repos_to_monitor?: Array<{ name: string; enabled?: boolean; baseBranch?: string }> }>,
-          getUserRepoPreferences().catch(() => ({} as UserRepoPreferences)),
-          getRepositoriesIndexingStatus().catch(() => ({ repositories: [] as RepositoryIndexingStatus[] }))
-        ]);
-        const indexingMap = new Map<string, RepositoryIndexingStatus>();
-        for (const status of indexingData.repositories || []) {
-          indexingMap.set(status.full_name, status);
-        }
-        const enabledRepos: Repo[] = (repoData.repos_to_monitor || [])
-          .filter((r): r is { name: string; enabled?: boolean; baseBranch?: string } =>
-            typeof r === 'object' && r !== null && 'name' in r && typeof (r as { name: unknown }).name === 'string'
-          )
-          .filter(r => r.enabled !== false)
-          .map(r => {
-            const prefs = userPrefs[r.name];
-            const indexingStatus = indexingMap.get(r.name);
-            return {
-              name: r.name,
-              enabled: true,
-              baseBranch: r.baseBranch,
-              starred: prefs?.starred || false,
-              iconPath: indexingStatus?.icon_path || null
-            };
-          });
+    fetchEnabledRepos()
+      .then(enabledRepos => {
         setRepos(enabledRepos);
         setSelectedRepo(getInitialSelectedRepo(enabledRepos));
-      } catch (err) {
+      })
+      .catch(err => {
         console.error('Failed to load repositories:', err);
-      }
-    };
-    loadRepos();
+      });
   }, []);
 
   const handleStartPlanning = useCallback(async () => {

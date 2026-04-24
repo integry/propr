@@ -2,11 +2,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ListPlus, Check, ChevronDown, ExternalLink } from 'lucide-react';
 import { createTodo, getCategories, RepoTodoCategory } from '../api/repoTodosApi';
-import { getRepoConfig } from '../api/proprApi';
-import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
-import { getUserRepoPreferences, UserRepoPreferences } from '../api/userRepoPreferencesApi';
 import RepositorySelector, { RepoOption } from './RepositorySelector';
 import { getPlannerSettings, savePlannerSettings } from '../hooks/usePlannerSettings';
+import { fetchEnabledRepos } from '../utils/repoHelpers';
 
 interface QuickAddTodoProps {
   externalOpen?: boolean;
@@ -43,42 +41,25 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
   // Load repos when popover opens
   useEffect(() => {
     if (!isOpen) return;
-    Promise.all([
-      getRepoConfig() as Promise<{ repos_to_monitor?: Array<{ name: string; enabled?: boolean; baseBranch?: string }> }>,
-      getUserRepoPreferences().catch(() => ({} as UserRepoPreferences)),
-      getRepositoriesIndexingStatus().catch(() => ({ repositories: [] as RepositoryIndexingStatus[] }))
-    ]).then(([repoData, userPrefs, indexingData]) => {
-      const indexingMap = new Map<string, RepositoryIndexingStatus>();
-      for (const status of indexingData.repositories || []) {
-        indexingMap.set(status.full_name, status);
-      }
-      const enabledRepos: RepoOption[] = (repoData.repos_to_monitor || [])
-        .filter(r => r.enabled !== false)
-        .map(r => {
-          const prefs = userPrefs[r.name];
-          const indexingStatus = indexingMap.get(r.name);
-          return {
-            name: r.name,
-            enabled: true,
-            baseBranch: r.baseBranch,
-            starred: prefs?.starred || false,
-            iconPath: indexingStatus?.icon_path || null
-          };
-        });
+    fetchEnabledRepos().then(enabledRepos => {
       setRepos(enabledRepos);
       const inferred = inferRepoFromUrl();
       if (inferred) {
         const match = enabledRepos.find(r => r.name === inferred);
         if (match) setSelectedRepo(match.name);
         else if (enabledRepos.length > 0) setSelectedRepo(enabledRepos[0].name);
-      } else if (enabledRepos.length > 0 && !selectedRepo) {
-        // Use last used repository from planner settings, fallback to first repo
-        const settings = getPlannerSettings();
-        const lastRepo = settings.lastRepository;
-        if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) {
-          setSelectedRepo(lastRepo);
-        } else {
-          setSelectedRepo(enabledRepos[0].name);
+      } else if (enabledRepos.length > 0) {
+        // Validate current selection still exists in the repo list
+        const currentStillValid = selectedRepo && enabledRepos.some(r => r.name === selectedRepo);
+        if (!currentStillValid) {
+          // Use last used repository from planner settings, fallback to first repo
+          const settings = getPlannerSettings();
+          const lastRepo = settings.lastRepository;
+          if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) {
+            setSelectedRepo(lastRepo);
+          } else {
+            setSelectedRepo(enabledRepos[0].name);
+          }
         }
       }
     }).catch(() => {});
