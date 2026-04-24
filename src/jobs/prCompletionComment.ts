@@ -1,11 +1,11 @@
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { UnprocessedComment } from '@propr/core';
-import { AgentRegistry, getModelShortName } from '@propr/core';
+import { AgentRegistry, MODEL_INFO_MAP } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 
 /**
  * Pick a random model label from all configured and enabled agents' supported models.
- * Returns a short display name suitable for a `/review <model>` suggestion.
+ * Returns the githubLabel (minus `llm-` prefix) which is the exact syntax for `/review <model>`.
  */
 function getRandomReviewModelSuggestion(): string | null {
     try {
@@ -21,7 +21,14 @@ function getRandomReviewModelSuggestion(): string | null {
         }
         if (models.length === 0) return null;
         const chosen = models[Math.floor(Math.random() * models.length)];
-        return getModelShortName(chosen);
+        const modelInfo = MODEL_INFO_MAP[chosen];
+        if (modelInfo?.githubLabel) {
+            // Strip 'llm-' prefix to get the exact label syntax for /review
+            return modelInfo.githubLabel.startsWith('llm-')
+                ? modelInfo.githubLabel.substring(4)
+                : modelInfo.githubLabel;
+        }
+        return null;
     } catch {
         return null;
     }
