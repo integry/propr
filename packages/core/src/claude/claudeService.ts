@@ -288,6 +288,25 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
     return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata });
 }
 
+function buildWorkRef(opts: {
+    executionType: string;
+    taskId?: string;
+    prNumber?: number;
+    issueRef?: IssueRef;
+    repository?: string;
+}): Record<string, unknown> {
+    const isPlan = opts.executionType === 'plan-generation' || opts.executionType === 'plan-refinement';
+    const taskNumber = isPlan ? undefined : opts.issueRef?.number;
+    return {
+        workType: isPlan ? 'plan' : (opts.taskId || taskNumber) ? 'task' : 'repository',
+        taskId: isPlan ? undefined : opts.taskId,
+        taskNumber,
+        prNumber: isPlan ? undefined : opts.prNumber,
+        planDraftId: isPlan ? opts.taskId : undefined,
+        workRepository: opts.repository,
+    };
+}
+
 async function executeClaudeAnalysis(
     options: RunLightweightLLMAnalysisOptions,
     resolvedModel: string,
@@ -307,8 +326,6 @@ async function executeClaudeAnalysis(
     await recordLLMMetrics(buildLlmMetricsPayload(claudeResult, resolvedModel), issueRef, { correlationId, taskId, executionType });
 
     const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
-    const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
-    const taskNumber = isPlan ? undefined : issueRef?.number;
     await persistLlmLog(createLlmLogFromAnalysis({
         executionType,
         modelUsed: claudeResult.model ?? resolvedModel,
@@ -321,14 +338,7 @@ async function executeClaudeAnalysis(
         agentAlias: 'claude',
         usageMetrics: mapUsageMetrics(claudeResult.usageMetrics),
         usageMetricRecords: claudeResult.usageMetrics?.records,
-        workRef: {
-            workType: isPlan ? 'plan' : (taskId || taskNumber) ? 'task' : 'repository',
-            taskId: isPlan ? undefined : taskId,
-            taskNumber,
-            prNumber: isPlan ? undefined : prNumber,
-            planDraftId: isPlan ? taskId : undefined,
-            workRepository: repository,
-        },
+        workRef: buildWorkRef({ executionType, taskId, prNumber, issueRef, repository }),
     }));
 
     const analysisText = (claudeResult.finalResult?.result || claudeResult.summary)?.trim();
