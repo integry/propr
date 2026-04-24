@@ -3,7 +3,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { ListPlus, Check, ChevronDown, ExternalLink } from 'lucide-react';
 import { createTodo, getCategories, RepoTodoCategory } from '../api/repoTodosApi';
 import { getRepoConfig } from '../api/proprApi';
-import { MonitoredRepo } from '../api/proprTypes';
+import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
+import { getUserRepoPreferences, UserRepoPreferences } from '../api/userRepoPreferencesApi';
 import RepositorySelector, { RepoOption } from './RepositorySelector';
 import { getPlannerSettings, savePlannerSettings } from '../hooks/usePlannerSettings';
 
@@ -16,7 +17,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
   const location = useLocation();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
-  const [repos, setRepos] = useState<MonitoredRepo[]>([]);
+  const [repos, setRepos] = useState<RepoOption[]>([]);
   const [selectedRepo, setSelectedRepo] = useState('');
   const [content, setContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -42,8 +43,28 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
   // Load repos when popover opens
   useEffect(() => {
     if (!isOpen) return;
-    getRepoConfig().then(data => {
-      const enabledRepos = data.repos_to_monitor.filter(r => r.enabled);
+    Promise.all([
+      getRepoConfig() as Promise<{ repos_to_monitor?: Array<{ name: string; enabled?: boolean; baseBranch?: string }> }>,
+      getUserRepoPreferences().catch(() => ({} as UserRepoPreferences)),
+      getRepositoriesIndexingStatus().catch(() => ({ repositories: [] as RepositoryIndexingStatus[] }))
+    ]).then(([repoData, userPrefs, indexingData]) => {
+      const indexingMap = new Map<string, RepositoryIndexingStatus>();
+      for (const status of indexingData.repositories || []) {
+        indexingMap.set(status.full_name, status);
+      }
+      const enabledRepos: RepoOption[] = (repoData.repos_to_monitor || [])
+        .filter(r => r.enabled !== false)
+        .map(r => {
+          const prefs = userPrefs[r.name];
+          const indexingStatus = indexingMap.get(r.name);
+          return {
+            name: r.name,
+            enabled: true,
+            baseBranch: r.baseBranch,
+            starred: prefs?.starred || false,
+            iconPath: indexingStatus?.icon_path || null
+          };
+        });
       setRepos(enabledRepos);
       const inferred = inferRepoFromUrl();
       if (inferred) {
@@ -186,7 +207,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
             <div className="p-3 space-y-3">
               {/* Repository Selector */}
               <RepositorySelector
-                repos={repos as RepoOption[]}
+                repos={repos}
                 selectedRepo={selectedRepo}
                 onRepoChange={handleRepoChange}
                 disabled={repos.length === 0}
