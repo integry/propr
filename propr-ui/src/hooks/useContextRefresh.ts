@@ -172,6 +172,11 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   // Track whether we've auto-paused after the first successful context fetch
   const hasAutoPausedRef = useRef<boolean>(false);
 
+  // Reset auto-pause tracking when draftId changes so it re-triggers for new drafts
+  useEffect(() => {
+    hasAutoPausedRef.current = false;
+  }, [draftId]);
+
   // Keep config ref up to date
   useEffect(() => { configRef.current = config; }, [config]);
 
