@@ -122,8 +122,10 @@ export async function buildCompletionComment(
 
         prCommentBody += `\n\n---\n`;
         const modelHint1 = getRandomReviewModelSuggestion();
-        const reviewExample1 = modelHint1 ? `\`/review ${modelHint1}\`` : '`/review`';
-        prCommentBody += `> 💡 **Tip:** Use ${reviewExample1} to request an AI code review with a specific model.\n\n`;
+        const reviewTip1 = modelHint1
+            ? `> 💡 **Tip:** Use \`/review\` to request an AI code review, or \`/review ${modelHint1}\` to use a specific model.\n\n`
+            : `> 💡 **Tip:** Use \`/review\` to request an AI code review.\n\n`;
+        prCommentBody += reviewTip1;
         prCommentBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return prCommentBody;
@@ -143,8 +145,10 @@ export async function buildCompletionComment(
 
         noChangesBody += `\n\n---\n`;
         const modelHint2 = getRandomReviewModelSuggestion();
-        const reviewExample2 = modelHint2 ? `\`/review ${modelHint2}\`` : '`/review`';
-        noChangesBody += `> 💡 **Tip:** Use ${reviewExample2} to request an AI code review with a specific model.\n\n`;
+        const reviewTip2 = modelHint2
+            ? `> 💡 **Tip:** Use \`/review\` to request an AI code review, or \`/review ${modelHint2}\` to use a specific model.\n\n`
+            : `> 💡 **Tip:** Use \`/review\` to request an AI code review.\n\n`;
+        noChangesBody += reviewTip2;
         noChangesBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return noChangesBody;
