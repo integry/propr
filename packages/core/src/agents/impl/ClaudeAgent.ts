@@ -263,7 +263,7 @@ export class ClaudeAgent implements Agent {
         prompt: string,
         options?: AnalyzeOptions
     ): Promise<AnalysisResult> {
-        const { context, model, taskId, executionType, correlationId, repository, metadata } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -344,7 +344,7 @@ export class ClaudeAgent implements Agent {
                     agentAlias: this.config.alias,
                     usageMetrics: usage.metrics,
                     usageMetricRecords: usage.records,
-                    workRef: buildAnalysisWorkRef(executionType, taskId, repository),
+                    workRef: buildAnalysisWorkRef(executionType, taskId, repository, taskNumber, prNumber),
                 }));
 
                 return {

@@ -95,6 +95,10 @@ export interface AnalyzeOptions {
     context?: string;
     model?: string;
     taskId?: string;
+    /** The GitHub issue number the task is associated with. */
+    taskNumber?: number;
+    /** The GitHub PR number when this call is part of a PR follow-up. */
+    prNumber?: number;
     /** Type of execution for container naming (e.g., 'plan-generation', 'context-analysis') */
     executionType?: string;
     /** Correlation ID for log tracking */

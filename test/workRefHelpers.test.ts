@@ -4,44 +4,13 @@
  * Validates that buildTaskWorkRef and buildAnalysisWorkRef produce correct
  * WorkReference payloads for the main flows: task execution, plan generation,
  * PR follow-up, and repository-scoped analysis.
+ *
+ * These tests import the real helpers from llmLogger.ts to catch regressions
+ * in the production code directly.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import type { WorkReference } from '../packages/core/src/utils/llmLogger.js';
-
-// ---------------------------------------------------------------------------
-// Replicate the helpers exactly as they appear in llmLogger.ts so that any
-// drift between the real code and these tests causes a visible failure.
-// ---------------------------------------------------------------------------
-
-function buildTaskWorkRef(
-  taskId: string | undefined,
-  taskNumber: number,
-  repository: string,
-  prNumber?: number,
-): WorkReference {
-  return {
-    workType: 'task',
-    taskId,
-    taskNumber,
-    prNumber,
-    workRepository: repository,
-  };
-}
-
-function buildAnalysisWorkRef(
-  executionType: string | undefined,
-  taskId: string | undefined,
-  repository: string | undefined,
-): WorkReference {
-  const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
-  return {
-    workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
-    taskId: isPlan ? undefined : taskId,
-    planDraftId: isPlan ? taskId : undefined,
-    workRepository: repository,
-  };
-}
+import { buildTaskWorkRef, buildAnalysisWorkRef } from '../packages/core/src/utils/llmLogger.js';
 
 // ---------------------------------------------------------------------------
 // Task execution flow
@@ -101,12 +70,21 @@ describe('buildAnalysisWorkRef — plan flow', () => {
     assert.strictEqual(ref.workRepository, 'integry/propr');
   });
 
-  it('plan without taskId still has workType plan and null planDraftId', () => {
+  it('plan without taskId still has workType plan and undefined planDraftId', () => {
     const ref = buildAnalysisWorkRef('plan-generation', undefined, 'integry/propr');
 
     assert.strictEqual(ref.workType, 'plan');
     assert.strictEqual(ref.planDraftId, undefined);
     assert.strictEqual(ref.taskId, undefined);
+  });
+
+  it('plan ignores taskNumber and prNumber', () => {
+    const ref = buildAnalysisWorkRef('plan-generation', 'draft-abc', 'integry/propr', 42, 99);
+
+    assert.strictEqual(ref.workType, 'plan');
+    assert.strictEqual(ref.taskNumber, undefined);
+    assert.strictEqual(ref.prNumber, undefined);
+    assert.strictEqual(ref.planDraftId, 'draft-abc');
   });
 });
 
@@ -152,6 +130,30 @@ describe('buildAnalysisWorkRef — repository flow', () => {
     assert.strictEqual(ref.workType, 'repository');
     assert.strictEqual(ref.taskId, undefined);
     assert.strictEqual(ref.workRepository, 'integry/propr');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task-linked analysis with taskNumber and prNumber
+// ---------------------------------------------------------------------------
+describe('buildAnalysisWorkRef — task with taskNumber/prNumber', () => {
+  it('carries taskNumber when provided', () => {
+    const ref = buildAnalysisWorkRef('context-analysis', 'task-abc', 'org/repo', 42);
+
+    assert.strictEqual(ref.workType, 'task');
+    assert.strictEqual(ref.taskId, 'task-abc');
+    assert.strictEqual(ref.taskNumber, 42);
+    assert.strictEqual(ref.prNumber, undefined);
+    assert.strictEqual(ref.workRepository, 'org/repo');
+  });
+
+  it('carries both taskNumber and prNumber when provided', () => {
+    const ref = buildAnalysisWorkRef('context-analysis', 'task-abc', 'org/repo', 42, 99);
+
+    assert.strictEqual(ref.workType, 'task');
+    assert.strictEqual(ref.taskId, 'task-abc');
+    assert.strictEqual(ref.taskNumber, 42);
+    assert.strictEqual(ref.prNumber, 99);
   });
 });
 

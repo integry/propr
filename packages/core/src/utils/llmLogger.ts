@@ -113,7 +113,7 @@ function n<T>(value: T | undefined): T | null {
   return value ?? null;
 }
 
-function buildLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined, hasWorkRefColumns: boolean): Record<string, unknown> {
+export function buildLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined, hasWorkRefColumns: boolean): Record<string, unknown> {
   const row: Record<string, unknown> = {
     execution_type: entry.executionType,
     model_name: entry.modelName,
@@ -151,17 +151,20 @@ function buildLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined, hasWork
   return row;
 }
 
-/** Cache for whether work-reference columns exist (checked once per process). */
-let _hasWorkRefColumns: boolean | null = null;
+/** Cache for whether work-reference columns exist. Only caches `true` so that
+ *  a process that starts before the migration runs will re-check on the next insert
+ *  instead of permanently skipping the new columns. */
+let _hasWorkRefColumns = false;
 
 async function checkWorkRefColumns(): Promise<boolean> {
-  if (_hasWorkRefColumns !== null) return _hasWorkRefColumns;
+  if (_hasWorkRefColumns) return true;
   try {
-    _hasWorkRefColumns = await db!.schema.hasColumn('llm_logs', 'work_type');
+    const result = await db!.schema.hasColumn('llm_logs', 'work_type');
+    if (result) _hasWorkRefColumns = true;
+    return result;
   } catch {
-    _hasWorkRefColumns = false;
+    return false;
   }
-  return _hasWorkRefColumns;
 }
 
 /**
@@ -247,11 +250,19 @@ export function buildTaskWorkRef(
 /**
  * Builds a WorkReference for analysis calls based on execution type and task context.
  */
-export function buildAnalysisWorkRef(executionType: string | undefined, taskId: string | undefined, repository: string | undefined): WorkReference {
+export function buildAnalysisWorkRef(
+  executionType: string | undefined,
+  taskId: string | undefined,
+  repository: string | undefined,
+  taskNumber?: number,
+  prNumber?: number,
+): WorkReference {
   const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
   return {
     workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
     taskId: isPlan ? undefined : taskId,
+    taskNumber: isPlan ? undefined : taskNumber,
+    prNumber: isPlan ? undefined : prNumber,
     planDraftId: isPlan ? taskId : undefined,
     workRepository: repository,
   };

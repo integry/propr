@@ -262,6 +262,8 @@ interface AgentExecutionParams {
     modelOverride?: string;
     prompt: string;
     taskId?: string;
+    taskNumber?: number;
+    prNumber?: number;
     executionType?: string;
     correlationId?: string;
     repository?: string;
@@ -270,7 +272,7 @@ interface AgentExecutionParams {
 }
 
 async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<AnalysisResult | null> {
-    const { agentAlias, modelOverride, prompt, taskId, executionType, correlationId, repository, metadata, correlatedLogger } = params;
+    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, correlatedLogger } = params;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
@@ -282,7 +284,7 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
 
     const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
     correlatedLogger.info({ agentAlias, resolvedModel, taskId, executionType }, 'Using agent-specific lightweight LLM analysis');
-    return await agent.analyze(prompt, { model: resolvedModel, taskId, executionType, correlationId, repository, metadata });
+    return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata });
 }
 
 async function executeClaudeAnalysis(
@@ -344,9 +346,10 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
     if (agentAlias) {
         try {
             const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
+            const taskNumber = issueRef?.number;
             // Pass all logging fields to agent - agent handles persistence internally
             const analysisResult = await tryExecuteWithAgent({
-                agentAlias, modelOverride, prompt, taskId, executionType,
+                agentAlias, modelOverride, prompt, taskId, taskNumber, executionType,
                 correlationId, repository, metadata, correlatedLogger
             });
             if (analysisResult !== null) {

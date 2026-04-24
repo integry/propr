@@ -155,7 +155,7 @@ export class CodexAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, executionType, correlationId, repository, metadata } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
@@ -187,7 +187,7 @@ export class CodexAgent implements Agent {
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
             if (result.exitCode === 0 || parsedOutput.result) {
-                return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, correlationId, repository, metadata });
+                return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata });
             }
 
             const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
@@ -226,10 +226,10 @@ export class CodexAgent implements Agent {
         parsedOutput: ReturnType<typeof parseCodexStreamOutput>;
         effectiveModel: string; executionTimeMs: number;
         usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
-        executionType?: string; taskId?: string;
+        executionType?: string; taskId?: string; taskNumber?: number; prNumber?: number;
         correlationId?: string; repository?: string; metadata?: Record<string, unknown>;
     }): Promise<AnalysisResult> {
-        const { parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, correlationId, repository, metadata } = opts;
+        const { parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata } = opts;
         const analysisText = (parsedOutput.result || '').trim();
         logger.info({
             agentAlias: this.config.alias, responseLength: analysisText.length,
@@ -247,7 +247,7 @@ export class CodexAgent implements Agent {
             correlationId, repository, metadata,
             agentAlias: this.config.alias,
             ...this.formatUsageMetrics(usageMetrics),
-            workRef: buildAnalysisWorkRef(executionType, taskId, repository),
+            workRef: buildAnalysisWorkRef(executionType, taskId, repository, taskNumber, prNumber),
         }));
 
         return {
