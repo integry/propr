@@ -79,7 +79,7 @@ describe('buildAnalysisWorkRef — plan flow', () => {
   });
 
   it('plan ignores taskNumber and prNumber', () => {
-    const ref = buildAnalysisWorkRef('plan-generation', 'draft-abc', 'integry/propr', 42, 99);
+    const ref = buildAnalysisWorkRef('plan-generation', 'draft-abc', 'integry/propr', { taskNumber: 42, prNumber: 99 });
 
     assert.strictEqual(ref.workType, 'plan');
     assert.strictEqual(ref.taskNumber, undefined);
@@ -138,7 +138,7 @@ describe('buildAnalysisWorkRef — repository flow', () => {
 // ---------------------------------------------------------------------------
 describe('buildAnalysisWorkRef — task with taskNumber/prNumber', () => {
   it('carries taskNumber when provided', () => {
-    const ref = buildAnalysisWorkRef('context-analysis', 'task-abc', 'org/repo', 42);
+    const ref = buildAnalysisWorkRef('context-analysis', 'task-abc', 'org/repo', { taskNumber: 42 });
 
     assert.strictEqual(ref.workType, 'task');
     assert.strictEqual(ref.taskId, 'task-abc');
@@ -148,7 +148,7 @@ describe('buildAnalysisWorkRef — task with taskNumber/prNumber', () => {
   });
 
   it('carries both taskNumber and prNumber when provided', () => {
-    const ref = buildAnalysisWorkRef('context-analysis', 'task-abc', 'org/repo', 42, 99);
+    const ref = buildAnalysisWorkRef('context-analysis', 'task-abc', 'org/repo', { taskNumber: 42, prNumber: 99 });
 
     assert.strictEqual(ref.workType, 'task');
     assert.strictEqual(ref.taskId, 'task-abc');

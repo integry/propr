@@ -247,7 +247,7 @@ export class CodexAgent implements Agent {
             correlationId, repository, metadata,
             agentAlias: this.config.alias,
             ...this.formatUsageMetrics(usageMetrics),
-            workRef: buildAnalysisWorkRef(executionType, taskId, repository, taskNumber, prNumber),
+            workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
         }));
 
         return {

@@ -254,9 +254,10 @@ export function buildAnalysisWorkRef(
   executionType: string | undefined,
   taskId: string | undefined,
   repository: string | undefined,
-  taskNumber?: number,
-  prNumber?: number,
+  opts?: { taskNumber?: number; prNumber?: number },
 ): WorkReference {
+  const taskNumber = opts?.taskNumber;
+  const prNumber = opts?.prNumber;
   const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
   return {
     workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',

@@ -195,7 +195,7 @@ export class GeminiAgent implements Agent {
                     agentAlias: this.config.alias,
                     usageMetrics: usage.metrics,
                     usageMetricRecords: usage.records,
-                    workRef: buildAnalysisWorkRef(executionType, taskId, repository, taskNumber, prNumber),
+                    workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
                 }));
 
                 return {
