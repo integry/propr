@@ -1,6 +1,31 @@
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { UnprocessedComment } from '@propr/core';
+import { AgentRegistry, getModelShortName } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
+
+/**
+ * Pick a random model label from all configured and enabled agents' supported models.
+ * Returns a short display name suitable for a `/review <model>` suggestion.
+ */
+function getRandomReviewModelSuggestion(): string | null {
+    try {
+        const registry = AgentRegistry.getInstance();
+        const agents = registry.getAllAgents();
+        const models: string[] = [];
+        for (const agent of agents) {
+            if (agent.config.enabled) {
+                for (const m of agent.config.supportedModels) {
+                    models.push(m);
+                }
+            }
+        }
+        if (models.length === 0) return null;
+        const chosen = models[Math.floor(Math.random() * models.length)];
+        return getModelShortName(chosen);
+    } catch {
+        return null;
+    }
+}
 
 export interface CommentContext {
     changesSummary: string;
@@ -89,7 +114,9 @@ export async function buildCompletionComment(
         }
 
         prCommentBody += `\n\n---\n`;
-        prCommentBody += `> 💡 **Tip:** Use \`/review\` to request a new AI code review, or \`/fix\` to apply suggestions from existing review comments.\n\n`;
+        const modelHint1 = getRandomReviewModelSuggestion();
+        const reviewExample1 = modelHint1 ? `\`/review ${modelHint1}\`` : '`/review`';
+        prCommentBody += `> 💡 **Tip:** Use ${reviewExample1} to request an AI code review with a specific model.\n\n`;
         prCommentBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return prCommentBody;
@@ -108,7 +135,9 @@ export async function buildCompletionComment(
         }
 
         noChangesBody += `\n\n---\n`;
-        noChangesBody += `> 💡 **Tip:** Use \`/review\` to request a new AI code review, or \`/fix\` to apply suggestions from existing review comments.\n\n`;
+        const modelHint2 = getRandomReviewModelSuggestion();
+        const reviewExample2 = modelHint2 ? `\`/review ${modelHint2}\`` : '`/review`';
+        noChangesBody += `> 💡 **Tip:** Use ${reviewExample2} to request an AI code review with a specific model.\n\n`;
         noChangesBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return noChangesBody;
