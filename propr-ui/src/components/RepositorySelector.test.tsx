@@ -195,6 +195,67 @@ describe('RepositorySelector', () => {
     expect(items).toHaveLength(2);
   });
 
+  it('renders custom displayName instead of repo name', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos' },
+      { name: 'org/repo-beta', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
+    );
+    // Trigger should show custom label
+    expect(screen.getByRole('button').textContent).toContain('All Repos');
+
+    // Open dropdown and verify item label
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+    expect(items[0].textContent).toContain('All Repos');
+    // The second repo without displayName should still show normal name
+    expect(items[1].textContent).toContain('repo-beta');
+  });
+
+  it('renders count badges when count is provided', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 42 },
+      { name: 'org/repo-beta', enabled: true, count: 7 },
+      { name: 'org/repo-gamma', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
+    );
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+    expect(items[0].textContent).toContain('42');
+    expect(items[1].textContent).toContain('7');
+    // Third item has no count
+    expect(items[2].textContent).not.toContain('42');
+    expect(items[2].textContent).not.toContain('7');
+  });
+
+  it('filters by repo name even when displayName differs', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 10 },
+      { name: 'org/repo-beta', enabled: true, count: 5 },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
+    );
+    fireEvent.click(screen.getByRole('button'));
+    const input = screen.getByPlaceholderText('Filter repositories...');
+
+    // Filter by the underlying repo name should still find "All Repos"
+    fireEvent.change(input, { target: { value: 'alpha' } });
+    let items = getVisibleRepoButtons();
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain('All Repos');
+
+    // Filter by displayName should also work
+    fireEvent.change(input, { target: { value: 'All Repos' } });
+    items = getVisibleRepoButtons();
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain('All Repos');
+  });
+
   it('clears filter when closing via trigger button', () => {
     const { container } = render(
       <RepositorySelector repos={mockRepos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
