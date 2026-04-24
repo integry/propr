@@ -234,6 +234,15 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
 
       const countQuery = db('llm_logs').count('* as count');
 
+      // If work_type filter is requested but the column doesn't exist, return empty results
+      if (!hasWorkRefColumns && workType) {
+        res.json({
+          logs: [],
+          pagination: { total: 0, page, limit, totalPages: 0 },
+        });
+        return;
+      }
+
       // Only apply work_type filter if the column exists
       const effectiveFilters = hasWorkRefColumns
         ? filters

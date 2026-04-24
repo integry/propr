@@ -214,4 +214,23 @@ describe('buildAnalysisWorkRef — edge cases', () => {
     assert.strictEqual(ref.taskId, 'task-abc');
     assert.strictEqual(ref.planDraftId, undefined);
   });
+
+  it('taskNumber without taskId produces task workRef (issue-scoped analysis)', () => {
+    const ref = buildAnalysisWorkRef('context-analysis', undefined, 'org/repo', { taskNumber: 42 });
+
+    assert.strictEqual(ref.workType, 'task');
+    assert.strictEqual(ref.taskId, undefined);
+    assert.strictEqual(ref.taskNumber, 42);
+    assert.strictEqual(ref.workRepository, 'org/repo');
+  });
+
+  it('taskNumber without taskId for PR follow-up carries prNumber', () => {
+    const ref = buildAnalysisWorkRef('pr-followup', undefined, 'org/repo', { taskNumber: 55, prNumber: 55 });
+
+    assert.strictEqual(ref.workType, 'task');
+    assert.strictEqual(ref.taskId, undefined);
+    assert.strictEqual(ref.taskNumber, 55);
+    assert.strictEqual(ref.prNumber, 55);
+    assert.strictEqual(ref.workRepository, 'org/repo');
+  });
 });

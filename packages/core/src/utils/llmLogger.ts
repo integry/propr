@@ -260,7 +260,7 @@ export function buildAnalysisWorkRef(
   const prNumber = opts?.prNumber;
   const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
   return {
-    workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
+    workType: isPlan ? 'plan' : (taskId || taskNumber) ? 'task' : 'repository',
     taskId: isPlan ? undefined : taskId,
     taskNumber: isPlan ? undefined : taskNumber,
     prNumber: isPlan ? undefined : prNumber,

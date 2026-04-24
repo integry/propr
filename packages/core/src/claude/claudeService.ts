@@ -87,6 +87,7 @@ export interface RunLightweightLLMAnalysisOptions {
     githubToken: string;
     issueRef: IssueRef;
     taskId?: string;
+    prNumber?: number;
     executionType?: ExecutionType;
     metadata?: Record<string, unknown>;
 }
@@ -292,7 +293,7 @@ async function executeClaudeAnalysis(
     resolvedModel: string,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<string> {
-    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, executionType = 'other', model } = options;
+    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, prNumber, executionType = 'other', model } = options;
 
     const claudeResult = await executeClaudeCode({
         worktreePath, issueRef, githubToken,
@@ -321,9 +322,10 @@ async function executeClaudeAnalysis(
         usageMetrics: mapUsageMetrics(claudeResult.usageMetrics),
         usageMetricRecords: claudeResult.usageMetrics?.records,
         workRef: {
-            workType: isPlan ? 'plan' : taskId ? 'task' : 'repository',
+            workType: isPlan ? 'plan' : (taskId || taskNumber) ? 'task' : 'repository',
             taskId: isPlan ? undefined : taskId,
             taskNumber,
+            prNumber: isPlan ? undefined : prNumber,
             planDraftId: isPlan ? taskId : undefined,
             workRepository: repository,
         },
@@ -340,7 +342,7 @@ async function executeClaudeAnalysis(
 }
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, taskId, issueRef, executionType = 'other', metadata } = options;
+    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
@@ -351,7 +353,7 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
             const taskNumber = issueRef?.number;
             // Pass all logging fields to agent - agent handles persistence internally
             const analysisResult = await tryExecuteWithAgent({
-                agentAlias, modelOverride, prompt, taskId, taskNumber, executionType,
+                agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType,
                 correlationId, repository, metadata, correlatedLogger
             });
             if (analysisResult !== null) {
