@@ -1,7 +1,6 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS } from './modelDefinitions.js';
-import logger from '../utils/logger.js';
 
 export type ModelAlias = string;
 export type ModelId = string;
