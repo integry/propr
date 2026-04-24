@@ -173,8 +173,8 @@ export class AgentRegistry {
             return defaultAgent;
         }
 
-        // Otherwise return the first available agent
-        return this.getAllAgents()[0];
+        // No default agent configured — return undefined so callers handle the error explicitly
+        return undefined;
     }
 
     /**

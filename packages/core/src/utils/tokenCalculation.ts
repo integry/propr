@@ -267,6 +267,8 @@ function getEncoder(): Tiktoken {
  * Falls back to tiktoken if the API call fails.
  */
 export async function countTokens(text: string, model?: string): Promise<number> {
+    if (!text) return 0;
+
     if (!model) {
         const defaultModel = getDefaultModel();
         if (!defaultModel) {
@@ -276,7 +278,6 @@ export async function countTokens(text: string, model?: string): Promise<number>
         }
         model = defaultModel;
     }
-    if (!text) return 0;
 
     try {
         const response = await getAnthropicClient().messages.countTokens({

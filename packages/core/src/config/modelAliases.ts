@@ -121,7 +121,7 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
  * Preference rules:
  * - Claude: prefer Opus, then Sonnet (skip Haiku)
  * - Gemini: prefer Pro models (skip Flash)
- * - Codex/OpenAI: prefer GPT (skip mini/spark variants)
+ * - Codex (OpenAI): prefer GPT (skip mini/spark variants)
  */
 function getPreferredModelForAgent(config: AgentConfig): string | null {
     const models = config.supportedModels;
@@ -446,7 +446,7 @@ async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAss
 
         // Validate that the resolved agent exists and is enabled
         const agent = registry.getAgentByAlias(resolution.agentAlias);
-        if (!agent) {
+        if (!agent || !agent.config.enabled) {
             unresolvedTokens.push(label);
             continue;
         }

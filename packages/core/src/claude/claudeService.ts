@@ -137,7 +137,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             sessionId: claudeOutput.sessionId,
             conversationId: claudeOutput.conversationId,
             model: claudeOutput.model || process.env.CLAUDE_MODEL || getDefaultModel() || (() => {
-                logger.warn('No default model configured - model field will be empty. Configure an AI agent with a default model.');
+                logger.error('No default model configured - using sentinel value "unconfigured". Configure an AI agent with a default model in the dashboard.');
                 return 'unconfigured';
             })(),
             finalResult: claudeOutput.finalResult,

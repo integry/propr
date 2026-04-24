@@ -36,7 +36,7 @@ export interface MergeCommandMeta {
 
 export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta;
 
-const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge)(?:\s+(?<rest>.*))?$/;
+const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
 
 /**
  * Parse a PR comment body for a slash command.

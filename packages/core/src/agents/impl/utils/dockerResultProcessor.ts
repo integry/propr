@@ -64,7 +64,8 @@ export function processDockerResult(
 ): ProcessedDockerResult {
     const claudeOutput = parseStreamJsonOutput(result);
 
-    // Determine the actual model used (from output or fallback to requested/default)
+    // Determine the actual model used (from output or fallback to requested model)
+    // 'unknown' is a sentinel value — downstream consumers (metrics, cost calculations) should check for it
     const modelUsed = claudeOutput.model || effectiveModel || 'unknown';
 
     // Ensure the initial prompt is included in the conversation log
