@@ -47,19 +47,20 @@ const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge)(?:\s+(?<rest>.*))?$/;
 export function parseSlashCommand(body: string | undefined | null): ParsedSlashCommand | null {
     if (!body) return null;
 
-    const trimmed = body.trim();
-    if (!trimmed.startsWith('/')) return null;
+    // Check the raw first line — comments with leading blank lines should not count as slash commands
+    const firstNewline = body.indexOf('\n');
+    const rawFirstLine = firstNewline === -1 ? body : body.substring(0, firstNewline);
+    const firstLineTrimmed = rawFirstLine.trim();
 
-    const firstNewline = trimmed.indexOf('\n');
-    const firstLine = firstNewline === -1 ? trimmed : trimmed.substring(0, firstNewline);
-    const rest = firstNewline === -1 ? '' : trimmed.substring(firstNewline + 1).trim();
+    if (!firstLineTrimmed.startsWith('/')) return null;
 
-    const match = firstLine.trim().match(SLASH_COMMAND_REGEX);
+    const match = firstLineTrimmed.match(SLASH_COMMAND_REGEX);
     if (!match?.groups) return null;
 
     const command = match.groups.cmd as SlashCommandName;
     const argsStr = match.groups.rest?.trim() ?? '';
     const args = argsStr ? argsStr.split(/\s+/) : [];
+    const rest = firstNewline === -1 ? '' : body.substring(firstNewline + 1).trim();
 
     return { command, args, instructions: rest };
 }

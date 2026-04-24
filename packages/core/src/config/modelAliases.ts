@@ -369,10 +369,15 @@ async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAss
         if (!defaultModel) {
             throw new NoDefaultModelConfiguredError();
         }
-        const defaultAgent = AgentRegistry.getInstance().getDefaultAgent();
+        const registry = AgentRegistry.getInstance();
+        await registry.ensureInitialized();
+        const defaultAgent = registry.getDefaultAgent();
+        if (!defaultAgent) {
+            throw new NoDefaultModelConfiguredError();
+        }
         const modelInfo = MODEL_INFO_MAP[defaultModel];
         return [{
-            agentAlias: defaultAgent?.config.alias || 'default',
+            agentAlias: defaultAgent.config.alias,
             model: defaultModel,
             displayLabel: modelInfo?.name || getModelShortName(defaultModel),
         }];

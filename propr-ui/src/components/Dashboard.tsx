@@ -115,7 +115,7 @@ const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
 
   // System readiness state for onboarding
-  const { hasAgents, hasRepos, hasTasks, isLoading: readinessLoading } = useSystemReadiness();
+  const { hasAgents, hasDefaultModel, hasRepos, hasTasks, isLoading: readinessLoading } = useSystemReadiness();
   const showOnboarding = !readinessLoading && (!hasAgents || !hasRepos || !hasTasks);
 
   // Lifted state for KPIs
@@ -186,9 +186,9 @@ const Dashboard: React.FC = () => {
   return (
     <div className="bg-white min-h-full">
       {/* Error alert when no AI agent is configured */}
-      {!readinessLoading && !hasAgents && (
+      {!readinessLoading && (!hasAgents || !hasDefaultModel) && (
         <div className="px-6 pt-6">
-          <NoDefaultModelAlert hasAgents={hasAgents} />
+          <NoDefaultModelAlert hasAgents={hasAgents} hasDefaultModel={hasDefaultModel} />
         </div>
       )}
 
