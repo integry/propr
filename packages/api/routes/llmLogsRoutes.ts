@@ -156,22 +156,23 @@ function draftIdFallback(workType: string | null, targetType: string, draftId: s
 }
 
 function resolveWorkReference(row: LlmLogRow): Record<string, unknown> {
-  const inferred = row.work_type ? null : inferWorkReference(row);
-  const workType = row.work_type || inferred?.workType || null;
+  const raw = row.work_type ? null : inferWorkReference(row);
+  const inf = raw || { workType: null, taskId: null, taskNumber: null, planDraftId: null, workRepository: null };
 
-  const planDraftId = row.plan_draft_id || inferred?.planDraftId
+  const workType = row.work_type || inf.workType || null;
+  const planDraftId = row.plan_draft_id || inf.planDraftId
     || draftIdFallback(workType, 'plan', row.draft_id);
-  const taskId = row.task_id || inferred?.taskId
+  const taskId = row.task_id || inf.taskId
     || draftIdFallback(workType, 'task', row.draft_id);
 
   return {
     workType,
     taskId: taskId || null,
-    taskNumber: row.task_number ?? inferred?.taskNumber ?? null,
+    taskNumber: row.task_number ?? inf.taskNumber ?? null,
     prNumber: row.pr_number ?? null,
     planDraftId: planDraftId || null,
     planIssueId: row.plan_issue_id ?? null,
-    workRepository: row.work_repository || inferred?.workRepository || null,
+    workRepository: row.work_repository || inf.workRepository || null,
   };
 }
 
