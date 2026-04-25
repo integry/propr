@@ -13,7 +13,7 @@ export function buildSlashCommandsBlock(): string {
         '| `/review` | Request an AI code review | `/review` or `/review claude-sonnet` |',
         '| `/fix` | Ask the AI to fix an issue or apply feedback | `/fix update the error message` |',
         '| `/switch` | Change the AI model for this PR | `/switch claude-opus` |',
-        '| `/use` | Specify a model for subsequent commands | `/use claude-sonnet` |',
+        '| `/use` | Override the model for a single follow-up run | `/use claude-sonnet` |',
         '',
         '</details>',
         '',

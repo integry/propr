@@ -113,17 +113,23 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
         }
         case 'merge':
             return { mode: 'merge' };
-        case 'switch':
+        case 'switch': {
+            // /switch accepts a single model; extra args are ignored
+            const switchModel = parsed.args.length > 0 ? [normalizeModelLabel(parsed.args[0])] : [];
             return {
                 mode: 'switch',
-                models: parsed.args.map(normalizeModelLabel),
+                models: switchModel,
                 instructions: parsed.instructions,
             };
-        case 'use':
+        }
+        case 'use': {
+            // /use accepts a single model; extra args are ignored
+            const useModel = parsed.args.length > 0 ? [normalizeModelLabel(parsed.args[0])] : [];
             return {
                 mode: 'use',
-                models: parsed.args.map(normalizeModelLabel),
+                models: useModel,
                 instructions: parsed.instructions,
             };
+        }
     }
 }

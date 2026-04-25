@@ -178,6 +178,10 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
         // /switch — update PR labels, then enqueue only if instructions are provided
         if (commandMeta.mode === 'switch') {
+            if (commandMeta.models.length === 0) {
+                correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/switch command requires a model argument, ignoring');
+                return;
+            }
             correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, models: commandMeta.models }, '/switch command detected, updating PR labels');
             const { prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
             const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';

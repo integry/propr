@@ -177,12 +177,12 @@ describe('buildCommandMeta', () => {
         assert.deepStrictEqual(meta, { mode: 'switch', models: [], instructions: '' });
     });
 
-    test('builds switch meta and strips llm- prefix', () => {
+    test('builds switch meta and strips llm- prefix (takes only first model)', () => {
         const parsed = parseSlashCommand('/switch llm-claude-opus gemini-pro')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual(meta, {
             mode: 'switch',
-            models: ['claude-opus', 'gemini-pro'],
+            models: ['claude-opus'],
             instructions: '',
         });
     });
@@ -203,12 +203,12 @@ describe('buildCommandMeta', () => {
         assert.deepStrictEqual(meta, { mode: 'use', models: [], instructions: '' });
     });
 
-    test('builds use meta and strips llm- prefix', () => {
+    test('builds use meta and strips llm- prefix (takes only first model)', () => {
         const parsed = parseSlashCommand('/use llm-gemini-pro gpt-54')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual(meta, {
             mode: 'use',
-            models: ['gemini-pro', 'gpt-54'],
+            models: ['gemini-pro'],
             instructions: '',
         });
     });
