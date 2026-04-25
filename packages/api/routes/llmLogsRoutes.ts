@@ -92,6 +92,25 @@ interface UsageMetricRecordRow {
  *   "{owner}-{repo}-{number}-{agent}-{model}-{uuid}". We use the repository
  *   field to anchor the prefix and extract the number.
  */
+const PLAN_EXEC_TYPES = new Set(['plan-generation', 'plan-refinement', 'title-generation']);
+const TASK_EXEC_TYPES = new Set(['implementation', 'task-analysis', 'context-analysis', 'pr-review']);
+
+/** Extract an issue number from a structured draft_id using the repo as anchor. */
+function extractIssueFromDraftId(draftId: string | null | undefined, repo: string | null): number | null {
+  if (!draftId || !repo) return null;
+  const prefix = repo.replace('/', '-') + '-';
+  if (!draftId.startsWith(prefix)) return null;
+  const match = draftId.substring(prefix.length).match(/^(\d+)-/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/** Extract an issue number from a correlation_id like "task-1405-abc123". */
+function extractIssueFromCorrelationId(correlationId: string | null | undefined): number | null {
+  if (!correlationId) return null;
+  const match = correlationId.match(/(?:task|issue|pr)[- ]?(\d+)/i);
+  return match ? parseInt(match[1], 10) : null;
+}
+
 function inferWorkReference(row: LlmLogRow): {
   workType: string | null;
   taskId: string | null;
@@ -101,50 +120,24 @@ function inferWorkReference(row: LlmLogRow): {
 } {
   const execType = row.execution_type;
   const repo = row.repository || null;
-
-  // Determine work type from execution_type
-  const isPlan = execType === 'plan-generation' || execType === 'plan-refinement'
-    || execType === 'title-generation';
-  const isTask = execType === 'implementation' || execType === 'task-analysis'
-    || execType === 'context-analysis' || execType === 'pr-review';
+  const isPlan = PLAN_EXEC_TYPES.has(execType);
+  const isTask = TASK_EXEC_TYPES.has(execType);
 
   let workType: string | null = null;
-  if (isPlan) {
-    workType = 'plan';
-  } else if (isTask) {
-    workType = 'task';
-  } else if (repo) {
-    workType = 'repository';
-  }
+  if (isPlan) workType = 'plan';
+  else if (isTask) workType = 'task';
+  else if (repo) workType = 'repository';
 
-  // Try to extract issue number from draft_id using the repository as anchor
-  let taskNumber: number | null = null;
-  const draftId = row.draft_id;
-  if (draftId && repo) {
-    // Convert "owner/repo" → "owner-repo-" prefix
-    const prefix = repo.replace('/', '-') + '-';
-    if (draftId.startsWith(prefix)) {
-      const afterPrefix = draftId.substring(prefix.length);
-      const match = afterPrefix.match(/^(\d+)-/);
-      if (match) {
-        taskNumber = parseInt(match[1], 10);
-      }
-    }
-  }
+  const taskNumber = extractIssueFromDraftId(row.draft_id, repo)
+    || (isTask ? extractIssueFromCorrelationId(row.correlation_id) : null);
 
-  // Fallback: try to extract issue number from correlation_id (e.g. "task-1405-abc123")
-  if (!taskNumber && isTask && row.correlation_id) {
-    const corrMatch = row.correlation_id.match(/(?:task|issue|pr)[- ]?(\d+)/i);
-    if (corrMatch) {
-      taskNumber = parseInt(corrMatch[1], 10);
-    }
-  }
+  const draftId = row.draft_id || null;
 
   return {
     workType,
-    taskId: isTask ? (draftId || null) : null,
-    taskNumber: isTask && taskNumber ? taskNumber : null,
-    planDraftId: isPlan ? (draftId || null) : null,
+    taskId: isTask ? draftId : null,
+    taskNumber: isTask ? taskNumber : null,
+    planDraftId: isPlan ? draftId : null,
     workRepository: repo,
   };
 }
@@ -158,24 +151,25 @@ function safeJsonParse(value: string | null | undefined): unknown {
   }
 }
 
+function draftIdFallback(workType: string | null, targetType: string, draftId: string | null | undefined): string | null {
+  return workType === targetType && draftId ? draftId : null;
+}
+
 function resolveWorkReference(row: LlmLogRow): Record<string, unknown> {
   const inferred = row.work_type ? null : inferWorkReference(row);
   const workType = row.work_type || inferred?.workType || null;
 
-  // Use draft_id as fallback for plan/task-specific IDs when work_ref columns are empty
   const planDraftId = row.plan_draft_id || inferred?.planDraftId
-    || (workType === 'plan' && row.draft_id ? row.draft_id : null)
-    || null;
+    || draftIdFallback(workType, 'plan', row.draft_id);
   const taskId = row.task_id || inferred?.taskId
-    || (workType === 'task' && row.draft_id ? row.draft_id : null)
-    || null;
+    || draftIdFallback(workType, 'task', row.draft_id);
 
   return {
     workType,
-    taskId,
+    taskId: taskId || null,
     taskNumber: row.task_number ?? inferred?.taskNumber ?? null,
     prNumber: row.pr_number ?? null,
-    planDraftId,
+    planDraftId: planDraftId || null,
     planIssueId: row.plan_issue_id ?? null,
     workRepository: row.work_repository || inferred?.workRepository || null,
   };
