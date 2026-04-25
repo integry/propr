@@ -69,6 +69,54 @@ describe('parseSlashCommand', () => {
         assert.deepStrictEqual(result.args, ['claude']);
     });
 
+    test('parses bare /switch', () => {
+        const result = parseSlashCommand('/switch');
+        assert.deepStrictEqual(result, { command: 'switch', args: [], instructions: '' });
+    });
+
+    test('parses /switch with one model', () => {
+        const result = parseSlashCommand('/switch claude-opus');
+        assert.deepStrictEqual(result, { command: 'switch', args: ['claude-opus'], instructions: '' });
+    });
+
+    test('parses /switch with multiple models', () => {
+        const result = parseSlashCommand('/switch llm-claude-opus gemini-pro');
+        assert.deepStrictEqual(result, { command: 'switch', args: ['llm-claude-opus', 'gemini-pro'], instructions: '' });
+    });
+
+    test('parses /switch with model and multiline instructions', () => {
+        const body = '/switch claude-opus\nPlease also review the error handling';
+        const result = parseSlashCommand(body);
+        assert.ok(result);
+        assert.strictEqual(result.command, 'switch');
+        assert.deepStrictEqual(result.args, ['claude-opus']);
+        assert.strictEqual(result.instructions, 'Please also review the error handling');
+    });
+
+    test('parses bare /use', () => {
+        const result = parseSlashCommand('/use');
+        assert.deepStrictEqual(result, { command: 'use', args: [], instructions: '' });
+    });
+
+    test('parses /use with one model', () => {
+        const result = parseSlashCommand('/use claude-sonnet');
+        assert.deepStrictEqual(result, { command: 'use', args: ['claude-sonnet'], instructions: '' });
+    });
+
+    test('parses /use with multiple models', () => {
+        const result = parseSlashCommand('/use llm-gemini-pro gpt-54');
+        assert.deepStrictEqual(result, { command: 'use', args: ['llm-gemini-pro', 'gpt-54'], instructions: '' });
+    });
+
+    test('parses /use with model and multiline instructions', () => {
+        const body = '/use gemini-pro\nFocus on performance';
+        const result = parseSlashCommand(body);
+        assert.ok(result);
+        assert.strictEqual(result.command, 'use');
+        assert.deepStrictEqual(result.args, ['gemini-pro']);
+        assert.strictEqual(result.instructions, 'Focus on performance');
+    });
+
     test('does not match unknown commands', () => {
         assert.strictEqual(parseSlashCommand('/deploy'), null);
         assert.strictEqual(parseSlashCommand('/unknown'), null);
@@ -121,5 +169,57 @@ describe('buildCommandMeta', () => {
         const parsed = parseSlashCommand('/merge')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual(meta, { mode: 'merge' });
+    });
+
+    test('builds switch meta with no models', () => {
+        const parsed = parseSlashCommand('/switch')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, { mode: 'switch', models: [], instructions: '' });
+    });
+
+    test('builds switch meta and strips llm- prefix', () => {
+        const parsed = parseSlashCommand('/switch llm-claude-opus gemini-pro')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'switch',
+            models: ['claude-opus', 'gemini-pro'],
+            instructions: '',
+        });
+    });
+
+    test('builds switch meta with instructions', () => {
+        const parsed = parseSlashCommand('/switch claude-opus\nAlso fix the types')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'switch',
+            models: ['claude-opus'],
+            instructions: 'Also fix the types',
+        });
+    });
+
+    test('builds use meta with no models', () => {
+        const parsed = parseSlashCommand('/use')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, { mode: 'use', models: [], instructions: '' });
+    });
+
+    test('builds use meta and strips llm- prefix', () => {
+        const parsed = parseSlashCommand('/use llm-gemini-pro gpt-54')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'use',
+            models: ['gemini-pro', 'gpt-54'],
+            instructions: '',
+        });
+    });
+
+    test('builds use meta with instructions', () => {
+        const parsed = parseSlashCommand('/use gemini-pro\nFocus on performance')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'use',
+            models: ['gemini-pro'],
+            instructions: 'Focus on performance',
+        });
     });
 });
