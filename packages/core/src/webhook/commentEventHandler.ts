@@ -13,6 +13,8 @@ import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isRevi
 import { handleMergeCommand } from './mergeConflictDetector.js';
 import { parseSlashCommand, buildCommandMeta } from './slashCommandParser.js';
 import type { CommandMeta } from './slashCommandParser.js';
+import { safeUpdateLabels } from '../utils/github/labelOperations.js';
+import { resolveModelAlias } from '../config/modelAliases.js';
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 
@@ -174,7 +176,34 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
             return;
         }
 
-        // /review and /fix — enqueue with structured command metadata
+        // /switch — update PR labels, then enqueue only if instructions are provided
+        if (commandMeta.mode === 'switch') {
+            correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, models: commandMeta.models }, '/switch command detected, updating PR labels');
+            const { prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+            const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
+            const modelLabelRegex = new RegExp(modelLabelPattern);
+
+            const existingLlmLabels = prLabels.filter(l => modelLabelRegex.test(l.name)).map(l => l.name);
+            const newLabels = commandMeta.models.map(m => `llm-${m}`);
+
+            const octokit = await getAuthenticatedOctokit();
+            await safeUpdateLabels(
+                { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+                existingLlmLabels,
+                newLabels
+            );
+
+            if (!commandMeta.instructions) {
+                correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has no instructions, label update complete');
+                return;
+            }
+
+            correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has instructions, enqueuing follow-up job');
+            await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+            return;
+        }
+
+        // /review, /fix, /use — enqueue with structured command metadata
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
         await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
         return;
@@ -261,13 +290,20 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
     const { branchName, prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     if (!llm && prLabels.length > 0) llm = extractLlmFromLabels(prLabels, MODEL_LABEL_PATTERN, prNumber, correlatedLogger);
 
+    // For /switch and /use, override the LLM with the model specified in the command
+    if (commandMeta && (commandMeta.mode === 'switch' || commandMeta.mode === 'use') && commandMeta.models.length > 0) {
+        const resolvedModel = resolveModelAlias(commandMeta.models[0]);
+        correlatedLogger.info({ pullRequestNumber: prNumber, commandMode: commandMeta.mode, resolvedModel }, `Overriding LLM from /${commandMeta.mode} command`);
+        llm = resolvedModel;
+    }
+
     const jobData: CommentJobData = {
         pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
         ...(commandMeta ? {
             commandMeta,
             // 'merge' commands are handled separately above and never reach here;
-            // map to 'default' defensively to satisfy the CommentJobData type constraint
-            commandMode: commandMeta.mode === 'review' || commandMeta.mode === 'fix' ? commandMeta.mode : 'default',
+            // 'switch' and 'use' get their own commandMode for downstream processing
+            commandMode: commandMeta.mode === 'review' || commandMeta.mode === 'fix' || commandMeta.mode === 'switch' || commandMeta.mode === 'use' ? commandMeta.mode : 'default',
             requestedModels: commandMeta.mode === 'review' ? commandMeta.models : undefined,
             commandInstructions: 'instructions' in commandMeta ? commandMeta.instructions : undefined,
         } : {}),
