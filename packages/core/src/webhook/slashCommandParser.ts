@@ -1,11 +1,11 @@
 /**
  * Slash command parser for PR comment intake.
  *
- * Recognizes `/review`, `/fix`, and `/merge` commands from PR comments.
+ * Recognizes `/review`, `/fix`, `/merge`, `/switch`, and `/use` commands from PR comments.
  * Splits the comment into command name, arguments, and trailing multiline instructions.
  */
 
-export type SlashCommandName = 'review' | 'fix' | 'merge';
+export type SlashCommandName = 'review' | 'fix' | 'merge' | 'switch' | 'use';
 
 export interface ParsedSlashCommand {
     /** The recognized command */
@@ -34,9 +34,25 @@ export interface MergeCommandMeta {
     mode: 'merge';
 }
 
-export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta;
+export interface SwitchCommandMeta {
+    mode: 'switch';
+    /** Target model labels to switch to permanently */
+    models: string[];
+    /** Extra instructions from lines below the command */
+    instructions: string;
+}
 
-const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
+export interface UseCommandMeta {
+    mode: 'use';
+    /** Target model labels for single-run override */
+    models: string[];
+    /** Extra instructions from lines below the command */
+    instructions: string;
+}
+
+export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta | SwitchCommandMeta | UseCommandMeta;
+
+const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge|switch|use)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
 
 /**
  * Parse a PR comment body for a slash command.
@@ -97,5 +113,17 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
         }
         case 'merge':
             return { mode: 'merge' };
+        case 'switch':
+            return {
+                mode: 'switch',
+                models: parsed.args.map(normalizeModelLabel),
+                instructions: parsed.instructions,
+            };
+        case 'use':
+            return {
+                mode: 'use',
+                models: parsed.args.map(normalizeModelLabel),
+                instructions: parsed.instructions,
+            };
     }
 }
