@@ -1,38 +1,7 @@
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { UnprocessedComment } from '@propr/core';
-import { AgentRegistry, MODEL_INFO_MAP } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
-
-/**
- * Pick a random model label from all configured and enabled agents' supported models.
- * Returns the githubLabel (minus `llm-` prefix) which is the exact syntax for `/review <model>`.
- */
-function getRandomReviewModelSuggestion(): string | null {
-    try {
-        const registry = AgentRegistry.getInstance();
-        const agents = registry.getAllAgents();
-        const models: string[] = [];
-        for (const agent of agents) {
-            if (agent.config.enabled) {
-                for (const m of agent.config.supportedModels) {
-                    models.push(m);
-                }
-            }
-        }
-        if (models.length === 0) return null;
-        const chosen = models[Math.floor(Math.random() * models.length)];
-        const modelInfo = MODEL_INFO_MAP[chosen];
-        if (modelInfo?.githubLabel) {
-            // Strip 'llm-' prefix to get the exact label syntax for /review
-            return modelInfo.githubLabel.startsWith('llm-')
-                ? modelInfo.githubLabel.substring(4)
-                : modelInfo.githubLabel;
-        }
-        return null;
-    } catch {
-        return null;
-    }
-}
+import { buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 
 export interface CommentContext {
     changesSummary: string;
@@ -121,11 +90,7 @@ export async function buildCompletionComment(
         }
 
         prCommentBody += `\n\n---\n`;
-        const modelHint1 = getRandomReviewModelSuggestion();
-        const reviewTip1 = modelHint1
-            ? `> 💡 **Tip:** Use \`/review\` to request an AI code review, or \`/review ${modelHint1}\` to use a specific model.\n\n`
-            : `> 💡 **Tip:** Use \`/review\` to request an AI code review.\n\n`;
-        prCommentBody += reviewTip1;
+        prCommentBody += buildSlashCommandsBlock();
         prCommentBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return prCommentBody;
@@ -144,11 +109,7 @@ export async function buildCompletionComment(
         }
 
         noChangesBody += `\n\n---\n`;
-        const modelHint2 = getRandomReviewModelSuggestion();
-        const reviewTip2 = modelHint2
-            ? `> 💡 **Tip:** Use \`/review\` to request an AI code review, or \`/review ${modelHint2}\` to use a specific model.\n\n`
-            : `> 💡 **Tip:** Use \`/review\` to request an AI code review.\n\n`;
-        noChangesBody += reviewTip2;
+        noChangesBody += buildSlashCommandsBlock();
         noChangesBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return noChangesBody;
