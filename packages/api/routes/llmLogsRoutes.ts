@@ -141,31 +141,41 @@ function inferWorkReference(row: LlmLogRow): {
   };
 }
 
+function safeJsonParse(value: string | null | undefined): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function resolveWorkReference(row: LlmLogRow): Record<string, unknown> {
+  const inferred = row.work_type ? null : inferWorkReference(row);
+  return {
+    workType: row.work_type || inferred?.workType || null,
+    taskId: row.task_id || inferred?.taskId || null,
+    taskNumber: row.task_number ?? inferred?.taskNumber ?? null,
+    prNumber: row.pr_number ?? null,
+    planDraftId: row.plan_draft_id || inferred?.planDraftId || null,
+    planIssueId: row.plan_issue_id ?? null,
+    workRepository: row.work_repository || inferred?.workRepository || null,
+  };
+}
+
+function formatMetricRecords(metricRecords?: UsageMetricRecordRow[]): Record<string, unknown>[] {
+  if (!metricRecords) return [];
+  return metricRecords.map(r => ({
+    agent: r.agent_name,
+    metricKey: r.metric_key,
+    metricValue: Number(r.metric_value),
+  }));
+}
+
 function formatLlmLogRow(
   row: LlmLogRow,
   metricRecords?: UsageMetricRecordRow[],
 ): Record<string, unknown> {
-  let metadata: Record<string, unknown> | null = null;
-  if (row.metadata) {
-    try {
-      metadata = JSON.parse(row.metadata);
-    } catch {
-      // If parsing fails, keep as null
-    }
-  }
-
-  const formattedRecords = metricRecords
-    ? metricRecords.map(r => ({
-        agent: r.agent_name,
-        metricKey: r.metric_key,
-        metricValue: Number(r.metric_value),
-      }))
-    : [];
-
-  // Use stored work reference if available, otherwise infer from existing fields
-  const hasWorkRef = !!(row.work_type);
-  const inferred = hasWorkRef ? null : inferWorkReference(row);
-
   return {
     logId: row.log_id,
     executionType: row.execution_type,
@@ -185,16 +195,10 @@ function formatLlmLogRow(
     draftId: row.draft_id,
     repository: row.repository,
     agentAlias: row.agent_alias,
-    metadata,
-    usageMetrics: row.usage_metrics ? (() => { try { return JSON.parse(row.usage_metrics); } catch { return null; } })() : null,
-    usageMetricRecords: formattedRecords,
-    workType: row.work_type || inferred?.workType || null,
-    taskId: row.task_id || inferred?.taskId || null,
-    taskNumber: row.task_number ?? inferred?.taskNumber ?? null,
-    prNumber: row.pr_number ?? null,
-    planDraftId: row.plan_draft_id || inferred?.planDraftId || null,
-    planIssueId: row.plan_issue_id ?? null,
-    workRepository: row.work_repository || inferred?.workRepository || null,
+    metadata: safeJsonParse(row.metadata),
+    usageMetrics: safeJsonParse(row.usage_metrics),
+    usageMetricRecords: formatMetricRecords(metricRecords),
+    ...resolveWorkReference(row),
   };
 }
 
