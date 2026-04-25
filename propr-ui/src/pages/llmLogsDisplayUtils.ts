@@ -49,7 +49,10 @@ export const getWorkReferenceDisplay = (log: WorkRefFields): string => {
     return 'Repository analysis';
   }
 
-  if (parts.length === 0) return '-';
+  if (parts.length === 0) {
+    // No specific identifiers but we know the work type — show repository if available
+    return repo || '-';
+  }
   if (repo && log.workType !== 'repository') {
     return `${repo} · ${parts.join(', ')}`;
   }

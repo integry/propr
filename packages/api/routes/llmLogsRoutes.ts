@@ -81,6 +81,66 @@ interface UsageMetricRecordRow {
   created_at: string;
 }
 
+/**
+ * Infer work reference fields from existing row data when work_type columns
+ * are not populated (e.g. pre-migration rows or migration not yet applied).
+ *
+ * Heuristics:
+ * - execution_type determines the work type (implementation/task-analysis → task,
+ *   plan-generation/plan-refinement → plan, otherwise → repository)
+ * - draft_id often encodes the issue number in a structured format like
+ *   "{owner}-{repo}-{number}-{agent}-{model}-{uuid}". We use the repository
+ *   field to anchor the prefix and extract the number.
+ */
+function inferWorkReference(row: LlmLogRow): {
+  workType: string | null;
+  taskId: string | null;
+  taskNumber: number | null;
+  planDraftId: string | null;
+  workRepository: string | null;
+} {
+  const execType = row.execution_type;
+  const repo = row.repository || null;
+
+  // Determine work type from execution_type
+  const isPlan = execType === 'plan-generation' || execType === 'plan-refinement'
+    || execType === 'title-generation';
+  const isTask = execType === 'implementation' || execType === 'task-analysis'
+    || execType === 'context-analysis' || execType === 'pr-review';
+
+  let workType: string | null = null;
+  if (isPlan) {
+    workType = 'plan';
+  } else if (isTask) {
+    workType = 'task';
+  } else if (repo) {
+    workType = 'repository';
+  }
+
+  // Try to extract issue number from draft_id using the repository as anchor
+  let taskNumber: number | null = null;
+  const draftId = row.draft_id;
+  if (draftId && repo) {
+    // Convert "owner/repo" → "owner-repo-" prefix
+    const prefix = repo.replace('/', '-') + '-';
+    if (draftId.startsWith(prefix)) {
+      const afterPrefix = draftId.substring(prefix.length);
+      const match = afterPrefix.match(/^(\d+)-/);
+      if (match) {
+        taskNumber = parseInt(match[1], 10);
+      }
+    }
+  }
+
+  return {
+    workType,
+    taskId: isTask ? (draftId || null) : null,
+    taskNumber: isTask ? taskNumber : null,
+    planDraftId: isPlan ? (draftId || null) : null,
+    workRepository: repo,
+  };
+}
+
 function formatLlmLogRow(
   row: LlmLogRow,
   metricRecords?: UsageMetricRecordRow[],
@@ -101,6 +161,10 @@ function formatLlmLogRow(
         metricValue: Number(r.metric_value),
       }))
     : [];
+
+  // Use stored work reference if available, otherwise infer from existing fields
+  const hasWorkRef = !!(row.work_type);
+  const inferred = hasWorkRef ? null : inferWorkReference(row);
 
   return {
     logId: row.log_id,
@@ -124,13 +188,13 @@ function formatLlmLogRow(
     metadata,
     usageMetrics: row.usage_metrics ? (() => { try { return JSON.parse(row.usage_metrics); } catch { return null; } })() : null,
     usageMetricRecords: formattedRecords,
-    workType: row.work_type || null,
-    taskId: row.task_id || null,
-    taskNumber: row.task_number ?? null,
+    workType: row.work_type || inferred?.workType || null,
+    taskId: row.task_id || inferred?.taskId || null,
+    taskNumber: row.task_number ?? inferred?.taskNumber ?? null,
     prNumber: row.pr_number ?? null,
-    planDraftId: row.plan_draft_id || null,
+    planDraftId: row.plan_draft_id || inferred?.planDraftId || null,
     planIssueId: row.plan_issue_id ?? null,
-    workRepository: row.work_repository || null,
+    workRepository: row.work_repository || inferred?.workRepository || null,
   };
 }
 
