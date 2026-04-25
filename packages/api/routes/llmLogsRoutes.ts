@@ -132,10 +132,18 @@ function inferWorkReference(row: LlmLogRow): {
     }
   }
 
+  // Fallback: try to extract issue number from correlation_id (e.g. "task-1405-abc123")
+  if (!taskNumber && isTask && row.correlation_id) {
+    const corrMatch = row.correlation_id.match(/(?:task|issue|pr)[- ]?(\d+)/i);
+    if (corrMatch) {
+      taskNumber = parseInt(corrMatch[1], 10);
+    }
+  }
+
   return {
     workType,
     taskId: isTask ? (draftId || null) : null,
-    taskNumber: isTask ? taskNumber : null,
+    taskNumber: isTask && taskNumber ? taskNumber : null,
     planDraftId: isPlan ? (draftId || null) : null,
     workRepository: repo,
   };
@@ -152,12 +160,22 @@ function safeJsonParse(value: string | null | undefined): unknown {
 
 function resolveWorkReference(row: LlmLogRow): Record<string, unknown> {
   const inferred = row.work_type ? null : inferWorkReference(row);
+  const workType = row.work_type || inferred?.workType || null;
+
+  // Use draft_id as fallback for plan/task-specific IDs when work_ref columns are empty
+  const planDraftId = row.plan_draft_id || inferred?.planDraftId
+    || (workType === 'plan' && row.draft_id ? row.draft_id : null)
+    || null;
+  const taskId = row.task_id || inferred?.taskId
+    || (workType === 'task' && row.draft_id ? row.draft_id : null)
+    || null;
+
   return {
-    workType: row.work_type || inferred?.workType || null,
-    taskId: row.task_id || inferred?.taskId || null,
+    workType,
+    taskId,
     taskNumber: row.task_number ?? inferred?.taskNumber ?? null,
     prNumber: row.pr_number ?? null,
-    planDraftId: row.plan_draft_id || inferred?.planDraftId || null,
+    planDraftId,
     planIssueId: row.plan_issue_id ?? null,
     workRepository: row.work_repository || inferred?.workRepository || null,
   };

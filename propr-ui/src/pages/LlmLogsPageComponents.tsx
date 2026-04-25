@@ -64,7 +64,7 @@ const WorkReferenceSection: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
             </Link>
           </div>
         )}
-        {log.taskNumber != null && (
+        {log.taskNumber != null && log.taskNumber !== 0 && (
           <div>
             <span className="text-gray-500">Issue:</span>{' '}
             <span className="font-mono text-gray-800">#{log.taskNumber}</span>
@@ -76,15 +76,15 @@ const WorkReferenceSection: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
             <span className="font-mono text-gray-800">#{log.prNumber}</span>
           </div>
         )}
-        {log.planDraftId && (
+        {(log.planDraftId || (log.workType === 'plan' && log.draftId)) && (
           <div>
             <span className="text-gray-500">Draft:</span>{' '}
             <Link
-              to={`/plans/${log.planDraftId}`}
+              to={`/plans/${log.planDraftId || log.draftId}`}
               className="font-mono text-teal-600 hover:text-teal-800 hover:underline"
               onClick={(e) => e.stopPropagation()}
             >
-              {log.planDraftId.substring(0, 12)}...
+              {(log.planDraftId || log.draftId || '').substring(0, 12)}...
             </Link>
           </div>
         )}

@@ -36,11 +36,19 @@ export const getWorkReferenceDisplay = (log: WorkRefFields): string => {
     if (parts.length === 0 && log.taskId) {
       parts.push(`Task ${log.taskId.substring(0, 8)}`);
     }
+    // Fallback: use draftId if available (links to the plan/draft this task belongs to)
+    if (parts.length === 0 && log.draftId) {
+      parts.push(`Draft ${log.draftId.substring(0, 8)}`);
+    }
   } else if (log.workType === 'plan') {
     if (log.planIssueId) {
       parts.push(`Plan Issue #${log.planIssueId}`);
     } else if (log.planDraftId) {
       parts.push(`Draft ${log.planDraftId.substring(0, 8)}`);
+    }
+    // Fallback: use draftId if planDraftId isn't set
+    if (parts.length === 0 && log.draftId) {
+      parts.push(`Draft ${log.draftId.substring(0, 8)}`);
     }
   } else if (log.workType === 'repository') {
     if (repo) {
