@@ -263,6 +263,21 @@ describe('commentEventHandler — /switch command', () => {
         assert.ok(switchWarn, 'Expected a warning about missing model argument');
     });
 
+    test('/switch with unrecognized model warns and returns early', async () => {
+        const event = createPRCommentEvent('/switch nonexistent-model');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-invalid-model', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        const warnCalls = mockLoggerInstance.warn.mock.calls;
+        const invalidWarn = warnCalls.find(
+            (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('unrecognized model')
+        );
+        assert.ok(invalidWarn, 'Expected a warning about unrecognized model');
+    });
+
     test('/switch without instructions does not enqueue a job', async () => {
         const event = createPRCommentEvent('/switch opus');
         const config = createTestConfig();
@@ -405,7 +420,7 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(jobData.commandInstructions, 'Fix the login bug');
     });
 
-    test('/use with instructions does not include command text in comment body', async () => {
+    test('/use with instructions passes stripped comment body without command text', async () => {
         const event = createPRCommentEvent('/use sonnet\nRefactor the utils');
         const config = createTestConfig();
 
@@ -414,9 +429,9 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         const comments = jobData.comments as Array<{ body: string }>;
-        // /use body goes through normal flow — the comment body is the original text
-        // (unlike /switch, /use is handled at enqueue time, not pre-stripped)
+        // /use body is stripped like /switch — only user instructions remain
         assert.ok(comments.length > 0);
+        assert.strictEqual(comments[0].body, 'Refactor the utils');
     });
 });
 

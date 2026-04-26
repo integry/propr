@@ -15,6 +15,7 @@ import { parseSlashCommand, buildCommandMeta } from './slashCommandParser.js';
 import type { CommandMeta } from './slashCommandParser.js';
 import { safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
+import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 
@@ -174,7 +175,10 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     }
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
-    await enqueueNewCommentJob(comment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+    // Strip the slash command line from the comment body so the downstream job
+    // only sees the user's instructions, not the control syntax (consistent with /switch).
+    const strippedComment = commandMeta.instructions ? { ...comment, body: commandMeta.instructions } : comment;
+    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
 }
 
 interface SwitchCommandOptions {
@@ -208,7 +212,13 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     if (!derived) {
         correlatedLogger.warn({ pullRequestNumber: prNumber, modelLabelPattern }, 'Could not derive label prefix from MODEL_LABEL_PATTERN, falling back to default "llm-". Labels may be mismatched.');
     }
-    const newLabels = commandMeta.models.map(m => `${prefix}${resolveModelAlias(m)}`);
+    const resolvedModels = commandMeta.models.map(m => resolveModelAlias(m));
+    const invalidModels = resolvedModels.filter(m => !MODEL_INFO_MAP[m]);
+    if (invalidModels.length > 0) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, invalidModels }, '/switch command contains unrecognized model(s), ignoring');
+        return;
+    }
+    const newLabels = resolvedModels.map(m => `${prefix}${m}`);
 
     const octokit = await getAuthenticatedOctokit();
     await safeUpdateLabels(
