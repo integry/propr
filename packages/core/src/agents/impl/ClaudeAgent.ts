@@ -27,7 +27,7 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
-import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
@@ -53,6 +53,7 @@ interface PersistLogsParams {
     executionTime: number;
     correctedTokenUsage: TokenUsage | undefined;
     taskId?: string;
+    prNumber?: number;
     usageMetrics?: UsageTrackingMetrics | null;
 }
 
@@ -109,7 +110,8 @@ export class ClaudeAgent implements Agent {
             onContainerId,
             githubToken,
             tools,
-            taskId
+            taskId,
+            prNumber
         } = options;
 
         const startTime = Date.now();
@@ -201,6 +203,7 @@ export class ClaudeAgent implements Agent {
                 executionTime,
                 correctedTokenUsage,
                 taskId,
+                prNumber,
                 usageMetrics
             });
 
@@ -260,7 +263,7 @@ export class ClaudeAgent implements Agent {
         prompt: string,
         options?: AnalyzeOptions
     ): Promise<AnalysisResult> {
-        const { context, model, taskId, executionType, correlationId, repository, metadata } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -326,6 +329,7 @@ export class ClaudeAgent implements Agent {
                 }, 'Lightweight analysis completed');
 
                 // Persist LLM log with usage metrics for analysis calls
+                const usage = formatUsageMetrics(usageMetrics);
                 await persistLlmLog(createLlmLogFromAnalysis({
                     executionType: (executionType || 'other') as ExecutionType,
                     modelUsed: claudeOutput.model || effectiveModel,
@@ -338,14 +342,9 @@ export class ClaudeAgent implements Agent {
                     repository,
                     metadata,
                     agentAlias: this.config.alias,
-                    usageMetrics: usageMetrics ? {
-                        preCall: usageMetrics.preCall,
-                        postCall: usageMetrics.postCall,
-                        delta: usageMetrics.delta,
-                        timestamp: usageMetrics.timestamp,
-                        agent: usageMetrics.agent
-                    } : undefined,
-                    usageMetricRecords: usageMetrics?.records
+                    usageMetrics: usage.metrics,
+                    usageMetricRecords: usage.records,
+                    workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
                 }));
 
                 return {
@@ -430,6 +429,7 @@ export class ClaudeAgent implements Agent {
             executionTime,
             correctedTokenUsage,
             taskId,
+            prNumber,
             usageMetrics
         } = params;
 
@@ -446,6 +446,7 @@ export class ClaudeAgent implements Agent {
         });
 
         // Persist LLM log for metrics tracking (including Agent Tank usage if available)
+        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
         await persistLlmLog(createLlmLogFromAnalysis({
             executionType: 'implementation',
             modelUsed,
@@ -455,7 +456,7 @@ export class ClaudeAgent implements Agent {
             error: claudeOutput.success ? undefined : (result.stderr || 'Execution failed'),
             sessionId: claudeOutput.sessionId ?? undefined,
             draftId: taskId,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
+            repository,
             agentAlias: this.config.alias,
             metadata: {
                 isRetry,
@@ -469,7 +470,8 @@ export class ClaudeAgent implements Agent {
                 timestamp: usageMetrics.timestamp,
                 agent: usageMetrics.agent
             } : undefined,
-            usageMetricRecords: usageMetrics?.records
+            usageMetricRecords: usageMetrics?.records,
+            workRef: buildTaskWorkRef(taskId, issueRef.number, repository, prNumber),
         }));
     }
 }

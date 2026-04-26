@@ -1,5 +1,6 @@
 import React from 'react';
 import type { UsageMetricRecord } from '@propr/shared';
+import { formatGeminiModelVariant } from '../../utils/modelDisplay';
 
 /**
  * Map of raw Agent Tank metric keys to human-readable labels.
@@ -19,6 +20,11 @@ const METRIC_KEY_LABELS: Record<string, string> = {
 
 function humanizeMetricKey(key: string): string {
   if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
+  // Shorten Gemini model names (e.g. "Gemini-2.5-flash" → "2.5 Flash")
+  const lowerKey = key.toLowerCase();
+  if (lowerKey.startsWith('gemini-') || lowerKey.startsWith('gemini ')) {
+    return formatGeminiModelVariant(lowerKey.replace(/\s/g, '-'));
+  }
   // Already humanized (starts with uppercase) — return as-is
   if (/^[A-Z]/.test(key)) return key;
   // Split camelCase and title-case each word
@@ -99,10 +105,12 @@ export const UsageBadge: React.FC<UsageBadgeProps> = ({
       parts.push(
         <span
           key={`${record.agent}-${record.metricKey}`}
-          className={record.metricValue > 0 ? 'text-amber-600' : 'text-green-600'}
           title={`${humanizeMetricKey(record.metricKey)}: ${sign}${record.metricValue.toFixed(1)}%`}
         >
-          {humanizeMetricKey(record.metricKey)} {sign}{record.metricValue.toFixed(1)}%
+          <span className="text-slate-500">{humanizeMetricKey(record.metricKey)}</span>{' '}
+          <span className={record.metricValue > 0 ? 'text-amber-600' : 'text-green-600'}>
+            {sign}{record.metricValue.toFixed(1)}%
+          </span>
         </span>
       );
     }

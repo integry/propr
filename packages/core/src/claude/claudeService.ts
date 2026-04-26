@@ -87,6 +87,7 @@ export interface RunLightweightLLMAnalysisOptions {
     githubToken: string;
     issueRef: IssueRef;
     taskId?: string;
+    prNumber?: number;
     executionType?: ExecutionType;
     metadata?: Record<string, unknown>;
 }
@@ -262,6 +263,8 @@ interface AgentExecutionParams {
     modelOverride?: string;
     prompt: string;
     taskId?: string;
+    taskNumber?: number;
+    prNumber?: number;
     executionType?: string;
     correlationId?: string;
     repository?: string;
@@ -270,7 +273,7 @@ interface AgentExecutionParams {
 }
 
 async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<AnalysisResult | null> {
-    const { agentAlias, modelOverride, prompt, taskId, executionType, correlationId, repository, metadata, correlatedLogger } = params;
+    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, correlatedLogger } = params;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
@@ -282,7 +285,26 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
 
     const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
     correlatedLogger.info({ agentAlias, resolvedModel, taskId, executionType }, 'Using agent-specific lightweight LLM analysis');
-    return await agent.analyze(prompt, { model: resolvedModel, taskId, executionType, correlationId, repository, metadata });
+    return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata });
+}
+
+function buildWorkRef(opts: {
+    executionType: string;
+    taskId?: string;
+    prNumber?: number;
+    issueRef?: IssueRef;
+    repository?: string;
+}): Record<string, unknown> {
+    const isPlan = opts.executionType === 'plan-generation' || opts.executionType === 'plan-refinement';
+    const taskNumber = isPlan ? undefined : opts.issueRef?.number;
+    return {
+        workType: isPlan ? 'plan' : (opts.taskId || taskNumber) ? 'task' : 'repository',
+        taskId: isPlan ? undefined : opts.taskId,
+        taskNumber,
+        prNumber: isPlan ? undefined : opts.prNumber,
+        planDraftId: isPlan ? opts.taskId : undefined,
+        workRepository: opts.repository,
+    };
 }
 
 async function executeClaudeAnalysis(
@@ -290,7 +312,7 @@ async function executeClaudeAnalysis(
     resolvedModel: string,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<string> {
-    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, executionType = 'other', model } = options;
+    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, prNumber, executionType = 'other', model } = options;
 
     const claudeResult = await executeClaudeCode({
         worktreePath, issueRef, githubToken,
@@ -315,7 +337,8 @@ async function executeClaudeAnalysis(
         correlationId, draftId: taskId, repository,
         agentAlias: 'claude',
         usageMetrics: mapUsageMetrics(claudeResult.usageMetrics),
-        usageMetricRecords: claudeResult.usageMetrics?.records
+        usageMetricRecords: claudeResult.usageMetrics?.records,
+        workRef: buildWorkRef({ executionType, taskId, prNumber, issueRef, repository }),
     }));
 
     const analysisText = (claudeResult.finalResult?.result || claudeResult.summary)?.trim();
@@ -329,7 +352,7 @@ async function executeClaudeAnalysis(
 }
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, taskId, issueRef, executionType = 'other', metadata } = options;
+    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
@@ -337,9 +360,10 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
     if (agentAlias) {
         try {
             const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
+            const taskNumber = issueRef?.number;
             // Pass all logging fields to agent - agent handles persistence internally
             const analysisResult = await tryExecuteWithAgent({
-                agentAlias, modelOverride, prompt, taskId, executionType,
+                agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType,
                 correlationId, repository, metadata, correlatedLogger
             });
             if (analysisResult !== null) {

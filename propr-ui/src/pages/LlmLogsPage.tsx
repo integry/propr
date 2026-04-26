@@ -3,18 +3,21 @@ import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getLlmLogs, LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
 import { getAgentTankStatus } from '../api/revertApi';
-import { ChevronLeft, ChevronRight, Filter, Clock, Cpu, Zap, Info, X } from 'lucide-react';
+import { Filter, Clock, Cpu, Zap, Info, X } from 'lucide-react';
 import {
   formatDuration,
   formatTimestamp,
   formatType,
   getContextDisplay,
+  getWorkReferenceDisplay,
+  getWorkTypeLabel,
   hasDetailedInfo,
 } from './llmLogsUtils';
 import {
   StatusIcon,
   ExpandButton,
   ExpandedRowDetails,
+  PaginationFooter,
 } from './LlmLogsPageComponents';
 import { UsageBadge } from '../components/ui/UsageBadge';
 
@@ -30,6 +33,7 @@ const LlmLogsPage: React.FC = () => {
   const typeFilter = searchParams.get('type') || 'all';
   const modelFilter = searchParams.get('model') || 'all';
   const statusFilter = searchParams.get('status') || 'all';
+  const workTypeFilter = searchParams.get('work_type') || 'all';
   const currentPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
 
   const [logs, setLogs] = useState<LlmLogEntry[]>([]);
@@ -98,6 +102,9 @@ const LlmLogsPage: React.FC = () => {
       if (statusFilter !== 'all') {
         params.success = statusFilter === 'success';
       }
+      if (workTypeFilter !== 'all') {
+        params.work_type = workTypeFilter;
+      }
 
       const data = await getLlmLogs(params as Parameters<typeof getLlmLogs>[0]);
       setLogs(data.logs);
@@ -123,9 +130,9 @@ const LlmLogsPage: React.FC = () => {
         setLoading(false);
       }
     }
-  }, [typeFilter, modelFilter, statusFilter]);
+  }, [typeFilter, modelFilter, statusFilter, workTypeFilter]);
 
-  // Initial load and when filters change
+  // Initial load and when filters/page change
   useEffect(() => {
     loadLogs(currentPage);
   }, [currentPage, loadLogs]);
@@ -141,6 +148,10 @@ const LlmLogsPage: React.FC = () => {
 
   const handleStatusFilterChange = (value: string) => {
     updateSearchParams({ status: value, page: '1' });
+  };
+
+  const handleWorkTypeFilterChange = (value: string) => {
+    updateSearchParams({ work_type: value, page: '1' });
   };
 
   const handlePageChange = (newPage: number) => {
@@ -206,6 +217,18 @@ const LlmLogsPage: React.FC = () => {
               <option value="all">All Status</option>
               <option value="success">Success</option>
               <option value="failed">Failed</option>
+            </select>
+
+            {/* Work Type Filter */}
+            <select
+              value={workTypeFilter}
+              onChange={(e) => handleWorkTypeFilterChange(e.target.value)}
+              className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+            >
+              <option value="all">All Work</option>
+              <option value="task">Tasks</option>
+              <option value="plan">Plans</option>
+              <option value="repository">Repository</option>
             </select>
 
             {/* Type Filter - hidden on mobile */}
@@ -296,7 +319,7 @@ const LlmLogsPage: React.FC = () => {
                     <th className="hidden sm:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <div className="flex items-center gap-1">
                         <Info size={14} />
-                        Context
+                        Work Ref
                       </div>
                     </th>
                     <th className="hidden md:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -348,9 +371,24 @@ const LlmLogsPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="hidden sm:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700">
-                          <span title={log.repository || log.draftId || log.sessionId || undefined}>
-                            {getContextDisplay(log)}
-                          </span>
+                          {log.workType ? (
+                            <div className="flex items-center gap-1.5">
+                              <span className={`inline-block px-1.5 py-0.5 text-xs font-medium rounded ${
+                                log.workType === 'task' ? 'bg-blue-100 text-blue-800' :
+                                log.workType === 'plan' ? 'bg-purple-100 text-purple-800' :
+                                'bg-gray-100 text-gray-800'
+                              }`}>
+                                {getWorkTypeLabel(log.workType)}
+                              </span>
+                              <span className="truncate max-w-[200px]" title={getWorkReferenceDisplay(log)}>
+                                {getWorkReferenceDisplay(log)}
+                              </span>
+                            </div>
+                          ) : (
+                            <span title={log.repository || log.draftId || log.sessionId || undefined}>
+                              {getContextDisplay(log)}
+                            </span>
+                          )}
                         </td>
                         <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
                           {log.modelName || '-'}
@@ -381,34 +419,14 @@ const LlmLogsPage: React.FC = () => {
 
       {/* Anchored Footer - compact on mobile */}
       {logs.length > 0 && totalPages > 1 && pagination && (
-        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
-          <div className="flex items-center justify-between px-4 sm:px-6 py-2 sm:py-4 gap-2">
-            <span className="text-xs sm:text-sm text-gray-600">
-              <span className="hidden sm:inline">Showing </span>{(currentPage - 1) * DEFAULT_PAGE_SIZE + 1}-{Math.min(currentPage * DEFAULT_PAGE_SIZE, pagination.total)}<span className="hidden sm:inline"> of {pagination.total} entries</span>
-            </span>
-            <div className="flex items-center gap-1 sm:gap-2">
-              <button
-                onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
-                disabled={!pagination.hasPreviousPage || loading}
-                className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <ChevronLeft size={14} className="sm:w-4 sm:h-4" />
-                <span className="hidden sm:inline">Previous</span>
-              </button>
-              <span className="text-xs sm:text-sm text-gray-600 px-1">
-                {currentPage}/{totalPages}
-              </span>
-              <button
-                onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
-                disabled={!pagination.hasNextPage || loading}
-                className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <span className="hidden sm:inline">Next</span>
-                <ChevronRight size={14} className="sm:w-4 sm:h-4" />
-              </button>
-            </div>
-          </div>
-        </div>
+        <PaginationFooter
+          currentPage={currentPage}
+          totalPages={totalPages}
+          pageSize={DEFAULT_PAGE_SIZE}
+          pagination={pagination}
+          loading={loading}
+          onPageChange={handlePageChange}
+        />
       )}
     </div>
   );

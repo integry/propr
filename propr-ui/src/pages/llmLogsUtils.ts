@@ -1,5 +1,8 @@
 import { LlmLogEntry } from '../api/llmLogsApi';
 
+// Re-export pure display helpers from the shared module (no browser deps)
+export { getWorkReferenceDisplay, getWorkTypeLabel, hasDetailedInfo } from './llmLogsDisplayUtils';
+
 // Format duration to human-readable (e.g., "1m 30s")
 export const formatDuration = (ms: number | null): string => {
   if (ms === null) return '-';
@@ -77,7 +80,3 @@ export const getContextDisplay = (log: LlmLogEntry): string => {
   return '-';
 };
 
-// Check if a log has detailed info to show
-export const hasDetailedInfo = (log: LlmLogEntry): boolean => {
-  return !!(log.metadata || log.draftId || log.sessionId || log.correlationId || log.errorMessage);
-};

@@ -136,6 +136,8 @@ async function handleMergeWithAgent(options: {
         branchName,
         onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolvedModel, stateManager, correlatedLogger, redisClient }),
         onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
+        taskId,
+        prNumber: pullRequestNumber,
     });
 
     const claudeResult: ClaudeCodeResponse = agentResultToClaudeResponse(agentResult);

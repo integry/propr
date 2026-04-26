@@ -216,6 +216,7 @@ export async function generateAndSaveTaskTitle(options: GenerateTitleOptions): P
     worktreePath,
     githubToken,
     issueRef: { number: 0, repoOwner: owner, repoName },
+    taskId: draftId,
     executionType: 'title-generation',
     metadata: titleGenerationMetadata
   });

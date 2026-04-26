@@ -298,6 +298,10 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
     error: errorMessage,
     repository: fullName,
     agentAlias: agent.config.alias,
+    workRef: {
+      workType: 'repository',
+      workRepository: fullName,
+    },
   });
   await persistLlmLog(logEntry);
 

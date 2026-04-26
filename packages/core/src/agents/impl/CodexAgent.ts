@@ -15,7 +15,7 @@ import {
     storeCodexPromptInRedis
 } from '../../codex/codexHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
-import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
@@ -42,7 +42,7 @@ export class CodexAgent implements Agent {
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, taskId } = options;
+            onSessionId, onContainerId, githubToken, taskId, prNumber } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -117,7 +117,8 @@ export class CodexAgent implements Agent {
                 repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
                 agentAlias: this.config.alias,
                 metadata: { isRetry, retryReason, conversationId: parsedOutput.conversationId },
-                ...this.formatUsageMetrics(usageMetrics)
+                ...this.formatUsageMetrics(usageMetrics),
+                workRef: buildTaskWorkRef(taskId, issueRef.number, repo, prNumber),
             });
             await persistLlmLog(logEntry);
 
@@ -154,7 +155,7 @@ export class CodexAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, executionType, correlationId, repository, metadata } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
@@ -186,7 +187,7 @@ export class CodexAgent implements Agent {
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
             if (result.exitCode === 0 || parsedOutput.result) {
-                return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, correlationId, repository, metadata });
+                return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata });
             }
 
             const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
@@ -225,10 +226,10 @@ export class CodexAgent implements Agent {
         parsedOutput: ReturnType<typeof parseCodexStreamOutput>;
         effectiveModel: string; executionTimeMs: number;
         usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
-        executionType?: string; taskId?: string;
+        executionType?: string; taskId?: string; taskNumber?: number; prNumber?: number;
         correlationId?: string; repository?: string; metadata?: Record<string, unknown>;
     }): Promise<AnalysisResult> {
-        const { parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, correlationId, repository, metadata } = opts;
+        const { parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata } = opts;
         const analysisText = (parsedOutput.result || '').trim();
         logger.info({
             agentAlias: this.config.alias, responseLength: analysisText.length,
@@ -245,7 +246,8 @@ export class CodexAgent implements Agent {
             sessionId: parsedOutput.sessionId, draftId: taskId,
             correlationId, repository, metadata,
             agentAlias: this.config.alias,
-            ...this.formatUsageMetrics(usageMetrics)
+            ...this.formatUsageMetrics(usageMetrics),
+            workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
         }));
 
         return {

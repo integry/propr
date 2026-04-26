@@ -129,7 +129,9 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
         githubToken,
         branchName,
         onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: modelToUse, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
+        onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
+        taskId,
+        prNumber: pullRequestNumber
     });
 
     return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };

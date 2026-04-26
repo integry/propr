@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { validatePagination, validateUUID, validateBoolean } from './validation.js';
+import { WORK_TYPES } from '@propr/core';
 
 interface LlmLogsRoutesDeps {
   db: Knex;
@@ -27,6 +28,13 @@ interface LlmLogRow {
   agent_alias: string | null;
   metadata: string | null;
   usage_metrics: string | null;
+  work_type: string | null;
+  task_id: string | null;
+  task_number: number | null;
+  pr_number: number | null;
+  plan_draft_id: string | null;
+  plan_issue_id: number | null;
+  work_repository: string | null;
 }
 
 interface CountRow {
@@ -39,6 +47,7 @@ interface LlmLogFilters {
   success?: boolean;
   draftId?: string;
   agentAlias?: string;
+  workType?: string;
 }
 
 function applyLlmLogFilters<T extends Knex.QueryBuilder>(query: T, filters: LlmLogFilters): T {
@@ -57,6 +66,9 @@ function applyLlmLogFilters<T extends Knex.QueryBuilder>(query: T, filters: LlmL
   if (filters.agentAlias) {
     query = query.where('agent_alias', filters.agentAlias) as T;
   }
+  if (filters.workType) {
+    query = query.where('work_type', filters.workType) as T;
+  }
   return query;
 }
 
@@ -69,27 +81,114 @@ interface UsageMetricRecordRow {
   created_at: string;
 }
 
+/**
+ * Infer work reference fields from existing row data when work_type columns
+ * are not populated (e.g. pre-migration rows or migration not yet applied).
+ *
+ * Heuristics:
+ * - execution_type determines the work type (implementation/task-analysis → task,
+ *   plan-generation/plan-refinement → plan, otherwise → repository)
+ * - draft_id often encodes the issue number in a structured format like
+ *   "{owner}-{repo}-{number}-{agent}-{model}-{uuid}". We use the repository
+ *   field to anchor the prefix and extract the number.
+ */
+const PLAN_EXEC_TYPES = new Set(['plan-generation', 'plan-refinement', 'title-generation']);
+const TASK_EXEC_TYPES = new Set(['implementation', 'task-analysis', 'context-analysis', 'pr-review']);
+
+/** Extract an issue number from a structured draft_id using the repo as anchor. */
+function extractIssueFromDraftId(draftId: string | null | undefined, repo: string | null): number | null {
+  if (!draftId || !repo) return null;
+  const prefix = repo.replace('/', '-') + '-';
+  if (!draftId.startsWith(prefix)) return null;
+  const match = draftId.substring(prefix.length).match(/^(\d+)-/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/** Extract an issue number from a correlation_id like "task-1405-abc123". */
+function extractIssueFromCorrelationId(correlationId: string | null | undefined): number | null {
+  if (!correlationId) return null;
+  const match = correlationId.match(/(?:task|issue|pr)[- ]?(\d+)/i);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+function inferWorkReference(row: LlmLogRow): {
+  workType: string | null;
+  taskId: string | null;
+  taskNumber: number | null;
+  planDraftId: string | null;
+  workRepository: string | null;
+} {
+  const execType = row.execution_type;
+  const repo = row.repository || null;
+  const isPlan = PLAN_EXEC_TYPES.has(execType);
+  const isTask = TASK_EXEC_TYPES.has(execType);
+
+  let workType: string | null = null;
+  if (isPlan) workType = 'plan';
+  else if (isTask) workType = 'task';
+  else if (repo) workType = 'repository';
+
+  const taskNumber = extractIssueFromDraftId(row.draft_id, repo)
+    || (isTask ? extractIssueFromCorrelationId(row.correlation_id) : null);
+
+  const draftId = row.draft_id || null;
+
+  return {
+    workType,
+    taskId: isTask ? draftId : null,
+    taskNumber: isTask ? taskNumber : null,
+    planDraftId: isPlan ? draftId : null,
+    workRepository: repo,
+  };
+}
+
+function safeJsonParse(value: string | null | undefined): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function draftIdFallback(workType: string | null, targetType: string, draftId: string | null | undefined): string | null {
+  return workType === targetType && draftId ? draftId : null;
+}
+
+function resolveWorkReference(row: LlmLogRow): Record<string, unknown> {
+  const raw = row.work_type ? null : inferWorkReference(row);
+  const inf = raw || { workType: null, taskId: null, taskNumber: null, planDraftId: null, workRepository: null };
+
+  const workType = row.work_type || inf.workType || null;
+  const planDraftId = row.plan_draft_id || inf.planDraftId
+    || draftIdFallback(workType, 'plan', row.draft_id);
+  const taskId = row.task_id || inf.taskId
+    || draftIdFallback(workType, 'task', row.draft_id);
+
+  return {
+    workType,
+    taskId: taskId || null,
+    taskNumber: row.task_number ?? inf.taskNumber ?? null,
+    prNumber: row.pr_number ?? null,
+    planDraftId: planDraftId || null,
+    planIssueId: row.plan_issue_id ?? null,
+    workRepository: row.work_repository || inf.workRepository || null,
+  };
+}
+
+function formatMetricRecords(metricRecords?: UsageMetricRecordRow[]): Record<string, unknown>[] {
+  if (!metricRecords) return [];
+  return metricRecords.map(r => ({
+    agent: r.agent_name,
+    metricKey: r.metric_key,
+    metricValue: Number(r.metric_value),
+  }));
+}
+
 function formatLlmLogRow(
   row: LlmLogRow,
   metricRecords?: UsageMetricRecordRow[],
 ): Record<string, unknown> {
-  let metadata: Record<string, unknown> | null = null;
-  if (row.metadata) {
-    try {
-      metadata = JSON.parse(row.metadata);
-    } catch {
-      // If parsing fails, keep as null
-    }
-  }
-
-  const formattedRecords = metricRecords
-    ? metricRecords.map(r => ({
-        agent: r.agent_name,
-        metricKey: r.metric_key,
-        metricValue: Number(r.metric_value),
-      }))
-    : [];
-
   return {
     logId: row.log_id,
     executionType: row.execution_type,
@@ -109,9 +208,10 @@ function formatLlmLogRow(
     draftId: row.draft_id,
     repository: row.repository,
     agentAlias: row.agent_alias,
-    metadata,
-    usageMetrics: row.usage_metrics ? (() => { try { return JSON.parse(row.usage_metrics); } catch { return null; } })() : null,
-    usageMetricRecords: formattedRecords,
+    metadata: safeJsonParse(row.metadata),
+    usageMetrics: safeJsonParse(row.usage_metrics),
+    usageMetricRecords: formatMetricRecords(metricRecords),
+    ...resolveWorkReference(row),
   };
 }
 
@@ -141,6 +241,21 @@ async function fetchMetricRecordsByLogId(
 export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
   const { db } = deps;
 
+  /** Process-wide cache for work-ref column existence. Only caches `true`
+   *  so a process started before the migration will re-check until it lands. */
+  let hasWorkRefColumnsCache = false;
+
+  async function checkWorkRefColumns(): Promise<boolean> {
+    if (hasWorkRefColumnsCache) return true;
+    try {
+      const result = await db.schema.hasColumn('llm_logs', 'work_type');
+      if (result) hasWorkRefColumnsCache = true;
+      return result;
+    } catch {
+      return false;
+    }
+  }
+
   async function getLlmLogs(req: Request, res: Response): Promise<void> {
     try {
       // Validate pagination parameters
@@ -157,6 +272,13 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
       const success = req.query.success as string | undefined;
       const draftId = req.query.draft_id as string | undefined;
       const agentAlias = req.query.agent_alias as string | undefined;
+      const workType = req.query.work_type as string | undefined;
+
+      // Validate work_type if provided
+      if (workType && !(WORK_TYPES as readonly string[]).includes(workType)) {
+        res.status(400).json({ error: `work_type must be one of: ${WORK_TYPES.join(', ')}` });
+        return;
+      }
 
       // Validate draft_id if provided
       if (draftId) {
@@ -182,26 +304,53 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         model,
         success: success !== undefined ? (success === 'true' || success === '1') : undefined,
         draftId,
-        agentAlias
+        agentAlias,
+        workType,
       };
 
+      // Check if work-reference columns exist (cached after first successful check)
+      const hasWorkRefColumns = await checkWorkRefColumns();
+
       // Build and execute queries
-      const baseQuery = db('llm_logs').select(
+      const baseColumns = [
         'log_id', 'execution_type', 'model_name', 'start_time', 'end_time',
         'duration_ms', 'success', 'input_tokens', 'output_tokens',
         'cache_creation_input_tokens', 'cache_read_input_tokens', 'cost_usd',
         'error_message', 'session_id', 'correlation_id', 'draft_id',
-        'repository', 'agent_alias', 'metadata', 'usage_metrics'
-      );
+        'repository', 'agent_alias', 'metadata', 'usage_metrics',
+      ];
+      const workRefColumns = [
+        'work_type', 'task_id', 'task_number', 'pr_number',
+        'plan_draft_id', 'plan_issue_id', 'work_repository',
+      ];
+      const selectColumns = hasWorkRefColumns
+        ? [...baseColumns, ...workRefColumns]
+        : baseColumns;
+
+      const baseQuery = db('llm_logs').select(...selectColumns);
 
       const countQuery = db('llm_logs').count('* as count');
 
+      // If work_type filter is requested but the column doesn't exist, return empty results
+      if (!hasWorkRefColumns && workType) {
+        res.json({
+          logs: [],
+          pagination: { total: 0, page, limit, totalPages: 0 },
+        });
+        return;
+      }
+
+      // Only apply work_type filter if the column exists
+      const effectiveFilters = hasWorkRefColumns
+        ? filters
+        : { ...filters, workType: undefined };
+
       const [logs, countResult] = await Promise.all([
-        applyLlmLogFilters(baseQuery, filters)
+        applyLlmLogFilters(baseQuery, effectiveFilters)
           .orderBy('start_time', 'desc')
           .limit(limit)
           .offset(offset) as unknown as Promise<LlmLogRow[]>,
-        applyLlmLogFilters(countQuery, filters).first() as unknown as Promise<CountRow | undefined>
+        applyLlmLogFilters(countQuery, effectiveFilters).first() as unknown as Promise<CountRow | undefined>
       ]);
 
       // Fetch structured usage metric records for all returned logs

@@ -10,6 +10,34 @@ import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
 import type { ExecutionType } from './llmMetrics.types.js';
 
+/** Discriminator for the kind of work an LLM call belongs to. */
+export type WorkType = 'task' | 'plan' | 'repository';
+
+/** Canonical list of valid WorkType values, shared across layers. */
+export const WORK_TYPES: readonly WorkType[] = ['task', 'plan', 'repository'] as const;
+
+/**
+ * Normalized work-reference that every LLM call can carry.
+ * At least one field should be set so the log row can be traced
+ * back to a task, plan, or repository-scoped workflow.
+ */
+export interface WorkReference {
+  /** Discriminator: task execution, plan generation/refinement, or repo-level work. */
+  workType?: WorkType;
+  /** The internal task ID (e.g. BullMQ job id). */
+  taskId?: string;
+  /** The GitHub issue number the task is associated with. */
+  taskNumber?: number;
+  /** The GitHub PR number when this call is part of a PR follow-up. */
+  prNumber?: number;
+  /** The plan / draft ID that owns this LLM call. */
+  planDraftId?: string;
+  /** The specific plan-issue row within a draft. */
+  planIssueId?: number;
+  /** owner/repo for the work context. */
+  workRepository?: string;
+}
+
 /** A single structured usage metric record for DB persistence. */
 export interface UsageMetricRecordEntry {
   agent: string;
@@ -41,6 +69,8 @@ export interface LlmLogEntry {
   usageMetrics?: Record<string, unknown>;
   /** Structured metric records (one per metric key) for the usage_metric_records table. */
   usageMetricRecords?: UsageMetricRecordEntry[];
+  /** Normalized work-reference fields for tracing this call to a task, plan, or repo. */
+  workRef?: WorkReference;
 }
 
 /**
@@ -81,33 +111,71 @@ async function calculateCost(entry: LlmLogEntry): Promise<number | undefined> {
   return undefined;
 }
 
-/**
- * Persists an LLM call log entry to the llm_logs table.
- */
-async function insertLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Promise<number | null> {
-  const [inserted] = await db!('llm_logs').insert({
+/** Coerce undefined to null for DB columns. */
+function n<T>(value: T | undefined): T | null {
+  return value ?? null;
+}
+
+export function buildLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined, hasWorkRefColumns: boolean): Record<string, unknown> {
+  const row: Record<string, unknown> = {
     execution_type: entry.executionType,
     model_name: entry.modelName,
     start_time: entry.startTime.toISOString(),
     end_time: entry.endTime.toISOString(),
     duration_ms: entry.durationMs,
     success: entry.success,
-    input_tokens: entry.inputTokens ?? null,
-    output_tokens: entry.outputTokens ?? null,
-    estimated_input_tokens: entry.estimatedInputTokens ?? null,
-    cache_creation_input_tokens: entry.cacheCreationInputTokens ?? null,
-    cache_read_input_tokens: entry.cacheReadInputTokens ?? null,
-    cost_usd: costUsd ?? null,
-    error_message: entry.errorMessage ?? null,
-    session_id: entry.sessionId ?? null,
-    correlation_id: entry.correlationId ?? null,
-    draft_id: entry.draftId ?? null,
-    repository: entry.repository ?? null,
-    agent_alias: entry.agentAlias ?? null,
+    input_tokens: n(entry.inputTokens),
+    output_tokens: n(entry.outputTokens),
+    estimated_input_tokens: n(entry.estimatedInputTokens),
+    cache_creation_input_tokens: n(entry.cacheCreationInputTokens),
+    cache_read_input_tokens: n(entry.cacheReadInputTokens),
+    cost_usd: n(costUsd),
+    error_message: n(entry.errorMessage),
+    session_id: n(entry.sessionId),
+    correlation_id: n(entry.correlationId),
+    draft_id: n(entry.draftId),
+    repository: n(entry.repository),
+    agent_alias: n(entry.agentAlias),
     metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
     usage_metrics: entry.usageMetrics ? JSON.stringify(entry.usageMetrics) : null,
-  }).returning('log_id');
+  };
 
+  if (hasWorkRefColumns) {
+    const ref = entry.workRef;
+    row.work_type = n(ref?.workType);
+    row.task_id = n(ref?.taskId);
+    row.task_number = n(ref?.taskNumber);
+    row.pr_number = n(ref?.prNumber);
+    row.plan_draft_id = n(ref?.planDraftId);
+    row.plan_issue_id = n(ref?.planIssueId);
+    row.work_repository = n(ref?.workRepository);
+  }
+
+  return row;
+}
+
+/** Cache for whether work-reference columns exist. Only caches `true` so that
+ *  a process that starts before the migration runs will re-check on the next insert
+ *  instead of permanently skipping the new columns. */
+let _hasWorkRefColumns = false;
+
+async function checkWorkRefColumns(): Promise<boolean> {
+  if (_hasWorkRefColumns) return true;
+  try {
+    const result = await db!.schema.hasColumn('llm_logs', 'work_type');
+    if (result) _hasWorkRefColumns = true;
+    return result;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persists an LLM call log entry to the llm_logs table.
+ */
+async function insertLlmLogRow(entry: LlmLogEntry, costUsd: number | undefined): Promise<number | null> {
+  const hasWorkRef = await checkWorkRefColumns();
+  const [inserted] = await db!('llm_logs').insert(buildLlmLogRow(entry, costUsd, hasWorkRef)).returning('log_id');
   return typeof inserted === 'object' ? (inserted as { log_id: number }).log_id : inserted;
 }
 
@@ -164,6 +232,64 @@ export async function persistLlmLog(entry: LlmLogEntry): Promise<number | null> 
 }
 
 /**
+ * Builds a WorkReference for task execution (implementation) calls.
+ * Used by all agent executeTask() methods to avoid duplicating inline workRef construction.
+ */
+export function buildTaskWorkRef(
+  taskId: string | undefined,
+  taskNumber: number,
+  repository: string,
+  prNumber?: number,
+): WorkReference {
+  return {
+    workType: 'task',
+    taskId,
+    taskNumber,
+    prNumber,
+    workRepository: repository,
+  };
+}
+
+/**
+ * Builds a WorkReference for analysis calls based on execution type and task context.
+ */
+export function buildAnalysisWorkRef(
+  executionType: string | undefined,
+  taskId: string | undefined,
+  repository: string | undefined,
+  opts?: { taskNumber?: number; prNumber?: number },
+): WorkReference {
+  const taskNumber = opts?.taskNumber;
+  const prNumber = opts?.prNumber;
+  const isPlan = executionType === 'plan-generation' || executionType === 'plan-refinement';
+  return {
+    workType: isPlan ? 'plan' : (taskId || taskNumber) ? 'task' : 'repository',
+    taskId: isPlan ? undefined : taskId,
+    taskNumber: isPlan ? undefined : taskNumber,
+    prNumber: isPlan ? undefined : prNumber,
+    planDraftId: isPlan ? taskId : undefined,
+    workRepository: repository,
+  };
+}
+
+/**
+ * Formats usage metrics from Agent Tank tracking into a plain object for persistence.
+ */
+export function formatUsageMetrics(usageMetrics: { preCall: unknown; postCall: unknown; delta: unknown; timestamp: unknown; agent: unknown; records?: UsageMetricRecordEntry[] } | null | undefined): { metrics?: Record<string, unknown>; records?: UsageMetricRecordEntry[] } {
+  if (!usageMetrics) return {};
+  return {
+    metrics: {
+      preCall: usageMetrics.preCall,
+      postCall: usageMetrics.postCall,
+      delta: usageMetrics.delta,
+      timestamp: usageMetrics.timestamp,
+      agent: usageMetrics.agent,
+    },
+    records: usageMetrics.records,
+  };
+}
+
+/**
  * Helper to create an LlmLogEntry from agent analysis result.
  */
 export function createLlmLogFromAnalysis(params: {
@@ -188,6 +314,7 @@ export function createLlmLogFromAnalysis(params: {
   metadata?: Record<string, unknown>;
   usageMetrics?: Record<string, unknown>;
   usageMetricRecords?: UsageMetricRecordEntry[];
+  workRef?: WorkReference;
 }): LlmLogEntry {
   const now = new Date();
   const startTime = new Date(now.getTime() - params.executionTimeMs);
@@ -213,5 +340,6 @@ export function createLlmLogFromAnalysis(params: {
     metadata: params.metadata,
     usageMetrics: params.usageMetrics,
     usageMetricRecords: params.usageMetricRecords,
+    workRef: params.workRef,
   };
 }
