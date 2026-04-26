@@ -43,13 +43,23 @@ export function isReviewComment(comment: { pull_request_review_id?: number }, ev
 /**
  * Derive the label prefix from a MODEL_LABEL_PATTERN regex string.
  * For example, '^llm-(.+)$' → 'llm-', '^ai-model-(.+)$' → 'ai-model-'.
- * Falls back to 'llm-' when the pattern cannot be parsed.
+ *
+ * Only supports patterns where the prefix is a simple literal (no regex
+ * metacharacters) followed by a single capture group.  Patterns with
+ * non-capturing groups, alternations, or other constructs are rejected
+ * and the default 'llm-' prefix is returned.
  */
 export function modelLabelPrefix(pattern: string): string {
     const clean = pattern.replace(/^\^/, '').replace(/\$$/, '');
     const idx = clean.indexOf('(');
-    if (idx > 0) return clean.slice(0, idx);
-    return 'llm-';
+    if (idx <= 0) return 'llm-';
+
+    const prefix = clean.slice(0, idx);
+
+    // Reject if the prefix contains regex metacharacters — it's not a simple literal.
+    if (/[\\.*+?^${}()|[\]]/.test(prefix)) return 'llm-';
+
+    return prefix;
 }
 
 export function extractLlmFromLabels(

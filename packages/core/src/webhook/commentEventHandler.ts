@@ -165,6 +165,11 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     if (parsedCommand) {
         const commandMeta = buildCommandMeta(parsedCommand);
 
+        // Surface warning if extra arguments were silently discarded
+        if ('warning' in commandMeta && commandMeta.warning) {
+            correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, commandMeta.warning);
+        }
+
         // /merge — triggers merge of base branch into PR branch (existing behavior)
         if (commandMeta.mode === 'merge') {
             correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/merge command detected, enqueuing merge job');

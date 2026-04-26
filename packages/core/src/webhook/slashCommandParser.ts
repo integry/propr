@@ -40,6 +40,8 @@ export interface SwitchCommandMeta {
     models: string[];
     /** Extra instructions from lines below the command */
     instructions: string;
+    /** Warning message if extra arguments were ignored */
+    warning?: string;
 }
 
 export interface UseCommandMeta {
@@ -48,6 +50,8 @@ export interface UseCommandMeta {
     models: string[];
     /** Extra instructions from lines below the command */
     instructions: string;
+    /** Warning message if extra arguments were ignored */
+    warning?: string;
 }
 
 export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta | SwitchCommandMeta | UseCommandMeta;
@@ -114,22 +118,28 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
         case 'merge':
             return { mode: 'merge' };
         case 'switch': {
-            // /switch accepts a single model; extra args are ignored
             const switchModel = parsed.args.length > 0 ? [normalizeModelLabel(parsed.args[0])] : [];
-            return {
+            const switchMeta: SwitchCommandMeta = {
                 mode: 'switch',
                 models: switchModel,
                 instructions: parsed.instructions,
             };
+            if (parsed.args.length > 1) {
+                switchMeta.warning = `/switch accepts only one model argument; extra arguments were ignored: ${parsed.args.slice(1).join(', ')}`;
+            }
+            return switchMeta;
         }
         case 'use': {
-            // /use accepts a single model; extra args are ignored
             const useModel = parsed.args.length > 0 ? [normalizeModelLabel(parsed.args[0])] : [];
-            return {
+            const useMeta: UseCommandMeta = {
                 mode: 'use',
                 models: useModel,
                 instructions: parsed.instructions,
             };
+            if (parsed.args.length > 1) {
+                useMeta.warning = `/use accepts only one model argument; extra arguments were ignored: ${parsed.args.slice(1).join(', ')}`;
+            }
+            return useMeta;
         }
     }
 }

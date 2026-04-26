@@ -184,6 +184,7 @@ describe('buildCommandMeta', () => {
             mode: 'switch',
             models: ['claude-opus'],
             instructions: '',
+            warning: '/switch accepts only one model argument; extra arguments were ignored: gemini-pro',
         });
     });
 
@@ -210,6 +211,7 @@ describe('buildCommandMeta', () => {
             mode: 'use',
             models: ['gemini-pro'],
             instructions: '',
+            warning: '/use accepts only one model argument; extra arguments were ignored: gpt-54',
         });
     });
 
