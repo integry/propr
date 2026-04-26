@@ -49,17 +49,18 @@ export function isReviewComment(comment: { pull_request_review_id?: number }, ev
  * non-capturing groups, alternations, or other constructs are rejected
  * and the default 'llm-' prefix is returned.
  */
-export function modelLabelPrefix(pattern: string): string {
+export function modelLabelPrefix(pattern: string): { prefix: string; derived: boolean } {
+    const DEFAULT = 'llm-';
     const clean = pattern.replace(/^\^/, '').replace(/\$$/, '');
     const idx = clean.indexOf('(');
-    if (idx <= 0) return 'llm-';
+    if (idx <= 0) return { prefix: DEFAULT, derived: false };
 
     const prefix = clean.slice(0, idx);
 
     // Reject if the prefix contains regex metacharacters — it's not a simple literal.
-    if (/[\\.*+?^${}()|[\]]/.test(prefix)) return 'llm-';
+    if (/[\\.*+?^${}()|[\]]/.test(prefix)) return { prefix: DEFAULT, derived: false };
 
-    return prefix;
+    return { prefix, derived: true };
 }
 
 export function extractLlmFromLabels(

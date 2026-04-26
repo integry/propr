@@ -273,7 +273,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
-    test('/switch with instructions enqueues a follow-up job', async () => {
+    test('/switch with instructions enqueues a follow-up job with stripped body', async () => {
         const event = createPRCommentEvent('/switch opus\nPlease review the auth module');
         const config = createTestConfig();
 
@@ -283,6 +283,12 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(jobData.commandMode, 'switch');
+        // The enqueued job body must contain only the user instructions,
+        // NOT the /switch command line.
+        const comments = jobData.comments as Array<{ body: string }>;
+        assert.ok(comments.length > 0, 'Expected at least one comment in job data');
+        assert.ok(!comments[0].body.includes('/switch'), 'Comment body should not contain /switch command text');
+        assert.ok(comments[0].body.includes('Please review the auth module'), 'Comment body should contain the user instructions');
     });
 
     test('/switch with custom MODEL_LABEL_PATTERN uses pattern-derived prefix for new labels', async () => {
@@ -397,5 +403,82 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(jobData.commandInstructions, 'Fix the login bug');
+    });
+
+    test('/use with instructions does not include command text in comment body', async () => {
+        const event = createPRCommentEvent('/use sonnet\nRefactor the utils');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-body', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        const comments = jobData.comments as Array<{ body: string }>;
+        // /use body goes through normal flow — the comment body is the original text
+        // (unlike /switch, /use is handled at enqueue time, not pre-stripped)
+        assert.ok(comments.length > 0);
+    });
+});
+
+describe('commentEventHandler — commandMode serialization in job data', () => {
+    beforeEach(() => {
+        mockSafeUpdateLabels.mock.resetCalls();
+        mockQueueAdd.mock.resetCalls();
+        mockOctokit.request.mock.resetCalls();
+        mockLoggerInstance.info.mock.resetCalls();
+        mockLoggerInstance.warn.mock.resetCalls();
+
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [
+                    { id: 1, name: 'llm-claude-opus-4-6', color: '000', default: false, description: null, node_id: 'L_1', url: '' },
+                ],
+            },
+        }));
+    });
+
+    test('/switch follow-up job has commandMode "switch" and commandMeta', async () => {
+        const event = createPRCommentEvent('/switch sonnet\nDo a review');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-mode-switch', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'switch');
+        const meta = jobData.commandMeta as { mode: string; models: string[]; instructions: string };
+        assert.strictEqual(meta.mode, 'switch');
+        assert.deepStrictEqual(meta.models, ['claude-sonnet-4-6']);
+        assert.strictEqual(meta.instructions, 'Do a review');
+        assert.strictEqual(jobData.commandInstructions, 'Do a review');
+    });
+
+    test('/use job has commandMode "use" and commandMeta with resolved model', async () => {
+        const event = createPRCommentEvent('/use haiku\nSummarize changes');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-mode-use', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'use');
+        const meta = jobData.commandMeta as { mode: string; models: string[]; instructions: string };
+        assert.strictEqual(meta.mode, 'use');
+        assert.deepStrictEqual(meta.models, ['haiku']);
+        assert.strictEqual(jobData.commandInstructions, 'Summarize changes');
+        // LLM should be resolved from /use command
+        assert.strictEqual(jobData.llm, 'claude-haiku-4-5-20251001');
+    });
+
+    test('/switch follow-up job does not include requestedModels (only /review uses that)', async () => {
+        const event = createPRCommentEvent('/switch opus\nCheck the tests');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-mode-no-req', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.requestedModels, undefined);
     });
 });

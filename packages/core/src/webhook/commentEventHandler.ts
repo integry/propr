@@ -204,7 +204,10 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     const modelLabelRegex = new RegExp(modelLabelPattern);
 
     const existingLlmLabels = prLabels.filter(l => modelLabelRegex.test(l.name)).map(l => l.name);
-    const prefix = modelLabelPrefix(modelLabelPattern);
+    const { prefix, derived } = modelLabelPrefix(modelLabelPattern);
+    if (!derived) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, modelLabelPattern }, 'Could not derive label prefix from MODEL_LABEL_PATTERN, falling back to default "llm-". Labels may be mismatched.');
+    }
     const newLabels = commandMeta.models.map(m => `${prefix}${resolveModelAlias(m)}`);
 
     const octokit = await getAuthenticatedOctokit();
@@ -220,7 +223,10 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     }
 
     correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has instructions, enqueuing follow-up job');
-    await enqueueNewCommentJob(comment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+    // Strip the /switch command line from the comment body so the downstream job
+    // only sees the user's instructions, not the control syntax.
+    const strippedComment = { ...comment, body: commandMeta.instructions };
+    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
 }
 
 export async function processCommentEvent(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
