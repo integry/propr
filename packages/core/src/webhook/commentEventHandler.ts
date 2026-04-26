@@ -188,7 +188,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
             const modelLabelRegex = new RegExp(modelLabelPattern);
 
             const existingLlmLabels = prLabels.filter(l => modelLabelRegex.test(l.name)).map(l => l.name);
-            const newLabels = commandMeta.models.map(m => `llm-${m}`);
+            const newLabels = commandMeta.models.map(m => `llm-${resolveModelAlias(m)}`);
 
             const octokit = await getAuthenticatedOctokit();
             await safeUpdateLabels(
