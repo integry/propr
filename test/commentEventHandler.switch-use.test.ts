@@ -340,6 +340,61 @@ describe('commentEventHandler — /switch command', () => {
         // "llm-haiku" → normalizeModelLabel strips "llm-" → "haiku" → resolveModelAlias → "claude-haiku-4-5-20251001"
         assert.deepStrictEqual(newLabels, ['llm-claude-haiku-4-5-20251001']);
     });
+
+    test('/switch removes multiple existing LLM labels', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [
+                    { id: 1, name: 'llm-claude-opus-4-6', color: '000', default: false, description: null, node_id: 'L_1', url: '' },
+                    { id: 2, name: 'llm-claude-sonnet-4-6', color: '000', default: false, description: null, node_id: 'L_2', url: '' },
+                    { id: 3, name: 'bug', color: 'fff', default: false, description: null, node_id: 'L_3', url: '' },
+                ],
+            },
+        }));
+
+        const event = createPRCommentEvent('/switch haiku');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-multi-label', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
+        assert.deepStrictEqual(existingLlmLabels, ['llm-claude-opus-4-6', 'llm-claude-sonnet-4-6']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-haiku-4-5-20251001']);
+    });
+
+    test('/switch with extra models logs a warning but uses first model', async () => {
+        const event = createPRCommentEvent('/switch opus sonnet');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-extra-args', config);
+
+        // Should still update labels using the first model
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
+        assert.deepStrictEqual(newLabels, ['llm-claude-opus-4-6']);
+        // Should have logged a warning about extra arguments
+        const warnCalls = mockLoggerInstance.warn.mock.calls;
+        const extraWarn = warnCalls.find(
+            (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('extra arguments were ignored')
+        );
+        assert.ok(extraWarn, 'Expected a warning about extra arguments');
+    });
+
+    test('/switch with multiline instructions preserves all instruction lines', async () => {
+        const event = createPRCommentEvent('/switch opus\nFirst line\nSecond line\nThird line');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-multiline', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        const comments = jobData.comments as Array<{ body: string }>;
+        assert.ok(comments[0].body.includes('First line'));
+        assert.ok(comments[0].body.includes('Second line'));
+        assert.ok(comments[0].body.includes('Third line'));
+    });
 });
 
 describe('commentEventHandler — /use command', () => {
@@ -433,6 +488,48 @@ describe('commentEventHandler — /use command', () => {
         assert.ok(comments.length > 0);
         assert.strictEqual(comments[0].body, 'Refactor the utils');
     });
+
+    test('/use with llm- prefixed argument strips prefix before resolving', async () => {
+        const event = createPRCommentEvent('/use llm-opus');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-llm-prefix', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        // "llm-opus" → normalizeModelLabel strips "llm-" → "opus" → resolveModelAlias → "claude-opus-4-6"
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+    });
+
+    test('/use without instructions still enqueues a job', async () => {
+        const event = createPRCommentEvent('/use opus');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-noinstructions', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'use');
+        // commandInstructions should be empty
+        assert.strictEqual(jobData.commandInstructions, '');
+    });
+
+    test('/use with extra models logs warning but uses first model', async () => {
+        const event = createPRCommentEvent('/use opus sonnet');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-extra', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        // Warning should be logged
+        const warnCalls = mockLoggerInstance.warn.mock.calls;
+        const extraWarn = warnCalls.find(
+            (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('extra arguments were ignored')
+        );
+        assert.ok(extraWarn, 'Expected a warning about extra arguments');
+    });
 });
 
 describe('commentEventHandler — commandMode serialization in job data', () => {
@@ -495,5 +592,53 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(jobData.requestedModels, undefined);
+    });
+
+    test('/use job does not include requestedModels', async () => {
+        const event = createPRCommentEvent('/use sonnet\nDo something');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-no-req', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.requestedModels, undefined);
+    });
+
+    test('/review job includes requestedModels from command args', async () => {
+        const event = createPRCommentEvent('/review claude sonnet');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-review-models', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.deepStrictEqual(jobData.requestedModels, ['claude', 'sonnet']);
+    });
+
+    test('/fix job has commandMode "fix" and instructions', async () => {
+        const event = createPRCommentEvent('/fix\nFix the broken tests');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-fix-mode', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'fix');
+        assert.strictEqual(jobData.commandInstructions, 'Fix the broken tests');
+    });
+
+    test('/switch job sets correct repo context fields', async () => {
+        const event = createPRCommentEvent('/switch opus\nReview this');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-switch-ctx', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.pullRequestNumber, 42);
+        assert.strictEqual(jobData.repoOwner, 'testowner');
+        assert.strictEqual(jobData.repoName, 'testrepo');
     });
 });
