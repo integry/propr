@@ -191,7 +191,7 @@ async function runSingleReview(
     });
 
     try {
-        const analysisResult = await agent.analyze(reviewPrompt, { model, taskId, executionType: 'pr-review' });
+        const analysisResult = await agent.analyze(reviewPrompt, { model, taskId, prNumber: pullRequestNumber, repository: `${repoOwner}/${repoName}`, executionType: 'pr-review' });
         correlatedLogger.info({
             pullRequestNumber, model: analysisResult.modelUsed, success: analysisResult.success,
             executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,

@@ -341,6 +341,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       correlationId,
       worktreePath,
       githubToken,
+      taskId: execution.task_id,
       issueRef: issueRef || {
         number: task.issue_number,
         repoOwner,

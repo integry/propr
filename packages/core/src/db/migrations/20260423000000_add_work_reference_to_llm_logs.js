@@ -14,6 +14,8 @@
  * All columns are nullable so existing flows adopt them incrementally.
  */
 export async function up(knex) {
+  const isSQLite = knex.client.config.client === 'sqlite3' || knex.client.config.client === 'better-sqlite3';
+
   await knex.schema.alterTable('llm_logs', (table) => {
     table.text('work_type').nullable();
     table.text('task_id').nullable();
@@ -33,16 +35,22 @@ export async function up(knex) {
     table.index('work_repository', 'idx_llm_logs_work_repository');
   });
 
-  // Add CHECK constraint for valid work_type values
-  await knex.raw(`
-    ALTER TABLE llm_logs
-    ADD CONSTRAINT chk_llm_logs_work_type
-    CHECK (work_type IS NULL OR work_type IN ('task', 'plan', 'repository'))
-  `);
+  // Add CHECK constraint for valid work_type values (PostgreSQL only - SQLite doesn't support ADD CONSTRAINT)
+  if (!isSQLite) {
+    await knex.raw(`
+      ALTER TABLE llm_logs
+      ADD CONSTRAINT chk_llm_logs_work_type
+      CHECK (work_type IS NULL OR work_type IN ('task', 'plan', 'repository'))
+    `);
+  }
 }
 
 export async function down(knex) {
-  await knex.raw('ALTER TABLE llm_logs DROP CONSTRAINT IF EXISTS chk_llm_logs_work_type');
+  const isSQLite = knex.client.config.client === 'sqlite3' || knex.client.config.client === 'better-sqlite3';
+
+  if (!isSQLite) {
+    await knex.raw('ALTER TABLE llm_logs DROP CONSTRAINT IF EXISTS chk_llm_logs_work_type');
+  }
 
   await knex.schema.alterTable('llm_logs', (table) => {
     table.dropIndex('work_type', 'idx_llm_logs_work_type');
