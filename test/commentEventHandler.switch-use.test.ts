@@ -285,6 +285,29 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(jobData.commandMode, 'switch');
     });
 
+    test('/switch with custom MODEL_LABEL_PATTERN uses pattern-derived prefix for new labels', async () => {
+        // Simulate PR with a custom-prefixed model label
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [
+                    { id: 1, name: 'ai-model-claude-opus-4-6', color: '000', default: false, description: null, node_id: 'L_1', url: '' },
+                ],
+            },
+        }));
+
+        const event = createPRCommentEvent('/switch sonnet');
+        const config = createTestConfig({ MODEL_LABEL_PATTERN: '^ai-model-(.+)$' });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-custom-pattern', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
+        assert.deepStrictEqual(existingLlmLabels, ['ai-model-claude-opus-4-6']);
+        // New label should use the custom prefix, not hardcoded 'llm-'
+        assert.deepStrictEqual(newLabels, ['ai-model-claude-sonnet-4-6']);
+    });
+
     test('/switch with llm- prefixed argument strips prefix before resolving', async () => {
         const event = createPRCommentEvent('/switch llm-haiku');
         const config = createTestConfig();
@@ -304,6 +327,7 @@ describe('commentEventHandler — /use command', () => {
         mockQueueAdd.mock.resetCalls();
         mockOctokit.request.mock.resetCalls();
         mockLoggerInstance.info.mock.resetCalls();
+        mockLoggerInstance.warn.mock.resetCalls();
 
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
@@ -346,6 +370,22 @@ describe('commentEventHandler — /use command', () => {
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         // resolveLlm should have resolved "opus" → "claude-opus-4-6"
         assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+    });
+
+    test('/use without model argument warns and returns early', async () => {
+        const event = createPRCommentEvent('/use');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-nomodel', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        // Should have logged a warning
+        const warnCalls = mockLoggerInstance.warn.mock.calls;
+        const useWarn = warnCalls.find(
+            (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('/use command requires a model argument')
+        );
+        assert.ok(useWarn, 'Expected a warning about missing model argument');
     });
 
     test('/use with instructions includes them in job data', async () => {

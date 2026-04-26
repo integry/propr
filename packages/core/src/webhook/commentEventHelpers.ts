@@ -40,6 +40,18 @@ export function isReviewComment(comment: { pull_request_review_id?: number }, ev
     return !!comment.pull_request_review_id || eventType === 'pull_request_review_comment';
 }
 
+/**
+ * Derive the label prefix from a MODEL_LABEL_PATTERN regex string.
+ * For example, '^llm-(.+)$' → 'llm-', '^ai-model-(.+)$' → 'ai-model-'.
+ * Falls back to 'llm-' when the pattern cannot be parsed.
+ */
+export function modelLabelPrefix(pattern: string): string {
+    const clean = pattern.replace(/^\^/, '').replace(/\$$/, '');
+    const idx = clean.indexOf('(');
+    if (idx > 0) return clean.slice(0, idx);
+    return 'llm-';
+}
+
 export function extractLlmFromLabels(
     prLabels: Label[],
     modelLabelPattern: string,

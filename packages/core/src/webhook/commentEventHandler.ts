@@ -9,7 +9,7 @@ import { withRetry } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
-import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './commentEventHelpers.js';
+import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels, modelLabelPrefix } from './commentEventHelpers.js';
 import { handleMergeCommand } from './mergeConflictDetector.js';
 import { parseSlashCommand, buildCommandMeta } from './slashCommandParser.js';
 import type { CommandMeta } from './slashCommandParser.js';
@@ -188,7 +188,8 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
             const modelLabelRegex = new RegExp(modelLabelPattern);
 
             const existingLlmLabels = prLabels.filter(l => modelLabelRegex.test(l.name)).map(l => l.name);
-            const newLabels = commandMeta.models.map(m => `llm-${resolveModelAlias(m)}`);
+            const prefix = modelLabelPrefix(modelLabelPattern);
+            const newLabels = commandMeta.models.map(m => `${prefix}${resolveModelAlias(m)}`);
 
             const octokit = await getAuthenticatedOctokit();
             await safeUpdateLabels(
@@ -204,6 +205,12 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
             correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has instructions, enqueuing follow-up job');
             await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+            return;
+        }
+
+        // /use — validate that a model argument was provided
+        if (commandMeta.mode === 'use' && commandMeta.models.length === 0) {
+            correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/use command requires a model argument, ignoring');
             return;
         }
 
