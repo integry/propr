@@ -130,6 +130,99 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     if (processCommentEventFn) await processCommentEventFn(payload, eventType, correlationId, config);
 }
 
+interface SlashCommandComment { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }
+
+interface SlashCommandHandlerOptions {
+    parsedCommand: ReturnType<typeof parseSlashCommand> & object;
+    comment: SlashCommandComment;
+    commentAuthor: string;
+    eventContext: CommentContext;
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent;
+    config: CommentEventConfig;
+    correlationId: string;
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+}
+
+async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<void> {
+    const { parsedCommand, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
+    const { prNumber, owner, repo } = eventContext;
+    const { redisClient } = config;
+    const commandMeta = buildCommandMeta(parsedCommand);
+
+    if ('warning' in commandMeta && commandMeta.warning) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, commandMeta.warning);
+    }
+
+    if (commandMeta.mode === 'merge') {
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/merge command detected, enqueuing merge job');
+        try {
+            await handleMergeCommand({ owner, repoName: repo, prNumber, redisClient, correlationId });
+        } catch (mergeError) {
+            correlatedLogger.error({ pullRequestNumber: prNumber, error: (mergeError as Error).message }, 'Failed to handle /merge command');
+        }
+        return;
+    }
+
+    if (commandMeta.mode === 'switch') {
+        await handleSwitchCommand({ commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger });
+        return;
+    }
+
+    if (commandMeta.mode === 'use' && commandMeta.models.length === 0) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/use command requires a model argument, ignoring');
+        return;
+    }
+
+    correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
+    await enqueueNewCommentJob(comment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+}
+
+interface SwitchCommandOptions {
+    commandMeta: CommandMeta & { mode: 'switch' };
+    comment: SlashCommandComment;
+    commentAuthor: string;
+    eventContext: CommentContext;
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent;
+    config: CommentEventConfig;
+    correlationId: string;
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+}
+
+async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
+    const { commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
+    const { eventType, prNumber, owner, repo } = eventContext;
+    const { redisClient } = config;
+
+    if (commandMeta.models.length === 0) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/switch command requires a model argument, ignoring');
+        return;
+    }
+
+    correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, models: commandMeta.models }, '/switch command detected, updating PR labels');
+    const { prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+    const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
+    const modelLabelRegex = new RegExp(modelLabelPattern);
+
+    const existingLlmLabels = prLabels.filter(l => modelLabelRegex.test(l.name)).map(l => l.name);
+    const prefix = modelLabelPrefix(modelLabelPattern);
+    const newLabels = commandMeta.models.map(m => `${prefix}${resolveModelAlias(m)}`);
+
+    const octokit = await getAuthenticatedOctokit();
+    await safeUpdateLabels(
+        { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+        existingLlmLabels,
+        newLabels
+    );
+
+    if (!commandMeta.instructions) {
+        correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has no instructions, label update complete');
+        return;
+    }
+
+    correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has instructions, enqueuing follow-up job');
+    await enqueueNewCommentJob(comment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+}
+
 export async function processCommentEvent(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
     const { redisClient } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -163,65 +256,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     // Parse slash commands (/merge, /review, /fix) before generic follow-up logic
     const parsedCommand = parseSlashCommand(comment.body);
     if (parsedCommand) {
-        const commandMeta = buildCommandMeta(parsedCommand);
-
-        // Surface warning if extra arguments were silently discarded
-        if ('warning' in commandMeta && commandMeta.warning) {
-            correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, commandMeta.warning);
-        }
-
-        // /merge — triggers merge of base branch into PR branch (existing behavior)
-        if (commandMeta.mode === 'merge') {
-            correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/merge command detected, enqueuing merge job');
-            try {
-                await handleMergeCommand({ owner, repoName: repo, prNumber, redisClient, correlationId });
-            } catch (mergeError) {
-                correlatedLogger.error({ pullRequestNumber: prNumber, error: (mergeError as Error).message }, 'Failed to handle /merge command');
-            }
-            return;
-        }
-
-        // /switch — update PR labels, then enqueue only if instructions are provided
-        if (commandMeta.mode === 'switch') {
-            if (commandMeta.models.length === 0) {
-                correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/switch command requires a model argument, ignoring');
-                return;
-            }
-            correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, models: commandMeta.models }, '/switch command detected, updating PR labels');
-            const { prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-            const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
-            const modelLabelRegex = new RegExp(modelLabelPattern);
-
-            const existingLlmLabels = prLabels.filter(l => modelLabelRegex.test(l.name)).map(l => l.name);
-            const prefix = modelLabelPrefix(modelLabelPattern);
-            const newLabels = commandMeta.models.map(m => `${prefix}${resolveModelAlias(m)}`);
-
-            const octokit = await getAuthenticatedOctokit();
-            await safeUpdateLabels(
-                { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-                existingLlmLabels,
-                newLabels
-            );
-
-            if (!commandMeta.instructions) {
-                correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has no instructions, label update complete');
-                return;
-            }
-
-            correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has instructions, enqueuing follow-up job');
-            await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
-            return;
-        }
-
-        // /use — validate that a model argument was provided
-        if (commandMeta.mode === 'use' && commandMeta.models.length === 0) {
-            correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/use command requires a model argument, ignoring');
-            return;
-        }
-
-        // /review, /fix, /use — enqueue with structured command metadata
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
-        await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+        await handleSlashCommand({ parsedCommand, comment, commentAuthor, eventContext: { eventType, prNumber, owner, repo }, payload, config, correlationId, correlatedLogger });
         return;
     }
 
