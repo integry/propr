@@ -174,10 +174,18 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         return;
     }
 
+    if (commandMeta.mode === 'use' && commandMeta.models.length > 0) {
+        const resolvedModel = resolveModelAlias(commandMeta.models[0]);
+        if (!MODEL_INFO_MAP[resolvedModel]) {
+            correlatedLogger.warn({ pullRequestNumber: prNumber, invalidModels: [resolvedModel] }, '/use command contains unrecognized model(s), ignoring');
+            return;
+        }
+    }
+
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
     // Strip the slash command line from the comment body so the downstream job
     // only sees the user's instructions, not the control syntax (consistent with /switch).
-    const strippedComment = commandMeta.instructions ? { ...comment, body: commandMeta.instructions } : comment;
+    const strippedComment = { ...comment, body: commandMeta.instructions || '' };
     await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
 }
 

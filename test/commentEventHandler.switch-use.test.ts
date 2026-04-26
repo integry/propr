@@ -501,7 +501,7 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(jobData.llm, 'claude-opus-4-6');
     });
 
-    test('/use without instructions still enqueues a job', async () => {
+    test('/use without instructions still enqueues a job with empty body', async () => {
         const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
@@ -512,6 +512,25 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(jobData.commandMode, 'use');
         // commandInstructions should be empty
         assert.strictEqual(jobData.commandInstructions, '');
+        // The queued comment body must NOT contain the slash command text
+        const comments = jobData.comments as Array<{ body: string }>;
+        assert.ok(comments.length > 0, 'Expected at least one comment in job data');
+        assert.strictEqual(comments[0].body, '', 'Bare /use should queue an empty body, not the command text');
+    });
+
+    test('/use with unrecognized model warns and returns early', async () => {
+        const event = createPRCommentEvent('/use nonexistent-model');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-invalid-model', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        const warnCalls = mockLoggerInstance.warn.mock.calls;
+        const invalidWarn = warnCalls.find(
+            (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('unrecognized model')
+        );
+        assert.ok(invalidWarn, 'Expected a warning about unrecognized model');
     });
 
     test('/use with extra models logs warning but uses first model', async () => {
@@ -615,6 +634,20 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(jobData.commandMode, 'review');
         assert.deepStrictEqual(jobData.requestedModels, ['claude', 'sonnet']);
+    });
+
+    test('/review without instructions queues empty body, not the command text', async () => {
+        const event = createPRCommentEvent('/review claude-sonnet');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-review-empty-body', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        const comments = jobData.comments as Array<{ body: string }>;
+        assert.ok(comments.length > 0, 'Expected at least one comment in job data');
+        assert.ok(!comments[0].body.includes('/review'), 'Bare /review should not pass command text as body');
+        assert.strictEqual(comments[0].body, '', 'Bare /review should queue an empty body');
     });
 
     test('/fix job has commandMode "fix" and instructions', async () => {
