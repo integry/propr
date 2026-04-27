@@ -32,7 +32,7 @@ const createRepoOptions = (repositories: Array<{ repository: string; total: numb
     count: totalCount,
   };
 
-  const repoOptions: RepoOption[] = repositories
+  const repoOptions: RepoOption[] = [...repositories]
     .sort((a, b) => a.repository.localeCompare(b.repository))
     .map(repo => ({
       name: repo.repository,

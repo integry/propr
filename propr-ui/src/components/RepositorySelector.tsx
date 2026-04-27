@@ -25,6 +25,8 @@ export interface RepoSelection {
 interface RepositorySelectorProps {
   repos?: RepoOption[];
   selectedRepo: string;
+  /** Optional base branch to disambiguate duplicate repo names on mount/rerender. */
+  selectedBaseBranch?: string;
   onRepoChange: (repo: string, selection?: RepoSelection) => void;
   onReposLoaded?: (repos: RepoOption[]) => void;
   disabled?: boolean;
@@ -256,6 +258,7 @@ const DefaultTrigger: React.FC<{
 export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   repos: externalRepos,
   selectedRepo,
+  selectedBaseBranch,
   onRepoChange,
   onReposLoaded,
   disabled = false,
@@ -325,8 +328,13 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
       const selectedOverride = repos.find(repo => repoKey(repo) === selectedRepoKeyOverride && repo.name === selectedRepo);
       if (selectedOverride) return selectedOverride;
     }
+    // Use selectedBaseBranch to deterministically resolve duplicate repo names
+    if (selectedBaseBranch) {
+      const branchMatch = repos.find(repo => repo.name === selectedRepo && repo.baseBranch === selectedBaseBranch);
+      if (branchMatch) return branchMatch;
+    }
     return repos.find(repo => repo.name === selectedRepo);
-  }, [repos, selectedRepo, selectedRepoKeyOverride]);
+  }, [repos, selectedRepo, selectedRepoKeyOverride, selectedBaseBranch]);
 
   const selectedRepoKeyValue = selectedRepoData ? repoKey(selectedRepoData) : null;
 

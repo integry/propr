@@ -144,9 +144,12 @@ const PlansPage: React.FC = () => {
   // Handle draft update from WebSocket - refresh drafts list when any draft changes
   const handleDraftUpdate = useCallback(async () => {
     console.log('[PlansPage] Received draft update via WebSocket');
-    // Silently refresh drafts list to reflect the latest state
-    await loadDrafts(currentPage, repoFilter, statusFilter, false);
-  }, [currentPage, repoFilter, statusFilter, loadDrafts]);
+    // Silently refresh drafts list and repository counts to reflect the latest state
+    await Promise.all([
+      loadDrafts(currentPage, repoFilter, statusFilter, false),
+      loadAllRepositories(),
+    ]);
+  }, [currentPage, repoFilter, statusFilter, loadDrafts, loadAllRepositories]);
 
   // Subscribe to WebSocket events for draft updates
   useEffect(() => {
@@ -217,7 +220,10 @@ const PlansPage: React.FC = () => {
     setAbortingId(id);
     try {
       await abortGeneration(id);
-      await loadDrafts(currentPage, repoFilter, statusFilter);
+      await Promise.all([
+        loadDrafts(currentPage, repoFilter, statusFilter),
+        loadAllRepositories(),
+      ]);
     } catch (err) {
       setError((err as Error).message || 'Failed to stop generation');
     } finally {
