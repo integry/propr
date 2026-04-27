@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { redactSecrets, redactObject } from '../packages/core/src/utils/github/logFiles.js';
+import fs from 'node:fs';
+import { redactSecrets, redactObject, createLogFiles } from '../packages/core/src/utils/github/logFiles.js';
 
 test('redactSecrets replaces GitHub personal access tokens', () => {
     const input = 'token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
@@ -58,7 +59,7 @@ test('redactObject handles arrays', () => {
         { text: 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn' },
         { text: 'safe text' }
     ];
-    const result = redactObject(input);
+    const result = redactObject(input) as Array<{ text: string }>;
     assert.ok(!JSON.stringify(result).includes('ghp_'));
     assert.strictEqual(result[1].text, 'safe text');
 });
@@ -146,4 +147,109 @@ test('redactObject redacts secrets in conversation log structure used by createL
     assert.ok(!serialized.includes('AKIAIOSFODNN7EXAMPLE'), 'AWS key should be redacted');
     assert.ok(serialized.includes('[REDACTED_GITHUB_TOKEN]'));
     assert.ok(serialized.includes('[REDACTED_AWS_ACCESS_KEY]'));
+});
+
+// --- Broader AWS secret key format tests (Finding 3) ---
+
+test('redactSecrets replaces AWS secret keys with JSON-style "SecretAccessKey" label', () => {
+    const input = '"SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1"';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('wJalrXUtnFEMI'), 'AWS secret should be redacted in JSON context');
+    assert.ok(result.includes('[REDACTED_AWS_SECRET_KEY]'));
+});
+
+test('redactSecrets replaces AWS secret keys with camelCase "secretAccessKey" label', () => {
+    const input = '"secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1"';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('wJalrXUtnFEMI'), 'AWS secret should be redacted in camelCase JSON context');
+    assert.ok(result.includes('[REDACTED_AWS_SECRET_KEY]'));
+});
+
+test('redactSecrets replaces AWS secret keys with AWS_SECRET_KEY env var', () => {
+    const input = 'AWS_SECRET_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('wJalrXUtnFEMI'), 'AWS secret should be redacted with AWS_SECRET_KEY prefix');
+    assert.ok(result.includes('[REDACTED_AWS_SECRET_KEY]'));
+});
+
+test('redactSecrets replaces SendGrid API keys', () => {
+    const input = 'SG.abcdefghijklmnopqrstuv.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('SG.'), 'SendGrid key should be redacted');
+    assert.ok(result.includes('[REDACTED_SENDGRID_KEY]'));
+});
+
+test('redactSecrets replaces Google API keys', () => {
+    const input = 'AIzaSyA1234567890abcdefghijklmnopqrstuvw';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('AIzaSy'), 'Google API key should be redacted');
+    assert.ok(result.includes('[REDACTED_GOOGLE_API_KEY]'));
+});
+
+test('redactSecrets replaces OpenAI project keys', () => {
+    const input = 'sk-proj-' + 'a'.repeat(50);
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('sk-proj-'), 'OpenAI project key should be redacted');
+    assert.ok(result.includes('[REDACTED_OPENAI_KEY]'));
+});
+
+// --- End-to-end tests for createLogFiles (Finding 2) ---
+
+test('createLogFiles writes redacted secrets to the JSON conversation log file', async () => {
+    const githubToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
+    const awsKey = 'AKIAIOSFODNN7EXAMPLE';
+    const claudeResult = {
+        success: true,
+        sessionId: 'test-session-e2e',
+        conversationLog: [
+            {
+                type: 'assistant',
+                message: {
+                    content: [{ text: `Found token ${githubToken} and key ${awsKey}` }]
+                }
+            }
+        ],
+        rawOutput: `Output containing ${githubToken}`
+    };
+    const issueRef = { number: 9999, repoOwner: 'test-owner', repoName: 'test-repo' };
+
+    const logFiles = await createLogFiles(claudeResult, issueRef);
+
+    // Verify conversation JSON file is redacted
+    assert.ok(logFiles.conversation, 'Conversation log file should be created');
+    const jsonContent = await fs.promises.readFile(logFiles.conversation, 'utf-8');
+    assert.ok(!jsonContent.includes(githubToken), 'GitHub token must not appear in persisted JSON');
+    assert.ok(!jsonContent.includes(awsKey), 'AWS key must not appear in persisted JSON');
+    assert.ok(jsonContent.includes('[REDACTED_GITHUB_TOKEN]'), 'Redaction placeholder should be present in JSON');
+    assert.ok(jsonContent.includes('[REDACTED_AWS_ACCESS_KEY]'), 'AWS redaction placeholder should be present in JSON');
+
+    // Verify raw output text file is redacted
+    assert.ok(logFiles.output, 'Output log file should be created');
+    const txtContent = await fs.promises.readFile(logFiles.output, 'utf-8');
+    assert.ok(!txtContent.includes(githubToken), 'GitHub token must not appear in persisted text output');
+    assert.ok(txtContent.includes('[REDACTED_GITHUB_TOKEN]'), 'Redaction placeholder should be present in text output');
+
+    // Cleanup
+    if (logFiles.conversation) await fs.promises.unlink(logFiles.conversation).catch(() => {});
+    if (logFiles.output) await fs.promises.unlink(logFiles.output).catch(() => {});
+});
+
+test('createLogFiles writes redacted Bearer tokens to the text output file', async () => {
+    const bearerToken = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    const claudeResult = {
+        success: true,
+        sessionId: 'test-session-bearer',
+        rawOutput: `Authorization: ${bearerToken}`
+    };
+    const issueRef = { number: 9998, repoOwner: 'test-owner', repoName: 'test-repo' };
+
+    const logFiles = await createLogFiles(claudeResult, issueRef);
+
+    assert.ok(logFiles.output, 'Output log file should be created');
+    const txtContent = await fs.promises.readFile(logFiles.output, 'utf-8');
+    assert.ok(!txtContent.includes('eyJhbGciOiJ'), 'Bearer token must not appear in persisted text output');
+    assert.ok(txtContent.includes('Bearer [REDACTED_BEARER_TOKEN]'), 'Redacted bearer placeholder should be present');
+
+    // Cleanup
+    if (logFiles.output) await fs.promises.unlink(logFiles.output).catch(() => {});
 });

@@ -54,7 +54,9 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
     { pattern: /github_pat_[A-Za-z0-9_]{22,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     // AWS keys
     { pattern: /(?:AKIA|ASIA)[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_ACCESS_KEY]' },
-    { pattern: /(?<=aws_secret_access_key\s*[=:]\s*)[A-Za-z0-9/+=]{40}/gi, replacement: '[REDACTED_AWS_SECRET_KEY]' },
+    { pattern: /(?<=(?:aws_secret_access_key|aws_secret_key|AWS_SECRET_ACCESS_KEY|AWS_SECRET_KEY|secret_access_key)\s*[=:]\s*['"]?)[A-Za-z0-9/+=]{40}/g, replacement: '[REDACTED_AWS_SECRET_KEY]' },
+    // AWS secret keys in JSON/YAML contexts
+    { pattern: /(?<=["'](?:aws_secret_access_key|aws_secret_key|SecretAccessKey|secretAccessKey)["']\s*[=:]\s*['"]?)[A-Za-z0-9/+=]{40}/g, replacement: '[REDACTED_AWS_SECRET_KEY]' },
     // OpenRouter API keys
     { pattern: /sk-or-v1-[A-Za-z0-9]{64}/g, replacement: '[REDACTED_OPENROUTER_KEY]' },
     // Stripe API keys
@@ -96,19 +98,25 @@ export function redactSecrets(input: string): string {
     return result;
 }
 
-export function redactObject<T>(obj: T): T {
+/**
+ * Recursively walk a JSON-serializable value and redact any secrets found in
+ * string leaves.  Returns a plain-object copy — prototypes, class instances,
+ * `Date`, `Map`, etc. are **not** preserved.  This is intentional: the only
+ * call-sites serialise the result to JSON immediately afterward.
+ */
+export function redactObject(obj: unknown): unknown {
     if (typeof obj === 'string') {
-        return redactSecrets(obj) as T;
+        return redactSecrets(obj);
     }
     if (Array.isArray(obj)) {
-        return obj.map(item => redactObject(item)) as T;
+        return obj.map(item => redactObject(item));
     }
     if (obj !== null && typeof obj === 'object') {
         const redacted: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(obj)) {
             redacted[key] = redactObject(value);
         }
-        return redacted as T;
+        return redacted;
     }
     return obj;
 }
