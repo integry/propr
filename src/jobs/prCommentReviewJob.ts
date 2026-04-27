@@ -14,7 +14,7 @@ import {
     buildCommentHistory, updateTaskTitleForPR
 } from './prCommentJobHelpers.js';
 import {
-    buildCombinedComment, fetchAllComments, fetchPRFiles, formatPRDiff
+    buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents
 } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
@@ -167,6 +167,7 @@ interface RunReviewsContext {
     originalTaskSpec: string;
     commandInstructions?: string;
     prDiff: string;
+    fileContents: string;
     correlatedLogger: Logger;
 }
 
@@ -187,7 +188,8 @@ async function runSingleReview(
 
     const reviewPrompt = buildReviewPrompt({
         pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
-        originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions, prDiff: ctx.prDiff,
+        originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
+        prDiff: ctx.prDiff, fileContents: ctx.fileContents,
     });
 
     try {
@@ -310,6 +312,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const prDiff = formatPRDiff(prFiles);
     correlatedLogger.info({ pullRequestNumber, fileCount: prFiles.length, diffLength: prDiff.length }, 'Fetched PR diff');
 
+    // Fetch full file contents to provide complete context for review
+    const prHeadRef = prData!.data.head.ref;
+    const fileContentsMap = await fetchPRFileContents(state.octokit, repoOwner, repoName, prHeadRef, prFiles);
+    const fileContents = formatFileContents(fileContentsMap);
+    correlatedLogger.info({ pullRequestNumber, filesWithContent: fileContentsMap.size, contentLength: fileContents.length }, 'Fetched full file contents');
+
     const requestedModels = job.data.requestedModels;
     const commandInstructions = job.data.commandInstructions;
     const assignments = await resolveReviewAssignments(requestedModels, llm, correlatedLogger);
@@ -333,7 +341,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const reviewCtx: RunReviewsContext = {
         registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
         taskId, taskUrl, combinedCommentBody, commentHistory,
-        originalTaskSpec: linkedIssueResult.context || '', commandInstructions, prDiff, correlatedLogger,
+        originalTaskSpec: linkedIssueResult.context || '', commandInstructions, prDiff, fileContents, correlatedLogger,
     };
 
     const reviewResults: ReviewResult[] = [];
