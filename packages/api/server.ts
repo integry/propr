@@ -46,7 +46,7 @@ import {
 } from '@propr/core';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
-import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from './webhookHandler.js';
+import { handleWebhookRequest } from './webhookHandler.js';
 
 const ioRedisClient = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',
