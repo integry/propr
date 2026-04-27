@@ -17,23 +17,35 @@ import express, { Request, Response } from 'express';
  * - Array-valued delivery ID rejection (400)
  * - First delivery accepted (200)
  * - Duplicate delivery rejected (409)
+ * - Stale/replayed body rejected (409)
  * - Signature verification (401)
- * - Redis key storage verification
+ * - Redis key storage verification with TTL
+ * - Failed processing allows retry (keys cleaned up)
  */
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 const WEBHOOK_DELIVERY_TTL_SECONDS = 300;
+const WEBHOOK_MAX_AGE_SECONDS = 600;
+
+interface StoredEntry {
+  value: string;
+  ex?: number;
+}
 
 function createMockRedisClient() {
-  const store = new Map<string, string>();
+  const store = new Map<string, StoredEntry>();
   return {
     store,
     set: async (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
       if (opts?.NX && store.has(key)) {
         return null;
       }
-      store.set(key, value);
+      store.set(key, { value, ex: opts?.EX });
       return 'OK';
+    },
+    del: async (key: string) => {
+      store.delete(key);
+      return 1;
     },
   };
 }
@@ -46,10 +58,15 @@ function signPayload(body: string, secret: string): string {
 
 /**
  * Creates a minimal Express app with the same webhook route structure as production.
- * This uses express.raw() middleware and the same header/Redis logic from server.ts,
- * ensuring the test exercises the real middleware stack.
+ * This uses express.raw() middleware and the same header/Redis/body-hash logic from
+ * server.ts, ensuring the test exercises the real middleware stack.
+ *
+ * @param shouldProcessingFail - if true, simulates a processing failure after dedup
  */
-function createTestApp(redisClient: ReturnType<typeof createMockRedisClient>) {
+function createTestApp(
+  redisClient: ReturnType<typeof createMockRedisClient>,
+  shouldProcessingFail = false,
+) {
   const app = express();
   app.use('/webhook', express.raw({ type: 'application/json' }));
 
@@ -75,10 +92,33 @@ function createTestApp(redisClient: ReturnType<typeof createMockRedisClient>) {
       if (!rawDeliveryId) {
         return res.status(400).send('Missing x-github-delivery header.');
       }
+
+      // Stale payload protection (matches production)
+      const bodyHash = crypto.createHash('sha256').update(req.body).digest('hex');
+      const bodyKey = `webhook:body:${bodyHash}`;
+      const bodyIsNew = await redisClient.set(bodyKey, '1', { NX: true, EX: WEBHOOK_MAX_AGE_SECONDS });
+      if (!bodyIsNew) {
+        return res.status(409).send('Stale webhook payload.');
+      }
+
       const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
       const isNew = await redisClient.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
       if (!isNew) {
         return res.status(409).send('Duplicate webhook delivery.');
+      }
+
+      // Simulate processing (parse body, call handler)
+      JSON.parse(req.body.toString());
+
+      try {
+        if (shouldProcessingFail) {
+          throw new Error('Simulated processing failure');
+        }
+      } catch (processingError) {
+        // Clean up Redis keys so retries work (matches production)
+        await redisClient.del(deliveryKey).catch(() => {});
+        await redisClient.del(bodyKey).catch(() => {});
+        throw processingError;
       }
 
       res.status(200).send('Webhook processed.');
@@ -106,7 +146,7 @@ function makeBody(overrides: Record<string, unknown> = {}): string {
 function sendWebhook(
   server: http.Server,
   body: string,
-  headers: Record<string, string>,
+  headers: Record<string, string | string[]>,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const addr = server.address() as { port: number };
@@ -150,6 +190,18 @@ describe('Webhook Replay Protection', () => {
     });
   });
 
+  describe('Array-valued delivery ID', () => {
+    test('rejects request with multi-valued x-github-delivery header', async () => {
+      const body = makeBody();
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': ['id-1', 'id-2'],
+      });
+      assert.strictEqual(res.status, 400);
+      assert.match(res.body, /Invalid x-github-delivery/);
+    });
+  });
+
   describe('Duplicate delivery rejection', () => {
     test('accepts first delivery', async () => {
       const body = makeBody();
@@ -162,45 +214,83 @@ describe('Webhook Replay Protection', () => {
     });
 
     test('rejects second delivery with same ID', async () => {
-      const body = makeBody();
-      const headers = {
-        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
-        'x-github-delivery': 'unique-delivery-002',
-      };
+      const body1 = makeBody({ nonce: 'first' });
+      const body2 = makeBody({ nonce: 'second' });
 
-      const first = await sendWebhook(server, body, headers);
+      const first = await sendWebhook(server, body1, {
+        'x-hub-signature-256': signPayload(body1, WEBHOOK_SECRET),
+        'x-github-delivery': 'unique-delivery-002',
+      });
       assert.strictEqual(first.status, 200);
 
-      const second = await sendWebhook(server, body, headers);
+      const second = await sendWebhook(server, body2, {
+        'x-hub-signature-256': signPayload(body2, WEBHOOK_SECRET),
+        'x-github-delivery': 'unique-delivery-002',
+      });
       assert.strictEqual(second.status, 409);
       assert.match(second.body, /Duplicate webhook delivery/);
     });
 
     test('accepts different delivery IDs', async () => {
-      const body = makeBody();
+      const body1 = makeBody({ nonce: 'aaa' });
+      const body2 = makeBody({ nonce: 'bbb' });
 
-      const first = await sendWebhook(server, body, {
-        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+      const first = await sendWebhook(server, body1, {
+        'x-hub-signature-256': signPayload(body1, WEBHOOK_SECRET),
         'x-github-delivery': 'delivery-aaa',
       });
       assert.strictEqual(first.status, 200);
 
-      const second = await sendWebhook(server, body, {
-        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+      const second = await sendWebhook(server, body2, {
+        'x-hub-signature-256': signPayload(body2, WEBHOOK_SECRET),
         'x-github-delivery': 'delivery-bbb',
       });
       assert.strictEqual(second.status, 200);
     });
   });
 
+  describe('Stale payload protection', () => {
+    test('rejects replayed body with a different delivery ID', async () => {
+      const body = makeBody();
+
+      const first = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-original',
+      });
+      assert.strictEqual(first.status, 200);
+
+      // Same body, different delivery ID — should be rejected as stale
+      const second = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-replay-attempt',
+      });
+      assert.strictEqual(second.status, 409);
+      assert.match(second.body, /Stale webhook payload/);
+    });
+  });
+
   describe('Redis key storage', () => {
-    test('stores delivery ID with correct key prefix', async () => {
+    test('stores delivery ID with correct key prefix and TTL', async () => {
       const body = makeBody();
       await sendWebhook(server, body, {
         'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
         'x-github-delivery': 'test-delivery-123',
       });
-      assert.ok(redisClient.store.has('webhook:delivery:test-delivery-123'));
+      const entry = redisClient.store.get('webhook:delivery:test-delivery-123');
+      assert.ok(entry, 'delivery key should be stored');
+      assert.strictEqual(entry.ex, WEBHOOK_DELIVERY_TTL_SECONDS, 'delivery key TTL should match');
+    });
+
+    test('stores body hash with correct key prefix and TTL', async () => {
+      const body = makeBody();
+      const bodyHash = crypto.createHash('sha256').update(body).digest('hex');
+      await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'test-delivery-body-ttl',
+      });
+      const entry = redisClient.store.get(`webhook:body:${bodyHash}`);
+      assert.ok(entry, 'body hash key should be stored');
+      assert.strictEqual(entry.ex, WEBHOOK_MAX_AGE_SECONDS, 'body hash TTL should match');
     });
 
     test('does not store key when delivery ID is missing', async () => {
@@ -209,6 +299,38 @@ describe('Webhook Replay Protection', () => {
         'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
       });
       assert.strictEqual(redisClient.store.size, 0);
+    });
+  });
+
+  describe('Failed processing cleanup', () => {
+    let failServer: http.Server;
+    let failRedis: ReturnType<typeof createMockRedisClient>;
+
+    beforeEach(async () => {
+      failRedis = createMockRedisClient();
+      const app = createTestApp(failRedis, true);
+      failServer = app.listen(0);
+      await new Promise<void>((resolve) => failServer.on('listening', resolve));
+    });
+
+    afterEach(async () => {
+      await new Promise<void>((resolve) => failServer.close(() => resolve()));
+    });
+
+    test('cleans up Redis keys when processing fails so retries work', async () => {
+      const body = makeBody();
+      const deliveryId = 'delivery-will-fail';
+
+      const first = await sendWebhook(failServer, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': deliveryId,
+      });
+      assert.strictEqual(first.status, 500);
+
+      // Both keys should be cleaned up
+      assert.ok(!failRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key should be removed after failure');
+      const bodyHash = crypto.createHash('sha256').update(body).digest('hex');
+      assert.ok(!failRedis.store.has(`webhook:body:${bodyHash}`), 'body hash key should be removed after failure');
     });
   });
 

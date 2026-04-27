@@ -336,7 +336,9 @@ function setupRoutes(): void {
 }
 
 // TTL for webhook delivery deduplication keys in Redis (seconds)
-const WEBHOOK_DELIVERY_TTL_SECONDS = 300;
+export const WEBHOOK_DELIVERY_TTL_SECONDS = 300;
+// Maximum age for webhook payloads — reject replayed bodies beyond this window (seconds)
+export const WEBHOOK_MAX_AGE_SECONDS = 600;
 
 function setupWebhookRoute(): void {
   if (process.env.ENABLE_GITHUB_WEBHOOKS !== 'true') {
@@ -367,6 +369,19 @@ function setupWebhookRoute(): void {
         console.warn('[webhook] Missing x-github-delivery header');
         return res.status(400).send('Missing x-github-delivery header.');
       }
+
+      // Stale payload protection: reject replayed bodies even if delivery ID differs.
+      // The HMAC signature covers only the body, so an attacker could replay the same
+      // signed body with a fresh delivery ID. Hashing the body and storing it in Redis
+      // prevents acceptance of the same payload beyond WEBHOOK_MAX_AGE_SECONDS.
+      const bodyHash = crypto.createHash('sha256').update(req.body).digest('hex');
+      const bodyKey = `webhook:body:${bodyHash}`;
+      const bodyIsNew = await redisClient.set(bodyKey, '1', { NX: true, EX: WEBHOOK_MAX_AGE_SECONDS });
+      if (!bodyIsNew) {
+        console.warn(`[webhook] Stale/replayed payload rejected (body hash ${bodyHash.slice(0, 12)}…), delivery: ${rawDeliveryId}`);
+        return res.status(409).send('Stale webhook payload.');
+      }
+
       const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
       const isNew = await redisClient.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
       if (!isNew) {
@@ -377,7 +392,14 @@ function setupWebhookRoute(): void {
       const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
       const event = req.headers['x-github-event'] as WebhookEventType;
       console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
-      await processWebhookEvent(payload, event, correlationId);
+      try {
+        await processWebhookEvent(payload, event, correlationId);
+      } catch (processingError) {
+        // Clean up Redis keys so GitHub can retry this delivery
+        await redisClient.del(deliveryKey).catch(() => {});
+        await redisClient.del(bodyKey).catch(() => {});
+        throw processingError;
+      }
       res.status(200).send('Webhook processed.');
     } catch (error) {
       console.error('[webhook] Error processing webhook:', error);
