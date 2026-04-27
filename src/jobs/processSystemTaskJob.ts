@@ -16,6 +16,106 @@ interface CorrelatedLogger {
     debug(obj: unknown, msg?: string): void;
 }
 
+interface ResetAndPushParams {
+    owner: string;
+    repoName: string;
+    prNumber: number;
+    prBranch: string;
+    commitHash: string;
+    headRepoOwner?: string;
+    headRepoName?: string;
+}
+
+async function performGitResetAndPush(
+    params: ResetAndPushParams,
+    correlatedLogger: CorrelatedLogger
+): Promise<{ worktreePath: string; localRepoPath: string }> {
+    const { owner, repoName, prNumber, prBranch, commitHash, headRepoOwner, headRepoName } = params;
+
+    const octokit = await getAuthenticatedOctokit();
+
+    const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner, repo: repoName, pull_number: prNumber
+    });
+
+    const { targetOwner, targetRepoName } = validatePrHead(
+        {
+            actualHeadOwner: prData.head.repo?.owner?.login,
+            actualHeadName: prData.head.repo?.name,
+            isFork: prData.head.repo?.full_name !== prData.base.repo?.full_name
+        },
+        { owner, repoName, prNumber, headRepoOwner, headRepoName }
+    );
+
+    const { token } = await octokit.auth({ type: "installation" }) as { token: string };
+    const repoUrl = getRepoUrl({ repoOwner: targetOwner, repoName: targetRepoName });
+
+    const localRepoPath = await ensureRepoCloned({ repoUrl, owner: targetOwner, repoName: targetRepoName, authToken: token });
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+    const worktreeInfo = await createWorktreeFromExistingBranch(localRepoPath, prBranch, {
+        worktreeDirName: `revert-${prNumber}-${timestamp}`,
+        owner: targetOwner,
+        repoName: targetRepoName
+    });
+    const worktreePath = worktreeInfo.worktreePath;
+
+    const git = simpleGit(worktreePath);
+
+    await git.reset(['--hard', `${commitHash}^`]);
+    correlatedLogger.info({ commitHash }, 'Git reset to parent commit complete');
+
+    const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${token}@`);
+    await git.push([authenticatedUrl, prBranch, '--force']);
+    correlatedLogger.info({ prBranch }, 'Git force push complete');
+
+    return { worktreePath, localRepoPath };
+}
+
+async function deleteCommentsFromTarget(
+    params: { owner: string; repoName: string; prNumber: number; targetCommentId: number },
+    correlatedLogger: CorrelatedLogger
+): Promise<number> {
+    const { owner, repoName, prNumber, targetCommentId } = params;
+    const octokit = await getAuthenticatedOctokit();
+
+    const comments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner,
+        repo: repoName,
+        issue_number: prNumber,
+        per_page: 100
+    }) as IssueComment[];
+
+    const startIndex = comments.findIndex((c: IssueComment) => c.id === Number(targetCommentId));
+
+    if (startIndex === -1) {
+        correlatedLogger.warn({ targetCommentId }, 'Target comment not found in thread');
+        return 0;
+    }
+
+    const commentsToDelete = comments.slice(startIndex);
+    correlatedLogger.info({ count: commentsToDelete.length }, 'Deleting comments');
+
+    for (const comment of commentsToDelete) {
+        try {
+            await octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+                owner,
+                repo: repoName,
+                comment_id: comment.id
+            });
+            correlatedLogger.debug({ commentId: comment.id }, 'Deleted comment');
+            await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (deleteError) {
+            correlatedLogger.warn({
+                commentId: comment.id,
+                error: (deleteError as Error).message
+            }, 'Failed to delete comment, continuing...');
+        }
+    }
+    correlatedLogger.info({ count: commentsToDelete.length }, 'Comment cleanup complete');
+    return commentsToDelete.length;
+}
+
 function verifyWhitelist(requestingUser: string, correlatedLogger: CorrelatedLogger): void {
     const whitelist = getUserWhitelist();
     if (whitelist.length === 0) {
@@ -107,90 +207,19 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
     let localRepoPath: string | undefined;
 
     try {
-        // 1. Git Hard Reset (Revert Code)
         correlatedLogger.info('Starting git hard reset...');
-
-        const octokit = await getAuthenticatedOctokit();
-
-        // Validate that the PR's actual head repo matches what the job claims
-        const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-            owner, repo: repoName, pull_number: prNumber
-        });
-
-        const { targetOwner, targetRepoName } = validatePrHead(
-            {
-                actualHeadOwner: prData.head.repo?.owner?.login,
-                actualHeadName: prData.head.repo?.name,
-                isFork: prData.head.repo?.full_name !== prData.base.repo?.full_name
-            },
-            { owner, repoName, prNumber, headRepoOwner, headRepoName }
+        const resetResult = await performGitResetAndPush(
+            { owner, repoName, prNumber, prBranch, commitHash, headRepoOwner, headRepoName },
+            correlatedLogger
         );
+        worktreePath = resetResult.worktreePath;
+        localRepoPath = resetResult.localRepoPath;
 
-        const { token } = await octokit.auth({ type: "installation" }) as { token: string };
-        const repoUrl = getRepoUrl({ repoOwner: targetOwner, repoName: targetRepoName });
-
-        localRepoPath = await ensureRepoCloned({ repoUrl, owner: targetOwner, repoName: targetRepoName, authToken: token });
-
-        // Create a worktree from the existing PR branch
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-        const worktreeInfo = await createWorktreeFromExistingBranch(localRepoPath, prBranch, {
-            worktreeDirName: `revert-${prNumber}-${timestamp}`,
-            owner: targetOwner,
-            repoName: targetRepoName
-        });
-        worktreePath = worktreeInfo.worktreePath;
-
-        const git = simpleGit(worktreePath);
-
-        // Reset to parent of the target commit to drop it and everything after
-        await git.reset(['--hard', `${commitHash}^`]);
-        correlatedLogger.info({ commitHash }, 'Git reset to parent commit complete');
-
-        // Force push the reset
-        const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${token}@`);
-        await git.push([authenticatedUrl, prBranch, '--force']);
-        correlatedLogger.info({ prBranch }, 'Git force push complete');
-
-        // 2. Cascade Comment Deletion (Cleanup Conversation)
         correlatedLogger.info('Starting comment cleanup...');
-
-        // Fetch all comments using paginate (paginate if necessary)
-        const comments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner,
-            repo: repoName,
-            issue_number: prNumber,
-            per_page: 100
-        }) as IssueComment[];
-
-        // Find the starting point (the instruction comment that triggered the change)
-        const startIndex = comments.findIndex((c: IssueComment) => c.id === Number(targetCommentId));
-
-        if (startIndex !== -1) {
-            // Delete the target and EVERYTHING after it
-            const commentsToDelete = comments.slice(startIndex);
-            correlatedLogger.info({ count: commentsToDelete.length }, 'Deleting comments');
-
-            for (const comment of commentsToDelete) {
-                try {
-                    await octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-                        owner,
-                        repo: repoName,
-                        comment_id: comment.id
-                    });
-                    correlatedLogger.debug({ commentId: comment.id }, 'Deleted comment');
-                    // Small delay to avoid secondary rate limits
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                } catch (deleteError) {
-                    correlatedLogger.warn({
-                        commentId: comment.id,
-                        error: (deleteError as Error).message
-                    }, 'Failed to delete comment, continuing...');
-                }
-            }
-            correlatedLogger.info({ count: commentsToDelete.length }, 'Comment cleanup complete');
-        } else {
-            correlatedLogger.warn({ targetCommentId }, 'Target comment not found in thread');
-        }
+        const deletedComments = await deleteCommentsFromTarget(
+            { owner, repoName, prNumber, targetCommentId },
+            correlatedLogger
+        );
 
         correlatedLogger.info({
             jobId: job.id,
@@ -202,7 +231,7 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
             status: 'complete',
             correlationId,
             revertedCommit: commitHash,
-            deletedComments: startIndex !== -1 ? comments.slice(startIndex).length : 0
+            deletedComments
         };
 
     } catch (error) {
@@ -214,7 +243,6 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
         }, 'System task failed');
         throw error;
     } finally {
-        // Cleanup worktree
         if (worktreePath && localRepoPath) {
             try {
                 await cleanupWorktree(localRepoPath, worktreePath, prBranch);
