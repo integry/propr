@@ -306,7 +306,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
 
     correlatedLogger.info({ pullRequestNumber }, 'Fetching PR diff for review');
-    const prFiles = await fetchPRFiles({ octokit: state.octokit, repoOwner, repoName, pullRequestNumber });
+    const prFiles = await fetchPRFiles(state.octokit, repoOwner, repoName, pullRequestNumber);
     const prDiff = formatPRDiff(prFiles);
     correlatedLogger.info({ pullRequestNumber, fileCount: prFiles.length, diffLength: prDiff.length }, 'Fetched PR diff');
 

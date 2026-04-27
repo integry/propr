@@ -403,4 +403,4 @@ export async function pickUpPendingComments(commentsToProcess: UnprocessedCommen
 
 export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
-export { PRFile, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents, agentResultToClaudeResponse } from './prFileUtils.js';
+export { PRFile, fetchPRFiles, formatPRDiff, agentResultToClaudeResponse } from './prFileUtils.js';
