@@ -58,8 +58,6 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const [error, setError] = useState<string | null>(null);
 
   const [availableRepos, setAvailableRepos] = useState<RepoOption[]>([]);
-  const [reposLoading, setReposLoading] = useState<boolean>(true);
-
   const [totalTasks, setTotalTasks] = useState<number>(0);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
@@ -109,7 +107,6 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   useEffect(() => {
     const fetchRepos = async () => {
       try {
-        setReposLoading(true);
         const data = await getRepositoryStats();
 
         const repos = data.repositories || [];
@@ -133,8 +130,6 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         setAvailableRepos([allOption, ...repoOptions]);
       } catch (err) {
         console.error('Error fetching repositories:', err);
-      } finally {
-        setReposLoading(false);
       }
     };
     fetchRepos();
@@ -228,7 +223,6 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     repoFilter,
     setRepoFilter,
     availableRepos,
-    reposLoading,
     searchQuery,
     setSearchQuery,
   };

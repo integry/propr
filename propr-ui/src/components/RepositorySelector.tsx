@@ -99,6 +99,29 @@ const FilterInput: React.FC<{
 const repoKey = (repo: RepoOption): string =>
   repo.baseBranch ? `${repo.name}:${repo.baseBranch}` : repo.name;
 
+const isSyntheticRepoOption = (repo: RepoOption): boolean => !repo.name.includes('/');
+
+const sortRepos = (repos: RepoOption[]): RepoOption[] => {
+  const syntheticRepos: RepoOption[] = [];
+  const normalRepos: RepoOption[] = [];
+
+  repos.forEach(repo => {
+    if (isSyntheticRepoOption(repo)) {
+      syntheticRepos.push(repo);
+      return;
+    }
+    normalRepos.push(repo);
+  });
+
+  normalRepos.sort((a, b) => {
+    const nameCompare = a.name.localeCompare(b.name);
+    if (nameCompare !== 0) return nameCompare;
+    return (a.baseBranch || '').localeCompare(b.baseBranch || '');
+  });
+
+  return [...syntheticRepos, ...normalRepos];
+};
+
 const RepoSectionHeader: React.FC<{ title: string }> = ({ title }) => (
   <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">{title}</div>
 );
@@ -150,7 +173,7 @@ const BreadcrumbTrigger: React.FC<{
   onClick: () => void;
 }> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isOpen, onClick }) => (
   <>
-    <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50" title={selectedRepo || placeholder}>
+    <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50" title={getBreadcrumbLabel(selectedRepoData, selectedRepo, placeholder, reposCount)}>
       {selectedRepoData ? <RepoIcon repoName={selectedRepoData.name} iconPath={selectedRepoData.iconPath} /> : <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />}
       <span className="truncate">{getBreadcrumbLabel(selectedRepoData, selectedRepo, placeholder, reposCount)}</span>
     </button>
@@ -245,8 +268,8 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
       (repo.searchText && repo.searchText.toLowerCase().includes(lowerFilter))
     );
     return {
-      starredRepos: filtered.filter(r => r.starred),
-      otherRepos: filtered.filter(r => !r.starred),
+      starredRepos: sortRepos(filtered.filter(r => r.starred)),
+      otherRepos: sortRepos(filtered.filter(r => !r.starred)),
     };
   }, [repos, filter]);
 

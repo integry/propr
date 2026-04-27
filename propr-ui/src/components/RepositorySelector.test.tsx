@@ -258,6 +258,26 @@ describe('RepositorySelector', () => {
     expect(items[1].textContent).toContain('aaa/repo');
   });
 
+  it('sorts starred and non-starred repos alphabetically after filtering', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-zeta', enabled: true, starred: true },
+      { name: 'org/repo-alpha', enabled: true },
+      { name: 'org/repo-beta', enabled: true, starred: true },
+      { name: 'org/repo-gamma', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+
+    expect(items[0].textContent).toContain('repo-beta');
+    expect(items[1].textContent).toContain('repo-zeta');
+    expect(items[2].textContent).toContain('repo-alpha');
+    expect(items[3].textContent).toContain('repo-gamma');
+  });
+
   it('renders count badges when count is provided', () => {
     const repos: RepoOption[] = [
       { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 42 },
@@ -317,5 +337,18 @@ describe('RepositorySelector', () => {
     fireEvent.click(trigger);
     const items = getVisibleRepoButtons();
     expect(items).toHaveLength(mockRepos.length);
+  });
+
+  it('uses the rendered label for the breadcrumb tooltip title', () => {
+    render(
+      <RepositorySelector
+        repos={[{ name: 'all', enabled: true, displayName: 'All Repos' }]}
+        selectedRepo="all"
+        onRepoChange={vi.fn()}
+        variant="breadcrumb"
+      />
+    );
+
+    expect(screen.getByRole('button')).toHaveAttribute('title', 'All Repos');
   });
 });
