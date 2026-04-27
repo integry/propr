@@ -71,9 +71,9 @@ const StackedRepoLabel: React.FC<{ repo: RepoOption }> = ({ repo }) => {
   }
 
   return (
-    <span className="min-w-0 flex flex-col leading-tight">
-      <span className="truncate text-[11px] text-gray-500">{parts[0]}</span>
-      <span className="truncate text-sm font-medium text-gray-900">
+    <span className="min-w-0 flex flex-col leading-none">
+      <span className="truncate text-[10px] text-gray-500">{parts[0]}</span>
+      <span className="truncate text-xs font-medium text-gray-900">
         {parts[1]}
         {repo.baseBranch && <span className="font-normal text-gray-500"> ({repo.baseBranch})</span>}
       </span>
@@ -97,6 +97,7 @@ const RepoItem: React.FC<{
 }> = ({ repo, isSelected, onSelect, labelLayout }) => (
   <button
     type="button"
+    data-testid="repo-item"
     className={`w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-gray-50 transition-colors ${
       isSelected ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700'
     }`}
@@ -230,6 +231,7 @@ const BreadcrumbTrigger: React.FC<{
 
 const DefaultTrigger: React.FC<{
   selectedRepoData: RepoOption | undefined;
+  selectedRepo: string;
   placeholder: string;
   reposCount: number;
   disabled: boolean;
@@ -237,8 +239,8 @@ const DefaultTrigger: React.FC<{
   isOpen: boolean;
   onClick: () => void;
   labelLayout: 'inline' | 'stacked';
-}> = ({ selectedRepoData, placeholder, reposCount, disabled, isLoading, isOpen, onClick, labelLayout }) => (
-  <button type="button" onClick={onClick} disabled={disabled || isLoading || reposCount === 0} className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 flex items-center gap-2 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500">
+}> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isLoading, isOpen, onClick, labelLayout }) => (
+  <button type="button" onClick={onClick} disabled={disabled || isLoading || reposCount === 0} className={`w-full px-3 ${labelLayout === 'stacked' ? 'py-1' : 'py-2'} bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 flex items-center gap-2 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500`}>
     {selectedRepoData ? (
       <>
         <RepoIcon repoName={selectedRepoData.name} iconPath={selectedRepoData.iconPath} />
@@ -251,7 +253,7 @@ const DefaultTrigger: React.FC<{
     ) : (
       <>
         {isLoading ? <Loader2 className="w-4 h-4 text-gray-400 flex-shrink-0 animate-spin" /> : <Github className="w-4 h-4 text-gray-400 flex-shrink-0" />}
-        <span className="flex-1 text-left text-gray-500 text-sm">{isLoading ? 'Loading repositories...' : reposCount === 0 ? 'No repositories configured' : placeholder}</span>
+        <span className="flex-1 text-left text-gray-500 text-sm">{isLoading ? 'Loading repositories...' : selectedRepo ? <FormatRepoName name={selectedRepo} /> : reposCount === 0 ? 'No repositories configured' : placeholder}</span>
       </>
     )}
     <ChevronDown className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
@@ -323,8 +325,13 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   useEffect(() => {
     if (!selectedRepoKeyOverride) return;
     const selectedOverride = repos.find(repo => repoKey(repo) === selectedRepoKeyOverride);
-    if (!selectedOverride || selectedOverride.name !== selectedRepo) setSelectedRepoKeyOverride(null);
-  }, [repos, selectedRepo, selectedRepoKeyOverride]);
+    if (!selectedOverride || selectedOverride.name !== selectedRepo) {
+      setSelectedRepoKeyOverride(null);
+    } else if (selectedBaseBranch && selectedOverride.baseBranch !== selectedBaseBranch) {
+      // Parent changed the branch for the same repo — honour the parent's selection
+      setSelectedRepoKeyOverride(null);
+    }
+  }, [repos, selectedRepo, selectedRepoKeyOverride, selectedBaseBranch]);
 
   const selectedRepoData = useMemo(() => {
     if (selectedRepoKeyOverride) {
@@ -389,7 +396,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   return (
     <div ref={containerRef} className={`relative ${className}`}>
-      <DefaultTrigger selectedRepoData={selectedRepoData} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isLoading={effectiveLoading} isOpen={isOpen} onClick={handleToggle} labelLayout={labelLayout} />
+      <DefaultTrigger selectedRepoData={selectedRepoData} selectedRepo={selectedRepo} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isLoading={effectiveLoading} isOpen={isOpen} onClick={handleToggle} labelLayout={labelLayout} />
       {dropdownContent}
     </div>
   );

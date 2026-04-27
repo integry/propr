@@ -25,10 +25,7 @@ function openDropdown() {
 }
 
 function getVisibleRepoButtons() {
-  return screen.getAllByRole('button').filter(btn => {
-    // RepoItem buttons have the w-full and text-left classes
-    return btn.className.includes('text-left') && btn.className.includes('w-full');
-  });
+  return screen.getAllByTestId('repo-item');
 }
 
 describe('RepositorySelector', () => {

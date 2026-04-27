@@ -141,7 +141,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     } catch (err) {
       console.error('Error fetching repositories:', err);
     } finally {
-      if (requestId === repoStatsRequestId.current && showLoadingState) setReposLoading(false);
+      if (requestId === repoStatsRequestId.current) setReposLoading(false);
     }
   }, [hideFilters]);
 
