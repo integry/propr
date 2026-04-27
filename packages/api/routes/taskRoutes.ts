@@ -1,8 +1,7 @@
-import crypto from 'node:crypto';
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
-import { generateCorrelationId, getAuthenticatedOctokit, issueQueue, COMMENT_BATCH_DELAY_MS } from '@propr/core';
+import { generateCorrelationId, getAuthenticatedOctokit, getUserWhitelist, generateAuthToken, issueQueue, COMMENT_BATCH_DELAY_MS } from '@propr/core';
 import type { SystemTaskJobData, CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
@@ -19,7 +18,7 @@ function validateRevertRequestBody(body: Record<string, unknown>): { valid: true
   const { repo, pr, commit, commentId, owner } = body;
 
   if (!repo || !pr || !commit || !commentId || !owner) {
-    return { valid: false, error: 'Missing required parameters' };
+    return { valid: false, error: 'Missing required parameters: repo, pr, commit, commentId, owner' };
   }
 
   if (typeof repo !== 'string' || repo.length > 100) {
@@ -198,6 +197,17 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
+      // Allowlist check: reject early if user is not in the whitelist (avoids queue noise)
+      const whitelist = getUserWhitelist();
+      if (whitelist.length === 0) {
+        res.status(403).json({ error: 'User whitelist is not configured — destructive operations require an explicit allowlist' });
+        return;
+      }
+      if (!whitelist.includes(requestingUser)) {
+        res.status(403).json({ error: `User '${requestingUser}' is not allowed to perform system tasks` });
+        return;
+      }
+
       // Scope validation: verify the requesting user has collaborator access to the target repo
       try {
         const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
@@ -206,7 +216,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
           username: requestingUser
         });
         const permission = permissionData.permission;
-        if (permission !== 'admin' && permission !== 'write') {
+        if (permission !== 'admin' && permission !== 'write' && permission !== 'maintain') {
           res.status(403).json({ error: `User '${requestingUser}' does not have write access to ${owner}/${repo}` });
           return;
         }
@@ -225,10 +235,17 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       const authTimestamp = Date.now();
       const targetCommentIdNum = parseInt(commentId, 10);
-      const authPayload = `revert:${owner}:${repo}:${prNumber}:${requestingUser}:${commit}:${targetCommentIdNum}:${branch}:${authTimestamp}`;
-      const hmac = crypto.createHmac('sha256', systemTaskSecret);
-      hmac.update(authPayload);
-      const authToken = hmac.digest('hex');
+      const authToken = generateAuthToken({
+        type: 'revert',
+        owner,
+        repoName: repo,
+        prNumber,
+        requestingUser,
+        commitHash: commit,
+        targetCommentId: targetCommentIdNum,
+        prBranch: branch,
+        authTimestamp
+      }, systemTaskSecret);
 
       const jobData: SystemTaskJobData = {
         type: 'revert',

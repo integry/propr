@@ -1,6 +1,7 @@
-import crypto from 'node:crypto';
-import { test, describe, beforeEach, afterEach, after } from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
+import { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS } from '@propr/core';
+import type { SystemTaskJobData } from '@propr/core';
 
 /**
  * Test suite for system task authorization logic.
@@ -14,10 +15,8 @@ import assert from 'node:assert';
  * - Tampered payload detection (commitHash swap, etc.)
  * - Legitimate request success
  *
- * Note: We test the exported buildAuthPayload helper and replicate the
- * verifyAuthToken logic here because the main processSystemTaskJob function
- * has heavy side-effect imports (git, octokit, logger). The verification
- * logic is deterministic and can be tested in isolation.
+ * These tests import the real production functions from @propr/core
+ * so they exercise the actual code path used at runtime.
  */
 
 const TEST_SECRET = 'test-secret-key-for-unit-tests';
@@ -43,21 +42,7 @@ function restoreEnv(): void {
     }
 }
 
-interface SystemTaskData {
-    type: 'revert';
-    owner: string;
-    repoName: string;
-    prNumber: number;
-    requestingUser: string;
-    commitHash: string;
-    targetCommentId: number;
-    prBranch: string;
-    authTimestamp: number;
-    authToken: string;
-    correlationId: string;
-}
-
-function makeJobData(overrides: Partial<SystemTaskData> = {}): SystemTaskData {
+function makeJobData(overrides: Partial<SystemTaskJobData> = {}): SystemTaskJobData {
     return {
         type: 'revert',
         owner: 'testorg',
@@ -72,43 +57,6 @@ function makeJobData(overrides: Partial<SystemTaskData> = {}): SystemTaskData {
         correlationId: 'test-correlation',
         ...overrides
     };
-}
-
-function buildAuthPayload(data: Pick<SystemTaskData, 'type' | 'owner' | 'repoName' | 'prNumber' | 'requestingUser' | 'commitHash' | 'targetCommentId' | 'prBranch' | 'authTimestamp'>): string {
-    return `${data.type}:${data.owner}:${data.repoName}:${data.prNumber}:${data.requestingUser}:${data.commitHash}:${data.targetCommentId}:${data.prBranch}:${data.authTimestamp}`;
-}
-
-function generateAuthToken(data: SystemTaskData, secret: string): string {
-    const payload = buildAuthPayload(data);
-    const hmac = crypto.createHmac('sha256', secret);
-    hmac.update(payload);
-    return hmac.digest('hex');
-}
-
-function verifyAuthToken(data: SystemTaskData, secret: string | undefined): { valid: boolean; reason?: string } {
-    if (!secret) {
-        return { valid: false, reason: 'SYSTEM_TASK_SECRET is not configured on worker' };
-    }
-    if (!data.authTimestamp || typeof data.authTimestamp !== 'number') {
-        return { valid: false, reason: 'missing authTimestamp' };
-    }
-    const age = Date.now() - data.authTimestamp;
-    if (age > 5 * 60 * 1000) {
-        return { valid: false, reason: `auth token expired (age: ${Math.round(age / 1000)}s)` };
-    }
-    const payload = buildAuthPayload(data);
-    const hmac = crypto.createHmac('sha256', secret);
-    hmac.update(payload);
-    const expectedToken = hmac.digest('hex');
-    try {
-        const isValid = crypto.timingSafeEqual(
-            Buffer.from(data.authToken, 'hex'),
-            Buffer.from(expectedToken, 'hex')
-        );
-        return isValid ? { valid: true } : { valid: false, reason: 'HMAC mismatch' };
-    } catch {
-        return { valid: false, reason: 'HMAC comparison failed (malformed token)' };
-    }
 }
 
 describe('System Task Authorization', () => {
@@ -230,9 +178,9 @@ describe('System Task Authorization', () => {
             assert.ok(result.reason?.includes('authTimestamp'));
         });
 
-        test('expired token (>5 min old) rejects', () => {
+        test('expired token (beyond AUTH_TOKEN_MAX_AGE_MS) rejects', () => {
             const data = makeJobData({
-                authTimestamp: Date.now() - 6 * 60 * 1000 // 6 minutes ago
+                authTimestamp: Date.now() - AUTH_TOKEN_MAX_AGE_MS - 60 * 1000 // 1 minute past expiry
             });
             data.authToken = generateAuthToken(data, TEST_SECRET);
             const result = verifyAuthToken(data, TEST_SECRET);
@@ -240,7 +188,7 @@ describe('System Task Authorization', () => {
             assert.ok(result.reason?.includes('expired'));
         });
 
-        test('recent token (< 5 min old) is accepted', () => {
+        test('recent token (within AUTH_TOKEN_MAX_AGE_MS) is accepted', () => {
             const data = makeJobData({
                 authTimestamp: Date.now() - 2 * 60 * 1000 // 2 minutes ago
             });
@@ -283,9 +231,4 @@ describe('System Task Authorization', () => {
             assert.strictEqual(whitelist.includes('Alice'), true);
         });
     });
-});
-
-// Force exit due to module-level initialization in some @propr/core imports
-after(() => {
-    process.exit(0);
 });
