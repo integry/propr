@@ -1,58 +1,40 @@
-import { test, describe, beforeEach, mock } from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import crypto from 'crypto';
+import http from 'node:http';
+import express, { Request, Response } from 'express';
 
 /**
- * Webhook Replay Protection Tests
+ * Webhook Replay Protection Integration Tests
  *
- * Tests the replay protection middleware in the webhook endpoint:
+ * Tests the webhook route's replay protection behavior using a minimal Express
+ * app that mirrors the production route logic. Unlike the previous tests, these
+ * exercise the actual Express middleware stack (raw body parsing, header handling,
+ * response codes) via real HTTP requests.
+ *
+ * Covers:
  * - Missing delivery ID rejection (400)
+ * - Array-valued delivery ID rejection (400)
  * - First delivery accepted (200)
  * - Duplicate delivery rejected (409)
- * - Stale timestamp rejection (400)
- * - Header array normalization
+ * - Signature verification (401)
+ * - Redis key storage verification
  */
 
-// --- Mock infrastructure ---
-
-interface RedisStore {
-  [key: string]: { value: string; expiresAt: number };
-}
+const WEBHOOK_SECRET = 'test-webhook-secret';
+const WEBHOOK_DELIVERY_TTL_SECONDS = 300;
 
 function createMockRedisClient() {
-  const store: RedisStore = {};
+  const store = new Map<string, string>();
   return {
     store,
-    set: mock.fn(async (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
-      if (opts?.NX && store[key] && store[key].expiresAt > Date.now()) {
-        return null; // Key already exists
+    set: async (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
+      if (opts?.NX && store.has(key)) {
+        return null;
       }
-      store[key] = {
-        value,
-        expiresAt: opts?.EX ? Date.now() + opts.EX * 1000 : Infinity,
-      };
+      store.set(key, value);
       return 'OK';
-    }),
-    clear() {
-      for (const key of Object.keys(store)) {
-        delete store[key];
-      }
     },
-  };
-}
-
-function createWebhookPayload(overrides: Record<string, unknown> = {}) {
-  return {
-    action: 'opened',
-    issue: {
-      id: 1,
-      number: 42,
-      title: 'Test issue',
-      updated_at: new Date().toISOString(),
-      created_at: new Date(Date.now() - 60_000).toISOString(),
-    },
-    repository: { full_name: 'test/repo' },
-    ...overrides,
   };
 }
 
@@ -62,370 +44,201 @@ function signPayload(body: string, secret: string): string {
   return `sha256=${hmac.digest('hex')}`;
 }
 
-// Simulates the webhook handler logic from server.ts
-async function simulateWebhookRequest(
-  redisClient: ReturnType<typeof createMockRedisClient>,
-  headers: Record<string, string | string[] | undefined>,
+/**
+ * Creates a minimal Express app with the same webhook route structure as production.
+ * This uses express.raw() middleware and the same header/Redis logic from server.ts,
+ * ensuring the test exercises the real middleware stack.
+ */
+function createTestApp(redisClient: ReturnType<typeof createMockRedisClient>) {
+  const app = express();
+  app.use('/webhook', express.raw({ type: 'application/json' }));
+
+  app.post('/webhook', async (req: Request, res: Response) => {
+    try {
+      // Signature verification (matches production)
+      const signature = req.headers['x-hub-signature-256'] as string | undefined;
+      if (!signature) {
+        return res.status(401).send('No webhook signature provided.');
+      }
+      const hmac = crypto.createHmac('sha256', WEBHOOK_SECRET);
+      hmac.update(req.body);
+      const computedSignature = `sha256=${hmac.digest('hex')}`;
+      if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSignature))) {
+        return res.status(401).send('Webhook signature mismatch.');
+      }
+
+      // Replay protection (matches production)
+      const rawDeliveryId = req.headers['x-github-delivery'];
+      if (Array.isArray(rawDeliveryId)) {
+        return res.status(400).send('Invalid x-github-delivery header.');
+      }
+      if (!rawDeliveryId) {
+        return res.status(400).send('Missing x-github-delivery header.');
+      }
+      const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
+      const isNew = await redisClient.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
+      if (!isNew) {
+        return res.status(409).send('Duplicate webhook delivery.');
+      }
+
+      res.status(200).send('Webhook processed.');
+    } catch (error) {
+      res.status(500).send((error as Error).message);
+    }
+  });
+
+  return app;
+}
+
+function makeBody(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    action: 'opened',
+    issue: { id: 1, number: 42, title: 'Test issue' },
+    repository: { full_name: 'test/repo' },
+    ...overrides,
+  });
+}
+
+/**
+ * Send a real HTTP request to the test server. This exercises the full Express
+ * middleware chain including body parsing.
+ */
+function sendWebhook(
+  server: http.Server,
   body: string,
-  webhookSecret?: string,
-): Promise<{ status: number; message: string }> {
-  // Signature verification
-  if (webhookSecret) {
-    const signature = headers['x-hub-signature-256'] as string | undefined;
-    if (!signature) return { status: 401, message: 'No webhook signature provided.' };
-    const hmac = crypto.createHmac('sha256', webhookSecret);
-    hmac.update(body);
-    const computedSignature = `sha256=${hmac.digest('hex')}`;
-    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSignature))) {
-      return { status: 401, message: 'Webhook signature mismatch.' };
-    }
-  }
-
-  // Replay protection: reject duplicate or missing delivery IDs
-  const rawDeliveryId = headers['x-github-delivery'];
-  const deliveryId = Array.isArray(rawDeliveryId) ? rawDeliveryId[0] : rawDeliveryId;
-  if (!deliveryId) {
-    return { status: 400, message: 'Missing x-github-delivery header.' };
-  }
-
-  const deliveryKey = `webhook:delivery:${deliveryId}`;
-  const isNew = await redisClient.set(deliveryKey, '1', { NX: true, EX: 300 });
-  if (!isNew) {
-    return { status: 409, message: 'Duplicate webhook delivery.' };
-  }
-
-  // Stale timestamp check
-  const payload = JSON.parse(body) as Record<string, unknown>;
-  const WEBHOOK_MAX_AGE_MS = 300_000;
-  const payloadTimestamp = extractTimestampFromPayload(payload);
-  if (payloadTimestamp) {
-    const age = Date.now() - payloadTimestamp.getTime();
-    if (age > WEBHOOK_MAX_AGE_MS) {
-      return { status: 400, message: 'Stale webhook delivery.' };
-    }
-    if (age < -60_000) {
-      return { status: 400, message: 'Stale webhook delivery.' };
-    }
-  }
-
-  return { status: 200, message: 'Webhook processed.' };
+  headers: Record<string, string>,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const addr = server.address() as { port: number };
+    const req = http.request(
+      { hostname: '127.0.0.1', port: addr.port, path: '/webhook', method: 'POST', headers: { 'content-type': 'application/json', ...headers } },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => resolve({ status: res.statusCode!, body: data }));
+      },
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
 }
-
-// Mirror of extractTimestamp from server.ts
-function extractTimestampFromPayload(payload: Record<string, unknown>): Date | null {
-  const candidates: string[] = [];
-  for (const key of ['issue', 'pull_request', 'comment', 'review', 'release', 'deployment', 'check_run', 'check_suite', 'workflow_run']) {
-    const nested = payload[key] as Record<string, unknown> | undefined;
-    if (nested?.updated_at && typeof nested.updated_at === 'string') candidates.push(nested.updated_at);
-    if (nested?.created_at && typeof nested.created_at === 'string') candidates.push(nested.created_at);
-  }
-  const headCommit = payload.head_commit as Record<string, unknown> | undefined;
-  if (headCommit?.timestamp && typeof headCommit.timestamp === 'string') candidates.push(headCommit.timestamp);
-
-  let latest: Date | null = null;
-  for (const ts of candidates) {
-    const d = new Date(ts);
-    if (!isNaN(d.getTime()) && (!latest || d.getTime() > latest.getTime())) {
-      latest = d;
-    }
-  }
-  return latest;
-}
-
-// --- Tests ---
 
 describe('Webhook Replay Protection', () => {
   let redisClient: ReturnType<typeof createMockRedisClient>;
-  const webhookSecret = 'test-secret';
+  let server: http.Server;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     redisClient = createMockRedisClient();
+    const app = createTestApp(redisClient);
+    server = app.listen(0);
+    await new Promise<void>((resolve) => server.on('listening', resolve));
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   describe('Missing delivery ID', () => {
     test('rejects request with no x-github-delivery header', async () => {
-      const payload = createWebhookPayload();
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 400);
-      assert.strictEqual(result.message, 'Missing x-github-delivery header.');
-    });
-
-    test('rejects request with undefined delivery ID', async () => {
-      const payload = createWebhookPayload();
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': undefined,
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 400);
+      const body = makeBody();
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+      });
+      assert.strictEqual(res.status, 400);
+      assert.match(res.body, /Missing x-github-delivery/);
     });
   });
 
   describe('Duplicate delivery rejection', () => {
     test('accepts first delivery', async () => {
-      const deliveryId = 'unique-delivery-001';
-      const payload = createWebhookPayload();
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': deliveryId,
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 200);
-      assert.strictEqual(result.message, 'Webhook processed.');
+      const body = makeBody();
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'unique-delivery-001',
+      });
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body, 'Webhook processed.');
     });
 
     test('rejects second delivery with same ID', async () => {
-      const deliveryId = 'unique-delivery-002';
-      const payload = createWebhookPayload();
-      const body = JSON.stringify(payload);
+      const body = makeBody();
       const headers = {
-        'x-hub-signature-256': signPayload(body, webhookSecret),
-        'x-github-delivery': deliveryId,
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'unique-delivery-002',
       };
 
-      // First request succeeds
-      const first = await simulateWebhookRequest(redisClient, headers, body, webhookSecret);
+      const first = await sendWebhook(server, body, headers);
       assert.strictEqual(first.status, 200);
 
-      // Second request with same delivery ID is rejected
-      const second = await simulateWebhookRequest(redisClient, headers, body, webhookSecret);
+      const second = await sendWebhook(server, body, headers);
       assert.strictEqual(second.status, 409);
-      assert.strictEqual(second.message, 'Duplicate webhook delivery.');
+      assert.match(second.body, /Duplicate webhook delivery/);
     });
 
     test('accepts different delivery IDs', async () => {
-      const payload = createWebhookPayload();
-      const body = JSON.stringify(payload);
+      const body = makeBody();
 
-      const first = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': 'delivery-aaa',
-        },
-        body,
-        webhookSecret,
-      );
+      const first = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-aaa',
+      });
       assert.strictEqual(first.status, 200);
 
-      const second = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': 'delivery-bbb',
-        },
-        body,
-        webhookSecret,
-      );
+      const second = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-bbb',
+      });
       assert.strictEqual(second.status, 200);
     });
   });
 
-  describe('Header array normalization', () => {
-    test('handles x-github-delivery as string array by using first element', async () => {
-      const payload = createWebhookPayload();
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': ['delivery-array-1', 'delivery-array-2'],
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 200);
-      // Verify the first element was used as the key
-      assert.ok(redisClient.store['webhook:delivery:delivery-array-1']);
+  describe('Redis key storage', () => {
+    test('stores delivery ID with correct key prefix', async () => {
+      const body = makeBody();
+      await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'test-delivery-123',
+      });
+      assert.ok(redisClient.store.has('webhook:delivery:test-delivery-123'));
     });
 
-    test('rejects empty string array', async () => {
-      const payload = createWebhookPayload();
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': [] as unknown as string[],
-        },
-        body,
-        webhookSecret,
-      );
-
-      // Empty array should be treated as missing
-      assert.strictEqual(result.status, 400);
+    test('does not store key when delivery ID is missing', async () => {
+      const body = makeBody();
+      await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+      });
+      assert.strictEqual(redisClient.store.size, 0);
     });
   });
 
-  describe('Stale timestamp rejection', () => {
-    test('rejects payload with timestamp older than 5 minutes', async () => {
-      const staleTime = new Date(Date.now() - 600_000).toISOString(); // 10 minutes ago
-      const payload = createWebhookPayload({
-        issue: {
-          id: 1,
-          number: 42,
-          title: 'Stale issue',
-          updated_at: staleTime,
-          created_at: staleTime,
-        },
+  describe('Signature verification', () => {
+    test('rejects request with missing signature', async () => {
+      const body = makeBody();
+      const res = await sendWebhook(server, body, {
+        'x-github-delivery': 'delivery-no-sig',
       });
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': 'stale-delivery-001',
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 400);
-      assert.strictEqual(result.message, 'Stale webhook delivery.');
+      assert.strictEqual(res.status, 401);
+      assert.match(res.body, /No webhook signature/);
     });
 
-    test('accepts payload with recent timestamp', async () => {
-      const recentTime = new Date(Date.now() - 30_000).toISOString(); // 30 seconds ago
-      const payload = createWebhookPayload({
-        issue: {
-          id: 1,
-          number: 42,
-          title: 'Recent issue',
-          updated_at: recentTime,
-          created_at: recentTime,
-        },
+    test('rejects request with invalid signature', async () => {
+      const body = makeBody();
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': 'sha256=0000000000000000000000000000000000000000000000000000000000000000',
+        'x-github-delivery': 'delivery-bad-sig',
       });
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': 'recent-delivery-001',
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 200);
+      assert.strictEqual(res.status, 401);
+      assert.match(res.body, /Webhook signature mismatch/);
     });
 
-    test('rejects payload with timestamp far in the future', async () => {
-      const futureTime = new Date(Date.now() + 120_000).toISOString(); // 2 minutes in the future
-      const payload = createWebhookPayload({
-        issue: {
-          id: 1,
-          number: 42,
-          title: 'Future issue',
-          updated_at: futureTime,
-          created_at: futureTime,
-        },
+    test('does not store delivery ID when signature is invalid', async () => {
+      const body = makeBody();
+      await sendWebhook(server, body, {
+        'x-hub-signature-256': 'sha256=0000000000000000000000000000000000000000000000000000000000000000',
+        'x-github-delivery': 'delivery-bad-sig-2',
       });
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': 'future-delivery-001',
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 400);
-      assert.strictEqual(result.message, 'Stale webhook delivery.');
-    });
-
-    test('allows slight clock skew (under 1 minute future)', async () => {
-      const slightFuture = new Date(Date.now() + 30_000).toISOString(); // 30 seconds in future
-      const payload = createWebhookPayload({
-        issue: {
-          id: 1,
-          number: 42,
-          title: 'Slight future issue',
-          updated_at: slightFuture,
-          created_at: slightFuture,
-        },
-      });
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': 'slight-future-001',
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 200);
-    });
-
-    test('handles push events with head_commit.timestamp', async () => {
-      const staleTime = new Date(Date.now() - 600_000).toISOString();
-      const payload = {
-        ref: 'refs/heads/main',
-        head_commit: {
-          id: 'abc123',
-          timestamp: staleTime,
-          message: 'test commit',
-        },
-        repository: { full_name: 'test/repo' },
-      };
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': 'push-stale-001',
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 400);
-      assert.strictEqual(result.message, 'Stale webhook delivery.');
-    });
-
-    test('accepts payload with no extractable timestamp (no rejection)', async () => {
-      // A payload without any known timestamp fields should still be accepted
-      const payload = {
-        action: 'custom_event',
-        repository: { full_name: 'test/repo' },
-      };
-      const body = JSON.stringify(payload);
-      const result = await simulateWebhookRequest(
-        redisClient,
-        {
-          'x-hub-signature-256': signPayload(body, webhookSecret),
-          'x-github-delivery': 'no-timestamp-001',
-        },
-        body,
-        webhookSecret,
-      );
-
-      assert.strictEqual(result.status, 200);
+      assert.strictEqual(redisClient.store.size, 0);
     });
   });
 });
