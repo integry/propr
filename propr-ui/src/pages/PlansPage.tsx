@@ -54,11 +54,13 @@ const PlansPage: React.FC = () => {
       displayName: 'All Repos',
       count: totalAllDrafts,
     };
-    const repoOptions: RepoOption[] = allRepositories.map(({ repo, count }) => ({
-      name: repo,
-      enabled: true,
-      count,
-    }));
+    const repoOptions: RepoOption[] = [...allRepositories]
+      .sort((a, b) => a.repo.localeCompare(b.repo))
+      .map(({ repo, count }) => ({
+        name: repo,
+        enabled: true,
+        count,
+      }));
     return [allOption, ...repoOptions];
   }, [allRepositories, totalAllDrafts]);
 
@@ -342,7 +344,7 @@ const PlansPage: React.FC = () => {
                 <option value="pr_created">PR Created</option>
                 <option value="merged">Merged</option>
               </select>
-              {allRepositories.length > 1 && (
+              {allRepositories.length > 0 && (
                 <RepositorySelector
                   repos={repoFilterOptions}
                   selectedRepo={repoFilter}

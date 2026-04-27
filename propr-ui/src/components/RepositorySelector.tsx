@@ -25,7 +25,10 @@ export interface RepoSelection {
 interface RepositorySelectorProps {
   repos?: RepoOption[];
   selectedRepo: string;
-  /** Optional base branch to disambiguate duplicate repo names on mount/rerender. */
+  /** Optional base branch to disambiguate duplicate repo names on mount/rerender.
+   *  Note: current call sites only persist `selectedRepo` — branch selection is only
+   *  maintained within the component instance via `selectedRepoKeyOverride`. To survive
+   *  remounts or route-state rehydration, parents must also wire this prop. */
   selectedBaseBranch?: string;
   onRepoChange: (repo: string, selection?: RepoSelection) => void;
   onReposLoaded?: (repos: RepoOption[]) => void;

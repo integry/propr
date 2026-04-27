@@ -83,6 +83,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const [totalTasks, setTotalTasks] = useState<number>(0);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const hasLoadedRepoStats = useRef(false);
+  const repoStatsRequestId = useRef(0);
 
   const tasksPerPage = limit;
 
@@ -130,14 +131,17 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const refreshRepositoryStats = useCallback(async (showLoadingState: boolean) => {
     if (hideFilters) return;
 
+    const requestId = ++repoStatsRequestId.current;
     try {
       if (showLoadingState) setReposLoading(true);
       const data = await getRepositoryStats();
+      // Discard stale responses — only apply if this is still the latest request
+      if (requestId !== repoStatsRequestId.current) return;
       setAvailableRepos(createRepoOptions(data.repositories || []));
     } catch (err) {
       console.error('Error fetching repositories:', err);
     } finally {
-      if (showLoadingState) setReposLoading(false);
+      if (requestId === repoStatsRequestId.current && showLoadingState) setReposLoading(false);
     }
   }, [hideFilters]);
 
