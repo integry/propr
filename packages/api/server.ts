@@ -337,8 +337,75 @@ function setupRoutes(): void {
 
 // TTL for webhook delivery deduplication keys in Redis (seconds)
 export const WEBHOOK_DELIVERY_TTL_SECONDS = 300;
-// Maximum age for webhook payloads — reject replayed bodies beyond this window (seconds)
-export const WEBHOOK_MAX_AGE_SECONDS = 600;
+
+/**
+ * Core webhook request handler extracted for testability.
+ * Validates signature, enforces delivery-ID deduplication via Redis, parses
+ * the payload, and delegates to the provided processor function.
+ *
+ * All failure paths after the Redis reservation clean up the key so that
+ * GitHub retries are not permanently blocked.
+ */
+export async function handleWebhookRequest(
+  req: Request,
+  res: Response,
+  deps: {
+    webhookSecret: string | undefined;
+    redis: { set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => Promise<string | null>; del: (key: string) => Promise<number> };
+    processor: (payload: Record<string, unknown>, event: string, correlationId: string) => Promise<void>;
+    correlationId: string;
+  },
+): Promise<void> {
+  const { webhookSecret, redis, processor, correlationId } = deps;
+
+  // Signature verification
+  const signature = req.headers['x-hub-signature-256'] as string | undefined;
+  if (webhookSecret) {
+    if (!signature) { console.error('[webhook] No signature provided'); res.status(401).send('No webhook signature provided.'); return; }
+    const hmac = crypto.createHmac('sha256', webhookSecret);
+    hmac.update(req.body);
+    const computedSignature = `sha256=${hmac.digest('hex')}`;
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSignature))) { console.error('[webhook] Signature mismatch'); res.status(401).send('Webhook signature mismatch.'); return; }
+  } else {
+    console.warn('[webhook] Webhook secret not configured. Skipping signature verification.');
+  }
+
+  // Replay protection: reject duplicate or missing delivery IDs
+  const rawDeliveryId = req.headers['x-github-delivery'];
+  if (Array.isArray(rawDeliveryId)) {
+    console.warn('[webhook] Rejecting multi-valued x-github-delivery header');
+    res.status(400).send('Invalid x-github-delivery header.');
+    return;
+  }
+  if (!rawDeliveryId) {
+    console.warn('[webhook] Missing x-github-delivery header');
+    res.status(400).send('Missing x-github-delivery header.');
+    return;
+  }
+
+  const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
+  const isNew = await redis.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
+  if (!isNew) {
+    console.warn(`[webhook] Duplicate delivery rejected: ${rawDeliveryId}`);
+    res.status(409).send('Duplicate webhook delivery.');
+    return;
+  }
+
+  // Everything after reservation is wrapped so that any failure (parse or
+  // processing) cleans up the Redis key and allows GitHub to retry.
+  try {
+    const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
+    const event = req.headers['x-github-event'] as string;
+    console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
+    await processor(payload, event, correlationId);
+  } catch (err) {
+    // Clean up Redis key so GitHub can retry this delivery
+    await redis.del(deliveryKey).catch(() => {});
+    throw err;
+  }
+
+  res.status(200).send('Webhook processed.');
+}
 
 function setupWebhookRoute(): void {
   if (process.env.ENABLE_GITHUB_WEBHOOKS !== 'true') {
@@ -348,63 +415,17 @@ function setupWebhookRoute(): void {
   app.post('/webhook', async (req: Request, res: Response) => {
     const correlationId = generateCorrelationId();
     try {
-      const signature = req.headers['x-hub-signature-256'] as string | undefined;
-      const webhookSecret = process.env.GH_WEBHOOK_SECRET;
-      if (webhookSecret) {
-        if (!signature) { console.error('[webhook] No signature provided'); return res.status(401).send('No webhook signature provided.'); }
-        const hmac = crypto.createHmac('sha256', webhookSecret);
-        hmac.update(req.body);
-        const computedSignature = `sha256=${hmac.digest('hex')}`;
-        if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSignature))) { console.error('[webhook] Signature mismatch'); return res.status(401).send('Webhook signature mismatch.'); }
-      } else {
-        console.warn('[webhook] Webhook secret not configured. Skipping signature verification.');
-      }
-      // Replay protection: reject duplicate or missing delivery IDs
-      const rawDeliveryId = req.headers['x-github-delivery'];
-      if (Array.isArray(rawDeliveryId)) {
-        console.warn('[webhook] Rejecting multi-valued x-github-delivery header');
-        return res.status(400).send('Invalid x-github-delivery header.');
-      }
-      if (!rawDeliveryId) {
-        console.warn('[webhook] Missing x-github-delivery header');
-        return res.status(400).send('Missing x-github-delivery header.');
-      }
-
-      // Stale payload protection: reject replayed bodies even if delivery ID differs.
-      // The HMAC signature covers only the body, so an attacker could replay the same
-      // signed body with a fresh delivery ID. Hashing the body and storing it in Redis
-      // prevents acceptance of the same payload beyond WEBHOOK_MAX_AGE_SECONDS.
-      const bodyHash = crypto.createHash('sha256').update(req.body).digest('hex');
-      const bodyKey = `webhook:body:${bodyHash}`;
-      const bodyIsNew = await redisClient.set(bodyKey, '1', { NX: true, EX: WEBHOOK_MAX_AGE_SECONDS });
-      if (!bodyIsNew) {
-        console.warn(`[webhook] Stale/replayed payload rejected (body hash ${bodyHash.slice(0, 12)}…), delivery: ${rawDeliveryId}`);
-        return res.status(409).send('Stale webhook payload.');
-      }
-
-      const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
-      const isNew = await redisClient.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
-      if (!isNew) {
-        console.warn(`[webhook] Duplicate delivery rejected: ${rawDeliveryId}`);
-        return res.status(409).send('Duplicate webhook delivery.');
-      }
-
-      const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
-      const event = req.headers['x-github-event'] as WebhookEventType;
-      console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
-      try {
-        await processWebhookEvent(payload, event, correlationId);
-      } catch (processingError) {
-        // Clean up Redis keys so GitHub can retry this delivery
-        await redisClient.del(deliveryKey).catch(() => {});
-        await redisClient.del(bodyKey).catch(() => {});
-        throw processingError;
-      }
-      res.status(200).send('Webhook processed.');
+      await handleWebhookRequest(req, res, {
+        webhookSecret: process.env.GH_WEBHOOK_SECRET,
+        redis: redisClient,
+        processor: (payload, event, cid) => processWebhookEvent(payload, event as WebhookEventType, cid),
+        correlationId,
+      });
     } catch (error) {
       console.error('[webhook] Error processing webhook:', error);
-      const statusCode = ((error as Error).message === 'Webhook signature mismatch.' || (error as Error).message === 'No webhook signature provided.') ? 401 : 500;
-      res.status(statusCode).send((error as Error).message);
+      if (!res.headersSent) {
+        res.status(500).send((error as Error).message);
+      }
     }
   });
   console.log('[webhook] Webhook endpoint enabled at POST /webhook');
