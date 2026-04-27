@@ -354,9 +354,22 @@ function setupWebhookRoute(): void {
       } else {
         console.warn('[webhook] Webhook secret not configured. Skipping signature verification.');
       }
+      // Replay protection: reject duplicate or missing delivery IDs
+      const deliveryId = req.headers['x-github-delivery'] as string | undefined;
+      if (!deliveryId) {
+        console.warn('[webhook] Missing x-github-delivery header');
+        return res.status(400).send('Missing x-github-delivery header.');
+      }
+      const deliveryKey = `webhook:delivery:${deliveryId}`;
+      const isNew = await redisClient.set(deliveryKey, '1', { NX: true, EX: 300 });
+      if (!isNew) {
+        console.warn(`[webhook] Duplicate delivery rejected: ${deliveryId}`);
+        return res.status(409).send('Duplicate webhook delivery.');
+      }
+
       const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string } };
       const event = req.headers['x-github-event'] as WebhookEventType;
-      console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}`);
+      console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${deliveryId}`);
       await processWebhookEvent(payload, event, correlationId);
       res.status(200).send('Webhook processed.');
     } catch (error) {
