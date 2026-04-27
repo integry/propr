@@ -9,16 +9,23 @@ export interface PRFile {
     patch?: string;
 }
 
+interface FetchPRFilesParams {
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+    repoOwner: string;
+    repoName: string;
+    pullRequestNumber: number;
+}
+
 /**
  * Fetches all files changed in a PR with their diffs.
  * GitHub limits patch content to ~1MB per file, so very large diffs may be truncated.
  */
-export async function fetchPRFiles(
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
-    repoOwner: string,
-    repoName: string,
-    pullRequestNumber: number
-): Promise<PRFile[]> {
+export async function fetchPRFiles({
+    octokit,
+    repoOwner,
+    repoName,
+    pullRequestNumber,
+}: FetchPRFilesParams): Promise<PRFile[]> {
     const files: PRFile[] = [];
     let page = 1;
     let hasMoreFiles = true;
@@ -41,6 +48,78 @@ export async function fetchPRFiles(
     }
 
     return files;
+}
+
+/**
+ * Fetches full content of changed files from the PR head branch.
+ * Only fetches non-deleted files up to maxFiles and maxSizePerFile limits.
+ */
+export async function fetchPRFileContents({
+    octokit,
+    repoOwner,
+    repoName,
+    prHeadRef,
+    files,
+    maxFiles = 10,
+    maxSizePerFile = 50000,
+}: {
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+    repoOwner: string;
+    repoName: string;
+    prHeadRef: string;
+    files: PRFile[];
+    maxFiles?: number;
+    maxSizePerFile?: number;
+}): Promise<Map<string, string>> {
+    const contents = new Map<string, string>();
+    const eligibleFiles = files
+        .filter(f => f.status !== 'removed' && !f.filename.match(/\.(png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|pdf|zip|tar|gz)$/i))
+        .slice(0, maxFiles);
+
+    for (const file of eligibleFiles) {
+        try {
+            const resp = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
+                owner: repoOwner,
+                repo: repoName,
+                path: file.filename,
+                ref: prHeadRef,
+            });
+
+            const data = resp.data as { content?: string; encoding?: string; size?: number };
+            if (data.content && data.encoding === 'base64' && (data.size || 0) <= maxSizePerFile) {
+                const decoded = Buffer.from(data.content, 'base64').toString('utf-8');
+                contents.set(file.filename, decoded);
+            }
+        } catch {
+            // File might not exist or be too large - skip silently
+        }
+    }
+
+    return contents;
+}
+
+/**
+ * Formats full file contents for inclusion in review prompts.
+ */
+export function formatFileContents(contents: Map<string, string>, maxChars: number = 100000): string {
+    if (contents.size === 0) return '';
+
+    const parts: string[] = [];
+    let currentSize = 0;
+
+    for (const [filename, content] of contents) {
+        const ext = filename.split('.').pop() || '';
+        const section = `## ${filename}\n\`\`\`${ext}\n${content}\n\`\`\`\n`;
+
+        if (currentSize + section.length > maxChars) break;
+
+        parts.push(section);
+        currentSize += section.length;
+    }
+
+    return parts.length > 0
+        ? `**Full content of ${parts.length} changed files (for context):**\n\n${parts.join('\n')}`
+        : '';
 }
 
 /**
