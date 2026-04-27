@@ -61,6 +61,20 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
         correlatedLogger.info('Starting git hard reset...');
 
         const octokit = await getAuthenticatedOctokit();
+
+        // Validate that the PR branch belongs to the expected repo (reject fork mismatches)
+        const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+            owner, repo: repoName, pull_number: prNumber
+        });
+        const headRepoOwner = prData.head.repo?.owner?.login;
+        const headRepoName = prData.head.repo?.name;
+        if (headRepoOwner !== owner || headRepoName !== repoName) {
+            throw new Error(
+                `Unauthorized: PR head branch belongs to ${headRepoOwner}/${headRepoName}, ` +
+                `but job targets ${owner}/${repoName}. Fork-based reverts must target the fork repository.`
+            );
+        }
+
         const { token } = await octokit.auth({ type: "installation" }) as { token: string };
         const repoUrl = getRepoUrl({ repoOwner: owner, repoName });
 

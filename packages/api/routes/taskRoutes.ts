@@ -86,16 +86,10 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
       const { repo, pr, commit, commentId, owner } = bodyValidation.params;
-
-      const octokit = await getAuthenticatedOctokit();
       const prNumber = parseInt(pr, 10);
+      const targetCommentIdNum = parseInt(commentId, 10);
 
-      const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-        owner, repo, pull_number: prNumber
-      });
-
-      const branch = prData.head.ref;
-      const correlationId = generateCorrelationId();
+      // --- Authorization gates (run before any GitHub API calls) ---
 
       const requestingUser = (req.user as { username?: string })?.username || '';
       if (!requestingUser) {
@@ -103,7 +97,6 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      // Allowlist check: reject early if user is not in the whitelist (avoids queue noise)
       const whitelist = getUserWhitelist();
       if (whitelist.length === 0) {
         res.status(403).json({ error: 'User whitelist is not configured — destructive operations require an explicit allowlist' });
@@ -114,24 +107,6 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      // Scope validation: verify the requesting user has collaborator access to the target repo
-      try {
-        const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
-          owner,
-          repo,
-          username: requestingUser
-        });
-        const permission = permissionData.permission;
-        if (permission !== 'admin' && permission !== 'write' && permission !== 'maintain') {
-          res.status(403).json({ error: `User '${requestingUser}' does not have write access to ${owner}/${repo}` });
-          return;
-        }
-      } catch (scopeError) {
-        console.error(`[revert] Failed to verify user scope for ${requestingUser} on ${owner}/${repo}:`, scopeError);
-        res.status(403).json({ error: `Unable to verify user access to ${owner}/${repo}` });
-        return;
-      }
-
       const systemTaskSecret = process.env.SYSTEM_TASK_SECRET;
       if (!systemTaskSecret) {
         console.error('[revert] SYSTEM_TASK_SECRET is not configured');
@@ -139,8 +114,56 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
+      // --- GitHub lookups (only after basic authorization passes) ---
+
+      const octokit = await getAuthenticatedOctokit();
+
+      let prData;
+      try {
+        const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+          owner, repo, pull_number: prNumber
+        });
+        prData = response.data;
+      } catch (prLookupError) {
+        const err = prLookupError as { status?: number; message?: string };
+        if (err.status === 404) {
+          res.status(404).json({ error: `PR #${pr} not found in ${owner}/${repo}` });
+        } else {
+          console.error(`[revert] Failed to fetch PR #${pr} from ${owner}/${repo}:`, prLookupError);
+          res.status(502).json({ error: `Unable to fetch PR #${pr} from GitHub` });
+        }
+        return;
+      }
+
+      const branch = prData.head.ref;
+
+      // Determine the actual target repo — for fork PRs the force-push targets the head repo
+      const headRepoOwner = prData.head.repo?.owner?.login ?? owner;
+      const headRepoName = prData.head.repo?.name ?? repo;
+      const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
+
+      // Scope validation: verify the requesting user has write access to the repo being force-pushed
+      const targetOwner = isFork ? headRepoOwner : owner;
+      const targetRepo = isFork ? headRepoName : repo;
+      try {
+        const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
+          owner: targetOwner,
+          repo: targetRepo,
+          username: requestingUser
+        });
+        const permission = permissionData.permission;
+        if (permission !== 'admin' && permission !== 'write' && permission !== 'maintain') {
+          res.status(403).json({ error: `User '${requestingUser}' does not have write access to ${targetOwner}/${targetRepo}` });
+          return;
+        }
+      } catch (scopeError) {
+        console.error(`[revert] Failed to verify user scope for ${requestingUser} on ${targetOwner}/${targetRepo}:`, scopeError);
+        res.status(403).json({ error: `Unable to verify user access to ${targetOwner}/${targetRepo}` });
+        return;
+      }
+
+      const correlationId = generateCorrelationId();
       const authTimestamp = Date.now();
-      const targetCommentIdNum = parseInt(commentId, 10);
       const authToken = generateAuthToken({
         type: 'revert',
         owner,
@@ -169,7 +192,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       const job = await taskQueue.add('processSystemTask', jobData);
 
-      console.log(`[revert] Queued revert job ${job.id} for PR #${pr} in ${owner}/${repo} (branch: ${branch})`);
+      console.log(`[revert] Queued revert job ${job.id} for PR #${pr} in ${owner}/${repo} (branch: ${branch}${isFork ? `, fork: ${headRepoOwner}/${headRepoName}` : ''})`);
 
       res.json({
         success: true,

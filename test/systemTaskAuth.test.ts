@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS } from '@propr/core';
+import { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS } from '@propr/core';
 import type { SystemTaskJobData } from '@propr/core';
 
 /**
@@ -131,6 +131,14 @@ describe('System Task Authorization', () => {
             const data = makeJobData({ authToken: 'not-a-hex-string!' });
             const result = verifyAuthToken(data, TEST_SECRET);
             assert.strictEqual(result.valid, false);
+            assert.ok(result.reason?.includes('malformed'));
+        });
+
+        test('wrong-length hex token rejects before HMAC comparison', () => {
+            const data = makeJobData({ authToken: 'abcd1234' }); // valid hex but wrong length
+            const result = verifyAuthToken(data, TEST_SECRET);
+            assert.strictEqual(result.valid, false);
+            assert.ok(result.reason?.includes('malformed'));
         });
 
         test('tampered commitHash invalidates token', () => {
@@ -191,6 +199,25 @@ describe('System Task Authorization', () => {
         test('recent token (within AUTH_TOKEN_MAX_AGE_MS) is accepted', () => {
             const data = makeJobData({
                 authTimestamp: Date.now() - 2 * 60 * 1000 // 2 minutes ago
+            });
+            data.authToken = generateAuthToken(data, TEST_SECRET);
+            const result = verifyAuthToken(data, TEST_SECRET);
+            assert.strictEqual(result.valid, true);
+        });
+
+        test('future-dated token (beyond clock-skew allowance) rejects', () => {
+            const data = makeJobData({
+                authTimestamp: Date.now() + AUTH_TOKEN_MAX_CLOCK_SKEW_MS + 60 * 1000 // 1 minute beyond skew
+            });
+            data.authToken = generateAuthToken(data, TEST_SECRET);
+            const result = verifyAuthToken(data, TEST_SECRET);
+            assert.strictEqual(result.valid, false);
+            assert.ok(result.reason?.includes('future'));
+        });
+
+        test('token within clock-skew allowance is accepted', () => {
+            const data = makeJobData({
+                authTimestamp: Date.now() + 30 * 1000 // 30 seconds in the future (within 1 min skew)
             });
             data.authToken = generateAuthToken(data, TEST_SECRET);
             const result = verifyAuthToken(data, TEST_SECRET);
