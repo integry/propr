@@ -358,7 +358,6 @@ function setupWebhookRoute(): void {
             }
             return redisClient.set(key, value) as Promise<string | null>;
           },
-          del: (key) => redisClient.del(key),
         },
         processor: (payload, event, cid) => processWebhookEvent(payload, event as WebhookEventType, cid),
         correlationId,

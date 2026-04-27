@@ -8,7 +8,6 @@ export interface WebhookHandlerDeps {
   webhookSecret: string | undefined;
   redis: {
     set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => Promise<string | null>;
-    del: (key: string) => Promise<number>;
   };
   processor: (payload: Record<string, unknown>, event: string, correlationId: string) => Promise<void>;
   correlationId: string;
@@ -23,12 +22,18 @@ export interface WebhookHandlerDeps {
  * 2. Redis-based delivery-ID deduplication (NX + TTL) — rejects exact replays
  *    within the TTL window. This is the primary replay-protection mechanism.
  *
- * Note: GitHub does not provide a signed timestamp, so time-based staleness
- * checks are not possible without a trusted clock source. Replay protection
- * relies entirely on the delivery-ID dedup window.
+ * Stale-request limitation: GitHub does not include a signed timestamp in
+ * webhook deliveries. The `Date` header is not covered by the HMAC, so an
+ * attacker who captures a valid signed payload can replay it at any point
+ * within the dedup TTL window. True time-based staleness rejection would
+ * require a trusted, authenticated timestamp from GitHub. Until that exists,
+ * replay resistance relies entirely on the delivery-ID dedup window
+ * ({@link WEBHOOK_DELIVERY_TTL_SECONDS}).
  *
- * All failure paths after the Redis reservation clean up the key so that
- * GitHub retries are not permanently blocked.
+ * Failure semantics: once a delivery ID is reserved in Redis, it is NOT
+ * removed on downstream processing errors. This prevents a partially-
+ * processed webhook from being re-accepted on a GitHub retry, which could
+ * re-trigger side effects. Downstream consumers must be idempotent.
  */
 export async function handleWebhookRequest(
   req: Request,
@@ -36,6 +41,13 @@ export async function handleWebhookRequest(
   deps: WebhookHandlerDeps,
 ): Promise<void> {
   const { webhookSecret, redis, processor, correlationId } = deps;
+
+  // --- Fail closed if req.body is not a Buffer (middleware misconfiguration) ---
+  if (!Buffer.isBuffer(req.body)) {
+    console.error('[webhook] req.body is not a Buffer — expected express.raw() middleware');
+    res.status(500).send('Webhook middleware misconfiguration.');
+    return;
+  }
 
   // --- Signature verification ---
   const rawSignature = req.headers['x-hub-signature-256'];
@@ -91,20 +103,11 @@ export async function handleWebhookRequest(
     return;
   }
 
-  // Wrap post-reservation logic so failures clean up the Redis key for retries.
-  // NOTE: Deleting the dedupe key on processor errors is an intentional tradeoff —
-  // it allows GitHub to retry a delivery that failed due to a transient error.
-  // If the processor performs partial side effects before throwing, this can lead
-  // to duplicate processing. Downstream consumers should be idempotent.
-  try {
-    const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
-    console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
-    await processor(payload, rawEvent, correlationId);
-  } catch (err) {
-    // Clean up Redis key so GitHub can retry this delivery
-    await redis.del(deliveryKey).catch(() => {});
-    throw err;
-  }
+  // The delivery ID remains reserved in Redis regardless of processing outcome.
+  // This is intentional — see the JSDoc above for rationale.
+  const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
+  console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
+  await processor(payload, rawEvent, correlationId);
 
   res.status(200).send('Webhook processed.');
 }

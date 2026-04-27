@@ -21,8 +21,8 @@ import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/
  * - Signature verification (401), including malformed signature lengths and multi-valued headers
  * - Missing x-github-event header rejection (400)
  * - Redis key storage with correct TTL
- * - Failed processing cleans up Redis key so retries work
- * - Parse failure cleans up Redis key so retries work
+ * - Failed processing retains Redis key to block duplicate side effects
+ * - Parse failure retains Redis key to block duplicate side effects
  *
  * Note: No time-based staleness tests — GitHub does not provide a signed
  * timestamp, so the Date header cannot be trusted for replay protection.
@@ -46,10 +46,6 @@ function createMockRedisClient() {
       }
       store.set(key, { value, ex: opts?.EX });
       return 'OK';
-    },
-    del: async (key: string) => {
-      store.delete(key);
-      return 1;
     },
   };
 }
@@ -232,8 +228,8 @@ describe('Webhook Replay Protection', () => {
     });
   });
 
-  describe('Failed processing cleanup', () => {
-    test('cleans up Redis key when processing fails so retries work', async () => {
+  describe('Failure keeps delivery ID reserved', () => {
+    test('retains Redis key when processing fails to prevent duplicate side effects', async () => {
       const failRedis = createMockRedisClient();
       const failApp = createTestApp(failRedis, async () => {
         throw new Error('Simulated processing failure');
@@ -251,13 +247,21 @@ describe('Webhook Replay Protection', () => {
           'x-github-event': 'issues',
         });
         assert.strictEqual(first.status, 500);
-        assert.ok(!failRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key should be removed after failure');
+        assert.ok(failRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key must be retained after failure to block duplicate processing');
+
+        // A retry with the same delivery ID should be rejected
+        const retry = await sendWebhook(failServer, body, {
+          'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+          'x-github-delivery': deliveryId,
+          'x-github-event': 'issues',
+        });
+        assert.strictEqual(retry.status, 409, 'retry after failure must be rejected as duplicate');
       } finally {
         await new Promise<void>((resolve) => failServer.close(() => resolve()));
       }
     });
 
-    test('cleans up Redis key when body parsing fails so retries work', async () => {
+    test('retains Redis key when body parsing fails to prevent duplicate side effects', async () => {
       const parseRedis = createMockRedisClient();
       const parseApp = express();
       parseApp.use('/webhook', express.raw({ type: 'application/json' }));
@@ -297,7 +301,7 @@ describe('Webhook Replay Protection', () => {
           'x-github-event': 'issues',
         });
         assert.strictEqual(result.status, 500);
-        assert.ok(!parseRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key should be removed after parse failure');
+        assert.ok(parseRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key must be retained after parse failure to block duplicate processing');
       } finally {
         await new Promise<void>((resolve) => parseServer.close(() => resolve()));
       }
