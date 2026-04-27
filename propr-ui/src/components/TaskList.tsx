@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getTasks, getRepositoryStats } from '../api/proprApi';
 import { useSocket } from '../contexts/useSocket';
+import type { RepoOption } from './RepositorySelector';
 import type { TaskListProps, LoadConfig } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
@@ -20,6 +21,27 @@ import {
   selectValue,
 } from './TaskList/utils';
 import { useDebouncedCallback } from './TaskList/hooks';
+
+const createRepoOptions = (repositories: Array<{ repository: string; total: number }>): RepoOption[] => {
+  const totalCount = repositories.reduce((sum, repo) => sum + repo.total, 0);
+
+  const allOption: RepoOption = {
+    name: 'all',
+    enabled: true,
+    displayName: 'All Repos',
+    count: totalCount,
+  };
+
+  const repoOptions: RepoOption[] = [...repositories]
+    .sort((a, b) => a.repository.localeCompare(b.repository))
+    .map(repo => ({
+      name: repo.repository,
+      enabled: true,
+      count: repo.total,
+    }));
+
+  return [allOption, ...repoOptions];
+};
 
 const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -56,11 +78,12 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [availableRepos, setAvailableRepos] = useState<string[]>([]);
-  const [reposLoading, setReposLoading] = useState<boolean>(true);
-
+  const [availableRepos, setAvailableRepos] = useState<RepoOption[]>([]);
+  const [reposLoading, setReposLoading] = useState<boolean>(!hideFilters);
   const [totalTasks, setTotalTasks] = useState<number>(0);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const hasLoadedRepoStats = useRef(false);
+  const repoStatsRequestId = useRef(0);
 
   const tasksPerPage = limit;
 
@@ -105,25 +128,22 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     }
   }, [useUrlState, updateSearchParams, urlPage]);
 
-  useEffect(() => {
-    const fetchRepos = async () => {
-      try {
-        setReposLoading(true);
-        const data = await getRepositoryStats();
+  const refreshRepositoryStats = useCallback(async (showLoadingState: boolean) => {
+    if (hideFilters) return;
 
-        // Extract repository names from stats (repos with task history)
-        const reposWithHistory = (data.repositories || []).map(r => r.repository);
-
-        // Sort alphabetically and include "all" option at the beginning
-        setAvailableRepos(['all', ...reposWithHistory.sort()]);
-      } catch (err) {
-        console.error('Error fetching repositories:', err);
-      } finally {
-        setReposLoading(false);
-      }
-    };
-    fetchRepos();
-  }, []);
+    const requestId = ++repoStatsRequestId.current;
+    try {
+      if (showLoadingState) setReposLoading(true);
+      const data = await getRepositoryStats();
+      // Discard stale responses — only apply if this is still the latest request
+      if (requestId !== repoStatsRequestId.current) return;
+      setAvailableRepos(createRepoOptions(data.repositories || []));
+    } catch (err) {
+      console.error('Error fetching repositories:', err);
+    } finally {
+      if (requestId === repoStatsRequestId.current) setReposLoading(false);
+    }
+  }, [hideFilters]);
 
   // Sync search input with URL on initial load (only when using URL state)
   useEffect(() => {
@@ -164,10 +184,16 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     }
   }, [filter, tasksPerPage, currentPage, repoFilter, debouncedSearch]);
 
-  // Initial fetch when dependencies change
+  // Refresh repository stats only on initial mount when filters are visible.
   useEffect(() => {
     fetchTasks({ setLoadingState: true });
   }, [fetchTasks]);
+
+  useEffect(() => {
+    if (hideFilters || hasLoadedRepoStats.current) return;
+    refreshRepositoryStats(true);
+    hasLoadedRepoStats.current = true;
+  }, [hideFilters, refreshRepositoryStats]);
 
   // Subscribe to WebSocket task updates for real-time refresh
   useEffect(() => {
@@ -176,13 +202,14 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     const handleTaskUpdate = () => {
       // Refresh task list without showing loading spinner
       fetchTasks({ setLoadingState: false });
+      refreshRepositoryStats(false);
     };
 
     const unsubscribe = onTaskUpdate(handleTaskUpdate);
     return () => {
       unsubscribe();
     };
-  }, [isConnected, onTaskUpdate, fetchTasks]);
+  }, [isConnected, onTaskUpdate, fetchTasks, refreshRepositoryStats]);
 
   const groupedTasks = useMemo(() => groupTasksForDisplay(tasks), [tasks]);
 

@@ -25,10 +25,7 @@ function openDropdown() {
 }
 
 function getVisibleRepoButtons() {
-  return screen.getAllByRole('button').filter(btn => {
-    // RepoItem buttons have the w-full and text-left classes
-    return btn.className.includes('text-left') && btn.className.includes('w-full');
-  });
+  return screen.getAllByTestId('repo-item');
 }
 
 describe('RepositorySelector', () => {
@@ -114,7 +111,10 @@ describe('RepositorySelector', () => {
     expect(betaItem).toBeDefined();
     fireEvent.click(betaItem!);
 
-    expect(onRepoChange).toHaveBeenCalledWith('org/repo-beta');
+    expect(onRepoChange).toHaveBeenCalledWith('org/repo-beta', expect.objectContaining({
+      repo: 'org/repo-beta',
+      option: expect.objectContaining({ name: 'org/repo-beta' }),
+    }));
   });
 
   it('shows starred repos in a separate section', () => {
@@ -195,6 +195,135 @@ describe('RepositorySelector', () => {
     expect(items).toHaveLength(2);
   });
 
+  it('preserves the selected baseBranch when choosing between duplicate repo names', () => {
+    const onRepoChange = vi.fn();
+    const branchRepos: RepoOption[] = [
+      { name: 'integry/forex', enabled: true, baseBranch: 'main' },
+      { name: 'integry/forex', enabled: true, baseBranch: 'develop' },
+      { name: 'integry/propr', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={branchRepos} selectedRepo="integry/forex" onRepoChange={onRepoChange} />
+    );
+
+    const trigger = screen.getByRole('button');
+    fireEvent.click(trigger);
+
+    const developItem = getVisibleRepoButtons().find(btn => btn.textContent?.includes('(develop)'));
+    expect(developItem).toBeDefined();
+
+    fireEvent.click(developItem!);
+
+    expect(onRepoChange).toHaveBeenCalledWith('integry/forex', expect.objectContaining({
+      repo: 'integry/forex',
+      baseBranch: 'develop',
+      option: expect.objectContaining({ name: 'integry/forex', baseBranch: 'develop' }),
+    }));
+    expect(trigger.textContent).toContain('(develop)');
+
+    fireEvent.click(trigger);
+    const selectedItem = getVisibleRepoButtons().find(btn => btn.className.includes('bg-indigo-50'));
+    expect(selectedItem?.textContent).toContain('(develop)');
+  });
+
+  it('renders custom displayName instead of repo name', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos' },
+      { name: 'org/repo-beta', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
+    );
+    // Trigger should show custom label
+    expect(screen.getByRole('button').textContent).toContain('All Repos');
+
+    // Open dropdown and verify item label
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+    expect(items[0].textContent).toContain('All Repos');
+    // The second repo without displayName should still show normal name
+    expect(items[1].textContent).toContain('repo-beta');
+  });
+
+  it('keeps caller-provided "All Repos" option at the top of non-starred items', () => {
+    const repos: RepoOption[] = [
+      { name: 'all', enabled: true, displayName: 'All Repos' },
+      { name: 'aaa/repo', enabled: true },
+      { name: 'zzz/repo', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="all" onRepoChange={vi.fn()} />
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+
+    expect(items[0].textContent).toContain('All Repos');
+    expect(items[1].textContent).toContain('aaa/repo');
+  });
+
+  it('sorts starred and non-starred repos alphabetically after filtering', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-zeta', enabled: true, starred: true },
+      { name: 'org/repo-alpha', enabled: true },
+      { name: 'org/repo-beta', enabled: true, starred: true },
+      { name: 'org/repo-gamma', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+
+    expect(items[0].textContent).toContain('repo-beta');
+    expect(items[1].textContent).toContain('repo-zeta');
+    expect(items[2].textContent).toContain('repo-alpha');
+    expect(items[3].textContent).toContain('repo-gamma');
+  });
+
+  it('renders count badges when count is provided', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 42 },
+      { name: 'org/repo-beta', enabled: true, count: 7 },
+      { name: 'org/repo-gamma', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
+    );
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+    expect(items[0].textContent).toContain('42');
+    expect(items[1].textContent).toContain('7');
+    // Third item has no count
+    expect(items[2].textContent).not.toContain('42');
+    expect(items[2].textContent).not.toContain('7');
+  });
+
+  it('filters by repo name even when displayName differs', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 10 },
+      { name: 'org/repo-beta', enabled: true, count: 5 },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
+    );
+    fireEvent.click(screen.getByRole('button'));
+    const input = screen.getByPlaceholderText('Filter repositories...');
+
+    // Filter by the underlying repo name should still find "All Repos"
+    fireEvent.change(input, { target: { value: 'alpha' } });
+    let items = getVisibleRepoButtons();
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain('All Repos');
+
+    // Filter by displayName should also work
+    fireEvent.change(input, { target: { value: 'All Repos' } });
+    items = getVisibleRepoButtons();
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain('All Repos');
+  });
+
   it('clears filter when closing via trigger button', () => {
     const { container } = render(
       <RepositorySelector repos={mockRepos} selectedRepo="org/repo-alpha" onRepoChange={vi.fn()} />
@@ -212,5 +341,49 @@ describe('RepositorySelector', () => {
     fireEvent.click(trigger);
     const items = getVisibleRepoButtons();
     expect(items).toHaveLength(mockRepos.length);
+  });
+
+  it('uses the rendered label for the breadcrumb tooltip title', () => {
+    render(
+      <RepositorySelector
+        repos={[{ name: 'all', enabled: true, displayName: 'All Repos' }]}
+        selectedRepo="all"
+        onRepoChange={vi.fn()}
+        variant="breadcrumb"
+      />
+    );
+
+    expect(screen.getByRole('button')).toHaveAttribute('title', 'All Repos');
+  });
+
+  it('renders a disabled selector trigger while repositories are loading', () => {
+    render(
+      <RepositorySelector
+        repos={[]}
+        selectedRepo=""
+        onRepoChange={vi.fn()}
+        isLoading
+        variant="default"
+      />
+    );
+
+    const trigger = screen.getByRole('button');
+    expect(trigger).toBeDisabled();
+    expect(trigger.textContent).toContain('Loading repositories...');
+  });
+
+  it('keeps the full owner/repo in the breadcrumb tooltip for normal repositories', () => {
+    render(
+      <RepositorySelector
+        repos={[{ name: 'integry/propr', enabled: true }]}
+        selectedRepo="integry/propr"
+        onRepoChange={vi.fn()}
+        variant="breadcrumb"
+      />
+    );
+
+    const trigger = screen.getByRole('button');
+    expect(trigger).toHaveAttribute('title', 'integry/propr');
+    expect(trigger.textContent).toContain('propr');
   });
 });
