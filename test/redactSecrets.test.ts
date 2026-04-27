@@ -252,6 +252,47 @@ test('createLogFiles writes redacted Bearer tokens to the text output file', asy
     if (logFiles.output) await fs.promises.unlink(logFiles.output).catch(() => {});
 });
 
+// --- Lowercase bearer token tests (Review finding 1) ---
+
+test('redactSecrets replaces lowercase "bearer" tokens', () => {
+    const input = 'authorization: bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('eyJhbGciOiJ'), 'Lowercase bearer token should be redacted');
+    assert.ok(result.includes('[REDACTED_BEARER_TOKEN]'));
+});
+
+test('redactSecrets replaces mixed-case "BEARER" tokens', () => {
+    const input = 'Authorization: BEARER eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('eyJhbGciOiJ'), 'Uppercase BEARER token should be redacted');
+    assert.ok(result.includes('[REDACTED_BEARER_TOKEN]'));
+});
+
+// --- toJSON / Date serialization preservation tests (Review finding 2) ---
+
+test('redactSerializableValue preserves Date serialization via toJSON', () => {
+    const date = new Date('2026-01-15T10:30:00.000Z');
+    const input = { createdAt: date, message: 'hello' };
+    const result = redactSerializableValue(input) as Record<string, unknown>;
+    // Date.toJSON() returns an ISO string; redactSerializableValue should preserve that
+    assert.strictEqual(result.createdAt, '2026-01-15T10:30:00.000Z');
+    assert.strictEqual(result.message, 'hello');
+    // Verify it matches what JSON.stringify would produce
+    const directJson = JSON.parse(JSON.stringify(input));
+    assert.strictEqual(result.createdAt, directJson.createdAt);
+});
+
+test('redactSerializableValue preserves custom toJSON and redacts secrets within', () => {
+    const obj = {
+        toJSON() {
+            return { key: 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn' };
+        }
+    };
+    const result = redactSerializableValue(obj) as Record<string, unknown>;
+    assert.ok(!JSON.stringify(result).includes('ghp_'), 'Secret inside toJSON output should be redacted');
+    assert.ok(JSON.stringify(result).includes('[REDACTED_GITHUB_TOKEN]'));
+});
+
 // --- False-positive tests (should NOT redact) ---
 
 test('redactSecrets should not redact the word "token" in ordinary prose', () => {

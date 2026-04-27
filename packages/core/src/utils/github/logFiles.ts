@@ -87,7 +87,7 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
     // Google API keys
     { pattern: /AIza[A-Za-z0-9_-]{35}/g, replacement: '[REDACTED_GOOGLE_API_KEY]' },
     // Generic Bearer tokens — require at least 20 chars or a dot/slash (JWT-like) to avoid matching prose
-    { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/g, replacement: 'Bearer [REDACTED_BEARER_TOKEN]' },
+    { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, replacement: 'Bearer [REDACTED_BEARER_TOKEN]' },
     // Generic secret/token assignment patterns (catches env vars like SECRET_KEY=... or API_TOKEN=...)
     // Requires the keyword to appear as a standalone word or after an underscore, not as part of arbitrary prose
     { pattern: /(?<=(?:^|[_A-Z])(?:SECRET|PASSWORD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY|SECRET_TOKEN|API_TOKEN|AUTH_TOKEN)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_-]{20,}(?=['"]?)/gim, replacement: '[REDACTED_SECRET]' },
@@ -103,9 +103,9 @@ export function redactSecrets(input: string): string {
 
 /**
  * Recursively walk a JSON-serializable value and redact any secrets found in
- * string leaves.  Returns a plain-object copy — prototypes, class instances,
- * `Date`, `Map`, etc. are **not** preserved.  This is intentional: the only
- * call-sites serialise the result to JSON immediately afterward.
+ * string leaves.  Preserves JSON serialization semantics: objects with a
+ * `toJSON()` method (e.g. `Date`, `URL`) are serialized via that method first,
+ * then the result is redacted recursively.
  */
 export function redactSerializableValue(obj: unknown): unknown {
     if (typeof obj === 'string') {
@@ -115,6 +115,10 @@ export function redactSerializableValue(obj: unknown): unknown {
         return obj.map(item => redactSerializableValue(item));
     }
     if (obj !== null && typeof obj === 'object') {
+        // Honour toJSON() so Date, URL, etc. serialize the same as JSON.stringify
+        if (typeof (obj as Record<string, unknown>).toJSON === 'function') {
+            return redactSerializableValue((obj as { toJSON(): unknown }).toJSON());
+        }
         const redacted: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(obj)) {
             redacted[key] = redactSerializableValue(value);
