@@ -440,10 +440,16 @@ function resolveLlm(llmFromKeywords: string | null, prLabels: Label[], options: 
  * via resolveLlm() before enqueuing, so no special downstream handling is needed.
  */
 function buildCommandJobFields(commandMeta: CommandMeta): CommandJobFields {
-    const COMMAND_MODES_WITH_OWN_MODE = ['review', 'fix', 'switch', 'use'] as const;
+    const commandMode = commandMeta.mode === 'review'
+        || commandMeta.mode === 'fix'
+        || commandMeta.mode === 'switch'
+        || commandMeta.mode === 'use'
+        ? commandMeta.mode
+        : 'default';
+
     return {
         commandMeta,
-        commandMode: (COMMAND_MODES_WITH_OWN_MODE as readonly string[]).includes(commandMeta.mode) ? commandMeta.mode : 'default',
+        commandMode,
         requestedModels: commandMeta.mode === 'review' ? commandMeta.models : undefined,
         commandInstructions: 'instructions' in commandMeta ? commandMeta.instructions : undefined,
     };
