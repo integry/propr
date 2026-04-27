@@ -1,4 +1,5 @@
-import { getUserWhitelist, getAuthenticatedOctokit } from '@propr/core';
+import { getUserWhitelist, getAuthenticatedOctokit, generateCorrelationId, generateAuthToken } from '@propr/core';
+import type { SystemTaskJobData } from '@propr/core';
 import { validatePositiveInteger } from './validation.js';
 
 export interface RevertRequestBody {
@@ -175,4 +176,51 @@ export async function checkUserRepoAccess(targetOwner: string, targetRepo: strin
     console.error(`[revert] Failed to verify user scope for ${requestingUser} on ${targetOwner}/${targetRepo}:`, scopeError);
     return { allowed: false, status: 502, error: `Unable to verify user access to ${targetOwner}/${targetRepo}` };
   }
+}
+
+export function buildRevertJobData(params: {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  commit: string;
+  targetCommentId: number;
+  requestingUser: string;
+  systemTaskSecret: string;
+  branch: string;
+  isFork: boolean;
+  headRepoOwner: string;
+  headRepoName: string;
+}): SystemTaskJobData {
+  const { owner, repo, prNumber, commit, targetCommentId, requestingUser, systemTaskSecret, branch, isFork, headRepoOwner, headRepoName } = params;
+  const correlationId = generateCorrelationId();
+  const authTimestamp = Date.now();
+
+  const tokenFields: Parameters<typeof generateAuthToken>[0] = {
+    type: 'revert',
+    owner,
+    repoName: repo,
+    prNumber,
+    requestingUser,
+    commitHash: commit,
+    targetCommentId,
+    prBranch: branch,
+    authTimestamp,
+    ...(isFork ? { headRepoOwner, headRepoName } : {})
+  };
+  const authToken = generateAuthToken(tokenFields, systemTaskSecret);
+
+  return {
+    type: 'revert',
+    repoName: repo,
+    prNumber,
+    commitHash: commit,
+    targetCommentId,
+    prBranch: branch,
+    owner,
+    correlationId,
+    requestingUser,
+    authToken,
+    authTimestamp,
+    ...(isFork ? { headRepoOwner, headRepoName } : {})
+  };
 }

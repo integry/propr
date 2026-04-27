@@ -9,12 +9,81 @@ interface IssueComment {
     id: number;
 }
 
+interface CorrelatedLogger {
+    info(obj: unknown, msg?: string): void;
+    warn(obj: unknown, msg?: string): void;
+    error(obj: unknown, msg?: string): void;
+    debug(obj: unknown, msg?: string): void;
+}
+
+function verifyWhitelist(requestingUser: string, correlatedLogger: CorrelatedLogger): void {
+    const whitelist = getUserWhitelist();
+    if (whitelist.length === 0) {
+        correlatedLogger.warn('System task rejected: user whitelist is not configured');
+        throw new Error('Unauthorized: user whitelist is not configured — destructive operations require an explicit allowlist');
+    }
+    if (!whitelist.includes(requestingUser)) {
+        correlatedLogger.warn({ requestingUser }, 'System task rejected: user not in whitelist');
+        throw new Error(`Unauthorized: user '${requestingUser}' is not allowed to perform system tasks`);
+    }
+}
+
+function verifyToken(jobData: SystemTaskJobData, correlatedLogger: CorrelatedLogger): void {
+    if (!jobData.authToken) {
+        correlatedLogger.warn({ requestingUser: jobData.requestingUser }, 'System task rejected: missing auth token');
+        throw new Error('Unauthorized: missing system task auth token');
+    }
+    const tokenResult = verifyAuthToken(jobData, process.env.SYSTEM_TASK_SECRET);
+    if (!tokenResult.valid) {
+        correlatedLogger.warn({ requestingUser: jobData.requestingUser, reason: tokenResult.reason }, 'System task rejected: auth token verification failed');
+        throw new Error(`Unauthorized: system task auth token invalid — ${tokenResult.reason}`);
+    }
+}
+
+interface PrHeadInfo {
+    actualHeadOwner: string | undefined;
+    actualHeadName: string | undefined;
+    isFork: boolean;
+}
+
+function validatePrHead(
+    prHead: PrHeadInfo,
+    jobData: { owner: string; repoName: string; prNumber: number; headRepoOwner?: string; headRepoName?: string }
+): { targetOwner: string; targetRepoName: string } {
+    const { actualHeadOwner, actualHeadName, isFork } = prHead;
+    const { owner, repoName, prNumber, headRepoOwner, headRepoName } = jobData;
+
+    if (isFork) {
+        if (!headRepoOwner || !headRepoName) {
+            throw new Error(
+                `Unauthorized: PR #${prNumber} is a fork PR (head: ${actualHeadOwner}/${actualHeadName}) ` +
+                `but job payload does not include headRepoOwner/headRepoName. Re-queue with fork-aware payload.`
+            );
+        }
+        if (headRepoOwner !== actualHeadOwner || headRepoName !== actualHeadName) {
+            throw new Error(
+                `Unauthorized: PR head repo mismatch — job claims ${headRepoOwner}/${headRepoName} ` +
+                `but PR head is ${actualHeadOwner}/${actualHeadName}.`
+            );
+        }
+        return { targetOwner: headRepoOwner, targetRepoName: headRepoName };
+    }
+
+    if (actualHeadOwner !== owner || actualHeadName !== repoName) {
+        throw new Error(
+            `Unauthorized: PR head repo mismatch — expected ${owner}/${repoName} ` +
+            `but found ${actualHeadOwner}/${actualHeadName}.`
+        );
+    }
+    return { targetOwner: owner, targetRepoName: repoName };
+}
+
 /**
  * Process system tasks like reverting commits and cleaning up comments.
  * This job is purely deterministic and does not use the LLM agent.
  */
 export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise<JobResult> {
-    const { repoName, prBranch, commitHash, targetCommentId, owner, prNumber, correlationId, requestingUser, authToken, headRepoOwner, headRepoName } = job.data;
+    const { repoName, prBranch, commitHash, targetCommentId, owner, prNumber, correlationId, requestingUser, headRepoOwner, headRepoName } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     correlatedLogger.info({
@@ -31,27 +100,8 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
         throw new Error(`Unknown system task type: ${job.data.type}`);
     }
 
-    // Authorization: verify requesting user is in the whitelist (fail-closed for destructive operations)
-    const whitelist = getUserWhitelist();
-    if (whitelist.length === 0) {
-        correlatedLogger.warn('System task rejected: user whitelist is not configured');
-        throw new Error('Unauthorized: user whitelist is not configured — destructive operations require an explicit allowlist');
-    }
-    if (!whitelist.includes(requestingUser)) {
-        correlatedLogger.warn({ requestingUser }, 'System task rejected: user not in whitelist');
-        throw new Error(`Unauthorized: user '${requestingUser}' is not allowed to perform system tasks`);
-    }
-
-    // Authorization: verify HMAC auth token (covers all payload fields + timestamp for replay resistance)
-    if (!authToken) {
-        correlatedLogger.warn({ requestingUser }, 'System task rejected: missing auth token');
-        throw new Error('Unauthorized: missing system task auth token');
-    }
-    const tokenResult = verifyAuthToken(job.data, process.env.SYSTEM_TASK_SECRET);
-    if (!tokenResult.valid) {
-        correlatedLogger.warn({ requestingUser, reason: tokenResult.reason }, 'System task rejected: auth token verification failed');
-        throw new Error(`Unauthorized: system task auth token invalid — ${tokenResult.reason}`);
-    }
+    verifyWhitelist(requestingUser, correlatedLogger);
+    verifyToken(job.data, correlatedLogger);
 
     let worktreePath: string | undefined;
     let localRepoPath: string | undefined;
@@ -66,37 +116,15 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
         const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
             owner, repo: repoName, pull_number: prNumber
         });
-        const actualHeadOwner = prData.head.repo?.owner?.login;
-        const actualHeadName = prData.head.repo?.name;
-        const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
 
-        if (isFork) {
-            // Fork PR: job must carry explicit headRepoOwner/headRepoName (bound in HMAC)
-            if (!headRepoOwner || !headRepoName) {
-                throw new Error(
-                    `Unauthorized: PR #${prNumber} is a fork PR (head: ${actualHeadOwner}/${actualHeadName}) ` +
-                    `but job payload does not include headRepoOwner/headRepoName. Re-queue with fork-aware payload.`
-                );
-            }
-            if (headRepoOwner !== actualHeadOwner || headRepoName !== actualHeadName) {
-                throw new Error(
-                    `Unauthorized: PR head repo mismatch — job claims ${headRepoOwner}/${headRepoName} ` +
-                    `but PR head is ${actualHeadOwner}/${actualHeadName}.`
-                );
-            }
-        } else {
-            // Non-fork PR: head repo should match the base repo
-            if (actualHeadOwner !== owner || actualHeadName !== repoName) {
-                throw new Error(
-                    `Unauthorized: PR head repo mismatch — expected ${owner}/${repoName} ` +
-                    `but found ${actualHeadOwner}/${actualHeadName}.`
-                );
-            }
-        }
-
-        // Determine the actual target repo for git operations
-        const targetOwner = isFork ? headRepoOwner! : owner;
-        const targetRepoName = isFork ? headRepoName! : repoName;
+        const { targetOwner, targetRepoName } = validatePrHead(
+            {
+                actualHeadOwner: prData.head.repo?.owner?.login,
+                actualHeadName: prData.head.repo?.name,
+                isFork: prData.head.repo?.full_name !== prData.base.repo?.full_name
+            },
+            { owner, repoName, prNumber, headRepoOwner, headRepoName }
+        );
 
         const { token } = await octokit.auth({ type: "installation" }) as { token: string };
         const repoUrl = getRepoUrl({ repoOwner: targetOwner, repoName: targetRepoName });

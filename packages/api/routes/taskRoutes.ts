@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
-import { generateCorrelationId, generateAuthToken, issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit } from '@propr/core';
-import type { SystemTaskJobData, CommentJobData, UnprocessedComment } from '@propr/core';
+import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCorrelationId } from '@propr/core';
+import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
-import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, lookupPr, checkUserRepoAccess } from './revertHelpers.js';
+import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, lookupPr, checkUserRepoAccess, buildRevertJobData } from './revertHelpers.js';
 
 interface TaskRoutesDeps {
   db: Knex;
@@ -108,8 +108,6 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const { prData } = prLookup;
 
       const branch = prData.head.ref;
-
-      // Determine the actual target repo — for fork PRs the force-push targets the head repo
       const headRepoOwner = prData.head.repo?.owner?.login ?? owner;
       const headRepoName = prData.head.repo?.name ?? repo;
       const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
@@ -123,38 +121,10 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      const correlationId = generateCorrelationId();
-      const authTimestamp = Date.now();
-
-      // For fork PRs, explicitly bind the head repo identity in the token and job data
-      const tokenFields: Parameters<typeof generateAuthToken>[0] = {
-        type: 'revert',
-        owner,
-        repoName: repo,
-        prNumber,
-        requestingUser,
-        commitHash: commit,
-        targetCommentId: targetCommentIdNum,
-        prBranch: branch,
-        authTimestamp,
-        ...(isFork ? { headRepoOwner, headRepoName } : {})
-      };
-      const authToken = generateAuthToken(tokenFields, systemTaskSecret);
-
-      const jobData: SystemTaskJobData = {
-        type: 'revert',
-        repoName: repo,
-        prNumber,
-        commitHash: commit,
-        targetCommentId: targetCommentIdNum,
-        prBranch: branch,
-        owner: owner,
-        correlationId,
-        requestingUser,
-        authToken,
-        authTimestamp,
-        ...(isFork ? { headRepoOwner, headRepoName } : {})
-      };
+      const jobData = buildRevertJobData({
+        owner, repo, prNumber, commit, targetCommentId: targetCommentIdNum,
+        requestingUser, systemTaskSecret, branch, isFork, headRepoOwner, headRepoName
+      });
 
       const job = await taskQueue.add('processSystemTask', jobData);
 
@@ -163,7 +133,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       res.json({
         success: true,
         jobId: job.id,
-        correlationId,
+        correlationId: jobData.correlationId,
         message: `Revert task queued for PR #${pr}`
       });
     } catch (error) {
