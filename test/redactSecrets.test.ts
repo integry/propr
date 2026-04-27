@@ -97,6 +97,34 @@ test('redactSecrets replaces Slack tokens', () => {
     assert.ok(result.includes('[REDACTED_SLACK_TOKEN]'));
 });
 
+test('redactSecrets replaces AWS temporary access keys (ASIA prefix)', () => {
+    const input = 'key is ASIAIOSTEMPKEY7EXAMP';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('ASIAIOSTEMPKEY7EXAMP'));
+    assert.ok(result.includes('[REDACTED_AWS_ACCESS_KEY]'));
+});
+
+test('redactSecrets replaces AWS secret access keys', () => {
+    const input = 'aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('wJalrXUtnFEMI'));
+    assert.ok(result.includes('[REDACTED_AWS_SECRET_KEY]'));
+});
+
+test('redactSecrets replaces generic secret assignment patterns', () => {
+    const input = 'SECRET_KEY="abcdefghijklmnopqrstuvwxyz1234"';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('abcdefghijklmnopqrstuvwxyz1234'));
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+test('redactSecrets replaces generic API_KEY assignment patterns', () => {
+    const input = "API_KEY='someLongSecretValue12345678'";
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('someLongSecretValue12345678'));
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
 test('redactObject redacts secrets in conversation log structure used by createLogFiles', () => {
     const conversationLog = [
         {

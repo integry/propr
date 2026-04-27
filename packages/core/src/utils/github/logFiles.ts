@@ -53,7 +53,7 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
     { pattern: /ghs_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /github_pat_[A-Za-z0-9_]{22,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     // AWS keys
-    { pattern: /AKIA[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_ACCESS_KEY]' },
+    { pattern: /(?:AKIA|ASIA)[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_ACCESS_KEY]' },
     { pattern: /(?<=aws_secret_access_key\s*[=:]\s*)[A-Za-z0-9/+=]{40}/gi, replacement: '[REDACTED_AWS_SECRET_KEY]' },
     // OpenRouter API keys
     { pattern: /sk-or-v1-[A-Za-z0-9]{64}/g, replacement: '[REDACTED_OPENROUTER_KEY]' },
