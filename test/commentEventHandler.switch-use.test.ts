@@ -277,6 +277,7 @@ describe('commentEventHandler — /switch command', () => {
 
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 0);
         const warnCalls = mockLoggerInstance.warn.mock.calls;
         const invalidWarn = warnCalls.find(
             (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('unrecognized model')
@@ -811,6 +812,11 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         // Should store comment for batch via rpush
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
+        assert.strictEqual(pendingComment.body, 'Fix the bug');
+        assert.strictEqual(pendingComment.commandMode, 'use');
+        assert.strictEqual(pendingComment.commandInstructions, 'Fix the bug');
+        assert.strictEqual(pendingComment.llmOverride, 'claude-opus-4-6');
     });
 
     test('/switch with instructions is batched when an existing job is active', async () => {
@@ -830,6 +836,10 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         // Comment should be stored for batch
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
+        assert.strictEqual(pendingComment.commandMode, 'switch');
+        assert.strictEqual(pendingComment.commandInstructions, 'Review the code');
+        assert.strictEqual(pendingComment.llmOverride, 'claude-opus-4-6');
     });
 
     test('/use enqueues normally when no existing job is active', async () => {
@@ -856,5 +866,9 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
+        assert.strictEqual(pendingComment.body, '');
+        assert.strictEqual(pendingComment.commandMode, 'review');
+        assert.deepStrictEqual(pendingComment.requestedModels, ['codex']);
     });
 });

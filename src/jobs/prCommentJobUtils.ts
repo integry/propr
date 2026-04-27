@@ -385,6 +385,30 @@ export function processPendingComments(commentsToProcess: UnprocessedComment[], 
     }
 }
 
+export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
+    const latestCommandComment = [...commentsToProcess]
+        .reverse()
+        .find(comment => comment.commandMode && comment.commandMode !== 'default');
+
+    if (!latestCommandComment) return;
+
+    jobData.commandMeta = latestCommandComment.commandMeta;
+    jobData.commandMode = latestCommandComment.commandMode;
+    jobData.requestedModels = latestCommandComment.requestedModels;
+    jobData.commandInstructions = latestCommandComment.commandInstructions;
+
+    if (latestCommandComment.llmOverride !== undefined) {
+        jobData.llm = latestCommandComment.llmOverride;
+    }
+
+    correlatedLogger.info({
+        commandMode: jobData.commandMode,
+        requestedModels: jobData.requestedModels,
+        llmOverride: latestCommandComment.llmOverride,
+        commentId: latestCommandComment.id,
+    }, 'Applied command context from pending batched comment');
+}
+
 export async function pickUpPendingComments(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<UnprocessedComment[]> {
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = options;
     const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);

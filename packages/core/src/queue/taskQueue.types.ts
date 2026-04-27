@@ -66,6 +66,11 @@ export interface UnprocessedComment {
     author: string;
     type: 'review' | 'issue';
     hasCodeContext?: boolean;
+    commandMeta?: CommandMeta;
+    commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use';
+    requestedModels?: string[];
+    commandInstructions?: string;
+    llmOverride?: string | null;
 }
 
 export interface TaskImportJobData {

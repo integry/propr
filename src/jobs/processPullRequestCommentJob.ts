@@ -23,7 +23,7 @@ import {
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
-    handleJobError, cleanupJob, pickUpPendingComments, toClaudeResult
+    handleJobError, cleanupJob, pickUpPendingComments, applyPendingCommentCommandContext, toClaudeResult
 } from './prCommentJobUtils.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
@@ -99,7 +99,7 @@ async function getPrimaryLabels(): Promise<string[]> {
 }
 
 async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext> {
-    const { pullRequestNumber, commentId, commentBody, commentAuthor, comments, branchName: jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId } = job.data;
+    const { pullRequestNumber, commentId, commentBody, commentAuthor, comments, repoOwner, repoName, correlationId } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     // Normalize missing commandMode to 'default' for backward compatibility
@@ -113,6 +113,8 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
     const isBatchJob = !!comments && Array.isArray(comments);
     let commentsToProcess: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
     commentsToProcess = await pickUpPendingComments(commentsToProcess, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
+    applyPendingCommentCommandContext(job.data, commentsToProcess, correlatedLogger);
+    const { branchName: jobBranchName, llm: jobLlm } = job.data;
     return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess };
 }
 

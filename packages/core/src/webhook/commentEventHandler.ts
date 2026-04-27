@@ -40,6 +40,8 @@ interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS:
 interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
+type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride'> & { path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
 
 async function prHasProcessingLabel(prLabels: Label[]): Promise<boolean> {
     const processingLabels = await loadPrimaryProcessingLabels();
@@ -190,7 +192,7 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
-        await storeCommentForBatch(strippedComment, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
         return;
     }
@@ -219,6 +221,13 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
         return;
     }
 
+    const resolvedModels = commandMeta.models.map(m => resolveModelAlias(m));
+    const invalidModels = resolvedModels.filter(m => !MODEL_INFO_MAP[m]);
+    if (invalidModels.length > 0) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, invalidModels }, '/switch command contains unrecognized model(s), ignoring');
+        return;
+    }
+
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, models: commandMeta.models }, '/switch command detected, updating PR labels');
     const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     const { prLabels } = prData;
@@ -229,12 +238,6 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     const { prefix, derived } = modelLabelPrefix(modelLabelPattern);
     if (!derived) {
         correlatedLogger.warn({ pullRequestNumber: prNumber, modelLabelPattern }, 'Could not derive label prefix from MODEL_LABEL_PATTERN, falling back to default "llm-". Labels may be mismatched.');
-    }
-    const resolvedModels = commandMeta.models.map(m => resolveModelAlias(m));
-    const invalidModels = resolvedModels.filter(m => !MODEL_INFO_MAP[m]);
-    if (invalidModels.length > 0) {
-        correlatedLogger.warn({ pullRequestNumber: prNumber, invalidModels }, '/switch command contains unrecognized model(s), ignoring');
-        return;
     }
     const newLabels = resolvedModels.map(m => `${prefix}${m}`);
 
@@ -267,7 +270,7 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
     const existingSwitchJob = await checkExistingJob(prNumber, owner, repo);
     if (existingSwitchJob) {
-        await storeCommentForBatch(strippedComment, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id }, '/switch command: existing job found for PR, stored follow-up instructions for batch processing');
         return;
     }
@@ -364,12 +367,23 @@ async function checkExistingJob(prNumber: number, owner: string, repo: string): 
     return existingJobs.some(job => job.name === 'processPullRequestComment' && job.data.pullRequestNumber === prNumber && job.data.repoOwner === owner && job.data.repoName === repo);
 }
 
-async function storeCommentForBatch(comment: { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, config: StoreCommentConfig): Promise<void> {
+async function storeCommentForBatch(comment: BatchComment, commentAuthor: string, eventContext: CommentContext, config: StoreCommentConfig): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
     const pendingCommentsKey = getPendingPrCommentsKey(owner, repo, prNumber);
     const strippedCommentBody = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? stripKeywordsFromBody(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : comment.body;
-    const pendingComment: UnprocessedComment = { id: comment.id, body: strippedCommentBody, author: commentAuthor, type: isReviewComment(comment, eventType) ? 'review' : 'issue', hasCodeContext: false };
+    const pendingComment: UnprocessedComment = {
+        id: comment.id,
+        body: strippedCommentBody,
+        author: commentAuthor,
+        type: isReviewComment(comment, eventType) ? 'review' : 'issue',
+        hasCodeContext: false,
+        commandMeta: comment.commandMeta,
+        commandMode: comment.commandMode,
+        requestedModels: comment.requestedModels,
+        commandInstructions: comment.commandInstructions,
+        llmOverride: comment.llmOverride,
+    };
     await redisClient.rpush(pendingCommentsKey, JSON.stringify(pendingComment));
     await redisClient.expire(pendingCommentsKey, 3600);
 }
@@ -425,13 +439,22 @@ function resolveLlm(llmFromKeywords: string | null, prLabels: Label[], options: 
  * through to the default processing path — the model override is already resolved
  * via resolveLlm() before enqueuing, so no special downstream handling is needed.
  */
-function buildCommandJobFields(commandMeta: CommandMeta): Record<string, unknown> {
+function buildCommandJobFields(commandMeta: CommandMeta): CommandJobFields {
     const COMMAND_MODES_WITH_OWN_MODE = ['review', 'fix', 'switch', 'use'] as const;
     return {
         commandMeta,
         commandMode: (COMMAND_MODES_WITH_OWN_MODE as readonly string[]).includes(commandMeta.mode) ? commandMeta.mode : 'default',
         requestedModels: commandMeta.mode === 'review' ? commandMeta.models : undefined,
         commandInstructions: 'instructions' in commandMeta ? commandMeta.instructions : undefined,
+    };
+}
+
+function buildPendingCommandFields(commandMeta: CommandMeta): Pick<UnprocessedComment, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride'> {
+    return {
+        ...buildCommandJobFields(commandMeta),
+        llmOverride: (commandMeta.mode === 'switch' || commandMeta.mode === 'use') && commandMeta.models.length > 0
+            ? resolveModelAlias(commandMeta.models[0])
+            : undefined,
     };
 }
 
