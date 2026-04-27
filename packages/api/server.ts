@@ -418,7 +418,7 @@ function setupWebhookRoute(): void {
       await handleWebhookRequest(req, res, {
         webhookSecret: process.env.GH_WEBHOOK_SECRET,
         redis: {
-          set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => redisClient.set(key, value, opts),
+          set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => redisClient.set(key, value, opts as any),
           del: (key: string) => redisClient.del(key),
         },
         processor: (payload, event, cid) => processWebhookEvent(payload, event as WebhookEventType, cid),
