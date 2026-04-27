@@ -68,3 +68,54 @@ test('redactObject preserves non-string values', () => {
     const result = redactObject(input);
     assert.deepStrictEqual(result, input);
 });
+
+test('redactSecrets replaces OpenRouter API keys', () => {
+    const input = 'key is sk-or-v1-' + 'a'.repeat(64);
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('sk-or-v1-'));
+    assert.ok(result.includes('[REDACTED_OPENROUTER_KEY]'));
+});
+
+test('redactSecrets replaces Stripe secret keys', () => {
+    const input = 'sk_live_' + 'a'.repeat(24);
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('sk_live_'));
+    assert.ok(result.includes('[REDACTED_STRIPE_SECRET_KEY]'));
+});
+
+test('redactSecrets replaces Anthropic API keys', () => {
+    const input = 'sk-ant-' + 'a'.repeat(32);
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('sk-ant-'));
+    assert.ok(result.includes('[REDACTED_ANTHROPIC_KEY]'));
+});
+
+test('redactSecrets replaces Slack tokens', () => {
+    const input = 'xoxb-1234567890-abcdefghij';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('xoxb-'));
+    assert.ok(result.includes('[REDACTED_SLACK_TOKEN]'));
+});
+
+test('redactObject redacts secrets in conversation log structure used by createLogFiles', () => {
+    const conversationLog = [
+        {
+            type: 'assistant',
+            message: {
+                content: [{ text: 'I found the token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn in the config' }]
+            }
+        },
+        {
+            type: 'assistant',
+            message: {
+                content: [{ text: 'The AWS key is AKIAIOSFODNN7EXAMPLE' }]
+            }
+        }
+    ];
+    const redacted = redactObject(conversationLog);
+    const serialized = JSON.stringify(redacted);
+    assert.ok(!serialized.includes('ghp_'), 'GitHub token should be redacted');
+    assert.ok(!serialized.includes('AKIAIOSFODNN7EXAMPLE'), 'AWS key should be redacted');
+    assert.ok(serialized.includes('[REDACTED_GITHUB_TOKEN]'));
+    assert.ok(serialized.includes('[REDACTED_AWS_ACCESS_KEY]'));
+});

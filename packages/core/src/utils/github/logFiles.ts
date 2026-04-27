@@ -289,7 +289,7 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
 
 function buildSummarySection(claudeResult: ClaudeResult): string {
     let section = '';
-    if (claudeResult?.summary) section += `**Summary:**\n${claudeResult.summary}\n\n`;
+    if (claudeResult?.summary) section += `**Summary:**\n${redactSecrets(claudeResult.summary)}\n\n`;
     if (claudeResult?.finalResult?.subtype === 'error_max_turns') {
         section += `**Max Turns Reached**: Claude reached the maximum number of conversation turns (${claudeResult.finalResult.num_turns}) before completing all tasks. Consider increasing the turn limit or breaking down the task into smaller parts.\n\n`;
     }
@@ -310,7 +310,8 @@ function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): s
         lines.push('```');
         claudeResult.conversationLog.slice(-3).forEach(msg => {
             if (msg.type === 'assistant') {
-                const content = msg.message?.content?.[0]?.text || '[content unavailable]';
+                const rawContent = msg.message?.content?.[0]?.text || '[content unavailable]';
+                const content = redactSecrets(rawContent);
                 const preview = content.substring(0, 200);
                 lines.push(`ASSISTANT: ${preview}${content.length > 200 ? '...' : ''}\n`);
             }
