@@ -1,3 +1,4 @@
+import { getUserWhitelist, getAuthenticatedOctokit } from '@propr/core';
 import { validatePositiveInteger } from './validation.js';
 
 export interface RevertRequestBody {
@@ -93,4 +94,85 @@ export function validateRevertPreviewParams(query: Record<string, string>): { va
   }
 
   return { valid: true, params: { owner, repo, pr, commit } };
+}
+
+export interface AuthorizationResult {
+  authorized: true;
+  requestingUser: string;
+  systemTaskSecret: string;
+} | {
+  authorized: false;
+  status: number;
+  error: string;
+}
+
+export function checkRevertAuthorization(req: { user?: unknown }): AuthorizationResult {
+  const requestingUser = (req.user as { username?: string })?.username || '';
+  if (!requestingUser) {
+    return { authorized: false, status: 401, error: 'Unable to determine requesting user' };
+  }
+
+  const whitelist = getUserWhitelist();
+  if (whitelist.length === 0) {
+    return { authorized: false, status: 403, error: 'User whitelist is not configured — destructive operations require an explicit allowlist' };
+  }
+  if (!whitelist.includes(requestingUser)) {
+    return { authorized: false, status: 403, error: `User '${requestingUser}' is not allowed to perform system tasks` };
+  }
+
+  const systemTaskSecret = process.env.SYSTEM_TASK_SECRET;
+  if (!systemTaskSecret) {
+    console.error('[revert] SYSTEM_TASK_SECRET is not configured');
+    return { authorized: false, status: 503, error: 'System task authorization is not configured' };
+  }
+
+  return { authorized: true, requestingUser, systemTaskSecret };
+}
+
+export interface PrLookupResult {
+  success: true;
+  prData: {
+    head: { ref: string; repo?: { owner?: { login?: string }; name?: string; full_name?: string } | null };
+    base: { ref: string; repo?: { full_name?: string } | null };
+  };
+} | {
+  success: false;
+  status: number;
+  error: string;
+}
+
+export async function lookupPr(owner: string, repo: string, prNumber: number, pr: string): Promise<PrLookupResult> {
+  const octokit = await getAuthenticatedOctokit();
+  try {
+    const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      owner, repo, pull_number: prNumber
+    });
+    return { success: true, prData: response.data };
+  } catch (prLookupError) {
+    const err = prLookupError as { status?: number; message?: string };
+    if (err.status === 404) {
+      return { success: false, status: 404, error: `PR #${pr} not found in ${owner}/${repo}` };
+    }
+    console.error(`[revert] Failed to fetch PR #${pr} from ${owner}/${repo}:`, prLookupError);
+    return { success: false, status: 502, error: `Unable to fetch PR #${pr} from GitHub` };
+  }
+}
+
+export async function checkUserRepoAccess(targetOwner: string, targetRepo: string, requestingUser: string): Promise<{ allowed: true } | { allowed: false; status: number; error: string }> {
+  const octokit = await getAuthenticatedOctokit();
+  try {
+    const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
+      owner: targetOwner,
+      repo: targetRepo,
+      username: requestingUser
+    });
+    const permission = permissionData.permission;
+    if (permission !== 'admin' && permission !== 'write' && permission !== 'maintain') {
+      return { allowed: false, status: 403, error: `User '${requestingUser}' does not have write access to ${targetOwner}/${targetRepo}` };
+    }
+    return { allowed: true };
+  } catch (scopeError) {
+    console.error(`[revert] Failed to verify user scope for ${requestingUser} on ${targetOwner}/${targetRepo}:`, scopeError);
+    return { allowed: false, status: 403, error: `Unable to verify user access to ${targetOwner}/${targetRepo}` };
+  }
 }

@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
-import { generateCorrelationId, getAuthenticatedOctokit, getUserWhitelist, generateAuthToken, issueQueue, COMMENT_BATCH_DELAY_MS } from '@propr/core';
+import { generateCorrelationId, generateAuthToken, issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit } from '@propr/core';
 import type { SystemTaskJobData, CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
-import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams } from './revertHelpers.js';
+import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, lookupPr, checkUserRepoAccess } from './revertHelpers.js';
 
 interface TaskRoutesDeps {
   db: Knex;
@@ -91,49 +91,21 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       // --- Authorization gates (run before any GitHub API calls) ---
 
-      const requestingUser = (req.user as { username?: string })?.username || '';
-      if (!requestingUser) {
-        res.status(401).json({ error: 'Unable to determine requesting user' });
+      const authResult = checkRevertAuthorization(req);
+      if (!authResult.authorized) {
+        res.status(authResult.status).json({ error: authResult.error });
         return;
       }
-
-      const whitelist = getUserWhitelist();
-      if (whitelist.length === 0) {
-        res.status(403).json({ error: 'User whitelist is not configured — destructive operations require an explicit allowlist' });
-        return;
-      }
-      if (!whitelist.includes(requestingUser)) {
-        res.status(403).json({ error: `User '${requestingUser}' is not allowed to perform system tasks` });
-        return;
-      }
-
-      const systemTaskSecret = process.env.SYSTEM_TASK_SECRET;
-      if (!systemTaskSecret) {
-        console.error('[revert] SYSTEM_TASK_SECRET is not configured');
-        res.status(503).json({ error: 'System task authorization is not configured' });
-        return;
-      }
+      const { requestingUser, systemTaskSecret } = authResult;
 
       // --- GitHub lookups (only after basic authorization passes) ---
 
-      const octokit = await getAuthenticatedOctokit();
-
-      let prData;
-      try {
-        const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-          owner, repo, pull_number: prNumber
-        });
-        prData = response.data;
-      } catch (prLookupError) {
-        const err = prLookupError as { status?: number; message?: string };
-        if (err.status === 404) {
-          res.status(404).json({ error: `PR #${pr} not found in ${owner}/${repo}` });
-        } else {
-          console.error(`[revert] Failed to fetch PR #${pr} from ${owner}/${repo}:`, prLookupError);
-          res.status(502).json({ error: `Unable to fetch PR #${pr} from GitHub` });
-        }
+      const prLookup = await lookupPr(owner, repo, prNumber, pr);
+      if (!prLookup.success) {
+        res.status(prLookup.status).json({ error: prLookup.error });
         return;
       }
+      const { prData } = prLookup;
 
       const branch = prData.head.ref;
 
@@ -145,20 +117,9 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       // Scope validation: verify the requesting user has write access to the repo being force-pushed
       const targetOwner = isFork ? headRepoOwner : owner;
       const targetRepo = isFork ? headRepoName : repo;
-      try {
-        const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
-          owner: targetOwner,
-          repo: targetRepo,
-          username: requestingUser
-        });
-        const permission = permissionData.permission;
-        if (permission !== 'admin' && permission !== 'write' && permission !== 'maintain') {
-          res.status(403).json({ error: `User '${requestingUser}' does not have write access to ${targetOwner}/${targetRepo}` });
-          return;
-        }
-      } catch (scopeError) {
-        console.error(`[revert] Failed to verify user scope for ${requestingUser} on ${targetOwner}/${targetRepo}:`, scopeError);
-        res.status(403).json({ error: `Unable to verify user access to ${targetOwner}/${targetRepo}` });
+      const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, requestingUser);
+      if (!accessResult.allowed) {
+        res.status(accessResult.status).json({ error: accessResult.error });
         return;
       }
 
