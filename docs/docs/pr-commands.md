@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # PR Slash Commands
 
-ProPR supports three slash commands that you can use in pull request comments to trigger automated actions: `/review`, `/fix`, and `/merge`. Each command serves a distinct purpose in the PR workflow.
+ProPR supports five slash commands that you can use in pull request comments to trigger automated actions: `/review`, `/fix`, `/merge`, `/switch`, and `/use`. Each command serves a distinct purpose in the PR workflow.
 
 ## `/review` — Request an AI Code Review
 
@@ -88,19 +88,74 @@ Merges the target base branch into the current PR branch to resolve conflicts or
 2. If merge conflicts are found, the AI attempts to resolve them automatically.
 3. A status comment is posted with the result.
 
+## `/switch` — Permanently Change the PR Model
+
+Updates the PR's model label so that all subsequent AI commands use the specified model.
+
+### Usage
+
+```
+/switch claude-opus
+```
+
+Switch the PR to use Claude Opus for all future commands.
+
+```
+/switch claude-sonnet
+Please re-review after switching
+```
+
+Switch models and include follow-up instructions. If instructions are provided, a review job is automatically queued with the new model after the label update.
+
+### Behavior
+
+1. ProPR removes existing model labels (e.g. `llm-claude-sonnet`) from the PR.
+2. A new model label is added (e.g. `llm-claude-opus`).
+3. If trailing instructions are provided, a follow-up review job is dispatched with the new model.
+4. Only one model argument is accepted; extra arguments are ignored with a warning.
+
+## `/use` — One-Time Model Override
+
+Overrides the model for a single follow-up run without changing the PR's labels.
+
+### Usage
+
+```
+/use claude-opus
+```
+
+Run the next command with Claude Opus.
+
+```
+/use claude-sonnet
+Focus on performance optimizations
+```
+
+Override the model and provide instructions for the run.
+
+### Behavior
+
+1. The specified model is used for a single review/fix job without modifying the PR's model labels.
+2. Trailing instructions are passed to the AI as context for the run.
+3. Only one model argument is accepted; extra arguments are ignored with a warning.
+4. After the run completes, subsequent commands revert to the PR's configured model.
+
 ## Typical Workflow
 
-A common workflow combining all three commands:
+A common workflow combining these commands:
 
 1. **Create a PR** (manually or via ProPR issue automation).
 2. **`/review`** — Request AI reviews from one or more models.
 3. **Read the reviews** — Edit or delete review comments you disagree with.
 4. **`/fix`** — Apply the remaining suggestions automatically.
 5. **Iterate** — Run `/review` and `/fix` again if needed.
-6. **`/merge`** — Bring the branch up to date before final merge.
+6. **`/switch`** or **`/use`** — Change models if needed (permanently or for one run).
+7. **`/merge`** — Bring the branch up to date before final merge.
 
 ## Notes
 
 - `/review` and `/fix` are independent commands. You can run `/fix` without a prior `/review` if you post your own instructions.
 - Multiple `/review` calls accumulate review comments; `/fix` processes all unprocessed ones at once.
+- `/switch` and `/use` each accept exactly one model argument. The `llm-` prefix is optional — `/switch claude-opus` and `/switch llm-claude-opus` are equivalent.
+- `/switch` changes the PR labels permanently; `/use` only affects the immediately following run.
 - Each command must be the first line of the PR comment. Any text after the first line is treated as extra instructions.
