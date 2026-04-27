@@ -27,12 +27,11 @@ interface ResetAndPushParams {
 }
 
 async function performGitResetAndPush(
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
     params: ResetAndPushParams,
     correlatedLogger: CorrelatedLogger
 ): Promise<{ worktreePath: string; localRepoPath: string }> {
     const { owner, repoName, prNumber, prBranch, commitHash, headRepoOwner, headRepoName } = params;
-
-    const octokit = await getAuthenticatedOctokit();
 
     const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
         owner, repo: repoName, pull_number: prNumber
@@ -73,11 +72,11 @@ async function performGitResetAndPush(
 }
 
 async function deleteCommentsFromTarget(
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
     params: { owner: string; repoName: string; prNumber: number; targetCommentId: number },
     correlatedLogger: CorrelatedLogger
 ): Promise<number> {
     const { owner, repoName, prNumber, targetCommentId } = params;
-    const octokit = await getAuthenticatedOctokit();
 
     const comments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner,
@@ -86,7 +85,7 @@ async function deleteCommentsFromTarget(
         per_page: 100
     }) as IssueComment[];
 
-    const startIndex = comments.findIndex((c: IssueComment) => c.id === Number(targetCommentId));
+    const startIndex = comments.findIndex((c: IssueComment) => c.id === targetCommentId);
 
     if (startIndex === -1) {
         correlatedLogger.warn({ targetCommentId }, 'Target comment not found in thread');
@@ -207,8 +206,11 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
     let localRepoPath: string | undefined;
 
     try {
+        const octokit = await getAuthenticatedOctokit();
+
         correlatedLogger.info('Starting git hard reset...');
         const resetResult = await performGitResetAndPush(
+            octokit,
             { owner, repoName, prNumber, prBranch, commitHash, headRepoOwner, headRepoName },
             correlatedLogger
         );
@@ -217,6 +219,7 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
 
         correlatedLogger.info('Starting comment cleanup...');
         const deletedComments = await deleteCommentsFromTarget(
+            octokit,
             { owner, repoName, prNumber, targetCommentId },
             correlatedLogger
         );
