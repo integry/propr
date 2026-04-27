@@ -9,16 +9,23 @@ export interface PRFile {
     patch?: string;
 }
 
+interface FetchPRFilesParams {
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+    repoOwner: string;
+    repoName: string;
+    pullRequestNumber: number;
+}
+
 /**
  * Fetches all files changed in a PR with their diffs.
  * GitHub limits patch content to ~1MB per file, so very large diffs may be truncated.
  */
-export async function fetchPRFiles(
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
-    repoOwner: string,
-    repoName: string,
-    pullRequestNumber: number
-): Promise<PRFile[]> {
+export async function fetchPRFiles({
+    octokit,
+    repoOwner,
+    repoName,
+    pullRequestNumber,
+}: FetchPRFilesParams): Promise<PRFile[]> {
     const files: PRFile[] = [];
     let page = 1;
     let hasMoreFiles = true;
