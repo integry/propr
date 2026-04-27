@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-import { redactSecrets, redactObject, createLogFiles } from '../packages/core/src/utils/github/logFiles.js';
+import { redactSecrets, redactSerializableValue, createLogFiles } from '../packages/core/src/utils/github/logFiles.js';
 
 test('redactSecrets replaces GitHub personal access tokens', () => {
     const input = 'token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
@@ -43,30 +43,30 @@ test('redactSecrets handles multiple secrets in one string', () => {
     assert.ok(result.includes('[REDACTED_AWS_ACCESS_KEY]'));
 });
 
-test('redactObject redacts strings within nested objects', () => {
+test('redactSerializableValue redacts strings within nested objects', () => {
     const input = {
         message: {
             content: [{ text: 'Found token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn in env' }]
         }
     };
-    const result = redactObject(input);
+    const result = redactSerializableValue(input);
     assert.ok(!JSON.stringify(result).includes('ghp_'));
     assert.ok(JSON.stringify(result).includes('[REDACTED_GITHUB_TOKEN]'));
 });
 
-test('redactObject handles arrays', () => {
+test('redactSerializableValue handles arrays', () => {
     const input = [
         { text: 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn' },
         { text: 'safe text' }
     ];
-    const result = redactObject(input) as Array<{ text: string }>;
+    const result = redactSerializableValue(input) as Array<{ text: string }>;
     assert.ok(!JSON.stringify(result).includes('ghp_'));
     assert.strictEqual(result[1].text, 'safe text');
 });
 
-test('redactObject preserves non-string values', () => {
+test('redactSerializableValue preserves non-string values', () => {
     const input = { count: 42, flag: true, data: null };
-    const result = redactObject(input);
+    const result = redactSerializableValue(input);
     assert.deepStrictEqual(result, input);
 });
 
@@ -126,7 +126,7 @@ test('redactSecrets replaces generic API_KEY assignment patterns', () => {
     assert.ok(result.includes('[REDACTED_SECRET]'));
 });
 
-test('redactObject redacts secrets in conversation log structure used by createLogFiles', () => {
+test('redactSerializableValue redacts secrets in conversation log structure used by createLogFiles', () => {
     const conversationLog = [
         {
             type: 'assistant',
@@ -141,7 +141,7 @@ test('redactObject redacts secrets in conversation log structure used by createL
             }
         }
     ];
-    const redacted = redactObject(conversationLog);
+    const redacted = redactSerializableValue(conversationLog);
     const serialized = JSON.stringify(redacted);
     assert.ok(!serialized.includes('ghp_'), 'GitHub token should be redacted');
     assert.ok(!serialized.includes('AKIAIOSFODNN7EXAMPLE'), 'AWS key should be redacted');
@@ -200,7 +200,6 @@ test('createLogFiles writes redacted secrets to the JSON conversation log file',
     const awsKey = 'AKIAIOSFODNN7EXAMPLE';
     const claudeResult = {
         success: true,
-        sessionId: 'test-session-e2e',
         conversationLog: [
             {
                 type: 'assistant',
@@ -238,7 +237,6 @@ test('createLogFiles writes redacted Bearer tokens to the text output file', asy
     const bearerToken = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
     const claudeResult = {
         success: true,
-        sessionId: 'test-session-bearer',
         rawOutput: `Authorization: ${bearerToken}`
     };
     const issueRef = { number: 9998, repoOwner: 'test-owner', repoName: 'test-repo' };
@@ -252,4 +250,45 @@ test('createLogFiles writes redacted Bearer tokens to the text output file', asy
 
     // Cleanup
     if (logFiles.output) await fs.promises.unlink(logFiles.output).catch(() => {});
+});
+
+// --- False-positive tests (should NOT redact) ---
+
+test('redactSecrets should not redact the word "token" in ordinary prose', () => {
+    const input = 'The token count was 1500 tokens. Each token represents a piece of text.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+test('redactSecrets should not redact "Bearer" without a following token value', () => {
+    const input = 'The Bearer authentication scheme is defined in RFC 6750.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+test('redactSecrets should not redact short strings that look like key prefixes', () => {
+    const input = 'Use key-value pairs for configuration.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+test('redactSecrets should not redact words like "access_key" in documentation text', () => {
+    const input = 'The access_key field is required for authentication. Set the token in your config.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+test('redactSecrets should not redact "sk-" followed by short strings', () => {
+    const input = 'The variable sk-foo is used internally.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+test('redactSecrets should not redact "SECRET_KEY" without an assignment', () => {
+    const input = 'Make sure SECRET_KEY is set in your environment.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+// --- Plain sk- key detection test (Finding 2) ---
+
+test('redactSecrets replaces plain sk- OpenAI keys without legacy marker', () => {
+    const input = 'sk-' + 'a'.repeat(48);
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('sk-aaa'), 'Plain sk- key should be redacted');
+    assert.ok(result.includes('[REDACTED_OPENAI_KEY]'));
 });

@@ -69,6 +69,8 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
     // OpenAI API keys
     { pattern: /sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}/g, replacement: '[REDACTED_OPENAI_KEY]' },
     { pattern: /sk-proj-[A-Za-z0-9_-]{40,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
+    // Generic sk- keys (OpenAI and similar) — at least 32 chars after prefix to avoid false positives
+    { pattern: /sk-[A-Za-z0-9]{32,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
     // Anthropic API keys
     { pattern: /sk-ant-[A-Za-z0-9-]{32,}/g, replacement: '[REDACTED_ANTHROPIC_KEY]' },
     // Slack tokens
@@ -84,10 +86,11 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
     { pattern: /key-[A-Za-z0-9]{32}/g, replacement: '[REDACTED_MAILGUN_KEY]' },
     // Google API keys
     { pattern: /AIza[A-Za-z0-9_-]{35}/g, replacement: '[REDACTED_GOOGLE_API_KEY]' },
-    // Generic Bearer tokens
-    { pattern: /Bearer\s+[A-Za-z0-9._~+/-]+=*/g, replacement: 'Bearer [REDACTED_BEARER_TOKEN]' },
+    // Generic Bearer tokens — require at least 20 chars or a dot/slash (JWT-like) to avoid matching prose
+    { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/g, replacement: 'Bearer [REDACTED_BEARER_TOKEN]' },
     // Generic secret/token assignment patterns (catches env vars like SECRET_KEY=... or API_TOKEN=...)
-    { pattern: /(?<=(?:SECRET|TOKEN|PASSWORD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_-]{20,}(?=['"]?)/gi, replacement: '[REDACTED_SECRET]' },
+    // Requires the keyword to appear as a standalone word or after an underscore, not as part of arbitrary prose
+    { pattern: /(?<=(?:^|[_A-Z])(?:SECRET|PASSWORD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY|SECRET_TOKEN|API_TOKEN|AUTH_TOKEN)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_-]{20,}(?=['"]?)/gim, replacement: '[REDACTED_SECRET]' },
 ];
 
 export function redactSecrets(input: string): string {
@@ -104,17 +107,17 @@ export function redactSecrets(input: string): string {
  * `Date`, `Map`, etc. are **not** preserved.  This is intentional: the only
  * call-sites serialise the result to JSON immediately afterward.
  */
-export function redactObject(obj: unknown): unknown {
+export function redactSerializableValue(obj: unknown): unknown {
     if (typeof obj === 'string') {
         return redactSecrets(obj);
     }
     if (Array.isArray(obj)) {
-        return obj.map(item => redactObject(item));
+        return obj.map(item => redactSerializableValue(item));
     }
     if (obj !== null && typeof obj === 'object') {
         const redacted: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(obj)) {
-            redacted[key] = redactObject(value);
+            redacted[key] = redactSerializableValue(value);
         }
         return redacted;
     }
@@ -161,7 +164,7 @@ export async function createLogFiles(claudeResultInput: unknown, issueRef: Issue
             timestamp: new Date().toISOString(),
             issueNumber: issueRef.number,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            messages: redactObject(claudeResult.conversationLog)
+            messages: redactSerializableValue(claudeResult.conversationLog)
         };
         await fs.promises.writeFile(conversationPath, JSON.stringify(conversationData, null, 2));
         files.conversation = conversationPath;
@@ -318,7 +321,10 @@ function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): s
         lines.push('```');
         claudeResult.conversationLog.slice(-3).forEach(msg => {
             if (msg.type === 'assistant') {
-                const rawContent = msg.message?.content?.[0]?.text || '[content unavailable]';
+                const rawContent = msg.message?.content
+                    ?.map(block => block.text)
+                    .filter(Boolean)
+                    .join('\n') || '[content unavailable]';
                 const content = redactSecrets(rawContent);
                 const preview = content.substring(0, 200);
                 lines.push(`ASSISTANT: ${preview}${content.length > 200 ? '...' : ''}\n`);
