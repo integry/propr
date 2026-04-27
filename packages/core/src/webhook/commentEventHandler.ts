@@ -363,12 +363,20 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
     const pendingCommentsKey = getPendingPrCommentsKey(owner, repo, prNumber);
     const strippedCommentBody = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? stripKeywordsFromBody(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : comment.body;
+    const reviewComment = isReviewComment(comment, eventType);
+    let pendingCommentBody = strippedCommentBody;
+
+    if (reviewComment) {
+        const codeContext = buildCodeContext(comment);
+        if (codeContext.length > 0) pendingCommentBody = `${pendingCommentBody}\n\n--- Review Comment Context ---\n${codeContext.join('\n')}`;
+    }
+
     const pendingComment: UnprocessedComment = {
         id: comment.id,
-        body: strippedCommentBody,
+        body: pendingCommentBody,
         author: commentAuthor,
-        type: isReviewComment(comment, eventType) ? 'review' : 'issue',
-        hasCodeContext: false,
+        type: reviewComment ? 'review' : 'issue',
+        hasCodeContext: reviewComment && !!comment.diff_hunk,
         commandMeta: comment.commandMeta,
         commandMode: comment.commandMode,
         requestedModels: comment.requestedModels,

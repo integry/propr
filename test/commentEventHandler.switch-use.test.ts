@@ -1,7 +1,7 @@
 import { test, mock, describe, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
-import { createWebhookIssueCommentCreatedEvent, createMockLabel } from './testHelpers.js';
+import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
 
 // ========== Mocks ==========
 
@@ -142,6 +142,9 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 const { processCommentEvent } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
+const { applyPendingCommentCommandContext } = await import(
+    '../src/jobs/prCommentJobUtils.js'
+);
 
 // ========== Helpers ==========
 
@@ -182,6 +185,18 @@ function createPRCommentEvent(body: string, labels: Label[] = []) {
     // Ensure pull_request is set so the handler knows it's a PR comment
     (event.issue as Record<string, unknown>).pull_request = { url: 'https://api.github.com/repos/test/repo/pulls/42' };
     return event;
+}
+
+function createPRReviewCommentEvent(body: string, overrides: Record<string, unknown> = {}) {
+    return createWebhookPRReviewCommentCreatedEvent({
+        comment: {
+            body,
+            path: 'src/auth.ts',
+            line: 27,
+            ...overrides,
+        },
+        pullRequest: { number: 42 },
+    });
 }
 
 // ========== Tests ==========
@@ -870,5 +885,66 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.body, '');
         assert.strictEqual(pendingComment.commandMode, 'review');
         assert.deepStrictEqual(pendingComment.requestedModels, ['codex']);
+    });
+
+    test('batched slash commands on review comments preserve code-review context', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+
+        const event = createPRReviewCommentEvent('/use opus\nPlease fix this line');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'pull_request_review_comment', 'corr-batch-review', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
+        assert.strictEqual(pendingComment.type, 'review');
+        assert.strictEqual(pendingComment.hasCodeContext, true);
+        assert.match(pendingComment.body as string, /Please fix this line/);
+        assert.match(pendingComment.body as string, /--- Review Comment Context ---/);
+        assert.match(pendingComment.body as string, /File: src\/auth\.ts/);
+        assert.match(pendingComment.body as string, /Line: 27/);
+        assert.match(pendingComment.body as string, /@@ -1,5 \+1,10 @@/);
+    });
+});
+
+describe('applyPendingCommentCommandContext', () => {
+    test('keeps an earlier /use llm override when a later pending /fix becomes the active command', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-1',
+            commandMode: 'default' as const,
+            llm: 'claude-sonnet-4-6',
+        };
+        const commentsToProcess = [
+            {
+                id: 100,
+                body: 'Use opus',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'use' as const,
+                commandInstructions: '',
+                llmOverride: 'claude-opus-4-6',
+            },
+            {
+                id: 101,
+                body: 'Fix the auth bug',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'Fix the auth bug',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'fix');
+        assert.strictEqual(jobData.commandInstructions, 'Fix the auth bug');
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
     });
 });

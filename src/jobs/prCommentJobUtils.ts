@@ -389,23 +389,29 @@ export function applyPendingCommentCommandContext(jobData: CommentJobData, comme
     const latestCommandComment = [...commentsToProcess]
         .reverse()
         .find(comment => comment.commandMode && comment.commandMode !== 'default');
+    const latestOverrideComment = [...commentsToProcess]
+        .reverse()
+        .find(comment => comment.llmOverride !== undefined);
 
-    if (!latestCommandComment) return;
+    if (!latestCommandComment && !latestOverrideComment) return;
 
-    jobData.commandMeta = latestCommandComment.commandMeta;
-    jobData.commandMode = latestCommandComment.commandMode;
-    jobData.requestedModels = latestCommandComment.requestedModels;
-    jobData.commandInstructions = latestCommandComment.commandInstructions;
+    if (latestCommandComment) {
+        jobData.commandMeta = latestCommandComment.commandMeta;
+        jobData.commandMode = latestCommandComment.commandMode;
+        jobData.requestedModels = latestCommandComment.requestedModels;
+        jobData.commandInstructions = latestCommandComment.commandInstructions;
+    }
 
-    if (latestCommandComment.llmOverride !== undefined) {
-        jobData.llm = latestCommandComment.llmOverride;
+    if (latestOverrideComment?.llmOverride !== undefined) {
+        jobData.llm = latestOverrideComment.llmOverride;
     }
 
     correlatedLogger.info({
         commandMode: jobData.commandMode,
         requestedModels: jobData.requestedModels,
-        llmOverride: latestCommandComment.llmOverride,
-        commentId: latestCommandComment.id,
+        llmOverride: latestOverrideComment?.llmOverride,
+        commandCommentId: latestCommandComment?.id,
+        overrideCommentId: latestOverrideComment?.id,
     }, 'Applied command context from pending batched comment');
 }
 
