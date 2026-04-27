@@ -3,22 +3,23 @@ import assert from 'node:assert';
 import crypto from 'crypto';
 import http from 'node:http';
 import express, { Request, Response } from 'express';
-import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/api/server.js';
+import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS, WEBHOOK_MAX_AGE_SECONDS } from '../packages/api/webhookHandler.js';
 
 /**
  * Webhook Replay Protection Tests
  *
  * These tests exercise the exported `handleWebhookRequest` handler from
- * packages/api/server.ts — the same function used in production — via a thin
- * Express wrapper that only supplies the raw-body middleware. This ensures we
- * test real production logic, not a reimplementation.
+ * packages/api/webhookHandler.ts — the same function used in production — via
+ * a thin Express wrapper that only supplies the raw-body middleware. Importing
+ * the standalone module avoids triggering server startup side effects.
  *
  * Covers:
  * - Missing delivery ID rejection (400)
  * - Array-valued delivery ID rejection (400)
  * - First delivery accepted (200)
  * - Duplicate delivery rejected (409)
- * - Signature verification (401)
+ * - Signature verification (401), including malformed signature lengths
+ * - Missing x-github-event header rejection (400)
  * - Redis key storage with correct TTL
  * - Failed processing cleans up Redis key so retries work
  * - Parse failure cleans up Redis key so retries work
@@ -158,6 +159,7 @@ describe('Webhook Replay Protection', () => {
       const res = await sendWebhook(server, body, {
         'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
         'x-github-delivery': 'unique-delivery-001',
+        'x-github-event': 'issues',
       });
       assert.strictEqual(res.status, 200);
       assert.strictEqual(res.body, 'Webhook processed.');
@@ -170,12 +172,14 @@ describe('Webhook Replay Protection', () => {
       const first = await sendWebhook(server, body1, {
         'x-hub-signature-256': signPayload(body1, WEBHOOK_SECRET),
         'x-github-delivery': 'unique-delivery-002',
+        'x-github-event': 'issues',
       });
       assert.strictEqual(first.status, 200);
 
       const second = await sendWebhook(server, body2, {
         'x-hub-signature-256': signPayload(body2, WEBHOOK_SECRET),
         'x-github-delivery': 'unique-delivery-002',
+        'x-github-event': 'issues',
       });
       assert.strictEqual(second.status, 409);
       assert.match(second.body, /Duplicate webhook delivery/);
@@ -187,6 +191,7 @@ describe('Webhook Replay Protection', () => {
       const first = await sendWebhook(server, body, {
         'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
         'x-github-delivery': 'delivery-aaa',
+        'x-github-event': 'issues',
       });
       assert.strictEqual(first.status, 200);
 
@@ -195,6 +200,7 @@ describe('Webhook Replay Protection', () => {
       const second = await sendWebhook(server, body, {
         'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
         'x-github-delivery': 'delivery-bbb',
+        'x-github-event': 'issues',
       });
       assert.strictEqual(second.status, 200);
     });
@@ -206,6 +212,7 @@ describe('Webhook Replay Protection', () => {
       await sendWebhook(server, body, {
         'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
         'x-github-delivery': 'test-delivery-123',
+        'x-github-event': 'issues',
       });
       const entry = redisClient.store.get('webhook:delivery:test-delivery-123');
       assert.ok(entry, 'delivery key should be stored');
@@ -237,6 +244,7 @@ describe('Webhook Replay Protection', () => {
         const first = await sendWebhook(failServer, body, {
           'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
           'x-github-delivery': deliveryId,
+          'x-github-event': 'issues',
         });
         assert.strictEqual(first.status, 500);
         assert.ok(!failRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key should be removed after failure');
@@ -282,6 +290,7 @@ describe('Webhook Replay Protection', () => {
         const result = await sendWebhook(parseServer, body, {
           'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
           'x-github-delivery': deliveryId,
+          'x-github-event': 'issues',
         });
         assert.strictEqual(result.status, 500);
         assert.ok(!parseRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key should be removed after parse failure');
@@ -311,6 +320,17 @@ describe('Webhook Replay Protection', () => {
       assert.match(res.body, /Webhook signature mismatch/);
     });
 
+    test('rejects request with malformed signature of different length', async () => {
+      const body = makeBody();
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': 'sha256=tooshort',
+        'x-github-delivery': 'delivery-bad-sig-len',
+        'x-github-event': 'issues',
+      });
+      assert.strictEqual(res.status, 401);
+      assert.match(res.body, /Webhook signature mismatch/);
+    });
+
     test('does not store delivery ID when signature is invalid', async () => {
       const body = makeBody();
       await sendWebhook(server, body, {
@@ -318,6 +338,20 @@ describe('Webhook Replay Protection', () => {
         'x-github-delivery': 'delivery-bad-sig-2',
       });
       assert.strictEqual(redisClient.store.size, 0);
+    });
+  });
+
+  describe('Missing x-github-event header', () => {
+    test('rejects request with no x-github-event header', async () => {
+      const body = makeBody();
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-no-event',
+      });
+      assert.strictEqual(res.status, 400);
+      assert.match(res.body, /Missing x-github-event/);
+      // Redis key should be cleaned up
+      assert.ok(!redisClient.store.has('webhook:delivery:delivery-no-event'), 'delivery key should be removed when event header is missing');
     });
   });
 });

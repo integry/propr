@@ -1,7 +1,6 @@
 import express, { Request, Response } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
-import crypto from 'crypto';
 import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
@@ -47,6 +46,7 @@ import {
 } from '@propr/core';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
+import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from './webhookHandler.js';
 
 const ioRedisClient = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',
@@ -335,71 +335,8 @@ function setupRoutes(): void {
   setupWebhookRoute();
 }
 
-// TTL for webhook delivery deduplication keys in Redis (seconds)
-export const WEBHOOK_DELIVERY_TTL_SECONDS = 300;
-
-/**
- * Core webhook request handler extracted for testability.
- * Validates signature, enforces delivery-ID deduplication via Redis, parses
- * the payload, and delegates to the provided processor function.
- *
- * All failure paths after the Redis reservation clean up the key so that
- * GitHub retries are not permanently blocked.
- */
-export async function handleWebhookRequest(
-  req: Request,
-  res: Response,
-  deps: {
-    webhookSecret: string | undefined;
-    redis: { set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => Promise<string | null>; del: (key: string) => Promise<number> };
-    processor: (payload: Record<string, unknown>, event: string, correlationId: string) => Promise<void>;
-    correlationId: string;
-  },
-): Promise<void> {
-  const { webhookSecret, redis, processor, correlationId } = deps;
-
-  // Signature verification
-  const signature = req.headers['x-hub-signature-256'] as string | undefined;
-  if (webhookSecret) {
-    if (!signature) { console.error('[webhook] No signature provided'); res.status(401).send('No webhook signature provided.'); return; }
-    const hmac = crypto.createHmac('sha256', webhookSecret);
-    hmac.update(req.body);
-    const computedSignature = `sha256=${hmac.digest('hex')}`;
-    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSignature))) { console.error('[webhook] Signature mismatch'); res.status(401).send('Webhook signature mismatch.'); return; }
-  } else {
-    console.warn('[webhook] Webhook secret not configured. Skipping signature verification.');
-  }
-
-  // Replay protection: reject duplicate or missing delivery IDs
-  const rawDeliveryId = req.headers['x-github-delivery'];
-  if (!rawDeliveryId || Array.isArray(rawDeliveryId)) {
-    console.warn(`[webhook] ${Array.isArray(rawDeliveryId) ? 'Rejecting multi-valued' : 'Missing'} x-github-delivery header`);
-    res.status(400).send(`${Array.isArray(rawDeliveryId) ? 'Invalid' : 'Missing'} x-github-delivery header.`);
-    return;
-  }
-
-  const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
-  const isNew = await redis.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
-  if (!isNew) {
-    console.warn(`[webhook] Duplicate delivery rejected: ${rawDeliveryId}`);
-    res.status(409).send('Duplicate webhook delivery.');
-    return;
-  }
-
-  // Wrap post-reservation logic so failures clean up the Redis key for retries.
-  try {
-    const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
-    const event = req.headers['x-github-event'] as string;
-    console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
-    await processor(payload, event, correlationId);
-  } catch (err) {
-    // Clean up Redis key so GitHub can retry this delivery
-    await redis.del(deliveryKey).catch(() => {});
-    throw err;
-  }
-
-  res.status(200).send('Webhook processed.');
-}
+// Re-export for backward compatibility
+export { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from './webhookHandler.js';
 
 function setupWebhookRoute(): void {
   if (process.env.ENABLE_GITHUB_WEBHOOKS !== 'true') {
