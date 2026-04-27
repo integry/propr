@@ -335,6 +335,33 @@ function setupRoutes(): void {
   setupWebhookRoute();
 }
 
+/**
+ * Extract the most relevant timestamp from a webhook payload.
+ * GitHub payloads include timestamps in various fields depending on the event type.
+ */
+function extractTimestamp(payload: Record<string, unknown>): Date | null {
+  // Try common timestamp fields in order of relevance
+  const candidates: string[] = [];
+  for (const key of ['issue', 'pull_request', 'comment', 'review', 'release', 'deployment', 'check_run', 'check_suite', 'workflow_run']) {
+    const nested = payload[key] as Record<string, unknown> | undefined;
+    if (nested?.updated_at && typeof nested.updated_at === 'string') candidates.push(nested.updated_at);
+    if (nested?.created_at && typeof nested.created_at === 'string') candidates.push(nested.created_at);
+  }
+  // Some events like 'push' have a top-level timestamp or head_commit.timestamp
+  const headCommit = payload.head_commit as Record<string, unknown> | undefined;
+  if (headCommit?.timestamp && typeof headCommit.timestamp === 'string') candidates.push(headCommit.timestamp);
+
+  // Pick the most recent timestamp from candidates
+  let latest: Date | null = null;
+  for (const ts of candidates) {
+    const d = new Date(ts);
+    if (!isNaN(d.getTime()) && (!latest || d.getTime() > latest.getTime())) {
+      latest = d;
+    }
+  }
+  return latest;
+}
+
 function setupWebhookRoute(): void {
   if (process.env.ENABLE_GITHUB_WEBHOOKS !== 'true') {
     console.log('[webhook] Webhook endpoint disabled (ENABLE_GITHUB_WEBHOOKS not set to true)');
@@ -355,7 +382,8 @@ function setupWebhookRoute(): void {
         console.warn('[webhook] Webhook secret not configured. Skipping signature verification.');
       }
       // Replay protection: reject duplicate or missing delivery IDs
-      const deliveryId = req.headers['x-github-delivery'] as string | undefined;
+      const rawDeliveryId = req.headers['x-github-delivery'];
+      const deliveryId = Array.isArray(rawDeliveryId) ? rawDeliveryId[0] : rawDeliveryId;
       if (!deliveryId) {
         console.warn('[webhook] Missing x-github-delivery header');
         return res.status(400).send('Missing x-github-delivery header.');
@@ -367,7 +395,23 @@ function setupWebhookRoute(): void {
         return res.status(409).send('Duplicate webhook delivery.');
       }
 
-      const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string } };
+      const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string }; timestamp?: string; [key: string]: unknown };
+
+      // Reject stale webhook deliveries based on payload timestamps
+      const WEBHOOK_MAX_AGE_MS = 300_000; // 5 minutes
+      const payloadTimestamp = extractTimestamp(payload);
+      if (payloadTimestamp) {
+        const age = Date.now() - payloadTimestamp.getTime();
+        if (age > WEBHOOK_MAX_AGE_MS) {
+          console.warn(`[webhook] Stale webhook rejected: delivery=${deliveryId}, age=${Math.round(age / 1000)}s`);
+          return res.status(400).send('Stale webhook delivery.');
+        }
+        if (age < -60_000) {
+          // Allow 1 minute of clock skew for future timestamps
+          console.warn(`[webhook] Webhook timestamp too far in the future: delivery=${deliveryId}`);
+          return res.status(400).send('Stale webhook delivery.');
+        }
+      }
       const event = req.headers['x-github-event'] as WebhookEventType;
       console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${deliveryId}`);
       await processWebhookEvent(payload, event, correlationId);
