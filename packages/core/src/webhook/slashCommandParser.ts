@@ -1,11 +1,11 @@
 /**
  * Slash command parser for PR comment intake.
  *
- * Recognizes `/review`, `/fix`, and `/merge` commands from PR comments.
+ * Recognizes `/review`, `/fix`, `/merge`, `/switch`, and `/use` commands from PR comments.
  * Splits the comment into command name, arguments, and trailing multiline instructions.
  */
 
-export type SlashCommandName = 'review' | 'fix' | 'merge';
+export type SlashCommandName = 'review' | 'fix' | 'merge' | 'switch' | 'use';
 
 export interface ParsedSlashCommand {
     /** The recognized command */
@@ -34,9 +34,29 @@ export interface MergeCommandMeta {
     mode: 'merge';
 }
 
-export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta;
+export interface SwitchCommandMeta {
+    mode: 'switch';
+    /** Target model labels to switch to permanently */
+    models: string[];
+    /** Extra instructions from lines below the command */
+    instructions: string;
+    /** Warning message if extra arguments were ignored */
+    warning?: string;
+}
 
-const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
+export interface UseCommandMeta {
+    mode: 'use';
+    /** Target model labels for single-run override */
+    models: string[];
+    /** Extra instructions from lines below the command */
+    instructions: string;
+    /** Warning message if extra arguments were ignored */
+    warning?: string;
+}
+
+export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta | SwitchCommandMeta | UseCommandMeta;
+
+const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge|switch|use)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
 
 /**
  * Parse a PR comment body for a slash command.
@@ -78,6 +98,8 @@ function normalizeModelLabel(label: string): string {
  * For `/review`: normalizes model labels and captures instructions.
  * For `/fix`: captures everything after `/fix` as instructions.
  * For `/merge`: returns a simple merge marker.
+ * For `/switch`: extracts single model target and optional instructions.
+ * For `/use`: extracts single model for one-time override and optional instructions.
  */
 export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
     switch (parsed.command) {
@@ -97,5 +119,29 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
         }
         case 'merge':
             return { mode: 'merge' };
+        case 'switch': {
+            const switchModel = parsed.args.length > 0 ? [normalizeModelLabel(parsed.args[0])] : [];
+            const switchMeta: SwitchCommandMeta = {
+                mode: 'switch',
+                models: switchModel,
+                instructions: parsed.instructions,
+            };
+            if (parsed.args.length > 1) {
+                switchMeta.warning = `/switch accepts only one model argument; extra arguments were ignored: ${parsed.args.slice(1).join(', ')}`;
+            }
+            return switchMeta;
+        }
+        case 'use': {
+            const useModel = parsed.args.length > 0 ? [normalizeModelLabel(parsed.args[0])] : [];
+            const useMeta: UseCommandMeta = {
+                mode: 'use',
+                models: useModel,
+                instructions: parsed.instructions,
+            };
+            if (parsed.args.length > 1) {
+                useMeta.warning = `/use accepts only one model argument; extra arguments were ignored: ${parsed.args.slice(1).join(', ')}`;
+            }
+            return useMeta;
+        }
     }
 }

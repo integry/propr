@@ -52,7 +52,7 @@ export interface CommentJobData {
     /** Structured slash-command metadata (e.g. /review, /fix) */
     commandMeta?: CommandMeta;
     /** Flattened command mode for queue serialization; defaults to 'default' when absent */
-    commandMode?: 'default' | 'review' | 'fix';
+    commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use';
     /** Requested model labels for /review commands */
     requestedModels?: string[];
     /** Extra instructions from the slash command body */
@@ -66,6 +66,11 @@ export interface UnprocessedComment {
     author: string;
     type: 'review' | 'issue';
     hasCodeContext?: boolean;
+    commandMeta?: CommandMeta;
+    commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use';
+    requestedModels?: string[];
+    commandInstructions?: string;
+    llmOverride?: string | null;
 }
 
 export interface TaskImportJobData {
