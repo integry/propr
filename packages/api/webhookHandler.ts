@@ -38,7 +38,13 @@ export async function handleWebhookRequest(
   const { webhookSecret, redis, processor, correlationId } = deps;
 
   // --- Signature verification ---
-  const signature = req.headers['x-hub-signature-256'] as string | undefined;
+  const rawSignature = req.headers['x-hub-signature-256'];
+  if (Array.isArray(rawSignature)) {
+    console.error('[webhook] Rejecting multi-valued x-hub-signature-256 header');
+    res.status(401).send('Invalid webhook signature header.');
+    return;
+  }
+  const signature: string | undefined = rawSignature;
   if (webhookSecret) {
     if (!signature) {
       console.error('[webhook] No signature provided');
@@ -61,11 +67,18 @@ export async function handleWebhookRequest(
     console.warn('[webhook] Webhook secret not configured. Skipping signature verification.');
   }
 
-  // --- Replay protection: reject duplicate or missing delivery IDs ---
+  // --- Validate required headers before any Redis writes ---
   const rawDeliveryId = req.headers['x-github-delivery'];
   if (!rawDeliveryId || Array.isArray(rawDeliveryId)) {
     console.warn(`[webhook] ${Array.isArray(rawDeliveryId) ? 'Rejecting multi-valued' : 'Missing'} x-github-delivery header`);
     res.status(400).send(`${Array.isArray(rawDeliveryId) ? 'Invalid' : 'Missing'} x-github-delivery header.`);
+    return;
+  }
+
+  const rawEvent = req.headers['x-github-event'];
+  if (!rawEvent || Array.isArray(rawEvent)) {
+    console.warn(`[webhook] ${Array.isArray(rawEvent) ? 'Rejecting multi-valued' : 'Missing'} x-github-event header`);
+    res.status(400).send(`${Array.isArray(rawEvent) ? 'Invalid' : 'Missing'} x-github-event header.`);
     return;
   }
 
@@ -75,16 +88,6 @@ export async function handleWebhookRequest(
   if (!isNew) {
     console.warn(`[webhook] Duplicate delivery rejected: ${rawDeliveryId}`);
     res.status(409).send('Duplicate webhook delivery.');
-    return;
-  }
-
-  // --- Validate x-github-event header ---
-  const rawEvent = req.headers['x-github-event'];
-  if (!rawEvent || Array.isArray(rawEvent)) {
-    // Clean up Redis key since we won't process this request
-    await redis.del(deliveryKey).catch(() => {});
-    console.warn(`[webhook] ${Array.isArray(rawEvent) ? 'Rejecting multi-valued' : 'Missing'} x-github-event header`);
-    res.status(400).send(`${Array.isArray(rawEvent) ? 'Invalid' : 'Missing'} x-github-event header.`);
     return;
   }
 

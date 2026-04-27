@@ -18,7 +18,7 @@ import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/
  * - Array-valued delivery ID rejection (400)
  * - First delivery accepted (200)
  * - Duplicate delivery rejected (409)
- * - Signature verification (401), including malformed signature lengths
+ * - Signature verification (401), including malformed signature lengths and multi-valued headers
  * - Missing x-github-event header rejection (400)
  * - Redis key storage with correct TTL
  * - Failed processing cleans up Redis key so retries work
@@ -335,6 +335,17 @@ describe('Webhook Replay Protection', () => {
       assert.match(res.body, /Webhook signature mismatch/);
     });
 
+    test('rejects request with multi-valued x-hub-signature-256 header', async () => {
+      const body = makeBody();
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': [signPayload(body, WEBHOOK_SECRET), 'sha256=extra'],
+        'x-github-delivery': 'delivery-multi-sig',
+        'x-github-event': 'issues',
+      });
+      assert.strictEqual(res.status, 401);
+      assert.match(res.body, /Invalid webhook signature/);
+    });
+
     test('does not store delivery ID when signature is invalid', async () => {
       const body = makeBody();
       await sendWebhook(server, body, {
@@ -354,8 +365,8 @@ describe('Webhook Replay Protection', () => {
       });
       assert.strictEqual(res.status, 400);
       assert.match(res.body, /Missing x-github-event/);
-      // Redis key should be cleaned up
-      assert.ok(!redisClient.store.has('webhook:delivery:delivery-no-event'), 'delivery key should be removed when event header is missing');
+      // Event header is validated before Redis write, so no key should exist
+      assert.strictEqual(redisClient.store.size, 0, 'no Redis key should be written when event header is missing');
     });
   });
 
