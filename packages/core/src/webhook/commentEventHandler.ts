@@ -228,6 +228,15 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     }
     const newLabels = resolvedModels.map(m => `${prefix}${m}`);
 
+    // Validate that newly constructed labels match the configured regex.
+    // If they don't, a future /switch would fail to detect them as existing
+    // model labels, causing duplicates instead of replacements.
+    const mismatchedLabels = newLabels.filter(l => !modelLabelRegex.test(l));
+    if (mismatchedLabels.length > 0) {
+        correlatedLogger.error({ pullRequestNumber: prNumber, mismatchedLabels, modelLabelPattern, derivedPrefix: prefix }, '/switch: derived label prefix produces labels that do not match MODEL_LABEL_PATTERN — aborting to prevent label duplication');
+        return;
+    }
+
     const octokit = await getAuthenticatedOctokit();
     await safeUpdateLabels(
         { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
@@ -354,7 +363,7 @@ function prepareComment(comment: { id: number; body: string; path?: string; line
 
     if (isReviewComment(comment, eventType)) {
         const codeContext = buildCodeContext(comment);
-        if (codeContext.length > 0) enhancedBody = `${comment.body}\n\n--- Review Comment Context ---\n${codeContext.join('\n')}`;
+        if (codeContext.length > 0) enhancedBody = `${enhancedBody}\n\n--- Review Comment Context ---\n${codeContext.join('\n')}`;
     }
 
     const commentType = isReviewComment(comment, eventType) ? 'review' as const : 'issue' as const;
@@ -375,6 +384,14 @@ function resolveLlm(llmFromKeywords: string | null, prLabels: Label[], options: 
     return llm;
 }
 
+/**
+ * Build flattened job fields from structured CommandMeta for queue serialization.
+ *
+ * Note: downstream job processing (processPullRequestCommentJob) only branches
+ * on 'review' and 'fix' modes. The 'switch' and 'use' modes intentionally fall
+ * through to the default processing path — the model override is already resolved
+ * via resolveLlm() before enqueuing, so no special downstream handling is needed.
+ */
 function buildCommandJobFields(commandMeta: CommandMeta): Record<string, unknown> {
     const COMMAND_MODES_WITH_OWN_MODE = ['review', 'fix', 'switch', 'use'] as const;
     return {

@@ -364,6 +364,27 @@ describe('commentEventHandler — /switch command', () => {
         assert.deepStrictEqual(newLabels, ['llm-claude-haiku-4-5-20251001']);
     });
 
+    test('/switch aborts when derived label prefix would not match MODEL_LABEL_PATTERN', async () => {
+        // Use a pattern whose prefix contains regex metacharacters that modelLabelPrefix
+        // cannot derive — the fallback 'llm-' prefix won't match the pattern, so the
+        // new labels would be invisible to future /switch calls, causing duplicates.
+        // modelLabelPrefix returns { prefix: 'llm-', derived: false } for complex patterns.
+        const event = createPRCommentEvent('/switch opus');
+        const config = createTestConfig({ MODEL_LABEL_PATTERN: '^model\\-(.+)$' });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-mismatch', config);
+
+        // Should NOT call safeUpdateLabels — the mismatch is detected and aborted
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        // Should have logged an error about the mismatch
+        const errorCalls = mockLoggerInstance.error.mock.calls;
+        const mismatchError = errorCalls.find(
+            (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('label duplication')
+        );
+        assert.ok(mismatchError, 'Expected an error about label duplication prevention');
+    });
+
     test('/switch with extra models logs a warning but uses first model', async () => {
         const event = createPRCommentEvent('/switch opus sonnet');
         const config = createTestConfig();
