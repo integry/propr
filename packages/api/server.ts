@@ -413,7 +413,17 @@ function setupWebhookRoute(): void {
       await handleWebhookRequest(req, res, {
         webhookSecret: process.env.GH_WEBHOOK_SECRET,
         redis: {
-          set: (key, value, opts) => redisClient.set(key, value, opts as Parameters<typeof redisClient.set>[2]) as Promise<string | null>,
+          set: async (key, value, opts) => {
+            const args: [string, string] = [key, value];
+            if (opts?.EX != null && opts?.NX) {
+              return await redisClient.set(args[0], args[1], { EX: opts.EX, NX: true }) as string | null;
+            } else if (opts?.EX != null) {
+              return await redisClient.set(args[0], args[1], { EX: opts.EX }) as string | null;
+            } else if (opts?.NX) {
+              return await redisClient.set(args[0], args[1], { NX: true }) as string | null;
+            }
+            return await redisClient.set(args[0], args[1]) as string | null;
+          },
           del: (key) => redisClient.del(key),
         },
         processor: (payload, event, cid) => processWebhookEvent(payload, event as WebhookEventType, cid),
