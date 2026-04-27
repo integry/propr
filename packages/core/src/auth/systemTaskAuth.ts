@@ -1,8 +1,18 @@
 import crypto from 'node:crypto';
 import type { SystemTaskJobData } from '../queue/taskQueue.types.js';
 
-/** Maximum age (in ms) for a signed auth token before it is considered expired. */
-export const AUTH_TOKEN_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes — allows for queue backlog and worker retries
+/** Maximum age (in ms) for a signed auth token before it is considered expired.
+ *  Configurable via SYSTEM_TASK_TOKEN_MAX_AGE_MS to accommodate queue backlog, worker downtime, or retry delays.
+ *  Defaults to 30 minutes.
+ */
+export const AUTH_TOKEN_MAX_AGE_MS = (() => {
+    const envVal = process.env.SYSTEM_TASK_TOKEN_MAX_AGE_MS;
+    if (envVal) {
+        const parsed = parseInt(envVal, 10);
+        if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+    }
+    return 30 * 60 * 1000; // 30 minutes default
+})();
 
 /** Maximum clock-skew allowance (in ms) for future-dated tokens. */
 export const AUTH_TOKEN_MAX_CLOCK_SKEW_MS = 60 * 1000; // 1 minute

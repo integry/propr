@@ -201,8 +201,42 @@ export async function checkUserRepoAccess(targetOwner: string, targetRepo: strin
     }
     return { allowed: true };
   } catch (scopeError) {
+    const err = scopeError as { status?: number; message?: string };
+    // GitHub returns 404 when the user is not a collaborator or the repo doesn't exist,
+    // and 403 when the app lacks permission to check collaborators on the repo.
+    // Both indicate an authorization problem, not a server error.
+    if (err.status === 404 || err.status === 403) {
+      return { allowed: false, status: 403, error: `User '${requestingUser}' does not have access to ${targetOwner}/${targetRepo}` };
+    }
     console.error(`[revert] Failed to verify user scope for ${requestingUser} on ${targetOwner}/${targetRepo}:`, scopeError);
     return { allowed: false, status: 502, error: `Unable to verify user access to ${targetOwner}/${targetRepo}` };
+  }
+}
+
+/**
+ * Verify that the GitHub App installation can access a repository.
+ * For fork PRs, the app may only be installed on the base repo/org,
+ * not on the contributor's fork, making push operations impossible.
+ */
+export async function verifyAppRepoAccess(targetOwner: string, targetRepo: string, existingOctokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>): Promise<{ accessible: true } | { accessible: false; status: number; error: string }> {
+  const octokit = existingOctokit ?? await getAuthenticatedOctokit();
+  try {
+    await octokit.request('GET /repos/{owner}/{repo}', {
+      owner: targetOwner,
+      repo: targetRepo
+    });
+    return { accessible: true };
+  } catch (repoError) {
+    const err = repoError as { status?: number; message?: string };
+    if (err.status === 404 || err.status === 403) {
+      return {
+        accessible: false,
+        status: 422,
+        error: `GitHub App does not have access to fork repository ${targetOwner}/${targetRepo} — the app must be installed on the fork for revert operations`
+      };
+    }
+    console.error(`[revert] Failed to verify app access to ${targetOwner}/${targetRepo}:`, repoError);
+    return { accessible: false, status: 502, error: `Unable to verify app access to ${targetOwner}/${targetRepo}` };
   }
 }
 

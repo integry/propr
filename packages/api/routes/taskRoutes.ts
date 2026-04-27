@@ -5,7 +5,7 @@ import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCo
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
-import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, lookupPr, checkUserRepoAccess, buildRevertJobData, verifyCommitBelongsToPr } from './revertHelpers.js';
+import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, lookupPr, checkUserRepoAccess, verifyAppRepoAccess, buildRevertJobData, verifyCommitBelongsToPr } from './revertHelpers.js';
 
 interface TaskRoutesDeps {
   db: Knex;
@@ -128,6 +128,16 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
+      // For fork PRs, verify the GitHub App installation can access the fork repo.
+      // The app is typically installed on the base repo/org, not the contributor's fork.
+      if (isFork) {
+        const appAccess = await verifyAppRepoAccess(targetOwner, targetRepo, octokit);
+        if (!appAccess.accessible) {
+          res.status(appAccess.status).json({ error: appAccess.error });
+          return;
+        }
+      }
+
       const jobData = buildRevertJobData({
         owner, repo, prNumber, commit, targetCommentId: targetCommentIdNum,
         requestingUser, systemTaskSecret, branch, isFork, headRepoOwner, headRepoName
@@ -163,6 +173,13 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const prValidation = validatePositiveInteger(pr, 'PR number', { required: true, max: 10000000 });
       if (!prValidation.valid) {
         res.status(400).json({ error: prValidation.error });
+        return;
+      }
+
+      // Authorization: apply the same whitelist gate as the destructive revert endpoint
+      const authResult = checkRevertAuthorization(req);
+      if (!authResult.authorized) {
+        res.status(authResult.status).json({ error: authResult.error });
         return;
       }
 

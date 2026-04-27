@@ -1,6 +1,6 @@
-import { test, describe, beforeEach, afterEach } from 'node:test';
+import { test, describe, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert';
-import { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS } from '@propr/core';
+import { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS, getUserWhitelist } from '@propr/core';
 import type { SystemTaskJobData } from '@propr/core';
 
 /**
@@ -314,35 +314,30 @@ describe('System Task Authorization', () => {
         });
     });
 
-    describe('Whitelist (fail-closed)', () => {
-        test('empty whitelist rejects all users', () => {
-            // Simulate the fail-closed logic from processSystemTaskJob
-            const whitelist: string[] = [];
-            const requestingUser = 'alice';
-
-            if (whitelist.length === 0) {
-                assert.ok(true, 'Empty whitelist should reject — destructive operations require explicit allowlist');
-            } else {
-                assert.fail('Empty whitelist should not allow through');
-            }
+    describe('Whitelist (fail-closed) — exercises getUserWhitelist()', () => {
+        test('empty GITHUB_USER_WHITELIST returns empty array (fail-closed)', () => {
+            saveAndSetEnv('GITHUB_USER_WHITELIST', '');
+            const whitelist = getUserWhitelist();
+            assert.strictEqual(whitelist.length, 0, 'Empty env should return empty whitelist');
         });
 
-        test('user not in whitelist is rejected', () => {
-            const whitelist = ['bob', 'charlie'];
-            const requestingUser = 'alice';
-
-            assert.strictEqual(whitelist.includes(requestingUser), false);
+        test('configured whitelist returns expected users', () => {
+            saveAndSetEnv('GITHUB_USER_WHITELIST', 'bob,charlie');
+            const whitelist = getUserWhitelist();
+            assert.ok(whitelist.includes('bob'));
+            assert.ok(whitelist.includes('charlie'));
+            assert.ok(!whitelist.includes('alice'), 'alice should not be in whitelist');
         });
 
-        test('user in whitelist is accepted', () => {
-            const whitelist = ['alice', 'bob'];
-            const requestingUser = 'alice';
-
-            assert.strictEqual(whitelist.includes(requestingUser), true);
+        test('user in whitelist passes includes check', () => {
+            saveAndSetEnv('GITHUB_USER_WHITELIST', 'alice,bob');
+            const whitelist = getUserWhitelist();
+            assert.strictEqual(whitelist.includes('alice'), true);
         });
 
         test('whitelist check is case-sensitive', () => {
-            const whitelist = ['Alice'];
+            saveAndSetEnv('GITHUB_USER_WHITELIST', 'Alice');
+            const whitelist = getUserWhitelist();
             assert.strictEqual(whitelist.includes('alice'), false);
             assert.strictEqual(whitelist.includes('Alice'), true);
         });
