@@ -98,6 +98,8 @@ function normalizeModelLabel(label: string): string {
  * For `/review`: normalizes model labels and captures instructions.
  * For `/fix`: captures everything after `/fix` as instructions.
  * For `/merge`: returns a simple merge marker.
+ * For `/switch`: extracts single model target and optional instructions.
+ * For `/use`: extracts single model for one-time override and optional instructions.
  */
 export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
     switch (parsed.command) {

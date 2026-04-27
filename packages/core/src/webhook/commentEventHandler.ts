@@ -37,7 +37,7 @@ interface PRJobData extends CommentJobData {
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
 interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[] }
-interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta }
+interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 
@@ -211,7 +211,8 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     }
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, models: commandMeta.models }, '/switch command detected, updating PR labels');
-    const { prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+    const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+    const { prLabels } = prData;
     const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
     const modelLabelRegex = new RegExp(modelLabelPattern);
 
@@ -253,7 +254,10 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     // Strip the /switch command line from the comment body so the downstream job
     // only sees the user's instructions, not the control syntax.
     const strippedComment = { ...comment, body: commandMeta.instructions };
-    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+    // Re-use already-fetched PR data to avoid a redundant GitHub API call.
+    // The labels have been updated above, so reflect the new labels in the prefetched data.
+    const updatedPRData = { branchName: prData.branchName, prLabels: [...prLabels.filter(l => !existingLlmLabels.includes(l.name)), ...newLabels.map(n => ({ id: 0, name: n, node_id: '', url: '', color: '', default: false, description: null }))] as Label[] };
+    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta, prefetchedPRData: updatedPRData });
 }
 
 export async function processCommentEvent(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
@@ -286,7 +290,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const ignoreResult = checkCommentIgnore(comment.body, ignoreKeywords, correlationId);
     if (ignoreResult.shouldIgnore) return;
 
-    // Parse slash commands (/merge, /review, /fix) before generic follow-up logic
+    // Parse slash commands (/review, /fix, /merge, /switch, /use) before generic follow-up logic
     const parsedCommand = parseSlashCommand(comment.body);
     if (parsedCommand) {
         await handleSlashCommand({ parsedCommand, comment, commentAuthor, eventContext: { eventType, prNumber, owner, repo }, payload, config, correlationId, correlatedLogger });
@@ -404,11 +408,11 @@ function buildCommandJobFields(commandMeta: CommandMeta): Record<string, unknown
 
 async function enqueueNewCommentJob(comment: { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
-    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta } = options;
+    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, PR_FOLLOWUP_TRIGGER_KEYWORDS);
-    const { branchName, prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+    const { branchName, prLabels } = prefetchedPRData || await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     const llm = resolveLlm(llmFromKeywords, prLabels, { modelLabelPattern: MODEL_LABEL_PATTERN, prNumber, correlatedLogger, commandMeta });
 
     const jobData: CommentJobData = {

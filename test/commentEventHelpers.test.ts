@@ -46,8 +46,18 @@ describe('modelLabelPrefix', () => {
         assert.deepStrictEqual(result, { prefix: 'llm-', derived: false });
     });
 
-    test('falls back to llm- for pattern with regex metacharacters in prefix', () => {
+    test('derives prefix from pattern with escaped metacharacters like ^llm\\.(.+)$', () => {
         const result = modelLabelPrefix('^llm\\.(.+)$');
+        assert.deepStrictEqual(result, { prefix: 'llm.', derived: true });
+    });
+
+    test('derives prefix from pattern with escaped hyphen ^model\\-(.+)$', () => {
+        const result = modelLabelPrefix('^model\\-(.+)$');
+        assert.deepStrictEqual(result, { prefix: 'model-', derived: true });
+    });
+
+    test('falls back to llm- for pattern with unescaped metacharacters in prefix', () => {
+        const result = modelLabelPrefix('^llm.*(.+)$');
         assert.deepStrictEqual(result, { prefix: 'llm-', derived: false });
     });
 
