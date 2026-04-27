@@ -108,7 +108,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const { prData, octokit } = prLookup;
 
       // Scope validation: verify the commit actually belongs to this PR
-      const commitCheck = await verifyCommitBelongsToPr(octokit, owner, repo, prNumber, commit);
+      const commitCheck = await verifyCommitBelongsToPr({ octokit, owner, repo, prNumber, commit });
       if (!commitCheck.valid) {
         res.status(commitCheck.status).json({ error: commitCheck.error });
         return;

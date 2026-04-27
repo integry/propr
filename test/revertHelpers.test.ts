@@ -207,7 +207,7 @@ describe('verifyCommitBelongsToPr — commit scope check', () => {
             return [{ sha: 'aaaa1111bbbb2222' }, { sha: 'cccc3333dddd4444' }];
         });
 
-        const result = await verifyCommitBelongsToPr(mockOctokit as never, 'owner', 'repo', 42, 'not-in-pr-hash');
+        const result = await verifyCommitBelongsToPr({ octokit: mockOctokit as never, owner: 'owner', repo: 'repo', prNumber: 42, commit: 'not-in-pr-hash' });
         assert.strictEqual(result.valid, false);
         if (!result.valid) {
             assert.strictEqual(result.status, 400);
@@ -220,7 +220,7 @@ describe('verifyCommitBelongsToPr — commit scope check', () => {
             return [{ sha: 'abc1234def5678' }, { sha: 'cccc3333dddd4444' }];
         });
 
-        const result = await verifyCommitBelongsToPr(mockOctokit as never, 'owner', 'repo', 42, 'abc1234def5678');
+        const result = await verifyCommitBelongsToPr({ octokit: mockOctokit as never, owner: 'owner', repo: 'repo', prNumber: 42, commit: 'abc1234def5678' });
         assert.strictEqual(result.valid, true);
     });
 });

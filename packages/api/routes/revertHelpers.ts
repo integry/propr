@@ -164,14 +164,21 @@ export async function lookupPr(owner: string, repo: string, prNumber: number, pr
   }
 }
 
+interface VerifyCommitBelongsToPrParams {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  commit: string;
+}
+
 /**
  * Verify that a commit hash belongs to the given PR's commit list.
  * Prevents arbitrary commit hash injection for destructive git reset.
  */
-export async function verifyCommitBelongsToPr(
-  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
-  owner: string, repo: string, prNumber: number, commit: string
-): Promise<{ valid: true } | { valid: false; status: number; error: string }> {
+export async function verifyCommitBelongsToPr({
+  octokit, owner, repo, prNumber, commit
+}: VerifyCommitBelongsToPrParams): Promise<{ valid: true } | { valid: false; status: number; error: string }> {
   try {
     const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
       owner, repo, pull_number: prNumber, per_page: 100
