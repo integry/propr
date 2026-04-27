@@ -14,7 +14,7 @@ interface IssueComment {
  * This job is purely deterministic and does not use the LLM agent.
  */
 export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise<JobResult> {
-    const { repoName, prBranch, commitHash, targetCommentId, owner, prNumber, correlationId, requestingUser, authToken } = job.data;
+    const { repoName, prBranch, commitHash, targetCommentId, owner, prNumber, correlationId, requestingUser, authToken, headRepoOwner, headRepoName } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     correlatedLogger.info({
@@ -62,30 +62,53 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
 
         const octokit = await getAuthenticatedOctokit();
 
-        // Validate that the PR branch belongs to the expected repo (reject fork mismatches)
+        // Validate that the PR's actual head repo matches what the job claims
         const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
             owner, repo: repoName, pull_number: prNumber
         });
-        const headRepoOwner = prData.head.repo?.owner?.login;
-        const headRepoName = prData.head.repo?.name;
-        if (headRepoOwner !== owner || headRepoName !== repoName) {
-            throw new Error(
-                `Unauthorized: PR head branch belongs to ${headRepoOwner}/${headRepoName}, ` +
-                `but job targets ${owner}/${repoName}. Fork-based reverts must target the fork repository.`
-            );
+        const actualHeadOwner = prData.head.repo?.owner?.login;
+        const actualHeadName = prData.head.repo?.name;
+        const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
+
+        if (isFork) {
+            // Fork PR: job must carry explicit headRepoOwner/headRepoName (bound in HMAC)
+            if (!headRepoOwner || !headRepoName) {
+                throw new Error(
+                    `Unauthorized: PR #${prNumber} is a fork PR (head: ${actualHeadOwner}/${actualHeadName}) ` +
+                    `but job payload does not include headRepoOwner/headRepoName. Re-queue with fork-aware payload.`
+                );
+            }
+            if (headRepoOwner !== actualHeadOwner || headRepoName !== actualHeadName) {
+                throw new Error(
+                    `Unauthorized: PR head repo mismatch — job claims ${headRepoOwner}/${headRepoName} ` +
+                    `but PR head is ${actualHeadOwner}/${actualHeadName}.`
+                );
+            }
+        } else {
+            // Non-fork PR: head repo should match the base repo
+            if (actualHeadOwner !== owner || actualHeadName !== repoName) {
+                throw new Error(
+                    `Unauthorized: PR head repo mismatch — expected ${owner}/${repoName} ` +
+                    `but found ${actualHeadOwner}/${actualHeadName}.`
+                );
+            }
         }
 
-        const { token } = await octokit.auth({ type: "installation" }) as { token: string };
-        const repoUrl = getRepoUrl({ repoOwner: owner, repoName });
+        // Determine the actual target repo for git operations
+        const targetOwner = isFork ? headRepoOwner! : owner;
+        const targetRepoName = isFork ? headRepoName! : repoName;
 
-        localRepoPath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken: token });
+        const { token } = await octokit.auth({ type: "installation" }) as { token: string };
+        const repoUrl = getRepoUrl({ repoOwner: targetOwner, repoName: targetRepoName });
+
+        localRepoPath = await ensureRepoCloned({ repoUrl, owner: targetOwner, repoName: targetRepoName, authToken: token });
 
         // Create a worktree from the existing PR branch
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
         const worktreeInfo = await createWorktreeFromExistingBranch(localRepoPath, prBranch, {
             worktreeDirName: `revert-${prNumber}-${timestamp}`,
-            owner,
-            repoName
+            owner: targetOwner,
+            repoName: targetRepoName
         });
         worktreePath = worktreeInfo.worktreePath;
 

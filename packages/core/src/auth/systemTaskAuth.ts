@@ -12,14 +12,19 @@ export const AUTH_TOKEN_MAX_CLOCK_SKEW_MS = 60 * 1000; // 1 minute
  * Includes all security-relevant fields so that tampering with any of them
  * (e.g. swapping commitHash or targetCommentId) invalidates the token.
  */
-export function buildAuthPayload(data: Pick<SystemTaskJobData, 'type' | 'owner' | 'repoName' | 'prNumber' | 'requestingUser' | 'commitHash' | 'targetCommentId' | 'prBranch' | 'authTimestamp'>): string {
-    return `${data.type}:${data.owner}:${data.repoName}:${data.prNumber}:${data.requestingUser}:${data.commitHash}:${data.targetCommentId}:${data.prBranch}:${data.authTimestamp}`;
+export function buildAuthPayload(data: Pick<SystemTaskJobData, 'type' | 'owner' | 'repoName' | 'prNumber' | 'requestingUser' | 'commitHash' | 'targetCommentId' | 'prBranch' | 'authTimestamp' | 'headRepoOwner' | 'headRepoName'>): string {
+    // Include headRepoOwner/headRepoName when present (fork PRs) so the HMAC binds the destructive target
+    const base = `${data.type}:${data.owner}:${data.repoName}:${data.prNumber}:${data.requestingUser}:${data.commitHash}:${data.targetCommentId}:${data.prBranch}:${data.authTimestamp}`;
+    if (data.headRepoOwner && data.headRepoName) {
+        return `${base}:${data.headRepoOwner}:${data.headRepoName}`;
+    }
+    return base;
 }
 
 /**
  * Generate an HMAC-SHA256 auth token for a system task request.
  */
-export function generateAuthToken(data: Pick<SystemTaskJobData, 'type' | 'owner' | 'repoName' | 'prNumber' | 'requestingUser' | 'commitHash' | 'targetCommentId' | 'prBranch' | 'authTimestamp'>, secret: string): string {
+export function generateAuthToken(data: Pick<SystemTaskJobData, 'type' | 'owner' | 'repoName' | 'prNumber' | 'requestingUser' | 'commitHash' | 'targetCommentId' | 'prBranch' | 'authTimestamp' | 'headRepoOwner' | 'headRepoName'>, secret: string): string {
     const payload = buildAuthPayload(data);
     const hmac = crypto.createHmac('sha256', secret);
     hmac.update(payload);

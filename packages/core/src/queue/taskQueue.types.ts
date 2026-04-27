@@ -94,6 +94,10 @@ export interface SystemTaskJobData {
     requestingUser: string;
     authToken: string;
     authTimestamp: number;
+    /** For fork PRs: the owner of the head (fork) repository where the force-push targets */
+    headRepoOwner?: string;
+    /** For fork PRs: the name of the head (fork) repository where the force-push targets */
+    headRepoName?: string;
 }
 
 export interface IndexingJobData {

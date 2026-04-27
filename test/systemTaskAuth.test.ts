@@ -225,6 +225,89 @@ describe('System Task Authorization', () => {
         });
     });
 
+    describe('Fork PR payload (headRepoOwner/headRepoName)', () => {
+        test('payload without headRepoOwner/headRepoName is backward-compatible', () => {
+            const data = makeJobData({ authTimestamp: 1700000000000 });
+            const payload = buildAuthPayload(data);
+            assert.strictEqual(
+                payload,
+                'revert:testorg:testrepo:42:alice:abc1234def5678:99999:feature-branch:1700000000000'
+            );
+        });
+
+        test('payload with headRepoOwner/headRepoName includes fork identity', () => {
+            const data = makeJobData({
+                authTimestamp: 1700000000000,
+                headRepoOwner: 'fork-user',
+                headRepoName: 'forked-repo'
+            });
+            const payload = buildAuthPayload(data);
+            assert.strictEqual(
+                payload,
+                'revert:testorg:testrepo:42:alice:abc1234def5678:99999:feature-branch:1700000000000:fork-user:forked-repo'
+            );
+        });
+
+        test('token signed with headRepoOwner/headRepoName is valid', () => {
+            const data = makeJobData({
+                headRepoOwner: 'fork-user',
+                headRepoName: 'forked-repo'
+            });
+            data.authToken = generateAuthToken(data, TEST_SECRET);
+            const result = verifyAuthToken(data, TEST_SECRET);
+            assert.strictEqual(result.valid, true);
+        });
+
+        test('tampered headRepoOwner invalidates token', () => {
+            const data = makeJobData({
+                headRepoOwner: 'fork-user',
+                headRepoName: 'forked-repo'
+            });
+            data.authToken = generateAuthToken(data, TEST_SECRET);
+            data.headRepoOwner = 'evil-user';
+            const result = verifyAuthToken(data, TEST_SECRET);
+            assert.strictEqual(result.valid, false);
+            assert.strictEqual(result.reason, 'HMAC mismatch');
+        });
+
+        test('tampered headRepoName invalidates token', () => {
+            const data = makeJobData({
+                headRepoOwner: 'fork-user',
+                headRepoName: 'forked-repo'
+            });
+            data.authToken = generateAuthToken(data, TEST_SECRET);
+            data.headRepoName = 'evil-repo';
+            const result = verifyAuthToken(data, TEST_SECRET);
+            assert.strictEqual(result.valid, false);
+            assert.strictEqual(result.reason, 'HMAC mismatch');
+        });
+
+        test('adding headRepoOwner/headRepoName after signing invalidates token', () => {
+            const data = makeJobData(); // no fork fields
+            data.authToken = generateAuthToken(data, TEST_SECRET);
+            // Attacker tries to add fork fields after signing
+            data.headRepoOwner = 'evil-user';
+            data.headRepoName = 'evil-repo';
+            const result = verifyAuthToken(data, TEST_SECRET);
+            assert.strictEqual(result.valid, false);
+            assert.strictEqual(result.reason, 'HMAC mismatch');
+        });
+
+        test('removing headRepoOwner/headRepoName after signing invalidates token', () => {
+            const data = makeJobData({
+                headRepoOwner: 'fork-user',
+                headRepoName: 'forked-repo'
+            });
+            data.authToken = generateAuthToken(data, TEST_SECRET);
+            // Attacker strips fork fields to redirect to base repo
+            delete data.headRepoOwner;
+            delete data.headRepoName;
+            const result = verifyAuthToken(data, TEST_SECRET);
+            assert.strictEqual(result.valid, false);
+            assert.strictEqual(result.reason, 'HMAC mismatch');
+        });
+    });
+
     describe('Whitelist (fail-closed)', () => {
         test('empty whitelist rejects all users', () => {
             // Simulate the fail-closed logic from processSystemTaskJob

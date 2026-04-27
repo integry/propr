@@ -164,7 +164,9 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       const correlationId = generateCorrelationId();
       const authTimestamp = Date.now();
-      const authToken = generateAuthToken({
+
+      // For fork PRs, explicitly bind the head repo identity in the token and job data
+      const tokenFields: Parameters<typeof generateAuthToken>[0] = {
         type: 'revert',
         owner,
         repoName: repo,
@@ -173,8 +175,10 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         commitHash: commit,
         targetCommentId: targetCommentIdNum,
         prBranch: branch,
-        authTimestamp
-      }, systemTaskSecret);
+        authTimestamp,
+        ...(isFork ? { headRepoOwner, headRepoName } : {})
+      };
+      const authToken = generateAuthToken(tokenFields, systemTaskSecret);
 
       const jobData: SystemTaskJobData = {
         type: 'revert',
@@ -187,7 +191,8 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         correlationId,
         requestingUser,
         authToken,
-        authTimestamp
+        authTimestamp,
+        ...(isFork ? { headRepoOwner, headRepoName } : {})
       };
 
       const job = await taskQueue.add('processSystemTask', jobData);
