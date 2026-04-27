@@ -200,16 +200,7 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
 }
 
-interface SwitchCommandOptions {
-    commandMeta: CommandMeta & { mode: 'switch' };
-    comment: SlashCommandComment;
-    commentAuthor: string;
-    eventContext: CommentContext;
-    payload: IssueCommentEvent | PullRequestReviewCommentEvent;
-    config: CommentEventConfig;
-    correlationId: string;
-    correlatedLogger: ReturnType<typeof logger.withCorrelation>;
-}
+type SwitchCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'switch' } };
 
 async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     const { commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
