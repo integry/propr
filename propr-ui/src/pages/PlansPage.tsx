@@ -342,7 +342,8 @@ const PlansPage: React.FC = () => {
                   selectedRepo={repoFilter}
                   onRepoChange={handleFilterChange}
                   variant="default"
-                  className="w-[160px] sm:w-[220px]"
+                  labelLayout="stacked"
+                  className="w-[220px] sm:w-[320px]"
                 />
               )}
             </div>

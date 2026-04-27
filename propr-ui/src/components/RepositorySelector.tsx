@@ -16,16 +16,23 @@ export interface RepoOption {
   searchText?: string;
 }
 
+export interface RepoSelection {
+  repo: string;
+  baseBranch?: string;
+  option: RepoOption;
+}
+
 interface RepositorySelectorProps {
   repos?: RepoOption[];
   selectedRepo: string;
-  onRepoChange: (repo: string) => void;
+  onRepoChange: (repo: string, selection?: RepoSelection) => void;
   onReposLoaded?: (repos: RepoOption[]) => void;
   disabled?: boolean;
   isLoading?: boolean;
   placeholder?: string;
   variant?: 'default' | 'breadcrumb';
   className?: string;
+  labelLayout?: 'inline' | 'stacked';
 }
 
 const getIconUrl = (repoName: string, iconPath: string): string => {
@@ -51,8 +58,29 @@ const FormatRepoName: React.FC<{ name: string }> = ({ name }) => {
   return <span>{name}</span>;
 };
 
-const RepoLabel: React.FC<{ repo: RepoOption }> = ({ repo }) =>
-  repo.displayName ? <>{repo.displayName}</> : <><FormatRepoName name={repo.name} />{repo.baseBranch && <span className="text-gray-500"> ({repo.baseBranch})</span>}</>;
+const StackedRepoLabel: React.FC<{ repo: RepoOption }> = ({ repo }) => {
+  const parts = repo.name.split('/');
+
+  if (repo.displayName || parts.length !== 2) {
+    return <span className="truncate">{repo.displayName || repo.name}</span>;
+  }
+
+  return (
+    <span className="min-w-0 flex flex-col leading-tight">
+      <span className="truncate text-[11px] text-gray-500">{parts[0]}</span>
+      <span className="truncate text-sm font-medium text-gray-900">
+        {parts[1]}
+        {repo.baseBranch && <span className="font-normal text-gray-500"> ({repo.baseBranch})</span>}
+      </span>
+    </span>
+  );
+};
+
+const RepoLabel: React.FC<{ repo: RepoOption; labelLayout: 'inline' | 'stacked' }> = ({ repo, labelLayout }) => (
+  labelLayout === 'stacked'
+    ? <StackedRepoLabel repo={repo} />
+    : (repo.displayName ? <>{repo.displayName}</> : <><FormatRepoName name={repo.name} />{repo.baseBranch && <span className="text-gray-500"> ({repo.baseBranch})</span>}</>)
+);
 
 const RepoCountBadge: React.FC<{ count: number }> = ({ count }) => <span className="inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0">{count}</span>;
 
@@ -60,7 +88,8 @@ const RepoItem: React.FC<{
   repo: RepoOption;
   isSelected: boolean;
   onSelect: (repo: RepoOption) => void;
-}> = ({ repo, isSelected, onSelect }) => (
+  labelLayout: 'inline' | 'stacked';
+}> = ({ repo, isSelected, onSelect, labelLayout }) => (
   <button
     type="button"
     className={`w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-gray-50 transition-colors ${
@@ -69,8 +98,8 @@ const RepoItem: React.FC<{
     onClick={() => onSelect(repo)}
   >
     <RepoIcon repoName={repo.name} iconPath={repo.iconPath} />
-    <span className="flex-1 truncate text-sm font-mono">
-      <RepoLabel repo={repo} />
+    <span className={`flex-1 min-w-0 ${labelLayout === 'stacked' ? '' : 'truncate text-sm font-mono'}`}>
+      <RepoLabel repo={repo} labelLayout={labelLayout} />
     </span>
     {repo.count !== undefined && <RepoCountBadge count={repo.count} />}
     {repo.starred && (
@@ -131,20 +160,21 @@ const RepoList: React.FC<{
   otherRepos: RepoOption[];
   selectedRepoKey: string | null;
   onSelect: (repo: RepoOption) => void;
-}> = ({ starredRepos, otherRepos, selectedRepoKey, onSelect }) => {
+  labelLayout: 'inline' | 'stacked';
+}> = ({ starredRepos, otherRepos, selectedRepoKey, onSelect, labelLayout }) => {
   if (starredRepos.length === 0 && otherRepos.length === 0) return <div className="px-3 py-4 text-sm text-gray-500 text-center">No repositories found</div>;
   return (
     <>
       {starredRepos.length > 0 && (
         <>
           <RepoSectionHeader title="Starred" />
-          {starredRepos.map(repo => <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepoKey === repoKey(repo)} onSelect={onSelect} />)}
+          {starredRepos.map(repo => <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepoKey === repoKey(repo)} onSelect={onSelect} labelLayout={labelLayout} />)}
         </>
       )}
       {otherRepos.length > 0 && (
         <>
           {starredRepos.length > 0 && <RepoSectionHeader title="All Repositories" />}
-          {otherRepos.map(repo => <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepoKey === repoKey(repo)} onSelect={onSelect} />)}
+          {otherRepos.map(repo => <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepoKey === repoKey(repo)} onSelect={onSelect} labelLayout={labelLayout} />)}
         </>
       )}
     </>
@@ -193,32 +223,30 @@ const BreadcrumbTrigger: React.FC<{
   </>
 );
 
-const getDefaultTriggerLabel = (selectedRepoData: RepoOption) => {
-  if (selectedRepoData.displayName) return selectedRepoData.displayName;
-  if (selectedRepoData.baseBranch) return `${selectedRepoData.name} (${selectedRepoData.baseBranch})`;
-  return selectedRepoData.name;
-};
-
 const DefaultTrigger: React.FC<{
   selectedRepoData: RepoOption | undefined;
   placeholder: string;
   reposCount: number;
   disabled: boolean;
+  isLoading: boolean;
   isOpen: boolean;
   onClick: () => void;
-}> = ({ selectedRepoData, placeholder, reposCount, disabled, isOpen, onClick }) => (
-  <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 flex items-center gap-2 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500">
+  labelLayout: 'inline' | 'stacked';
+}> = ({ selectedRepoData, placeholder, reposCount, disabled, isLoading, isOpen, onClick, labelLayout }) => (
+  <button type="button" onClick={onClick} disabled={disabled || isLoading || reposCount === 0} className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 flex items-center gap-2 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500">
     {selectedRepoData ? (
       <>
         <RepoIcon repoName={selectedRepoData.name} iconPath={selectedRepoData.iconPath} />
-        <span className="flex-1 text-left truncate text-sm">{getDefaultTriggerLabel(selectedRepoData)}</span>
+        <span className={`flex-1 min-w-0 text-left ${labelLayout === 'stacked' ? '' : 'truncate text-sm'}`}>
+          <RepoLabel repo={selectedRepoData} labelLayout={labelLayout} />
+        </span>
         {selectedRepoData.count !== undefined && <RepoCountBadge count={selectedRepoData.count} />}
         {selectedRepoData.starred && <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
       </>
     ) : (
       <>
-        <Github className="w-4 h-4 text-gray-400 flex-shrink-0" />
-        <span className="flex-1 text-left text-gray-500 text-sm">{reposCount === 0 ? 'No repositories configured' : placeholder}</span>
+        {isLoading ? <Loader2 className="w-4 h-4 text-gray-400 flex-shrink-0 animate-spin" /> : <Github className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+        <span className="flex-1 text-left text-gray-500 text-sm">{isLoading ? 'Loading repositories...' : reposCount === 0 ? 'No repositories configured' : placeholder}</span>
       </>
     )}
     <ChevronDown className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
@@ -234,7 +262,8 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   isLoading = false,
   placeholder = 'Select repository',
   variant = 'default',
-  className = ''
+  className = '',
+  labelLayout = 'inline'
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -303,7 +332,11 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   const handleSelect = useCallback((repo: RepoOption) => {
     setSelectedRepoKeyOverride(repoKey(repo));
-    onRepoChange(repo.name);
+    onRepoChange(repo.name, {
+      repo: repo.name,
+      baseBranch: repo.baseBranch,
+      option: repo,
+    });
     setIsOpen(false);
     setFilter('');
   }, [onRepoChange]);
@@ -319,19 +352,17 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   }, [starredRepos, otherRepos, handleSelect]);
 
   const handleToggle = useCallback(() => {
-    if (!disabled) setIsOpen(prev => {
+    if (!disabled && !effectiveLoading) setIsOpen(prev => {
       if (prev) setFilter('');
       return !prev;
     });
-  }, [disabled]);
-
-  if (effectiveLoading) return <div className={`flex items-center gap-2 text-gray-400 text-sm ${className}`}><Loader2 className="w-4 h-4 animate-spin" /><span>Loading repositories...</span></div>;
+  }, [disabled, effectiveLoading]);
 
   const dropdownContent = isOpen && (
     <div className={`absolute top-full ${variant === 'breadcrumb' ? 'left-0 w-72' : 'left-0 right-0'} mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden`}>
       <FilterInput inputRef={inputRef} value={filter} onChange={setFilter} onKeyDown={handleKeyDown} />
       <div className="max-h-64 overflow-y-auto">
-        <RepoList starredRepos={starredRepos} otherRepos={otherRepos} selectedRepoKey={selectedRepoKeyValue} onSelect={handleSelect} />
+        <RepoList starredRepos={starredRepos} otherRepos={otherRepos} selectedRepoKey={selectedRepoKeyValue} onSelect={handleSelect} labelLayout={labelLayout} />
       </div>
     </div>
   );
@@ -347,7 +378,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   return (
     <div ref={containerRef} className={`relative ${className}`}>
-      <DefaultTrigger selectedRepoData={selectedRepoData} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isOpen={isOpen} onClick={handleToggle} />
+      <DefaultTrigger selectedRepoData={selectedRepoData} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isLoading={effectiveLoading} isOpen={isOpen} onClick={handleToggle} labelLayout={labelLayout} />
       {dropdownContent}
     </div>
   );

@@ -114,7 +114,10 @@ describe('RepositorySelector', () => {
     expect(betaItem).toBeDefined();
     fireEvent.click(betaItem!);
 
-    expect(onRepoChange).toHaveBeenCalledWith('org/repo-beta');
+    expect(onRepoChange).toHaveBeenCalledWith('org/repo-beta', expect.objectContaining({
+      repo: 'org/repo-beta',
+      option: expect.objectContaining({ name: 'org/repo-beta' }),
+    }));
   });
 
   it('shows starred repos in a separate section', () => {
@@ -214,7 +217,11 @@ describe('RepositorySelector', () => {
 
     fireEvent.click(developItem!);
 
-    expect(onRepoChange).toHaveBeenCalledWith('integry/forex');
+    expect(onRepoChange).toHaveBeenCalledWith('integry/forex', expect.objectContaining({
+      repo: 'integry/forex',
+      baseBranch: 'develop',
+      option: expect.objectContaining({ name: 'integry/forex', baseBranch: 'develop' }),
+    }));
     expect(trigger.textContent).toContain('(develop)');
 
     fireEvent.click(trigger);
@@ -350,6 +357,22 @@ describe('RepositorySelector', () => {
     );
 
     expect(screen.getByRole('button')).toHaveAttribute('title', 'All Repos');
+  });
+
+  it('renders a disabled selector trigger while repositories are loading', () => {
+    render(
+      <RepositorySelector
+        repos={[]}
+        selectedRepo=""
+        onRepoChange={vi.fn()}
+        isLoading
+        variant="default"
+      />
+    );
+
+    const trigger = screen.getByRole('button');
+    expect(trigger).toBeDisabled();
+    expect(trigger.textContent).toContain('Loading repositories...');
   });
 
   it('keeps the full owner/repo in the breadcrumb tooltip for normal repositories', () => {

@@ -180,14 +180,16 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     }
   }, [filter, tasksPerPage, currentPage, repoFilter, debouncedSearch]);
 
-  // Initial fetch when dependencies change
+  // Refresh repository stats only on initial mount when filters are visible.
   useEffect(() => {
     fetchTasks({ setLoadingState: true });
-    if (!hideFilters) {
-      refreshRepositoryStats(!hasLoadedRepoStats.current);
-      hasLoadedRepoStats.current = true;
-    }
-  }, [fetchTasks, hideFilters, refreshRepositoryStats]);
+  }, [fetchTasks]);
+
+  useEffect(() => {
+    if (hideFilters || hasLoadedRepoStats.current) return;
+    refreshRepositoryStats(true);
+    hasLoadedRepoStats.current = true;
+  }, [hideFilters, refreshRepositoryStats]);
 
   // Subscribe to WebSocket task updates for real-time refresh
   useEffect(() => {

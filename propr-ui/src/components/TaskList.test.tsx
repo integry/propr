@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import TaskList from './TaskList';
 import { getTasks, getRepositoryStats } from '../api/proprApi';
 
@@ -57,6 +57,19 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const NavigationHarness = () => {
+  const navigate = useNavigate();
+
+  return (
+    <>
+      <button type="button" onClick={() => navigate('/tasks?status=completed')}>
+        change filters
+      </button>
+      <TaskList limit={10} />
+    </>
+  );
+};
+
 describe('TaskList', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -107,5 +120,28 @@ describe('TaskList', () => {
 
     await waitFor(() => expect(mockGetRepositoryStats).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByTestId('repo-summary').textContent).toBe('all:2|integry/propr:2'));
+  });
+
+  it('does not refetch repository stats when task query params change', async () => {
+    mockGetTasks.mockResolvedValue({ tasks: [], total: 0 });
+    mockGetRepositoryStats.mockResolvedValue({ repositories: [{ repository: 'integry/propr', total: 1 }] });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<NavigationHarness />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(mockGetRepositoryStats).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockGetTasks).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'change filters' }).click();
+    });
+
+    await waitFor(() => expect(mockGetTasks).toHaveBeenCalledTimes(2));
+    expect(mockGetRepositoryStats).toHaveBeenCalledTimes(1);
   });
 });

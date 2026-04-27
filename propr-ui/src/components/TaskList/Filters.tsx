@@ -82,7 +82,8 @@ export const Filters: React.FC<FiltersProps> = ({
                   onRepoChange={setRepoFilter}
                   isLoading={reposLoading}
                   variant="default"
-                  className="w-[160px] sm:w-[220px]"
+                  labelLayout="stacked"
+                  className="w-[220px] sm:w-[320px]"
                 />
               )}
             </div>
