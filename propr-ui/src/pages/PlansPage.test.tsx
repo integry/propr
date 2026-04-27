@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import PlansPage from './PlansPage';
+import type { PaginatedDraftsResponse, RepositoriesResponse } from '../api/proprApi';
 import { getDrafts, getDraftRepositories } from '../api/proprApi';
 
 vi.mock('../hooks/useDocumentTitle', () => ({
@@ -37,18 +38,29 @@ describe('PlansPage', () => {
   });
 
   it('renders repository filter counts and respects the repository query param', async () => {
-    mockGetDraftRepositories.mockResolvedValue({
+    const repositoriesResponse: RepositoriesResponse = {
       repositories: [
         { repo: 'integry/propr', count: 3 },
         { repo: 'integry/agent', count: 1 },
       ],
       total: 4,
-    } as any);
-    mockGetDrafts.mockResolvedValue({
-      drafts: [{ draft_id: 'draft-1' }],
+    };
+    const draftsResponse: PaginatedDraftsResponse = {
+      drafts: [{
+        draft_id: 'draft-1',
+        repository: 'integry/propr',
+        initial_prompt: 'Test draft',
+        status: 'draft',
+        updated_at: '2026-04-27T00:00:00Z',
+        created_at: '2026-04-27T00:00:00Z',
+      }],
       total: 1,
+      page: 1,
+      limit: 20,
       hasMore: false,
-    } as any);
+    };
+    mockGetDraftRepositories.mockResolvedValue(repositoriesResponse);
+    mockGetDrafts.mockResolvedValue(draftsResponse);
 
     render(
       <MemoryRouter initialEntries={['/plans?repository=integry/propr']}>
