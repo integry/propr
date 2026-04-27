@@ -40,6 +40,10 @@ const mockOctokitInstance = {
                 }
             };
         }
+        if (route === 'GET /repos/{owner}/{repo}/collaborators/{username}/permission') {
+            callOrder.push('github:checkPermission');
+            return { data: { permission: 'write' } };
+        }
         if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments') {
             callOrder.push('github:getComments');
             return { data: [] };
@@ -50,7 +54,12 @@ const mockOctokitInstance = {
         }
         return { data: {} };
     }),
-    paginate: mock.fn(async () => {
+    paginate: mock.fn(async (route: string) => {
+        if (typeof route === 'string' && route.includes('/commits')) {
+            callOrder.push('github:getPRCommits');
+            // Return a commit that matches the default test commitHash
+            return [{ sha: 'abc1234def5678' }];
+        }
         callOrder.push('github:paginate');
         return [];
     }),
@@ -108,7 +117,9 @@ const { processSystemTaskJob } = await import('../src/jobs/processSystemTaskJob.
 const originalEnv: Record<string, string | undefined> = {};
 
 function saveAndSetEnv(key: string, value: string | undefined): void {
-    originalEnv[key] = process.env[key];
+    if (!(key in originalEnv)) {
+        originalEnv[key] = process.env[key];
+    }
     if (value === undefined) {
         delete process.env[key];
     } else {
@@ -123,6 +134,10 @@ function restoreEnv(): void {
         } else {
             process.env[key] = value;
         }
+    }
+    // Clear the snapshot so subsequent suites start fresh
+    for (const key of Object.keys(originalEnv)) {
+        delete originalEnv[key];
     }
 }
 
@@ -215,7 +230,7 @@ describe('processSystemTaskJob — worker-path authorization', () => {
         await assert.rejects(
             () => processSystemTaskJob(job as never),
             (err: Error) => {
-                assert.ok(err.message.includes('missing system task auth token'));
+                assert.ok(err.message.includes('auth token invalid'));
                 return true;
             }
         );
@@ -261,17 +276,15 @@ describe('processSystemTaskJob — worker-path authorization', () => {
 });
 
 describe('processSystemTaskJob — fork PR handling', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         callOrder = [];
         saveAndSetEnv('SYSTEM_TASK_SECRET', TEST_SECRET);
         mockSimpleGit.reset.mock.resetCalls();
         mockSimpleGit.push.mock.resetCalls();
 
-        // Restore whitelist
-        const coreMod = import('@propr/core');
-        coreMod.then(m => {
-            (m.getUserWhitelist as ReturnType<typeof mock.fn>).mock.mockImplementation(() => ['alice', 'bob']);
-        });
+        // Restore whitelist (awaited to avoid race)
+        const coreMod = await import('@propr/core');
+        (coreMod.getUserWhitelist as ReturnType<typeof mock.fn>).mock.mockImplementation(() => ['alice', 'bob']);
     });
 
     afterEach(() => {
@@ -300,6 +313,10 @@ describe('processSystemTaskJob — fork PR handling', () => {
                         }
                     }
                 };
+            }
+            if (route === 'GET /repos/{owner}/{repo}/collaborators/{username}/permission') {
+                callOrder.push('github:checkPermission');
+                return { data: { permission: 'write' } };
             }
             return { data: {} };
         });
@@ -345,6 +362,10 @@ describe('processSystemTaskJob — fork PR handling', () => {
                     }
                 };
             }
+            if (route === 'GET /repos/{owner}/{repo}/collaborators/{username}/permission') {
+                callOrder.push('github:checkPermission');
+                return { data: { permission: 'write' } };
+            }
             return { data: {} };
         });
 
@@ -389,6 +410,10 @@ describe('processSystemTaskJob — fork PR handling', () => {
                         }
                     }
                 };
+            }
+            if (route === 'GET /repos/{owner}/{repo}/collaborators/{username}/permission') {
+                callOrder.push('github:checkPermission');
+                return { data: { permission: 'write' } };
             }
             return { data: {} };
         });
@@ -437,6 +462,10 @@ describe('processSystemTaskJob — fork PR handling', () => {
                     }
                 };
             }
+            if (route === 'GET /repos/{owner}/{repo}/collaborators/{username}/permission') {
+                callOrder.push('github:checkPermission');
+                return { data: { permission: 'write' } };
+            }
             return { data: {} };
         });
 
@@ -454,14 +483,12 @@ describe('processSystemTaskJob — fork PR handling', () => {
 });
 
 describe('processSystemTaskJob — authorization order guarantee', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         callOrder = [];
         saveAndSetEnv('SYSTEM_TASK_SECRET', TEST_SECRET);
 
-        const coreMod = import('@propr/core');
-        coreMod.then(m => {
-            (m.getUserWhitelist as ReturnType<typeof mock.fn>).mock.mockImplementation(() => ['alice', 'bob']);
-        });
+        const coreMod = await import('@propr/core');
+        (coreMod.getUserWhitelist as ReturnType<typeof mock.fn>).mock.mockImplementation(() => ['alice', 'bob']);
 
         // Reset to non-fork PR
         mockOctokitInstance.request.mock.mockImplementation(async (route: string, params: Record<string, unknown>) => {
@@ -484,6 +511,10 @@ describe('processSystemTaskJob — authorization order guarantee', () => {
                         }
                     }
                 };
+            }
+            if (route === 'GET /repos/{owner}/{repo}/collaborators/{username}/permission') {
+                callOrder.push('github:checkPermission');
+                return { data: { permission: 'write' } };
             }
             return { data: {} };
         });

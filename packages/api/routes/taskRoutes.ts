@@ -5,7 +5,7 @@ import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCo
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
-import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, lookupPr, checkUserRepoAccess, buildRevertJobData } from './revertHelpers.js';
+import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, lookupPr, checkUserRepoAccess, buildRevertJobData, verifyCommitBelongsToPr } from './revertHelpers.js';
 
 interface TaskRoutesDeps {
   db: Knex;
@@ -105,7 +105,14 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         res.status(prLookup.status).json({ error: prLookup.error });
         return;
       }
-      const { prData } = prLookup;
+      const { prData, octokit } = prLookup;
+
+      // Scope validation: verify the commit actually belongs to this PR
+      const commitCheck = await verifyCommitBelongsToPr(octokit, owner, repo, prNumber, commit);
+      if (!commitCheck.valid) {
+        res.status(commitCheck.status).json({ error: commitCheck.error });
+        return;
+      }
 
       const branch = prData.head.ref;
       const headRepoOwner = prData.head.repo?.owner?.login ?? owner;
@@ -115,7 +122,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       // Scope validation: verify the requesting user has write access to the repo being force-pushed
       const targetOwner = isFork ? headRepoOwner : owner;
       const targetRepo = isFork ? headRepoName : repo;
-      const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, requestingUser);
+      const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, requestingUser, octokit);
       if (!accessResult.allowed) {
         res.status(accessResult.status).json({ error: accessResult.error });
         return;

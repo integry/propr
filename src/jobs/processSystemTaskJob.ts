@@ -22,6 +22,7 @@ interface ResetAndPushParams {
     prNumber: number;
     prBranch: string;
     commitHash: string;
+    requestingUser: string;
     headRepoOwner?: string;
     headRepoName?: string;
 }
@@ -31,11 +32,19 @@ async function performGitResetAndPush(
     params: ResetAndPushParams,
     correlatedLogger: CorrelatedLogger
 ): Promise<{ worktreePath: string; localRepoPath: string }> {
-    const { owner, repoName, prNumber, prBranch, commitHash, headRepoOwner, headRepoName } = params;
+    const { owner, repoName, prNumber, prBranch, commitHash, requestingUser, headRepoOwner, headRepoName } = params;
 
     const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
         owner, repo: repoName, pull_number: prNumber
     });
+
+    // Verify the signed branch still matches the current PR head ref
+    if (prData.head.ref !== prBranch) {
+        throw new Error(
+            `Unauthorized: PR #${prNumber} head ref changed — signed branch is '${prBranch}' ` +
+            `but current head ref is '${prData.head.ref}'. Re-queue the revert.`
+        );
+    }
 
     const { targetOwner, targetRepoName } = validatePrHead(
         {
@@ -45,6 +54,32 @@ async function performGitResetAndPush(
         },
         { owner, repoName, prNumber, headRepoOwner, headRepoName }
     );
+
+    // Re-check repo access at execution time (user's access may have been revoked since enqueue)
+    const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
+        owner: targetOwner,
+        repo: targetRepoName,
+        username: requestingUser
+    });
+    const permission = permissionData.permission;
+    if (permission !== 'admin' && permission !== 'write' && permission !== 'maintain') {
+        throw new Error(
+            `Unauthorized: user '${requestingUser}' no longer has write access to ${targetOwner}/${targetRepoName}`
+        );
+    }
+    correlatedLogger.info({ requestingUser, permission }, 'Execution-time access recheck passed');
+
+    // Verify the commit actually belongs to this PR (prevents arbitrary commit hash injection)
+    const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
+        owner, repo: repoName, pull_number: prNumber, per_page: 100
+    }) as Array<{ sha: string }>;
+    const commitFound = prCommits.some(c => c.sha === commitHash || c.sha.startsWith(commitHash));
+    if (!commitFound) {
+        throw new Error(
+            `Unauthorized: commit ${commitHash} does not belong to PR #${prNumber} in ${owner}/${repoName}`
+        );
+    }
+    correlatedLogger.info({ commitHash, prNumber }, 'Commit-to-PR validation passed');
 
     const { token } = await octokit.auth({ type: "installation" }) as { token: string };
     const repoUrl = getRepoUrl({ repoOwner: targetOwner, repoName: targetRepoName });
@@ -128,10 +163,6 @@ function verifyWhitelist(requestingUser: string, correlatedLogger: CorrelatedLog
 }
 
 function verifyToken(jobData: SystemTaskJobData, correlatedLogger: CorrelatedLogger): void {
-    if (!jobData.authToken) {
-        correlatedLogger.warn({ requestingUser: jobData.requestingUser }, 'System task rejected: missing auth token');
-        throw new Error('Unauthorized: missing system task auth token');
-    }
     const tokenResult = verifyAuthToken(jobData, process.env.SYSTEM_TASK_SECRET);
     if (!tokenResult.valid) {
         correlatedLogger.warn({ requestingUser: jobData.requestingUser, reason: tokenResult.reason }, 'System task rejected: auth token verification failed');
@@ -211,7 +242,7 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
         correlatedLogger.info('Starting git hard reset...');
         const resetResult = await performGitResetAndPush(
             octokit,
-            { owner, repoName, prNumber, prBranch, commitHash, headRepoOwner, headRepoName },
+            { owner, repoName, prNumber, prBranch, commitHash, requestingUser, headRepoOwner, headRepoName },
             correlatedLogger
         );
         worktreePath = resetResult.worktreePath;

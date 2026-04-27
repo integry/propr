@@ -2,6 +2,9 @@ import { getUserWhitelist, getAuthenticatedOctokit, generateCorrelationId, gener
 import type { SystemTaskJobData } from '@propr/core';
 import { validatePositiveInteger } from './validation.js';
 
+/** GitHub owner/repo names: alphanumeric, hyphens, underscores, dots. No slashes or whitespace. */
+const GITHUB_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
+
 export interface RevertRequestBody {
   repo: string;
   pr: string;
@@ -17,11 +20,11 @@ export function validateRevertRequestBody(body: Record<string, unknown>): { vali
     return { valid: false, error: 'Missing required parameters: repo, pr, commit, commentId, owner' };
   }
 
-  if (typeof repo !== 'string' || repo.length > 100) {
+  if (typeof repo !== 'string' || repo.length > 100 || !GITHUB_NAME_PATTERN.test(repo)) {
     return { valid: false, error: 'Invalid repo name' };
   }
 
-  if (typeof owner !== 'string' || owner.length > 100) {
+  if (typeof owner !== 'string' || owner.length > 100 || !GITHUB_NAME_PATTERN.test(owner)) {
     return { valid: false, error: 'Invalid owner name' };
   }
 
@@ -82,11 +85,11 @@ export function validateRevertPreviewParams(query: Record<string, string>): { va
     return { valid: false, error: 'Missing required parameters: owner, repo, pr, commit' };
   }
 
-  if (typeof owner !== 'string' || owner.length > 100) {
+  if (typeof owner !== 'string' || owner.length > 100 || !GITHUB_NAME_PATTERN.test(owner)) {
     return { valid: false, error: 'Invalid owner name' };
   }
 
-  if (typeof repo !== 'string' || repo.length > 100) {
+  if (typeof repo !== 'string' || repo.length > 100 || !GITHUB_NAME_PATTERN.test(repo)) {
     return { valid: false, error: 'Invalid repo name' };
   }
 
@@ -136,6 +139,8 @@ export type PrLookupResult = {
     head: { ref: string; repo?: { owner?: { login?: string }; name?: string; full_name?: string } | null };
     base: { ref: string; repo?: { full_name?: string } | null };
   };
+  /** Reuse this Octokit instance for subsequent calls in the same request */
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 } | {
   success: false;
   status: number;
@@ -148,7 +153,7 @@ export async function lookupPr(owner: string, repo: string, prNumber: number, pr
     const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
       owner, repo, pull_number: prNumber
     });
-    return { success: true, prData: response.data };
+    return { success: true, prData: response.data, octokit };
   } catch (prLookupError) {
     const err = prLookupError as { status?: number; message?: string };
     if (err.status === 404) {
@@ -159,8 +164,31 @@ export async function lookupPr(owner: string, repo: string, prNumber: number, pr
   }
 }
 
-export async function checkUserRepoAccess(targetOwner: string, targetRepo: string, requestingUser: string): Promise<{ allowed: true } | { allowed: false; status: number; error: string }> {
-  const octokit = await getAuthenticatedOctokit();
+/**
+ * Verify that a commit hash belongs to the given PR's commit list.
+ * Prevents arbitrary commit hash injection for destructive git reset.
+ */
+export async function verifyCommitBelongsToPr(
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+  owner: string, repo: string, prNumber: number, commit: string
+): Promise<{ valid: true } | { valid: false; status: number; error: string }> {
+  try {
+    const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
+      owner, repo, pull_number: prNumber, per_page: 100
+    }) as Array<{ sha: string }>;
+    const found = prCommits.some(c => c.sha === commit || c.sha.startsWith(commit));
+    if (!found) {
+      return { valid: false, status: 400, error: `Commit ${commit} does not belong to PR #${prNumber}` };
+    }
+    return { valid: true };
+  } catch (err) {
+    console.error(`[revert] Failed to fetch commits for PR #${prNumber}:`, err);
+    return { valid: false, status: 502, error: `Unable to verify commit against PR #${prNumber}` };
+  }
+}
+
+export async function checkUserRepoAccess(targetOwner: string, targetRepo: string, requestingUser: string, existingOctokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>): Promise<{ allowed: true } | { allowed: false; status: number; error: string }> {
+  const octokit = existingOctokit ?? await getAuthenticatedOctokit();
   try {
     const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
       owner: targetOwner,

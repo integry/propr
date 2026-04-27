@@ -24,7 +24,9 @@ const TEST_SECRET = 'test-secret-key-for-unit-tests';
 const originalEnv: Record<string, string | undefined> = {};
 
 function saveAndSetEnv(key: string, value: string | undefined): void {
-    originalEnv[key] = process.env[key];
+    if (!(key in originalEnv)) {
+        originalEnv[key] = process.env[key];
+    }
     if (value === undefined) {
         delete process.env[key];
     } else {
@@ -39,6 +41,10 @@ function restoreEnv(): void {
         } else {
             process.env[key] = value;
         }
+    }
+    // Clear the snapshot so subsequent suites start fresh
+    for (const key of Object.keys(originalEnv)) {
+        delete originalEnv[key];
     }
 }
 
