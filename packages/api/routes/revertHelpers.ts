@@ -96,7 +96,7 @@ export function validateRevertPreviewParams(query: Record<string, string>): { va
   return { valid: true, params: { owner, repo, pr, commit } };
 }
 
-export interface AuthorizationResult {
+export type AuthorizationResult = {
   authorized: true;
   requestingUser: string;
   systemTaskSecret: string;
@@ -129,7 +129,7 @@ export function checkRevertAuthorization(req: { user?: unknown }): Authorization
   return { authorized: true, requestingUser, systemTaskSecret };
 }
 
-export interface PrLookupResult {
+export type PrLookupResult = {
   success: true;
   prData: {
     head: { ref: string; repo?: { owner?: { login?: string }; name?: string; full_name?: string } | null };
@@ -173,6 +173,6 @@ export async function checkUserRepoAccess(targetOwner: string, targetRepo: strin
     return { allowed: true };
   } catch (scopeError) {
     console.error(`[revert] Failed to verify user scope for ${requestingUser} on ${targetOwner}/${targetRepo}:`, scopeError);
-    return { allowed: false, status: 403, error: `Unable to verify user access to ${targetOwner}/${targetRepo}` };
+    return { allowed: false, status: 502, error: `Unable to verify user access to ${targetOwner}/${targetRepo}` };
   }
 }
