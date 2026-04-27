@@ -93,6 +93,7 @@ export interface SystemTaskJobData {
     correlationId: string;
     requestingUser: string;
     authToken: string;
+    authTimestamp: number;
 }
 
 export interface IndexingJobData {

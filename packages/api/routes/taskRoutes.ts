@@ -193,6 +193,24 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
+      // Scope validation: verify the requesting user has collaborator access to the target repo
+      try {
+        const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
+          owner,
+          repo,
+          username: requestingUser
+        });
+        const permission = permissionData.permission;
+        if (permission !== 'admin' && permission !== 'write') {
+          res.status(403).json({ error: `User '${requestingUser}' does not have write access to ${owner}/${repo}` });
+          return;
+        }
+      } catch (scopeError) {
+        console.error(`[revert] Failed to verify user scope for ${requestingUser} on ${owner}/${repo}:`, scopeError);
+        res.status(403).json({ error: `Unable to verify user access to ${owner}/${repo}` });
+        return;
+      }
+
       const systemTaskSecret = process.env.SYSTEM_TASK_SECRET;
       if (!systemTaskSecret) {
         console.error('[revert] SYSTEM_TASK_SECRET is not configured');
@@ -200,7 +218,9 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      const authPayload = `revert:${owner}:${repo}:${prNumber}:${requestingUser}`;
+      const authTimestamp = Date.now();
+      const targetCommentIdNum = parseInt(commentId, 10);
+      const authPayload = `revert:${owner}:${repo}:${prNumber}:${requestingUser}:${commit}:${targetCommentIdNum}:${branch}:${authTimestamp}`;
       const hmac = crypto.createHmac('sha256', systemTaskSecret);
       hmac.update(authPayload);
       const authToken = hmac.digest('hex');
@@ -210,12 +230,13 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         repoName: repo,
         prNumber,
         commitHash: commit,
-        targetCommentId: parseInt(commentId, 10),
+        targetCommentId: targetCommentIdNum,
         prBranch: branch,
         owner: owner,
         correlationId,
         requestingUser,
-        authToken
+        authToken,
+        authTimestamp
       };
 
       const job = await taskQueue.add('processSystemTask', jobData);
