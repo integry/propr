@@ -372,14 +372,9 @@ export async function handleWebhookRequest(
 
   // Replay protection: reject duplicate or missing delivery IDs
   const rawDeliveryId = req.headers['x-github-delivery'];
-  if (Array.isArray(rawDeliveryId)) {
-    console.warn('[webhook] Rejecting multi-valued x-github-delivery header');
-    res.status(400).send('Invalid x-github-delivery header.');
-    return;
-  }
-  if (!rawDeliveryId) {
-    console.warn('[webhook] Missing x-github-delivery header');
-    res.status(400).send('Missing x-github-delivery header.');
+  if (!rawDeliveryId || Array.isArray(rawDeliveryId)) {
+    console.warn(`[webhook] ${Array.isArray(rawDeliveryId) ? 'Rejecting multi-valued' : 'Missing'} x-github-delivery header`);
+    res.status(400).send(`${Array.isArray(rawDeliveryId) ? 'Invalid' : 'Missing'} x-github-delivery header.`);
     return;
   }
 
@@ -418,19 +413,8 @@ function setupWebhookRoute(): void {
       await handleWebhookRequest(req, res, {
         webhookSecret: process.env.GH_WEBHOOK_SECRET,
         redis: {
-          set: async (key: string, value: string, opts?: { NX?: boolean; EX?: number }): Promise<string | null> => {
-            if (opts?.NX && opts?.EX !== undefined) {
-              return redisClient.set(key, value, { NX: true, EX: opts.EX });
-            }
-            if (opts?.NX) {
-              return redisClient.set(key, value, { NX: true });
-            }
-            if (opts?.EX !== undefined) {
-              return redisClient.set(key, value, { EX: opts.EX });
-            }
-            return redisClient.set(key, value);
-          },
-          del: (key: string) => redisClient.del(key),
+          set: (key, value, opts) => redisClient.set(key, value, opts as Parameters<typeof redisClient.set>[2]) as Promise<string | null>,
+          del: (key) => redisClient.del(key),
         },
         processor: (payload, event, cid) => processWebhookEvent(payload, event as WebhookEventType, cid),
         correlationId,
