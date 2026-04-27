@@ -195,6 +195,33 @@ describe('RepositorySelector', () => {
     expect(items).toHaveLength(2);
   });
 
+  it('preserves the selected baseBranch when choosing between duplicate repo names', () => {
+    const onRepoChange = vi.fn();
+    const branchRepos: RepoOption[] = [
+      { name: 'integry/forex', enabled: true, baseBranch: 'main' },
+      { name: 'integry/forex', enabled: true, baseBranch: 'develop' },
+      { name: 'integry/propr', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={branchRepos} selectedRepo="integry/forex" onRepoChange={onRepoChange} />
+    );
+
+    const trigger = screen.getByRole('button');
+    fireEvent.click(trigger);
+
+    const developItem = getVisibleRepoButtons().find(btn => btn.textContent?.includes('(develop)'));
+    expect(developItem).toBeDefined();
+
+    fireEvent.click(developItem!);
+
+    expect(onRepoChange).toHaveBeenCalledWith('integry/forex');
+    expect(trigger.textContent).toContain('(develop)');
+
+    fireEvent.click(trigger);
+    const selectedItem = getVisibleRepoButtons().find(btn => btn.className.includes('bg-indigo-50'));
+    expect(selectedItem?.textContent).toContain('(develop)');
+  });
+
   it('renders custom displayName instead of repo name', () => {
     const repos: RepoOption[] = [
       { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos' },
@@ -212,6 +239,23 @@ describe('RepositorySelector', () => {
     expect(items[0].textContent).toContain('All Repos');
     // The second repo without displayName should still show normal name
     expect(items[1].textContent).toContain('repo-beta');
+  });
+
+  it('keeps caller-provided "All Repos" option at the top of non-starred items', () => {
+    const repos: RepoOption[] = [
+      { name: 'all', enabled: true, displayName: 'All Repos' },
+      { name: 'aaa/repo', enabled: true },
+      { name: 'zzz/repo', enabled: true },
+    ];
+    render(
+      <RepositorySelector repos={repos} selectedRepo="all" onRepoChange={vi.fn()} />
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+
+    expect(items[0].textContent).toContain('All Repos');
+    expect(items[1].textContent).toContain('aaa/repo');
   });
 
   it('renders count badges when count is provided', () => {

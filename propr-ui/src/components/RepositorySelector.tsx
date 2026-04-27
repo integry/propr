@@ -79,22 +79,35 @@ const FormatRepoName: React.FC<{ name: string }> = ({ name }) => {
   return <span>{name}</span>;
 };
 
+const RepoLabel: React.FC<{ repo: RepoOption }> = ({ repo }) => {
+  if (repo.displayName) {
+    return <>{repo.displayName}</>;
+  }
+
+  return (
+    <>
+      <FormatRepoName name={repo.name} />
+      {repo.baseBranch && <span className="text-gray-500"> ({repo.baseBranch})</span>}
+    </>
+  );
+};
+
 // Repository item in dropdown list
 const RepoItem: React.FC<{
   repo: RepoOption;
   isSelected: boolean;
-  onSelect: (name: string) => void;
+  onSelect: (repo: RepoOption) => void;
 }> = ({ repo, isSelected, onSelect }) => (
   <button
     type="button"
     className={`w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-gray-50 transition-colors ${
       isSelected ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700'
     }`}
-    onClick={() => onSelect(repo.name)}
+    onClick={() => onSelect(repo)}
   >
     <RepoIcon repoName={repo.name} iconPath={repo.iconPath} />
     <span className="flex-1 truncate text-sm font-mono">
-      {repo.displayName ? repo.displayName : <FormatRepoName name={repo.name} />}
+      <RepoLabel repo={repo} />
     </span>
     {repo.count !== undefined && (
       <span className="inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0">
@@ -148,9 +161,9 @@ const repoKey = (repo: RepoOption): string =>
 const RepoList: React.FC<{
   starredRepos: RepoOption[];
   otherRepos: RepoOption[];
-  selectedRepo: string;
-  onSelect: (name: string) => void;
-}> = ({ starredRepos, otherRepos, selectedRepo, onSelect }) => {
+  selectedRepoKey: string | null;
+  onSelect: (repo: RepoOption) => void;
+}> = ({ starredRepos, otherRepos, selectedRepoKey, onSelect }) => {
   if (starredRepos.length === 0 && otherRepos.length === 0) {
     return (
       <div className="px-3 py-4 text-sm text-gray-500 text-center">
@@ -167,7 +180,12 @@ const RepoList: React.FC<{
             Starred
           </div>
           {starredRepos.map(repo => (
-            <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
+            <RepoItem
+              key={repoKey(repo)}
+              repo={repo}
+              isSelected={selectedRepoKey === repoKey(repo)}
+              onSelect={onSelect}
+            />
           ))}
         </>
       )}
@@ -179,7 +197,12 @@ const RepoList: React.FC<{
             </div>
           )}
           {otherRepos.map(repo => (
-            <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepo === repo.name} onSelect={onSelect} />
+            <RepoItem
+              key={repoKey(repo)}
+              repo={repo}
+              isSelected={selectedRepoKey === repoKey(repo)}
+              onSelect={onSelect}
+            />
           ))}
         </>
       )}
@@ -213,7 +236,11 @@ const BreadcrumbTrigger: React.FC<{
       <span className="truncate">
         {selectedRepoData?.displayName
           ? selectedRepoData.displayName
-          : selectedRepo ? selectedRepo.split('/')[1] || selectedRepo : (reposCount === 0 ? 'No repositories' : placeholder)}
+          : selectedRepoData?.baseBranch
+            ? `${selectedRepo.split('/')[1] || selectedRepo} (${selectedRepoData.baseBranch})`
+            : selectedRepo
+              ? selectedRepo.split('/')[1] || selectedRepo
+              : (reposCount === 0 ? 'No repositories' : placeholder)}
       </span>
     </button>
     <ChevronDown className={`w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none transition-transform ${isOpen ? 'rotate-180' : ''}`} />
@@ -279,6 +306,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [filter, setFilter] = useState('');
+  const [selectedRepoKeyOverride, setSelectedRepoKeyOverride] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -328,7 +356,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     }
   }, [isOpen]);
 
-  // Filter and sort repos: starred first, then alphabetical.
+  // Filter repos while preserving caller order within starred and non-starred groups.
   // Repos with the same name but different branches are preserved as distinct entries.
   const { starredRepos, otherRepos } = useMemo(() => {
     const lowerFilter = filter.toLowerCase();
@@ -337,15 +365,39 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
       (repo.displayName && repo.displayName.toLowerCase().includes(lowerFilter)) ||
       (repo.searchText && repo.searchText.toLowerCase().includes(lowerFilter))
     );
-    const starred = filtered.filter(r => r.starred).sort((a, b) => a.name.localeCompare(b.name));
-    const others = filtered.filter(r => !r.starred).sort((a, b) => a.name.localeCompare(b.name));
-    return { starredRepos: starred, otherRepos: others };
+    return {
+      starredRepos: filtered.filter(r => r.starred),
+      otherRepos: filtered.filter(r => !r.starred),
+    };
   }, [repos, filter]);
 
-  const selectedRepoData = repos.find(r => r.name === selectedRepo);
+  useEffect(() => {
+    if (!selectedRepoKeyOverride) return;
 
-  const handleSelect = useCallback((repoName: string) => {
-    onRepoChange(repoName);
+    const selectedOverride = repos.find(repo => repoKey(repo) === selectedRepoKeyOverride);
+    if (!selectedOverride || selectedOverride.name !== selectedRepo) {
+      setSelectedRepoKeyOverride(null);
+    }
+  }, [repos, selectedRepo, selectedRepoKeyOverride]);
+
+  const selectedRepoData = useMemo(() => {
+    if (selectedRepoKeyOverride) {
+      const selectedOverride = repos.find(
+        repo => repoKey(repo) === selectedRepoKeyOverride && repo.name === selectedRepo
+      );
+      if (selectedOverride) {
+        return selectedOverride;
+      }
+    }
+
+    return repos.find(repo => repo.name === selectedRepo);
+  }, [repos, selectedRepo, selectedRepoKeyOverride]);
+
+  const selectedRepoKeyValue = selectedRepoData ? repoKey(selectedRepoData) : null;
+
+  const handleSelect = useCallback((repo: RepoOption) => {
+    setSelectedRepoKeyOverride(repoKey(repo));
+    onRepoChange(repo.name);
     setIsOpen(false);
     setFilter('');
   }, [onRepoChange]);
@@ -356,7 +408,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
       setFilter('');
     } else if (e.key === 'Enter' && starredRepos.length + otherRepos.length === 1) {
       const singleRepo = starredRepos[0] || otherRepos[0];
-      handleSelect(singleRepo.name);
+      handleSelect(singleRepo);
     }
   }, [starredRepos, otherRepos, handleSelect]);
 
@@ -382,7 +434,12 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     <div className={`absolute top-full ${variant === 'breadcrumb' ? 'left-0 w-72' : 'left-0 right-0'} mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden`}>
       <FilterInput inputRef={inputRef} value={filter} onChange={setFilter} onKeyDown={handleKeyDown} />
       <div className="max-h-64 overflow-y-auto">
-        <RepoList starredRepos={starredRepos} otherRepos={otherRepos} selectedRepo={selectedRepo} onSelect={handleSelect} />
+        <RepoList
+          starredRepos={starredRepos}
+          otherRepos={otherRepos}
+          selectedRepoKey={selectedRepoKeyValue}
+          onSelect={handleSelect}
+        />
       </div>
     </div>
   );
