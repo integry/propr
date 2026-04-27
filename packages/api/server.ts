@@ -336,7 +336,7 @@ function setupRoutes(): void {
 }
 
 // Re-export for backward compatibility
-export { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from './webhookHandler.js';
+export { handleWebhookRequest } from './webhookHandler.js';
 
 function setupWebhookRoute(): void {
   if (process.env.ENABLE_GITHUB_WEBHOOKS !== 'true') {
