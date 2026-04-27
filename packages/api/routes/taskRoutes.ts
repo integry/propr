@@ -7,6 +7,46 @@ import type { SystemTaskJobData, CommentJobData, UnprocessedComment } from '@pro
 import { getTasksFromDb } from './taskHelpers.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
 
+interface RevertRequestBody {
+  repo: string;
+  pr: string;
+  commit: string;
+  commentId: string;
+  owner: string;
+}
+
+function validateRevertRequestBody(body: Record<string, unknown>): { valid: true; params: RevertRequestBody } | { valid: false; error: string } {
+  const { repo, pr, commit, commentId, owner } = body;
+
+  if (!repo || !pr || !commit || !commentId || !owner) {
+    return { valid: false, error: 'Missing required parameters' };
+  }
+
+  if (typeof repo !== 'string' || repo.length > 100) {
+    return { valid: false, error: 'Invalid repo name' };
+  }
+
+  if (typeof owner !== 'string' || owner.length > 100) {
+    return { valid: false, error: 'Invalid owner name' };
+  }
+
+  const prValidation = validatePositiveInteger(pr, 'PR number', { required: true, max: 10000000 });
+  if (!prValidation.valid) {
+    return { valid: false, error: prValidation.error! };
+  }
+
+  if (typeof commit !== 'string' || !/^[a-f0-9]{7,40}$/i.test(commit)) {
+    return { valid: false, error: 'Invalid commit hash' };
+  }
+
+  const commentIdValidation = validatePositiveInteger(commentId, 'Comment ID', { required: true, max: 10000000000 });
+  if (!commentIdValidation.valid) {
+    return { valid: false, error: commentIdValidation.error! };
+  }
+
+  return { valid: true, params: { repo, pr, commit, commentId, owner } as RevertRequestBody };
+}
+
 interface TaskRoutesDeps {
   db: Knex;
   taskQueue?: Queue;
@@ -135,47 +175,12 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      const { repo, pr, commit, commentId, owner } = req.body;
-
-      if (!repo || !pr || !commit || !commentId || !owner) {
-        res.status(400).json({
-          error: 'Missing required parameters',
-          required: ['repo', 'pr', 'commit', 'commentId', 'owner']
-        });
+      const bodyValidation = validateRevertRequestBody(req.body);
+      if (!bodyValidation.valid) {
+        res.status(400).json({ error: bodyValidation.error });
         return;
       }
-
-      // Validate repo name
-      if (typeof repo !== 'string' || repo.length > 100) {
-        res.status(400).json({ error: 'Invalid repo name' });
-        return;
-      }
-
-      // Validate owner name
-      if (typeof owner !== 'string' || owner.length > 100) {
-        res.status(400).json({ error: 'Invalid owner name' });
-        return;
-      }
-
-      // Validate PR number
-      const prValidation = validatePositiveInteger(pr, 'PR number', { required: true, max: 10000000 });
-      if (!prValidation.valid) {
-        res.status(400).json({ error: prValidation.error });
-        return;
-      }
-
-      // Validate commit hash
-      if (typeof commit !== 'string' || !/^[a-f0-9]{7,40}$/i.test(commit)) {
-        res.status(400).json({ error: 'Invalid commit hash' });
-        return;
-      }
-
-      // Validate commentId
-      const commentIdValidation = validatePositiveInteger(commentId, 'Comment ID', { required: true, max: 10000000000 });
-      if (!commentIdValidation.valid) {
-        res.status(400).json({ error: commentIdValidation.error });
-        return;
-      }
+      const { repo, pr, commit, commentId, owner } = bodyValidation.params;
 
       const octokit = await getAuthenticatedOctokit();
       const prNumber = parseInt(pr, 10);
