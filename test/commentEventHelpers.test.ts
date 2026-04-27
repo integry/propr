@@ -65,6 +65,21 @@ describe('modelLabelPrefix', () => {
         const result = modelLabelPrefix('');
         assert.deepStrictEqual(result, { prefix: 'llm-', derived: false });
     });
+
+    test('falls back to llm- for pattern with regex shorthand \\d in prefix', () => {
+        const result = modelLabelPrefix('^model\\d-(.+)$');
+        assert.deepStrictEqual(result, { prefix: 'llm-', derived: false });
+    });
+
+    test('falls back to llm- for pattern with regex shorthand \\w in prefix', () => {
+        const result = modelLabelPrefix('^prefix\\w(.+)$');
+        assert.deepStrictEqual(result, { prefix: 'llm-', derived: false });
+    });
+
+    test('falls back to llm- for pattern with regex shorthand \\s in prefix', () => {
+        const result = modelLabelPrefix('^llm\\s(.+)$');
+        assert.deepStrictEqual(result, { prefix: 'llm-', derived: false });
+    });
 });
 
 describe('buildCodeContext', () => {

@@ -24,8 +24,11 @@ await mock.module('ioredis', {
     },
 });
 
-// Mock bullmq
+// Mock bullmq — allow tests to inject active/waiting/delayed jobs
 const mockQueueAdd = mock.fn(async () => {});
+let mockActiveJobs: unknown[] = [];
+let mockWaitingJobs: unknown[] = [];
+let mockDelayedJobs: unknown[] = [];
 await mock.module('bullmq', {
     namedExports: {
         Queue: function Queue() {
@@ -33,9 +36,9 @@ await mock.module('bullmq', {
                 add: mockQueueAdd,
                 close: mock.fn(),
                 on: mock.fn(),
-                getActive: mock.fn(async () => []),
-                getWaiting: mock.fn(async () => []),
-                getDelayed: mock.fn(async () => []),
+                getActive: mock.fn(async () => mockActiveJobs),
+                getWaiting: mock.fn(async () => mockWaitingJobs),
+                getDelayed: mock.fn(async () => mockDelayedJobs),
             };
         },
         Worker: function Worker() {
@@ -190,6 +193,9 @@ describe('commentEventHandler — /switch command', () => {
         mockOctokit.request.mock.resetCalls();
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
 
         // Default: Octokit returns a PR with no labels
         mockOctokit.request.mock.mockImplementation(async () => ({
@@ -432,6 +438,9 @@ describe('commentEventHandler — /use command', () => {
         mockOctokit.request.mock.resetCalls();
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
 
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
@@ -586,6 +595,9 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         mockOctokit.request.mock.resetCalls();
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
 
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
@@ -701,5 +713,148 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.pullRequestNumber, 42);
         assert.strictEqual(jobData.repoOwner, 'testowner');
         assert.strictEqual(jobData.repoName, 'testrepo');
+    });
+});
+
+describe('commentEventHandler — slash command dedup protection', () => {
+    beforeEach(() => {
+        mockSafeUpdateLabels.mock.resetCalls();
+        mockQueueAdd.mock.resetCalls();
+        mockOctokit.request.mock.resetCalls();
+        mockLoggerInstance.info.mock.resetCalls();
+        mockLoggerInstance.warn.mock.resetCalls();
+        mockLoggerInstance.debug.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [],
+            },
+        }));
+    });
+
+    test('redelivered /use webhook is skipped when comment already processed', async () => {
+        const event = createPRCommentEvent('/use opus');
+        const config = createTestConfig();
+
+        // First delivery — should enqueue
+        await processCommentEvent(event, 'issue_comment', 'corr-dedup-1', config);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+
+        // Simulate redelivery — same event, same comment id
+        await processCommentEvent(event, 'issue_comment', 'corr-dedup-2', config);
+        // Should NOT enqueue a second job
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    });
+
+    test('redelivered /switch webhook is skipped and labels are not mutated again', async () => {
+        const event = createPRCommentEvent('/switch opus');
+        const config = createTestConfig();
+
+        // First delivery
+        await processCommentEvent(event, 'issue_comment', 'corr-dedup-3', config);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+
+        // Redelivery
+        await processCommentEvent(event, 'issue_comment', 'corr-dedup-4', config);
+        // Labels should NOT be updated again
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+    });
+
+    test('redelivered /review webhook is skipped', async () => {
+        const event = createPRCommentEvent('/review codex');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-dedup-5', config);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+
+        await processCommentEvent(event, 'issue_comment', 'corr-dedup-6', config);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    });
+});
+
+describe('commentEventHandler — slash command batching/concurrency guard', () => {
+    beforeEach(() => {
+        mockSafeUpdateLabels.mock.resetCalls();
+        mockQueueAdd.mock.resetCalls();
+        mockOctokit.request.mock.resetCalls();
+        mockLoggerInstance.info.mock.resetCalls();
+        mockLoggerInstance.warn.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [],
+            },
+        }));
+    });
+
+    test('/use is batched when an existing job is active for the same PR', async () => {
+        // Simulate an active job for PR 42
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+
+        const event = createPRCommentEvent('/use opus\nFix the bug');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-batch-1', config);
+
+        // Should NOT enqueue a new job
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        // Should store comment for batch via rpush
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+    });
+
+    test('/switch with instructions is batched when an existing job is active', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+
+        const event = createPRCommentEvent('/switch opus\nReview the code');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-batch-2', config);
+
+        // Labels should still be updated (label mutation happens before batching check)
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        // But the follow-up job should NOT be enqueued
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        // Comment should be stored for batch
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+    });
+
+    test('/use enqueues normally when no existing job is active', async () => {
+        // No active jobs (default)
+        const event = createPRCommentEvent('/use opus');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-batch-3', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+    });
+
+    test('/review is batched when a waiting job exists for the same PR', async () => {
+        mockWaitingJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+
+        const event = createPRCommentEvent('/review codex');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-batch-4', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
     });
 });

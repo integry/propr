@@ -58,6 +58,11 @@ export function modelLabelPrefix(pattern: string): { prefix: string; derived: bo
 
     const rawPrefix = clean.slice(0, idx);
 
+    // Reject prefixes that contain regex shorthand character classes (e.g. `\d`,
+    // `\w`, `\s`).  These are NOT literal character escapes and unescaping them
+    // would produce an incorrect prefix (e.g. `\d` → `d` instead of "any digit").
+    if (/\\[dDwWsSbB]/.test(rawPrefix)) return { prefix: DEFAULT, derived: false };
+
     // Unescape regex escape sequences (e.g. `\-` → `-`, `\.` → `.`) to
     // recover the literal prefix string.  If the prefix still contains
     // unescaped metacharacters after this step, it's not a simple literal.

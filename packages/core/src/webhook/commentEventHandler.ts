@@ -186,6 +186,15 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     // Strip the slash command line from the comment body so the downstream job
     // only sees the user's instructions, not the control syntax (consistent with /switch).
     const strippedComment = { ...comment, body: commandMeta.instructions || '' };
+
+    // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
+    const existingJob = await checkExistingJob(prNumber, owner, repo);
+    if (existingJob) {
+        await storeCommentForBatch(strippedComment, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
+        return;
+    }
+
     await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
 }
 
@@ -254,6 +263,15 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     // Strip the /switch command line from the comment body so the downstream job
     // only sees the user's instructions, not the control syntax.
     const strippedComment = { ...comment, body: commandMeta.instructions };
+
+    // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
+    const existingSwitchJob = await checkExistingJob(prNumber, owner, repo);
+    if (existingSwitchJob) {
+        await storeCommentForBatch(strippedComment, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id }, '/switch command: existing job found for PR, stored follow-up instructions for batch processing');
+        return;
+    }
+
     // Re-use already-fetched PR data to avoid a redundant GitHub API call.
     // The labels have been updated above, so reflect the new labels in the prefetched data.
     const updatedPRData = { branchName: prData.branchName, prLabels: [...prLabels.filter(l => !existingLlmLabels.includes(l.name)), ...newLabels.map(n => ({ id: 0, name: n, node_id: '', url: '', color: '', default: false, description: null }))] as Label[] };
@@ -293,7 +311,18 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     // Parse slash commands (/review, /fix, /merge, /switch, /use) before generic follow-up logic
     const parsedCommand = parseSlashCommand(comment.body);
     if (parsedCommand) {
+        // Deduplicate redelivered webhooks — same check used for normal follow-up comments
+        const slashCommentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
+        const alreadyProcessed = await redisClient.get(slashCommentTrackingKey);
+        if (alreadyProcessed) {
+            correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id }, 'Slash command comment already processed, skipping redelivery');
+            return;
+        }
         await handleSlashCommand({ parsedCommand, comment, commentAuthor, eventContext: { eventType, prNumber, owner, repo }, payload, config, correlationId, correlatedLogger });
+        // Mark as processed to prevent duplicate webhook delivery.
+        // enqueueNewCommentJob also sets this key, but not all slash command paths enqueue
+        // (e.g. /merge, /switch without instructions), so set it unconditionally here.
+        await redisClient.setex(slashCommentTrackingKey, 86400, Date.now().toString());
         return;
     }
 
