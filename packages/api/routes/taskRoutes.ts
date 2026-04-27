@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
@@ -186,6 +187,24 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const branch = prData.head.ref;
       const correlationId = generateCorrelationId();
 
+      const requestingUser = (req.user as { username?: string })?.username || '';
+      if (!requestingUser) {
+        res.status(401).json({ error: 'Unable to determine requesting user' });
+        return;
+      }
+
+      const systemTaskSecret = process.env.SYSTEM_TASK_SECRET;
+      if (!systemTaskSecret) {
+        console.error('[revert] SYSTEM_TASK_SECRET is not configured');
+        res.status(503).json({ error: 'System task authorization is not configured' });
+        return;
+      }
+
+      const authPayload = `revert:${owner}:${repo}:${prNumber}:${requestingUser}`;
+      const hmac = crypto.createHmac('sha256', systemTaskSecret);
+      hmac.update(authPayload);
+      const authToken = hmac.digest('hex');
+
       const jobData: SystemTaskJobData = {
         type: 'revert',
         repoName: repo,
@@ -194,7 +213,9 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         targetCommentId: parseInt(commentId, 10),
         prBranch: branch,
         owner: owner,
-        correlationId
+        correlationId,
+        requestingUser,
+        authToken
       };
 
       const job = await taskQueue.add('processSystemTask', jobData);

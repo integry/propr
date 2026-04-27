@@ -1,6 +1,7 @@
+import crypto from 'node:crypto';
 import { Job } from 'bullmq';
 import { simpleGit } from 'simple-git';
-import { logger } from '@propr/core';
+import { logger, getUserWhitelist } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, cleanupWorktree } from '@propr/core';
 import type { SystemTaskJobData, JobResult } from '@propr/core';
@@ -10,11 +11,37 @@ interface IssueComment {
 }
 
 /**
+ * Verify the HMAC auth token for a system task request.
+ * The token is an HMAC-SHA256 signature over "type:owner:repoName:prNumber:requestingUser"
+ * using the SYSTEM_TASK_SECRET environment variable.
+ */
+function verifyAuthToken(data: SystemTaskJobData): boolean {
+    const secret = process.env.SYSTEM_TASK_SECRET;
+    if (!secret) {
+        return false;
+    }
+
+    const payload = `${data.type}:${data.owner}:${data.repoName}:${data.prNumber}:${data.requestingUser}`;
+    const hmac = crypto.createHmac('sha256', secret);
+    hmac.update(payload);
+    const expectedToken = hmac.digest('hex');
+
+    try {
+        return crypto.timingSafeEqual(
+            Buffer.from(data.authToken, 'hex'),
+            Buffer.from(expectedToken, 'hex')
+        );
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Process system tasks like reverting commits and cleaning up comments.
  * This job is purely deterministic and does not use the LLM agent.
  */
 export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise<JobResult> {
-    const { repoName, prBranch, commitHash, targetCommentId, owner, prNumber, correlationId } = job.data;
+    const { repoName, prBranch, commitHash, targetCommentId, owner, prNumber, correlationId, requestingUser, authToken } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     correlatedLogger.info({
@@ -23,11 +50,25 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
         repoName,
         prNumber,
         commitHash,
-        targetCommentId
+        targetCommentId,
+        requestingUser
     }, 'Starting system task processing');
 
     if (job.data.type !== 'revert') {
         throw new Error(`Unknown system task type: ${job.data.type}`);
+    }
+
+    // Authorization: verify requesting user is in the whitelist
+    const whitelist = getUserWhitelist();
+    if (whitelist.length > 0 && !whitelist.includes(requestingUser)) {
+        correlatedLogger.warn({ requestingUser }, 'System task rejected: user not in whitelist');
+        throw new Error(`Unauthorized: user '${requestingUser}' is not allowed to perform system tasks`);
+    }
+
+    // Authorization: verify HMAC auth token
+    if (!authToken || !verifyAuthToken(job.data)) {
+        correlatedLogger.warn({ requestingUser }, 'System task rejected: invalid or missing auth token');
+        throw new Error('Unauthorized: invalid or missing system task auth token');
     }
 
     let worktreePath: string | undefined;

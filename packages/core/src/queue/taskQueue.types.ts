@@ -91,6 +91,8 @@ export interface SystemTaskJobData {
     prBranch: string;
     owner: string;
     correlationId: string;
+    requestingUser: string;
+    authToken: string;
 }
 
 export interface IndexingJobData {
