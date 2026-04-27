@@ -386,8 +386,7 @@ export async function handleWebhookRequest(
     return;
   }
 
-  // Everything after reservation is wrapped so that any failure (parse or
-  // processing) cleans up the Redis key and allows GitHub to retry.
+  // Wrap post-reservation logic so failures clean up the Redis key for retries.
   try {
     const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
     const event = req.headers['x-github-event'] as string;
@@ -414,15 +413,10 @@ function setupWebhookRoute(): void {
         webhookSecret: process.env.GH_WEBHOOK_SECRET,
         redis: {
           set: async (key, value, opts) => {
-            const args: [string, string] = [key, value];
-            if (opts?.EX != null && opts?.NX) {
-              return await redisClient.set(args[0], args[1], { EX: opts.EX, NX: true }) as string | null;
-            } else if (opts?.EX != null) {
-              return await redisClient.set(args[0], args[1], { EX: opts.EX }) as string | null;
-            } else if (opts?.NX) {
-              return await redisClient.set(args[0], args[1], { NX: true }) as string | null;
-            }
-            return await redisClient.set(args[0], args[1]) as string | null;
+            if (opts?.EX != null && opts?.NX) return await redisClient.set(key, value, { EX: opts.EX, NX: true }) as string | null;
+            if (opts?.EX != null) return await redisClient.set(key, value, { EX: opts.EX }) as string | null;
+            if (opts?.NX) return await redisClient.set(key, value, { NX: true }) as string | null;
+            return await redisClient.set(key, value) as string | null;
           },
           del: (key) => redisClient.del(key),
         },
