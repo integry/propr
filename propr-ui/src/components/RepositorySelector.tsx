@@ -163,6 +163,18 @@ const getBreadcrumbLabel = (
   return reposCount === 0 ? 'No repositories' : placeholder;
 };
 
+const getBreadcrumbTitle = (
+  selectedRepoData: RepoOption | undefined,
+  selectedRepo: string,
+  placeholder: string,
+  reposCount: number
+) => {
+  if (selectedRepoData?.displayName) return selectedRepoData.displayName;
+  if (selectedRepoData?.baseBranch) return `${selectedRepoData.name} (${selectedRepoData.baseBranch})`;
+  if (selectedRepo) return selectedRepo;
+  return reposCount === 0 ? 'No repositories' : placeholder;
+};
+
 const BreadcrumbTrigger: React.FC<{
   selectedRepoData: RepoOption | undefined;
   selectedRepo: string;
@@ -173,7 +185,7 @@ const BreadcrumbTrigger: React.FC<{
   onClick: () => void;
 }> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isOpen, onClick }) => (
   <>
-    <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50" title={getBreadcrumbLabel(selectedRepoData, selectedRepo, placeholder, reposCount)}>
+    <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50" title={getBreadcrumbTitle(selectedRepoData, selectedRepo, placeholder, reposCount)}>
       {selectedRepoData ? <RepoIcon repoName={selectedRepoData.name} iconPath={selectedRepoData.iconPath} /> : <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />}
       <span className="truncate">{getBreadcrumbLabel(selectedRepoData, selectedRepo, placeholder, reposCount)}</span>
     </button>

@@ -11,6 +11,7 @@ interface FiltersProps {
   repoFilter: string;
   setRepoFilter: (repo: string) => void;
   availableRepos: RepoOption[];
+  reposLoading: boolean;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
 }
@@ -23,6 +24,7 @@ export const Filters: React.FC<FiltersProps> = ({
   repoFilter,
   setRepoFilter,
   availableRepos,
+  reposLoading,
   searchQuery,
   setSearchQuery
 }) => {
@@ -73,11 +75,12 @@ export const Filters: React.FC<FiltersProps> = ({
               </select>
 
               {/* Repository filter - only show if multiple repos (more than just "All Repos") */}
-              {availableRepos.length > 1 && (
+              {(reposLoading || availableRepos.length > 1) && (
                 <RepositorySelector
                   repos={availableRepos}
                   selectedRepo={repoFilter}
                   onRepoChange={setRepoFilter}
+                  isLoading={reposLoading}
                   variant="default"
                   className="w-[160px] sm:w-[220px]"
                 />

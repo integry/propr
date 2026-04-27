@@ -351,4 +351,19 @@ describe('RepositorySelector', () => {
 
     expect(screen.getByRole('button')).toHaveAttribute('title', 'All Repos');
   });
+
+  it('keeps the full owner/repo in the breadcrumb tooltip for normal repositories', () => {
+    render(
+      <RepositorySelector
+        repos={[{ name: 'integry/propr', enabled: true }]}
+        selectedRepo="integry/propr"
+        onRepoChange={vi.fn()}
+        variant="breadcrumb"
+      />
+    );
+
+    const trigger = screen.getByRole('button');
+    expect(trigger).toHaveAttribute('title', 'integry/propr');
+    expect(trigger.textContent).toContain('propr');
+  });
 });
