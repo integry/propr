@@ -46,14 +46,46 @@ interface LogFiles {
 }
 
 const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+    // GitHub tokens
     { pattern: /ghp_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /gho_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /ghu_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /ghs_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /github_pat_[A-Za-z0-9_]{22,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+    // AWS keys
     { pattern: /AKIA[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_ACCESS_KEY]' },
     { pattern: /(?<=aws_secret_access_key\s*[=:]\s*)[A-Za-z0-9/+=]{40}/gi, replacement: '[REDACTED_AWS_SECRET_KEY]' },
+    // OpenRouter API keys
+    { pattern: /sk-or-v1-[A-Za-z0-9]{64}/g, replacement: '[REDACTED_OPENROUTER_KEY]' },
+    // Stripe API keys
+    { pattern: /sk_live_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_SECRET_KEY]' },
+    { pattern: /sk_test_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_SECRET_KEY]' },
+    { pattern: /rk_live_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_RESTRICTED_KEY]' },
+    { pattern: /rk_test_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_RESTRICTED_KEY]' },
+    { pattern: /pk_live_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_PUBLISHABLE_KEY]' },
+    { pattern: /pk_test_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_PUBLISHABLE_KEY]' },
+    // OpenAI API keys
+    { pattern: /sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}/g, replacement: '[REDACTED_OPENAI_KEY]' },
+    { pattern: /sk-proj-[A-Za-z0-9_\-]{40,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
+    // Anthropic API keys
+    { pattern: /sk-ant-[A-Za-z0-9\-]{32,}/g, replacement: '[REDACTED_ANTHROPIC_KEY]' },
+    // Slack tokens
+    { pattern: /xoxb-[0-9]{10,}-[A-Za-z0-9]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
+    { pattern: /xoxp-[0-9]{10,}-[A-Za-z0-9]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
+    { pattern: /xapp-[0-9]{1,}-[A-Za-z0-9]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
+    { pattern: /xoxa-[0-9]{10,}-[A-Za-z0-9]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
+    // SendGrid API keys
+    { pattern: /SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}/g, replacement: '[REDACTED_SENDGRID_KEY]' },
+    // Twilio
+    { pattern: /SK[0-9a-fA-F]{32}/g, replacement: '[REDACTED_TWILIO_KEY]' },
+    // Mailgun
+    { pattern: /key-[A-Za-z0-9]{32}/g, replacement: '[REDACTED_MAILGUN_KEY]' },
+    // Google API keys
+    { pattern: /AIza[A-Za-z0-9_\-]{35}/g, replacement: '[REDACTED_GOOGLE_API_KEY]' },
+    // Generic Bearer tokens
     { pattern: /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g, replacement: 'Bearer [REDACTED_BEARER_TOKEN]' },
+    // Generic secret/token assignment patterns (catches env vars like SECRET_KEY=... or API_TOKEN=...)
+    { pattern: /(?<=(?:SECRET|TOKEN|PASSWORD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_\-]{20,}(?=['"]?)/gi, replacement: '[REDACTED_SECRET]' },
 ];
 
 export function redactSecrets(input: string): string {
