@@ -45,6 +45,42 @@ interface LogFiles {
     output?: string;
 }
 
+const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+    { pattern: /ghp_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+    { pattern: /gho_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+    { pattern: /ghu_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+    { pattern: /ghs_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+    { pattern: /github_pat_[A-Za-z0-9_]{22,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+    { pattern: /AKIA[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_ACCESS_KEY]' },
+    { pattern: /(?<=aws_secret_access_key\s*[=:]\s*)[A-Za-z0-9/+=]{40}/gi, replacement: '[REDACTED_AWS_SECRET_KEY]' },
+    { pattern: /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g, replacement: 'Bearer [REDACTED_BEARER_TOKEN]' },
+];
+
+export function redactSecrets(input: string): string {
+    let result = input;
+    for (const { pattern, replacement } of SECRET_PATTERNS) {
+        result = result.replace(pattern, replacement);
+    }
+    return result;
+}
+
+export function redactObject<T>(obj: T): T {
+    if (typeof obj === 'string') {
+        return redactSecrets(obj) as T;
+    }
+    if (Array.isArray(obj)) {
+        return obj.map(item => redactObject(item)) as T;
+    }
+    if (obj !== null && typeof obj === 'object') {
+        const redacted: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(obj)) {
+            redacted[key] = redactObject(value);
+        }
+        return redacted as T;
+    }
+    return obj;
+}
+
 async function calculateExecutionCost(
     claudeResult: ClaudeResult,
     detailedStats: DetailedUsageStats
@@ -85,7 +121,7 @@ export async function createLogFiles(claudeResultInput: unknown, issueRef: Issue
             timestamp: new Date().toISOString(),
             issueNumber: issueRef.number,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            messages: claudeResult.conversationLog
+            messages: redactObject(claudeResult.conversationLog)
         };
         await fs.promises.writeFile(conversationPath, JSON.stringify(conversationData, null, 2));
         files.conversation = conversationPath;
@@ -94,7 +130,7 @@ export async function createLogFiles(claudeResultInput: unknown, issueRef: Issue
 
     if (claudeResult?.rawOutput) {
         const outputPath = path.join(logDir, `${filePrefix}-output.txt`);
-        await fs.promises.writeFile(outputPath, claudeResult.rawOutput);
+        await fs.promises.writeFile(outputPath, redactSecrets(claudeResult.rawOutput));
         files.output = outputPath;
         logger.info({ outputPath, size: claudeResult.rawOutput.length }, 'Created raw output log file');
     }
