@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import crypto from 'crypto';
 import http from 'node:http';
 import express, { Request, Response } from 'express';
-import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS, WEBHOOK_MAX_AGE_SECONDS } from '../packages/api/webhookHandler.js';
+import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/api/webhookHandler.js';
 
 /**
  * Webhook Replay Protection Tests
@@ -23,6 +23,10 @@ import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS, WEBHOOK_MAX_AGE_SEC
  * - Redis key storage with correct TTL
  * - Failed processing cleans up Redis key so retries work
  * - Parse failure cleans up Redis key so retries work
+ *
+ * Note: No time-based staleness tests — GitHub does not provide a signed
+ * timestamp, so the Date header cannot be trusted for replay protection.
+ * Replay resistance relies on Redis delivery-ID deduplication.
  */
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
@@ -355,113 +359,4 @@ describe('Webhook Replay Protection', () => {
     });
   });
 
-  describe('Stale delivery rejection', () => {
-    test('rejects request with Date header older than WEBHOOK_MAX_AGE_SECONDS', async () => {
-      const staleRedis = createMockRedisClient();
-      const nowSec = Math.floor(Date.now() / 1000);
-      // Create a Date header that is older than the max age
-      const staleDate = new Date((nowSec - WEBHOOK_MAX_AGE_SECONDS - 60) * 1000).toUTCString();
-
-      const staleApp = express();
-      staleApp.use('/webhook', express.raw({ type: 'application/json' }));
-      staleApp.post('/webhook', async (req: Request, res: Response) => {
-        try {
-          await handleWebhookRequest(req, res, {
-            webhookSecret: WEBHOOK_SECRET,
-            redis: staleRedis,
-            processor: async () => {},
-            correlationId: 'test-stale',
-            nowSeconds: nowSec,
-          });
-        } catch (error) {
-          if (!res.headersSent) {
-            res.status(500).send((error as Error).message);
-          }
-        }
-      });
-      const staleServer = staleApp.listen(0);
-      await new Promise<void>((resolve) => staleServer.on('listening', resolve));
-
-      try {
-        const body = makeBody();
-        const res = await sendWebhook(staleServer, body, {
-          'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
-          'x-github-delivery': 'delivery-stale',
-          'x-github-event': 'issues',
-          'date': staleDate,
-        });
-        assert.strictEqual(res.status, 400);
-        assert.match(res.body, /Stale webhook request/);
-        // Should not store in Redis since request was rejected before dedup
-        assert.ok(!staleRedis.store.has('webhook:delivery:delivery-stale'), 'stale request should not be stored in Redis');
-      } finally {
-        await new Promise<void>((resolve) => staleServer.close(() => resolve()));
-      }
-    });
-
-    test('accepts request with Date header within WEBHOOK_MAX_AGE_SECONDS', async () => {
-      const freshRedis = createMockRedisClient();
-      const nowSec = Math.floor(Date.now() / 1000);
-      // Create a Date header that is recent (10 seconds ago)
-      const freshDate = new Date((nowSec - 10) * 1000).toUTCString();
-
-      const freshApp = express();
-      freshApp.use('/webhook', express.raw({ type: 'application/json' }));
-      freshApp.post('/webhook', async (req: Request, res: Response) => {
-        try {
-          await handleWebhookRequest(req, res, {
-            webhookSecret: WEBHOOK_SECRET,
-            redis: freshRedis,
-            processor: async () => {},
-            correlationId: 'test-fresh',
-            nowSeconds: nowSec,
-          });
-        } catch (error) {
-          if (!res.headersSent) {
-            res.status(500).send((error as Error).message);
-          }
-        }
-      });
-      const freshServer = freshApp.listen(0);
-      await new Promise<void>((resolve) => freshServer.on('listening', resolve));
-
-      try {
-        const body = makeBody();
-        const res = await sendWebhook(freshServer, body, {
-          'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
-          'x-github-delivery': 'delivery-fresh',
-          'x-github-event': 'issues',
-          'date': freshDate,
-        });
-        assert.strictEqual(res.status, 200);
-        assert.strictEqual(res.body, 'Webhook processed.');
-      } finally {
-        await new Promise<void>((resolve) => freshServer.close(() => resolve()));
-      }
-    });
-
-    test('accepts request with no Date header (best-effort check)', async () => {
-      // When no Date header is present, the stale check is skipped
-      const body = makeBody();
-      const res = await sendWebhook(server, body, {
-        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
-        'x-github-delivery': 'delivery-no-date',
-        'x-github-event': 'issues',
-      });
-      assert.strictEqual(res.status, 200);
-      assert.strictEqual(res.body, 'Webhook processed.');
-    });
-
-    test('accepts request with unparseable Date header', async () => {
-      const body = makeBody();
-      const res = await sendWebhook(server, body, {
-        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
-        'x-github-delivery': 'delivery-bad-date',
-        'x-github-event': 'issues',
-        'date': 'not-a-valid-date',
-      });
-      assert.strictEqual(res.status, 200);
-      assert.strictEqual(res.body, 'Webhook processed.');
-    });
-  });
 });

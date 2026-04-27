@@ -4,13 +4,6 @@ import type { Request, Response } from 'express';
 /** TTL for webhook delivery deduplication keys in Redis (seconds) */
 export const WEBHOOK_DELIVERY_TTL_SECONDS = 300;
 
-/**
- * Maximum age (in seconds) of a webhook request before it is considered stale.
- * Checked against the HTTP Date header when present. Uses a generous window
- * that accommodates legitimate network delays while rejecting old replays.
- */
-export const WEBHOOK_MAX_AGE_SECONDS = 300;
-
 export interface WebhookHandlerDeps {
   webhookSecret: string | undefined;
   redis: {
@@ -19,15 +12,20 @@ export interface WebhookHandlerDeps {
   };
   processor: (payload: Record<string, unknown>, event: string, correlationId: string) => Promise<void>;
   correlationId: string;
-  /** Override current time for testing (epoch seconds). */
-  nowSeconds?: number;
 }
 
 /**
  * Core webhook request handler extracted for testability.
- * Validates signature, enforces delivery-ID deduplication via Redis,
- * rejects stale deliveries, validates required headers, parses the payload,
- * and delegates to the provided processor function.
+ *
+ * Security layers:
+ * 1. HMAC signature verification — proves the payload was sent by someone
+ *    who knows the webhook secret and that the body has not been tampered with.
+ * 2. Redis-based delivery-ID deduplication (NX + TTL) — rejects exact replays
+ *    within the TTL window. This is the primary replay-protection mechanism.
+ *
+ * Note: GitHub does not provide a signed timestamp, so time-based staleness
+ * checks are not possible without a trusted clock source. Replay protection
+ * relies entirely on the delivery-ID dedup window.
  *
  * All failure paths after the Redis reservation clean up the key so that
  * GitHub retries are not permanently blocked.
@@ -71,29 +69,9 @@ export async function handleWebhookRequest(
     return;
   }
 
-  // --- Stale delivery rejection ---
-  // Check the HTTP Date header to reject requests that are too old.
-  // This catches naïve replays of captured traffic. While a sophisticated
-  // attacker could alter the Date header, the HMAC signature check above
-  // ensures the payload body is authentic, and Redis dedup catches exact
-  // replays within the TTL window.
-  const nowSec = deps.nowSeconds ?? Math.floor(Date.now() / 1000);
-  const dateHeader = req.headers['date'] as string | undefined;
-  if (dateHeader) {
-    const requestTimeSec = Math.floor(new Date(dateHeader).getTime() / 1000);
-    if (!Number.isNaN(requestTimeSec)) {
-      const ageSec = nowSec - requestTimeSec;
-      if (ageSec > WEBHOOK_MAX_AGE_SECONDS) {
-        console.warn(`[webhook] Stale request rejected: age=${ageSec}s, max=${WEBHOOK_MAX_AGE_SECONDS}s, delivery=${rawDeliveryId}`);
-        res.status(400).send('Stale webhook request.');
-        return;
-      }
-    }
-  }
-
   // --- Replay protection: reject duplicate delivery IDs via Redis NX ---
   const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
-  const isNew = await redis.set(deliveryKey, String(nowSec), { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
+  const isNew = await redis.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
   if (!isNew) {
     console.warn(`[webhook] Duplicate delivery rejected: ${rawDeliveryId}`);
     res.status(409).send('Duplicate webhook delivery.');
