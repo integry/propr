@@ -50,19 +50,7 @@ export async function fetchPRFiles({
     return files;
 }
 
-/**
- * Fetches full content of changed files from the PR head branch.
- * Only fetches non-deleted files up to maxFiles and maxSizePerFile limits.
- */
-export async function fetchPRFileContents({
-    octokit,
-    repoOwner,
-    repoName,
-    prHeadRef,
-    files,
-    maxFiles = 10,
-    maxSizePerFile = 50000,
-}: {
+interface FetchPRFileContentsParams {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
     repoOwner: string;
     repoName: string;
@@ -70,7 +58,22 @@ export async function fetchPRFileContents({
     files: PRFile[];
     maxFiles?: number;
     maxSizePerFile?: number;
-}): Promise<Map<string, string>> {
+}
+
+/**
+ * Fetches full content of changed files from the PR head branch.
+ * Only fetches non-deleted files up to maxFiles and maxSizePerFile limits.
+ */
+export async function fetchPRFileContents(params: FetchPRFileContentsParams): Promise<Map<string, string>> {
+    const {
+        octokit,
+        repoOwner,
+        repoName,
+        prHeadRef,
+        files,
+        maxFiles = 10,
+        maxSizePerFile = 50000,
+    } = params;
     const contents = new Map<string, string>();
     const eligibleFiles = files
         .filter(f => f.status !== 'removed' && !f.filename.match(/\.(png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|pdf|zip|tar|gz)$/i))
