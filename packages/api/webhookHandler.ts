@@ -5,11 +5,9 @@ import type { Request, Response } from 'express';
 export const WEBHOOK_DELIVERY_TTL_SECONDS = 300;
 
 /**
- * Maximum age (in seconds) of a webhook delivery before it is considered stale.
- * GitHub includes the delivery timestamp inside the payload, but the most
- * reliable server-side proxy is the wall-clock skew between "now" and the
- * time the request was received. We use a generous window that accommodates
- * legitimate network delays while still rejecting old replays.
+ * Maximum age (in seconds) of a webhook request before it is considered stale.
+ * Checked against the HTTP Date header when present. Uses a generous window
+ * that accommodates legitimate network delays while rejecting old replays.
  */
 export const WEBHOOK_MAX_AGE_SECONDS = 300;
 
@@ -74,14 +72,26 @@ export async function handleWebhookRequest(
   }
 
   // --- Stale delivery rejection ---
-  // GitHub webhook payloads don't include a standard timestamp header, so we
-  // embed a server-side received-at check: if the delivery ID was already seen
-  // within the TTL window the NX guard catches it; for fresh IDs, we record the
-  // receipt time. To reject truly stale *requests* (e.g. captured traffic
-  // replayed hours later), we rely on the Redis NX+TTL window — any delivery
-  // older than WEBHOOK_MAX_AGE_SECONDS will have had its key expire, so we
-  // additionally store the receipt timestamp and check it on the next line.
+  // Check the HTTP Date header to reject requests that are too old.
+  // This catches naïve replays of captured traffic. While a sophisticated
+  // attacker could alter the Date header, the HMAC signature check above
+  // ensures the payload body is authentic, and Redis dedup catches exact
+  // replays within the TTL window.
   const nowSec = deps.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const dateHeader = req.headers['date'] as string | undefined;
+  if (dateHeader) {
+    const requestTimeSec = Math.floor(new Date(dateHeader).getTime() / 1000);
+    if (!Number.isNaN(requestTimeSec)) {
+      const ageSec = nowSec - requestTimeSec;
+      if (ageSec > WEBHOOK_MAX_AGE_SECONDS) {
+        console.warn(`[webhook] Stale request rejected: age=${ageSec}s, max=${WEBHOOK_MAX_AGE_SECONDS}s, delivery=${rawDeliveryId}`);
+        res.status(400).send('Stale webhook request.');
+        return;
+      }
+    }
+  }
+
+  // --- Replay protection: reject duplicate delivery IDs via Redis NX ---
   const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
   const isNew = await redis.set(deliveryKey, String(nowSec), { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
   if (!isNew) {
