@@ -186,8 +186,8 @@ test('redactSecrets replaces Google API keys', () => {
     assert.ok(result.includes('[REDACTED_GOOGLE_API_KEY]'));
 });
 
-test('redactSecrets replaces OpenAI project keys', () => {
-    const input = 'sk-proj-' + 'a'.repeat(50);
+test('redactSecrets replaces OpenAI project keys (longer variant)', () => {
+    const input = 'sk-proj-' + 'X'.repeat(80);
     const result = redactSecrets(input);
     assert.ok(!result.includes('sk-proj-'), 'OpenAI project key should be redacted');
     assert.ok(result.includes('[REDACTED_OPENAI_KEY]'));
@@ -331,10 +331,23 @@ test('redactSecrets should not redact "SECRET_KEY" without an assignment', () =>
 
 // --- Plain sk- key detection test (Finding 2) ---
 
-test('redactSecrets replaces plain sk- OpenAI keys without legacy marker', () => {
-    const input = 'sk-' + 'a'.repeat(48);
+test('redactSecrets does not false-positive on short sk- identifiers', () => {
+    // A plain "sk-" + 32 chars should NOT be redacted — it could be a non-secret identifier
+    const input = 'sk-' + 'a'.repeat(32);
+    assert.strictEqual(redactSecrets(input), input, 'Short sk- string should not be redacted');
+});
+
+test('redactSecrets redacts OpenAI legacy keys with T3BlbkFJ marker', () => {
+    const input = 'sk-' + 'a'.repeat(20) + 'T3BlbkFJ' + 'b'.repeat(20);
     const result = redactSecrets(input);
-    assert.ok(!result.includes('sk-aaa'), 'Plain sk- key should be redacted');
+    assert.ok(!result.includes('T3BlbkFJ'), 'Legacy OpenAI key should be redacted');
+    assert.ok(result.includes('[REDACTED_OPENAI_KEY]'));
+});
+
+test('redactSecrets redacts OpenAI project keys (sk-proj-)', () => {
+    const input = 'sk-proj-' + 'a'.repeat(50);
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('sk-proj-'), 'OpenAI project key should be redacted');
     assert.ok(result.includes('[REDACTED_OPENAI_KEY]'));
 });
 
@@ -349,8 +362,9 @@ test('generateCompletionComment redacts secrets in summary, conversation preview
         success: true,
         executionTime: 5000,
         model: 'claude-opus-4-6',
-        sessionId: 'test-session-id',
-        conversationId: 'test-conv-id',
+        // Intentionally omit sessionId/conversationId to avoid constructing a
+        // real Redis client inside createLogFiles — keeps this a deterministic
+        // unit test with no external dependencies.
         summary: `Completed task. Used token ${githubToken} to push changes.`,
         conversationLog: [
             {

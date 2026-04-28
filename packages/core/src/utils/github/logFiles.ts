@@ -45,7 +45,19 @@ interface LogFiles {
     output?: string;
 }
 
-const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+interface SecretPattern {
+    pattern: RegExp;
+    replacement: string;
+    /** When set, the replacement callback is used instead of a literal string substitution. */
+    dynamicReplacement?: 'bearer';
+}
+
+const SECRET_PATTERNS: SecretPattern[] = [
+    // =====================================================================
+    // Strict provider patterns — these have distinctive, well-known prefixes
+    // and are safe to match with high confidence.
+    // =====================================================================
+
     // --- GitHub ---
     { pattern: /ghp_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /gho_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
@@ -69,10 +81,9 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
     { pattern: /pk_live_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_PUBLISHABLE_KEY]' },
     { pattern: /pk_test_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_PUBLISHABLE_KEY]' },
 
-    // --- OpenAI ---
+    // --- OpenAI --- (legacy keys contain "T3BlbkFJ"; project keys start with "sk-proj-")
     { pattern: /sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}/g, replacement: '[REDACTED_OPENAI_KEY]' },
     { pattern: /sk-proj-[A-Za-z0-9_-]{40,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
-    { pattern: /sk-[A-Za-z0-9]{32,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
 
     // --- Anthropic ---
     { pattern: /sk-ant-[A-Za-z0-9-]{32,}/g, replacement: '[REDACTED_ANTHROPIC_KEY]' },
@@ -95,18 +106,23 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
     // --- Google ---
     { pattern: /AIza[A-Za-z0-9_-]{35}/g, replacement: '[REDACTED_GOOGLE_API_KEY]' },
 
-    // --- Generic patterns ---
-    // Bearer tokens — require at least 20 chars to avoid matching prose; empty replacement triggers casing-preserving callback
-    { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, replacement: '' },
+    // =====================================================================
+    // Heuristic / generic patterns — these rely on contextual signals (e.g.
+    // assignment syntax, "Bearer" scheme) and use broader matching.  Order
+    // matters: provider-specific rules above take precedence.
+    // =====================================================================
+
+    // Bearer tokens — require at least 20 chars to avoid matching prose
+    { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, replacement: '', dynamicReplacement: 'bearer' },
     // Secret/token assignment patterns (catches env vars like SECRET_KEY=... or API_TOKEN=...)
     { pattern: /(?<=(?:^|[_A-Z])(?:SECRET|PASSWORD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY|SECRET_TOKEN|API_TOKEN|AUTH_TOKEN)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_-]{20,}(?=['"]?)/gim, replacement: '[REDACTED_SECRET]' },
 ];
 
 export function redactSecrets(input: string): string {
     let result = input;
-    for (const { pattern, replacement } of SECRET_PATTERNS) {
-        if (replacement === '') {
-            // Bearer token: preserve original scheme casing
+    for (const { pattern, replacement, dynamicReplacement } of SECRET_PATTERNS) {
+        if (dynamicReplacement === 'bearer') {
+            // Preserve the original casing of "Bearer" / "bearer" / "BEARER"
             result = result.replace(pattern, (match) => {
                 const scheme = match.split(/\s/)[0];
                 return `${scheme} [REDACTED_BEARER_TOKEN]`;
