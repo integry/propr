@@ -97,7 +97,7 @@ export async function handleWebhookRequest(
       return;
     }
   } else {
-    console.error('[webhook] GH_WEBHOOK_SECRET is not configured — rejecting request. Set the environment variable to accept webhooks.');
+    console.error('[webhook] GH_WEBHOOK_SECRET is not configured — rejecting request. Set GH_WEBHOOK_SECRET in the environment to accept webhooks. This is a security requirement: all webhook deliveries are rejected until a secret is provisioned.');
     res.status(500).send('Webhook secret not configured.');
     return;
   }
@@ -126,10 +126,13 @@ export async function handleWebhookRequest(
     return;
   }
 
-  // --- Validate event type against known allowlist ---
+  // --- Ignore unsupported event types gracefully ---
+  // GitHub sends events like `ping` on webhook creation/update. Returning 200
+  // avoids marking those deliveries as failed in GitHub's UI while still
+  // preventing any downstream processing.
   if (!SUPPORTED_EVENTS.has(rawEvent)) {
-    console.warn(`[webhook] Unsupported event type: ${rawEvent}`);
-    res.status(400).send('Unsupported webhook event type.');
+    console.log(`[webhook] Ignoring unsupported event type: ${rawEvent}`);
+    res.status(200).send('Unsupported event type — ignored.');
     return;
   }
 

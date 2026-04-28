@@ -20,7 +20,7 @@ import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/
  * - Duplicate delivery rejected (409)
  * - Signature verification (401), including malformed signature lengths and multi-valued headers
  * - Missing x-github-event header rejection (400)
- * - Unsupported event type rejection (400)
+ * - Unsupported event type ignored with 200 (e.g. ping)
  * - Redis key storage with correct TTL
  * - Failed processing retains Redis key to block duplicate side effects
  * - Parse failure returns generic 400 and retains Redis key
@@ -404,15 +404,17 @@ describe('Webhook Replay Protection', () => {
   });
 
   describe('Unsupported event type', () => {
-    test('rejects request with unsupported x-github-event value', async () => {
+    test('ignores request with unsupported x-github-event value with 200', async () => {
       const body = makeBody();
       const res = await sendWebhook(server, body, {
         'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
         'x-github-delivery': 'delivery-unsupported-event',
         'x-github-event': 'unknown_event_type',
       });
-      assert.strictEqual(res.status, 400);
-      assert.match(res.body, /Unsupported webhook event type/);
+      // Unsupported events (e.g. ping) are acknowledged with 200 to avoid
+      // marking them as failed in GitHub's UI, but no processing occurs.
+      assert.strictEqual(res.status, 200);
+      assert.match(res.body, /ignored/i);
       // Unsupported event is validated before processing, but after Redis dedup
       // The delivery ID should still be reserved to prevent replay
     });

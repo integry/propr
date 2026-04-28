@@ -34,13 +34,14 @@ import type { Redis } from 'ioredis';
 
 const execAsync = promisify(exec);
 
-export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request' | 'check_run' | 'push';
-
 /** Runtime-accessible list of supported webhook event types — single source of truth. */
-export const SUPPORTED_WEBHOOK_EVENTS: readonly WebhookEventType[] = [
+export const SUPPORTED_WEBHOOK_EVENTS = [
   'issues', 'issue_comment', 'pull_request_review_comment',
   'pull_request', 'check_run', 'push',
 ] as const;
+
+/** Derived union type — always in sync with the runtime array. */
+export type WebhookEventType = (typeof SUPPORTED_WEBHOOK_EVENTS)[number];
 
 // --- PREVIEW ENVIRONMENT CONFIGURATION ---
 // This implements the "Singleton Processor" pattern for webhook routing.
@@ -311,13 +312,22 @@ async function forwardToProcessor(
     }
 
     try {
-        await fetch(targetUrl, {
+        const response = await fetch(targetUrl, {
             method: 'POST',
             headers,
             body,
         });
+        if (!response.ok) {
+            const responseBody = await response.text().catch(() => '<unreadable>');
+            log.error(
+                { prNumber, targetUrl, status: response.status, responseBody },
+                'Preview instance rejected forwarded webhook',
+            );
+            throw new Error(`Forwarded webhook rejected by preview instance: HTTP ${response.status}`);
+        }
     } catch (err) {
         log.error({ err, targetUrl }, 'Failed to forward webhook');
+        throw err;
     }
 }
 
