@@ -49,7 +49,7 @@ function humanizeKey(key: string): string {
 }
 
 function extractPercentFromObject(obj: Record<string, unknown>): number | null {
-    if (typeof obj.percentLeft === 'number') return -obj.percentLeft;
+    if (typeof obj.percentLeft === 'number') return 100 - obj.percentLeft;
     if (typeof obj.percent === 'number') return obj.percent;
     if (typeof obj.percentUsed === 'number') return obj.percentUsed;
     return null;
@@ -114,8 +114,10 @@ function extractRecordsFromDelta(
  *
  * @param usageMetrics - The usage tracking metrics from a result object.
  *   May be null/undefined when Agent Tank tracking was not active.
- * @returns A formatted string like `- Subscription usage: Session +16%, Weekly +4%`
+ * @returns A formatted string like `Session +16%, Weekly +4%`
  *   or an empty string when there is nothing to display.
+ *   Returns only the content — callers are responsible for rendering
+ *   their own bullet style or prefix.
  */
 export function formatSubscriptionUsage(
     usageMetrics: SubscriptionUsageMetrics | null | undefined,
@@ -145,5 +147,5 @@ export function formatSubscriptionUsage(
         return `${r.metricKey} +${value}%`;
     });
 
-    return `- Subscription usage: ${parts.join(', ')}\n`;
+    return parts.join(', ');
 }

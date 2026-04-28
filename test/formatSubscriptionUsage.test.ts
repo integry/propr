@@ -12,7 +12,7 @@ describe('formatSubscriptionUsage', () => {
                 { agent: 'claude', metricKey: 'Weekly', metricValue: 4 },
             ],
         });
-        assert.strictEqual(result, '- Subscription usage: Session +16%, Weekly +4%\n');
+        assert.strictEqual(result, 'Session +16%, Weekly +4%');
     });
 
     test('prefers records over delta when both are present', () => {
@@ -36,7 +36,7 @@ describe('formatSubscriptionUsage', () => {
                 { agent: 'gemini', metricKey: 'Daily', metricValue: 5 },
             ],
         });
-        assert.strictEqual(result, '- Subscription usage: Daily +5%\n');
+        assert.strictEqual(result, 'Daily +5%');
     });
 
     // --- Delta fallback ---
@@ -106,7 +106,7 @@ describe('formatSubscriptionUsage', () => {
                 { agent: 'claude', metricKey: 'Weekly', metricValue: 7 },
             ],
         });
-        assert.strictEqual(result, '- Subscription usage: Weekly +7%\n');
+        assert.strictEqual(result, 'Weekly +7%');
     });
 
     // --- Formatting ---
@@ -117,7 +117,7 @@ describe('formatSubscriptionUsage', () => {
                 { agent: 'claude', metricKey: 'Session', metricValue: 2.5 },
             ],
         });
-        assert.strictEqual(result, '- Subscription usage: Session +2.5%\n');
+        assert.strictEqual(result, 'Session +2.5%');
     });
 
     test('formats integer values without decimals', () => {
@@ -126,7 +126,7 @@ describe('formatSubscriptionUsage', () => {
                 { agent: 'claude', metricKey: 'Session', metricValue: 3 },
             ],
         });
-        assert.strictEqual(result, '- Subscription usage: Session +3%\n');
+        assert.strictEqual(result, 'Session +3%');
     });
 
     test('filters out negative values', () => {
@@ -136,6 +136,38 @@ describe('formatSubscriptionUsage', () => {
                 { agent: 'claude', metricKey: 'Weekly', metricValue: 3 },
             ],
         });
-        assert.strictEqual(result, '- Subscription usage: Weekly +3%\n');
+        assert.strictEqual(result, 'Weekly +3%');
+    });
+
+    // --- percentLeft legacy delta ---
+
+    test('correctly converts percentLeft-only delta to percent used', () => {
+        const result = formatSubscriptionUsage({
+            delta: {
+                session: { percentLeft: 84 },
+            },
+            agent: 'claude',
+        });
+        assert.strictEqual(result, 'Session +16%');
+    });
+
+    test('handles percentLeft of 100 (0% used) as empty', () => {
+        const result = formatSubscriptionUsage({
+            delta: {
+                session: { percentLeft: 100 },
+            },
+            agent: 'claude',
+        });
+        assert.strictEqual(result, '');
+    });
+
+    test('handles percentLeft of 0 (100% used)', () => {
+        const result = formatSubscriptionUsage({
+            delta: {
+                session: { percentLeft: 0 },
+            },
+            agent: 'claude',
+        });
+        assert.strictEqual(result, 'Session +100%');
     });
 });

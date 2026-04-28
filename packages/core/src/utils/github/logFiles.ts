@@ -353,9 +353,9 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
         ...buildOptionalDetails(claudeResult)
     ];
 
-    let result = lines.join('\n') + '\n';
-    if (subscriptionLine) result += subscriptionLine;
-    return result + '\n';
+    if (subscriptionLine) lines.push(`- Subscription usage: ${subscriptionLine}`);
+
+    return lines.join('\n') + '\n\n';
 }
 
 function buildSummarySection(claudeResult: ClaudeResult): string {
