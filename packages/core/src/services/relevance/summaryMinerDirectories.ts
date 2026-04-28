@@ -88,14 +88,8 @@ export async function aggregateDirectories(
       if (dirInfo) {
         dirsToProcess.push(dirInfo);
       } else {
-        // Directory is up-to-date, load its summary into cache for parent use
-        const existing = await db('directory_summaries').where({ path: dirPath, branch }).first();
-        if (existing) {
-          dirSummaryCache.set(dirPath, existing.summary);
-        }
+        await handleSkippedDirectory(dirPath, branch, dirSummaryCache, fullName);
         dirsProcessed++;
-        const skipProgress = await updateDirectoryProgress(fullName, branch);
-        if (skipProgress) { try { await publishProgress(fullName, branch, skipProgress); } catch { /* best-effort */ } }
       }
     }
 
@@ -118,14 +112,9 @@ export async function aggregateDirectories(
 
       // Save results and update cache
       for (const result of results) {
-        const dirInfo = result.summary ? batch.find(d => d.dirPath === result.dirPath) : null;
-        if (dirInfo && result.summary) {
-          await saveDirectorySummary(result.dirPath, result.summary, dirInfo.newHash, branch);
-          dirSummaryCache.set(result.dirPath, result.summary);
-        }
+        await saveBatchResult(result, batch, branch, dirSummaryCache);
         dirsProcessed++;
-        const dirProgress = await updateDirectoryProgress(fullName, branch);
-        if (dirProgress) { try { await publishProgress(fullName, branch, dirProgress); } catch { /* best-effort */ } }
+        await tryPublishDirectoryProgress(fullName, branch);
       }
     }
   }
@@ -134,6 +123,29 @@ export async function aggregateDirectories(
   await deleteStaleDirectorySummaries(fullName, branch, directories, log);
 
   log.info({ directoryCount: totalDirs, batchCount: totalBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
+}
+
+async function handleSkippedDirectory(dirPath: string, branch: string, dirSummaryCache: Map<string, string>, fullName: string): Promise<void> {
+  const existing = await db('directory_summaries').where({ path: dirPath, branch }).first();
+  if (existing) {
+    dirSummaryCache.set(dirPath, existing.summary);
+  }
+  await tryPublishDirectoryProgress(fullName, branch);
+}
+
+async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], branch: string, dirSummaryCache: Map<string, string>): Promise<void> {
+  if (!result.summary) return;
+  const dirInfo = batch.find(d => d.dirPath === result.dirPath);
+  if (!dirInfo) return;
+  await saveDirectorySummary(result.dirPath, result.summary, dirInfo.newHash, branch);
+  dirSummaryCache.set(result.dirPath, result.summary);
+}
+
+async function tryPublishDirectoryProgress(fullName: string, branch: string): Promise<void> {
+  const progress = await updateDirectoryProgress(fullName, branch);
+  if (progress) {
+    try { await publishProgress(fullName, branch, progress); } catch { /* best-effort */ }
+  }
 }
 
 /**

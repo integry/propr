@@ -23,24 +23,29 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     }
   }
 
+  function validateIndexingInput(body: Record<string, unknown>): string | null {
+    const { repository, baseBranch } = body;
+    if (!repository || typeof repository !== 'string') {
+      return 'repository is required and must be a string (e.g., "owner/repo")';
+    }
+    if (!(repository as string).match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/)) {
+      return 'Invalid repository format. Expected "owner/repo"';
+    }
+    if (baseBranch !== undefined && typeof baseBranch !== 'string') {
+      return 'baseBranch must be a string';
+    }
+    return null;
+  }
+
   async function triggerIndexing(req: Request, res: Response): Promise<void> {
     const { repository, fullReindex, baseBranch } = req.body;
+    const validationError = validateIndexingInput(req.body);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
+      return;
+    }
+
     try {
-      if (!repository || typeof repository !== 'string') {
-        res.status(400).json({ error: 'repository is required and must be a string (e.g., "owner/repo")' });
-        return;
-      }
-
-      if (!repository.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/)) {
-        res.status(400).json({ error: 'Invalid repository format. Expected "owner/repo"' });
-        return;
-      }
-
-      if (baseBranch !== undefined && typeof baseBranch !== 'string') {
-        res.status(400).json({ error: 'baseBranch must be a string' });
-        return;
-      }
-
       // Publish indexing status before queueing to prevent race where a fast worker
       // emits completed/failed before the route publishes the start event.
       // Best-effort: don't let a transient Redis pub/sub failure prevent queueing work.

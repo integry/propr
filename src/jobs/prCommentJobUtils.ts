@@ -1,19 +1,7 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { generateCorrelationId } from '@propr/core';
-import { handleError } from '@propr/core';
-import { getAuthenticatedOctokit } from '@propr/core';
-import { cleanupWorktree } from '@propr/core';
-import type { WorktreeInfo } from '@propr/core';
-import { formatResetTime } from '@propr/core';
-import type { ClaudeCodeResponse } from '@propr/core';
-import type { ClaudeResult } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
-import { issueQueue, type CommentJobData, type UnprocessedComment } from '@propr/core';
-import { TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
-import { getDefaultModel, resolveModelAlias } from '@propr/core';
-import { getPendingPrCommentsKey } from '@propr/core';
+import { generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree, formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel, resolveModelAlias, getPendingPrCommentsKey } from '@propr/core';
+import type { WorktreeInfo, ClaudeCodeResponse, ClaudeResult, CommentJobData, UnprocessedComment, WorkerStateManager } from '@propr/core';
 import type { Redis } from 'ioredis';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
@@ -129,12 +117,9 @@ export async function fetchAllComments(octokit: Awaited<ReturnType<typeof getAut
 }
 
 export interface CommitMessageOptions {
-    changesSummary: string;
-    unprocessedComments: UnprocessedComment[];
-    pullRequestNumber: number;
-    claudeResult: ClaudeCodeResponse;
-    llm: string | null | undefined;
-    authorsText: string;
+    changesSummary: string; unprocessedComments: UnprocessedComment[];
+    pullRequestNumber: number; claudeResult: ClaudeCodeResponse;
+    llm: string | null | undefined; authorsText: string;
 }
 
 export function buildCommitMessage(options: CommitMessageOptions): string {
@@ -152,14 +137,9 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME || 'unconfigured'}`;
 }
 
 export interface PromptOptions {
-    pullRequestNumber: number;
-    combinedCommentBody: string;
-    commentHistory: string;
-    originalTaskSpec: string;
-    worktreeInfo: WorktreeInfo;
-    repoOwner: string;
-    repoName: string;
-    commentCount: number;
+    pullRequestNumber: number; combinedCommentBody: string; commentHistory: string;
+    originalTaskSpec: string; worktreeInfo: WorktreeInfo;
+    repoOwner: string; repoName: string; commentCount: number;
     /** Formatted section of AI review comments gathered for /fix */
     reviewCommentsSection?: string;
 }
@@ -187,18 +167,12 @@ ${commentHistory}${originalTaskSpec}
 }
 
 export interface JobErrorOptions {
-    pullRequestNumber: number;
-    repoOwner: string;
-    repoName: string;
-    authorsText: string;
+    pullRequestNumber: number; repoOwner: string; repoName: string; authorsText: string;
     unprocessedComments: UnprocessedComment[];
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     startingWorkComment: { data: { id: number } } | null;
-    claudeResult: ClaudeCodeResponse | null;
-    correlationId: string;
-    correlatedLogger: Logger;
-    stateManager: WorkerStateManager;
-    taskId: string;
+    claudeResult: ClaudeCodeResponse | null; correlationId: string;
+    correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
 }
 
 export class UsageLimitError extends Error {
@@ -316,18 +290,11 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
 }
 
 export interface CleanupOptions {
-    stateManager: WorkerStateManager;
-    lockKey: string;
-    correlationId: string;
-    localRepoPath: string | undefined;
-    worktreeInfo: WorktreeInfo | undefined;
-    repoOwner: string;
-    repoName: string;
-    pullRequestNumber: number;
-    jobBranchName: string | undefined;
-    jobLlm: string | null | undefined;
-    correlatedLogger: Logger;
-    redisClient: Redis;
+    stateManager: WorkerStateManager; lockKey: string; correlationId: string;
+    localRepoPath: string | undefined; worktreeInfo: WorktreeInfo | undefined;
+    repoOwner: string; repoName: string; pullRequestNumber: number;
+    jobBranchName: string | undefined; jobLlm: string | null | undefined;
+    correlatedLogger: Logger; redisClient: Redis;
 }
 
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
@@ -368,20 +335,14 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
 export { buildMetricsSection } from './prCommentMetrics.js';
 
 export function parsePendingComment(commentJson: string, correlatedLogger: Logger): UnprocessedComment | null {
-    try {
-        return JSON.parse(commentJson) as UnprocessedComment;
-    } catch (parseError) {
-        correlatedLogger.warn({ error: (parseError as Error).message }, 'Failed to parse pending comment');
-        return null;
-    }
+    try { return JSON.parse(commentJson) as UnprocessedComment; }
+    catch (parseError) { correlatedLogger.warn({ error: (parseError as Error).message }, 'Failed to parse pending comment'); return null; }
 }
 
 export function processPendingComments(commentsToProcess: UnprocessedComment[], pendingComments: string[], correlatedLogger: Logger): void {
     for (const commentJson of pendingComments) {
         const pendingComment = parsePendingComment(commentJson, correlatedLogger);
-        if (pendingComment && !commentsToProcess.some(c => c.id === pendingComment.id)) {
-            commentsToProcess.push(pendingComment);
-        }
+        if (pendingComment && !commentsToProcess.some(c => c.id === pendingComment.id)) commentsToProcess.push(pendingComment);
     }
 }
 
