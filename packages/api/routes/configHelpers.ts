@@ -373,10 +373,29 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
         }
       }
     } else {
-      // No job found — force idle for the requested branch to handle stuck states
-      const targetBranch = branch || 'HEAD';
-      await updateRepositoryStatus(repository, 'idle', targetBranch);
-      removedQueuedBranches.push(targetBranch);
+      // No job found — force idle to handle stuck states
+      if (branch) {
+        // Specific branch requested
+        await updateRepositoryStatus(repository, 'idle', branch);
+        removedQueuedBranches.push(branch);
+      } else {
+        // No branch specified — reset all tracked branches for this repo
+        const statuses = await configManager.getRepositoriesIndexingStatus();
+        const repoStatuses = statuses.filter(
+          (s: { full_name: string }) => s.full_name === repository
+        );
+        if (repoStatuses.length > 0) {
+          for (const s of repoStatuses) {
+            const b = s.branch || 'HEAD';
+            await updateRepositoryStatus(repository, 'idle', b);
+            removedQueuedBranches.push(b);
+          }
+        } else {
+          // Fallback: at minimum reset HEAD
+          await updateRepositoryStatus(repository, 'idle', 'HEAD');
+          removedQueuedBranches.push('HEAD');
+        }
+      }
     }
 
     return { success: true, cancelledActiveBranches, removedQueuedBranches };

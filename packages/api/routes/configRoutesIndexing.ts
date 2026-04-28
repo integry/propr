@@ -38,14 +38,14 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
   }
 
   async function triggerIndexing(req: Request, res: Response): Promise<void> {
-    const { repository, fullReindex, baseBranch } = req.body;
-    const validationError = validateIndexingInput(req.body);
-    if (validationError) {
-      res.status(400).json({ error: validationError });
-      return;
-    }
-
     try {
+      const { repository, fullReindex, baseBranch } = req.body;
+      const validationError = validateIndexingInput(req.body);
+      if (validationError) {
+        res.status(400).json({ error: validationError });
+        return;
+      }
+
       // Publish indexing status before queueing to prevent race where a fast worker
       // emits completed/failed before the route publishes the start event.
       // Best-effort: don't let a transient Redis pub/sub failure prevent queueing work.
@@ -62,7 +62,11 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         // so broadcasting idle would incorrectly tell clients the job stopped.
         const isAlreadyQueued = result.error?.includes('already queued');
         if (!isAlreadyQueued) {
-          await publishIndexingStatus(repository, baseBranch || 'HEAD', 'idle');
+          try {
+            await publishIndexingStatus(repository, baseBranch || 'HEAD', 'idle');
+          } catch {
+            // Best-effort rollback — don't mask the real error
+          }
         }
         const statusCode = isAlreadyQueued ? 409 : 400;
         res.status(statusCode).json({ error: result.error });
@@ -77,9 +81,10 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: !!fullReindex, baseBranch });
     } catch (error) {
       // Revert the optimistic indexing status since queueing threw
-      if (repository && typeof repository === 'string') {
+      const body = req.body || {};
+      if (body.repository && typeof body.repository === 'string') {
         try {
-          await publishIndexingStatus(repository, baseBranch || 'HEAD', 'idle');
+          await publishIndexingStatus(body.repository, body.baseBranch || 'HEAD', 'idle');
         } catch {
           // Best-effort rollback
         }
