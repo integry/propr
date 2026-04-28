@@ -131,6 +131,20 @@ export async function aggregateDirectories(
   }
 
   // Clean up stale directory summaries
+  await deleteStaleDirectorySummaries(fullName, branch, directories, log);
+
+  log.info({ directoryCount: totalDirs, batchCount: totalBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
+}
+
+/**
+ * Deletes directory summaries that no longer correspond to existing directories
+ */
+async function deleteStaleDirectorySummaries(
+  fullName: string,
+  branch: string,
+  directories: Set<string>,
+  log: Logger
+): Promise<void> {
   const existingDirs = await db('directory_summaries')
     .where('path', 'like', `${fullName}/%`)
     .andWhere({ branch })
@@ -151,8 +165,6 @@ export async function aggregateDirectories(
     }
     log.info({ count: dirsToDelete.length }, 'Deleted stale directory summaries');
   }
-
-  log.info({ directoryCount: totalDirs, batchCount: totalBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
 }
 
 /**
