@@ -195,7 +195,7 @@ test('redactSecrets replaces OpenAI project keys', () => {
 
 // --- End-to-end tests for createLogFiles (Finding 2) ---
 
-test('createLogFiles writes redacted secrets to the JSON conversation log file', async () => {
+test('createLogFiles writes redacted secrets to the JSON conversation log file', async (t) => {
     const githubToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
     const awsKey = 'AKIAIOSFODNN7EXAMPLE';
     const claudeResult = {
@@ -214,6 +214,12 @@ test('createLogFiles writes redacted secrets to the JSON conversation log file',
 
     const logFiles = await createLogFiles(claudeResult, issueRef);
 
+    // Failure-safe cleanup: runs even if assertions throw
+    t.after(async () => {
+        if (logFiles.conversation) await fs.promises.unlink(logFiles.conversation).catch(() => {});
+        if (logFiles.output) await fs.promises.unlink(logFiles.output).catch(() => {});
+    });
+
     // Verify conversation JSON file is redacted
     assert.ok(logFiles.conversation, 'Conversation log file should be created');
     const jsonContent = await fs.promises.readFile(logFiles.conversation, 'utf-8');
@@ -227,13 +233,9 @@ test('createLogFiles writes redacted secrets to the JSON conversation log file',
     const txtContent = await fs.promises.readFile(logFiles.output, 'utf-8');
     assert.ok(!txtContent.includes(githubToken), 'GitHub token must not appear in persisted text output');
     assert.ok(txtContent.includes('[REDACTED_GITHUB_TOKEN]'), 'Redaction placeholder should be present in text output');
-
-    // Cleanup
-    if (logFiles.conversation) await fs.promises.unlink(logFiles.conversation).catch(() => {});
-    if (logFiles.output) await fs.promises.unlink(logFiles.output).catch(() => {});
 });
 
-test('createLogFiles writes redacted Bearer tokens to the text output file', async () => {
+test('createLogFiles writes redacted Bearer tokens to the text output file', async (t) => {
     const bearerToken = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
     const claudeResult = {
         success: true,
@@ -243,13 +245,15 @@ test('createLogFiles writes redacted Bearer tokens to the text output file', asy
 
     const logFiles = await createLogFiles(claudeResult, issueRef);
 
+    // Failure-safe cleanup: runs even if assertions throw
+    t.after(async () => {
+        if (logFiles.output) await fs.promises.unlink(logFiles.output).catch(() => {});
+    });
+
     assert.ok(logFiles.output, 'Output log file should be created');
     const txtContent = await fs.promises.readFile(logFiles.output, 'utf-8');
     assert.ok(!txtContent.includes('eyJhbGciOiJ'), 'Bearer token must not appear in persisted text output');
     assert.ok(txtContent.includes('Bearer [REDACTED_BEARER_TOKEN]'), 'Redacted bearer placeholder should be present');
-
-    // Cleanup
-    if (logFiles.output) await fs.promises.unlink(logFiles.output).catch(() => {});
 });
 
 // --- Lowercase bearer token tests (Review finding 1) ---
@@ -336,7 +340,7 @@ test('redactSecrets replaces plain sk- OpenAI keys without legacy marker', () =>
 
 // --- End-to-end test for generateCompletionComment (Review warning: comment redaction) ---
 
-test('generateCompletionComment redacts secrets in summary, conversation preview, and raw output', async () => {
+test('generateCompletionComment redacts secrets in summary, conversation preview, and raw output', async (t) => {
     const githubToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
     const bearerToken = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
     const awsKey = 'AKIAIOSFODNN7EXAMPLE';
@@ -361,6 +365,20 @@ test('generateCompletionComment redacts secrets in summary, conversation preview
     };
 
     const issueRef = { number: 7777, repoOwner: 'test-owner', repoName: 'test-repo' };
+
+    // Failure-safe cleanup: runs even if assertions throw
+    t.after(async () => {
+        const os = await import('os');
+        const path = await import('path');
+        const logDir = path.join(os.tmpdir(), 'claude-logs');
+        const entries = await fs.promises.readdir(logDir).catch(() => [] as string[]);
+        for (const entry of entries) {
+            if (entry.startsWith('issue-7777-')) {
+                await fs.promises.unlink(path.join(logDir, entry)).catch(() => {});
+            }
+        }
+    });
+
     const comment = await generateCompletionComment(claudeResult, issueRef);
 
     // Secrets must not appear anywhere in the final comment
@@ -372,17 +390,6 @@ test('generateCompletionComment redacts secrets in summary, conversation preview
     assert.ok(comment.includes('[REDACTED_GITHUB_TOKEN]'), 'GitHub redaction placeholder should appear in comment');
     assert.ok(comment.includes('[REDACTED_BEARER_TOKEN]'), 'Bearer redaction placeholder should appear in comment');
     assert.ok(comment.includes('[REDACTED_AWS_ACCESS_KEY]'), 'AWS redaction placeholder should appear in comment');
-
-    // Cleanup temp files created by createLogFiles inside generateCompletionComment
-    const os = await import('os');
-    const path = await import('path');
-    const logDir = path.join(os.tmpdir(), 'claude-logs');
-    const entries = await fs.promises.readdir(logDir).catch(() => [] as string[]);
-    for (const entry of entries) {
-        if (entry.startsWith('issue-7777-')) {
-            await fs.promises.unlink(path.join(logDir, entry)).catch(() => {});
-        }
-    }
 });
 
 // --- Vendor-specific false-positive boundary tests ---
@@ -426,4 +433,36 @@ test('redactSecrets correctly redacts a real Mailgun key', () => {
     const result = redactSecrets(input);
     assert.ok(!result.includes('key-aaa'), 'Mailgun key should be redacted');
     assert.ok(result.includes('[REDACTED_MAILGUN_KEY]'));
+});
+
+// --- Case-insensitive equivalence tests (prove no casing bypasses redaction) ---
+
+test('redactSecrets redacts BEARER in all-caps', () => {
+    const input = 'Authorization: BEARER eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('eyJhbGciOiJ'), 'All-caps BEARER token value must be redacted');
+    assert.ok(result.includes('BEARER [REDACTED_BEARER_TOKEN]'));
+});
+
+test('redactSecrets redacts lowercase secret assignment patterns', () => {
+    const input = 'password="abcdefghijklmnopqrstuvwxyz1234"';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('abcdefghijklmnopqrstuvwxyz1234'), 'Lowercase password assignment must be redacted');
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+test('redactSecrets redacts mixed-case secret assignment patterns', () => {
+    const input = 'Api_Key="someLongSecretValue1234567890ab"';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('someLongSecretValue1234567890ab'), 'Mixed-case Api_Key assignment must be redacted');
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+test('redactSecrets redacts secrets regardless of surrounding text with no known prefixes', () => {
+    // This input contains no literal prefix strings from the old SECRET_PREFIXES list
+    // but should still be redacted via the case-insensitive generic pattern
+    const input = 'MY_PASSWORD="VeryLongSecretPassword12345678"';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('VeryLongSecretPassword12345678'), 'Generic PASSWORD assignment must be redacted even without fast-path prefix');
+    assert.ok(result.includes('[REDACTED_SECRET]'));
 });
