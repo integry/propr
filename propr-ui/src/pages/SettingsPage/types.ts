@@ -6,6 +6,10 @@ export interface Settings {
   default_agent_alias: string;
   auto_followup_score_threshold: number;
   auto_resolve_merge_conflicts: boolean;
+  pr_review_model: string;
+  ultrafix_rating_goal: number;
+  ultrafix_max_cycles: number;
+  ultrafix_pause_seconds: number;
   // github_user_whitelist is now handled as string[] in main state
 }
 

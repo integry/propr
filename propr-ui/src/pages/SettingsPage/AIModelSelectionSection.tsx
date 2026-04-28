@@ -9,6 +9,7 @@ interface AIModelSelectionSettings {
   planner_context_model: string;
   planner_generation_model: string;
   default_agent_alias: string;
+  pr_review_model: string;
 }
 
 interface AIModelSelectionSectionProps {
@@ -39,6 +40,9 @@ const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemin
 
 // Models recommended for implementation (high capability options)
 const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude'];
+
+// Models recommended for PR review (high capability options)
+const RECOMMENDED_PR_REVIEW_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro'];
 
 const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   settings,
@@ -71,6 +75,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const isRecommendedForPlanGeneration = (modelId: string) => {
     const info = MODEL_INFO_MAP[modelId];
     return info && RECOMMENDED_PLAN_GENERATION_ALIASES.includes(info.shortAlias);
+  };
+
+  // Check if a model is recommended for PR review
+  const isRecommendedForPrReview = (modelId: string) => {
+    const info = MODEL_INFO_MAP[modelId];
+    return info && RECOMMENDED_PR_REVIEW_ALIASES.includes(info.shortAlias);
   };
 
   // Check if an agent is recommended for implementation
@@ -148,6 +158,20 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
     label: agent.alias,
     isRecommended: isAgentRecommendedForImplementation(agent.alias)
   })).sort((a, b) => {
+    if (a.isRecommended && !b.isRecommended) return -1;
+    if (!a.isRecommended && b.isRecommended) return 1;
+    return 0;
+  });
+
+  // Model options for PR review (only enabled agents, sorted by recommendation - high capability models)
+  const prReviewOptions: ModelOption[] = enabledAgents.flatMap(agent =>
+    agent.supportedModels.map(model => ({
+      value: `${agent.alias}:${model}`,
+      label: getModelLabel(agent.alias, model),
+      enabled: agent.enabled,
+      isRecommended: isRecommendedForPrReview(model)
+    }))
+  ).sort((a, b) => {
     if (a.isRecommended && !b.isRecommended) return -1;
     if (!a.isRecommended && b.isRecommended) return 1;
     return 0;
@@ -354,10 +378,51 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
             <h5 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Review</h5>
           </div>
           <div className="space-y-3 pl-6">
+            {/* Default PR Review Model */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="pr_review_model">
+                Default PR Review Model
+              </label>
+              {hasEnabledAgents ? (
+                <select
+                  id="pr_review_model"
+                  name="pr_review_model"
+                  value={settings.pr_review_model}
+                  onChange={onSettingChange}
+                  className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
+                >
+                  <option value="">Use default agent model</option>
+                  {prReviewOptions.map(opt => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                      {opt.isRecommended ? ' (Recommended)' : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
+                  No enabled agents available. Please enable an agent in the{' '}
+                  <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
+                    AI Agents
+                  </a>{' '}
+                  page first.
+                </div>
+              )}
+              <p className="mt-1 text-xs text-gray-500">
+                The model used to review pull requests and provide feedback.
+                {hasEnabledAgents && (
+                  <span className="flex items-center gap-1.5 mt-1">
+                    <RecommendedChip />
+                    <span>models are high-capability models best suited for thorough PR reviews.</span>
+                  </span>
+                )}
+              </p>
+            </div>
+
             {/* Post-implementation Analysis Model */}
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="analysis_model_fast">
-                Post-implementation Analysis Model
+                Post-Implementation Analysis Model
               </label>
               {hasAgents ? (
                 <select
@@ -397,7 +462,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                 </div>
               )}
               <p className="mt-1 text-xs text-gray-500">
-                Analyzes code changes after implementation.
+                Analyzes the agent run, prompt, and diff after implementation. This is not used for PR review.
               </p>
             </div>
           </div>

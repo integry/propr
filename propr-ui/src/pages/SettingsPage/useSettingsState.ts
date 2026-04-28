@@ -47,6 +47,8 @@ function parseLoadedData(results: any[]) {
     planner_context_model?: string; planner_generation_model?: string;
     default_agent_alias?: string; github_user_whitelist?: string[];
     auto_followup_score_threshold?: number; auto_resolve_merge_conflicts?: boolean;
+    pr_review_model?: string; ultrafix_rating_goal?: number;
+    ultrafix_max_cycles?: number; ultrafix_pause_seconds?: number;
   };
   const agentsList = (aData as { agents?: AgentConfig[] }).agents || [];
   const enabledAgents = agentsList.filter((a: AgentConfig) => a.enabled);
@@ -61,6 +63,10 @@ function parseLoadedData(results: any[]) {
       default_agent_alias: resolveDefaultAgentAlias(settingsData.default_agent_alias, enabledAgents),
       auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4,
       auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false,
+      pr_review_model: settingsData.pr_review_model || '',
+      ultrafix_rating_goal: settingsData.ultrafix_rating_goal ?? 7,
+      ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
+      ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,
     },
     whitelist: Array.isArray(whitelistRaw) ? whitelistRaw : [],
     keywords: (kData as { followup_keywords?: string[] }).followup_keywords || [],
@@ -98,7 +104,11 @@ export function useSettingsState() {
     planner_generation_model: '',
     default_agent_alias: '',
     auto_followup_score_threshold: 4,
-    auto_resolve_merge_conflicts: false
+    auto_resolve_merge_conflicts: false,
+    pr_review_model: '',
+    ultrafix_rating_goal: 7,
+    ultrafix_max_cycles: 5,
+    ultrafix_pause_seconds: 60
   });
   const [prLabel, setPrLabel] = useState('');
 
@@ -221,7 +231,11 @@ export function useSettingsState() {
           planner_generation_model: settingsToSave.planner_generation_model,
           default_agent_alias: settingsToSave.default_agent_alias,
           auto_followup_score_threshold: settingsToSave.auto_followup_score_threshold,
-          auto_resolve_merge_conflicts: settingsToSave.auto_resolve_merge_conflicts
+          auto_resolve_merge_conflicts: settingsToSave.auto_resolve_merge_conflicts,
+          pr_review_model: settingsToSave.pr_review_model,
+          ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
+          ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
+          ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
         }),
         updatePrLabel(prLabelToSave.trim()),
         updatePrimaryProcessingLabels(primaryLabelsToSave),
