@@ -110,27 +110,63 @@ function extractRecordsFromDelta(
 }
 
 /**
+ * Normalize a possibly snake_case payload into the camelCase shape
+ * the formatter expects.  This handles older or partially migrated
+ * callers that pass through the storage-shaped `usage_metrics` /
+ * `usage_metric_records` directly.
+ */
+function normalizeMetrics(
+    raw: Record<string, unknown>,
+): SubscriptionUsageMetrics {
+    const normalized: SubscriptionUsageMetrics = {};
+
+    // records / usage_metric_records
+    const records = raw.records ?? raw.usage_metric_records;
+    if (Array.isArray(records)) {
+        normalized.records = records as SubscriptionUsageRecord[];
+    }
+
+    // delta / usage_metrics (when it's the delta sub-object)
+    const delta = raw.delta ?? raw.usage_metrics;
+    if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
+        normalized.delta = delta as Record<string, unknown>;
+    }
+
+    // agent
+    if (typeof raw.agent === 'string') {
+        normalized.agent = raw.agent;
+    }
+
+    return normalized;
+}
+
+/**
  * Format subscription usage data into a single GitHub-comment line.
  *
  * @param usageMetrics - The usage tracking metrics from a result object.
  *   May be null/undefined when Agent Tank tracking was not active.
+ *   Accepts both camelCase (`records`, `delta`) and snake_case
+ *   (`usage_metric_records`, `usage_metrics`) field names.
  * @returns A formatted string like `Session +16%, Weekly +4%`
  *   or an empty string when there is nothing to display.
  *   Returns only the content — callers are responsible for rendering
  *   their own bullet style or prefix.
  */
 export function formatSubscriptionUsage(
-    usageMetrics: SubscriptionUsageMetrics | null | undefined,
+    usageMetrics: SubscriptionUsageMetrics | Record<string, unknown> | null | undefined,
 ): string {
     if (!usageMetrics) return '';
 
+    // Normalize snake_case fields to camelCase
+    const metrics = normalizeMetrics(usageMetrics as Record<string, unknown>);
+
     // Prefer structured records when available
-    let records = usageMetrics.records;
+    let records = metrics.records;
 
     // Fall back to extracting from delta
-    if ((!records || records.length === 0) && usageMetrics.delta) {
-        const agent = usageMetrics.agent || 'unknown';
-        records = extractRecordsFromDelta(agent, usageMetrics.delta);
+    if ((!records || records.length === 0) && metrics.delta) {
+        const agent = metrics.agent || 'unknown';
+        records = extractRecordsFromDelta(agent, metrics.delta);
     }
 
     if (!records || records.length === 0) return '';

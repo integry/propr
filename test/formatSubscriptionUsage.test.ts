@@ -170,4 +170,53 @@ describe('formatSubscriptionUsage', () => {
         });
         assert.strictEqual(result, 'Session +100%');
     });
+
+    // --- Snake_case field support ---
+
+    test('accepts snake_case usage_metric_records field', () => {
+        const result = formatSubscriptionUsage({
+            usage_metric_records: [
+                { agent: 'claude', metricKey: 'Session', metricValue: 12 },
+                { agent: 'claude', metricKey: 'Weekly', metricValue: 3 },
+            ],
+        } as Record<string, unknown>);
+        assert.strictEqual(result, 'Session +12%, Weekly +3%');
+    });
+
+    test('accepts snake_case usage_metrics as delta fallback', () => {
+        const result = formatSubscriptionUsage({
+            usage_metrics: {
+                session: { percent: 7 },
+            },
+            agent: 'claude',
+        } as Record<string, unknown>);
+        assert.ok(result.includes('Session +7%'), 'Should extract from snake_case delta');
+    });
+
+    test('prefers usage_metric_records over usage_metrics when both present', () => {
+        const result = formatSubscriptionUsage({
+            usage_metric_records: [
+                { agent: 'claude', metricKey: 'Session', metricValue: 5 },
+            ],
+            usage_metrics: {
+                session: { percent: 99 },
+            },
+            agent: 'claude',
+        } as Record<string, unknown>);
+        assert.ok(result.includes('+5%'), 'Should use records value');
+        assert.ok(!result.includes('+99%'), 'Should not use delta value');
+    });
+
+    test('camelCase records take priority over snake_case usage_metric_records', () => {
+        const result = formatSubscriptionUsage({
+            records: [
+                { agent: 'claude', metricKey: 'Session', metricValue: 20 },
+            ],
+            usage_metric_records: [
+                { agent: 'claude', metricKey: 'Session', metricValue: 99 },
+            ],
+        } as Record<string, unknown>);
+        assert.ok(result.includes('+20%'), 'Should use camelCase records');
+        assert.ok(!result.includes('+99%'), 'Should not use snake_case records');
+    });
 });

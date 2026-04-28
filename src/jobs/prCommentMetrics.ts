@@ -59,7 +59,7 @@ export async function buildMetricsSection(
     if (totalTokens > 0) section += `* **Tokens:** ${totalTokens.toLocaleString()} (${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out)\n`;
     if (cost != null && cost > 0) section += `* **Cost:** $${cost.toFixed(2)}\n`;
 
-    const subscriptionUsage = formatSubscriptionUsage((claudeResult as unknown as Record<string, unknown>).usageMetrics as Parameters<typeof formatSubscriptionUsage>[0]);
+    const subscriptionUsage = formatSubscriptionUsage(claudeResult.usageMetrics);
     if (subscriptionUsage) section += `* **Subscription usage:** ${subscriptionUsage}\n`;
 
     return section;
