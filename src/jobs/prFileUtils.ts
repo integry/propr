@@ -58,11 +58,9 @@ export async function fetchPRFileContents(
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
     repoOwner: string,
     repoName: string,
-    prHeadRef: string,
-    files: PRFile[],
-    maxFiles: number = 10,
-    maxSizePerFile: number = 50000
+    options: { prHeadRef: string; files: PRFile[]; maxFiles?: number; maxSizePerFile?: number }
 ): Promise<Map<string, string>> {
+    const { prHeadRef, files, maxFiles = 10, maxSizePerFile = 50000 } = options;
     const contents = new Map<string, string>();
     const eligibleFiles = files
         .filter(f => f.status !== 'removed' && !f.filename.match(/\.(png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|pdf|zip|tar|gz)$/i))
