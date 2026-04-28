@@ -379,6 +379,13 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.ok(pendingComment.ultrafixMeta, 'Batched comment should include ultrafixMeta');
         // The batched comment commandMode should be the first action (review), not 'ultrafix'
         assert.strictEqual(pendingComment.commandMode, 'review');
+
+        // Should NOT post label or circuit-breaker comment (batching guard fires before side effects)
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        const postCalls = mockOctokit.request.mock.calls.filter(
+            (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
+        );
+        assert.strictEqual(postCalls.length, 0, 'Should not post circuit-breaker comment when batched');
     });
 
     test('/ultrafix does not add ultrafix label if it already exists', async () => {

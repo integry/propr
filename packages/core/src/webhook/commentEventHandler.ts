@@ -33,21 +33,11 @@ export function setUltrafixDeps(deps: UltrafixDeps): void {
     _ultrafixDeps = deps;
 }
 
-async function loadUltrafixDeps(): Promise<UltrafixDeps> {
-    if (_ultrafixDeps) return _ultrafixDeps;
-    const [configMod, orchMod, gathererMod] = await Promise.all([
-        import('../config/configManagerUltrafix.js'),
-        import('../../../../src/jobs/ultrafixOrchestrationService.js'),
-        import('../../../../src/jobs/reviewCommentGatherer.js'),
-    ]);
-    return {
-        loadUltrafixRatingGoal: configMod.loadUltrafixRatingGoal,
-        loadUltrafixMaxCycles: configMod.loadUltrafixMaxCycles,
-        loadUltrafixPauseSeconds: configMod.loadUltrafixPauseSeconds,
-        loadPrReviewModel: configMod.loadPrReviewModel,
-        startLoop: orchMod.startLoop,
-        getPendingReviewState: gathererMod.getPendingReviewState,
-    };
+function loadUltrafixDeps(): UltrafixDeps {
+    if (!_ultrafixDeps) {
+        throw new Error('Ultrafix dependencies not initialized. Call setUltrafixDeps() during app startup.');
+    }
+    return _ultrafixDeps;
 }
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
@@ -320,7 +310,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/ultrafix command detected, initializing loop');
 
     // 1. Load configured defaults from settings, then override with command arguments
-    const deps = await loadUltrafixDeps();
+    const deps = loadUltrafixDeps();
     const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel] = await Promise.all([
         deps.loadUltrafixRatingGoal(),
         deps.loadUltrafixMaxCycles(),
@@ -328,14 +318,31 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         deps.loadPrReviewModel(),
     ]);
 
-    // Command args override DB defaults; parser defaults (goal=2, max=5, pause=0) are the
-    // "unset" sentinel values — use DB defaults when they match parser defaults.
-    const effectiveGoal = commandMeta.goal !== 2 ? commandMeta.goal : dbGoal;
-    const effectiveMaxCycles = commandMeta.maxCycles !== 5 ? commandMeta.maxCycles : dbMaxCycles;
-    const effectivePauseSeconds = commandMeta.pauseSeconds !== 0 ? commandMeta.pauseSeconds : dbPauseSeconds;
-    const effectiveReviewModel = commandMeta.reviewModel || dbReviewModel;
+    // Command args override DB defaults; undefined means "not provided by user".
+    const effectiveGoal = commandMeta.goal ?? dbGoal;
+    const effectiveMaxCycles = commandMeta.maxCycles ?? dbMaxCycles;
+    const effectivePauseSeconds = commandMeta.pauseSeconds ?? dbPauseSeconds;
+    const effectiveReviewModel = commandMeta.reviewModel ?? dbReviewModel;
 
-    // 2. Query pending review state to decide initial action
+    // 2. Check for existing active/waiting jobs (batching/concurrency guard) BEFORE
+    //    posting comments or mutating labels to avoid duplicate side effects.
+    const strippedComment = { ...comment, body: commandMeta.instructions || '' };
+    const existingJob = await checkExistingJob(prNumber, owner, repo);
+    if (existingJob) {
+        // Build a provisional first-action meta for the batched comment.
+        // The actual initial action will be determined when the batch is processed.
+        const batchActionMeta: CommandMeta = { mode: 'review', models: effectiveReviewModel ? [effectiveReviewModel] : [], instructions: commandMeta.instructions };
+        await storeCommentForBatch(
+            { ...strippedComment, ...buildPendingCommandFields(batchActionMeta), ultrafixMeta: commandMeta },
+            commentAuthor,
+            eventContext,
+            { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
+        );
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id }, '/ultrafix command: existing job found for PR, stored comment for batch processing');
+        return;
+    }
+
+    // 3. Query pending review state to decide initial action
     const octokit = await getAuthenticatedOctokit();
     const commentsResponse = await withRetry(
         () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: prNumber, per_page: 100 }),
@@ -349,7 +356,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         { repoOwner: owner, repoName: repo, pullRequestNumber: prNumber, redisClient, correlatedLogger },
     );
 
-    // 3. Persist ultrafix state in Redis before enqueueing the first step
+    // 4. Persist ultrafix state in Redis before enqueueing the first step
     const { initialAction } = await deps.startLoop(redisClient, {
         owner,
         repo,
@@ -365,7 +372,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         `/ultrafix initialized, first action: ${initialAction}`,
     );
 
-    // 4. Add `ultrafix` label to the PR
+    // 5. Add `ultrafix` label to the PR
     const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     const hasUltrafixLabel = prData.prLabels.some(l => l.name === 'ultrafix');
     if (!hasUltrafixLabel) {
@@ -376,7 +383,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         );
     }
 
-    // 5. Post a circuit-breaker comment
+    // 6. Post a circuit-breaker comment
     await withRetry(
         () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner,
@@ -388,25 +395,10 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         `post_ultrafix_comment_${owner}_${repo}_${prNumber}`
     );
 
-    // 6. Build a command meta for the first action (review or fix), carrying ultrafix metadata
+    // 7. Build a command meta for the first action (review or fix), carrying ultrafix metadata
     const firstActionMeta: CommandMeta = initialAction === 'review'
         ? { mode: 'review', models: effectiveReviewModel ? [effectiveReviewModel] : [], instructions: commandMeta.instructions }
         : { mode: 'fix', instructions: commandMeta.instructions };
-
-    const strippedComment = { ...comment, body: commandMeta.instructions || '' };
-
-    // 7. Check for existing active/waiting jobs (batching/concurrency guard)
-    const existingJob = await checkExistingJob(prNumber, owner, repo);
-    if (existingJob) {
-        await storeCommentForBatch(
-            { ...strippedComment, ...buildPendingCommandFields(firstActionMeta), ultrafixMeta: commandMeta },
-            commentAuthor,
-            eventContext,
-            { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
-        );
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id }, '/ultrafix command: existing job found for PR, stored comment for batch processing');
-        return;
-    }
 
     // 8. Enqueue the first step with ultrafix metadata
     await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {

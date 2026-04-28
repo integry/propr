@@ -333,15 +333,11 @@ describe('buildCommandMeta', () => {
         assert.deepStrictEqual((meta as { models: string[] }).models, ['opus', 'sonnet', 'plain-model']);
     });
 
-    test('builds ultrafix meta with defaults', () => {
+    test('builds ultrafix meta with defaults (all undefined when not provided)', () => {
         const parsed = parseSlashCommand('/ultrafix')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual(meta, {
             mode: 'ultrafix',
-            goal: 2,
-            maxCycles: 5,
-            pauseSeconds: 0,
-            reviewModel: '',
             instructions: '',
         });
     });
@@ -374,14 +370,14 @@ describe('buildCommandMeta', () => {
         assert.strictEqual((meta as { instructions: string }).instructions, 'Focus on the auth module');
     });
 
-    test('ultrafix ignores invalid numeric values and keeps defaults', () => {
+    test('ultrafix ignores invalid numeric values (fields remain undefined)', () => {
         const parsed = parseSlashCommand('/ultrafix goal=abc max=-1 pause=xyz')!;
         const meta = buildCommandMeta(parsed);
         assert.strictEqual(meta.mode, 'ultrafix');
-        // goal=abc is NaN → keeps default 2; max=-1 is <=0 → keeps default 5; pause=xyz is NaN → keeps default 0
-        assert.strictEqual((meta as { goal: number }).goal, 2);
-        assert.strictEqual((meta as { maxCycles: number }).maxCycles, 5);
-        assert.strictEqual((meta as { pauseSeconds: number }).pauseSeconds, 0);
+        // goal=abc is NaN → remains undefined; max=-1 is <=0 → remains undefined; pause=xyz is NaN → remains undefined
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, undefined);
+        assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, undefined);
     });
 
     test('ultrafix warns on unknown keys', () => {
