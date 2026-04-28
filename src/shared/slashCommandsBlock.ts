@@ -14,6 +14,7 @@ export function buildSlashCommandsBlock(): string {
         '| `/fix` | Implement fixes for issues found by `/review` | `/fix` or `/fix address the null check issue` |',
         '| `/switch` | Change the AI model for this PR | `/switch claude-opus` |',
         '| `/use` | Override the model for a single follow-up run | `/use claude-sonnet` |',
+        '| `/ultrafix` | Loop review→fix cycles until score goal is met | `/ultrafix` or `/ultrafix goal=8 max=10` |',
         '',
         '</details>',
         '',
