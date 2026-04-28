@@ -172,7 +172,48 @@ export async function handleUsageLimitError(
     }
 }
 
+function parseGitHubHtmlError(html: string): string {
+    // Try to extract the title
+    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].replace(/&middot;/g, '-').replace(/&#\d+;/g, '').trim() : null;
+
+    // Common GitHub error patterns
+    if (html.includes('Unicorn')) {
+        return `GitHub API server error (5xx): ${title || 'Unicorn page'}`;
+    }
+    if (html.includes('rate limit') || html.includes('Rate limit')) {
+        return 'GitHub API rate limit exceeded (HTML response)';
+    }
+    if (html.includes('Not Found') || html.includes('404')) {
+        return `GitHub API resource not found: ${title || '404'}`;
+    }
+    if (html.includes('Bad credentials') || html.includes('401')) {
+        return 'GitHub API authentication failed (401)';
+    }
+    if (html.includes('Forbidden') || html.includes('403')) {
+        return `GitHub API forbidden: ${title || '403'}`;
+    }
+    if (title) {
+        return `GitHub API error: ${title}`;
+    }
+    return 'GitHub API returned an HTML error page instead of JSON';
+}
+
+function sanitizeErrorMessage(message: string | undefined): string {
+    if (!message) return 'Unknown error';
+    // Detect GitHub HTML error pages
+    if (message.includes('<!DOCTYPE html>') || message.includes('<html>')) {
+        return parseGitHubHtmlError(message);
+    }
+    // Truncate very long messages
+    if (message.length > 500) {
+        return message.slice(0, 500) + '... [truncated]';
+    }
+    return message;
+}
+
 function categorizeError(errorMessage: string | undefined): string {
+    if (errorMessage?.includes('<!DOCTYPE html>') || errorMessage?.includes('Unicorn')) return 'github_server_error';
     if (errorMessage?.includes('authentication')) return 'auth_error';
     if (errorMessage?.includes('network')) return 'network_error';
     if (errorMessage?.includes('git')) return 'git_error';
@@ -213,13 +254,14 @@ export async function handleGenericError(
     const errorCategory = categorizeError(error.message);
     const isUserCancelled = error.message?.includes('aborted by user');
 
+    const sanitizedMessage = sanitizeErrorMessage(error.message);
     correlatedLogger.error({
         jobId: job.id,
         issueNumber: issueRef.number,
         repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
         correlationId: issueRef.correlationId,
         taskId,
-        errMessage: error.message,
+        errMessage: sanitizedMessage,
         stack: error.stack,
         status: 'system_error',
         resolution: 'failed',
@@ -269,11 +311,14 @@ async function postErrorComment(issueRef: IssueJobData, error: Error, options: P
     const { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger } = options;
     try {
         const categoryHints: Record<string, string> = {
+            github_server_error: 'GitHub API returned a server error (5xx). This is a temporary issue on GitHub\'s side. The system will automatically retry.\n\n',
             git_error: 'This appears to be a Git-related issue. The system may have encountered a corrupted repository or git operation failure. The issue will be automatically retried, and any corrupted repositories will be cleaned up.\n\n',
             auth_error: 'This is an authentication issue. Please ensure the GitHub token has proper permissions.\n\n',
             network_error: 'This is a network connectivity issue. The system will automatically retry.\n\n'
         };
-        const errorMessage = `❌ **Failed to process this issue**\n\n**Error Category:** ${errorCategory.replace('_', ' ')}\n**Error Message:** ${error.message}\n\n${categoryHints[errorCategory] || ''}**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n${worktreeInfo ? `**Branch:** ${worktreeInfo.branchName}\n` : ''}\n<details><summary>Technical Details</summary>\n\n\`\`\`\n${error.stack || error.message}\n\`\`\`\n</details>\n\n---\n*The system will automatically retry this task. If the issue persists, please contact support.*`;
+        const sanitizedMessage = sanitizeErrorMessage(error.message);
+        const sanitizedStack = error.stack ? sanitizeErrorMessage(error.stack) : sanitizedMessage;
+        const errorMessage = `❌ **Failed to process this issue**\n\n**Error Category:** ${errorCategory.replace('_', ' ')}\n**Error Message:** ${sanitizedMessage}\n\n${categoryHints[errorCategory] || ''}**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n${worktreeInfo ? `**Branch:** ${worktreeInfo.branchName}\n` : ''}\n<details><summary>Technical Details</summary>\n\n\`\`\`\n${sanitizedStack}\n\`\`\`\n</details>\n\n---\n*The system will automatically retry this task. If the issue persists, please contact support.*`;
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, body: errorMessage });
         await safeRemoveLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
     } catch (commentError) {

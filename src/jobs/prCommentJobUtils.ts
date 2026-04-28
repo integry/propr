@@ -16,6 +16,46 @@ import { getDefaultModel, resolveModelAlias } from '@propr/core';
 import { getPendingPrCommentsKey } from '@propr/core';
 import type { Redis } from 'ioredis';
 
+function parseGitHubHtmlError(html: string): string {
+    // Try to extract the title
+    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].replace(/&middot;/g, '-').replace(/&#\d+;/g, '').trim() : null;
+
+    // Common GitHub error patterns
+    if (html.includes('Unicorn')) {
+        return `GitHub API server error (5xx): ${title || 'Unicorn page'}`;
+    }
+    if (html.includes('rate limit') || html.includes('Rate limit')) {
+        return 'GitHub API rate limit exceeded (HTML response)';
+    }
+    if (html.includes('Not Found') || html.includes('404')) {
+        return `GitHub API resource not found: ${title || '404'}`;
+    }
+    if (html.includes('Bad credentials') || html.includes('401')) {
+        return 'GitHub API authentication failed (401)';
+    }
+    if (html.includes('Forbidden') || html.includes('403')) {
+        return `GitHub API forbidden: ${title || '403'}`;
+    }
+    if (title) {
+        return `GitHub API error: ${title}`;
+    }
+    return 'GitHub API returned an HTML error page instead of JSON';
+}
+
+function sanitizeErrorMessage(message: string | undefined): string {
+    if (!message) return 'Unknown error';
+    // Detect GitHub HTML error pages
+    if (message.includes('<!DOCTYPE html>') || message.includes('<html>')) {
+        return parseGitHubHtmlError(message);
+    }
+    // Truncate very long messages
+    if (message.length > 500) {
+        return message.slice(0, 500) + '... [truncated]';
+    }
+    return message;
+}
+
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
         model: response.model,
@@ -266,7 +306,8 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
     const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId } = options;
     handleError(error, 'Failed to process PR comment job', { correlationId });
 
-    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: error.message } });
+    const sanitizedMessage = sanitizeErrorMessage(error.message);
+    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } });
 
     if (claudeResult) {
         try {
@@ -280,7 +321,7 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
         try {
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
-                body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${error.message}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.`,
+                body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.`,
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');
