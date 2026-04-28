@@ -41,6 +41,26 @@ export const WEBHOOK_DELIVERY_TTL_SECONDS: number = (() => {
 /** Module-level allowlist derived from @propr/core — single source of truth. */
 const SUPPORTED_EVENTS: ReadonlySet<string> = new Set(SUPPORTED_WEBHOOK_EVENTS);
 
+/**
+ * Extract and validate a single-valued header. Returns the string value,
+ * or null after sending an appropriate error response.
+ */
+function requireSingleHeader(
+  req: Request,
+  res: Response,
+  headerName: string,
+): string | null {
+  const value = req.headers[headerName];
+  if (!value || Array.isArray(value)) {
+    const reason = Array.isArray(value) ? 'Invalid' : 'Missing';
+    const logReason = Array.isArray(value) ? 'Rejecting multi-valued' : 'Missing';
+    console.warn(`[webhook] ${logReason} ${headerName} header`);
+    res.status(400).send(`${reason} ${headerName} header.`);
+    return null;
+  }
+  return value;
+}
+
 export interface WebhookHandlerDeps {
   webhookSecret: string | undefined;
   redis: {
@@ -111,19 +131,11 @@ export async function handleWebhookRequest(
   }
 
   // --- Validate required headers before any Redis writes ---
-  const rawDeliveryId = req.headers['x-github-delivery'];
-  if (!rawDeliveryId || Array.isArray(rawDeliveryId)) {
-    console.warn(`[webhook] ${Array.isArray(rawDeliveryId) ? 'Rejecting multi-valued' : 'Missing'} x-github-delivery header`);
-    res.status(400).send(`${Array.isArray(rawDeliveryId) ? 'Invalid' : 'Missing'} x-github-delivery header.`);
-    return;
-  }
+  const rawDeliveryId = requireSingleHeader(req, res, 'x-github-delivery');
+  if (!rawDeliveryId) return;
 
-  const rawEvent = req.headers['x-github-event'];
-  if (!rawEvent || Array.isArray(rawEvent)) {
-    console.warn(`[webhook] ${Array.isArray(rawEvent) ? 'Rejecting multi-valued' : 'Missing'} x-github-event header`);
-    res.status(400).send(`${Array.isArray(rawEvent) ? 'Invalid' : 'Missing'} x-github-event header.`);
-    return;
-  }
+  const rawEvent = requireSingleHeader(req, res, 'x-github-event');
+  if (!rawEvent) return;
 
   // --- Ignore unsupported event types gracefully (before Redis write) ---
   // GitHub sends events like `ping` on webhook creation/update. Returning 200
