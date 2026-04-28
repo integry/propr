@@ -3,12 +3,23 @@ import type { Request, Response } from 'express';
 import { SUPPORTED_WEBHOOK_EVENTS } from '@propr/core';
 
 /**
- * TTL for webhook delivery deduplication keys in Redis (seconds).
- * Set to 24 hours to provide a wide replay-protection window. GitHub retries
- * deliveries for up to 24 hours, so this window ensures that both genuine
- * retries and malicious replays within that period are caught.
+ * Default TTL for webhook delivery deduplication keys in Redis (seconds).
+ * Configurable via WEBHOOK_DELIVERY_TTL_SECONDS env var. Defaults to 300 (5 minutes).
+ *
+ * This controls how long delivery IDs are retained for duplicate detection.
+ * Higher values increase Redis key retention — size the value according to
+ * your Redis capacity and expected webhook volume.
  */
-export const WEBHOOK_DELIVERY_TTL_SECONDS = 86_400;
+const DEFAULT_DELIVERY_TTL_SECONDS = 300;
+
+export const WEBHOOK_DELIVERY_TTL_SECONDS: number = (() => {
+  const env = process.env.WEBHOOK_DELIVERY_TTL_SECONDS;
+  if (env) {
+    const parsed = parseInt(env, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_DELIVERY_TTL_SECONDS;
+})();
 
 /** Module-level allowlist derived from @propr/core — single source of truth. */
 const SUPPORTED_EVENTS: ReadonlySet<string> = new Set(SUPPORTED_WEBHOOK_EVENTS);
@@ -28,19 +39,17 @@ export interface WebhookHandlerDeps {
  * Security layers:
  * 1. HMAC signature verification — proves the payload was sent by someone
  *    who knows the webhook secret and that the body has not been tampered with.
- * 2. Redis-based delivery-ID deduplication (NX + TTL) — rejects exact replays
- *    within the TTL window. This is the primary replay-protection mechanism.
+ * 2. Redis-based delivery-ID deduplication (NX + TTL) — rejects duplicate
+ *    deliveries within the TTL window.
  *
- * Stale-request protection: GitHub does not include a signed timestamp in
- * webhook deliveries — the `Date` header is not covered by the HMAC. This
- * means true clock-based staleness rejection is impossible without a trusted,
- * authenticated timestamp from GitHub. Instead, we set a 24-hour TTL on the
- * delivery-ID dedup key ({@link WEBHOOK_DELIVERY_TTL_SECONDS}), which matches
- * GitHub's own retry window. Any captured signed payload replayed within 24
- * hours is rejected by the NX guard; after 24 hours the delivery ID expires,
- * but the practical replay risk at that point is minimal because GitHub will
- * have already stopped retrying and the delivery is considered stale by the
- * platform itself.
+ * Known limitation — no stale-request protection: GitHub does not include a
+ * signed timestamp in webhook deliveries (the `Date` header is not covered by
+ * the HMAC), so true clock-based staleness rejection is impossible. A captured
+ * signed payload with a *new* delivery ID cannot be distinguished from a
+ * legitimate delivery. The deduplication layer only prevents the *same*
+ * delivery ID from being processed twice; it does not protect against replays
+ * that use a different or expired delivery ID. Addressing this would require
+ * an authenticated freshness signal from GitHub that does not currently exist.
  *
  * Failure semantics: once a delivery ID is reserved in Redis, it is NOT
  * removed on downstream processing errors. This prevents a partially-
