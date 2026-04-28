@@ -1,11 +1,11 @@
 /**
  * Slash command parser for PR comment intake.
  *
- * Recognizes `/review`, `/fix`, `/merge`, `/switch`, and `/use` commands from PR comments.
+ * Recognizes `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix` commands from PR comments.
  * Splits the comment into command name, arguments, and trailing multiline instructions.
  */
 
-export type SlashCommandName = 'review' | 'fix' | 'merge' | 'switch' | 'use';
+export type SlashCommandName = 'review' | 'fix' | 'merge' | 'switch' | 'use' | 'ultrafix';
 
 export interface ParsedSlashCommand {
     /** The recognized command */
@@ -54,9 +54,25 @@ export interface UseCommandMeta {
     warning?: string;
 }
 
-export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta | SwitchCommandMeta | UseCommandMeta;
+export interface UltrafixCommandMeta {
+    mode: 'ultrafix';
+    /** Target number of passing review cycles */
+    goal: number;
+    /** Maximum fix cycles before giving up */
+    maxCycles: number;
+    /** Seconds to pause between cycles */
+    pauseSeconds: number;
+    /** Model to use for review cycles */
+    reviewModel: string;
+    /** Extra instructions from lines below the command */
+    instructions: string;
+    /** Warning message if unknown keys were encountered */
+    warning?: string;
+}
 
-const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge|switch|use)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
+export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta | SwitchCommandMeta | UseCommandMeta | UltrafixCommandMeta;
+
+const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge|switch|use|ultrafix)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
 
 /**
  * Parse a PR comment body for a slash command.
@@ -100,6 +116,7 @@ function normalizeModelLabel(label: string): string {
  * For `/merge`: returns a simple merge marker.
  * For `/switch`: extracts single model target and optional instructions.
  * For `/use`: extracts single model for one-time override and optional instructions.
+ * For `/ultrafix`: parses positional goal or named key=value arguments.
  */
 export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
     switch (parsed.command) {
@@ -143,5 +160,86 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
             }
             return useMeta;
         }
+        case 'ultrafix': {
+            return parseUltrafixArgs(parsed);
+        }
     }
+}
+
+const ULTRAFIX_KNOWN_KEYS = new Set(['goal', 'max', 'pause', 'model']);
+const ULTRAFIX_DEFAULTS = { goal: 2, maxCycles: 5, pauseSeconds: 0, reviewModel: '' };
+
+/** Parse a string as a finite positive number, or return undefined. */
+function parsePositiveNumber(value: string, allowZero = false): number | undefined {
+    const n = Number(value);
+    if (Number.isNaN(n) || !Number.isFinite(n)) return undefined;
+    return allowZero ? (n >= 0 ? n : undefined) : (n > 0 ? n : undefined);
+}
+
+/** Apply a single key=value pair to the ultrafix meta object. */
+function applyUltrafixKeyValue(meta: UltrafixCommandMeta, key: string, value: string): boolean {
+    switch (key) {
+        case 'goal': {
+            const n = parsePositiveNumber(value);
+            if (n !== undefined) meta.goal = n;
+            return true;
+        }
+        case 'max': {
+            const n = parsePositiveNumber(value);
+            if (n !== undefined) meta.maxCycles = n;
+            return true;
+        }
+        case 'pause': {
+            const n = parsePositiveNumber(value, true);
+            if (n !== undefined) meta.pauseSeconds = n;
+            return true;
+        }
+        case 'model':
+            meta.reviewModel = normalizeModelLabel(value);
+            return true;
+        default:
+            return false;
+    }
+}
+
+/**
+ * Parse `/ultrafix` arguments supporting positional and key=value forms.
+ *
+ * - `/ultrafix` → all defaults
+ * - `/ultrafix 8` → goal=8
+ * - `/ultrafix goal=8 max=10 pause=60 model=claude-sonnet-4-6`
+ */
+function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
+    const meta: UltrafixCommandMeta = {
+        mode: 'ultrafix',
+        ...ULTRAFIX_DEFAULTS,
+        instructions: parsed.instructions,
+    };
+
+    const unknownKeys: string[] = [];
+    let hasNamedArgs = false;
+
+    for (const arg of parsed.args) {
+        const eqIdx = arg.indexOf('=');
+        if (eqIdx !== -1) {
+            const key = arg.substring(0, eqIdx).toLowerCase();
+            const value = arg.substring(eqIdx + 1);
+            hasNamedArgs = true;
+
+            if (ULTRAFIX_KNOWN_KEYS.has(key)) {
+                applyUltrafixKeyValue(meta, key, value);
+            } else {
+                unknownKeys.push(key);
+            }
+        } else if (!hasNamedArgs && parsed.args.indexOf(arg) === 0) {
+            const n = parsePositiveNumber(arg);
+            if (n !== undefined) meta.goal = n;
+        }
+    }
+
+    if (unknownKeys.length > 0) {
+        meta.warning = `Unknown ultrafix keys ignored: ${unknownKeys.join(', ')}`;
+    }
+
+    return meta;
 }

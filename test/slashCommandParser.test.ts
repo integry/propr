@@ -117,6 +117,34 @@ describe('parseSlashCommand', () => {
         assert.strictEqual(result.instructions, 'Focus on performance');
     });
 
+    test('parses bare /ultrafix', () => {
+        const result = parseSlashCommand('/ultrafix');
+        assert.deepStrictEqual(result, { command: 'ultrafix', args: [], instructions: '' });
+    });
+
+    test('parses /ultrafix with positional goal', () => {
+        const result = parseSlashCommand('/ultrafix 8');
+        assert.ok(result);
+        assert.strictEqual(result.command, 'ultrafix');
+        assert.deepStrictEqual(result.args, ['8']);
+    });
+
+    test('parses /ultrafix with named args', () => {
+        const result = parseSlashCommand('/ultrafix goal=8 max=10 pause=60 model=claude-sonnet-4-6');
+        assert.ok(result);
+        assert.strictEqual(result.command, 'ultrafix');
+        assert.deepStrictEqual(result.args, ['goal=8', 'max=10', 'pause=60', 'model=claude-sonnet-4-6']);
+    });
+
+    test('parses /ultrafix with multiline instructions', () => {
+        const body = '/ultrafix goal=3\nFocus on fixing the auth module\nand the database layer';
+        const result = parseSlashCommand(body);
+        assert.ok(result);
+        assert.strictEqual(result.command, 'ultrafix');
+        assert.deepStrictEqual(result.args, ['goal=3']);
+        assert.strictEqual(result.instructions, 'Focus on fixing the auth module\nand the database layer');
+    });
+
     test('does not match unknown commands', () => {
         assert.strictEqual(parseSlashCommand('/deploy'), null);
         assert.strictEqual(parseSlashCommand('/unknown'), null);
@@ -303,6 +331,73 @@ describe('buildCommandMeta', () => {
         const parsed = parseSlashCommand('/review llm-opus llm-sonnet plain-model')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual((meta as { models: string[] }).models, ['opus', 'sonnet', 'plain-model']);
+    });
+
+    test('builds ultrafix meta with defaults', () => {
+        const parsed = parseSlashCommand('/ultrafix')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'ultrafix',
+            goal: 2,
+            maxCycles: 5,
+            pauseSeconds: 0,
+            reviewModel: '',
+            instructions: '',
+        });
+    });
+
+    test('builds ultrafix meta with positional goal', () => {
+        const parsed = parseSlashCommand('/ultrafix 8')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal: number }).goal, 8);
+    });
+
+    test('builds ultrafix meta with named args', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=8 max=10 pause=60 model=claude-sonnet-4-6')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'ultrafix',
+            goal: 8,
+            maxCycles: 10,
+            pauseSeconds: 60,
+            reviewModel: 'claude-sonnet-4-6',
+            instructions: '',
+        });
+    });
+
+    test('builds ultrafix meta with multiline instructions', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=3\nFocus on the auth module')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal: number }).goal, 3);
+        assert.strictEqual((meta as { instructions: string }).instructions, 'Focus on the auth module');
+    });
+
+    test('ultrafix ignores invalid numeric values and keeps defaults', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=abc max=-1 pause=xyz')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        // goal=abc is NaN → keeps default 2; max=-1 is <=0 → keeps default 5; pause=xyz is NaN → keeps default 0
+        assert.strictEqual((meta as { goal: number }).goal, 2);
+        assert.strictEqual((meta as { maxCycles: number }).maxCycles, 5);
+        assert.strictEqual((meta as { pauseSeconds: number }).pauseSeconds, 0);
+    });
+
+    test('ultrafix warns on unknown keys', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=3 foo=bar baz=1')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal: number }).goal, 3);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('foo'));
+        assert.ok(meta.warning!.includes('baz'));
+    });
+
+    test('ultrafix strips llm- prefix from model', () => {
+        const parsed = parseSlashCommand('/ultrafix model=llm-claude-sonnet-4-6')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { reviewModel: string }).reviewModel, 'claude-sonnet-4-6');
     });
 });
 

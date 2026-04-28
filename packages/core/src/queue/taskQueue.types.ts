@@ -1,7 +1,7 @@
 // Task queue type definitions
 import type { Job } from 'bullmq';
 import type { ConversationStep, TokenUsage } from '../utils/llmMetrics.types.js';
-import type { CommandMeta } from '../webhook/slashCommandParser.js';
+import type { CommandMeta, UltrafixCommandMeta } from '../webhook/slashCommandParser.js';
 
 export interface IssueJobData {
     repoOwner: string;
@@ -52,11 +52,13 @@ export interface CommentJobData {
     /** Structured slash-command metadata (e.g. /review, /fix) */
     commandMeta?: CommandMeta;
     /** Flattened command mode for queue serialization; defaults to 'default' when absent */
-    commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use';
+    commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
     /** Requested model labels for /review commands */
     requestedModels?: string[];
     /** Extra instructions from the slash command body */
     commandInstructions?: string;
+    /** Ultrafix-specific settings when commandMode is 'ultrafix' */
+    ultrafixMeta?: UltrafixCommandMeta;
 }
 
 export interface UnprocessedComment {
@@ -67,10 +69,12 @@ export interface UnprocessedComment {
     type: 'review' | 'issue';
     hasCodeContext?: boolean;
     commandMeta?: CommandMeta;
-    commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use';
+    commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
     requestedModels?: string[];
     commandInstructions?: string;
     llmOverride?: string | null;
+    /** Ultrafix-specific settings when commandMode is 'ultrafix' */
+    ultrafixMeta?: UltrafixCommandMeta;
 }
 
 export interface TaskImportJobData {
