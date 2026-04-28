@@ -319,7 +319,13 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
 
     // Fetch full file contents to provide complete context for review
     const prHeadRef = prData!.data.head.ref;
-    const fileContentsMap = await fetchPRFileContents(state.octokit, repoOwner, repoName, { prHeadRef, files: prFiles });
+    const fileContentsMap = await fetchPRFileContents({
+        octokit: state.octokit,
+        repoOwner,
+        repoName,
+        prHeadRef,
+        files: prFiles,
+    });
     const fileContents = formatFileContents(fileContentsMap);
     correlatedLogger.info({ pullRequestNumber, filesWithContent: fileContentsMap.size, contentLength: fileContents.length }, 'Fetched full file contents');
 

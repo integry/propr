@@ -1,4 +1,5 @@
 import logger from '../utils/logger.js';
+import crypto from 'crypto';
 import { fetch } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -33,7 +34,14 @@ import type { Redis } from 'ioredis';
 
 const execAsync = promisify(exec);
 
-export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request' | 'check_run' | 'push';
+/** Runtime-accessible list of supported webhook event types — single source of truth. */
+export const SUPPORTED_WEBHOOK_EVENTS = [
+  'issues', 'issue_comment', 'pull_request_review_comment',
+  'pull_request', 'check_run', 'push',
+] as const;
+
+/** Derived union type — always in sync with the runtime array. */
+export type WebhookEventType = (typeof SUPPORTED_WEBHOOK_EVENTS)[number];
 
 // --- PREVIEW ENVIRONMENT CONFIGURATION ---
 // This implements the "Singleton Processor" pattern for webhook routing.
@@ -118,53 +126,30 @@ function isIssuesEvent(payload: unknown): payload is IssuesEvent {
     return typeof payload === 'object' && payload !== null && 'issue' in payload && 'action' in payload && !('comment' in payload);
 }
 
-function isIssuesLabeledEvent(payload: IssuesEvent): payload is IssuesLabeledEvent {
-    return payload.action === 'labeled';
-}
+const isIssuesLabeledEvent = (payload: IssuesEvent): payload is IssuesLabeledEvent => payload.action === 'labeled';
 
 function isIssueCommentEvent(payload: unknown): payload is IssueCommentEvent {
     return typeof payload === 'object' && payload !== null && 'issue' in payload && 'comment' in payload && 'action' in payload;
 }
 
-function isIssueCommentCreatedEvent(payload: IssueCommentEvent): payload is IssueCommentCreatedEvent {
-    return payload.action === 'created';
-}
-
-function isIssueCommentDeletedEvent(payload: IssueCommentEvent): payload is IssueCommentDeletedEvent {
-    return payload.action === 'deleted';
-}
-
-function isIssueCommentEditedEvent(payload: IssueCommentEvent): payload is IssueCommentEditedEvent {
-    return payload.action === 'edited';
-}
+const isIssueCommentCreatedEvent = (payload: IssueCommentEvent): payload is IssueCommentCreatedEvent => payload.action === 'created';
+const isIssueCommentDeletedEvent = (payload: IssueCommentEvent): payload is IssueCommentDeletedEvent => payload.action === 'deleted';
+const isIssueCommentEditedEvent = (payload: IssueCommentEvent): payload is IssueCommentEditedEvent => payload.action === 'edited';
 
 function isPullRequestReviewCommentEvent(payload: unknown): payload is PullRequestReviewCommentEvent {
     return typeof payload === 'object' && payload !== null && 'pull_request' in payload && 'comment' in payload && 'action' in payload;
 }
 
-function isPullRequestReviewCommentCreatedEvent(payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentCreatedEvent {
-    return payload.action === 'created';
-}
-
-function isPullRequestReviewCommentDeletedEvent(payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentDeletedEvent {
-    return payload.action === 'deleted';
-}
-
-function isPullRequestReviewCommentEditedEvent(payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentEditedEvent {
-    return payload.action === 'edited';
-}
+const isPullRequestReviewCommentCreatedEvent = (payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentCreatedEvent => payload.action === 'created';
+const isPullRequestReviewCommentDeletedEvent = (payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentDeletedEvent => payload.action === 'deleted';
+const isPullRequestReviewCommentEditedEvent = (payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentEditedEvent => payload.action === 'edited';
 
 function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
     return typeof payload === 'object' && payload !== null && 'pull_request' in payload && 'action' in payload && !('comment' in payload);
 }
 
-function isPullRequestLabeledEvent(payload: PullRequestEvent): payload is PullRequestLabeledEvent {
-    return payload.action === 'labeled';
-}
-
-function isPullRequestUnlabeledEvent(payload: PullRequestEvent): payload is PullRequestUnlabeledEvent {
-    return payload.action === 'unlabeled';
-}
+const isPullRequestLabeledEvent = (payload: PullRequestEvent): payload is PullRequestLabeledEvent => payload.action === 'labeled';
+const isPullRequestUnlabeledEvent = (payload: PullRequestEvent): payload is PullRequestUnlabeledEvent => payload.action === 'unlabeled';
 
 function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
     return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
@@ -273,21 +258,53 @@ async function handleInfrastructureEvents(
 }
 
 // --- EVENT ROUTING: Forward webhooks to specific PR preview instance ---
-async function forwardToProcessor(payload: unknown, prNumber: number, correlationId: string): Promise<void> {
+async function forwardToProcessor(
+    payload: unknown,
+    prNumber: number,
+    eventType: WebhookEventType,
+    ids: { deliveryId: string; correlationId: string },
+): Promise<void> {
+    const { deliveryId, correlationId } = ids;
     const targetPort = API_PORT_BASE + prNumber;
     const targetUrl = `${HOST_ADDRESS}:${targetPort}/webhook`;
     const log = logger.withCorrelation(correlationId);
 
     log.info({ prNumber, targetUrl }, 'Forwarding event to Preview Instance');
 
+    const body = JSON.stringify(payload);
+    const forwardedDeliveryId = `fwd-${deliveryId}`;
+
+    // Compute HMAC signature over the forwarded body so the preview instance
+    // can verify authenticity using the same webhook secret.
+    const webhookSecret = process.env.GH_WEBHOOK_SECRET;
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'x-github-event': eventType,
+        'x-github-delivery': forwardedDeliveryId,
+    };
+    if (webhookSecret) {
+        const hmac = crypto.createHmac('sha256', webhookSecret);
+        hmac.update(body);
+        headers['x-hub-signature-256'] = `sha256=${hmac.digest('hex')}`;
+    }
+
     try {
-        await fetch(targetUrl, {
+        const response = await fetch(targetUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            headers,
+            body,
         });
+        if (!response.ok) {
+            const responseBody = await response.text().catch(() => '<unreadable>');
+            log.error(
+                { prNumber, targetUrl, status: response.status, responseBody },
+                'Preview instance rejected forwarded webhook',
+            );
+            throw new Error(`Forwarded webhook rejected by preview instance: HTTP ${response.status}`);
+        }
     } catch (err) {
         log.error({ err, targetUrl }, 'Failed to forward webhook');
+        throw err;
     }
 }
 
@@ -417,7 +434,8 @@ async function processStandardWebhookEvent(
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
-    correlationId: string
+    correlationId: string,
+    deliveryId?: string,
 ): Promise<void> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
@@ -434,7 +452,7 @@ export async function processWebhookEvent(
     // 3. Routing Decision: Forward to preview instance if applicable
     if (ENABLE_PREVIEW_ROUTING && processorPrNumber) {
         correlatedLogger.info({ processorPrNumber }, 'Forwarding webhook to designated processor PR instance');
-        await forwardToProcessor(payload, processorPrNumber, correlationId);
+        await forwardToProcessor(payload, processorPrNumber, eventType, { deliveryId: deliveryId || correlationId, correlationId });
         return;
     }
 

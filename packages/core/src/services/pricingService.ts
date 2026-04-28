@@ -10,14 +10,14 @@ const CACHE_TTL_SECONDS = 86400;
 interface RedisConnectionOptions {
     host: string;
     port: number;
-    maxRetriesPerRequest: null;
+    maxRetriesPerRequest: number;
     enableReadyCheck: boolean;
 }
 
 const connectionOptions: RedisConnectionOptions = {
     host: REDIS_HOST,
     port: REDIS_PORT,
-    maxRetriesPerRequest: null,
+    maxRetriesPerRequest: 3,
     enableReadyCheck: false,
 };
 

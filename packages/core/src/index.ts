@@ -25,6 +25,7 @@ export { createLogFiles, generateCompletionComment } from './utils/github/logFil
 
 export { getGitHubInstallationToken, getAuthenticatedOctokit } from './auth/githubAuth.js';
 export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
+export { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS } from './auth/systemTaskAuth.js';
 
 export * from './config/configManager.js';
 export {
@@ -107,7 +108,7 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { processWebhookEvent, initializeWebhookHandler } from './webhook/webhookHandler.js';
+export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';

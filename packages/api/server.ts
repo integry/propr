@@ -1,7 +1,6 @@
 import express, { Request, Response } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
-import crypto from 'crypto';
 import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
@@ -47,6 +46,7 @@ import {
 } from '@propr/core';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
+import { handleWebhookRequest } from './webhookHandler.js';
 
 const ioRedisClient = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',
@@ -340,29 +340,33 @@ function setupWebhookRoute(): void {
     console.log('[webhook] Webhook endpoint disabled (ENABLE_GITHUB_WEBHOOKS not set to true)');
     return;
   }
+  if (!process.env.GH_WEBHOOK_SECRET) {
+    throw new Error('[webhook] ENABLE_GITHUB_WEBHOOKS is true but GH_WEBHOOK_SECRET is not set. Refusing to start — all webhook traffic would be rejected. Set GH_WEBHOOK_SECRET in the environment.');
+  }
   app.post('/webhook', async (req: Request, res: Response) => {
     const correlationId = generateCorrelationId();
     try {
-      const signature = req.headers['x-hub-signature-256'] as string | undefined;
-      const webhookSecret = process.env.GH_WEBHOOK_SECRET;
-      if (webhookSecret) {
-        if (!signature) { console.error('[webhook] No signature provided'); return res.status(401).send('No webhook signature provided.'); }
-        const hmac = crypto.createHmac('sha256', webhookSecret);
-        hmac.update(req.body);
-        const computedSignature = `sha256=${hmac.digest('hex')}`;
-        if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSignature))) { console.error('[webhook] Signature mismatch'); return res.status(401).send('Webhook signature mismatch.'); }
-      } else {
-        console.warn('[webhook] Webhook secret not configured. Skipping signature verification.');
-      }
-      const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string } };
-      const event = req.headers['x-github-event'] as WebhookEventType;
-      console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}`);
-      await processWebhookEvent(payload, event, correlationId);
-      res.status(200).send('Webhook processed.');
+      await handleWebhookRequest(req, res, {
+        webhookSecret: process.env.GH_WEBHOOK_SECRET,
+        redis: {
+          set: (key, value, opts) => {
+            if (opts) {
+              return redisClient.set(key, value, {
+                ...(opts.NX ? { NX: true as const } : {}),
+                ...(opts.EX != null ? { EX: opts.EX } : {}),
+              }) as Promise<string | null>;
+            }
+            return redisClient.set(key, value) as Promise<string | null>;
+          },
+        },
+        processor: (payload, event, cid, deliveryId) => processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId),
+        correlationId,
+      });
     } catch (error) {
       console.error('[webhook] Error processing webhook:', error);
-      const statusCode = ((error as Error).message === 'Webhook signature mismatch.' || (error as Error).message === 'No webhook signature provided.') ? 401 : 500;
-      res.status(statusCode).send((error as Error).message);
+      if (!res.headersSent) {
+        res.status(500).send('Internal webhook processing error.');
+      }
     }
   });
   console.log('[webhook] Webhook endpoint enabled at POST /webhook');
