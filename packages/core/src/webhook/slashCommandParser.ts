@@ -169,6 +169,39 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
 const ULTRAFIX_KNOWN_KEYS = new Set(['goal', 'max', 'pause', 'model']);
 const ULTRAFIX_DEFAULTS = { goal: 2, maxCycles: 5, pauseSeconds: 0, reviewModel: '' };
 
+/** Parse a string as a finite positive number, or return undefined. */
+function parsePositiveNumber(value: string, allowZero = false): number | undefined {
+    const n = Number(value);
+    if (Number.isNaN(n) || !Number.isFinite(n)) return undefined;
+    return allowZero ? (n >= 0 ? n : undefined) : (n > 0 ? n : undefined);
+}
+
+/** Apply a single key=value pair to the ultrafix meta object. */
+function applyUltrafixKeyValue(meta: UltrafixCommandMeta, key: string, value: string): boolean {
+    switch (key) {
+        case 'goal': {
+            const n = parsePositiveNumber(value);
+            if (n !== undefined) meta.goal = n;
+            return true;
+        }
+        case 'max': {
+            const n = parsePositiveNumber(value);
+            if (n !== undefined) meta.maxCycles = n;
+            return true;
+        }
+        case 'pause': {
+            const n = parsePositiveNumber(value, true);
+            if (n !== undefined) meta.pauseSeconds = n;
+            return true;
+        }
+        case 'model':
+            meta.reviewModel = normalizeModelLabel(value);
+            return true;
+        default:
+            return false;
+    }
+}
+
 /**
  * Parse `/ultrafix` arguments supporting positional and key=value forms.
  *
@@ -189,42 +222,18 @@ function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
     for (const arg of parsed.args) {
         const eqIdx = arg.indexOf('=');
         if (eqIdx !== -1) {
-            // key=value form
             const key = arg.substring(0, eqIdx).toLowerCase();
             const value = arg.substring(eqIdx + 1);
             hasNamedArgs = true;
 
-            if (!ULTRAFIX_KNOWN_KEYS.has(key)) {
+            if (ULTRAFIX_KNOWN_KEYS.has(key)) {
+                applyUltrafixKeyValue(meta, key, value);
+            } else {
                 unknownKeys.push(key);
-                continue;
-            }
-
-            switch (key) {
-                case 'goal': {
-                    const n = Number(value);
-                    if (!Number.isNaN(n) && Number.isFinite(n) && n > 0) meta.goal = n;
-                    break;
-                }
-                case 'max': {
-                    const n = Number(value);
-                    if (!Number.isNaN(n) && Number.isFinite(n) && n > 0) meta.maxCycles = n;
-                    break;
-                }
-                case 'pause': {
-                    const n = Number(value);
-                    if (!Number.isNaN(n) && Number.isFinite(n) && n >= 0) meta.pauseSeconds = n;
-                    break;
-                }
-                case 'model':
-                    meta.reviewModel = normalizeModelLabel(value);
-                    break;
             }
         } else if (!hasNamedArgs && parsed.args.indexOf(arg) === 0) {
-            // First positional argument → goal
-            const n = Number(arg);
-            if (!Number.isNaN(n) && Number.isFinite(n) && n > 0) {
-                meta.goal = n;
-            }
+            const n = parsePositiveNumber(arg);
+            if (n !== undefined) meta.goal = n;
         }
     }
 
