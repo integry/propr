@@ -94,8 +94,8 @@ export async function aggregateDirectories(
           dirSummaryCache.set(dirPath, existing.summary);
         }
         dirsProcessed++;
-        await updateDirectoryProgress(fullName, branch);
-        await publishProgress(fullName, branch);
+        const skipProgress = await updateDirectoryProgress(fullName, branch);
+        if (skipProgress) await publishProgress(fullName, branch, skipProgress);
       }
     }
 
@@ -124,8 +124,8 @@ export async function aggregateDirectories(
           dirSummaryCache.set(result.dirPath, result.summary);
         }
         dirsProcessed++;
-        await updateDirectoryProgress(fullName, branch);
-        await publishProgress(fullName, branch);
+        const dirProgress = await updateDirectoryProgress(fullName, branch);
+        if (dirProgress) await publishProgress(fullName, branch, dirProgress);
       }
     }
   }

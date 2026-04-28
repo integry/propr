@@ -338,7 +338,9 @@ async function handleIndexingError(
   // Handle user-initiated cancellation
   if (error instanceof IndexingCancelledError) {
     correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
-    // Status already set to 'idle' by stopIndexingJob, just return without throwing
+    // Publish idle now that the worker has fully stopped — this is the authoritative
+    // terminal event so clients won't see stale progress updates afterward.
+    await publishIndexingStatus(repoName, errorBranch, 'idle');
     return;
   }
 

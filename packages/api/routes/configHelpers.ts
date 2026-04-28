@@ -86,9 +86,11 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
   const queue = await getIndexingQueue();
   const [owner, name] = repoFullName.split('/');
 
-  // Check if job already queued
+  // Check if job already queued for this repository and branch
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
-  const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repoFullName);
+  const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
+    j.data.repository === repoFullName && (!j.data.baseBranch || j.data.baseBranch === 'HEAD')
+  );
   if (alreadyQueued) {
     return false;
   }
@@ -274,12 +276,15 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
     return { success: false, error: 'No agent configured for summarization. Configure one in settings first.' };
   }
 
-  // Check if job already queued
+  // Check if job already queued for this repository and branch
   const queue = await getIndexingQueue();
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
-  const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repository);
+  const effectiveBranch = baseBranch || 'HEAD';
+  const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
+    j.data.repository === repository && (j.data.baseBranch || 'HEAD') === effectiveBranch
+  );
   if (alreadyQueued) {
-    return { success: false, error: 'Indexing job already queued for this repository' };
+    return { success: false, error: 'Indexing job already queued for this repository and branch' };
   }
 
   // Clone and queue
@@ -338,20 +343,26 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
     });
 
     if (job) {
+      // Use the matched job's actual branch for cancellation, not the requested branch.
+      // If branch was omitted, we match any job for this repo — but the cancellation
+      // flag must target the branch the worker is actually indexing.
+      const jobBranch = job.data.baseBranch || 'HEAD';
       const state = await job.getState();
       if (state === 'active') {
         // Active jobs are locked by the worker. Set a cancellation flag in Redis
         // that the worker will check and stop processing gracefully.
-        await requestIndexingCancellation(repository, branch || 'HEAD');
+        await requestIndexingCancellation(repository, jobBranch);
       } else {
         // Waiting/delayed jobs can be removed directly
         await job.remove();
       }
-    }
 
-    // Always force the status back to idle in the DB, even if no job was found
-    // (to handle stuck states). Use branch if provided, otherwise default to 'HEAD'.
-    await updateRepositoryStatus(repository, 'idle', branch || 'HEAD');
+      // Force the status back to idle in the DB for the matched job's branch
+      await updateRepositoryStatus(repository, 'idle', jobBranch);
+    } else {
+      // No job found — force idle for the requested branch to handle stuck states
+      await updateRepositoryStatus(repository, 'idle', branch || 'HEAD');
+    }
 
     return { success: true };
   } catch (error) {

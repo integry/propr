@@ -115,6 +115,8 @@ export async function initIndexingProgress(repository: string, totalFiles: numbe
 
 /**
  * Update progress after processing a batch.
+ * Returns the updated progress so callers can pass it to publishProgress
+ * without an extra Redis read.
  */
 export async function updateIndexingProgress(
   repository: string,
@@ -125,11 +127,11 @@ export async function updateIndexingProgress(
     outputTokens: number;
   },
   branch = 'HEAD'
-): Promise<void> {
+): Promise<IndexingProgress | null> {
   const redis = getRedis();
   const key = getProgressKey(repository, branch);
   const existing = await redis.get(key);
-  if (!existing) return;
+  if (!existing) return null;
 
   const progress: IndexingProgress = JSON.parse(existing);
   progress.processedFiles += update.filesProcessed;
@@ -140,6 +142,7 @@ export async function updateIndexingProgress(
   progress.outputTokens += update.outputTokens;
 
   await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
+  return progress;
 }
 
 /**
@@ -177,16 +180,19 @@ export async function startDirectoryPhase(repository: string, branch: string, to
 
 /**
  * Update progress after processing a directory.
+ * Returns the updated progress so callers can pass it to publishProgress
+ * without an extra Redis read.
  */
-export async function updateDirectoryProgress(repository: string, branch = 'HEAD'): Promise<void> {
+export async function updateDirectoryProgress(repository: string, branch = 'HEAD'): Promise<IndexingProgress | null> {
   const redis = getRedis();
   const key = getProgressKey(repository, branch);
   const existing = await redis.get(key);
-  if (!existing) return;
+  if (!existing) return null;
 
   const progress: IndexingProgress = JSON.parse(existing);
   progress.processedDirectories++;
   await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
+  return progress;
 }
 
 /**
@@ -210,11 +216,12 @@ export async function clearIndexingProgress(repository: string, branch = 'HEAD')
 }
 
 /**
- * Publish current indexing progress to WebSocket clients via Redis pub/sub.
- * Reads the current progress from Redis and broadcasts it.
+ * Publish indexing progress to WebSocket clients via Redis pub/sub.
+ * Accepts progress data directly to avoid a redundant Redis read on the hot path.
+ * Falls back to reading from Redis if no progress data is provided (e.g. for phase transitions).
  */
-export async function publishProgress(repository: string, branch: string): Promise<void> {
-  const progress = await getIndexingProgress(repository, branch);
+export async function publishProgress(repository: string, branch: string, progressData?: IndexingProgress): Promise<void> {
+  const progress = progressData ?? await getIndexingProgress(repository, branch);
   if (!progress) return;
 
   const totalItems = progress.phase === 'directories' ? progress.totalDirectories : progress.totalFiles;

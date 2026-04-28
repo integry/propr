@@ -47,9 +47,14 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
       const result = await queueIndexingJob(repository, !!fullReindex, baseBranch);
       if (!result.success) {
-        // Revert the optimistic status since the job wasn't queued
-        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'idle');
-        const statusCode = result.error?.includes('already queued') ? 409 : 400;
+        // Only revert the optimistic status if the job isn't already running.
+        // When the error is "already queued", indexing is active for this repo/branch,
+        // so broadcasting idle would incorrectly tell clients the job stopped.
+        const isAlreadyQueued = result.error?.includes('already queued');
+        if (!isAlreadyQueued) {
+          await publishIndexingStatus(repository, baseBranch || 'HEAD', 'idle');
+        }
+        const statusCode = isAlreadyQueued ? 409 : 400;
         res.status(statusCode).json({ error: result.error });
         return;
       }
@@ -126,7 +131,10 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
-      await publishIndexingStatus(repository, branch || 'HEAD', 'idle');
+      // Don't publish idle here — the worker's handleIndexingError will emit the
+      // final idle event after it finishes its current batch and sees the cancellation
+      // flag. Publishing idle prematurely causes a race where subsequent worker
+      // progress updates flip the UI back to "indexing".
 
       const branchInfo = branch ? ` (branch: ${branch})` : '';
       await logActivityHelper(

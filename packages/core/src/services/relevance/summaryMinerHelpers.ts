@@ -157,14 +157,14 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         filesFailed += batchFileCount;
       }
 
-      // Update progress tracking
-      await updateIndexingProgress(fullName, {
+      // Update progress tracking and publish in one step (avoids extra Redis read)
+      const updatedProgress = await updateIndexingProgress(fullName, {
         filesProcessed: batchFileCount,
         batchCompleted: true,
         inputTokens: batchInputTokens,
         outputTokens: batchOutputTokens,
       }, branch);
-      await publishProgress(fullName, branch);
+      if (updatedProgress) await publishProgress(fullName, branch, updatedProgress);
 
       currentBatch = [];
       currentTokens = 0;
@@ -202,14 +202,14 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       filesFailed += batchFileCount;
     }
 
-    // Update progress tracking
-    await updateIndexingProgress(fullName, {
+    // Update progress tracking and publish in one step (avoids extra Redis read)
+    const updatedProgress = await updateIndexingProgress(fullName, {
       filesProcessed: batchFileCount,
       batchCompleted: true,
       inputTokens: batchInputTokens,
       outputTokens: batchOutputTokens,
     }, branch);
-    await publishProgress(fullName, branch);
+    if (updatedProgress) await publishProgress(fullName, branch, updatedProgress);
   }
 
   log.info({ totalBatches: batchNumber, successfulBatches, failedBatches, filesProcessed, filesFailed }, 'Batch processing complete');
