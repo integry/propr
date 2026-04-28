@@ -23,8 +23,9 @@ import {
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
-    handleJobError, cleanupJob, pickUpPendingComments, applyPendingCommentCommandContext, toClaudeResult
+    handleJobError, cleanupJob, toClaudeResult
 } from './prCommentJobUtils.js';
+import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
 import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
