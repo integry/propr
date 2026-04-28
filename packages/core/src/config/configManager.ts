@@ -163,9 +163,14 @@ const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 /**
  * Loads the auto-followup score threshold from the database.
  * Returns 0 if disabled, or a value 1-9 indicating the threshold.
+ * Falls back to default if the stored value is malformed or out of range.
  */
 export async function loadAutoFollowupScoreThreshold(): Promise<number> {
     const threshold = await getConfig<number>('auto_followup_score_threshold', DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD);
+    if (typeof threshold !== 'number' || isNaN(threshold) || threshold < 0 || threshold > 9) {
+        logger.warn({ stored_value: threshold }, 'Invalid auto_followup_score_threshold in DB, using default');
+        return DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD;
+    }
     logger.info({ auto_followup_score_threshold: threshold }, 'Successfully loaded auto-followup score threshold');
     return threshold;
 }
@@ -173,12 +178,15 @@ export async function loadAutoFollowupScoreThreshold(): Promise<number> {
 /**
  * Saves the auto-followup score threshold to the database.
  * @param threshold - Value 0-9 (0 = disabled, 1-9 = threshold value)
+ * @throws Error if threshold is not a valid integer in range 0-9
  */
 export async function saveAutoFollowupScoreThreshold(threshold: number): Promise<boolean> {
-    // Validate the threshold is within the valid range
-    const validThreshold = Math.max(0, Math.min(9, Math.floor(threshold)));
-    await saveConfig('auto_followup_score_threshold', validThreshold);
-    logger.info({ auto_followup_score_threshold: validThreshold }, 'Successfully saved auto-followup score threshold');
+    const value = Math.floor(threshold);
+    if (isNaN(value) || value < 0 || value > 9) {
+        throw new Error('auto_followup_score_threshold must be an integer between 0 and 9');
+    }
+    await saveConfig('auto_followup_score_threshold', value);
+    logger.info({ auto_followup_score_threshold: value }, 'Successfully saved auto-followup score threshold');
     return true;
 }
 
@@ -426,9 +434,14 @@ export async function saveAgentTankSettings(settings: AgentTankSettings): Promis
 /**
  * Loads the pr_review_model setting from the database.
  * Returns an empty string when not configured (meaning use the default agent model).
+ * Falls back to empty string if the stored value is not a string.
  */
 export async function loadPrReviewModel(): Promise<string> {
     const model = await getConfig<string>('pr_review_model', '');
+    if (typeof model !== 'string') {
+        logger.warn({ stored_value: model }, 'Invalid pr_review_model in DB, using default');
+        return '';
+    }
     logger.info({ pr_review_model: model }, 'Successfully loaded PR review model');
     return model;
 }
@@ -456,9 +469,14 @@ const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
 /**
  * Loads the ultrafix_rating_goal setting from the database.
  * Range: 1-10. Defaults to 7.
+ * Falls back to default if the stored value is malformed or out of range.
  */
 export async function loadUltrafixRatingGoal(): Promise<number> {
     const goal = await getConfig<number>('ultrafix_rating_goal', DEFAULT_ULTRAFIX_RATING_GOAL);
+    if (typeof goal !== 'number' || isNaN(goal) || goal < 1 || goal > 10) {
+        logger.warn({ stored_value: goal }, 'Invalid ultrafix_rating_goal in DB, using default');
+        return DEFAULT_ULTRAFIX_RATING_GOAL;
+    }
     logger.info({ ultrafix_rating_goal: goal }, 'Successfully loaded ultrafix rating goal');
     return goal;
 }
@@ -466,20 +484,29 @@ export async function loadUltrafixRatingGoal(): Promise<number> {
 /**
  * Saves the ultrafix_rating_goal setting to the database.
  * @param goal - Value 1-10
+ * @throws Error if goal is not a valid integer in range 1-10
  */
 export async function saveUltrafixRatingGoal(goal: number): Promise<boolean> {
-    const valid = Math.max(1, Math.min(10, Math.floor(goal)));
-    await saveConfig('ultrafix_rating_goal', valid);
-    logger.info({ ultrafix_rating_goal: valid }, 'Successfully saved ultrafix rating goal');
+    const value = Math.floor(goal);
+    if (isNaN(value) || value < 1 || value > 10) {
+        throw new Error('ultrafix_rating_goal must be an integer between 1 and 10');
+    }
+    await saveConfig('ultrafix_rating_goal', value);
+    logger.info({ ultrafix_rating_goal: value }, 'Successfully saved ultrafix rating goal');
     return true;
 }
 
 /**
  * Loads the ultrafix_max_cycles setting from the database.
  * Range: 1-50. Defaults to 5.
+ * Falls back to default if the stored value is malformed or out of range.
  */
 export async function loadUltrafixMaxCycles(): Promise<number> {
     const cycles = await getConfig<number>('ultrafix_max_cycles', DEFAULT_ULTRAFIX_MAX_CYCLES);
+    if (typeof cycles !== 'number' || isNaN(cycles) || cycles < 1 || cycles > 50) {
+        logger.warn({ stored_value: cycles }, 'Invalid ultrafix_max_cycles in DB, using default');
+        return DEFAULT_ULTRAFIX_MAX_CYCLES;
+    }
     logger.info({ ultrafix_max_cycles: cycles }, 'Successfully loaded ultrafix max cycles');
     return cycles;
 }
@@ -487,20 +514,29 @@ export async function loadUltrafixMaxCycles(): Promise<number> {
 /**
  * Saves the ultrafix_max_cycles setting to the database.
  * @param cycles - Value 1-50
+ * @throws Error if cycles is not a valid integer in range 1-50
  */
 export async function saveUltrafixMaxCycles(cycles: number): Promise<boolean> {
-    const valid = Math.max(1, Math.min(50, Math.floor(cycles)));
-    await saveConfig('ultrafix_max_cycles', valid);
-    logger.info({ ultrafix_max_cycles: valid }, 'Successfully saved ultrafix max cycles');
+    const value = Math.floor(cycles);
+    if (isNaN(value) || value < 1 || value > 50) {
+        throw new Error('ultrafix_max_cycles must be an integer between 1 and 50');
+    }
+    await saveConfig('ultrafix_max_cycles', value);
+    logger.info({ ultrafix_max_cycles: value }, 'Successfully saved ultrafix max cycles');
     return true;
 }
 
 /**
  * Loads the ultrafix_pause_seconds setting from the database.
  * Range: 0-600. Defaults to 60.
+ * Falls back to default if the stored value is malformed or out of range.
  */
 export async function loadUltrafixPauseSeconds(): Promise<number> {
     const pause = await getConfig<number>('ultrafix_pause_seconds', DEFAULT_ULTRAFIX_PAUSE_SECONDS);
+    if (typeof pause !== 'number' || isNaN(pause) || pause < 0 || pause > 600) {
+        logger.warn({ stored_value: pause }, 'Invalid ultrafix_pause_seconds in DB, using default');
+        return DEFAULT_ULTRAFIX_PAUSE_SECONDS;
+    }
     logger.info({ ultrafix_pause_seconds: pause }, 'Successfully loaded ultrafix pause seconds');
     return pause;
 }
@@ -508,11 +544,15 @@ export async function loadUltrafixPauseSeconds(): Promise<number> {
 /**
  * Saves the ultrafix_pause_seconds setting to the database.
  * @param seconds - Value 0-600
+ * @throws Error if seconds is not a valid integer in range 0-600
  */
 export async function saveUltrafixPauseSeconds(seconds: number): Promise<boolean> {
-    const valid = Math.max(0, Math.min(600, Math.floor(seconds)));
-    await saveConfig('ultrafix_pause_seconds', valid);
-    logger.info({ ultrafix_pause_seconds: valid }, 'Successfully saved ultrafix pause seconds');
+    const value = Math.floor(seconds);
+    if (isNaN(value) || value < 0 || value > 600) {
+        throw new Error('ultrafix_pause_seconds must be an integer between 0 and 600');
+    }
+    await saveConfig('ultrafix_pause_seconds', value);
+    logger.info({ ultrafix_pause_seconds: value }, 'Successfully saved ultrafix pause seconds');
     return true;
 }
 
