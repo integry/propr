@@ -137,24 +137,33 @@ export function redactSecrets(input: string): string {
 /**
  * Recursively walk a JSON-serializable value and redact any secrets found in
  * string leaves.  Preserves JSON serialization semantics: objects with a
- * `toJSON()` method (e.g. `Date`, `URL`) are serialized via that method first,
- * then the result is redacted recursively.
+ * `toJSON(key)` method (e.g. `Date`, `URL`) are invoked with the same key
+ * argument that `JSON.stringify` would supply, then the result is redacted
+ * recursively.
+ *
+ * @param obj  - The value to redact.
+ * @param key  - The property name under which `obj` appears in its parent
+ *               (empty string `""` for the root), mirroring the `key` argument
+ *               that `JSON.stringify` passes to `toJSON`.
  */
-export function redactSerializableValue(obj: unknown): unknown {
+export function redactSerializableValue(obj: unknown, key: string = ''): unknown {
     if (typeof obj === 'string') {
         return redactSecrets(obj);
     }
     if (Array.isArray(obj)) {
-        return obj.map(item => redactSerializableValue(item));
+        return obj.map((item, index) => redactSerializableValue(item, String(index)));
     }
     if (obj !== null && typeof obj === 'object') {
-        // Honour toJSON() so Date, URL, etc. serialize the same as JSON.stringify
+        // Honour toJSON(key) so Date, URL, etc. serialize the same as JSON.stringify
         if (typeof (obj as Record<string, unknown>).toJSON === 'function') {
-            return redactSerializableValue((obj as { toJSON(): unknown }).toJSON());
+            return redactSerializableValue(
+                (obj as { toJSON(key: string): unknown }).toJSON(key),
+                key
+            );
         }
         const redacted: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(obj)) {
-            redacted[key] = redactSerializableValue(value);
+        for (const [k, value] of Object.entries(obj)) {
+            redacted[k] = redactSerializableValue(value, k);
         }
         return redacted;
     }

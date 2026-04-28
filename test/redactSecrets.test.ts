@@ -297,6 +297,46 @@ test('redactSerializableValue preserves custom toJSON and redacts secrets within
     assert.ok(JSON.stringify(result).includes('[REDACTED_GITHUB_TOKEN]'));
 });
 
+test('redactSerializableValue passes the correct key argument to toJSON()', () => {
+    const receivedKeys: string[] = [];
+    const parent = {
+        child: {
+            toJSON(key: string) {
+                receivedKeys.push(key);
+                return `serialized-${key}`;
+            }
+        }
+    };
+    redactSerializableValue(parent);
+    assert.deepStrictEqual(receivedKeys, ['child'], 'toJSON should receive the property name as key');
+});
+
+test('redactSerializableValue passes empty string key for root toJSON()', () => {
+    const receivedKeys: string[] = [];
+    const root = {
+        toJSON(key: string) {
+            receivedKeys.push(key);
+            return 'root-value';
+        }
+    };
+    redactSerializableValue(root);
+    assert.deepStrictEqual(receivedKeys, [''], 'Root toJSON should receive empty string as key');
+});
+
+test('redactSerializableValue passes array index as key for toJSON() inside arrays', () => {
+    const receivedKeys: string[] = [];
+    const arr = [
+        {
+            toJSON(key: string) {
+                receivedKeys.push(key);
+                return 'item';
+            }
+        }
+    ];
+    redactSerializableValue(arr);
+    assert.deepStrictEqual(receivedKeys, ['0'], 'toJSON inside array should receive the string index as key');
+});
+
 // --- False-positive tests (should NOT redact) ---
 
 test('redactSecrets should not redact the word "token" in ordinary prose', () => {
