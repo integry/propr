@@ -126,53 +126,30 @@ function isIssuesEvent(payload: unknown): payload is IssuesEvent {
     return typeof payload === 'object' && payload !== null && 'issue' in payload && 'action' in payload && !('comment' in payload);
 }
 
-function isIssuesLabeledEvent(payload: IssuesEvent): payload is IssuesLabeledEvent {
-    return payload.action === 'labeled';
-}
+const isIssuesLabeledEvent = (payload: IssuesEvent): payload is IssuesLabeledEvent => payload.action === 'labeled';
 
 function isIssueCommentEvent(payload: unknown): payload is IssueCommentEvent {
     return typeof payload === 'object' && payload !== null && 'issue' in payload && 'comment' in payload && 'action' in payload;
 }
 
-function isIssueCommentCreatedEvent(payload: IssueCommentEvent): payload is IssueCommentCreatedEvent {
-    return payload.action === 'created';
-}
-
-function isIssueCommentDeletedEvent(payload: IssueCommentEvent): payload is IssueCommentDeletedEvent {
-    return payload.action === 'deleted';
-}
-
-function isIssueCommentEditedEvent(payload: IssueCommentEvent): payload is IssueCommentEditedEvent {
-    return payload.action === 'edited';
-}
+const isIssueCommentCreatedEvent = (payload: IssueCommentEvent): payload is IssueCommentCreatedEvent => payload.action === 'created';
+const isIssueCommentDeletedEvent = (payload: IssueCommentEvent): payload is IssueCommentDeletedEvent => payload.action === 'deleted';
+const isIssueCommentEditedEvent = (payload: IssueCommentEvent): payload is IssueCommentEditedEvent => payload.action === 'edited';
 
 function isPullRequestReviewCommentEvent(payload: unknown): payload is PullRequestReviewCommentEvent {
     return typeof payload === 'object' && payload !== null && 'pull_request' in payload && 'comment' in payload && 'action' in payload;
 }
 
-function isPullRequestReviewCommentCreatedEvent(payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentCreatedEvent {
-    return payload.action === 'created';
-}
-
-function isPullRequestReviewCommentDeletedEvent(payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentDeletedEvent {
-    return payload.action === 'deleted';
-}
-
-function isPullRequestReviewCommentEditedEvent(payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentEditedEvent {
-    return payload.action === 'edited';
-}
+const isPullRequestReviewCommentCreatedEvent = (payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentCreatedEvent => payload.action === 'created';
+const isPullRequestReviewCommentDeletedEvent = (payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentDeletedEvent => payload.action === 'deleted';
+const isPullRequestReviewCommentEditedEvent = (payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentEditedEvent => payload.action === 'edited';
 
 function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
     return typeof payload === 'object' && payload !== null && 'pull_request' in payload && 'action' in payload && !('comment' in payload);
 }
 
-function isPullRequestLabeledEvent(payload: PullRequestEvent): payload is PullRequestLabeledEvent {
-    return payload.action === 'labeled';
-}
-
-function isPullRequestUnlabeledEvent(payload: PullRequestEvent): payload is PullRequestUnlabeledEvent {
-    return payload.action === 'unlabeled';
-}
+const isPullRequestLabeledEvent = (payload: PullRequestEvent): payload is PullRequestLabeledEvent => payload.action === 'labeled';
+const isPullRequestUnlabeledEvent = (payload: PullRequestEvent): payload is PullRequestUnlabeledEvent => payload.action === 'unlabeled';
 
 function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
     return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
