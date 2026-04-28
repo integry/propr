@@ -29,7 +29,7 @@ export interface WebhookHandlerDeps {
   redis: {
     set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => Promise<string | null>;
   };
-  processor: (payload: Record<string, unknown>, event: string, correlationId: string) => Promise<void>;
+  processor: (payload: Record<string, unknown>, event: string, correlationId: string, deliveryId: string) => Promise<void>;
   correlationId: string;
 }
 
@@ -144,7 +144,7 @@ export async function handleWebhookRequest(
     return;
   }
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
-  await processor(payload, rawEvent, correlationId);
+  await processor(payload, rawEvent, correlationId, rawDeliveryId);
 
   res.status(200).send('Webhook processed.');
 }

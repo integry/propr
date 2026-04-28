@@ -64,7 +64,7 @@ function signPayload(body: string, secret: string): string {
  */
 function createTestApp(
   redisClient: ReturnType<typeof createMockRedisClient>,
-  processor: (payload: Record<string, unknown>, event: string, correlationId: string) => Promise<void> = async () => {},
+  processor: (payload: Record<string, unknown>, event: string, correlationId: string, deliveryId: string) => Promise<void> = async () => {},
 ) {
   const app = express();
   app.use('/webhook', express.raw({ type: 'application/json' }));
@@ -415,6 +415,55 @@ describe('Webhook Replay Protection', () => {
       assert.match(res.body, /Unsupported webhook event type/);
       // Unsupported event is validated before processing, but after Redis dedup
       // The delivery ID should still be reserved to prevent replay
+    });
+  });
+
+  describe('Preview routing: delivery ID passed to processor', () => {
+    test('processor receives the delivery ID for downstream forwarding', async () => {
+      let receivedDeliveryId: string | undefined;
+      const captureRedis = createMockRedisClient();
+      const captureApp = createTestApp(captureRedis, async (_payload, _event, _cid, deliveryId) => {
+        receivedDeliveryId = deliveryId;
+      });
+      const captureServer = captureApp.listen(0);
+      await new Promise<void>((resolve) => captureServer.on('listening', resolve));
+
+      try {
+        const body = makeBody();
+        const deliveryId = 'delivery-for-forwarding';
+        const res = await sendWebhook(captureServer, body, {
+          'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+          'x-github-delivery': deliveryId,
+          'x-github-event': 'issues',
+        });
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(receivedDeliveryId, deliveryId, 'processor must receive the original delivery ID');
+      } finally {
+        await new Promise<void>((resolve) => captureServer.close(() => resolve()));
+      }
+    });
+
+    test('forwarded delivery with fwd- prefix is accepted as a distinct delivery', async () => {
+      // Simulates the scenario where the main instance processes a delivery,
+      // then forwards it with a fwd- prefixed delivery ID to a preview instance.
+      // Both should be accepted since they have different delivery IDs.
+      const body = makeBody();
+      const originalDeliveryId = 'delivery-original';
+      const forwardedDeliveryId = `fwd-${originalDeliveryId}`;
+
+      const original = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': originalDeliveryId,
+        'x-github-event': 'issues',
+      });
+      assert.strictEqual(original.status, 200);
+
+      const forwarded = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': forwardedDeliveryId,
+        'x-github-event': 'issues',
+      });
+      assert.strictEqual(forwarded.status, 200, 'forwarded delivery with fwd- prefix must not collide with original');
     });
   });
 

@@ -335,9 +335,6 @@ function setupRoutes(): void {
   setupWebhookRoute();
 }
 
-// Re-export for backward compatibility
-export { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from './webhookHandler.js';
-
 function setupWebhookRoute(): void {
   if (process.env.ENABLE_GITHUB_WEBHOOKS !== 'true') {
     console.log('[webhook] Webhook endpoint disabled (ENABLE_GITHUB_WEBHOOKS not set to true)');
@@ -359,7 +356,7 @@ function setupWebhookRoute(): void {
             return redisClient.set(key, value) as Promise<string | null>;
           },
         },
-        processor: (payload, event, cid) => processWebhookEvent(payload, event as WebhookEventType, cid),
+        processor: (payload, event, cid, deliveryId) => processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId),
         correlationId,
       });
     } catch (error) {

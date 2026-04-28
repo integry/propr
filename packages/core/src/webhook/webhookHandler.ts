@@ -1,4 +1,5 @@
 import logger from '../utils/logger.js';
+import crypto from 'crypto';
 import { fetch } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -279,18 +280,41 @@ async function handleInfrastructureEvents(
 }
 
 // --- EVENT ROUTING: Forward webhooks to specific PR preview instance ---
-async function forwardToProcessor(payload: unknown, prNumber: number, correlationId: string): Promise<void> {
+async function forwardToProcessor(
+    payload: unknown,
+    prNumber: number,
+    eventType: WebhookEventType,
+    deliveryId: string,
+    correlationId: string,
+): Promise<void> {
     const targetPort = API_PORT_BASE + prNumber;
     const targetUrl = `${HOST_ADDRESS}:${targetPort}/webhook`;
     const log = logger.withCorrelation(correlationId);
 
     log.info({ prNumber, targetUrl }, 'Forwarding event to Preview Instance');
 
+    const body = JSON.stringify(payload);
+    const forwardedDeliveryId = `fwd-${deliveryId}`;
+
+    // Compute HMAC signature over the forwarded body so the preview instance
+    // can verify authenticity using the same webhook secret.
+    const webhookSecret = process.env.GH_WEBHOOK_SECRET;
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'x-github-event': eventType,
+        'x-github-delivery': forwardedDeliveryId,
+    };
+    if (webhookSecret) {
+        const hmac = crypto.createHmac('sha256', webhookSecret);
+        hmac.update(body);
+        headers['x-hub-signature-256'] = `sha256=${hmac.digest('hex')}`;
+    }
+
     try {
         await fetch(targetUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            headers,
+            body,
         });
     } catch (err) {
         log.error({ err, targetUrl }, 'Failed to forward webhook');
@@ -423,7 +447,8 @@ async function processStandardWebhookEvent(
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
-    correlationId: string
+    correlationId: string,
+    deliveryId?: string,
 ): Promise<void> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
@@ -440,7 +465,7 @@ export async function processWebhookEvent(
     // 3. Routing Decision: Forward to preview instance if applicable
     if (ENABLE_PREVIEW_ROUTING && processorPrNumber) {
         correlatedLogger.info({ processorPrNumber }, 'Forwarding webhook to designated processor PR instance');
-        await forwardToProcessor(payload, processorPrNumber, correlationId);
+        await forwardToProcessor(payload, processorPrNumber, eventType, deliveryId || correlationId, correlationId);
         return;
     }
 
