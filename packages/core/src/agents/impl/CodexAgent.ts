@@ -103,7 +103,8 @@ export class CodexAgent implements Agent {
                 summary: parsedOutput.result ?? undefined,
                 prompt,
                 error: parsedOutput.error,
-                tokenUsage: parsedOutput.tokenUsage
+                tokenUsage: parsedOutput.tokenUsage,
+                usageMetrics: usageMetrics ?? undefined
             };
 
             await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt, issueRef, model: modelUsed, isRetry, retryReason });
