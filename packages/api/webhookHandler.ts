@@ -22,55 +22,24 @@ export const WEBHOOK_DELIVERY_TTL_SECONDS: number = (() => {
 })();
 
 /**
- * Maximum age (in seconds) for a webhook payload before it is considered stale.
- * Configurable via WEBHOOK_MAX_AGE_SECONDS env var. Defaults to 300 (5 minutes).
+ * NOTE: Payload-timestamp–based staleness detection was intentionally removed.
  *
- * This is checked against timestamps embedded in the payload body, which ARE
- * covered by the HMAC signature. An attacker who replays a signed payload with
- * a new delivery ID cannot forge a fresh timestamp without invalidating the
- * signature, making this an effective defence-in-depth layer.
+ * GitHub webhook payloads do not include a signed delivery timestamp. Fields
+ * like `issue.updated_at`, `pull_request.updated_at`, and `head_commit.timestamp`
+ * are resource/commit timestamps, NOT delivery timestamps. A valid webhook about
+ * an older resource (e.g. pushing an older commit, or an event on a long-idle
+ * issue) would be falsely rejected. Because GitHub does not expose a reliable
+ * signed delivery-time signal, replay protection relies on:
+ *
+ * 1. HMAC signature verification (proves authenticity and body integrity).
+ * 2. Redis-based delivery-ID deduplication with a configurable TTL window
+ *    (prevents replays within the TTL).
+ *
+ * If a stronger replay window is needed, increase WEBHOOK_DELIVERY_TTL_SECONDS.
  */
-const DEFAULT_MAX_AGE_SECONDS = 300;
-
-export const WEBHOOK_MAX_AGE_SECONDS: number = (() => {
-  const env = process.env.WEBHOOK_MAX_AGE_SECONDS;
-  if (env) {
-    const parsed = parseInt(env, 10);
-    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
-  }
-  return DEFAULT_MAX_AGE_SECONDS;
-})();
 
 /** Module-level allowlist derived from @propr/core — single source of truth. */
 const SUPPORTED_EVENTS: ReadonlySet<string> = new Set(SUPPORTED_WEBHOOK_EVENTS);
-
-/**
- * Extracts the most relevant timestamp from a webhook payload body.
- * These fields are part of the HMAC-signed body, so they cannot be forged.
- *
- * Returns the parsed Date, or null if no recognisable timestamp is found
- * (in which case the staleness check is skipped — fail-open for unknown shapes).
- */
-function extractPayloadTimestamp(payload: Record<string, unknown>, event: string): Date | null {
-  let raw: unknown;
-
-  if (event === 'push') {
-    raw = (payload.head_commit as Record<string, unknown> | undefined)?.timestamp;
-  } else if (event === 'check_run') {
-    const cr = payload.check_run as Record<string, unknown> | undefined;
-    raw = cr?.completed_at ?? cr?.started_at;
-  } else if (event === 'issue_comment' || event === 'pull_request_review_comment') {
-    raw = (payload.comment as Record<string, unknown> | undefined)?.updated_at;
-  } else if (event === 'pull_request') {
-    raw = (payload.pull_request as Record<string, unknown> | undefined)?.updated_at;
-  } else if (event === 'issues') {
-    raw = (payload.issue as Record<string, unknown> | undefined)?.updated_at;
-  }
-
-  if (typeof raw !== 'string') return null;
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
 
 export interface WebhookHandlerDeps {
   webhookSecret: string | undefined;
@@ -89,17 +58,6 @@ export interface WebhookHandlerDeps {
  *    who knows the webhook secret and that the body has not been tampered with.
  * 2. Redis-based delivery-ID deduplication (NX + TTL) — rejects duplicate
  *    deliveries within the TTL window.
- *
- * 3. Payload-timestamp staleness check — extracts a timestamp from the signed
- *    payload body (e.g. `issue.updated_at`, `head_commit.timestamp`) and
- *    rejects payloads older than WEBHOOK_MAX_AGE_SECONDS. Because these
- *    timestamps are part of the HMAC-signed body, an attacker cannot forge a
- *    fresh timestamp without invalidating the signature.
- *
- * Note: if the payload does not contain a recognisable timestamp field, the
- * staleness check is skipped (fail-open) to avoid breaking unknown event
- * shapes. The `Date` HTTP header is NOT used because it is not covered by
- * the HMAC and can be trivially forged by a replaying attacker.
  *
  * Failure semantics: once a delivery ID is reserved in Redis, it is NOT
  * removed on downstream processing errors. This prevents a partially-
@@ -196,16 +154,6 @@ export async function handleWebhookRequest(
     console.error(`[webhook] Failed to parse JSON body for delivery ${rawDeliveryId}`);
     res.status(400).send('Invalid JSON payload.');
     return;
-  }
-  // --- Staleness check: reject payloads with old signed timestamps ---
-  const payloadTimestamp = extractPayloadTimestamp(payload, rawEvent);
-  if (payloadTimestamp) {
-    const ageSeconds = (Date.now() - payloadTimestamp.getTime()) / 1000;
-    if (ageSeconds > WEBHOOK_MAX_AGE_SECONDS) {
-      console.warn(`[webhook] Stale payload rejected: delivery=${rawDeliveryId}, event=${rawEvent}, age=${Math.round(ageSeconds)}s, max=${WEBHOOK_MAX_AGE_SECONDS}s`);
-      res.status(400).send('Stale webhook payload.');
-      return;
-    }
   }
 
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
