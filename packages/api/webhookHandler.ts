@@ -117,22 +117,23 @@ export async function handleWebhookRequest(
     return;
   }
 
+  // --- Ignore unsupported event types gracefully (before Redis write) ---
+  // GitHub sends events like `ping` on webhook creation/update. Returning 200
+  // avoids marking those deliveries as failed in GitHub's UI while still
+  // preventing any downstream processing. Checked before Redis dedup to avoid
+  // consuming dedupe keys for events that will never be processed.
+  if (!SUPPORTED_EVENTS.has(rawEvent)) {
+    console.log(`[webhook] Ignoring unsupported event type: ${rawEvent}`);
+    res.status(200).send('Unsupported event type — ignored.');
+    return;
+  }
+
   // --- Replay protection: reject duplicate delivery IDs via Redis NX ---
   const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
   const isNew = await redis.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
   if (!isNew) {
     console.warn(`[webhook] Duplicate delivery rejected: ${rawDeliveryId}`);
     res.status(409).send('Duplicate webhook delivery.');
-    return;
-  }
-
-  // --- Ignore unsupported event types gracefully ---
-  // GitHub sends events like `ping` on webhook creation/update. Returning 200
-  // avoids marking those deliveries as failed in GitHub's UI while still
-  // preventing any downstream processing.
-  if (!SUPPORTED_EVENTS.has(rawEvent)) {
-    console.log(`[webhook] Ignoring unsupported event type: ${rawEvent}`);
-    res.status(200).send('Unsupported event type — ignored.');
     return;
   }
 

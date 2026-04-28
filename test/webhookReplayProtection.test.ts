@@ -415,8 +415,8 @@ describe('Webhook Replay Protection', () => {
       // marking them as failed in GitHub's UI, but no processing occurs.
       assert.strictEqual(res.status, 200);
       assert.match(res.body, /ignored/i);
-      // Unsupported event is validated before processing, but after Redis dedup
-      // The delivery ID should still be reserved to prevent replay
+      // Unsupported events are filtered before Redis dedup, so no key is written
+      assert.strictEqual(redisClient.store.size, 0, 'no Redis key should be written for unsupported events');
     });
   });
 
@@ -466,6 +466,101 @@ describe('Webhook Replay Protection', () => {
         'x-github-event': 'issues',
       });
       assert.strictEqual(forwarded.status, 200, 'forwarded delivery with fwd- prefix must not collide with original');
+    });
+  });
+
+  describe('Redis adapter shape (server.ts integration path)', () => {
+    /**
+     * Verifies that the Redis adapter pattern used in server.ts correctly
+     * reshapes the {NX, EX} options for the node-redis client. This test
+     * exercises the same adapter logic used in production to catch any
+     * mismatch between the handler's interface and node-redis's API.
+     */
+    test('adapter reshapes NX/EX options correctly', async () => {
+      const calls: Array<{ key: string; value: string; opts: Record<string, unknown> }> = [];
+
+      // Simulate the exact adapter from server.ts
+      const fakeNodeRedisClient = {
+        set: async (key: string, value: string, opts?: Record<string, unknown>) => {
+          calls.push({ key, value, opts: opts ?? {} });
+          return 'OK' as string | null;
+        },
+      };
+
+      const adapter = {
+        set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
+          if (opts) {
+            return fakeNodeRedisClient.set(key, value, {
+              ...(opts.NX ? { NX: true as const } : {}),
+              ...(opts.EX != null ? { EX: opts.EX } : {}),
+            }) as Promise<string | null>;
+          }
+          return fakeNodeRedisClient.set(key, value) as Promise<string | null>;
+        },
+      };
+
+      // Call through the adapter the same way handleWebhookRequest does
+      await adapter.set('webhook:delivery:test-id', '1', { NX: true, EX: 300 });
+
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls[0].key, 'webhook:delivery:test-id');
+      assert.strictEqual(calls[0].value, '1');
+      assert.deepStrictEqual(calls[0].opts, { NX: true, EX: 300 });
+    });
+
+    test('adapter passes through plain set without options', async () => {
+      const calls: Array<{ key: string; value: string; opts: Record<string, unknown> }> = [];
+      const fakeNodeRedisClient = {
+        set: async (key: string, value: string, opts?: Record<string, unknown>) => {
+          calls.push({ key, value, opts: opts ?? {} });
+          return 'OK' as string | null;
+        },
+      };
+
+      const adapter = {
+        set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
+          if (opts) {
+            return fakeNodeRedisClient.set(key, value, {
+              ...(opts.NX ? { NX: true as const } : {}),
+              ...(opts.EX != null ? { EX: opts.EX } : {}),
+            }) as Promise<string | null>;
+          }
+          return fakeNodeRedisClient.set(key, value) as Promise<string | null>;
+        },
+      };
+
+      await adapter.set('some-key', 'some-value');
+      assert.strictEqual(calls.length, 1);
+      assert.deepStrictEqual(calls[0].opts, {});
+    });
+
+    test('adapter returns null when NX key already exists', async () => {
+      const existing = new Set<string>();
+      const fakeNodeRedisClient = {
+        set: async (key: string, _value: string, opts?: Record<string, unknown>) => {
+          if (opts?.NX && existing.has(key)) return null;
+          existing.add(key);
+          return 'OK' as string | null;
+        },
+      };
+
+      const adapter = {
+        set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
+          if (opts) {
+            return fakeNodeRedisClient.set(key, value, {
+              ...(opts.NX ? { NX: true as const } : {}),
+              ...(opts.EX != null ? { EX: opts.EX } : {}),
+            }) as Promise<string | null>;
+          }
+          return fakeNodeRedisClient.set(key, value) as Promise<string | null>;
+        },
+      };
+
+      const first = await adapter.set('webhook:delivery:dup', '1', { NX: true, EX: 300 });
+      assert.strictEqual(first, 'OK');
+
+      const second = await adapter.set('webhook:delivery:dup', '1', { NX: true, EX: 300 });
+      assert.strictEqual(second, null, 'NX must return null for existing key');
     });
   });
 

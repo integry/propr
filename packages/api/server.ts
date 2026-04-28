@@ -340,6 +340,9 @@ function setupWebhookRoute(): void {
     console.log('[webhook] Webhook endpoint disabled (ENABLE_GITHUB_WEBHOOKS not set to true)');
     return;
   }
+  if (!process.env.GH_WEBHOOK_SECRET) {
+    throw new Error('[webhook] ENABLE_GITHUB_WEBHOOKS is true but GH_WEBHOOK_SECRET is not set. Refusing to start — all webhook traffic would be rejected. Set GH_WEBHOOK_SECRET in the environment.');
+  }
   app.post('/webhook', async (req: Request, res: Response) => {
     const correlationId = generateCorrelationId();
     try {
