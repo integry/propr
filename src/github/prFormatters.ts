@@ -1,4 +1,4 @@
-import { getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing } from '@propr/core';
+import { getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing, formatSubscriptionUsage } from '@propr/core';
 import type { DetailedUsageStats } from '@propr/core';
 import { buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 
@@ -43,6 +43,12 @@ export interface ClaudeResult {
         cache_creation_input_tokens?: number;
         cache_read_input_tokens?: number;
     };
+    // Agent Tank subscription usage metrics
+    usageMetrics?: {
+        delta?: Record<string, unknown>;
+        records?: Array<{ agent: string; metricKey: string; metricValue: number }>;
+        agent?: string;
+    } | null;
 }
 
 async function calculateApiCost(
@@ -87,6 +93,8 @@ export async function generatePRBody(issueNumber: number, issueTitle: string, co
     body += `- **Execution Time**: ${executionTime}s\n`;
     body += `- **Tokens used**: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
     body += `- **API cost**: $${cost}\n`;
+    const subscriptionLine = formatSubscriptionUsage(claudeResult?.usageMetrics);
+    if (subscriptionLine) body += subscriptionLine;
     body += `- **Generated**: ${timestamp}\n`;
 
     if (claudeResult?.finalResult) {
@@ -137,6 +145,8 @@ export async function generateClaudeLogsComment(claudeResult: ClaudeResult | nul
         comment += `- **Success**: ${claudeResult.success ? 'Yes' : 'No'}\n`;
         comment += `- **Tokens used**: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
         comment += `- **API cost**: $${cost.toFixed(2)}\n`;
+        const logsSubscriptionLine = formatSubscriptionUsage(claudeResult?.usageMetrics);
+        if (logsSubscriptionLine) comment += logsSubscriptionLine;
         comment += `- **Execution Time**: ${Math.round((claudeResult.executionTime || 0) / 1000)}s\n`;
         comment += `- **Exit Code**: ${claudeResult.exitCode || 'unknown'}\n\n`;
 
