@@ -5,7 +5,7 @@ import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCo
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
-import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, checkRevertPreviewAuthorization, lookupPr, checkUserRepoAccess, verifyAppRepoAccess, buildRevertJobData, verifyCommitBelongsToPr } from './revertHelpers.js';
+import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, checkRevertPreviewAuthorization, lookupPr, buildRevertJobData, verifyCommitBelongsToPr, resolveRepoAndCheckAccess } from './revertHelpers.js';
 
 interface TaskRoutesDeps {
   db: Knex;
@@ -113,51 +113,27 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         res.status(commitCheck.status).json({ error: commitCheck.error });
         return;
       }
-      // Use the resolved full SHA from here on to eliminate short-SHA ambiguity
       const resolvedCommit = commitCheck.resolvedSha;
+
+      // Resolve target repo (handling forks) and verify access
+      const repoAccess = await resolveRepoAndCheckAccess({ prData, owner, repo, pr, requestingUser, octokit });
+      if (!repoAccess.ok) {
+        res.status(repoAccess.status).json({ error: repoAccess.error });
+        return;
+      }
 
       const branch = prData.head.ref;
       const prHeadSha = prData.head.sha;
-      const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
-
-      // For fork PRs, the head repo must be available — reject early if deleted/unavailable
-      if (isFork && !prData.head.repo) {
-        res.status(422).json({ error: `Fork head repository is unavailable for PR #${pr} — cannot perform revert` });
-        return;
-      }
-
-      const headRepoOwner = prData.head.repo?.owner?.login ?? owner;
-      const headRepoName = prData.head.repo?.name ?? repo;
-
-      const targetOwner = isFork ? headRepoOwner : owner;
-      const targetRepo = isFork ? headRepoName : repo;
-
-      // For fork PRs, verify the app can access the fork repo BEFORE checking user permissions.
-      // This produces a more accurate error ("app cannot access fork") instead of misleading
-      // "user does not have access" when the app isn't installed on the fork.
-      if (isFork) {
-        const appAccess = await verifyAppRepoAccess(targetOwner, targetRepo, octokit);
-        if (!appAccess.accessible) {
-          res.status(appAccess.status).json({ error: appAccess.error });
-          return;
-        }
-      }
-
-      // Scope validation: verify the requesting user has write access to the repo being force-pushed
-      const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, requestingUser, octokit);
-      if (!accessResult.allowed) {
-        res.status(accessResult.status).json({ error: accessResult.error });
-        return;
-      }
 
       const jobData = buildRevertJobData({
         owner, repo, prNumber, commit: resolvedCommit, targetCommentId: targetCommentIdNum,
-        requestingUser, systemTaskSecret, branch, prHeadSha, isFork, headRepoOwner, headRepoName
+        requestingUser, systemTaskSecret, branch, prHeadSha,
+        isFork: repoAccess.isFork, headRepoOwner: repoAccess.headRepoOwner, headRepoName: repoAccess.headRepoName
       });
 
       const job = await taskQueue.add('processSystemTask', jobData);
 
-      logger.info({ jobId: job.id, pr, owner, repo, branch, isFork, headRepoOwner, headRepoName }, `[revert] Queued revert job ${job.id} for PR #${pr} in ${owner}/${repo}`);
+      logger.info({ jobId: job.id, pr, owner, repo, branch, isFork: repoAccess.isFork, headRepoOwner: repoAccess.headRepoOwner, headRepoName: repoAccess.headRepoName }, `[revert] Queued revert job ${job.id} for PR #${pr} in ${owner}/${repo}`);
 
       res.json({
         success: true,
@@ -202,35 +178,10 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         owner, repo, pull_number: prNumber
       });
 
-      const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
-
-      // For fork PRs, the head repo must be available — reject early if deleted/unavailable
-      // (matches the destructive revert endpoint behavior)
-      if (isFork && !prData.head.repo) {
-        res.status(422).json({ error: `Fork head repository is unavailable for PR #${pr} — cannot perform revert` });
-        return;
-      }
-
-      const headRepoOwner = prData.head.repo?.owner?.login ?? owner;
-      const headRepoName = prData.head.repo?.name ?? repo;
-
-      const targetOwner = isFork ? headRepoOwner : owner;
-      const targetRepo = isFork ? headRepoName : repo;
-
-      // For fork PRs, verify the app can access the fork repo BEFORE checking user permissions.
-      // (matches the destructive revert endpoint behavior)
-      if (isFork) {
-        const appAccess = await verifyAppRepoAccess(targetOwner, targetRepo, octokit);
-        if (!appAccess.accessible) {
-          res.status(appAccess.status).json({ error: appAccess.error });
-          return;
-        }
-      }
-
-      // Scope validation: verify the requesting user has write access to the target repo
-      const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, authResult.requestingUser, octokit);
-      if (!accessResult.allowed) {
-        res.status(accessResult.status).json({ error: accessResult.error });
+      // Resolve target repo (handling forks) and verify access
+      const repoAccess = await resolveRepoAndCheckAccess({ prData, owner, repo, pr, requestingUser: authResult.requestingUser, octokit });
+      if (!repoAccess.ok) {
+        res.status(repoAccess.status).json({ error: repoAccess.error });
         return;
       }
 

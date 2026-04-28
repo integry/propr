@@ -287,6 +287,65 @@ export async function verifyAppRepoAccess(targetOwner: string, targetRepo: strin
   }
 }
 
+interface PrData {
+  head: { ref: string; sha: string; repo?: { owner?: { login?: string }; name?: string; full_name?: string } | null };
+  base: { ref: string; repo?: { full_name?: string } | null };
+}
+
+export type RepoAccessResult = {
+  ok: true;
+  targetOwner: string;
+  targetRepo: string;
+  isFork: boolean;
+  headRepoOwner: string;
+  headRepoName: string;
+} | {
+  ok: false;
+  status: number;
+  error: string;
+}
+
+interface ResolveRepoParams {
+  prData: PrData;
+  owner: string;
+  repo: string;
+  pr: string;
+  requestingUser: string;
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+}
+
+/**
+ * Resolves the target repository (handling forks) and verifies both app and user access.
+ * Consolidates fork detection, head-repo availability, app access, and user write-access checks.
+ */
+export async function resolveRepoAndCheckAccess(params: ResolveRepoParams): Promise<RepoAccessResult> {
+  const { prData, owner, repo, pr, requestingUser, octokit } = params;
+  const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
+
+  if (isFork && !prData.head.repo) {
+    return { ok: false, status: 422, error: `Fork head repository is unavailable for PR #${pr} — cannot perform revert` };
+  }
+
+  const headRepoOwner = prData.head.repo?.owner?.login ?? owner;
+  const headRepoName = prData.head.repo?.name ?? repo;
+  const targetOwner = isFork ? headRepoOwner : owner;
+  const targetRepo = isFork ? headRepoName : repo;
+
+  if (isFork) {
+    const appAccess = await verifyAppRepoAccess(targetOwner, targetRepo, octokit);
+    if (!appAccess.accessible) {
+      return { ok: false, status: appAccess.status, error: appAccess.error };
+    }
+  }
+
+  const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, requestingUser, octokit);
+  if (!accessResult.allowed) {
+    return { ok: false, status: accessResult.status, error: accessResult.error };
+  }
+
+  return { ok: true, targetOwner, targetRepo, isFork, headRepoOwner, headRepoName };
+}
+
 export function buildRevertJobData(params: {
   owner: string;
   repo: string;
