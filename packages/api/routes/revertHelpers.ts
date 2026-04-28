@@ -136,7 +136,7 @@ export function checkRevertAuthorization(req: { user?: unknown }): Authorization
 export type PrLookupResult = {
   success: true;
   prData: {
-    head: { ref: string; repo?: { owner?: { login?: string }; name?: string; full_name?: string } | null };
+    head: { ref: string; sha: string; repo?: { owner?: { login?: string }; name?: string; full_name?: string } | null };
     base: { ref: string; repo?: { full_name?: string } | null };
   };
   /** Reuse this Octokit instance for subsequent calls in the same request */
@@ -175,19 +175,25 @@ interface VerifyCommitBelongsToPrParams {
 /**
  * Verify that a commit hash belongs to the given PR's commit list.
  * Prevents arbitrary commit hash injection for destructive git reset.
+ * Returns the resolved full SHA to eliminate short-SHA ambiguity.
  */
 export async function verifyCommitBelongsToPr({
   octokit, owner, repo, prNumber, commit
-}: VerifyCommitBelongsToPrParams): Promise<{ valid: true } | { valid: false; status: number; error: string }> {
+}: VerifyCommitBelongsToPrParams): Promise<{ valid: true; resolvedSha: string } | { valid: false; status: number; error: string }> {
   try {
     const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
       owner, repo, pull_number: prNumber, per_page: 100
     }) as Array<{ sha: string }>;
-    const found = prCommits.some(c => c.sha === commit || c.sha.startsWith(commit));
-    if (!found) {
+
+    // Resolve to exact full SHA — reject ambiguous short prefixes
+    const matches = prCommits.filter(c => c.sha === commit || c.sha.startsWith(commit));
+    if (matches.length === 0) {
       return { valid: false, status: 400, error: `Commit ${commit} does not belong to PR #${prNumber}` };
     }
-    return { valid: true };
+    if (matches.length > 1) {
+      return { valid: false, status: 400, error: `Commit prefix ${commit} is ambiguous in PR #${prNumber} — use a full SHA` };
+    }
+    return { valid: true, resolvedSha: matches[0].sha };
   } catch (err) {
     console.error(`[revert] Failed to fetch commits for PR #${prNumber}:`, err);
     return { valid: false, status: 502, error: `Unable to verify commit against PR #${prNumber}` };
@@ -256,11 +262,12 @@ export function buildRevertJobData(params: {
   requestingUser: string;
   systemTaskSecret: string;
   branch: string;
+  prHeadSha: string;
   isFork: boolean;
   headRepoOwner: string;
   headRepoName: string;
 }): SystemTaskJobData {
-  const { owner, repo, prNumber, commit, targetCommentId, requestingUser, systemTaskSecret, branch, isFork, headRepoOwner, headRepoName } = params;
+  const { owner, repo, prNumber, commit, targetCommentId, requestingUser, systemTaskSecret, branch, prHeadSha, isFork, headRepoOwner, headRepoName } = params;
   const correlationId = generateCorrelationId();
   const authTimestamp = Date.now();
 
@@ -274,6 +281,7 @@ export function buildRevertJobData(params: {
     targetCommentId,
     prBranch: branch,
     authTimestamp,
+    prHeadSha,
     ...(isFork ? { headRepoOwner, headRepoName } : {})
   };
   const authToken = generateAuthToken(tokenFields, systemTaskSecret);
@@ -290,6 +298,7 @@ export function buildRevertJobData(params: {
     requestingUser,
     authToken,
     authTimestamp,
+    prHeadSha,
     ...(isFork ? { headRepoOwner, headRepoName } : {})
   };
 }

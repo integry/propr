@@ -26,6 +26,7 @@ const mockOctokitInstance = {
                 data: {
                     head: {
                         ref: 'feature-branch',
+                        sha: 'head1234567890abcdef1234567890abcdef123456',
                         repo: {
                             owner: { login: params.owner as string },
                             name: params.repo as string,
@@ -151,6 +152,7 @@ function makeJobData(overrides: Partial<SystemTaskJobData> = {}): SystemTaskJobD
         commitHash: 'abc1234def5678',
         targetCommentId: 99999,
         prBranch: 'feature-branch',
+        prHeadSha: 'head1234567890abcdef1234567890abcdef123456',
         authTimestamp: Date.now(),
         authToken: '',
         correlationId: 'test-correlation',
@@ -300,6 +302,7 @@ describe('processSystemTaskJob — fork PR handling', () => {
                     data: {
                         head: {
                             ref: 'feature-branch',
+                            sha: 'head1234567890abcdef1234567890abcdef123456',
                             repo: {
                                 owner: { login: 'fork-user' },
                                 name: 'testrepo',
@@ -348,6 +351,7 @@ describe('processSystemTaskJob — fork PR handling', () => {
                     data: {
                         head: {
                             ref: 'feature-branch',
+                            sha: 'head1234567890abcdef1234567890abcdef123456',
                             repo: {
                                 owner: { login: 'fork-user' },
                                 name: 'testrepo',
@@ -397,6 +401,7 @@ describe('processSystemTaskJob — fork PR handling', () => {
                     data: {
                         head: {
                             ref: 'feature-branch',
+                            sha: 'head1234567890abcdef1234567890abcdef123456',
                             repo: {
                                 owner: { login: 'fork-user' },
                                 name: 'forked-repo',
@@ -498,6 +503,7 @@ describe('processSystemTaskJob — authorization order guarantee', () => {
                     data: {
                         head: {
                             ref: 'feature-branch',
+                            sha: 'head1234567890abcdef1234567890abcdef123456',
                             repo: {
                                 owner: { login: params.owner as string },
                                 name: params.repo as string,

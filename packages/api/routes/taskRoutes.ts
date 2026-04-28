@@ -107,29 +107,34 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       }
       const { prData, octokit } = prLookup;
 
-      // Scope validation: verify the commit actually belongs to this PR
+      // Scope validation: verify the commit actually belongs to this PR and resolve to full SHA
       const commitCheck = await verifyCommitBelongsToPr({ octokit, owner, repo, prNumber, commit });
       if (!commitCheck.valid) {
         res.status(commitCheck.status).json({ error: commitCheck.error });
         return;
       }
+      // Use the resolved full SHA from here on to eliminate short-SHA ambiguity
+      const resolvedCommit = commitCheck.resolvedSha;
 
       const branch = prData.head.ref;
-      const headRepoOwner = prData.head.repo?.owner?.login ?? owner;
-      const headRepoName = prData.head.repo?.name ?? repo;
+      const prHeadSha = prData.head.sha;
       const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
 
-      // Scope validation: verify the requesting user has write access to the repo being force-pushed
-      const targetOwner = isFork ? headRepoOwner : owner;
-      const targetRepo = isFork ? headRepoName : repo;
-      const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, requestingUser, octokit);
-      if (!accessResult.allowed) {
-        res.status(accessResult.status).json({ error: accessResult.error });
+      // For fork PRs, the head repo must be available — reject early if deleted/unavailable
+      if (isFork && !prData.head.repo) {
+        res.status(422).json({ error: `Fork head repository is unavailable for PR #${pr} — cannot perform revert` });
         return;
       }
 
-      // For fork PRs, verify the GitHub App installation can access the fork repo.
-      // The app is typically installed on the base repo/org, not the contributor's fork.
+      const headRepoOwner = prData.head.repo?.owner?.login ?? owner;
+      const headRepoName = prData.head.repo?.name ?? repo;
+
+      const targetOwner = isFork ? headRepoOwner : owner;
+      const targetRepo = isFork ? headRepoName : repo;
+
+      // For fork PRs, verify the app can access the fork repo BEFORE checking user permissions.
+      // This produces a more accurate error ("app cannot access fork") instead of misleading
+      // "user does not have access" when the app isn't installed on the fork.
       if (isFork) {
         const appAccess = await verifyAppRepoAccess(targetOwner, targetRepo, octokit);
         if (!appAccess.accessible) {
@@ -138,9 +143,16 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         }
       }
 
+      // Scope validation: verify the requesting user has write access to the repo being force-pushed
+      const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, requestingUser, octokit);
+      if (!accessResult.allowed) {
+        res.status(accessResult.status).json({ error: accessResult.error });
+        return;
+      }
+
       const jobData = buildRevertJobData({
-        owner, repo, prNumber, commit, targetCommentId: targetCommentIdNum,
-        requestingUser, systemTaskSecret, branch, isFork, headRepoOwner, headRepoName
+        owner, repo, prNumber, commit: resolvedCommit, targetCommentId: targetCommentIdNum,
+        requestingUser, systemTaskSecret, branch, prHeadSha, isFork, headRepoOwner, headRepoName
       });
 
       const job = await taskQueue.add('processSystemTask', jobData);
@@ -190,9 +202,20 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         owner, repo, pull_number: prNumber
       });
 
-      const { data: prCommits } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
+      // Scope validation: verify the requesting user has write access to the target repo
+      const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
+      const targetOwner = isFork ? (prData.head.repo?.owner?.login ?? owner) : owner;
+      const targetRepo = isFork ? (prData.head.repo?.name ?? repo) : repo;
+      const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, authResult.requestingUser, octokit);
+      if (!accessResult.allowed) {
+        res.status(accessResult.status).json({ error: accessResult.error });
+        return;
+      }
+
+      // Use paginate to handle PRs with more than 100 commits
+      const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
         owner, repo, pull_number: prNumber, per_page: 100
-      });
+      }) as Array<{ sha: string; commit: { message: string; author?: { name?: string; email?: string; date?: string } | null }; author?: { login?: string } | null }>;
 
       const targetCommitIndex = prCommits.findIndex(c => c.sha === commit || c.sha.startsWith(commit));
 

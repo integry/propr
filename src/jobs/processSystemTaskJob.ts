@@ -23,6 +23,7 @@ interface ResetAndPushParams {
     prBranch: string;
     commitHash: string;
     requestingUser: string;
+    prHeadSha?: string;
     headRepoOwner?: string;
     headRepoName?: string;
 }
@@ -43,6 +44,16 @@ async function performGitResetAndPush(
         throw new Error(
             `Unauthorized: PR #${prNumber} head ref changed — signed branch is '${prBranch}' ` +
             `but current head ref is '${prData.head.ref}'. Re-queue the revert.`
+        );
+    }
+
+    // Verify the PR head SHA hasn't changed since queue time.
+    // If new commits were pushed after authorization, the branch tip differs from what was signed.
+    // Force-pushing in that state would wipe commits that were never part of the authorized state.
+    if (params.prHeadSha && prData.head.sha !== params.prHeadSha) {
+        throw new Error(
+            `Unauthorized: PR #${prNumber} head SHA changed — signed SHA is '${params.prHeadSha}' ` +
+            `but current head SHA is '${prData.head.sha}'. New commits may have been pushed since authorization. Re-queue the revert.`
         );
     }
 
@@ -73,7 +84,7 @@ async function performGitResetAndPush(
     const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
         owner, repo: repoName, pull_number: prNumber, per_page: 100
     }) as Array<{ sha: string }>;
-    const commitFound = prCommits.some(c => c.sha === commitHash || c.sha.startsWith(commitHash));
+    const commitFound = prCommits.some(c => c.sha === commitHash);
     if (!commitFound) {
         throw new Error(
             `Unauthorized: commit ${commitHash} does not belong to PR #${prNumber} in ${owner}/${repoName}`
@@ -213,7 +224,7 @@ function validatePrHead(
  * This job is purely deterministic and does not use the LLM agent.
  */
 export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise<JobResult> {
-    const { repoName, prBranch, commitHash, targetCommentId, owner, prNumber, correlationId, requestingUser, headRepoOwner, headRepoName } = job.data;
+    const { repoName, prBranch, commitHash, targetCommentId, owner, prNumber, correlationId, requestingUser, prHeadSha, headRepoOwner, headRepoName } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     correlatedLogger.info({
@@ -242,7 +253,7 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
         correlatedLogger.info('Starting git hard reset...');
         const resetResult = await performGitResetAndPush(
             octokit,
-            { owner, repoName, prNumber, prBranch, commitHash, requestingUser, headRepoOwner, headRepoName },
+            { owner, repoName, prNumber, prBranch, commitHash, requestingUser, prHeadSha, headRepoOwner, headRepoName },
             correlatedLogger
         );
         worktreePath = resetResult.worktreePath;
