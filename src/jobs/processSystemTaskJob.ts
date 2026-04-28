@@ -177,7 +177,8 @@ function verifyWhitelist(requestingUser: string, correlatedLogger: CorrelatedLog
         correlatedLogger.warn('System task rejected: user whitelist is not configured');
         throw new Error('Unauthorized: user whitelist is not configured — destructive operations require an explicit allowlist');
     }
-    if (!whitelist.includes(requestingUser)) {
+    const normalizedUser = requestingUser.toLowerCase();
+    if (!whitelist.some(w => w.toLowerCase() === normalizedUser)) {
         correlatedLogger.warn({ requestingUser }, 'System task rejected: user not in whitelist');
         throw new Error(`Unauthorized: user '${requestingUser}' is not allowed to perform system tasks`);
     }

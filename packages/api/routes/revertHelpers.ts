@@ -110,7 +110,19 @@ export type AuthorizationResult = {
   error: string;
 }
 
-export function checkRevertAuthorization(req: { user?: unknown }): AuthorizationResult {
+export type PreviewAuthorizationResult = {
+  authorized: true;
+  requestingUser: string;
+} | {
+  authorized: false;
+  status: number;
+  error: string;
+}
+
+/**
+ * Shared whitelist + user identity check used by both preview and destructive paths.
+ */
+function checkWhitelistAuthorization(req: { user?: unknown }): PreviewAuthorizationResult {
   const requestingUser = (req.user as { username?: string })?.username || '';
   if (!requestingUser) {
     return { authorized: false, status: 401, error: 'Unable to determine requesting user' };
@@ -120,8 +132,30 @@ export function checkRevertAuthorization(req: { user?: unknown }): Authorization
   if (whitelist.length === 0) {
     return { authorized: false, status: 403, error: 'User whitelist is not configured — destructive operations require an explicit allowlist' };
   }
-  if (!whitelist.includes(requestingUser)) {
+  const normalizedUser = requestingUser.toLowerCase();
+  if (!whitelist.some(w => w.toLowerCase() === normalizedUser)) {
     return { authorized: false, status: 403, error: `User '${requestingUser}' is not allowed to perform system tasks` };
+  }
+
+  return { authorized: true, requestingUser };
+}
+
+/**
+ * Authorization check for the read-only preview endpoint.
+ * Requires whitelist membership but does NOT require SYSTEM_TASK_SECRET.
+ */
+export function checkRevertPreviewAuthorization(req: { user?: unknown }): PreviewAuthorizationResult {
+  return checkWhitelistAuthorization(req);
+}
+
+/**
+ * Full authorization check for the destructive revert endpoint.
+ * Requires whitelist membership AND SYSTEM_TASK_SECRET.
+ */
+export function checkRevertAuthorization(req: { user?: unknown }): AuthorizationResult {
+  const baseResult = checkWhitelistAuthorization(req);
+  if (!baseResult.authorized) {
+    return baseResult;
   }
 
   const systemTaskSecret = process.env.SYSTEM_TASK_SECRET;
@@ -130,7 +164,7 @@ export function checkRevertAuthorization(req: { user?: unknown }): Authorization
     return { authorized: false, status: 503, error: 'System task authorization is not configured' };
   }
 
-  return { authorized: true, requestingUser, systemTaskSecret };
+  return { authorized: true, requestingUser: baseResult.requestingUser, systemTaskSecret };
 }
 
 export type PrLookupResult = {
@@ -159,7 +193,7 @@ export async function lookupPr(owner: string, repo: string, prNumber: number, pr
     if (err.status === 404) {
       return { success: false, status: 404, error: `PR #${pr} not found in ${owner}/${repo}` };
     }
-    console.error(`[revert] Failed to fetch PR #${pr} from ${owner}/${repo}:`, prLookupError);
+    logger.error({ err: prLookupError, owner, repo, pr }, `[revert] Failed to fetch PR #${pr} from ${owner}/${repo}`);
     return { success: false, status: 502, error: `Unable to fetch PR #${pr} from GitHub` };
   }
 }
@@ -175,15 +209,15 @@ interface VerifyCommitBelongsToPrParams {
 /**
  * Verify that a commit hash belongs to the given PR's commit list.
  * Prevents arbitrary commit hash injection for destructive git reset.
- * Returns the resolved full SHA to eliminate short-SHA ambiguity.
+ * Returns the resolved full SHA and the fetched commits list to avoid duplicate pagination.
  */
 export async function verifyCommitBelongsToPr({
   octokit, owner, repo, prNumber, commit
-}: VerifyCommitBelongsToPrParams): Promise<{ valid: true; resolvedSha: string } | { valid: false; status: number; error: string }> {
+}: VerifyCommitBelongsToPrParams): Promise<{ valid: true; resolvedSha: string; prCommits: GitHubCommit[] } | { valid: false; status: number; error: string }> {
   try {
     const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
       owner, repo, pull_number: prNumber, per_page: 100
-    }) as Array<{ sha: string }>;
+    }) as GitHubCommit[];
 
     // Resolve to exact full SHA — reject ambiguous short prefixes
     const matches = prCommits.filter(c => c.sha === commit || c.sha.startsWith(commit));
@@ -193,9 +227,9 @@ export async function verifyCommitBelongsToPr({
     if (matches.length > 1) {
       return { valid: false, status: 400, error: `Commit prefix ${commit} is ambiguous in PR #${prNumber} — use a full SHA` };
     }
-    return { valid: true, resolvedSha: matches[0].sha };
+    return { valid: true, resolvedSha: matches[0].sha, prCommits };
   } catch (err) {
-    console.error(`[revert] Failed to fetch commits for PR #${prNumber}:`, err);
+    logger.error({ err, prNumber }, `[revert] Failed to fetch commits for PR #${prNumber}`);
     return { valid: false, status: 502, error: `Unable to verify commit against PR #${prNumber}` };
   }
 }
@@ -221,7 +255,7 @@ export async function checkUserRepoAccess(targetOwner: string, targetRepo: strin
     if (err.status === 404 || err.status === 403) {
       return { allowed: false, status: 403, error: `User '${requestingUser}' does not have access to ${targetOwner}/${targetRepo}` };
     }
-    console.error(`[revert] Failed to verify user scope for ${requestingUser} on ${targetOwner}/${targetRepo}:`, scopeError);
+    logger.error({ err: scopeError, requestingUser, targetOwner, targetRepo }, `[revert] Failed to verify user scope for ${requestingUser} on ${targetOwner}/${targetRepo}`);
     return { allowed: false, status: 502, error: `Unable to verify user access to ${targetOwner}/${targetRepo}` };
   }
 }
@@ -248,7 +282,7 @@ export async function verifyAppRepoAccess(targetOwner: string, targetRepo: strin
         error: `GitHub App does not have access to fork repository ${targetOwner}/${targetRepo} — the app must be installed on the fork for revert operations`
       };
     }
-    console.error(`[revert] Failed to verify app access to ${targetOwner}/${targetRepo}:`, repoError);
+    logger.error({ err: repoError, targetOwner, targetRepo }, `[revert] Failed to verify app access to ${targetOwner}/${targetRepo}`);
     return { accessible: false, status: 502, error: `Unable to verify app access to ${targetOwner}/${targetRepo}` };
   }
 }

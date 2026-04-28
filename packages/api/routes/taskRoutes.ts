@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
-import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCorrelationId } from '@propr/core';
+import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCorrelationId, logger } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
-import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, lookupPr, checkUserRepoAccess, verifyAppRepoAccess, buildRevertJobData, verifyCommitBelongsToPr } from './revertHelpers.js';
+import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, checkRevertPreviewAuthorization, lookupPr, checkUserRepoAccess, verifyAppRepoAccess, buildRevertJobData, verifyCommitBelongsToPr } from './revertHelpers.js';
 
 interface TaskRoutesDeps {
   db: Knex;
@@ -157,7 +157,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       const job = await taskQueue.add('processSystemTask', jobData);
 
-      console.log(`[revert] Queued revert job ${job.id} for PR #${pr} in ${owner}/${repo} (branch: ${branch}${isFork ? `, fork: ${headRepoOwner}/${headRepoName}` : ''})`);
+      logger.info({ jobId: job.id, pr, owner, repo, branch, isFork, headRepoOwner, headRepoName }, `[revert] Queued revert job ${job.id} for PR #${pr} in ${owner}/${repo}`);
 
       res.json({
         success: true,
@@ -166,7 +166,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         message: `Revert task queued for PR #${pr}`
       });
     } catch (error) {
-      console.error('Error in /api/tasks/revert:', error);
+      logger.error({ err: error }, 'Error in /api/tasks/revert');
       res.status(500).json({ error: 'Failed to queue revert task' });
     }
   }
@@ -188,8 +188,8 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      // Authorization: apply the same whitelist gate as the destructive revert endpoint
-      const authResult = checkRevertAuthorization(req);
+      // Authorization: whitelist check only — preview is read-only and does not require SYSTEM_TASK_SECRET
+      const authResult = checkRevertPreviewAuthorization(req);
       if (!authResult.authorized) {
         res.status(authResult.status).json({ error: authResult.error });
         return;
@@ -202,28 +202,46 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         owner, repo, pull_number: prNumber
       });
 
-      // Scope validation: verify the requesting user has write access to the target repo
       const isFork = prData.head.repo?.full_name !== prData.base.repo?.full_name;
-      const targetOwner = isFork ? (prData.head.repo?.owner?.login ?? owner) : owner;
-      const targetRepo = isFork ? (prData.head.repo?.name ?? repo) : repo;
+
+      // For fork PRs, the head repo must be available — reject early if deleted/unavailable
+      // (matches the destructive revert endpoint behavior)
+      if (isFork && !prData.head.repo) {
+        res.status(422).json({ error: `Fork head repository is unavailable for PR #${pr} — cannot perform revert` });
+        return;
+      }
+
+      const headRepoOwner = prData.head.repo?.owner?.login ?? owner;
+      const headRepoName = prData.head.repo?.name ?? repo;
+
+      const targetOwner = isFork ? headRepoOwner : owner;
+      const targetRepo = isFork ? headRepoName : repo;
+
+      // For fork PRs, verify the app can access the fork repo BEFORE checking user permissions.
+      // (matches the destructive revert endpoint behavior)
+      if (isFork) {
+        const appAccess = await verifyAppRepoAccess(targetOwner, targetRepo, octokit);
+        if (!appAccess.accessible) {
+          res.status(appAccess.status).json({ error: appAccess.error });
+          return;
+        }
+      }
+
+      // Scope validation: verify the requesting user has write access to the target repo
       const accessResult = await checkUserRepoAccess(targetOwner, targetRepo, authResult.requestingUser, octokit);
       if (!accessResult.allowed) {
         res.status(accessResult.status).json({ error: accessResult.error });
         return;
       }
 
-      // Validate commit belongs to this PR and resolve full SHA (rejects ambiguous short prefixes)
+      // Validate commit belongs to this PR, resolve full SHA, and reuse the fetched commits list
       const commitVerification = await verifyCommitBelongsToPr({ octokit, owner, repo, prNumber, commit });
       if (!commitVerification.valid) {
         res.status(commitVerification.status).json({ error: commitVerification.error });
         return;
       }
       const resolvedCommit = commitVerification.resolvedSha;
-
-      // Use paginate to handle PRs with more than 100 commits
-      const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
-        owner, repo, pull_number: prNumber, per_page: 100
-      }) as Array<{ sha: string; commit: { message: string; author?: { name?: string; email?: string; date?: string } | null }; author?: { login?: string } | null }>;
+      const prCommits = commitVerification.prCommits;
 
       const targetCommitIndex = prCommits.findIndex(c => c.sha === resolvedCommit);
 
@@ -246,7 +264,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         willRevertToBase: targetCommitIndex === 0
       });
     } catch (error) {
-      console.error('Error in /api/tasks/revert-preview:', error);
+      logger.error({ err: error }, 'Error in /api/tasks/revert-preview');
       res.status(500).json({ error: 'Failed to fetch revert preview' });
     }
   }

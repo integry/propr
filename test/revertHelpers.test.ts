@@ -49,18 +49,28 @@ const mockOctokit = {
     })
 };
 
+const mockLogger = {
+    info: mock.fn(() => {}),
+    warn: mock.fn(() => {}),
+    error: mock.fn(() => {}),
+    debug: mock.fn(() => {}),
+    withCorrelation: mock.fn(() => mockLogger)
+};
+
 await mock.module('@propr/core', {
     namedExports: {
         getUserWhitelist: mock.fn(() => ['alice', 'bob']),
         getAuthenticatedOctokit: mock.fn(async () => mockOctokit),
         generateCorrelationId: () => 'test-correlation',
         generateAuthToken: (await import('@propr/core')).generateAuthToken,
-        buildAuthPayload: (await import('@propr/core')).buildAuthPayload
+        buildAuthPayload: (await import('@propr/core')).buildAuthPayload,
+        logger: mockLogger
     }
 });
 
 const {
     checkRevertAuthorization,
+    checkRevertPreviewAuthorization,
     checkUserRepoAccess,
     verifyCommitBelongsToPr,
     verifyAppRepoAccess,
@@ -122,6 +132,48 @@ describe('checkRevertAuthorization — route-level', () => {
         if (result.authorized) {
             assert.strictEqual(result.requestingUser, 'alice');
             assert.strictEqual(result.systemTaskSecret, TEST_SECRET);
+        }
+    });
+
+    test('whitelist matching is case-insensitive', () => {
+        const result = checkRevertAuthorization({ user: { username: 'Alice' } });
+        assert.strictEqual(result.authorized, true);
+        if (result.authorized) {
+            assert.strictEqual(result.requestingUser, 'Alice');
+        }
+    });
+});
+
+describe('checkRevertPreviewAuthorization — read-only preview auth', () => {
+    afterEach(async () => {
+        restoreEnv();
+        const coreMod = await import('@propr/core');
+        (coreMod.getUserWhitelist as ReturnType<typeof mock.fn>).mock.mockImplementation(() => ['alice', 'bob']);
+    });
+
+    test('authorizes whitelisted user without requiring SYSTEM_TASK_SECRET', () => {
+        // No SYSTEM_TASK_SECRET set — preview should still succeed
+        delete process.env.SYSTEM_TASK_SECRET;
+        const result = checkRevertPreviewAuthorization({ user: { username: 'alice' } });
+        assert.strictEqual(result.authorized, true);
+        if (result.authorized) {
+            assert.strictEqual(result.requestingUser, 'alice');
+        }
+    });
+
+    test('rejects unauthenticated user', () => {
+        const result = checkRevertPreviewAuthorization({ user: undefined });
+        assert.strictEqual(result.authorized, false);
+        if (!result.authorized) {
+            assert.strictEqual(result.status, 401);
+        }
+    });
+
+    test('rejects user not in whitelist', () => {
+        const result = checkRevertPreviewAuthorization({ user: { username: 'mallory' } });
+        assert.strictEqual(result.authorized, false);
+        if (!result.authorized) {
+            assert.strictEqual(result.status, 403);
         }
     });
 });
@@ -215,13 +267,19 @@ describe('verifyCommitBelongsToPr — commit scope check', () => {
         }
     });
 
-    test('accepts commit that is in PR', async () => {
+    test('accepts commit that is in PR and returns fetched commits list', async () => {
+        const commits = [{ sha: 'abc1234def5678', commit: { message: 'test' } }, { sha: 'cccc3333dddd4444', commit: { message: 'test2' } }];
         mockOctokit.paginate.mock.mockImplementation(async () => {
-            return [{ sha: 'abc1234def5678' }, { sha: 'cccc3333dddd4444' }];
+            return commits;
         });
 
         const result = await verifyCommitBelongsToPr({ octokit: mockOctokit as never, owner: 'owner', repo: 'repo', prNumber: 42, commit: 'abc1234def5678' });
         assert.strictEqual(result.valid, true);
+        if (result.valid) {
+            assert.strictEqual(result.resolvedSha, 'abc1234def5678');
+            assert.strictEqual(result.prCommits.length, 2);
+            assert.strictEqual(result.prCommits[0].sha, 'abc1234def5678');
+        }
     });
 });
 
