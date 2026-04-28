@@ -1,60 +1,14 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { generateCorrelationId } from '@propr/core';
-import { handleError } from '@propr/core';
-import { getAuthenticatedOctokit } from '@propr/core';
-import { cleanupWorktree } from '@propr/core';
-import type { WorktreeInfo } from '@propr/core';
-import { formatResetTime } from '@propr/core';
-import type { ClaudeCodeResponse } from '@propr/core';
-import type { ClaudeResult } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
-import { issueQueue, type CommentJobData, type UnprocessedComment } from '@propr/core';
-import { TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
-import { getDefaultModel, resolveModelAlias } from '@propr/core';
-import { getPendingPrCommentsKey } from '@propr/core';
 import type { Redis } from 'ioredis';
-
-function parseGitHubHtmlError(html: string): string {
-    // Try to extract the title
-    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].replace(/&middot;/g, '-').replace(/&#\d+;/g, '').trim() : null;
-
-    // Common GitHub error patterns
-    if (html.includes('Unicorn')) {
-        return `GitHub API server error (5xx): ${title || 'Unicorn page'}`;
-    }
-    if (html.includes('rate limit') || html.includes('Rate limit')) {
-        return 'GitHub API rate limit exceeded (HTML response)';
-    }
-    if (html.includes('Not Found') || html.includes('404')) {
-        return `GitHub API resource not found: ${title || '404'}`;
-    }
-    if (html.includes('Bad credentials') || html.includes('401')) {
-        return 'GitHub API authentication failed (401)';
-    }
-    if (html.includes('Forbidden') || html.includes('403')) {
-        return `GitHub API forbidden: ${title || '403'}`;
-    }
-    if (title) {
-        return `GitHub API error: ${title}`;
-    }
-    return 'GitHub API returned an HTML error page instead of JSON';
-}
-
-function sanitizeErrorMessage(message: string | undefined): string {
-    if (!message) return 'Unknown error';
-    // Detect GitHub HTML error pages
-    if (message.includes('<!DOCTYPE html>') || message.includes('<html>')) {
-        return parseGitHubHtmlError(message);
-    }
-    // Truncate very long messages
-    if (message.length > 500) {
-        return message.slice(0, 500) + '... [truncated]';
-    }
-    return message;
-}
+import {
+    generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
+    formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
+    resolveModelAlias, getPendingPrCommentsKey,
+    type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
+    type CommentJobData, type UnprocessedComment, type WorkerStateManager,
+} from '@propr/core';
+import { sanitizeErrorMessage } from './errorSanitizer.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -125,46 +79,23 @@ export function extractModelFromLabels(labels: Array<{ name: string }>, currentL
     return currentLlm || null;
 }
 
-export async function fetchAllComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, repoOwner: string, repoName: string, pullRequestNumber: number): Promise<PRComment[]> {
-    // Fetch ALL issue comments with pagination
-    const issueComments: PRComment[] = [];
+async function paginateComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, url: string, params: Record<string, unknown>): Promise<PRComment[]> {
+    const results: PRComment[] = [];
     let page = 1;
-    let hasMoreIssueComments = true;
-
-    while (hasMoreIssueComments) {
-        const resp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100, page,
-            mediaType: { format: 'full' }
-        });
-        const pageComments = resp.data as PRComment[];
-        issueComments.push(...pageComments);
-
-        // Check if there are more pages
+    let hasMore = true;
+    while (hasMore) {
+        const resp = await octokit.request(url, { ...params, per_page: 100, page, mediaType: { format: 'full' } });
+        results.push(...(resp.data as PRComment[]));
         const linkHeader = (resp.headers as Record<string, string | undefined>).link;
-        hasMoreIssueComments = Boolean(linkHeader && linkHeader.includes('rel="next"'));
+        hasMore = Boolean(linkHeader && linkHeader.includes('rel="next"'));
         page++;
     }
+    return results;
+}
 
-    // Fetch ALL review comments with pagination
-    const reviewComments: PRComment[] = [];
-    page = 1;
-    let hasMoreReviewComments = true;
-
-    while (hasMoreReviewComments) {
-        const resp = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
-            owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100, page,
-            sort: 'created', direction: 'desc',
-            mediaType: { format: 'full' }
-        });
-        const pageComments = resp.data as PRComment[];
-        reviewComments.push(...pageComments);
-
-        // Check if there are more pages
-        const linkHeader = (resp.headers as Record<string, string | undefined>).link;
-        hasMoreReviewComments = Boolean(linkHeader && linkHeader.includes('rel="next"'));
-        page++;
-    }
-
+export async function fetchAllComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, repoOwner: string, repoName: string, pullRequestNumber: number): Promise<PRComment[]> {
+    const issueComments = await paginateComments(octokit, 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber });
+    const reviewComments = await paginateComments(octokit, 'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', { owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, sort: 'created', direction: 'desc' });
     return [...issueComments, ...reviewComments];
 }
 
@@ -426,36 +357,6 @@ export function processPendingComments(commentsToProcess: UnprocessedComment[], 
     }
 }
 
-export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
-    const latestCommandComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.commandMode && comment.commandMode !== 'default');
-    const latestOverrideComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.llmOverride !== undefined);
-
-    if (!latestCommandComment && !latestOverrideComment) return;
-
-    if (latestCommandComment) {
-        jobData.commandMeta = latestCommandComment.commandMeta;
-        jobData.commandMode = latestCommandComment.commandMode;
-        jobData.requestedModels = latestCommandComment.requestedModels;
-        jobData.commandInstructions = latestCommandComment.commandInstructions;
-    }
-
-    if (latestOverrideComment?.llmOverride !== undefined) {
-        jobData.llm = latestOverrideComment.llmOverride;
-    }
-
-    correlatedLogger.info({
-        commandMode: jobData.commandMode,
-        requestedModels: jobData.requestedModels,
-        llmOverride: latestOverrideComment?.llmOverride,
-        commandCommentId: latestCommandComment?.id,
-        overrideCommentId: latestOverrideComment?.id,
-    }, 'Applied command context from pending batched comment');
-}
-
 export async function pickUpPendingComments(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<UnprocessedComment[]> {
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = options;
     const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
@@ -475,3 +376,4 @@ export async function pickUpPendingComments(commentsToProcess: UnprocessedCommen
 export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
 export { PRFile, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents, agentResultToClaudeResponse } from './prFileUtils.js';
+export { applyPendingCommentCommandContext } from './prCommentCommandContext.js';

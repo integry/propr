@@ -48,6 +48,31 @@ function humanizeKey(key: string): string {
         .replace(/^./, c => c.toUpperCase());
 }
 
+function extractPercentFromObject(obj: Record<string, unknown>): number | null {
+    if (typeof obj.percentLeft === 'number') return -obj.percentLeft;
+    if (typeof obj.percent === 'number') return obj.percent;
+    if (typeof obj.percentUsed === 'number') return obj.percentUsed;
+    return null;
+}
+
+function extractRecordsFromArray(
+    agent: string,
+    key: string,
+    items: unknown[],
+): SubscriptionUsageRecord[] {
+    const records: SubscriptionUsageRecord[] = [];
+    for (const item of items) {
+        if (!item || typeof item !== 'object') continue;
+        const entry = item as Record<string, unknown>;
+        const rawName = typeof entry.model === 'string' ? entry.model : key;
+        const pv = extractPercentFromObject(entry);
+        if (pv !== null && pv > 0) {
+            records.push({ agent, metricKey: humanizeKey(rawName), metricValue: pv });
+        }
+    }
+    return records;
+}
+
 /**
  * Extract metric records from a raw Agent Tank delta object.
  * Lightweight version that handles the common shapes without importing
@@ -70,37 +95,14 @@ function extractRecordsFromDelta(
         }
 
         if (typeof value === 'object' && !Array.isArray(value)) {
-            const nested = value as Record<string, unknown>;
-            let percentValue: number | null = null;
-
-            if (typeof nested.percentLeft === 'number') {
-                percentValue = -nested.percentLeft;
-            } else if (typeof nested.percent === 'number') {
-                percentValue = nested.percent;
-            } else if (typeof nested.percentUsed === 'number') {
-                percentValue = nested.percentUsed;
-            }
-
+            const percentValue = extractPercentFromObject(value as Record<string, unknown>);
             if (percentValue !== null && percentValue > 0) {
                 records.push({ agent, metricKey: label, metricValue: percentValue });
             }
         }
 
         if (Array.isArray(value)) {
-            for (const item of value) {
-                if (item && typeof item === 'object') {
-                    const entry = item as Record<string, unknown>;
-                    const rawName = typeof entry.model === 'string' ? entry.model : key;
-                    const itemLabel = humanizeKey(rawName);
-                    const pv =
-                        typeof entry.percentUsed === 'number' ? entry.percentUsed :
-                        typeof entry.percent === 'number' ? entry.percent :
-                        null;
-                    if (pv !== null && pv > 0) {
-                        records.push({ agent, metricKey: itemLabel, metricValue: pv });
-                    }
-                }
-            }
+            records.push(...extractRecordsFromArray(agent, key, value));
         }
     }
 
