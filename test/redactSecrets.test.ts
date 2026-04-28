@@ -512,6 +512,69 @@ test('redactSecrets redacts mixed-case secret assignment patterns', () => {
     assert.ok(result.includes('[REDACTED_SECRET]'));
 });
 
+// --- Generic *_TOKEN variable tests (Review finding: missing TOKEN patterns) ---
+
+test('redactSecrets redacts GITHUB_TOKEN assignment', () => {
+    const input = 'GITHUB_TOKEN=ghx_someLongTokenValue1234567890abc';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('ghx_someLongTokenValue1234567890abc'), 'GITHUB_TOKEN value should be redacted');
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+test('redactSecrets redacts NPM_TOKEN assignment', () => {
+    const input = 'NPM_TOKEN="npm_abcdefghijklmnopqrstuvwxyz"';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('npm_abcdefghijklmnopqrstuvwxyz'), 'NPM_TOKEN value should be redacted');
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+test('redactSecrets redacts SLACK_TOKEN assignment', () => {
+    const input = 'SLACK_TOKEN=some_long_slack_token_value_1234';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('some_long_slack_token_value_1234'), 'SLACK_TOKEN value should be redacted');
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+test('redactSecrets redacts CI_JOB_TOKEN assignment', () => {
+    const input = 'CI_JOB_TOKEN=abcdefghijklmnopqrstuvwxyz1234';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('abcdefghijklmnopqrstuvwxyz1234'), 'CI_JOB_TOKEN value should be redacted');
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+test('redactSecrets redacts plain TOKEN assignment', () => {
+    const input = 'TOKEN="mySecretTokenValue12345678901234"';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('mySecretTokenValue12345678901234'), 'Plain TOKEN value should be redacted');
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+test('redactSecrets redacts CLIENT_SECRET assignment', () => {
+    const input = 'CLIENT_SECRET=abcdefghijklmnopqrstuvwxyz1234';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('abcdefghijklmnopqrstuvwxyz1234'), 'CLIENT_SECRET value should be redacted');
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+// --- Cyclic object handling test (Review finding: stack overflow on cycles) ---
+
+test('redactSerializableValue handles cyclic objects without stack overflow', () => {
+    const obj: Record<string, unknown> = { name: 'test', secret: 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn' };
+    obj.self = obj; // create cycle
+    const result = redactSerializableValue(obj) as Record<string, unknown>;
+    assert.strictEqual(result.self, '[Circular]', 'Cyclic reference should be replaced with [Circular]');
+    assert.ok(!(result.secret as string).includes('ghp_'), 'Secrets should still be redacted in cyclic objects');
+    assert.ok((result.secret as string).includes('[REDACTED_GITHUB_TOKEN]'));
+});
+
+test('redactSerializableValue handles cyclic arrays without stack overflow', () => {
+    const arr: unknown[] = ['ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn'];
+    arr.push(arr); // create cycle
+    const result = redactSerializableValue(arr) as unknown[];
+    assert.strictEqual(result[1], '[Circular]', 'Cyclic array reference should be replaced with [Circular]');
+    assert.ok(!(result[0] as string).includes('ghp_'), 'Secrets should still be redacted');
+});
+
 test('redactSecrets redacts secrets regardless of surrounding text with no known prefixes', () => {
     // This input contains no literal prefix strings from the old SECRET_PREFIXES list
     // but should still be redacted via the case-insensitive generic pattern

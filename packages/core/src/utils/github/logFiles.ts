@@ -114,8 +114,8 @@ const SECRET_PATTERNS: SecretPattern[] = [
 
     // Bearer tokens — require at least 20 chars to avoid matching prose
     { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, replacement: '', dynamicReplacement: 'bearer' },
-    // Secret/token assignment patterns (catches env vars like SECRET_KEY=... or API_TOKEN=...)
-    { pattern: /(?<=(?:^|[_A-Z])(?:SECRET|PASSWORD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY|SECRET_TOKEN|API_TOKEN|AUTH_TOKEN)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_-]{20,}(?=['"]?)/gim, replacement: '[REDACTED_SECRET]' },
+    // Secret/token assignment patterns (catches env vars like SECRET_KEY=..., GITHUB_TOKEN=..., NPM_TOKEN=..., etc.)
+    { pattern: /(?<=(?:^|[_A-Z])(?:SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY|SECRET_TOKEN|API_TOKEN|AUTH_TOKEN|TOKEN|GITHUB_TOKEN|NPM_TOKEN|SLACK_TOKEN|CI_JOB_TOKEN|CI_TOKEN|DEPLOY_TOKEN|SERVICE_TOKEN|REFRESH_TOKEN|CLIENT_SECRET|APP_SECRET|WEBHOOK_SECRET)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_-]{20,}(?=['"]?)/gim, replacement: '[REDACTED_SECRET]' },
 ];
 
 export function redactSecrets(input: string): string {
@@ -146,24 +146,31 @@ export function redactSecrets(input: string): string {
  *               (empty string `""` for the root), mirroring the `key` argument
  *               that `JSON.stringify` passes to `toJSON`.
  */
-export function redactSerializableValue(obj: unknown, key: string = ''): unknown {
+export function redactSerializableValue(obj: unknown, key: string = '', seen?: WeakSet<object>): unknown {
     if (typeof obj === 'string') {
         return redactSecrets(obj);
     }
     if (Array.isArray(obj)) {
-        return obj.map((item, index) => redactSerializableValue(item, String(index)));
+        const guard = seen ?? new WeakSet();
+        if (guard.has(obj)) return '[Circular]';
+        guard.add(obj);
+        return obj.map((item, index) => redactSerializableValue(item, String(index), guard));
     }
     if (obj !== null && typeof obj === 'object') {
+        const guard = seen ?? new WeakSet();
+        if (guard.has(obj)) return '[Circular]';
+        guard.add(obj);
         // Honour toJSON(key) so Date, URL, etc. serialize the same as JSON.stringify
         if (typeof (obj as Record<string, unknown>).toJSON === 'function') {
             return redactSerializableValue(
                 (obj as { toJSON(key: string): unknown }).toJSON(key),
-                key
+                key,
+                guard
             );
         }
         const redacted: Record<string, unknown> = {};
         for (const [k, value] of Object.entries(obj)) {
-            redacted[k] = redactSerializableValue(value, k);
+            redacted[k] = redactSerializableValue(value, k, guard);
         }
         return redacted;
     }
