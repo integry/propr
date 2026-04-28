@@ -284,9 +284,9 @@ async function forwardToProcessor(
     payload: unknown,
     prNumber: number,
     eventType: WebhookEventType,
-    deliveryId: string,
-    correlationId: string,
+    ids: { deliveryId: string; correlationId: string },
 ): Promise<void> {
+    const { deliveryId, correlationId } = ids;
     const targetPort = API_PORT_BASE + prNumber;
     const targetUrl = `${HOST_ADDRESS}:${targetPort}/webhook`;
     const log = logger.withCorrelation(correlationId);
@@ -465,7 +465,7 @@ export async function processWebhookEvent(
     // 3. Routing Decision: Forward to preview instance if applicable
     if (ENABLE_PREVIEW_ROUTING && processorPrNumber) {
         correlatedLogger.info({ processorPrNumber }, 'Forwarding webhook to designated processor PR instance');
-        await forwardToProcessor(payload, processorPrNumber, eventType, deliveryId || correlationId, correlationId);
+        await forwardToProcessor(payload, processorPrNumber, eventType, { deliveryId: deliveryId || correlationId, correlationId });
         return;
     }
 
