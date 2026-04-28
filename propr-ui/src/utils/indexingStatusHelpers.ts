@@ -1,8 +1,8 @@
-import { IndexingUpdatePayload } from '@propr/shared';
+import { IndexingUpdatePayload, IndexingPhase } from '@propr/shared';
 import { RepositoryIndexingStatus } from '../api/proprApi';
 
 // Helper function to map WebSocket payload phase to indexing status
-export const mapPhaseToIndexingStatus = (phase: string): 'idle' | 'indexing' | 'completed' | 'failed' => {
+export const mapPhaseToIndexingStatus = (phase: IndexingPhase): 'idle' | 'indexing' | 'completed' | 'failed' => {
   if (phase === 'files' || phase === 'directories' || phase === 'indexing') {
     return 'indexing';
   }

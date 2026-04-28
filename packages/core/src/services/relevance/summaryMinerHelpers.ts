@@ -163,7 +163,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         batchCompleted: true,
         inputTokens: batchInputTokens,
         outputTokens: batchOutputTokens,
-      });
+      }, branch);
       await publishProgress(fullName, branch);
 
       currentBatch = [];

@@ -63,7 +63,7 @@ export async function aggregateDirectories(
   log.info({ directoryCount: totalDirs, depthLevels: depths.length }, 'Aggregating directory summaries (batched)');
 
   // Start directory phase tracking
-  await startDirectoryPhase(fullName, totalDirs);
+  await startDirectoryPhase(fullName, branch, totalDirs);
 
   // Cache for directory summaries (populated as we process bottom-up)
   const dirSummaryCache = new Map<string, string>();
@@ -94,7 +94,7 @@ export async function aggregateDirectories(
           dirSummaryCache.set(dirPath, existing.summary);
         }
         dirsProcessed++;
-        await updateDirectoryProgress(fullName);
+        await updateDirectoryProgress(fullName, branch);
         await publishProgress(fullName, branch);
       }
     }
@@ -124,9 +124,9 @@ export async function aggregateDirectories(
           dirSummaryCache.set(result.dirPath, result.summary);
         }
         dirsProcessed++;
+        await updateDirectoryProgress(fullName, branch);
+        await publishProgress(fullName, branch);
       }
-      await updateDirectoryProgress(fullName);
-      await publishProgress(fullName, branch);
     }
   }
 

@@ -268,6 +268,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     if (filesToProcess.length === 0 && filesToDelete.length === 0) {
       correlatedLogger.info('No files need processing, all summaries up to date');
       await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+      await publishIndexingStatus(fullName, branch, 'completed');
       return;
     }
 
@@ -277,7 +278,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
 
       // Initialize progress tracking
-      await initIndexingProgress(fullName, filesToProcess.length);
+      await initIndexingProgress(fullName, filesToProcess.length, branch);
 
       // Phase B: Batch Summarization
       batchResult = await processBatches({
@@ -314,7 +315,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // Clear cancellation flag and progress on successful completion
     await clearIndexingCancellation(fullName);
-    await clearIndexingProgress(fullName);
+    await clearIndexingProgress(fullName, branch);
 
   } catch (error) {
     await handleIndexingError(error, repoPath, options, correlatedLogger);
@@ -332,7 +333,7 @@ async function handleIndexingError(
 
   // Always clear the cancellation flag and progress
   await clearIndexingCancellation(repoName);
-  await clearIndexingProgress(repoName);
+  await clearIndexingProgress(repoName, errorBranch);
 
   // Handle user-initiated cancellation
   if (error instanceof IndexingCancelledError) {

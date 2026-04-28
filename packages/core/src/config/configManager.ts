@@ -526,7 +526,7 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
 
             // Fetch progress data for repos that are actively indexing
             if (status.indexing_status === 'indexing') {
-                const progress = await getIndexingProgress(r.full_name);
+                const progress = await getIndexingProgress(r.full_name, r.branch || 'HEAD');
                 if (progress) {
                     const percentComplete = progress.totalFiles > 0
                         ? Math.round((progress.processedFiles / progress.totalFiles) * 100)

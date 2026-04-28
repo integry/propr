@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis';
+import { type IndexingPhase } from '@propr/shared';
 import { getEventPublisher } from '../../utils/eventPublisher.js';
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
@@ -84,16 +85,16 @@ export class IndexingCancelledError extends Error {
 
 // --- Progress Tracking ---
 
-function getProgressKey(repository: string): string {
-  return `${PROGRESS_KEY_PREFIX}${repository}`;
+function getProgressKey(repository: string, branch = 'HEAD'): string {
+  return `${PROGRESS_KEY_PREFIX}${repository}:${branch}`;
 }
 
 /**
  * Initialize progress tracking for a repository.
  */
-export async function initIndexingProgress(repository: string, totalFiles: number): Promise<void> {
+export async function initIndexingProgress(repository: string, totalFiles: number, branch = 'HEAD'): Promise<void> {
   const redis = getRedis();
-  const key = getProgressKey(repository);
+  const key = getProgressKey(repository, branch);
   const progress: IndexingProgress = {
     totalFiles,
     processedFiles: 0,
@@ -119,10 +120,11 @@ export async function updateIndexingProgress(
     batchCompleted: boolean;
     inputTokens: number;
     outputTokens: number;
-  }
+  },
+  branch = 'HEAD'
 ): Promise<void> {
   const redis = getRedis();
-  const key = getProgressKey(repository);
+  const key = getProgressKey(repository, branch);
   const existing = await redis.get(key);
   if (!existing) return;
 
@@ -140,9 +142,9 @@ export async function updateIndexingProgress(
 /**
  * Set the total number of batches (known after first pass through files).
  */
-export async function setTotalBatches(repository: string, totalBatches: number): Promise<void> {
+export async function setTotalBatches(repository: string, totalBatches: number, branch = 'HEAD'): Promise<void> {
   const redis = getRedis();
-  const key = getProgressKey(repository);
+  const key = getProgressKey(repository, branch);
   const existing = await redis.get(key);
   if (!existing) return;
 
@@ -154,9 +156,9 @@ export async function setTotalBatches(repository: string, totalBatches: number):
 /**
  * Start the directory aggregation phase.
  */
-export async function startDirectoryPhase(repository: string, totalDirectories: number): Promise<void> {
+export async function startDirectoryPhase(repository: string, branch: string, totalDirectories: number): Promise<void> {
   const redis = getRedis();
-  const key = getProgressKey(repository);
+  const key = getProgressKey(repository, branch);
   const existing = await redis.get(key);
   if (!existing) return;
 
@@ -170,9 +172,9 @@ export async function startDirectoryPhase(repository: string, totalDirectories: 
 /**
  * Update progress after processing a directory.
  */
-export async function updateDirectoryProgress(repository: string): Promise<void> {
+export async function updateDirectoryProgress(repository: string, branch = 'HEAD'): Promise<void> {
   const redis = getRedis();
-  const key = getProgressKey(repository);
+  const key = getProgressKey(repository, branch);
   const existing = await redis.get(key);
   if (!existing) return;
 
@@ -184,9 +186,9 @@ export async function updateDirectoryProgress(repository: string): Promise<void>
 /**
  * Get current indexing progress for a repository.
  */
-export async function getIndexingProgress(repository: string): Promise<IndexingProgress | null> {
+export async function getIndexingProgress(repository: string, branch = 'HEAD'): Promise<IndexingProgress | null> {
   const redis = getRedis();
-  const key = getProgressKey(repository);
+  const key = getProgressKey(repository, branch);
   const data = await redis.get(key);
   if (!data) return null;
   return JSON.parse(data);
@@ -195,9 +197,9 @@ export async function getIndexingProgress(repository: string): Promise<IndexingP
 /**
  * Clear progress tracking for a repository.
  */
-export async function clearIndexingProgress(repository: string): Promise<void> {
+export async function clearIndexingProgress(repository: string, branch = 'HEAD'): Promise<void> {
   const redis = getRedis();
-  const key = getProgressKey(repository);
+  const key = getProgressKey(repository, branch);
   await redis.del(key);
 }
 
@@ -206,7 +208,7 @@ export async function clearIndexingProgress(repository: string): Promise<void> {
  * Reads the current progress from Redis and broadcasts it.
  */
 export async function publishProgress(repository: string, branch: string): Promise<void> {
-  const progress = await getIndexingProgress(repository);
+  const progress = await getIndexingProgress(repository, branch);
   if (!progress) return;
 
   const totalItems = progress.phase === 'directories' ? progress.totalDirectories : progress.totalFiles;
@@ -228,7 +230,7 @@ export async function publishProgress(repository: string, branch: string): Promi
 /**
  * Publish an indexing status change (e.g., indexing, completed, failed, idle) to WebSocket clients.
  */
-export async function publishIndexingStatus(repository: string, branch: string, phase: string): Promise<void> {
+export async function publishIndexingStatus(repository: string, branch: string, phase: IndexingPhase): Promise<void> {
   await getEventPublisher().publishIndexingUpdate({
     repository,
     branch,

@@ -10,6 +10,7 @@ import {
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
+  type IndexingPhase,
   type TaskLiveUpdatePayload,
   type QueueStatsUpdatePayload,
   type ConversationEvent,
@@ -127,7 +128,7 @@ class EventPublisher {
   async publishIndexingUpdate(params: {
     repository: string;
     branch?: string;
-    phase: string;
+    phase: IndexingPhase;
     progress?: number;
     totalFiles?: number;
     processedFiles?: number;

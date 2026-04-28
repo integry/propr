@@ -42,14 +42,18 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
+      // Publish indexing status before queueing to prevent race where a fast worker
+      // emits completed/failed before the route publishes the start event
+      await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+
       const result = await queueIndexingJob(repository, !!fullReindex, baseBranch);
       if (!result.success) {
+        // Revert the optimistic status since the job wasn't queued
+        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'idle');
         const statusCode = result.error?.includes('already queued') ? 409 : 400;
         res.status(statusCode).json({ error: result.error });
         return;
       }
-
-      await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
 
       await logActivityHelper(
         `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
