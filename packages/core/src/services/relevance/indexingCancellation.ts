@@ -38,17 +38,17 @@ function getRedis(): Redis {
   return redisClient;
 }
 
-function getCancellationKey(repository: string): string {
-  return `${CANCELLATION_KEY_PREFIX}${repository}`;
+function getCancellationKey(repository: string, branch = 'HEAD'): string {
+  return `${CANCELLATION_KEY_PREFIX}${repository}:${branch}`;
 }
 
 /**
  * Request cancellation of an indexing job for a repository.
  * The worker will check this flag and stop processing.
  */
-export async function requestIndexingCancellation(repository: string): Promise<void> {
+export async function requestIndexingCancellation(repository: string, branch = 'HEAD'): Promise<void> {
   const redis = getRedis();
-  const key = getCancellationKey(repository);
+  const key = getCancellationKey(repository, branch);
   await redis.set(key, '1', 'EX', CANCELLATION_TTL_SECONDS);
 }
 
@@ -56,9 +56,9 @@ export async function requestIndexingCancellation(repository: string): Promise<v
  * Check if indexing has been cancelled for a repository.
  * Called by the worker during processing.
  */
-export async function isIndexingCancelled(repository: string): Promise<boolean> {
+export async function isIndexingCancelled(repository: string, branch = 'HEAD'): Promise<boolean> {
   const redis = getRedis();
-  const key = getCancellationKey(repository);
+  const key = getCancellationKey(repository, branch);
   const value = await redis.get(key);
   return value === '1';
 }
@@ -67,9 +67,9 @@ export async function isIndexingCancelled(repository: string): Promise<boolean> 
  * Clear the cancellation flag for a repository.
  * Called when indexing completes (success, failure, or cancellation).
  */
-export async function clearIndexingCancellation(repository: string): Promise<void> {
+export async function clearIndexingCancellation(repository: string, branch = 'HEAD'): Promise<void> {
   const redis = getRedis();
-  const key = getCancellationKey(repository);
+  const key = getCancellationKey(repository, branch);
   await redis.del(key);
 }
 
@@ -108,6 +108,9 @@ export async function initIndexingProgress(repository: string, totalFiles: numbe
     phase: 'files',
   };
   await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
+
+  // Publish initial progress so clients see totalFiles and phase immediately
+  await publishProgress(repository, branch);
 }
 
 /**
@@ -167,6 +170,9 @@ export async function startDirectoryPhase(repository: string, branch: string, to
   progress.totalDirectories = totalDirectories;
   progress.processedDirectories = 0;
   await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
+
+  // Publish phase transition so clients see directory phase start immediately
+  await publishProgress(repository, branch);
 }
 
 /**

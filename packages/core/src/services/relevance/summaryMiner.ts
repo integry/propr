@@ -314,7 +314,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     }
 
     // Clear cancellation flag and progress on successful completion
-    await clearIndexingCancellation(fullName);
+    await clearIndexingCancellation(fullName, branch);
     await clearIndexingProgress(fullName, branch);
 
   } catch (error) {
@@ -332,7 +332,7 @@ async function handleIndexingError(
   const errorBranch = options.branch || 'HEAD';
 
   // Always clear the cancellation flag and progress
-  await clearIndexingCancellation(repoName);
+  await clearIndexingCancellation(repoName, errorBranch);
   await clearIndexingProgress(repoName, errorBranch);
 
   // Handle user-initiated cancellation

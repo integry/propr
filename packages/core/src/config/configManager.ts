@@ -528,8 +528,10 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
             if (status.indexing_status === 'indexing') {
                 const progress = await getIndexingProgress(r.full_name, r.branch || 'HEAD');
                 if (progress) {
-                    const percentComplete = progress.totalFiles > 0
-                        ? Math.round((progress.processedFiles / progress.totalFiles) * 100)
+                    const totalItems = progress.phase === 'directories' ? progress.totalDirectories : progress.totalFiles;
+                    const processedItems = progress.phase === 'directories' ? progress.processedDirectories : progress.processedFiles;
+                    const percentComplete = totalItems > 0
+                        ? Math.round((processedItems / totalItems) * 100)
                         : 0;
                     status.progress = {
                         totalFiles: progress.totalFiles,

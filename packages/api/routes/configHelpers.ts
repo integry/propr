@@ -342,7 +342,7 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
       if (state === 'active') {
         // Active jobs are locked by the worker. Set a cancellation flag in Redis
         // that the worker will check and stop processing gracefully.
-        await requestIndexingCancellation(repository);
+        await requestIndexingCancellation(repository, branch || 'HEAD');
       } else {
         // Waiting/delayed jobs can be removed directly
         await job.remove();

@@ -116,7 +116,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
   for (const file of files) {
     // Check for cancellation before processing each file
-    if (await isIndexingCancelled(fullName)) {
+    if (await isIndexingCancelled(fullName, branch)) {
       log.info({ repository: fullName }, 'Indexing cancelled by user');
       throw new IndexingCancelledError(fullName);
     }
@@ -182,7 +182,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   // Process remaining batch
   if (currentBatch.length > 0) {
     // Check for cancellation before final batch
-    if (await isIndexingCancelled(fullName)) {
+    if (await isIndexingCancelled(fullName, branch)) {
       log.info({ repository: fullName }, 'Indexing cancelled by user');
       throw new IndexingCancelledError(fullName);
     }
@@ -208,7 +208,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       batchCompleted: true,
       inputTokens: batchInputTokens,
       outputTokens: batchOutputTokens,
-    });
+    }, branch);
     await publishProgress(fullName, branch);
   }
 

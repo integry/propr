@@ -24,9 +24,8 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
   }
 
   async function triggerIndexing(req: Request, res: Response): Promise<void> {
+    const { repository, fullReindex, baseBranch } = req.body;
     try {
-      const { repository, fullReindex, baseBranch } = req.body;
-
       if (!repository || typeof repository !== 'string') {
         res.status(400).json({ error: 'repository is required and must be a string (e.g., "owner/repo")' });
         return;
@@ -62,6 +61,14 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
       res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: !!fullReindex, baseBranch });
     } catch (error) {
+      // Revert the optimistic indexing status since queueing threw
+      if (repository && typeof repository === 'string') {
+        try {
+          await publishIndexingStatus(repository, baseBranch || 'HEAD', 'idle');
+        } catch {
+          // Best-effort rollback
+        }
+      }
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });
     }
