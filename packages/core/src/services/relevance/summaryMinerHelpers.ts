@@ -13,7 +13,7 @@ import {
 } from './summaryMinerMetrics.js';
 import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './summaryMinerMetrics.js';
 import { aggregateDirectories } from './summaryMinerDirectories.js';
-import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress } from './indexingCancellation.js';
+import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress, publishProgress } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 
 // Re-export metrics types and functions for backwards compatibility
@@ -164,6 +164,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         inputTokens: batchInputTokens,
         outputTokens: batchOutputTokens,
       });
+      await publishProgress(fullName, branch);
 
       currentBatch = [];
       currentTokens = 0;
@@ -208,6 +209,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       inputTokens: batchInputTokens,
       outputTokens: batchOutputTokens,
     });
+    await publishProgress(fullName, branch);
   }
 
   log.info({ totalBatches: batchNumber, successfulBatches, failedBatches, filesProcessed, filesFailed }, 'Batch processing complete');

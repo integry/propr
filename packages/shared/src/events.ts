@@ -73,10 +73,13 @@ export interface PlanStepUpdatePayload {
 export interface IndexingUpdatePayload {
   eventType: typeof INDEXING_UPDATE;
   repository: string;
+  branch?: string;
   phase: string;
   progress?: number;
   totalFiles?: number;
   processedFiles?: number;
+  totalDirectories?: number;
+  processedDirectories?: number;
   timestamp: string;
 }
 

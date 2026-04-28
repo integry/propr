@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis';
+import { getEventPublisher } from '../../utils/eventPublisher.js';
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
@@ -198,4 +199,39 @@ export async function clearIndexingProgress(repository: string): Promise<void> {
   const redis = getRedis();
   const key = getProgressKey(repository);
   await redis.del(key);
+}
+
+/**
+ * Publish current indexing progress to WebSocket clients via Redis pub/sub.
+ * Reads the current progress from Redis and broadcasts it.
+ */
+export async function publishProgress(repository: string, branch: string): Promise<void> {
+  const progress = await getIndexingProgress(repository);
+  if (!progress) return;
+
+  const totalItems = progress.phase === 'directories' ? progress.totalDirectories : progress.totalFiles;
+  const processedItems = progress.phase === 'directories' ? progress.processedDirectories : progress.processedFiles;
+  const percentComplete = totalItems > 0 ? Math.round((processedItems / totalItems) * 100) : 0;
+
+  await getEventPublisher().publishIndexingUpdate({
+    repository,
+    branch,
+    phase: progress.phase,
+    progress: percentComplete,
+    totalFiles: progress.totalFiles,
+    processedFiles: progress.processedFiles,
+    totalDirectories: progress.totalDirectories,
+    processedDirectories: progress.processedDirectories,
+  });
+}
+
+/**
+ * Publish an indexing status change (e.g., indexing, completed, failed, idle) to WebSocket clients.
+ */
+export async function publishIndexingStatus(repository: string, branch: string, phase: string): Promise<void> {
+  await getEventPublisher().publishIndexingUpdate({
+    repository,
+    branch,
+    phase,
+  });
 }

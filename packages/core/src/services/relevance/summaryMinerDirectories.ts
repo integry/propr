@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
-import { startDirectoryPhase, updateDirectoryProgress } from './indexingCancellation.js';
+import { startDirectoryPhase, updateDirectoryProgress, publishProgress } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
 
@@ -95,6 +95,7 @@ export async function aggregateDirectories(
         }
         dirsProcessed++;
         await updateDirectoryProgress(fullName);
+        await publishProgress(fullName, branch);
       }
     }
 
@@ -125,6 +126,7 @@ export async function aggregateDirectories(
         dirsProcessed++;
       }
       await updateDirectoryProgress(fullName);
+      await publishProgress(fullName, branch);
     }
   }
 

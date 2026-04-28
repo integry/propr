@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
+import { publishIndexingStatus } from '@propr/core';
 import { queueResummarizationForAllRepos, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex, stopIndexingJob } from './configHelpers.js';
 
 interface IndexingRoutesDeps {
@@ -47,6 +48,8 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         res.status(statusCode).json({ error: result.error });
         return;
       }
+
+      await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
 
       await logActivityHelper(
         `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
@@ -111,6 +114,8 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         res.status(500).json({ error: result.message || 'Failed to stop indexing' });
         return;
       }
+
+      await publishIndexingStatus(repository, branch || 'HEAD', 'idle');
 
       const branchInfo = branch ? ` (branch: ${branch})` : '';
       await logActivityHelper(

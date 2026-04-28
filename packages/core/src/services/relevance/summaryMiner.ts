@@ -11,7 +11,7 @@ import {
   processBatches,
   aggregateDirectories
 } from './summaryMinerHelpers.js';
-import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, clearIndexingProgress } from './indexingCancellation.js';
+import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
 import { updateRepositoryStatus } from './summaryMinerQueries.js';
 
 // Re-export metrics functions and types for external access
@@ -301,12 +301,14 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     if (batchResult.failedBatches > 0) {
       // Some batches failed - mark as failed so it will be retried
       await updateRepositoryStatus(fullName, 'failed', branch);
+      await publishIndexingStatus(fullName, branch, 'failed');
       correlatedLogger.warn(
         { repoPath, fullName, branch, ...batchResult },
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {
       await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+      await publishIndexingStatus(fullName, branch, 'completed');
       correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
     }
 
@@ -348,6 +350,7 @@ async function handleIndexingError(
   // Set status to failed
   try {
     await updateRepositoryStatus(repoName, 'failed', errorBranch);
+    await publishIndexingStatus(repoName, errorBranch, 'failed');
   } catch (statusError) {
     correlatedLogger.error(
       { error: (statusError as Error).message },

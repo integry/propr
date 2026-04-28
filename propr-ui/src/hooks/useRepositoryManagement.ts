@@ -104,7 +104,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   }, []);
 
   const handleIndexingUpdate = useCallback((payload: IndexingUpdatePayload) => {
-    const key = getRepoStatusKey(payload.repository, undefined);
+    const key = getRepoStatusKey(payload.repository, payload.branch);
     if (payload.phase === 'indexing' || payload.phase === 'files' || payload.phase === 'directories') {
       pendingOptimisticUpdatesRef.current.delete(key);
     }
@@ -188,7 +188,6 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       const displayName = baseBranch ? `${repoName} (${baseBranch})` : repoName;
       if (!confirm(`Are you sure you want to stop indexing for ${displayName}?`)) return;
       await stopRepositoryIndexing(repoName, baseBranch);
-      setTimeout(loadIndexingStatuses, 500);
     } catch (err) {
       alert('Failed to stop indexing: ' + (err as Error).message);
     }
@@ -209,7 +208,6 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     }));
     try {
       await triggerRepositoryIndexing(repoName, baseBranch);
-      setTimeout(loadIndexingStatuses, 500);
     } catch (err) {
       pendingOptimisticUpdatesRef.current.delete(statusKey);
       loadIndexingStatuses();

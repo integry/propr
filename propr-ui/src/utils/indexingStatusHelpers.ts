@@ -38,8 +38,8 @@ const buildProgressObject = (
   inputTokens: prevProgress?.inputTokens ?? 0,
   outputTokens: prevProgress?.outputTokens ?? 0,
   phase: validPhase,
-  totalDirectories: prevProgress?.totalDirectories ?? 0,
-  processedDirectories: prevProgress?.processedDirectories ?? 0
+  totalDirectories: payload.totalDirectories ?? prevProgress?.totalDirectories ?? 0,
+  processedDirectories: payload.processedDirectories ?? prevProgress?.processedDirectories ?? 0
 });
 
 // Helper function to build updated repository status from WebSocket payload
@@ -51,7 +51,7 @@ export const buildUpdatedStatus = (
   return {
     ...prevStatus,
     full_name: payload.repository,
-    branch: 'HEAD',
+    branch: payload.branch || prevStatus?.branch || 'HEAD',
     indexing_status: mapPhaseToIndexingStatus(payload.phase),
     last_indexed_at: prevStatus?.last_indexed_at ?? null,
     last_indexed_hash: prevStatus?.last_indexed_hash ?? null,
