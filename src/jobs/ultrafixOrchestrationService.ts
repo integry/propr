@@ -164,7 +164,8 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
 /**
  * Record that an action was completed and advance the cycle count if appropriate.
  */
-export async function recordAction(redis: Redis, owner: string, repo: string, pr: number, action: UltrafixAction): Promise<UltrafixLoopState | null> {
+export async function recordAction(redis: Redis, params: { owner: string; repo: string; pr: number; action: UltrafixAction }): Promise<UltrafixLoopState | null> {
+    const { owner, repo, pr, action } = params;
     const state = await loadState(redis, owner, repo, pr);
     if (!state) return null;
 

@@ -220,7 +220,7 @@ describe('recordAction', () => {
         const redis = createMockRedis();
         await startLoop(redis as any, { owner: 'o', repo: 'r', pr: 1 }, false);
 
-        const updated = await recordAction(redis as any, 'o', 'r', 1, 'review');
+        const updated = await recordAction(redis as any, { owner: 'o', repo: 'r', pr: 1, action: 'review' });
         assert.ok(updated);
         assert.strictEqual(updated!.lastAction, 'review');
         assert.strictEqual(updated!.cycleCount, 0);
@@ -230,7 +230,7 @@ describe('recordAction', () => {
         const redis = createMockRedis();
         await startLoop(redis as any, { owner: 'o', repo: 'r', pr: 1 }, false);
 
-        const updated = await recordAction(redis as any, 'o', 'r', 1, 'fix');
+        const updated = await recordAction(redis as any, { owner: 'o', repo: 'r', pr: 1, action: 'fix' });
         assert.ok(updated);
         assert.strictEqual(updated!.lastAction, 'fix');
         assert.strictEqual(updated!.cycleCount, 1);
@@ -238,7 +238,7 @@ describe('recordAction', () => {
 
     test('returns null for non-existent state', async () => {
         const redis = createMockRedis();
-        const result = await recordAction(redis as any, 'no', 'exist', 99, 'fix');
+        const result = await recordAction(redis as any, { owner: 'no', repo: 'exist', pr: 99, action: 'fix' });
         assert.strictEqual(result, null);
     });
 });
