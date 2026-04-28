@@ -170,10 +170,22 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const [settings, autoFollowupThreshold, autoResolveMergeConflicts] = await Promise.all([
+      const [
+        settings,
+        autoFollowupThreshold,
+        autoResolveMergeConflicts,
+        prReviewModel,
+        ultrafixRatingGoal,
+        ultrafixMaxCycles,
+        ultrafixPauseSeconds
+      ] = await Promise.all([
         configManager.loadSettings(),
         configManager.loadAutoFollowupScoreThreshold(),
-        configManager.loadAutoResolveMergeConflicts()
+        configManager.loadAutoResolveMergeConflicts(),
+        configManager.loadPrReviewModel(),
+        configManager.loadUltrafixRatingGoal(),
+        configManager.loadUltrafixMaxCycles(),
+        configManager.loadUltrafixPauseSeconds()
       ]);
       const envDefaults = {
         worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
@@ -189,7 +201,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         planner_context_model: settings.planner_context_model || envDefaults.planner_context_model,
         planner_generation_model: settings.planner_generation_model || envDefaults.planner_generation_model,
         auto_followup_score_threshold: autoFollowupThreshold,
-        auto_resolve_merge_conflicts: autoResolveMergeConflicts
+        auto_resolve_merge_conflicts: autoResolveMergeConflicts,
+        pr_review_model: prReviewModel,
+        ultrafix_rating_goal: ultrafixRatingGoal,
+        ultrafix_max_cycles: ultrafixMaxCycles,
+        ultrafix_pause_seconds: ultrafixPauseSeconds
       };
       res.json(mergedSettings);
     } catch (error) {
@@ -206,9 +222,16 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'settings object is required' } };
       }
 
-      // Handle auto_followup_score_threshold and auto_resolve_merge_conflicts separately
-      // since they are stored in their own keys
-      const { auto_followup_score_threshold, auto_resolve_merge_conflicts, ...otherSettings } = settings;
+      // Handle settings stored in their own keys separately
+      const {
+        auto_followup_score_threshold,
+        auto_resolve_merge_conflicts,
+        pr_review_model,
+        ultrafix_rating_goal,
+        ultrafix_max_cycles,
+        ultrafix_pause_seconds,
+        ...otherSettings
+      } = settings;
 
       const savePromises: Promise<boolean>[] = [configManager.saveSettings(otherSettings)];
 
@@ -225,6 +248,37 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
           return { status: 400, body: { error: 'auto_resolve_merge_conflicts must be a boolean' } };
         }
         savePromises.push(configManager.saveAutoResolveMergeConflicts(auto_resolve_merge_conflicts));
+      }
+
+      if (pr_review_model !== undefined) {
+        if (typeof pr_review_model !== 'string') {
+          return { status: 400, body: { error: 'pr_review_model must be a string' } };
+        }
+        savePromises.push(configManager.savePrReviewModel(pr_review_model));
+      }
+
+      if (ultrafix_rating_goal !== undefined) {
+        const goal = parseInt(ultrafix_rating_goal, 10);
+        if (isNaN(goal) || goal < 1 || goal > 10) {
+          return { status: 400, body: { error: 'ultrafix_rating_goal must be a number between 1 and 10' } };
+        }
+        savePromises.push(configManager.saveUltrafixRatingGoal(goal));
+      }
+
+      if (ultrafix_max_cycles !== undefined) {
+        const cycles = parseInt(ultrafix_max_cycles, 10);
+        if (isNaN(cycles) || cycles < 1 || cycles > 50) {
+          return { status: 400, body: { error: 'ultrafix_max_cycles must be a number between 1 and 50' } };
+        }
+        savePromises.push(configManager.saveUltrafixMaxCycles(cycles));
+      }
+
+      if (ultrafix_pause_seconds !== undefined) {
+        const pause = parseInt(ultrafix_pause_seconds, 10);
+        if (isNaN(pause) || pause < 0 || pause > 600) {
+          return { status: 400, body: { error: 'ultrafix_pause_seconds must be a number between 0 and 600' } };
+        }
+        savePromises.push(configManager.saveUltrafixPauseSeconds(pause));
       }
 
       await Promise.all(savePromises);

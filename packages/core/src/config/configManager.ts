@@ -421,6 +421,101 @@ export async function saveAgentTankSettings(settings: AgentTankSettings): Promis
     return true;
 }
 
+// --- PR Review Model ---
+
+/**
+ * Loads the pr_review_model setting from the database.
+ * Returns an empty string when not configured (meaning use the default agent model).
+ */
+export async function loadPrReviewModel(): Promise<string> {
+    const model = await getConfig<string>('pr_review_model', '');
+    logger.info({ pr_review_model: model }, 'Successfully loaded PR review model');
+    return model;
+}
+
+/**
+ * Saves the pr_review_model setting to the database.
+ */
+export async function savePrReviewModel(model: string): Promise<boolean> {
+    await saveConfig('pr_review_model', model);
+    logger.info({ pr_review_model: model }, 'Successfully saved PR review model');
+    return true;
+}
+
+// --- Ultrafix Settings ---
+
+/** Default rating goal for ultrafix cycles (1-10). */
+const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
+
+/** Default maximum number of ultrafix cycles. */
+const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
+
+/** Default pause between ultrafix cycles in seconds. */
+const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
+
+/**
+ * Loads the ultrafix_rating_goal setting from the database.
+ * Range: 1-10. Defaults to 7.
+ */
+export async function loadUltrafixRatingGoal(): Promise<number> {
+    const goal = await getConfig<number>('ultrafix_rating_goal', DEFAULT_ULTRAFIX_RATING_GOAL);
+    logger.info({ ultrafix_rating_goal: goal }, 'Successfully loaded ultrafix rating goal');
+    return goal;
+}
+
+/**
+ * Saves the ultrafix_rating_goal setting to the database.
+ * @param goal - Value 1-10
+ */
+export async function saveUltrafixRatingGoal(goal: number): Promise<boolean> {
+    const valid = Math.max(1, Math.min(10, Math.floor(goal)));
+    await saveConfig('ultrafix_rating_goal', valid);
+    logger.info({ ultrafix_rating_goal: valid }, 'Successfully saved ultrafix rating goal');
+    return true;
+}
+
+/**
+ * Loads the ultrafix_max_cycles setting from the database.
+ * Range: 1-50. Defaults to 5.
+ */
+export async function loadUltrafixMaxCycles(): Promise<number> {
+    const cycles = await getConfig<number>('ultrafix_max_cycles', DEFAULT_ULTRAFIX_MAX_CYCLES);
+    logger.info({ ultrafix_max_cycles: cycles }, 'Successfully loaded ultrafix max cycles');
+    return cycles;
+}
+
+/**
+ * Saves the ultrafix_max_cycles setting to the database.
+ * @param cycles - Value 1-50
+ */
+export async function saveUltrafixMaxCycles(cycles: number): Promise<boolean> {
+    const valid = Math.max(1, Math.min(50, Math.floor(cycles)));
+    await saveConfig('ultrafix_max_cycles', valid);
+    logger.info({ ultrafix_max_cycles: valid }, 'Successfully saved ultrafix max cycles');
+    return true;
+}
+
+/**
+ * Loads the ultrafix_pause_seconds setting from the database.
+ * Range: 0-600. Defaults to 60.
+ */
+export async function loadUltrafixPauseSeconds(): Promise<number> {
+    const pause = await getConfig<number>('ultrafix_pause_seconds', DEFAULT_ULTRAFIX_PAUSE_SECONDS);
+    logger.info({ ultrafix_pause_seconds: pause }, 'Successfully loaded ultrafix pause seconds');
+    return pause;
+}
+
+/**
+ * Saves the ultrafix_pause_seconds setting to the database.
+ * @param seconds - Value 0-600
+ */
+export async function saveUltrafixPauseSeconds(seconds: number): Promise<boolean> {
+    const valid = Math.max(0, Math.min(600, Math.floor(seconds)));
+    await saveConfig('ultrafix_pause_seconds', valid);
+    logger.info({ ultrafix_pause_seconds: valid }, 'Successfully saved ultrafix pause seconds');
+    return true;
+}
+
 // --- Auto Resolve Merge Conflicts ---
 
 /**

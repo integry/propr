@@ -48,6 +48,27 @@ export interface SystemSettings {
    * contributor branches and ask an agent to resolve any conflicts.
    */
   auto_resolve_merge_conflicts: boolean;
+
+  /**
+   * Model identifier used for full PR reviews.
+   * Empty string means use the default agent model.
+   */
+  pr_review_model: string;
+
+  /**
+   * Target quality rating (1-10) that ultrafix cycles aim to reach.
+   */
+  ultrafix_rating_goal: number;
+
+  /**
+   * Maximum number of ultrafix improvement cycles before stopping.
+   */
+  ultrafix_max_cycles: number;
+
+  /**
+   * Pause duration in seconds between ultrafix cycles.
+   */
+  ultrafix_pause_seconds: number;
 }
 
 /**
@@ -95,6 +116,27 @@ export interface UpdateSettingsOptions {
    * contributor branches and ask an agent to resolve any conflicts.
    */
   auto_resolve_merge_conflicts?: boolean;
+
+  /**
+   * Model identifier used for full PR reviews.
+   * Empty string means use the default agent model.
+   */
+  pr_review_model?: string;
+
+  /**
+   * Target quality rating (1-10) that ultrafix cycles aim to reach.
+   */
+  ultrafix_rating_goal?: number;
+
+  /**
+   * Maximum number of ultrafix improvement cycles before stopping.
+   */
+  ultrafix_max_cycles?: number;
+
+  /**
+   * Pause duration in seconds between ultrafix cycles.
+   */
+  ultrafix_pause_seconds?: number;
 }
 
 /**
@@ -128,6 +170,10 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "planner_generation_model",
   "auto_followup_score_threshold",
   "auto_resolve_merge_conflicts",
+  "pr_review_model",
+  "ultrafix_rating_goal",
+  "ultrafix_max_cycles",
+  "ultrafix_pause_seconds",
 ];
 
 /**
@@ -164,6 +210,27 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_rating_goal": {
+      const parsed = parseInt(value, 10);
+      if (isNaN(parsed) || parsed < 1 || parsed > 10) {
+        throw new Error(`Invalid value for ${key}: must be a number between 1 and 10`);
+      }
+      return parsed;
+    }
+    case "ultrafix_max_cycles": {
+      const parsed = parseInt(value, 10);
+      if (isNaN(parsed) || parsed < 1 || parsed > 50) {
+        throw new Error(`Invalid value for ${key}: must be a number between 1 and 50`);
+      }
+      return parsed;
+    }
+    case "ultrafix_pause_seconds": {
+      const parsed = parseInt(value, 10);
+      if (isNaN(parsed) || parsed < 0 || parsed > 600) {
+        throw new Error(`Invalid value for ${key}: must be a number between 0 and 600`);
+      }
+      return parsed;
+    }
     case "auto_resolve_merge_conflicts": {
       const lower = value.toLowerCase();
       if (lower !== "true" && lower !== "false") {
@@ -177,6 +244,7 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
     case "analysis_model_fast":
     case "planner_context_model":
     case "planner_generation_model":
+    case "pr_review_model":
       return value;
     default:
       return value;
