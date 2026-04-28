@@ -12,13 +12,14 @@ import {
     AGENT_DEFAULT_VERSIONS
 } from '@propr/core';
 import type { CliVersionType, AgentType } from '@propr/core';
-import { withConfigLock, validateAgentsConfig } from './configHelpers.js';
+import { withConfigLock, validateAgentsConfig, extractSettingSaves } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
 }
+
 
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
 
@@ -222,7 +223,6 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'settings object is required' } };
       }
 
-      // Handle settings stored in their own keys separately
       const {
         auto_followup_score_threshold,
         auto_resolve_merge_conflicts,
@@ -234,58 +234,22 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       } = settings;
 
       const savePromises: Promise<boolean>[] = [configManager.saveSettings(otherSettings)];
+      const extracted = extractSettingSaves({
+        auto_followup_score_threshold,
+        auto_resolve_merge_conflicts,
+        pr_review_model,
+        ultrafix_rating_goal,
+        ultrafix_max_cycles,
+        ultrafix_pause_seconds
+      });
 
-      if (auto_followup_score_threshold !== undefined) {
-        const threshold = parseInt(auto_followup_score_threshold, 10);
-        if (isNaN(threshold) || threshold < 0 || threshold > 9) {
-          return { status: 400, body: { error: 'auto_followup_score_threshold must be a number between 0 and 9' } };
-        }
-        savePromises.push(configManager.saveAutoFollowupScoreThreshold(threshold));
+      if (extracted.error) {
+        return { status: 400, body: { error: extracted.error } };
       }
-
-      if (auto_resolve_merge_conflicts !== undefined) {
-        if (typeof auto_resolve_merge_conflicts !== 'boolean') {
-          return { status: 400, body: { error: 'auto_resolve_merge_conflicts must be a boolean' } };
-        }
-        savePromises.push(configManager.saveAutoResolveMergeConflicts(auto_resolve_merge_conflicts));
-      }
-
-      if (pr_review_model !== undefined) {
-        if (typeof pr_review_model !== 'string') {
-          return { status: 400, body: { error: 'pr_review_model must be a string' } };
-        }
-        savePromises.push(configManager.savePrReviewModel(pr_review_model));
-      }
-
-      if (ultrafix_rating_goal !== undefined) {
-        const goal = parseInt(ultrafix_rating_goal, 10);
-        if (isNaN(goal) || goal < 1 || goal > 10) {
-          return { status: 400, body: { error: 'ultrafix_rating_goal must be a number between 1 and 10' } };
-        }
-        savePromises.push(configManager.saveUltrafixRatingGoal(goal));
-      }
-
-      if (ultrafix_max_cycles !== undefined) {
-        const cycles = parseInt(ultrafix_max_cycles, 10);
-        if (isNaN(cycles) || cycles < 1 || cycles > 50) {
-          return { status: 400, body: { error: 'ultrafix_max_cycles must be a number between 1 and 50' } };
-        }
-        savePromises.push(configManager.saveUltrafixMaxCycles(cycles));
-      }
-
-      if (ultrafix_pause_seconds !== undefined) {
-        const pause = parseInt(ultrafix_pause_seconds, 10);
-        if (isNaN(pause) || pause < 0 || pause > 600) {
-          return { status: 400, body: { error: 'ultrafix_pause_seconds must be a number between 0 and 600' } };
-        }
-        savePromises.push(configManager.saveUltrafixPauseSeconds(pause));
-      }
+      savePromises.push(...extracted.saves);
 
       await Promise.all(savePromises);
-
-      // Publish config update event
       await publishConfigUpdate('settings_update');
-
       return { status: 200, body: { success: true, settings } };
     });
 
