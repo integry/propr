@@ -107,7 +107,7 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { processWebhookEvent, initializeWebhookHandler } from './webhook/webhookHandler.js';
+export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';

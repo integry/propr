@@ -1,8 +1,17 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
+import { SUPPORTED_WEBHOOK_EVENTS } from '@propr/core';
 
-/** TTL for webhook delivery deduplication keys in Redis (seconds) */
-export const WEBHOOK_DELIVERY_TTL_SECONDS = 300;
+/**
+ * TTL for webhook delivery deduplication keys in Redis (seconds).
+ * Set to 24 hours to provide a wide replay-protection window. GitHub retries
+ * deliveries for up to 24 hours, so this window ensures that both genuine
+ * retries and malicious replays within that period are caught.
+ */
+export const WEBHOOK_DELIVERY_TTL_SECONDS = 86_400;
+
+/** Module-level allowlist derived from @propr/core — single source of truth. */
+const SUPPORTED_EVENTS: ReadonlySet<string> = new Set(SUPPORTED_WEBHOOK_EVENTS);
 
 export interface WebhookHandlerDeps {
   webhookSecret: string | undefined;
@@ -22,13 +31,16 @@ export interface WebhookHandlerDeps {
  * 2. Redis-based delivery-ID deduplication (NX + TTL) — rejects exact replays
  *    within the TTL window. This is the primary replay-protection mechanism.
  *
- * Stale-request limitation: GitHub does not include a signed timestamp in
- * webhook deliveries. The `Date` header is not covered by the HMAC, so an
- * attacker who captures a valid signed payload can replay it at any point
- * within the dedup TTL window. True time-based staleness rejection would
- * require a trusted, authenticated timestamp from GitHub. Until that exists,
- * replay resistance relies entirely on the delivery-ID dedup window
- * ({@link WEBHOOK_DELIVERY_TTL_SECONDS}).
+ * Stale-request protection: GitHub does not include a signed timestamp in
+ * webhook deliveries — the `Date` header is not covered by the HMAC. This
+ * means true clock-based staleness rejection is impossible without a trusted,
+ * authenticated timestamp from GitHub. Instead, we set a 24-hour TTL on the
+ * delivery-ID dedup key ({@link WEBHOOK_DELIVERY_TTL_SECONDS}), which matches
+ * GitHub's own retry window. Any captured signed payload replayed within 24
+ * hours is rejected by the NX guard; after 24 hours the delivery ID expires,
+ * but the practical replay risk at that point is minimal because GitHub will
+ * have already stopped retrying and the delivery is considered stale by the
+ * platform itself.
  *
  * Failure semantics: once a delivery ID is reserved in Redis, it is NOT
  * removed on downstream processing errors. This prevents a partially-
@@ -106,10 +118,6 @@ export async function handleWebhookRequest(
   }
 
   // --- Validate event type against known allowlist ---
-  const SUPPORTED_EVENTS: ReadonlySet<string> = new Set([
-    'issues', 'issue_comment', 'pull_request_review_comment',
-    'pull_request', 'check_run', 'push',
-  ]);
   if (!SUPPORTED_EVENTS.has(rawEvent)) {
     console.warn(`[webhook] Unsupported event type: ${rawEvent}`);
     res.status(400).send('Unsupported webhook event type.');

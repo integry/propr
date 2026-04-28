@@ -35,6 +35,12 @@ const execAsync = promisify(exec);
 
 export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request' | 'check_run' | 'push';
 
+/** Runtime-accessible list of supported webhook event types — single source of truth. */
+export const SUPPORTED_WEBHOOK_EVENTS: readonly WebhookEventType[] = [
+  'issues', 'issue_comment', 'pull_request_review_comment',
+  'pull_request', 'check_run', 'push',
+] as const;
+
 // --- PREVIEW ENVIRONMENT CONFIGURATION ---
 // This implements the "Singleton Processor" pattern for webhook routing.
 //
