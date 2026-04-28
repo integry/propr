@@ -57,6 +57,15 @@ Gathers unprocessed AI review comments and applies suggested changes in a single
 ### Base Branch Merge (`/merge`)
 Merges the target base branch into the PR branch with automatic conflict resolution.
 
+### Model Switch (`/switch`)
+Permanently changes the AI model for the PR by updating its labels. All subsequent commands use the new model. Supports optional follow-up instructions.
+
+### One-Time Model Override (`/use`)
+Overrides the AI model for a single follow-up run without changing the PR's labels. Useful for getting a second opinion from a different model.
+
+### Expandable Command Reference
+Every PR created or completed by ProPR includes a collapsible slash command reference table, making commands easily discoverable without leaving the PR.
+
 See the [PR Slash Commands](./pr-commands.md) documentation for full usage details and examples.
 
 ## Robust Git Management

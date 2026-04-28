@@ -1,5 +1,6 @@
 import { getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing } from '@propr/core';
 import type { DetailedUsageStats } from '@propr/core';
+import { buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 
 const MAX_COMMENT_LENGTH = 65000;
 
@@ -108,7 +109,9 @@ export async function generatePRBody(issueNumber: number, issueTitle: string, co
     body += `- Check that the solution addresses the original issue requirements\n`;
     body += `- Verify that no unintended changes were introduced\n`;
     body += `- **Need changes?** Comment on this PR to request refinements — the AI agent will update the implementation based on your feedback\n\n`;
-    body += `---\n*This PR was generated automatically by [ProPR](https://propr.dev). Full execution logs are available in the comments.*`;
+    body += `---\n`;
+    body += buildSlashCommandsBlock();
+    body += `\n*This PR was generated automatically by [ProPR](https://propr.dev). Full execution logs are available in the comments.*`;
 
     return body;
 }

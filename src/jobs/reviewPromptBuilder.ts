@@ -16,6 +16,8 @@ export interface ReviewPromptOptions {
     instructions?: string;
     /** Formatted PR diff from fetchPRFiles + formatPRDiff */
     prDiff?: string;
+    /** Full content of changed files for additional context */
+    fileContents?: string;
 }
 
 /**
@@ -39,17 +41,22 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         repoName,
         instructions,
         prDiff,
+        fileContents,
     } = options;
 
     const diffSection = prDiff
         ? `\n**PR Diff (Current Code Changes):**\nThis diff shows the CURRENT state of all changes in this PR. Base your review on this actual code, not on what earlier comments may have mentioned.\n\n${prDiff}\n`
         : '\n**Note:** No diff available. Review based on available context only.\n';
 
+    const fileContentsSection = fileContents
+        ? `\n**Full File Contents (for context):**\nThese are the complete contents of the changed files in the PR. Use this to understand the full context when reviewing the diff - variables, functions, and imports defined elsewhere in the file are visible here.\n\n${fileContents}\n`
+        : '';
+
     const prompt = `You are reviewing pull request #${pullRequestNumber} in ${repoOwner}/${repoName}.
 
 **PR Comment History and Context:**
 ${commentHistory}${originalTaskSpec}
-${diffSection}
+${diffSection}${fileContentsSection}
 **Review Request:**
 ${combinedCommentBody}
 
@@ -62,14 +69,14 @@ Perform a thorough code review of this pull request based on the CURRENT diff. Y
 Provide a concise summary of the PR's purpose, approach, and overall quality. State whether the PR is ready to merge, needs minor changes, or needs significant rework.
 
 ## Findings
-List every issue, concern, or suggestion you identify. Organise them by severity using the markers below. Each finding MUST start with the severity emoji, include a short title, and reference file names / line numbers where applicable.
+List **ALL** issues, concerns, and suggestions you identify — do not limit yourself to just the top 3 or most important ones. Be exhaustive and thorough. Organise them by severity using the markers below. Each finding MUST start with the severity emoji, include a short title, and reference file names / line numbers where applicable.
 
 - 🔴 **Critical** — Bugs, security issues, data loss risks, correctness problems
 - 🟡 **Warning** — Performance concerns, potential edge cases, maintainability issues
 - 🟢 **Suggestion** — Style improvements, minor optimisations, best practices
 - ✅ **Positive** — Things done well that should be called out
 
-If there are no findings at a given severity level, omit that level (but you must include at least one finding overall).
+Include every finding you discover, regardless of how minor. A comprehensive review is more valuable than a brief one. If there are no findings at a given severity level, omit that level (but you must include at least one finding overall).
 
 ## Score
 Rate the PR on a scale of **1 – 10** using the format: **Score: N/10**
