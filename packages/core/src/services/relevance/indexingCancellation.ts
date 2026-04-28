@@ -21,7 +21,7 @@ export interface IndexingProgress {
   // Directory aggregation phase
   totalDirectories: number;
   processedDirectories: number;
-  phase: 'files' | 'directories' | 'done';
+  phase: 'files' | 'directories' | 'completed';
 }
 
 let redisClient: Redis | null = null;

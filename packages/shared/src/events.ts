@@ -70,7 +70,7 @@ export interface PlanStepUpdatePayload {
 }
 
 /** Valid phase values for indexing status events */
-export type IndexingPhase = 'indexing' | 'files' | 'directories' | 'completed' | 'failed' | 'idle' | 'done';
+export type IndexingPhase = 'indexing' | 'files' | 'directories' | 'completed' | 'failed' | 'idle';
 
 /** Event payload for indexing updates */
 export interface IndexingUpdatePayload {

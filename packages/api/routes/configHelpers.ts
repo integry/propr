@@ -328,43 +328,46 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
  * For active jobs, sets a cancellation flag in Redis that the worker checks.
  * For waiting/delayed jobs, removes them from the queue directly.
  */
-export async function stopIndexingJob(repository: string, branch?: string): Promise<{ success: boolean; message?: string }> {
+export async function stopIndexingJob(repository: string, branch?: string): Promise<{ success: boolean; message?: string; stoppedBranch?: string; wasQueued?: boolean }> {
   try {
     const queue = await getIndexingQueue();
     const jobs = await queue.getJobs(['active', 'waiting', 'delayed']);
-    // Find job matching both repository and branch (if specified)
-    const job = jobs.find((j: { data: IndexingJobData }) => {
+    // Find all jobs matching the repository (and branch if specified)
+    const matchingJobs = jobs.filter((j: { data: IndexingJobData }) => {
       if (j.data.repository !== repository) return false;
-      // If branch is specified, match it; otherwise match any job for this repo
       if (branch) {
         return j.data.baseBranch === branch;
       }
       return true;
     });
 
-    if (job) {
-      // Use the matched job's actual branch for cancellation, not the requested branch.
-      // If branch was omitted, we match any job for this repo — but the cancellation
-      // flag must target the branch the worker is actually indexing.
-      const jobBranch = job.data.baseBranch || 'HEAD';
-      const state = await job.getState();
-      if (state === 'active') {
-        // Active jobs are locked by the worker. Set a cancellation flag in Redis
-        // that the worker will check and stop processing gracefully.
-        await requestIndexingCancellation(repository, jobBranch);
-      } else {
-        // Waiting/delayed jobs can be removed directly
-        await job.remove();
+    if (matchingJobs.length > 0) {
+      let wasQueued = true;
+      // Stop all matching jobs for this repository
+      for (const job of matchingJobs) {
+        const jobBranch = job.data.baseBranch || 'HEAD';
+        const state = await job.getState();
+        if (state === 'active') {
+          // Active jobs are locked by the worker. Set a cancellation flag in Redis
+          // that the worker will check and stop processing gracefully.
+          // Don't update DB to idle here — the worker will do it when it actually stops,
+          // keeping REST state consistent with reality.
+          await requestIndexingCancellation(repository, jobBranch);
+          wasQueued = false;
+        } else {
+          // Waiting/delayed jobs can be removed directly — no worker will handle them
+          await job.remove();
+          await updateRepositoryStatus(repository, 'idle', jobBranch);
+        }
       }
 
-      // Force the status back to idle in the DB for the matched job's branch
-      await updateRepositoryStatus(repository, 'idle', jobBranch);
+      const firstBranch = matchingJobs[0].data.baseBranch || 'HEAD';
+      return { success: true, stoppedBranch: firstBranch, wasQueued };
     } else {
       // No job found — force idle for the requested branch to handle stuck states
       await updateRepositoryStatus(repository, 'idle', branch || 'HEAD');
+      return { success: true, stoppedBranch: branch || 'HEAD', wasQueued: true };
     }
-
-    return { success: true };
   } catch (error) {
     console.error('Error stopping indexing job:', error);
     return { success: false, message: (error as Error).message };

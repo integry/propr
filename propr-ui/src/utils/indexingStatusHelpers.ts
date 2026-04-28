@@ -6,7 +6,7 @@ export const mapPhaseToIndexingStatus = (phase: IndexingPhase): 'idle' | 'indexi
   if (phase === 'files' || phase === 'directories' || phase === 'indexing') {
     return 'indexing';
   }
-  if (phase === 'done' || phase === 'completed') {
+  if (phase === 'completed') {
     return 'completed';
   }
   if (phase === 'failed') {
@@ -18,9 +18,9 @@ export const mapPhaseToIndexingStatus = (phase: IndexingPhase): 'idle' | 'indexi
 // Helper to determine valid phase from payload
 const getValidPhase = (
   payloadPhase: string,
-  prevPhase: 'files' | 'directories' | 'done' | undefined
-): 'files' | 'directories' | 'done' => {
-  if (payloadPhase === 'files' || payloadPhase === 'directories' || payloadPhase === 'done') {
+  prevPhase: 'files' | 'directories' | 'completed' | undefined
+): 'files' | 'directories' | 'completed' => {
+  if (payloadPhase === 'files' || payloadPhase === 'directories' || payloadPhase === 'completed') {
     return payloadPhase;
   }
   return prevPhase ?? 'files';
@@ -30,7 +30,7 @@ const getValidPhase = (
 const buildProgressObject = (
   payload: IndexingUpdatePayload,
   prevProgress: RepositoryIndexingStatus['progress'] | undefined,
-  validPhase: 'files' | 'directories' | 'done'
+  validPhase: 'files' | 'directories' | 'completed'
 ): RepositoryIndexingStatus['progress'] => ({
   totalFiles: payload.totalFiles ?? prevProgress?.totalFiles ?? 0,
   processedFiles: payload.processedFiles ?? prevProgress?.processedFiles ?? 0,

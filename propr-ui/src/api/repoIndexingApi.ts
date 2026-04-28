@@ -7,7 +7,7 @@ export interface RepositoryIndexingProgress {
   percentComplete: number;
   inputTokens: number;
   outputTokens: number;
-  phase: 'files' | 'directories' | 'done';
+  phase: 'files' | 'directories' | 'completed';
   totalDirectories: number;
   processedDirectories: number;
 }

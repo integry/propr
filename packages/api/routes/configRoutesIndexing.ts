@@ -131,10 +131,13 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
-      // Don't publish idle here — the worker's handleIndexingError will emit the
-      // final idle event after it finishes its current batch and sees the cancellation
-      // flag. Publishing idle prematurely causes a race where subsequent worker
-      // progress updates flip the UI back to "indexing".
+      // For queued (waiting/delayed) jobs that were removed directly, there is no worker
+      // to emit the terminal idle event — publish it here so the UI updates.
+      // For active jobs, the worker's handleIndexingError will emit idle after it
+      // finishes its current batch and sees the cancellation flag.
+      if (result.wasQueued) {
+        await publishIndexingStatus(repository, result.stoppedBranch || branch || 'HEAD', 'idle');
+      }
 
       const branchInfo = branch ? ` (branch: ${branch})` : '';
       await logActivityHelper(
