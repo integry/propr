@@ -1,4 +1,4 @@
-import { getUserWhitelist, getAuthenticatedOctokit, generateCorrelationId, generateAuthToken } from '@propr/core';
+import { getUserWhitelist, getAuthenticatedOctokit, generateCorrelationId, generateAuthToken, logger } from '@propr/core';
 import type { SystemTaskJobData } from '@propr/core';
 import { validatePositiveInteger } from './validation.js';
 
@@ -126,7 +126,7 @@ export function checkRevertAuthorization(req: { user?: unknown }): Authorization
 
   const systemTaskSecret = process.env.SYSTEM_TASK_SECRET;
   if (!systemTaskSecret) {
-    console.error('[revert] SYSTEM_TASK_SECRET is not configured');
+    logger.error('[revert] SYSTEM_TASK_SECRET is not configured');
     return { authorized: false, status: 503, error: 'System task authorization is not configured' };
   }
 

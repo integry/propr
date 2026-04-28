@@ -67,18 +67,28 @@ async function performGitResetAndPush(
     );
 
     // Re-check repo access at execution time (user's access may have been revoked since enqueue)
-    const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
-        owner: targetOwner,
-        repo: targetRepoName,
-        username: requestingUser
-    });
-    const permission = permissionData.permission;
-    if (permission !== 'admin' && permission !== 'write' && permission !== 'maintain') {
-        throw new Error(
-            `Unauthorized: user '${requestingUser}' no longer has write access to ${targetOwner}/${targetRepoName}`
-        );
+    try {
+        const { data: permissionData } = await octokit.request('GET /repos/{owner}/{repo}/collaborators/{username}/permission', {
+            owner: targetOwner,
+            repo: targetRepoName,
+            username: requestingUser
+        });
+        const permission = permissionData.permission;
+        if (permission !== 'admin' && permission !== 'write' && permission !== 'maintain') {
+            throw new Error(
+                `Unauthorized: user '${requestingUser}' no longer has write access to ${targetOwner}/${targetRepoName}`
+            );
+        }
+        correlatedLogger.info({ requestingUser, permission }, 'Execution-time access recheck passed');
+    } catch (accessError) {
+        const err = accessError as { status?: number; message?: string };
+        if (err.status === 404 || err.status === 403) {
+            throw new Error(
+                `Unauthorized: user '${requestingUser}' no longer has access to ${targetOwner}/${targetRepoName}`
+            );
+        }
+        throw accessError;
     }
-    correlatedLogger.info({ requestingUser, permission }, 'Execution-time access recheck passed');
 
     // Verify the commit actually belongs to this PR (prevents arbitrary commit hash injection)
     const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {

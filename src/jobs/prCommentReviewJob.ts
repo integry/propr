@@ -14,7 +14,7 @@ import {
     buildCommentHistory, updateTaskTitleForPR
 } from './prCommentJobHelpers.js';
 import {
-    buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents
+    buildCombinedComment, fetchAllComments, fetchPRFiles, formatPRDiff
 } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';

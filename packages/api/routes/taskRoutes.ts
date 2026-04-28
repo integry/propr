@@ -212,12 +212,20 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
+      // Validate commit belongs to this PR and resolve full SHA (rejects ambiguous short prefixes)
+      const commitVerification = await verifyCommitBelongsToPr({ octokit, owner, repo, prNumber, commit });
+      if (!commitVerification.valid) {
+        res.status(commitVerification.status).json({ error: commitVerification.error });
+        return;
+      }
+      const resolvedCommit = commitVerification.resolvedSha;
+
       // Use paginate to handle PRs with more than 100 commits
       const prCommits = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
         owner, repo, pull_number: prNumber, per_page: 100
       }) as Array<{ sha: string; commit: { message: string; author?: { name?: string; email?: string; date?: string } | null }; author?: { login?: string } | null }>;
 
-      const targetCommitIndex = prCommits.findIndex(c => c.sha === commit || c.sha.startsWith(commit));
+      const targetCommitIndex = prCommits.findIndex(c => c.sha === resolvedCommit);
 
       if (targetCommitIndex === -1) {
         res.status(404).json({ error: 'Target commit not found in PR commits' });
@@ -231,7 +239,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       res.json({
         branch: prData.head.ref,
         baseBranch: prData.base.ref,
-        targetCommit: { sha: commit, shortSha: commit.substring(0, 7) },
+        targetCommit: { sha: resolvedCommit, shortSha: resolvedCommit.substring(0, 7) },
         newHead: newHeadCommit ? formatCommit(newHeadCommit) : null,
         commitsToRemove,
         remainingCommits,
