@@ -46,57 +46,74 @@ interface LogFiles {
 }
 
 const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
-    // GitHub tokens
+    // --- GitHub ---
     { pattern: /ghp_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /gho_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /ghu_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /ghs_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /github_pat_[A-Za-z0-9_]{22,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
-    // AWS keys
+
+    // --- AWS ---
     { pattern: /(?:AKIA|ASIA)[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_ACCESS_KEY]' },
     { pattern: /(?<=(?:aws_secret_access_key|aws_secret_key|AWS_SECRET_ACCESS_KEY|AWS_SECRET_KEY|secret_access_key)\s*[=:]\s*['"]?)[A-Za-z0-9/+=]{40}/g, replacement: '[REDACTED_AWS_SECRET_KEY]' },
-    // AWS secret keys in JSON/YAML contexts
     { pattern: /(?<=["'](?:aws_secret_access_key|aws_secret_key|SecretAccessKey|secretAccessKey)["']\s*[=:]\s*['"]?)[A-Za-z0-9/+=]{40}/g, replacement: '[REDACTED_AWS_SECRET_KEY]' },
-    // OpenRouter API keys
+
+    // --- OpenRouter ---
     { pattern: /sk-or-v1-[A-Za-z0-9]{64}/g, replacement: '[REDACTED_OPENROUTER_KEY]' },
-    // Stripe API keys
+
+    // --- Stripe ---
     { pattern: /sk_live_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_SECRET_KEY]' },
     { pattern: /sk_test_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_SECRET_KEY]' },
     { pattern: /rk_live_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_RESTRICTED_KEY]' },
     { pattern: /rk_test_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_RESTRICTED_KEY]' },
     { pattern: /pk_live_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_PUBLISHABLE_KEY]' },
     { pattern: /pk_test_[A-Za-z0-9]{24,}/g, replacement: '[REDACTED_STRIPE_PUBLISHABLE_KEY]' },
-    // OpenAI API keys
+
+    // --- OpenAI ---
     { pattern: /sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}/g, replacement: '[REDACTED_OPENAI_KEY]' },
     { pattern: /sk-proj-[A-Za-z0-9_-]{40,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
-    // Generic sk- keys (OpenAI and similar) — at least 32 chars after prefix to avoid false positives
     { pattern: /sk-[A-Za-z0-9]{32,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
-    // Anthropic API keys
+
+    // --- Anthropic ---
     { pattern: /sk-ant-[A-Za-z0-9-]{32,}/g, replacement: '[REDACTED_ANTHROPIC_KEY]' },
-    // Slack tokens
+
+    // --- Slack ---
     { pattern: /xoxb-[0-9]{10,}-[A-Za-z0-9]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
     { pattern: /xoxp-[0-9]{10,}-[A-Za-z0-9]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
     { pattern: /xapp-[0-9]{1,}-[A-Za-z0-9]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
     { pattern: /xoxa-[0-9]{10,}-[A-Za-z0-9]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
-    // SendGrid API keys
+
+    // --- SendGrid ---
     { pattern: /SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/g, replacement: '[REDACTED_SENDGRID_KEY]' },
-    // Twilio
+
+    // --- Twilio ---
     { pattern: /SK[0-9a-fA-F]{32}/g, replacement: '[REDACTED_TWILIO_KEY]' },
-    // Mailgun
+
+    // --- Mailgun ---
     { pattern: /key-[A-Za-z0-9]{32}/g, replacement: '[REDACTED_MAILGUN_KEY]' },
-    // Google API keys
+
+    // --- Google ---
     { pattern: /AIza[A-Za-z0-9_-]{35}/g, replacement: '[REDACTED_GOOGLE_API_KEY]' },
-    // Generic Bearer tokens — require at least 20 chars or a dot/slash (JWT-like) to avoid matching prose
-    { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, replacement: 'Bearer [REDACTED_BEARER_TOKEN]' },
-    // Generic secret/token assignment patterns (catches env vars like SECRET_KEY=... or API_TOKEN=...)
-    // Requires the keyword to appear as a standalone word or after an underscore, not as part of arbitrary prose
+
+    // --- Generic patterns ---
+    // Bearer tokens — require at least 20 chars to avoid matching prose; empty replacement triggers casing-preserving callback
+    { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, replacement: '' },
+    // Secret/token assignment patterns (catches env vars like SECRET_KEY=... or API_TOKEN=...)
     { pattern: /(?<=(?:^|[_A-Z])(?:SECRET|PASSWORD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY|SECRET_TOKEN|API_TOKEN|AUTH_TOKEN)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_-]{20,}(?=['"]?)/gim, replacement: '[REDACTED_SECRET]' },
 ];
 
 export function redactSecrets(input: string): string {
     let result = input;
     for (const { pattern, replacement } of SECRET_PATTERNS) {
-        result = result.replace(pattern, replacement);
+        if (replacement === '') {
+            // Bearer token: preserve original scheme casing
+            result = result.replace(pattern, (match) => {
+                const scheme = match.split(/\s/)[0];
+                return `${scheme} [REDACTED_BEARER_TOKEN]`;
+            });
+        } else {
+            result = result.replace(pattern, replacement);
+        }
     }
     return result;
 }

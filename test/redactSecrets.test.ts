@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-import { redactSecrets, redactSerializableValue, createLogFiles } from '../packages/core/src/utils/github/logFiles.js';
+import { redactSecrets, redactSerializableValue, createLogFiles, generateCompletionComment } from '../packages/core/src/utils/github/logFiles.js';
 
 test('redactSecrets replaces GitHub personal access tokens', () => {
     const input = 'token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
@@ -254,18 +254,18 @@ test('createLogFiles writes redacted Bearer tokens to the text output file', asy
 
 // --- Lowercase bearer token tests (Review finding 1) ---
 
-test('redactSecrets replaces lowercase "bearer" tokens', () => {
+test('redactSecrets replaces lowercase "bearer" tokens and preserves casing', () => {
     const input = 'authorization: bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
     const result = redactSecrets(input);
     assert.ok(!result.includes('eyJhbGciOiJ'), 'Lowercase bearer token should be redacted');
-    assert.ok(result.includes('[REDACTED_BEARER_TOKEN]'));
+    assert.ok(result.includes('bearer [REDACTED_BEARER_TOKEN]'), 'Original lowercase "bearer" casing should be preserved');
 });
 
-test('redactSecrets replaces mixed-case "BEARER" tokens', () => {
+test('redactSecrets replaces mixed-case "BEARER" tokens and preserves casing', () => {
     const input = 'Authorization: BEARER eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
     const result = redactSecrets(input);
     assert.ok(!result.includes('eyJhbGciOiJ'), 'Uppercase BEARER token should be redacted');
-    assert.ok(result.includes('[REDACTED_BEARER_TOKEN]'));
+    assert.ok(result.includes('BEARER [REDACTED_BEARER_TOKEN]'), 'Original uppercase "BEARER" casing should be preserved');
 });
 
 // --- toJSON / Date serialization preservation tests (Review finding 2) ---
@@ -332,4 +332,44 @@ test('redactSecrets replaces plain sk- OpenAI keys without legacy marker', () =>
     const result = redactSecrets(input);
     assert.ok(!result.includes('sk-aaa'), 'Plain sk- key should be redacted');
     assert.ok(result.includes('[REDACTED_OPENAI_KEY]'));
+});
+
+// --- End-to-end test for generateCompletionComment (Review warning: comment redaction) ---
+
+test('generateCompletionComment redacts secrets in summary, conversation preview, and raw output', async () => {
+    const githubToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
+    const bearerToken = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    const awsKey = 'AKIAIOSFODNN7EXAMPLE';
+
+    const claudeResult = {
+        success: true,
+        executionTime: 5000,
+        model: 'claude-opus-4-6',
+        sessionId: 'test-session-id',
+        conversationId: 'test-conv-id',
+        summary: `Completed task. Used token ${githubToken} to push changes.`,
+        conversationLog: [
+            {
+                type: 'assistant',
+                message: {
+                    content: [{ text: `I used ${bearerToken} and ${awsKey} to authenticate.` }]
+                }
+            }
+        ],
+        rawOutput: `Raw output with secret ${githubToken}`,
+        tokenUsage: { input_tokens: 1000, output_tokens: 500 }
+    };
+
+    const issueRef = { number: 7777, repoOwner: 'test-owner', repoName: 'test-repo' };
+    const comment = await generateCompletionComment(claudeResult, issueRef);
+
+    // Secrets must not appear anywhere in the final comment
+    assert.ok(!comment.includes(githubToken), 'GitHub token must not leak into the comment body');
+    assert.ok(!comment.includes('eyJhbGciOiJ'), 'Bearer JWT must not leak into the comment body');
+    assert.ok(!comment.includes(awsKey), 'AWS access key must not leak into the comment body');
+
+    // Redaction placeholders should be present
+    assert.ok(comment.includes('[REDACTED_GITHUB_TOKEN]'), 'GitHub redaction placeholder should appear in comment');
+    assert.ok(comment.includes('[REDACTED_BEARER_TOKEN]'), 'Bearer redaction placeholder should appear in comment');
+    assert.ok(comment.includes('[REDACTED_AWS_ACCESS_KEY]'), 'AWS redaction placeholder should appear in comment');
 });
