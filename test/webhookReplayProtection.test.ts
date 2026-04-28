@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import crypto from 'crypto';
 import http from 'node:http';
 import express, { Request, Response } from 'express';
-import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/api/webhookHandler.js';
+import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS, WEBHOOK_MAX_AGE_SECONDS } from '../packages/api/webhookHandler.js';
 
 /**
  * Webhook Replay Protection Tests
@@ -26,9 +26,8 @@ import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/
  * - Parse failure returns generic 400 and retains Redis key
  * - Fail-closed behavior when webhook secret is not configured (500)
  *
- * Note: No time-based staleness tests — GitHub does not provide a signed
- * timestamp, so the Date header cannot be trusted for replay protection.
- * Replay resistance relies on Redis delivery-ID deduplication.
+ * - Stale payload rejection based on signed payload timestamps (400)
+ * - Fresh payloads with timestamps within the allowed window are accepted
  */
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
@@ -90,7 +89,7 @@ function createTestApp(
 function makeBody(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     action: 'opened',
-    issue: { id: 1, number: 42, title: 'Test issue' },
+    issue: { id: 1, number: 42, title: 'Test issue', updated_at: new Date().toISOString() },
     repository: { full_name: 'test/repo' },
     ...overrides,
   });
@@ -466,6 +465,92 @@ describe('Webhook Replay Protection', () => {
         'x-github-event': 'issues',
       });
       assert.strictEqual(forwarded.status, 200, 'forwarded delivery with fwd- prefix must not collide with original');
+    });
+  });
+
+  describe('Stale payload rejection', () => {
+    test('rejects payload with a timestamp older than WEBHOOK_MAX_AGE_SECONDS', async () => {
+      const staleDate = new Date(Date.now() - (WEBHOOK_MAX_AGE_SECONDS + 60) * 1000).toISOString();
+      const body = makeBody({ issue: { id: 1, number: 42, title: 'Stale issue', updated_at: staleDate } });
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-stale-payload',
+        'x-github-event': 'issues',
+      });
+      assert.strictEqual(res.status, 400);
+      assert.match(res.body, /Stale webhook payload/);
+    });
+
+    test('accepts payload with a fresh timestamp', async () => {
+      const freshDate = new Date().toISOString();
+      const body = makeBody({ issue: { id: 1, number: 42, title: 'Fresh issue', updated_at: freshDate } });
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-fresh-payload',
+        'x-github-event': 'issues',
+      });
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body, 'Webhook processed.');
+    });
+
+    test('accepts payload without a recognisable timestamp (fail-open)', async () => {
+      // Payload with no timestamp field — staleness check should be skipped
+      const body = makeBody({ issue: { id: 1, number: 42, title: 'No timestamp' } });
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-no-timestamp',
+        'x-github-event': 'issues',
+      });
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body, 'Webhook processed.');
+    });
+
+    test('rejects stale pull_request payload', async () => {
+      const staleDate = new Date(Date.now() - (WEBHOOK_MAX_AGE_SECONDS + 120) * 1000).toISOString();
+      const body = JSON.stringify({
+        action: 'opened',
+        pull_request: { id: 10, number: 5, title: 'Stale PR', updated_at: staleDate },
+        repository: { full_name: 'test/repo' },
+      });
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-stale-pr',
+        'x-github-event': 'pull_request',
+      });
+      assert.strictEqual(res.status, 400);
+      assert.match(res.body, /Stale webhook payload/);
+    });
+
+    test('rejects stale push payload using head_commit.timestamp', async () => {
+      const staleDate = new Date(Date.now() - (WEBHOOK_MAX_AGE_SECONDS + 60) * 1000).toISOString();
+      const body = JSON.stringify({
+        ref: 'refs/heads/main',
+        head_commit: { id: 'abc123', timestamp: staleDate },
+        repository: { full_name: 'test/repo' },
+      });
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-stale-push',
+        'x-github-event': 'push',
+      });
+      assert.strictEqual(res.status, 400);
+      assert.match(res.body, /Stale webhook payload/);
+    });
+
+    test('stale payload still consumes Redis dedup key', async () => {
+      // Even though the payload is rejected as stale, the delivery ID should
+      // remain reserved to prevent a retry from being accepted
+      const staleDate = new Date(Date.now() - (WEBHOOK_MAX_AGE_SECONDS + 60) * 1000).toISOString();
+      const body = makeBody({ issue: { id: 1, number: 42, title: 'Stale', updated_at: staleDate } });
+      await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-stale-dedup',
+        'x-github-event': 'issues',
+      });
+      assert.ok(
+        redisClient.store.has('webhook:delivery:delivery-stale-dedup'),
+        'delivery key must be retained even for stale payloads',
+      );
     });
   });
 
