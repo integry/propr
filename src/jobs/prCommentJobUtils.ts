@@ -1,20 +1,13 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { generateCorrelationId } from '@propr/core';
-import { handleError } from '@propr/core';
-import { getAuthenticatedOctokit } from '@propr/core';
-import { cleanupWorktree } from '@propr/core';
-import type { WorktreeInfo } from '@propr/core';
-import { formatResetTime } from '@propr/core';
-import type { ClaudeCodeResponse } from '@propr/core';
-import type { ClaudeResult } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
-import { issueQueue, type CommentJobData, type UnprocessedComment } from '@propr/core';
-import { TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
-import { getDefaultModel, resolveModelAlias } from '@propr/core';
-import { getPendingPrCommentsKey } from '@propr/core';
 import type { Redis } from 'ioredis';
+import {
+    generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
+    formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
+    resolveModelAlias, getPendingPrCommentsKey,
+    type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
+    type CommentJobData, type UnprocessedComment, type WorkerStateManager,
+} from '@propr/core';
 
 function parseGitHubHtmlError(html: string): string {
     // Try to extract the title
@@ -181,7 +174,6 @@ export function buildCommitMessage(options: CommitMessageOptions): string {
     const { changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText } = options;
 
     const commentReferences = unprocessedComments.map(c => `Comment by: @${c.author} (ID: ${c.id})`).join('\n');
-
     return `feat(ai): ${changesSummary ? changesSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
 
 ${changesSummary ? changesSummary : `Implemented changes requested by ${authorsText}`}
@@ -296,7 +288,6 @@ async function handleUserCancellation(options: JobErrorOptions, errorMessage: st
     const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
     await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } });
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
-
     if (octokit && startingWorkComment) {
         await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
     }
@@ -305,10 +296,8 @@ async function handleUserCancellation(options: JobErrorOptions, errorMessage: st
 async function handleGenericError(error: Error, options: JobErrorOptions): Promise<void> {
     const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId } = options;
     handleError(error, 'Failed to process PR comment job', { correlationId });
-
     const sanitizedMessage = sanitizeErrorMessage(error.message);
     await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } });
-
     if (claudeResult) {
         try {
             await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
@@ -316,7 +305,6 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
             correlatedLogger.error({ error: (metricsError as Error).message, correlationId }, 'Failed to record LLM metrics for failed PR comment job');
         }
     }
-
     if (octokit && startingWorkComment) {
         try {
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
@@ -407,71 +395,6 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
 }
 
 export { buildMetricsSection } from './prCommentMetrics.js';
-
-export function parsePendingComment(commentJson: string, correlatedLogger: Logger): UnprocessedComment | null {
-    try {
-        return JSON.parse(commentJson) as UnprocessedComment;
-    } catch (parseError) {
-        correlatedLogger.warn({ error: (parseError as Error).message }, 'Failed to parse pending comment');
-        return null;
-    }
-}
-
-export function processPendingComments(commentsToProcess: UnprocessedComment[], pendingComments: string[], correlatedLogger: Logger): void {
-    for (const commentJson of pendingComments) {
-        const pendingComment = parsePendingComment(commentJson, correlatedLogger);
-        if (pendingComment && !commentsToProcess.some(c => c.id === pendingComment.id)) {
-            commentsToProcess.push(pendingComment);
-        }
-    }
-}
-
-export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
-    const latestCommandComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.commandMode && comment.commandMode !== 'default');
-    const latestOverrideComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.llmOverride !== undefined);
-
-    if (!latestCommandComment && !latestOverrideComment) return;
-
-    if (latestCommandComment) {
-        jobData.commandMeta = latestCommandComment.commandMeta;
-        jobData.commandMode = latestCommandComment.commandMode;
-        jobData.requestedModels = latestCommandComment.requestedModels;
-        jobData.commandInstructions = latestCommandComment.commandInstructions;
-    }
-
-    if (latestOverrideComment?.llmOverride !== undefined) {
-        jobData.llm = latestOverrideComment.llmOverride;
-    }
-
-    correlatedLogger.info({
-        commandMode: jobData.commandMode,
-        requestedModels: jobData.requestedModels,
-        llmOverride: latestOverrideComment?.llmOverride,
-        commandCommentId: latestCommandComment?.id,
-        overrideCommentId: latestOverrideComment?.id,
-    }, 'Applied command context from pending batched comment');
-}
-
-export async function pickUpPendingComments(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<UnprocessedComment[]> {
-    const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = options;
-    const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
-    try {
-        const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
-        if (pendingComments.length > 0) {
-            await redisClient.del(pendingCommentsKey);
-            processPendingComments(commentsToProcess, pendingComments, correlatedLogger);
-            correlatedLogger.info({ pullRequestNumber, pendingCount: pendingComments.length, totalCount: commentsToProcess.length }, 'Picked up pending comments from Redis');
-        }
-    } catch (redisError) {
-        correlatedLogger.warn({ error: (redisError as Error).message }, 'Failed to fetch pending comments from Redis');
-    }
-    return commentsToProcess;
-}
-
 export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
 export { PRFile, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents, agentResultToClaudeResponse } from './prFileUtils.js';

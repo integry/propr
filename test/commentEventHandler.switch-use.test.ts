@@ -143,7 +143,7 @@ const { processCommentEvent } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
 const { applyPendingCommentCommandContext } = await import(
-    '../src/jobs/prCommentJobUtils.js'
+    '../src/jobs/prPendingComments.js'
 );
 
 // ========== Helpers ==========
