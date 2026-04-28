@@ -268,7 +268,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     if (filesToProcess.length === 0 && filesToDelete.length === 0) {
       correlatedLogger.info('No files need processing, all summaries up to date');
       await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-      await publishIndexingStatus(fullName, branch, 'completed');
+      try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
       return;
     }
 
@@ -302,14 +302,14 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     if (batchResult.failedBatches > 0) {
       // Some batches failed - mark as failed so it will be retried
       await updateRepositoryStatus(fullName, 'failed', branch);
-      await publishIndexingStatus(fullName, branch, 'failed');
+      try { await publishIndexingStatus(fullName, branch, 'failed'); } catch { /* best-effort */ }
       correlatedLogger.warn(
         { repoPath, fullName, branch, ...batchResult },
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {
       await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-      await publishIndexingStatus(fullName, branch, 'completed');
+      try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
       correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
     }
 
@@ -338,9 +338,11 @@ async function handleIndexingError(
   // Handle user-initiated cancellation
   if (error instanceof IndexingCancelledError) {
     correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
+    // Reset DB status to idle so REST queries reflect the stopped state
+    await updateRepositoryStatus(repoName, 'idle', errorBranch);
     // Publish idle now that the worker has fully stopped — this is the authoritative
     // terminal event so clients won't see stale progress updates afterward.
-    await publishIndexingStatus(repoName, errorBranch, 'idle');
+    try { await publishIndexingStatus(repoName, errorBranch, 'idle'); } catch { /* best-effort */ }
     return;
   }
 
@@ -353,7 +355,7 @@ async function handleIndexingError(
   // Set status to failed
   try {
     await updateRepositoryStatus(repoName, 'failed', errorBranch);
-    await publishIndexingStatus(repoName, errorBranch, 'failed');
+    try { await publishIndexingStatus(repoName, errorBranch, 'failed'); } catch { /* best-effort */ }
   } catch (statusError) {
     correlatedLogger.error(
       { error: (statusError as Error).message },

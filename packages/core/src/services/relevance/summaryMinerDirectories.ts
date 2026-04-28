@@ -95,7 +95,7 @@ export async function aggregateDirectories(
         }
         dirsProcessed++;
         const skipProgress = await updateDirectoryProgress(fullName, branch);
-        if (skipProgress) await publishProgress(fullName, branch, skipProgress);
+        if (skipProgress) { try { await publishProgress(fullName, branch, skipProgress); } catch { /* best-effort */ } }
       }
     }
 
@@ -125,7 +125,7 @@ export async function aggregateDirectories(
         }
         dirsProcessed++;
         const dirProgress = await updateDirectoryProgress(fullName, branch);
-        if (dirProgress) await publishProgress(fullName, branch, dirProgress);
+        if (dirProgress) { try { await publishProgress(fullName, branch, dirProgress); } catch { /* best-effort */ } }
       }
     }
   }

@@ -164,7 +164,9 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         inputTokens: batchInputTokens,
         outputTokens: batchOutputTokens,
       }, branch);
-      if (updatedProgress) await publishProgress(fullName, branch, updatedProgress);
+      if (updatedProgress) {
+        try { await publishProgress(fullName, branch, updatedProgress); } catch { /* best-effort */ }
+      }
 
       currentBatch = [];
       currentTokens = 0;

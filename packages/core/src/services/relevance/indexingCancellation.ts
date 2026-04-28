@@ -109,8 +109,13 @@ export async function initIndexingProgress(repository: string, totalFiles: numbe
   };
   await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
 
-  // Publish initial progress so clients see totalFiles and phase immediately
-  await publishProgress(repository, branch);
+  // Publish initial progress so clients see totalFiles and phase immediately.
+  // Best-effort: don't let a pub/sub failure abort indexing.
+  try {
+    await publishProgress(repository, branch);
+  } catch {
+    // Swallow — progress publishing is non-critical
+  }
 }
 
 /**
@@ -174,8 +179,13 @@ export async function startDirectoryPhase(repository: string, branch: string, to
   progress.processedDirectories = 0;
   await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
 
-  // Publish phase transition so clients see directory phase start immediately
-  await publishProgress(repository, branch);
+  // Publish phase transition so clients see directory phase start immediately.
+  // Best-effort: don't let a pub/sub failure abort indexing.
+  try {
+    await publishProgress(repository, branch);
+  } catch {
+    // Swallow — progress publishing is non-critical
+  }
 }
 
 /**

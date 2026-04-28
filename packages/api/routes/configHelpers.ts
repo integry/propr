@@ -327,22 +327,33 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
  * Stop an indexing job for a repository and reset its status to idle.
  * For active jobs, sets a cancellation flag in Redis that the worker checks.
  * For waiting/delayed jobs, removes them from the queue directly.
+ *
+ * Returns per-branch results so callers can publish the correct WebSocket events.
  */
-export async function stopIndexingJob(repository: string, branch?: string): Promise<{ success: boolean; message?: string; stoppedBranch?: string; wasQueued?: boolean }> {
+export async function stopIndexingJob(repository: string, branch?: string): Promise<{
+  success: boolean;
+  message?: string;
+  cancelledActiveBranches: string[];
+  removedQueuedBranches: string[];
+}> {
   try {
     const queue = await getIndexingQueue();
     const jobs = await queue.getJobs(['active', 'waiting', 'delayed']);
-    // Find all jobs matching the repository (and branch if specified)
+    // Find all jobs matching the repository (and branch if specified).
+    // Normalize missing baseBranch to 'HEAD' so that stopping branch 'HEAD'
+    // correctly matches jobs that were queued without an explicit baseBranch.
     const matchingJobs = jobs.filter((j: { data: IndexingJobData }) => {
       if (j.data.repository !== repository) return false;
       if (branch) {
-        return j.data.baseBranch === branch;
+        return (j.data.baseBranch || 'HEAD') === branch;
       }
       return true;
     });
 
+    const cancelledActiveBranches: string[] = [];
+    const removedQueuedBranches: string[] = [];
+
     if (matchingJobs.length > 0) {
-      let wasQueued = true;
       // Stop all matching jobs for this repository
       for (const job of matchingJobs) {
         const jobBranch = job.data.baseBranch || 'HEAD';
@@ -353,23 +364,24 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
           // Don't update DB to idle here — the worker will do it when it actually stops,
           // keeping REST state consistent with reality.
           await requestIndexingCancellation(repository, jobBranch);
-          wasQueued = false;
+          cancelledActiveBranches.push(jobBranch);
         } else {
           // Waiting/delayed jobs can be removed directly — no worker will handle them
           await job.remove();
           await updateRepositoryStatus(repository, 'idle', jobBranch);
+          removedQueuedBranches.push(jobBranch);
         }
       }
-
-      const firstBranch = matchingJobs[0].data.baseBranch || 'HEAD';
-      return { success: true, stoppedBranch: firstBranch, wasQueued };
     } else {
       // No job found — force idle for the requested branch to handle stuck states
-      await updateRepositoryStatus(repository, 'idle', branch || 'HEAD');
-      return { success: true, stoppedBranch: branch || 'HEAD', wasQueued: true };
+      const targetBranch = branch || 'HEAD';
+      await updateRepositoryStatus(repository, 'idle', targetBranch);
+      removedQueuedBranches.push(targetBranch);
     }
+
+    return { success: true, cancelledActiveBranches, removedQueuedBranches };
   } catch (error) {
     console.error('Error stopping indexing job:', error);
-    return { success: false, message: (error as Error).message };
+    return { success: false, message: (error as Error).message, cancelledActiveBranches: [], removedQueuedBranches: [] };
   }
 }

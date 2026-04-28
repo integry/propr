@@ -42,8 +42,13 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       }
 
       // Publish indexing status before queueing to prevent race where a fast worker
-      // emits completed/failed before the route publishes the start event
-      await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+      // emits completed/failed before the route publishes the start event.
+      // Best-effort: don't let a transient Redis pub/sub failure prevent queueing work.
+      try {
+        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+      } catch (pubErr) {
+        console.warn('Failed to publish optimistic indexing status:', pubErr);
+      }
 
       const result = await queueIndexingJob(repository, !!fullReindex, baseBranch);
       if (!result.success) {
@@ -135,8 +140,12 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       // to emit the terminal idle event — publish it here so the UI updates.
       // For active jobs, the worker's handleIndexingError will emit idle after it
       // finishes its current batch and sees the cancellation flag.
-      if (result.wasQueued) {
-        await publishIndexingStatus(repository, result.stoppedBranch || branch || 'HEAD', 'idle');
+      for (const queuedBranch of result.removedQueuedBranches) {
+        try {
+          await publishIndexingStatus(repository, queuedBranch, 'idle');
+        } catch {
+          // Best-effort — don't fail the stop request if publishing fails
+        }
       }
 
       const branchInfo = branch ? ` (branch: ${branch})` : '';
