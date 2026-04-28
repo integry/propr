@@ -102,7 +102,32 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
     { pattern: /(?<=(?:^|[_A-Z])(?:SECRET|PASSWORD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY|SECRET_TOKEN|API_TOKEN|AUTH_TOKEN)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_-]{20,}(?=['"]?)/gim, replacement: '[REDACTED_SECRET]' },
 ];
 
+/**
+ * Quick pre-check: if no pattern prefix appears in the input, skip regex scanning entirely.
+ * This avoids repeated full-string regex passes on large payloads that contain no secrets.
+ */
+const SECRET_PREFIXES = [
+    'ghp_', 'gho_', 'ghu_', 'ghs_', 'github_pat_',
+    'AKIA', 'ASIA', 'aws_secret', 'AWS_SECRET', 'secret_access_key', 'SecretAccessKey', 'secretAccessKey',
+    'sk-or-v1-', 'sk_live_', 'sk_test_', 'rk_live_', 'rk_test_', 'pk_live_', 'pk_test_',
+    'sk-', 'sk-proj-', 'sk-ant-',
+    'xoxb-', 'xoxp-', 'xapp-', 'xoxa-',
+    'SG.', 'SK', 'key-', 'AIza',
+    'earer', // covers Bearer/bearer/BEARER
+    'SECRET', 'PASSWORD', 'APIKEY', 'API_KEY', 'ACCESS_KEY', 'PRIVATE_KEY', 'SECRET_KEY', 'SECRET_TOKEN', 'API_TOKEN', 'AUTH_TOKEN',
+];
+
 export function redactSecrets(input: string): string {
+    // Fast path: skip regex work when no known prefix is present
+    let hasAnyPrefix = false;
+    for (const prefix of SECRET_PREFIXES) {
+        if (input.includes(prefix)) {
+            hasAnyPrefix = true;
+            break;
+        }
+    }
+    if (!hasAnyPrefix) return input;
+
     let result = input;
     for (const { pattern, replacement } of SECRET_PATTERNS) {
         if (replacement === '') {

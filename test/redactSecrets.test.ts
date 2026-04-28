@@ -372,4 +372,58 @@ test('generateCompletionComment redacts secrets in summary, conversation preview
     assert.ok(comment.includes('[REDACTED_GITHUB_TOKEN]'), 'GitHub redaction placeholder should appear in comment');
     assert.ok(comment.includes('[REDACTED_BEARER_TOKEN]'), 'Bearer redaction placeholder should appear in comment');
     assert.ok(comment.includes('[REDACTED_AWS_ACCESS_KEY]'), 'AWS redaction placeholder should appear in comment');
+
+    // Cleanup temp files created by createLogFiles inside generateCompletionComment
+    const os = await import('os');
+    const path = await import('path');
+    const logDir = path.join(os.tmpdir(), 'claude-logs');
+    const entries = await fs.promises.readdir(logDir).catch(() => [] as string[]);
+    for (const entry of entries) {
+        if (entry.startsWith('issue-7777-')) {
+            await fs.promises.unlink(path.join(logDir, entry)).catch(() => {});
+        }
+    }
+});
+
+// --- Vendor-specific false-positive boundary tests ---
+
+test('redactSecrets should not redact Stripe publishable key prefix in prose', () => {
+    const input = 'Use pk_test_ prefix for publishable test keys and pk_live_ for production.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+test('redactSecrets should not redact "rk_live_" followed by short strings in documentation', () => {
+    const input = 'Restricted keys start with rk_live_ or rk_test_ prefixes.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+test('redactSecrets should not redact "key-" followed by short strings', () => {
+    const input = 'Use key-value pairs or key-based lookups.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+test('redactSecrets should not redact short sk- identifiers that are not real keys', () => {
+    const input = 'The sk-short variable is just a name.';
+    assert.strictEqual(redactSecrets(input), input);
+});
+
+test('redactSecrets correctly redacts a real Stripe publishable key', () => {
+    const input = 'pk_live_' + 'A'.repeat(24);
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('pk_live_'), 'Stripe publishable key should be redacted');
+    assert.ok(result.includes('[REDACTED_STRIPE_PUBLISHABLE_KEY]'));
+});
+
+test('redactSecrets correctly redacts a real Stripe restricted key', () => {
+    const input = 'rk_test_' + 'B'.repeat(24);
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('rk_test_'), 'Stripe restricted key should be redacted');
+    assert.ok(result.includes('[REDACTED_STRIPE_RESTRICTED_KEY]'));
+});
+
+test('redactSecrets correctly redacts a real Mailgun key', () => {
+    const input = 'key-' + 'a'.repeat(32);
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('key-aaa'), 'Mailgun key should be redacted');
+    assert.ok(result.includes('[REDACTED_MAILGUN_KEY]'));
 });
