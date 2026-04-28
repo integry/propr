@@ -1,3 +1,5 @@
+import type { SubscriptionUsageMetrics } from './github/formatSubscriptionUsage.js';
+
 export interface Usage {
     input_tokens?: number;
     output_tokens?: number;
@@ -48,11 +50,7 @@ export interface ClaudeResult {
     conversationLog?: ConversationStep[];
     error?: string;
     tokenUsage?: TokenUsage;
-    usageMetrics?: {
-        delta?: Record<string, unknown>;
-        records?: Array<{ agent: string; metricKey: string; metricValue: number }>;
-        agent?: string;
-    } | null;
+    usageMetrics?: SubscriptionUsageMetrics | null;
 }
 
 export interface IssueRef {

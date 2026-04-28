@@ -1,5 +1,5 @@
 import { getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing, formatSubscriptionUsage } from '@propr/core';
-import type { DetailedUsageStats } from '@propr/core';
+import type { DetailedUsageStats, SubscriptionUsageMetrics } from '@propr/core';
 import { buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 
 const MAX_COMMENT_LENGTH = 65000;
@@ -44,11 +44,7 @@ export interface ClaudeResult {
         cache_read_input_tokens?: number;
     };
     // Agent Tank subscription usage metrics
-    usageMetrics?: {
-        delta?: Record<string, unknown>;
-        records?: Array<{ agent: string; metricKey: string; metricValue: number }>;
-        agent?: string;
-    } | null;
+    usageMetrics?: SubscriptionUsageMetrics | null;
 }
 
 async function calculateApiCost(

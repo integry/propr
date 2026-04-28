@@ -1,6 +1,7 @@
 // Task queue type definitions
 import type { Job } from 'bullmq';
 import type { ConversationStep, TokenUsage } from '../utils/llmMetrics.types.js';
+import type { SubscriptionUsageMetrics } from '../utils/github/formatSubscriptionUsage.js';
 import type { CommandMeta } from '../webhook/slashCommandParser.js';
 
 export interface IssueJobData {
@@ -159,11 +160,7 @@ export interface ClaudeResult {
     rawOutput?: string;
     error?: string;
     tokenUsage?: TokenUsage;
-    usageMetrics?: {
-        delta?: Record<string, unknown>;
-        records?: Array<{ agent: string; metricKey: string; metricValue: number }>;
-        agent?: string;
-    } | null;
+    usageMetrics?: SubscriptionUsageMetrics | null;
 }
 
 export interface JobResult {
