@@ -384,13 +384,12 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
         const repoStatuses = statuses.filter(
           (s: { full_name: string }) => s.full_name === repository
         );
-        if (repoStatuses.length > 0) {
-          for (const s of repoStatuses) {
-            const b = s.branch || 'HEAD';
-            await updateRepositoryStatus(repository, 'idle', b);
-            removedQueuedBranches.push(b);
-          }
-        } else {
+        for (const s of repoStatuses) {
+          const b = s.branch || 'HEAD';
+          await updateRepositoryStatus(repository, 'idle', b);
+          removedQueuedBranches.push(b);
+        }
+        if (repoStatuses.length === 0) {
           // Fallback: at minimum reset HEAD
           await updateRepositoryStatus(repository, 'idle', 'HEAD');
           removedQueuedBranches.push('HEAD');
