@@ -365,7 +365,7 @@ function setupWebhookRoute(): void {
     } catch (error) {
       console.error('[webhook] Error processing webhook:', error);
       if (!res.headersSent) {
-        res.status(500).send((error as Error).message);
+        res.status(500).send('Internal webhook processing error.');
       }
     }
   });

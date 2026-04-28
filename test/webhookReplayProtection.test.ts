@@ -20,9 +20,11 @@ import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/
  * - Duplicate delivery rejected (409)
  * - Signature verification (401), including malformed signature lengths and multi-valued headers
  * - Missing x-github-event header rejection (400)
+ * - Unsupported event type rejection (400)
  * - Redis key storage with correct TTL
  * - Failed processing retains Redis key to block duplicate side effects
- * - Parse failure retains Redis key to block duplicate side effects
+ * - Parse failure returns generic 400 and retains Redis key
+ * - Fail-closed behavior when webhook secret is not configured (500)
  *
  * Note: No time-based staleness tests — GitHub does not provide a signed
  * timestamp, so the Date header cannot be trusted for replay protection.
@@ -261,7 +263,7 @@ describe('Webhook Replay Protection', () => {
       }
     });
 
-    test('retains Redis key when body parsing fails to prevent duplicate side effects', async () => {
+    test('retains Redis key when body parsing fails and returns generic 400', async () => {
       const parseRedis = createMockRedisClient();
       const parseApp = express();
       parseApp.use('/webhook', express.raw({ type: 'application/json' }));
@@ -274,18 +276,12 @@ describe('Webhook Replay Protection', () => {
         hmac.update(req.body);
         req.headers['x-hub-signature-256'] = `sha256=${hmac.digest('hex')}`;
 
-        try {
-          await handleWebhookRequest(req, res, {
-            webhookSecret: WEBHOOK_SECRET,
-            redis: parseRedis,
-            processor: async () => {},
-            correlationId: 'test-parse-fail',
-          });
-        } catch (error) {
-          if (!res.headersSent) {
-            res.status(500).send((error as Error).message);
-          }
-        }
+        await handleWebhookRequest(req, res, {
+          webhookSecret: WEBHOOK_SECRET,
+          redis: parseRedis,
+          processor: async () => {},
+          correlationId: 'test-parse-fail',
+        });
       });
 
       const parseServer = parseApp.listen(0);
@@ -300,7 +296,8 @@ describe('Webhook Replay Protection', () => {
           'x-github-delivery': deliveryId,
           'x-github-event': 'issues',
         });
-        assert.strictEqual(result.status, 500);
+        assert.strictEqual(result.status, 400);
+        assert.strictEqual(result.body, 'Invalid JSON payload.');
         assert.ok(parseRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key must be retained after parse failure to block duplicate processing');
       } finally {
         await new Promise<void>((resolve) => parseServer.close(() => resolve()));
@@ -371,6 +368,53 @@ describe('Webhook Replay Protection', () => {
       assert.match(res.body, /Missing x-github-event/);
       // Event header is validated before Redis write, so no key should exist
       assert.strictEqual(redisClient.store.size, 0, 'no Redis key should be written when event header is missing');
+    });
+  });
+
+  describe('Webhook secret not configured (fail closed)', () => {
+    test('rejects request when webhookSecret is undefined', async () => {
+      const noSecretRedis = createMockRedisClient();
+      const noSecretApp = express();
+      noSecretApp.use('/webhook', express.raw({ type: 'application/json' }));
+      noSecretApp.post('/webhook', async (req: Request, res: Response) => {
+        await handleWebhookRequest(req, res, {
+          webhookSecret: undefined,
+          redis: noSecretRedis,
+          processor: async () => {},
+          correlationId: 'test-no-secret',
+        });
+      });
+      const noSecretServer = noSecretApp.listen(0);
+      await new Promise<void>((resolve) => noSecretServer.on('listening', resolve));
+
+      try {
+        const body = makeBody();
+        const res = await sendWebhook(noSecretServer, body, {
+          'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+          'x-github-delivery': 'delivery-no-secret',
+          'x-github-event': 'issues',
+        });
+        assert.strictEqual(res.status, 500);
+        assert.match(res.body, /Webhook secret not configured/);
+        assert.strictEqual(noSecretRedis.store.size, 0, 'no Redis key should be written when secret is not configured');
+      } finally {
+        await new Promise<void>((resolve) => noSecretServer.close(() => resolve()));
+      }
+    });
+  });
+
+  describe('Unsupported event type', () => {
+    test('rejects request with unsupported x-github-event value', async () => {
+      const body = makeBody();
+      const res = await sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-delivery': 'delivery-unsupported-event',
+        'x-github-event': 'unknown_event_type',
+      });
+      assert.strictEqual(res.status, 400);
+      assert.match(res.body, /Unsupported webhook event type/);
+      // Unsupported event is validated before processing, but after Redis dedup
+      // The delivery ID should still be reserved to prevent replay
     });
   });
 

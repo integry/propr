@@ -76,7 +76,9 @@ export async function handleWebhookRequest(
       return;
     }
   } else {
-    console.warn('[webhook] Webhook secret not configured. Skipping signature verification.');
+    console.error('[webhook] GH_WEBHOOK_SECRET is not configured — rejecting request. Set the environment variable to accept webhooks.');
+    res.status(500).send('Webhook secret not configured.');
+    return;
   }
 
   // --- Validate required headers before any Redis writes ---
@@ -103,9 +105,27 @@ export async function handleWebhookRequest(
     return;
   }
 
+  // --- Validate event type against known allowlist ---
+  const SUPPORTED_EVENTS: ReadonlySet<string> = new Set([
+    'issues', 'issue_comment', 'pull_request_review_comment',
+    'pull_request', 'check_run', 'push',
+  ]);
+  if (!SUPPORTED_EVENTS.has(rawEvent)) {
+    console.warn(`[webhook] Unsupported event type: ${rawEvent}`);
+    res.status(400).send('Unsupported webhook event type.');
+    return;
+  }
+
   // The delivery ID remains reserved in Redis regardless of processing outcome.
   // This is intentional — see the JSDoc above for rationale.
-  const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
+  let payload: { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
+  try {
+    payload = JSON.parse(req.body.toString());
+  } catch {
+    console.error(`[webhook] Failed to parse JSON body for delivery ${rawDeliveryId}`);
+    res.status(400).send('Invalid JSON payload.');
+    return;
+  }
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
   await processor(payload, rawEvent, correlationId);
 
