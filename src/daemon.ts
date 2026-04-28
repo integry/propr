@@ -15,6 +15,11 @@ import {
     handleCommentDeleted,
     handleCommentEdited,
     processCommentEvent,
+    setUltrafixDeps,
+    loadUltrafixRatingGoal,
+    loadUltrafixMaxCycles,
+    loadUltrafixPauseSeconds,
+    loadPrReviewModel,
     AgentRegistry
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
@@ -32,6 +37,8 @@ import {
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
+import { startLoop } from './jobs/ultrafixOrchestrationService.js';
+import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -140,6 +147,17 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     }
 
     await loadAllConfigs();
+
+    // Wire up ultrafix dependencies so packages/core can call into app-level services
+    // without cross-package imports.
+    setUltrafixDeps({
+        loadUltrafixRatingGoal,
+        loadUltrafixMaxCycles,
+        loadUltrafixPauseSeconds,
+        loadPrReviewModel,
+        startLoop,
+        getPendingReviewState,
+    });
 
     const repos = getRepos();
 

@@ -56,14 +56,14 @@ export interface UseCommandMeta {
 
 export interface UltrafixCommandMeta {
     mode: 'ultrafix';
-    /** Target number of passing review cycles */
-    goal: number;
-    /** Maximum fix cycles before giving up */
-    maxCycles: number;
-    /** Seconds to pause between cycles */
-    pauseSeconds: number;
-    /** Model to use for review cycles */
-    reviewModel: string;
+    /** Target number of passing review cycles (undefined = not provided, use DB default) */
+    goal?: number;
+    /** Maximum fix cycles before giving up (undefined = not provided, use DB default) */
+    maxCycles?: number;
+    /** Seconds to pause between cycles (undefined = not provided, use DB default) */
+    pauseSeconds?: number;
+    /** Model to use for review cycles (undefined = not provided, use DB default) */
+    reviewModel?: string;
     /** Extra instructions from lines below the command */
     instructions: string;
     /** Warning message if unknown keys were encountered */
@@ -167,7 +167,6 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
 }
 
 const ULTRAFIX_KNOWN_KEYS = new Set(['goal', 'max', 'pause', 'model']);
-const ULTRAFIX_DEFAULTS = { goal: 2, maxCycles: 5, pauseSeconds: 0, reviewModel: '' };
 
 /** Parse a string as a finite positive number, or return undefined. */
 function parsePositiveNumber(value: string, allowZero = false): number | undefined {
@@ -212,7 +211,6 @@ function applyUltrafixKeyValue(meta: UltrafixCommandMeta, key: string, value: st
 function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
     const meta: UltrafixCommandMeta = {
         mode: 'ultrafix',
-        ...ULTRAFIX_DEFAULTS,
         instructions: parsed.instructions,
     };
 
