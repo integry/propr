@@ -163,9 +163,14 @@ const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 /**
  * Loads the auto-followup score threshold from the database.
  * Returns 0 if disabled, or a value 1-9 indicating the threshold.
+ * Falls back to default if the stored value is malformed or out of range.
  */
 export async function loadAutoFollowupScoreThreshold(): Promise<number> {
     const threshold = await getConfig<number>('auto_followup_score_threshold', DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD);
+    if (typeof threshold !== 'number' || isNaN(threshold) || threshold < 0 || threshold > 9) {
+        logger.warn({ stored_value: threshold }, 'Invalid auto_followup_score_threshold in DB, using default');
+        return DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD;
+    }
     logger.info({ auto_followup_score_threshold: threshold }, 'Successfully loaded auto-followup score threshold');
     return threshold;
 }
@@ -173,12 +178,15 @@ export async function loadAutoFollowupScoreThreshold(): Promise<number> {
 /**
  * Saves the auto-followup score threshold to the database.
  * @param threshold - Value 0-9 (0 = disabled, 1-9 = threshold value)
+ * @throws Error if threshold is not a valid integer in range 0-9
  */
 export async function saveAutoFollowupScoreThreshold(threshold: number): Promise<boolean> {
-    // Validate the threshold is within the valid range
-    const validThreshold = Math.max(0, Math.min(9, Math.floor(threshold)));
-    await saveConfig('auto_followup_score_threshold', validThreshold);
-    logger.info({ auto_followup_score_threshold: validThreshold }, 'Successfully saved auto-followup score threshold');
+    const value = Math.floor(threshold);
+    if (isNaN(value) || value < 0 || value > 9) {
+        throw new Error('auto_followup_score_threshold must be an integer between 0 and 9');
+    }
+    await saveConfig('auto_followup_score_threshold', value);
+    logger.info({ auto_followup_score_threshold: value }, 'Successfully saved auto-followup score threshold');
     return true;
 }
 
@@ -420,6 +428,17 @@ export async function saveAgentTankSettings(settings: AgentTankSettings): Promis
     logger.info({ agentTank: settings }, 'Successfully saved Agent Tank settings');
     return true;
 }
+
+export {
+    loadPrReviewModel,
+    savePrReviewModel,
+    loadUltrafixRatingGoal,
+    saveUltrafixRatingGoal,
+    loadUltrafixMaxCycles,
+    saveUltrafixMaxCycles,
+    loadUltrafixPauseSeconds,
+    saveUltrafixPauseSeconds
+} from './configManagerUltrafix.js';
 
 // --- Auto Resolve Merge Conflicts ---
 

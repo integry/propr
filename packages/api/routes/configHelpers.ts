@@ -135,6 +135,53 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
   return true;
 }
 
+interface SettingFields {
+  auto_followup_score_threshold?: unknown;
+  auto_resolve_merge_conflicts?: unknown;
+  pr_review_model?: unknown;
+  ultrafix_rating_goal?: unknown;
+  ultrafix_max_cycles?: unknown;
+  ultrafix_pause_seconds?: unknown;
+}
+
+function validateIntRange(raw: unknown, min: number, max: number): number | null {
+  const value = parseInt(String(raw), 10);
+  return (isNaN(value) || value < min || value > max) ? null : value;
+}
+
+export function extractSettingSaves(fields: SettingFields): { error?: string; saves: Promise<boolean>[] } {
+  const saves: Promise<boolean>[] = [];
+  if (fields.auto_followup_score_threshold !== undefined) {
+    const v = validateIntRange(fields.auto_followup_score_threshold, 0, 9);
+    if (v === null) return { error: 'auto_followup_score_threshold must be a number between 0 and 9', saves: [] };
+    saves.push(configManager.saveAutoFollowupScoreThreshold(v));
+  }
+  if (fields.auto_resolve_merge_conflicts !== undefined) {
+    if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [] };
+    saves.push(configManager.saveAutoResolveMergeConflicts(fields.auto_resolve_merge_conflicts));
+  }
+  if (fields.pr_review_model !== undefined) {
+    if (typeof fields.pr_review_model !== 'string') return { error: 'pr_review_model must be a string', saves: [] };
+    saves.push(configManager.savePrReviewModel(fields.pr_review_model));
+  }
+  if (fields.ultrafix_rating_goal !== undefined) {
+    const v = validateIntRange(fields.ultrafix_rating_goal, 1, 10);
+    if (v === null) return { error: 'ultrafix_rating_goal must be a number between 1 and 10', saves: [] };
+    saves.push(configManager.saveUltrafixRatingGoal(v));
+  }
+  if (fields.ultrafix_max_cycles !== undefined) {
+    const v = validateIntRange(fields.ultrafix_max_cycles, 1, 50);
+    if (v === null) return { error: 'ultrafix_max_cycles must be a number between 1 and 50', saves: [] };
+    saves.push(configManager.saveUltrafixMaxCycles(v));
+  }
+  if (fields.ultrafix_pause_seconds !== undefined) {
+    const v = validateIntRange(fields.ultrafix_pause_seconds, 0, 600);
+    if (v === null) return { error: 'ultrafix_pause_seconds must be a number between 0 and 600', saves: [] };
+    saves.push(configManager.saveUltrafixPauseSeconds(v));
+  }
+  return { saves };
+}
+
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_AGENT_TYPES = ['claude', 'codex', 'gemini'];
 

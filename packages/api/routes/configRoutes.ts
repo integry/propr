@@ -12,13 +12,14 @@ import {
     AGENT_DEFAULT_VERSIONS
 } from '@propr/core';
 import type { CliVersionType, AgentType } from '@propr/core';
-import { withConfigLock, validateAgentsConfig } from './configHelpers.js';
+import { withConfigLock, validateAgentsConfig, extractSettingSaves } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
 }
+
 
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
 
@@ -170,10 +171,22 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const [settings, autoFollowupThreshold, autoResolveMergeConflicts] = await Promise.all([
+      const [
+        settings,
+        autoFollowupThreshold,
+        autoResolveMergeConflicts,
+        prReviewModel,
+        ultrafixRatingGoal,
+        ultrafixMaxCycles,
+        ultrafixPauseSeconds
+      ] = await Promise.all([
         configManager.loadSettings(),
         configManager.loadAutoFollowupScoreThreshold(),
-        configManager.loadAutoResolveMergeConflicts()
+        configManager.loadAutoResolveMergeConflicts(),
+        configManager.loadPrReviewModel(),
+        configManager.loadUltrafixRatingGoal(),
+        configManager.loadUltrafixMaxCycles(),
+        configManager.loadUltrafixPauseSeconds()
       ]);
       const envDefaults = {
         worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
@@ -189,7 +202,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         planner_context_model: settings.planner_context_model || envDefaults.planner_context_model,
         planner_generation_model: settings.planner_generation_model || envDefaults.planner_generation_model,
         auto_followup_score_threshold: autoFollowupThreshold,
-        auto_resolve_merge_conflicts: autoResolveMergeConflicts
+        auto_resolve_merge_conflicts: autoResolveMergeConflicts,
+        pr_review_model: prReviewModel,
+        ultrafix_rating_goal: ultrafixRatingGoal,
+        ultrafix_max_cycles: ultrafixMaxCycles,
+        ultrafix_pause_seconds: ultrafixPauseSeconds
       };
       res.json(mergedSettings);
     } catch (error) {
@@ -206,32 +223,33 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'settings object is required' } };
       }
 
-      // Handle auto_followup_score_threshold and auto_resolve_merge_conflicts separately
-      // since they are stored in their own keys
-      const { auto_followup_score_threshold, auto_resolve_merge_conflicts, ...otherSettings } = settings;
+      const {
+        auto_followup_score_threshold,
+        auto_resolve_merge_conflicts,
+        pr_review_model,
+        ultrafix_rating_goal,
+        ultrafix_max_cycles,
+        ultrafix_pause_seconds,
+        ...otherSettings
+      } = settings;
 
       const savePromises: Promise<boolean>[] = [configManager.saveSettings(otherSettings)];
+      const extracted = extractSettingSaves({
+        auto_followup_score_threshold,
+        auto_resolve_merge_conflicts,
+        pr_review_model,
+        ultrafix_rating_goal,
+        ultrafix_max_cycles,
+        ultrafix_pause_seconds
+      });
 
-      if (auto_followup_score_threshold !== undefined) {
-        const threshold = parseInt(auto_followup_score_threshold, 10);
-        if (isNaN(threshold) || threshold < 0 || threshold > 9) {
-          return { status: 400, body: { error: 'auto_followup_score_threshold must be a number between 0 and 9' } };
-        }
-        savePromises.push(configManager.saveAutoFollowupScoreThreshold(threshold));
+      if (extracted.error) {
+        return { status: 400, body: { error: extracted.error } };
       }
-
-      if (auto_resolve_merge_conflicts !== undefined) {
-        if (typeof auto_resolve_merge_conflicts !== 'boolean') {
-          return { status: 400, body: { error: 'auto_resolve_merge_conflicts must be a boolean' } };
-        }
-        savePromises.push(configManager.saveAutoResolveMergeConflicts(auto_resolve_merge_conflicts));
-      }
+      savePromises.push(...extracted.saves);
 
       await Promise.all(savePromises);
-
-      // Publish config update event
       await publishConfigUpdate('settings_update');
-
       return { status: 200, body: { success: true, settings } };
     });
 
