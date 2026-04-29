@@ -6,7 +6,7 @@ import type { IssueJobData, CommentJobData, TaskImportJobData, SystemTaskJobData
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
-import { AgentRegistry, areAllChecksPassing, getCurrentPRHead } from '@propr/core';
+import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
@@ -218,6 +218,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
     setCheckRunDeps({
         areAllChecksPassing,
         getCurrentPRHead,
+        getCheckRunsStatus,
     });
     logger.info('Check run dependencies initialized for ultrafix');
 

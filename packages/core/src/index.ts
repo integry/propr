@@ -113,7 +113,8 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { areAllChecksPassing, getCurrentPRHead } from './webhook/checkRunHelpers.js';
+export { areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from './webhook/checkRunHelpers.js';
+export type { CheckRunsStatus } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, setUltrafixCheckRunHook } from './webhook/checkRunHandler.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';

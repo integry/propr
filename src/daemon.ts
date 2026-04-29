@@ -19,6 +19,7 @@ import {
     setUltrafixCheckRunHook,
     areAllChecksPassing,
     getCurrentPRHead,
+    getCheckRunsStatus,
     loadUltrafixRatingGoal,
     loadUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
@@ -168,6 +169,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     setCheckRunDeps({
         areAllChecksPassing,
         getCurrentPRHead,
+        getCheckRunsStatus,
     });
 
     // Wire up check_run hook to resume deferred ultrafix continuations

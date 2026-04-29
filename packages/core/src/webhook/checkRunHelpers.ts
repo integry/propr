@@ -190,6 +190,40 @@ export async function getCurrentPRHead(owner: string, repoName: string, prNumber
     }
 }
 
+export interface CheckRunsStatus {
+    count: number;
+    allPassing: boolean;
+    anyPending: boolean;
+    anyFailed: boolean;
+}
+
+/**
+ * Gets detailed status of check runs for a commit.
+ */
+export async function getCheckRunsStatus(owner: string, repoName: string, ref: string): Promise<CheckRunsStatus> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+        const checkRunsResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+            owner,
+            repo: repoName,
+            ref
+        });
+        const checkRuns = checkRunsResponse.data.check_runs;
+        const count = checkRuns.length;
+        const anyPending = checkRuns.some((run: { status: string }) => run.status !== 'completed');
+        const anyFailed = checkRuns.some((run: { status: string; conclusion: string | null }) =>
+            run.status === 'completed' && run.conclusion !== 'success' && run.conclusion !== 'skipped'
+        );
+        const allPassing = count === 0 || (!anyPending && !anyFailed);
+
+        logger.debug({ owner, repoName, ref, count, allPassing, anyPending, anyFailed }, 'Check runs status');
+        return { count, allPassing, anyPending, anyFailed };
+    } catch (error) {
+        logger.warn({ owner, repoName, ref, error: (error as Error).message }, 'Failed to get check runs status');
+        return { count: 0, allPassing: false, anyPending: false, anyFailed: false };
+    }
+}
+
 /**
  * Checks if all check runs have passed for a PR.
  */

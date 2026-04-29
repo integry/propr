@@ -54,16 +54,20 @@ export interface UltrafixContinuationParams {
 
 type ChecksPassingFn = (owner: string, repo: string, ref: string) => Promise<boolean>;
 type GetPRHeadFn = (owner: string, repo: string, pr: number) => Promise<string | null>;
+type GetCheckRunsStatusFn = (owner: string, repo: string, ref: string) => Promise<{ count: number; allPassing: boolean; anyPending: boolean; anyFailed: boolean }>;
 
 let _areAllChecksPassing: ChecksPassingFn | null = null;
 let _getCurrentPRHead: GetPRHeadFn | null = null;
+let _getCheckRunsStatus: GetCheckRunsStatusFn | null = null;
 
 export function setCheckRunDeps(deps: {
     areAllChecksPassing: ChecksPassingFn;
     getCurrentPRHead: GetPRHeadFn;
+    getCheckRunsStatus?: GetCheckRunsStatusFn;
 }): void {
     _areAllChecksPassing = deps.areAllChecksPassing;
     _getCurrentPRHead = deps.getCurrentPRHead;
+    _getCheckRunsStatus = deps.getCheckRunsStatus ?? null;
 }
 
 export interface ContinuationResult {
@@ -425,15 +429,35 @@ export async function patchUltrafixContinuationMeta(
 async function evaluateReadiness(
     params: UltrafixContinuationParams,
 ): Promise<import('./ultrafixOrchestrationService.js').UltrafixReadinessResult> {
-    const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, currentJobId } = params;
+    const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, currentJobId, completedAction } = params;
 
     // 1. CI checks passing (fail-closed: assume NOT passing if deps not wired or on error)
+    // Special case: after a fix, if there are 0 checks, CI likely hasn't started yet - treat as not ready
     let allChecksPassing = false;
-    if (_areAllChecksPassing && _getCurrentPRHead) {
+    if (_getCurrentPRHead) {
         try {
             const headSha = await _getCurrentPRHead(owner, repo, pullRequestNumber);
             if (headSha) {
-                allChecksPassing = await _areAllChecksPassing(owner, repo, headSha);
+                // Use detailed status if available, otherwise fall back to simple check
+                if (_getCheckRunsStatus) {
+                    const status = await _getCheckRunsStatus(owner, repo, headSha);
+                    correlatedLogger.debug(
+                        { pullRequestNumber, ...status, completedAction },
+                        'Ultrafix readiness: check runs status',
+                    );
+                    // After a fix with 0 checks, CI likely hasn't started yet - defer
+                    if (completedAction === 'fix' && status.count === 0) {
+                        correlatedLogger.info(
+                            { pullRequestNumber },
+                            'Ultrafix readiness: 0 checks after fix, CI likely not started yet',
+                        );
+                        allChecksPassing = false;
+                    } else {
+                        allChecksPassing = status.allPassing;
+                    }
+                } else if (_areAllChecksPassing) {
+                    allChecksPassing = await _areAllChecksPassing(owner, repo, headSha);
+                }
             }
         } catch (err) {
             correlatedLogger.warn(
