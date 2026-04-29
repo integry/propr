@@ -175,13 +175,19 @@ export function extractSettingSaves(fields: SettingFields): { error?: string; sa
     }
     // Empty string is valid (means "use default agent model"), but strings with invalid
     // characters are not. Model values should look like an identifier
-    // (e.g. "claude-sonnet-4-6", "gemini:gemini-pro", "codex").
+    // (e.g. "claude-sonnet-4-6", "gemini:gemini-pro", "codex:gpt-5.4").
     if (val !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(val)) {
       return { error: 'pr_review_model contains invalid characters; expected a model identifier (e.g. "claude-sonnet-4-6")', saves: [] };
     }
     // Validate that the model resolves to a known model in the system.
+    // Supports "agent:model" format (e.g. "codex:gpt-5.4") - extract model part for validation.
     if (val !== '') {
-      const resolved = resolveModelAlias(val);
+      let modelPart = val;
+      const colonIdx = val.indexOf(':');
+      if (colonIdx > 0 && colonIdx < val.length - 1) {
+        modelPart = val.substring(colonIdx + 1);
+      }
+      const resolved = resolveModelAlias(modelPart);
       if (!MODEL_INFO_MAP[resolved]) {
         return { error: `pr_review_model "${val}" does not resolve to a known model`, saves: [] };
       }
