@@ -220,6 +220,33 @@ function enrichMetadataWithExecution(
   };
 }
 
+function buildTaskInfoFromState(
+  taskId: string,
+  ref: Record<string, unknown>,
+  historyEntries: Array<Record<string, unknown>>
+): Record<string, unknown> {
+  const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
+  const taskInfo: Record<string, unknown> = {
+    repoOwner: ref.repoOwner, repoName: ref.repoName, number: ref.number,
+    type: isPr ? 'pr-comment' : 'issue', comments: ref.comments,
+    title: ref.title || null, subtitle: ref.subtitle || null, modelName: ref.modelName
+  };
+  if (isPr) {
+    const issueNumber = ref.issueNumber as number | null | undefined
+      || extractIssueNumberFromTitle(ref.title as string | null | undefined);
+    if (issueNumber) taskInfo.issueNumber = issueNumber;
+  }
+  const findMetaWith = (key: string) => historyEntries.find(
+    h => h.metadata && typeof h.metadata === 'object' && key in h.metadata
+  )?.metadata as Record<string, unknown> | undefined;
+  const historyWithMeta = findMetaWith('commandMode');
+  if (historyWithMeta?.commandMode) taskInfo.commandMode = historyWithMeta.commandMode;
+  if (historyWithMeta?.ultrafixCycle || findMetaWith('ultrafixCycle')) {
+    taskInfo.ultrafixCycle = true;
+  }
+  return taskInfo;
+}
+
 async function getHistoryFromRedis(
   redisClient: RedisClientType,
   taskId: string
@@ -237,38 +264,9 @@ async function getHistoryFromRedis(
       return enrichedItem;
     });
     
-    let taskInfo: Record<string, unknown> | null = null;
-    if (state.issueRef) {
-      const ref = state.issueRef as Record<string, unknown>;
-      const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
-      taskInfo = {
-        repoOwner: ref.repoOwner, repoName: ref.repoName, number: ref.number,
-        type: isPr ? 'pr-comment' : 'issue', comments: ref.comments,
-        title: ref.title || null, subtitle: ref.subtitle || null, modelName: ref.modelName
-      };
-      if (isPr) {
-        const issueNumber = ref.issueNumber as number | null | undefined
-          || extractIssueNumberFromTitle(ref.title as string | null | undefined);
-        if (issueNumber) taskInfo.issueNumber = issueNumber;
-      }
-      // Extract commandMode and ultrafixCycle from history metadata if available
-      const historyWithMeta = (state.history || []).find(
-        h => h.metadata && typeof h.metadata === 'object' && 'commandMode' in h.metadata
-      )?.metadata as Record<string, unknown> | undefined;
-      if (historyWithMeta?.commandMode) {
-        taskInfo.commandMode = historyWithMeta.commandMode;
-      }
-      if (historyWithMeta?.ultrafixCycle) {
-        taskInfo.ultrafixCycle = true;
-      }
-      // Also check other history entries for ultrafixCycle if not found above
-      if (!taskInfo.ultrafixCycle) {
-        const ultrafixEntry = (state.history || []).find(
-          h => h.metadata && typeof h.metadata === 'object' && 'ultrafixCycle' in h.metadata
-        );
-        if (ultrafixEntry) taskInfo.ultrafixCycle = true;
-      }
-    }
+    const taskInfo = state.issueRef
+      ? buildTaskInfoFromState(taskId, state.issueRef as Record<string, unknown>, state.history || [])
+      : null;
     return { history, taskInfo };
   } catch (e) {
     console.error('Error parsing state data:', e);

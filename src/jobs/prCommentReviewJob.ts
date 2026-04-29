@@ -8,7 +8,7 @@ import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError, loadPrReviewModel, db } from '@propr/core';
+import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError, loadPrReviewModel } from '@propr/core';
 import {
     fetchLinkedIssueContext,
     buildCommentHistory, updateTaskTitleForPR
@@ -18,7 +18,7 @@ import {
 } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
-import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
+import { continueUltrafixLoop, buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixLoopContinuation.js';
 import { loadState as loadUltrafixState } from './ultrafixOrchestrationService.js';
 import type { Redis } from 'ioredis';
 
@@ -385,17 +385,9 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
     const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
 
-    // Build ultrafix metadata if this is part of an ultrafix loop
-    let ultrafixHistoryMeta: Record<string, unknown> | undefined;
-    if (job.data.ultrafixMeta) {
-        const ufState = await loadUltrafixState(redisClient, repoOwner, repoName, pullRequestNumber);
-        ultrafixHistoryMeta = {
-            ultrafixCycle: true,
-            ultrafixGoal: job.data.ultrafixMeta.goal ?? ufState?.goal,
-            ultrafixCycleCount: ufState?.cycleCount ?? 0,
-            ultrafixMaxCycles: job.data.ultrafixMeta.maxCycles ?? ufState?.maxCycles,
-        };
-    }
+    const ultrafixHistoryMeta = job.data.ultrafixMeta
+        ? buildUltrafixHistoryMeta(job.data.ultrafixMeta, await loadUltrafixState(redisClient, repoOwner, repoName, pullRequestNumber))
+        : undefined;
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',
@@ -415,60 +407,13 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     if (job.data.ultrafixMeta) {
         try {
             const continuationResult = await continueUltrafixLoop({
-                owner: repoOwner,
-                repo: repoName,
-                pullRequestNumber,
-                completedAction: 'review',
-                ultrafixMeta: job.data.ultrafixMeta,
-                redisClient,
-                correlatedLogger,
-                correlationId,
+                owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: 'review',
+                ultrafixMeta: job.data.ultrafixMeta, redisClient, correlatedLogger, correlationId,
             });
-            correlatedLogger.info(
-                { pullRequestNumber, ...continuationResult },
-                'Ultrafix loop continuation after review',
-            );
-
-            // Patch the COMPLETED history entry with continuation details in both Redis and SQLite
-            const continuationMeta: Record<string, unknown> = {
-                ...(continuationResult.score != null && { ultrafixScore: continuationResult.score }),
-                ...(continuationResult.cycleCount != null && { ultrafixCycleCount: continuationResult.cycleCount }),
-                ...(continuationResult.nextAction && { ultrafixNextAction: continuationResult.nextAction }),
-                ...(!continuationResult.continued && { ultrafixStopReason: continuationResult.reason }),
-            };
-            try {
-                // Update Redis (canonical in-memory state) so the UI sees it immediately
-                await stateManager.updateHistoryMetadata(taskId, TaskStates.COMPLETED, continuationMeta);
-            } catch (redisPatchErr) {
-                correlatedLogger.warn(
-                    { error: (redisPatchErr as Error).message, taskId },
-                    'Failed to patch ultrafix metadata into Redis history entry',
-                );
-            }
-            try {
-                // Also patch the persisted SQLite row for durability
-                const latestHistory = await db('task_history')
-                    .where({ task_id: taskId, state: 'completed' })
-                    .orderBy('timestamp', 'desc')
-                    .first();
-                if (latestHistory) {
-                    const existingMeta = typeof latestHistory.metadata === 'string'
-                        ? JSON.parse(latestHistory.metadata) : (latestHistory.metadata ?? {});
-                    await db('task_history')
-                        .where({ history_id: latestHistory.history_id })
-                        .update({ metadata: JSON.stringify({ ...existingMeta, ...continuationMeta }) });
-                }
-            } catch (patchErr) {
-                correlatedLogger.warn(
-                    { error: (patchErr as Error).message, taskId },
-                    'Failed to patch ultrafix metadata into SQLite history entry',
-                );
-            }
+            correlatedLogger.info({ pullRequestNumber, ...continuationResult }, 'Ultrafix loop continuation after review');
+            await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), correlatedLogger);
         } catch (contErr) {
-            correlatedLogger.error(
-                { error: (contErr as Error).message, pullRequestNumber },
-                'Ultrafix loop continuation failed after review',
-            );
+            correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, 'Ultrafix loop continuation failed after review');
         }
     }
 
