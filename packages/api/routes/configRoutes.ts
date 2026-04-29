@@ -250,10 +250,24 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: extracted.error } };
       }
 
-      // Execute specialized saves first — they are more likely to fail due to
-      // stricter validation. General settings are saved last to minimise partial writes.
-      for (const saveFn of extracted.saves) {
-        await saveFn();
+      // Execute all saves sequentially. If any save fails, report the error
+      // but note that earlier writes in the sequence may already be committed
+      // (there is no cross-key transaction support). Validation up front minimises
+      // this risk; runtime failures here indicate an infrastructure problem.
+      const completedSaves: number[] = [];
+      for (let i = 0; i < extracted.saves.length; i++) {
+        try {
+          await extracted.saves[i]();
+          completedSaves.push(i);
+        } catch (saveError) {
+          console.error(`Settings save failed at step ${i + 1}/${extracted.saves.length} (${completedSaves.length} already committed):`, saveError);
+          return {
+            status: 500,
+            body: {
+              error: `Failed to save setting (step ${i + 1}). ${completedSaves.length} earlier setting(s) were already saved. Please retry or check system logs.`
+            }
+          };
+        }
       }
       await configManager.saveSettings(otherSettings);
       await publishConfigUpdate('settings_update');

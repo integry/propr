@@ -523,5 +523,32 @@ describe('buildCommandMeta', () => {
         const meta = buildCommandMeta(parsed);
         assert.strictEqual((meta as { pauseSeconds: number }).pauseSeconds, 86400);
     });
+
+    test('ultrafix positional goal after named args (mixed order)', () => {
+        const parsed = parseSlashCommand('/ultrafix max=10 8')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, 10);
+        // No warning — this is a supported mixed form
+        assert.strictEqual((meta as { warning?: string }).warning, undefined);
+    });
+
+    test('ultrafix positional goal between named args', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=60 8 model=claude-sonnet-4-6')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
+        assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, 60);
+        assert.strictEqual((meta as { reviewModel?: string }).reviewModel, 'claude-sonnet-4-6');
+    });
+
+    test('ultrafix named goal takes precedence over later positional', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=5 8')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        // Named goal=5 was set first, positional 8 does not override
+        assert.strictEqual((meta as { goal?: number }).goal, 5);
+    });
 });
 

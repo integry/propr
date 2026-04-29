@@ -150,7 +150,7 @@ Runs an automated loop of `/review` followed by `/fix` cycles until the review s
 /ultrafix
 ```
 
-Run with defaults: goal=7 passing score, max=5 cycles, 60 second pause between cycles.
+Run with system defaults (goal=7, max=5, pause=60 unless changed by an admin in settings).
 
 ```
 /ultrafix 8
@@ -163,9 +163,9 @@ Set the target score goal to 8 (positional argument).
 ```
 
 Use named arguments for full control:
-- **goal** — Target review score to reach, 1-10 (default: 7)
-- **max** — Maximum fix cycles before giving up (default: 5)
-- **pause** — Seconds to wait between cycles (default: 60)
+- **goal** — Target review score to reach, 1-10 (system default: 7)
+- **max** — Maximum fix cycles before giving up (system default: 5)
+- **pause** — Seconds to wait between cycles (system default: 60)
 - **model** — Override the review model for all cycles
 
 ```

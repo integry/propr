@@ -219,7 +219,7 @@ function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
     };
 
     const warnings: string[] = [];
-    let hasNamedArgs = false;
+    let positionalGoalSet = false;
 
     for (let i = 0; i < parsed.args.length; i++) {
         const arg = parsed.args[i];
@@ -228,21 +228,21 @@ function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
             const key = arg.substring(0, eqIdx).toLowerCase();
             const value = arg.substring(eqIdx + 1);
 
-            // When mixing positional goal with named args, keep the positional goal
-            // unless a named goal= is explicitly provided (handled by applyUltrafixKeyValue)
-            hasNamedArgs = true;
-
             if (ULTRAFIX_KNOWN_KEYS.has(key)) {
                 const err = applyUltrafixKeyValue(meta, key, value);
                 if (err) warnings.push(err);
             } else {
                 warnings.push(`Unknown key '${key}' ignored`);
             }
-        } else if (!hasNamedArgs && i === 0) {
+        } else if (!positionalGoalSet && /^\d+$/.test(arg)) {
+            // Treat the first bare number as the goal, regardless of position
+            // relative to named args. A named goal= later will override this.
+            positionalGoalSet = true;
             const n = parsePositiveInt(arg);
             if (n === undefined || n < 1 || n > 10) {
                 warnings.push(`Invalid positional goal '${arg}'; must be an integer between 1 and 10`);
-            } else {
+            } else if (meta.goal === undefined) {
+                // Only set if no named goal= was already provided
                 meta.goal = n;
             }
         } else {

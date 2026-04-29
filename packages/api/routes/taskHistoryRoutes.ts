@@ -241,8 +241,13 @@ function buildTaskInfoFromState(
   )?.metadata as Record<string, unknown> | undefined;
   const historyWithMeta = findMetaWith('commandMode');
   if (historyWithMeta?.commandMode) taskInfo.commandMode = historyWithMeta.commandMode;
-  if (historyWithMeta?.ultrafixCycle || findMetaWith('ultrafixCycle')) {
+  if (historyWithMeta?.ultrafixCycle === true) {
     taskInfo.ultrafixCycle = true;
+  } else {
+    const ultrafixMeta = findMetaWith('ultrafixCycle');
+    if (ultrafixMeta?.ultrafixCycle === true) {
+      taskInfo.ultrafixCycle = true;
+    }
   }
   return taskInfo;
 }
