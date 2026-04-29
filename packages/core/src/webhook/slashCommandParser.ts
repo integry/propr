@@ -229,7 +229,8 @@ function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
             const value = arg.substring(eqIdx + 1);
 
             if (hasPositionalGoal) {
-                warnings.push('Mixed positional and named arguments; positional goal was overridden by named arguments');
+                warnings.push('Mixed positional and named arguments; positional goal was discarded in favour of named arguments');
+                meta.goal = undefined;
                 hasPositionalGoal = false;
             }
             hasNamedArgs = true;

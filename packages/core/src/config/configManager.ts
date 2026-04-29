@@ -88,9 +88,10 @@ export function getDefaultConfigPath(agentType: AgentConfig['type']): string {
 }
 
 /**
- * Helper to get a config value from DB with a fallback
+ * Helper to get a config value from DB with a fallback.
+ * Exported for reuse by sibling config modules (e.g. configManagerUltrafix).
  */
-async function getConfig<T>(key: string, defaultValue: T): Promise<T> {
+export async function getConfig<T>(key: string, defaultValue: T): Promise<T> {
     try {
         const result = await db('system_configs').where({ key }).first();
         if (result && result.value !== undefined && result.value !== null) {
@@ -107,9 +108,10 @@ async function getConfig<T>(key: string, defaultValue: T): Promise<T> {
 }
 
 /**
- * Helper to save a config value to DB
+ * Helper to save a config value to DB.
+ * Exported for reuse by sibling config modules (e.g. configManagerUltrafix).
  */
-async function saveConfig<T>(key: string, value: T): Promise<boolean> {
+export async function saveConfig<T>(key: string, value: T): Promise<boolean> {
     try {
         const jsonValue = JSON.stringify(value);
         await db('system_configs')

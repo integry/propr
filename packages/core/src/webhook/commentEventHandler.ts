@@ -330,11 +330,10 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     const strippedComment = { ...comment, body: commandMeta.instructions || '' };
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
-        // Build a provisional first-action meta for the batched comment.
-        // The actual initial action will be determined when the batch is processed.
-        const batchActionMeta: CommandMeta = { mode: 'review', models: effectiveReviewModel ? [effectiveReviewModel] : [], instructions: commandMeta.instructions };
+        // Store the original ultrafix meta so commandMode is 'ultrafix', not a provisional value.
+        // The actual initial action (review vs fix) will be determined when the batch is processed.
         await storeCommentForBatch(
-            { ...strippedComment, ...buildPendingCommandFields(batchActionMeta), ultrafixMeta: commandMeta },
+            { ...strippedComment, ...buildPendingCommandFields(commandMeta), ultrafixMeta: commandMeta },
             commentAuthor,
             eventContext,
             { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },

@@ -250,11 +250,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: extracted.error } };
       }
 
-      // Execute saves sequentially so a failure stops before touching remaining settings
-      await configManager.saveSettings(otherSettings);
+      // Execute specialized saves first — they are more likely to fail due to
+      // stricter validation. General settings are saved last to minimise partial writes.
       for (const saveFn of extracted.saves) {
         await saveFn();
       }
+      await configManager.saveSettings(otherSettings);
       await publishConfigUpdate('settings_update');
       return { status: 200, body: { success: true, settings } };
     });

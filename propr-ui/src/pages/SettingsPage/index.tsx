@@ -190,7 +190,9 @@ const SettingsPage: React.FC = () => {
                     // Only accept strings that are strictly integer digits (with optional leading minus)
                     // to avoid silent coercion of values like "1e6" or "2.5"
                     if (raw === '' || !/^-?\d+$/.test(raw)) return;
-                    value = Number(raw);
+                    const parsed = Number(raw);
+                    if (!Number.isSafeInteger(parsed)) return;
+                    value = parsed;
                   } else if (e.target.name === 'auto_resolve_merge_conflicts') {
                     value = (e.target as HTMLInputElement).checked;
                   } else {

@@ -263,6 +263,18 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
     await registry.ensureInitialized();
 
     const agents = registry.getAllAgents();
+
+    // 0. Handle explicit "agentAlias:modelId" format (used by settings UI for pr_review_model)
+    const colonIdx = label.indexOf(':');
+    if (colonIdx > 0 && colonIdx < label.length - 1) {
+        const explicitAlias = label.substring(0, colonIdx);
+        const explicitModel = label.substring(colonIdx + 1);
+        const agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
+        if (agent) {
+            return { agentAlias: agent.config.alias, model: explicitModel };
+        }
+    }
+
     const lowerLabel = label.toLowerCase();
     const fullLabel = `llm-${lowerLabel}`;
 

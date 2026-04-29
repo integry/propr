@@ -225,8 +225,8 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be a positive integer`);
       }
       const parsed = Number(value);
-      if (parsed < 1) {
-        throw new Error(`Invalid value for ${key}: must be a positive integer`);
+      if (parsed < 1 || !Number.isSafeInteger(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be a positive integer up to ${Number.MAX_SAFE_INTEGER}`);
       }
       return parsed;
     }
@@ -235,8 +235,8 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be a non-negative integer`);
       }
       const parsed = Number(value);
-      if (parsed < 0) {
-        throw new Error(`Invalid value for ${key}: must be a non-negative integer`);
+      if (parsed < 0 || !Number.isSafeInteger(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be a non-negative integer up to ${Number.MAX_SAFE_INTEGER}`);
       }
       return parsed;
     }

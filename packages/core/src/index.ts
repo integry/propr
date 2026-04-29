@@ -28,7 +28,9 @@ export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
 export { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS } from './auth/systemTaskAuth.js';
 
 export * from './config/configManager.js';
-export { loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel } from './config/configManagerUltrafix.js';
+// Note: loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel
+// are re-exported via configManager.ts (which re-exports from configManagerUltrafix.ts).
+// Do NOT add explicit re-exports here — they would conflict with the wildcard export above.
 export {
     createPlanIssue,
     getPlanIssuesByDraft,

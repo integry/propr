@@ -153,6 +153,7 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
   const str = String(raw);
   if (!/^-?\d+$/.test(str)) return null;
   const value = Number(str);
+  if (!Number.isSafeInteger(value)) return null;
   return (value < min || value > max) ? null : value;
 }
 
