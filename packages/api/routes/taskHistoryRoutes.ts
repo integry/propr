@@ -76,7 +76,7 @@ async function getHistoryFromDb(
     if (!task || historyRecords.length === 0) return null;
 
     const [repoOwner, repoName] = (task.repository as string).split('/');
-    const { title, subtitle, pullRequestNumber, issueNumber, commandMode } = parseJobData(task.initial_job_data);
+    const { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta } = parseJobData(task.initial_job_data);
     const isPr = task.task_type === 'pr-comment' || taskId.startsWith('pr-comments-batch-') || !!pullRequestNumber;
 
     const taskInfo: Record<string, unknown> = {
@@ -92,6 +92,7 @@ async function getHistoryFromDb(
 
     if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
     if (commandMode) taskInfo.commandMode = commandMode;
+    if (hasUltrafixMeta) taskInfo.ultrafixCycle = true;
 
     const llmExecutions = await db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc');
     const llmLog = await db('llm_logs')
@@ -121,6 +122,16 @@ async function getHistoryFromDb(
     const history = historyRecords.map((record: Record<string, unknown>) =>
       mapDbHistoryRecord(record, executionsByHistoryId, executionsBySessionId)
     );
+
+    // If ultrafixCycle not yet set from job data, check history metadata
+    if (!taskInfo.ultrafixCycle) {
+      const hasUltrafixHistory = history.some((h: Record<string, unknown>) => {
+        const meta = h.metadata as Record<string, unknown> | undefined;
+        return meta?.ultrafixCycle === true;
+      });
+      if (hasUltrafixHistory) taskInfo.ultrafixCycle = true;
+    }
+
     console.log(`Fetched ${history.length} history records from SQLite for task ${taskId}`);
     return { history, taskInfo, usageMetrics, usageMetricRecords };
   } catch (error) {
@@ -136,8 +147,9 @@ function extractIssueNumberFromTitle(title: string | null | undefined): number |
   return issueMatch ? parseInt(issueMatch[1], 10) : null;
 }
 
-function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null; commandMode: string | null } {
+function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null; commandMode: string | null; hasUltrafixMeta: boolean } {
   let title = null, subtitle = null, pullRequestNumber = null, issueNumber = null, commandMode = null;
+  let hasUltrafixMeta = false;
   if (initialJobData) {
     try {
       const jobData = typeof initialJobData === 'string' ? JSON.parse(initialJobData) : initialJobData;
@@ -147,11 +159,12 @@ function parseJobData(initialJobData: unknown): { title: string | null; subtitle
       pullRequestNumber = jobData.pullRequestNumber || ref?.pullRequestNumber || null;
       issueNumber = jobData.issueNumber || ref?.issueNumber || null;
       commandMode = jobData.commandMode || null;
+      hasUltrafixMeta = !!jobData.ultrafixMeta;
       if (!title && ref) title = ref.title;
       if (!issueNumber && title) issueNumber = extractIssueNumberFromTitle(title);
     } catch (e) { console.error('Failed to parse initial_job_data', e); }
   }
-  return { title, subtitle, pullRequestNumber, issueNumber, commandMode };
+  return { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta };
 }
 
 function mapDbHistoryRecord(
@@ -207,6 +220,43 @@ function enrichMetadataWithExecution(
   };
 }
 
+function buildTaskInfoFromState(
+  taskId: string,
+  ref: Record<string, unknown>,
+  historyEntries: Array<Record<string, unknown>>
+): Record<string, unknown> {
+  const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
+  const taskInfo: Record<string, unknown> = {
+    repoOwner: ref.repoOwner, repoName: ref.repoName, number: ref.number,
+    type: isPr ? 'pr-comment' : 'issue', comments: ref.comments,
+    title: ref.title || null, subtitle: ref.subtitle || null, modelName: ref.modelName
+  };
+  if (isPr) {
+    const issueNumber = ref.issueNumber as number | null | undefined
+      || extractIssueNumberFromTitle(ref.title as string | null | undefined);
+    if (issueNumber) taskInfo.issueNumber = issueNumber;
+  }
+  const findMetaWith = (key: string) => historyEntries.find(
+    h => h.metadata && typeof h.metadata === 'object' && key in h.metadata
+  )?.metadata as Record<string, unknown> | undefined;
+  const historyWithMeta = findMetaWith('commandMode');
+  if (historyWithMeta?.commandMode) taskInfo.commandMode = historyWithMeta.commandMode;
+  if (historyWithMeta?.ultrafixCycle || findMetaWith('ultrafixCycle')) {
+    taskInfo.ultrafixCycle = true;
+  }
+  return taskInfo;
+}
+
+function enrichRedisHistoryItem(item: Record<string, unknown>): Record<string, unknown> {
+  const enrichedItem = { ...item };
+  const metadata = item.metadata as Record<string, unknown> | undefined;
+  if (metadata?.sessionId) {
+    enrichedItem.promptPath = `/api/execution/${metadata.sessionId}/prompt`;
+    enrichedItem.logsPath = `/api/execution/${metadata.sessionId}/logs`;
+  }
+  return enrichedItem;
+}
+
 async function getHistoryFromRedis(
   redisClient: RedisClientType,
   taskId: string
@@ -215,37 +265,10 @@ async function getHistoryFromRedis(
   if (!stateData) return null;
   try {
     const state = JSON.parse(stateData) as { history?: Array<Record<string, unknown>>; issueRef?: Record<string, unknown> };
-    const history = (state.history || []).map(item => {
-      const enrichedItem = { ...item };
-      if ((item.metadata as Record<string, unknown>)?.sessionId) {
-        enrichedItem.promptPath = `/api/execution/${(item.metadata as Record<string, unknown>).sessionId}/prompt`;
-        enrichedItem.logsPath = `/api/execution/${(item.metadata as Record<string, unknown>).sessionId}/logs`;
-      }
-      return enrichedItem;
-    });
-    
-    let taskInfo: Record<string, unknown> | null = null;
-    if (state.issueRef) {
-      const ref = state.issueRef as Record<string, unknown>;
-      const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
-      taskInfo = {
-        repoOwner: ref.repoOwner, repoName: ref.repoName, number: ref.number,
-        type: isPr ? 'pr-comment' : 'issue', comments: ref.comments,
-        title: ref.title || null, subtitle: ref.subtitle || null, modelName: ref.modelName
-      };
-      if (isPr) {
-        const issueNumber = ref.issueNumber as number | null | undefined
-          || extractIssueNumberFromTitle(ref.title as string | null | undefined);
-        if (issueNumber) taskInfo.issueNumber = issueNumber;
-      }
-      // Extract commandMode from history metadata if available
-      const commandMode = (state.history || []).find(
-        h => h.metadata && typeof h.metadata === 'object' && 'commandMode' in h.metadata
-      )?.metadata as Record<string, string> | undefined;
-      if (commandMode?.commandMode) {
-        taskInfo.commandMode = commandMode.commandMode;
-      }
-    }
+    const history = (state.history || []).map(enrichRedisHistoryItem);
+    const taskInfo = state.issueRef
+      ? buildTaskInfoFromState(taskId, state.issueRef as Record<string, unknown>, state.history || [])
+      : null;
     return { history, taskInfo };
   } catch (e) {
     console.error('Error parsing state data:', e);
@@ -284,6 +307,9 @@ function buildTaskInfoFromJob(job: Job<JobData, JobReturnValue>, taskId: string)
     const issueNumber = (job.data as Record<string, unknown>).issueNumber as number | null | undefined
       || extractIssueNumberFromTitle(job.data.title);
     if (issueNumber) taskInfo.issueNumber = issueNumber;
+  }
+  if ((job.data as Record<string, unknown>).ultrafixMeta) {
+    taskInfo.ultrafixCycle = true;
   }
   return taskInfo;
 }

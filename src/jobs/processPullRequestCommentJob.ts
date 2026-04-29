@@ -30,7 +30,8 @@ import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
 import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
-import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
+import { continueUltrafixLoop, buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixLoopContinuation.js';
+import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
@@ -212,6 +213,24 @@ function getWebUiUrl(): string {
     return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
 }
 
+async function handleUltrafixContinuation(
+    action: UltrafixAction,
+    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
+): Promise<void> {
+    if (!params.job.data.ultrafixMeta) return;
+    const { job, stateManager, taskId, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } = params;
+    try {
+        const continuationResult = await continueUltrafixLoop({
+            owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: action,
+            ultrafixMeta: job.data.ultrafixMeta!, redisClient, correlatedLogger, correlationId,
+        });
+        correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
+        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), correlatedLogger);
+    } catch (contErr) {
+        correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
+    }
+}
+
 function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: UnprocessedComment[], taskUrl: string): string {
     const plural = unprocessedComments.length > 1 ? 's' : '';
     const commentIds = unprocessedComments.map(c => String(c.id) + '✓').join(', ');
@@ -228,21 +247,38 @@ interface PostExecutionParams {
     llm: string | null | undefined;
 }
 
+async function commitAndPush(
+    state: ProcessingState,
+    issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number },
+    llm: string | null | undefined
+) {
+    const changesSummary = state.claudeResult!.summary || state.claudeResult!.finalResult?.result || '';
+    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: issueRef.pullRequestNumber, claudeResult: state.claudeResult!, llm, authorsText: state.authorsText });
+    const commitResult = await commitChanges(state.worktreeInfo!.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: issueRef.pullRequestNumber, issueTitle: 'Follow-up changes' });
+
+    if (commitResult) {
+        const repoUrl = getRepoUrl({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
+        const githubToken = await state.octokit!.auth({ type: "installation" }) as GitHubToken;
+        await pushBranch(state.worktreeInfo!.worktreePath, state.worktreeInfo!.branchName, { repoUrl, authToken: githubToken.token });
+    }
+
+    return { commitResult, changesSummary, commitMessage };
+}
+
+async function resolveUltrafixHistoryMeta(
+    job: Job<CommentJobData>, issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number }
+): Promise<Record<string, unknown> | undefined> {
+    if (!job.data.ultrafixMeta) return undefined;
+    return buildUltrafixHistoryMeta(job.data.ultrafixMeta, await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber));
+}
+
 async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string }> {
     const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm } = params;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
 
     if (!state.claudeResult!.success) throw new Error(`Agent execution failed: ${state.claudeResult!.error || 'Unknown error'}`);
 
-    const changesSummary = state.claudeResult!.summary || state.claudeResult!.finalResult?.result || '';
-    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber, claudeResult: state.claudeResult!, llm, authorsText: state.authorsText });
-    const commitResult = await commitChanges(state.worktreeInfo!.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Follow-up changes' });
-
-    if (commitResult) {
-        const repoUrl = getRepoUrl({ repoOwner, repoName });
-        const githubToken = await state.octokit!.auth({ type: "installation" }) as GitHubToken;
-        await pushBranch(state.worktreeInfo!.worktreePath, state.worktreeInfo!.branchName, { repoUrl, authToken: githubToken.token });
-    }
+    const { commitResult, changesSummary, commitMessage } = await commitAndPush(state, { repoOwner, repoName, pullRequestNumber }, llm);
 
     const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo!.branchName });
     const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
@@ -251,26 +287,22 @@ async function handlePostExecution(params: PostExecutionParams, taskUrl: string)
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
 
     if (unprocessedReviewComments.length > 0) {
-        await markReviewCommentsProcessed(
-            unprocessedReviewComments.map(c => c.id),
-            { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger },
-        );
+        await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger });
     }
+
+    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber });
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
         historyMetadata: {
             commandMode: job.data.commandMode || 'default',
             githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
-            ...(unprocessedReviewComments.length > 0 && {
-                consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id),
-            }),
-            ...(job.data.ultrafixMeta && { ultrafixCycle: true }),
+            ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
+            ...ultrafixHistoryMeta,
         }
     });
 
     await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
-
     return { commitHash: commitResult?.commitHash };
 }
 
@@ -380,30 +412,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         taskUrl,
     );
 
-    // Ultrafix loop continuation: after a fix step, schedule the next review
-    if (job.data.ultrafixMeta) {
-        try {
-            const continuationResult = await continueUltrafixLoop({
-                owner: repoOwner,
-                repo: repoName,
-                pullRequestNumber,
-                completedAction: 'fix',
-                ultrafixMeta: job.data.ultrafixMeta,
-                redisClient,
-                correlatedLogger,
-                correlationId,
-            });
-            correlatedLogger.info(
-                { pullRequestNumber, ...continuationResult },
-                'Ultrafix loop continuation after fix',
-            );
-        } catch (contErr) {
-            correlatedLogger.error(
-                { error: (contErr as Error).message, pullRequestNumber },
-                'Ultrafix loop continuation failed after fix',
-            );
-        }
-    }
+    await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
 
     return { status: 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }

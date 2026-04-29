@@ -198,6 +198,7 @@ const TaskDetails: React.FC = () => {
           <SectionLabelHeader
             commandMode={taskData.taskInfo?.commandMode}
             score={score}
+            ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
             className="hidden lg:flex flex-1 px-4 items-center gap-3"
           />
         </div>
@@ -227,6 +228,7 @@ const TaskDetails: React.FC = () => {
             <SectionLabelHeader
               commandMode={taskData.taskInfo?.commandMode}
               score={score}
+              ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
               className="lg:hidden flex-shrink-0 px-4 py-2 border-b border-slate-200 flex items-center gap-3"
             />
             {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}

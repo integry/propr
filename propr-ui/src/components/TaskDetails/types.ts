@@ -28,6 +28,13 @@ export interface HistoryItemMetadata {
   tokenUsage?: TokenUsage;
   commandMode?: 'default' | 'review' | 'fix';
   consumedReviewCommentIds?: number[];
+  ultrafixCycle?: boolean;
+  ultrafixGoal?: number;
+  ultrafixCycleCount?: number;
+  ultrafixMaxCycles?: number;
+  ultrafixScore?: number;
+  ultrafixNextAction?: string;
+  ultrafixStopReason?: string;
 }
 
 export interface HistoryItem {
@@ -51,6 +58,7 @@ export interface TaskInfo {
   model?: string;
   llmProvider?: string;
   commandMode?: 'default' | 'review' | 'fix';
+  ultrafixCycle?: boolean;
 }
 
 export interface PromptData {
