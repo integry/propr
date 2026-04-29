@@ -431,6 +431,12 @@ async function start(): Promise<void> {
 
     // Wire up check_run hook to resume deferred ultrafix continuations when CI passes
     const contMod = await import(`${jobsBase}/ultrafixLoopContinuation.js`);
+    // Wire up check_run deps so resumeDeferredContinuation can evaluate readiness
+    contMod.setCheckRunDeps({
+      areAllChecksPassing: configManager.areAllChecksPassing,
+      getCurrentPRHead: configManager.getCurrentPRHead,
+      getCheckRunsStatus: configManager.getCheckRunsStatus,
+    });
     setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number) => {
       const log = logger.withCorrelation(generateCorrelationId());
       log.info({ owner, repo, prNumber }, '[ultrafix] check_run hook triggered, attempting to resume deferred continuation');
