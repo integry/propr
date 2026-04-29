@@ -54,9 +54,24 @@ export interface StartLoopOptions {
     reviewModel?: string;
 }
 
+export interface UltrafixReadinessResult {
+    ready: boolean;
+    reasons: string[];
+}
+
+export interface UltrafixDeferredContinuation {
+    owner: string;
+    repo: string;
+    pr: number;
+    nextAction: UltrafixAction;
+    savedAt: string;
+    reason: string;
+}
+
 // --- Constants ---
 
 const KEY_PREFIX = 'ultrafix:state';
+const DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 const DEFAULT_GOAL = 7;
 const DEFAULT_MAX_CYCLES = 5;
 const DEFAULT_PAUSE_SECONDS = 60;
@@ -65,6 +80,10 @@ const DEFAULT_PAUSE_SECONDS = 60;
 
 export function getUltrafixStateKey(owner: string, repo: string, pr: number): string {
     return `${KEY_PREFIX}:${owner}:${repo}:${pr}`;
+}
+
+export function getUltrafixDeferredKey(owner: string, repo: string, pr: number): string {
+    return `${DEFERRED_KEY_PREFIX}:${owner}:${repo}:${pr}`;
 }
 
 // --- State defaults ---
@@ -191,4 +210,143 @@ export async function stopLoop(redis: Redis, owner: string, repo: string, pr: nu
     state.active = false;
     await saveState(redis, state);
     return state;
+}
+
+// --- Readiness helpers (side-effect free, testable independently) ---
+
+/**
+ * Check whether the configured cooldown has elapsed since the last action.
+ */
+export function isCooldownElapsed(state: UltrafixLoopState, nowMs?: number): boolean {
+    if (!state.lastActionTimestamp) return true;
+    const elapsed = (nowMs ?? Date.now()) - new Date(state.lastActionTimestamp).getTime();
+    return elapsed >= state.pauseSeconds * 1000;
+}
+
+/**
+ * Check whether there are follow-up jobs (waiting, active, or delayed)
+ * for the same PR in the issue queue.
+ *
+ * Only considers jobs with `ultrafixMeta` (i.e. ultrafix implementation
+ * follow-up work), not arbitrary PR jobs. This avoids false positives from
+ * unrelated issue-queue work on the same PR.
+ *
+ * `getQueueJobs` is injected so this function stays side-effect free in tests.
+ */
+export async function hasFollowUpJobsForPR(
+    owner: string,
+    repo: string,
+    pr: number,
+    getQueueJobs: () => Promise<Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>>,
+): Promise<boolean> {
+    const jobs = await getQueueJobs();
+    return jobs.some(j =>
+        j.data.repoOwner === owner &&
+        j.data.repoName === repo &&
+        j.data.pullRequestNumber === pr &&
+        j.data.ultrafixMeta != null,
+    );
+}
+
+/**
+ * Check whether there are pending batched PR comments in Redis
+ * that haven't been consumed yet.
+ */
+export async function hasPendingBatchedComments(
+    redis: Redis,
+    pendingCommentsKey: string,
+): Promise<boolean> {
+    const len = await redis.llen(pendingCommentsKey);
+    return len > 0;
+}
+
+/**
+ * Aggregate readiness check. Returns { ready, reasons } where reasons
+ * lists every blocking condition that is currently true.
+ *
+ * Note: cooldown is NOT checked here — it is enforced via the enqueue delay
+ * in `enqueueNextStep()`. Including it as a readiness gate would cause
+ * double-application of the pause (once as a defer, then again as a delay).
+ *
+ * Side-effect free: callers supply the external check results.
+ */
+export function checkReadiness(opts: {
+    allChecksPassing: boolean;
+    hasFollowUpJobs: boolean;
+    hasPendingComments: boolean;
+}): UltrafixReadinessResult {
+    const reasons: string[] = [];
+
+    if (!opts.allChecksPassing) {
+        reasons.push('checks_not_passing');
+    }
+    if (opts.hasFollowUpJobs) {
+        reasons.push('follow_up_jobs_active');
+    }
+    if (opts.hasPendingComments) {
+        reasons.push('pending_comments_exist');
+    }
+
+    return { ready: reasons.length === 0, reasons };
+}
+
+// --- Deferred continuation persistence ---
+
+export async function saveDeferredContinuation(
+    redis: Redis,
+    deferred: UltrafixDeferredContinuation,
+): Promise<void> {
+    const key = getUltrafixDeferredKey(deferred.owner, deferred.repo, deferred.pr);
+    await redis.set(key, JSON.stringify(deferred));
+}
+
+export async function loadDeferredContinuation(
+    redis: Redis,
+    owner: string,
+    repo: string,
+    pr: number,
+): Promise<UltrafixDeferredContinuation | null> {
+    const key = getUltrafixDeferredKey(owner, repo, pr);
+    const raw = await redis.get(key);
+    if (!raw) return null;
+    return JSON.parse(raw) as UltrafixDeferredContinuation;
+}
+
+export async function clearDeferredContinuation(
+    redis: Redis,
+    owner: string,
+    repo: string,
+    pr: number,
+): Promise<void> {
+    const key = getUltrafixDeferredKey(owner, repo, pr);
+    await redis.del(key);
+}
+
+/**
+ * List all deferred continuation keys currently in Redis.
+ * Uses SCAN to avoid blocking on large keyspaces.
+ */
+export async function listDeferredContinuationKeys(redis: Redis): Promise<string[]> {
+    const keys: string[] = [];
+    let cursor = '0';
+    do {
+        const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', `${DEFERRED_KEY_PREFIX}:*`, 'COUNT', '100');
+        cursor = nextCursor;
+        keys.push(...batch);
+    } while (cursor !== '0');
+    return keys;
+}
+
+/**
+ * Parse owner/repo/pr from a deferred continuation Redis key.
+ */
+export function parseDeferredKey(key: string): { owner: string; repo: string; pr: number } | null {
+    const prefix = `${DEFERRED_KEY_PREFIX}:`;
+    if (!key.startsWith(prefix)) return null;
+    const parts = key.slice(prefix.length).split(':');
+    if (parts.length < 3) return null;
+    const pr = parseInt(parts[parts.length - 1], 10);
+    if (isNaN(pr)) return null;
+    // GitHub owner/repo cannot contain colons, so simple split is sufficient
+    return { owner: parts[0], repo: parts[1], pr };
 }

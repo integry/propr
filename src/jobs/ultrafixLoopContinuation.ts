@@ -17,10 +17,19 @@ import {
 } from '@propr/core';
 import type { UltrafixCommandMeta } from '@propr/core';
 import {
+    getPendingPrCommentsKey,
+} from '@propr/core';
+import {
     loadState,
+    loadDeferredContinuation,
     recordAction,
     clearState,
     determineNextAction,
+    hasFollowUpJobsForPR,
+    hasPendingBatchedComments,
+    checkReadiness,
+    saveDeferredContinuation,
+    clearDeferredContinuation,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
@@ -37,12 +46,29 @@ export interface UltrafixContinuationParams {
     correlationId: string;
 }
 
+// --- Dependency injection for check_run status ---
+
+type ChecksPassingFn = (owner: string, repo: string, ref: string) => Promise<boolean>;
+type GetPRHeadFn = (owner: string, repo: string, pr: number) => Promise<string | null>;
+
+let _areAllChecksPassing: ChecksPassingFn | null = null;
+let _getCurrentPRHead: GetPRHeadFn | null = null;
+
+export function setCheckRunDeps(deps: {
+    areAllChecksPassing: ChecksPassingFn;
+    getCurrentPRHead: GetPRHeadFn;
+}): void {
+    _areAllChecksPassing = deps.areAllChecksPassing;
+    _getCurrentPRHead = deps.getCurrentPRHead;
+}
+
 export interface ContinuationResult {
     continued: boolean;
     reason: string;
     nextAction?: UltrafixAction;
     score?: number | null;
     cycleCount?: number;
+    deferred?: boolean;
 }
 
 /**
@@ -242,7 +268,41 @@ export async function continueUltrafixLoop(
         };
     }
 
-    // 7. Enqueue the next step with configured pause
+    // 7. Readiness gating — verify all conditions before enqueueing
+    const readiness = await evaluateReadiness(params);
+    correlatedLogger.info(
+        { pullRequestNumber, ready: readiness.ready, reasons: readiness.reasons },
+        'Ultrafix loop: readiness check',
+    );
+
+    if (!readiness.ready) {
+        // Defer the continuation — a check_run event can wake it later
+        await saveDeferredContinuation(redisClient, {
+            owner,
+            repo,
+            pr: pullRequestNumber,
+            nextAction: decision.action,
+            savedAt: new Date().toISOString(),
+            reason: readiness.reasons.join(', '),
+        });
+        correlatedLogger.info(
+            { pullRequestNumber, nextAction: decision.action, blockingReasons: readiness.reasons },
+            'Ultrafix loop: deferred continuation — waiting for readiness',
+        );
+        return {
+            continued: false,
+            reason: `deferred: ${readiness.reasons.join(', ')}`,
+            nextAction: decision.action,
+            score: latestScore,
+            cycleCount: updatedState.cycleCount,
+            deferred: true,
+        };
+    }
+
+    // Clear any stale deferred record before proceeding
+    await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
+
+    // 8. Enqueue the next step with configured pause
     const delayMs = (updatedState.pauseSeconds || 60) * 1000;
     await enqueueNextStep(params, decision.action, delayMs);
 
@@ -253,4 +313,139 @@ export async function continueUltrafixLoop(
         score: latestScore,
         cycleCount: updatedState.cycleCount,
     };
+}
+
+/**
+ * Resume a deferred ultrafix continuation. Called when a check_run event
+ * indicates that checks may now be green for a PR with a waiting loop.
+ *
+ * Re-evaluates readiness. If ready, enqueues the next step and clears the
+ * deferred record. If still not ready, leaves the deferred record in place.
+ */
+export async function resumeDeferredContinuation(
+    prId: { owner: string; repo: string; pr: number },
+    redisClient: Redis,
+    correlatedLogger: Logger,
+): Promise<ContinuationResult> {
+    const { owner, repo, pr } = prId;
+    const deferred = await loadDeferredContinuation(redisClient, owner, repo, pr);
+    if (!deferred) {
+        return { continued: false, reason: 'no_deferred_continuation' };
+    }
+
+    const state = await loadState(redisClient, owner, repo, pr);
+    if (!state || !state.active) {
+        await clearDeferredContinuation(redisClient, owner, repo, pr);
+        return { continued: false, reason: 'no_active_loop' };
+    }
+
+    const correlationId = generateCorrelationId();
+    const params: UltrafixContinuationParams = {
+        owner,
+        repo,
+        pullRequestNumber: pr,
+        completedAction: state.lastAction ?? 'review',
+        ultrafixMeta: undefined,
+        redisClient,
+        correlatedLogger,
+        correlationId,
+    };
+
+    // Re-evaluate readiness
+    const readiness = await evaluateReadiness(params);
+    correlatedLogger.info(
+        { pr, ready: readiness.ready, reasons: readiness.reasons },
+        'Ultrafix deferred resume: readiness re-check',
+    );
+
+    if (!readiness.ready) {
+        return {
+            continued: false,
+            reason: `still_deferred: ${readiness.reasons.join(', ')}`,
+            deferred: true,
+        };
+    }
+
+    // Ready — enqueue and clear deferred record
+    await clearDeferredContinuation(redisClient, owner, repo, pr);
+    const delayMs = (state.pauseSeconds || 60) * 1000;
+    await enqueueNextStep(params, deferred.nextAction, delayMs);
+
+    correlatedLogger.info(
+        { pr, nextAction: deferred.nextAction },
+        'Ultrafix deferred resume: enqueued next step',
+    );
+
+    return {
+        continued: true,
+        reason: 'deferred_resumed',
+        nextAction: deferred.nextAction,
+        cycleCount: state.cycleCount,
+    };
+}
+
+/**
+ * Evaluate all readiness conditions for the ultrafix loop.
+ * Gathers external state and delegates to the pure `checkReadiness` helper.
+ */
+async function evaluateReadiness(
+    params: UltrafixContinuationParams,
+): Promise<import('./ultrafixOrchestrationService.js').UltrafixReadinessResult> {
+    const { owner, repo, pullRequestNumber, redisClient, correlatedLogger } = params;
+
+    // 1. CI checks passing (fail-closed: assume NOT passing if deps not wired or on error)
+    let allChecksPassing = false;
+    if (_areAllChecksPassing && _getCurrentPRHead) {
+        try {
+            const headSha = await _getCurrentPRHead(owner, repo, pullRequestNumber);
+            if (headSha) {
+                allChecksPassing = await _areAllChecksPassing(owner, repo, headSha);
+            }
+        } catch (err) {
+            correlatedLogger.warn(
+                { error: (err as Error).message, pullRequestNumber },
+                'Ultrafix readiness: failed to check CI status, assuming NOT passing (fail-closed)',
+            );
+        }
+    } else {
+        correlatedLogger.warn(
+            { pullRequestNumber },
+            'Ultrafix readiness: check_run deps not wired, assuming checks NOT passing',
+        );
+    }
+
+    // 2. Follow-up ultrafix jobs in queue
+    let followUpJobsExist = false;
+    try {
+        followUpJobsExist = await hasFollowUpJobsForPR(
+            owner, repo, pullRequestNumber,
+            async () => {
+                const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']);
+                return jobs as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>;
+            },
+        );
+    } catch (err) {
+        correlatedLogger.warn(
+            { error: (err as Error).message, pullRequestNumber },
+            'Ultrafix readiness: failed to inspect queue, assuming no conflicts',
+        );
+    }
+
+    // 3. Pending batched comments in Redis
+    let pendingComments = false;
+    try {
+        const pendingKey = getPendingPrCommentsKey(owner, repo, pullRequestNumber);
+        pendingComments = await hasPendingBatchedComments(redisClient, pendingKey);
+    } catch (err) {
+        correlatedLogger.warn(
+            { error: (err as Error).message, pullRequestNumber },
+            'Ultrafix readiness: failed to check pending comments, assuming none',
+        );
+    }
+
+    return checkReadiness({
+        allChecksPassing,
+        hasFollowUpJobs: followUpJobsExist,
+        hasPendingComments: pendingComments,
+    });
 }
