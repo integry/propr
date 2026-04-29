@@ -246,6 +246,23 @@ async function getAllCustomLabels(): Promise<string[]> {
 }
 
 /**
+ * Resolves a full github label (e.g., "llm-gemini-g3-flash-preview") to an agent alias and model
+ * by matching against modelDefinitions' githubLabel field.
+ */
+function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
+    for (const modelInfo of ALL_MODELS) {
+        if (modelInfo.githubLabel.toLowerCase() === fullLabel) {
+            const agentType = getAgentTypeFromModel(modelInfo.id);
+            const agent = agents.find(a => a.config.type === agentType);
+            if (agent) {
+                return { agentAlias: agent.config.alias, model: modelInfo.id };
+            }
+        }
+    }
+    return null;
+}
+
+/**
  * Resolves an LLM label (e.g., "gemini-pro", "claude-opus", "codex") to an agent alias and model.
  *
  * Resolution order:
@@ -280,18 +297,9 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
 
     // 1. Check if label matches a githubLabel from modelDefinitions exactly
     // This ensures labels like "gemini-g3-flash-preview" correctly resolve to "gemini-3-flash-preview"
-    for (const modelInfo of ALL_MODELS) {
-        if (modelInfo.githubLabel.toLowerCase() === fullLabel) {
-            // Found exact match - determine the agent from the model
-            const agentType = getAgentTypeFromModel(modelInfo.id);
-            const agent = agents.find(a => a.config.type === agentType);
-            if (agent) {
-                return {
-                    agentAlias: agent.config.alias,
-                    model: modelInfo.id
-                };
-            }
-        }
+    const githubLabelMatch = resolveByGithubLabel(fullLabel, agents);
+    if (githubLabelMatch) {
+        return githubLabelMatch;
     }
 
     // 2. Check if label matches an agent alias exactly (use default model)
