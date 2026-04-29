@@ -219,15 +219,15 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
     }
     case "ultrafix_max_cycles": {
       const parsed = parseInt(value, 10);
-      if (isNaN(parsed) || parsed < 1 || parsed > 50) {
-        throw new Error(`Invalid value for ${key}: must be a number between 1 and 50`);
+      if (isNaN(parsed) || parsed < 1) {
+        throw new Error(`Invalid value for ${key}: must be a positive integer`);
       }
       return parsed;
     }
     case "ultrafix_pause_seconds": {
       const parsed = parseInt(value, 10);
-      if (isNaN(parsed) || parsed < 0 || parsed > 600) {
-        throw new Error(`Invalid value for ${key}: must be a number between 0 and 600`);
+      if (isNaN(parsed) || parsed < 0) {
+        throw new Error(`Invalid value for ${key}: must be a non-negative integer`);
       }
       return parsed;
     }

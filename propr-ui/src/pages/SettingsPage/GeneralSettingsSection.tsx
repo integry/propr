@@ -131,12 +131,11 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
                 onChange={onSettingChange}
                 onBlur={onBlur}
                 min={1}
-                max={50}
                 placeholder="5"
                 className="max-w-[80px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
               />
               <p className="text-xs text-gray-500">
-                Maximum number of fix-review cycles before stopping (1-50).
+                Maximum number of fix-review cycles before stopping (positive integer).
               </p>
             </div>
 
@@ -152,12 +151,11 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
                 onChange={onSettingChange}
                 onBlur={onBlur}
                 min={0}
-                max={600}
                 placeholder="60"
                 className="max-w-[80px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
               />
               <p className="text-xs text-gray-500">
-                Seconds to wait between each ultrafix cycle (0-600).
+                Seconds to wait between each ultrafix cycle (non-negative integer).
               </p>
             </div>
           </div>

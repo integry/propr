@@ -370,7 +370,7 @@ describe('buildCommandMeta', () => {
         assert.strictEqual((meta as { instructions: string }).instructions, 'Focus on the auth module');
     });
 
-    test('ultrafix ignores invalid numeric values (fields remain undefined)', () => {
+    test('ultrafix rejects invalid numeric values with warnings (fields remain undefined)', () => {
         const parsed = parseSlashCommand('/ultrafix goal=abc max=-1 pause=xyz')!;
         const meta = buildCommandMeta(parsed);
         assert.strictEqual(meta.mode, 'ultrafix');
@@ -378,6 +378,10 @@ describe('buildCommandMeta', () => {
         assert.strictEqual((meta as { goal?: number }).goal, undefined);
         assert.strictEqual((meta as { maxCycles?: number }).maxCycles, undefined);
         assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, undefined);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('goal'));
+        assert.ok(meta.warning!.includes('max'));
+        assert.ok(meta.warning!.includes('pause'));
     });
 
     test('ultrafix warns on unknown keys', () => {
@@ -408,16 +412,19 @@ describe('buildCommandMeta', () => {
         assert.strictEqual((meta as { goal: number }).goal, 10);
     });
 
-    test('ultrafix goal=0 is rejected (must be positive)', () => {
+    test('ultrafix goal=0 is rejected with warning (must be positive)', () => {
         const parsed = parseSlashCommand('/ultrafix goal=0')!;
         const meta = buildCommandMeta(parsed);
         assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.ok('warning' in meta && meta.warning);
     });
 
-    test('ultrafix goal above 10 is accepted by parser (validation is downstream)', () => {
+    test('ultrafix goal above 10 is rejected by parser with warning', () => {
         const parsed = parseSlashCommand('/ultrafix goal=11')!;
         const meta = buildCommandMeta(parsed);
-        assert.strictEqual((meta as { goal: number }).goal, 11);
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('goal'));
     });
 
     test('ultrafix max at lower boundary (1) is accepted', () => {
@@ -426,16 +433,18 @@ describe('buildCommandMeta', () => {
         assert.strictEqual((meta as { maxCycles: number }).maxCycles, 1);
     });
 
-    test('ultrafix max=0 is rejected (must be positive)', () => {
+    test('ultrafix max=0 is rejected with warning (must be positive)', () => {
         const parsed = parseSlashCommand('/ultrafix max=0')!;
         const meta = buildCommandMeta(parsed);
         assert.strictEqual((meta as { maxCycles?: number }).maxCycles, undefined);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('max'));
     });
 
-    test('ultrafix large max is accepted by parser (validation is downstream)', () => {
-        const parsed = parseSlashCommand('/ultrafix max=51')!;
+    test('ultrafix large max is accepted by parser (no upper limit)', () => {
+        const parsed = parseSlashCommand('/ultrafix max=9999')!;
         const meta = buildCommandMeta(parsed);
-        assert.strictEqual((meta as { maxCycles: number }).maxCycles, 51);
+        assert.strictEqual((meta as { maxCycles: number }).maxCycles, 9999);
     });
 
     test('ultrafix pause=0 is accepted (no pause)', () => {
@@ -444,19 +453,59 @@ describe('buildCommandMeta', () => {
         assert.strictEqual((meta as { pauseSeconds: number }).pauseSeconds, 0);
     });
 
-    test('ultrafix negative pause is rejected', () => {
+    test('ultrafix negative pause is rejected with warning', () => {
         const parsed = parseSlashCommand('/ultrafix pause=-1')!;
         const meta = buildCommandMeta(parsed);
         assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, undefined);
+        assert.ok('warning' in meta && meta.warning);
     });
 
-    test('ultrafix combines positional goal with named args', () => {
-        // When positional goal is provided with named max, both should work
+    test('ultrafix warns when mixing positional goal with named args', () => {
         const parsed = parseSlashCommand('/ultrafix 8 max=3')!;
         const meta = buildCommandMeta(parsed);
         assert.strictEqual(meta.mode, 'ultrafix');
-        // The positional arg is treated as goal if it's a bare number
+        // Named args override: positional goal is set but warning is emitted
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, 3);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('Mixed positional'));
+    });
+
+    test('ultrafix warns on extra positional arguments', () => {
+        const parsed = parseSlashCommand('/ultrafix 8 9')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
         assert.strictEqual((meta as { goal?: number }).goal, 8);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes("Extra argument '9'"));
+    });
+
+    test('ultrafix warns on non-numeric positional argument', () => {
+        const parsed = parseSlashCommand('/ultrafix foo')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('foo'));
+    });
+
+    test('ultrafix rejects decimal goal (must be integer)', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=7.5')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.ok('warning' in meta && meta.warning);
+    });
+
+    test('ultrafix rejects decimal pause (must be integer)', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=30.5')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, undefined);
+        assert.ok('warning' in meta && meta.warning);
+    });
+
+    test('ultrafix large pause is accepted by parser (no upper limit)', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=86400')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { pauseSeconds: number }).pauseSeconds, 86400);
     });
 });
 

@@ -168,36 +168,39 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
 
 const ULTRAFIX_KNOWN_KEYS = new Set(['goal', 'max', 'pause', 'model']);
 
-/** Parse a string as a finite positive number, or return undefined. */
-function parsePositiveNumber(value: string, allowZero = false): number | undefined {
+/** Parse a string as a positive integer, or return undefined. */
+function parsePositiveInt(value: string, allowZero = false): number | undefined {
     const n = Number(value);
-    if (Number.isNaN(n) || !Number.isFinite(n)) return undefined;
+    if (Number.isNaN(n) || !Number.isFinite(n) || !Number.isInteger(n)) return undefined;
     return allowZero ? (n >= 0 ? n : undefined) : (n > 0 ? n : undefined);
 }
 
-/** Apply a single key=value pair to the ultrafix meta object. */
-function applyUltrafixKeyValue(meta: UltrafixCommandMeta, key: string, value: string): boolean {
+/** Apply a single key=value pair to the ultrafix meta object. Returns an error string if invalid, or undefined on success. */
+function applyUltrafixKeyValue(meta: UltrafixCommandMeta, key: string, value: string): string | undefined {
     switch (key) {
         case 'goal': {
-            const n = parsePositiveNumber(value);
-            if (n !== undefined) meta.goal = n;
-            return true;
+            const n = parsePositiveInt(value);
+            if (n === undefined || n < 1 || n > 10) return `goal must be an integer between 1 and 10, got '${value}'`;
+            meta.goal = n;
+            return undefined;
         }
         case 'max': {
-            const n = parsePositiveNumber(value);
-            if (n !== undefined) meta.maxCycles = n;
-            return true;
+            const n = parsePositiveInt(value);
+            if (n === undefined || n < 1) return `max must be a positive integer, got '${value}'`;
+            meta.maxCycles = n;
+            return undefined;
         }
         case 'pause': {
-            const n = parsePositiveNumber(value, true);
-            if (n !== undefined) meta.pauseSeconds = n;
-            return true;
+            const n = parsePositiveInt(value, true);
+            if (n === undefined) return `pause must be a non-negative integer, got '${value}'`;
+            meta.pauseSeconds = n;
+            return undefined;
         }
         case 'model':
             meta.reviewModel = normalizeModelLabel(value);
-            return true;
+            return undefined;
         default:
-            return false;
+            return undefined;
     }
 }
 
@@ -214,29 +217,44 @@ function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
         instructions: parsed.instructions,
     };
 
-    const unknownKeys: string[] = [];
+    const warnings: string[] = [];
     let hasNamedArgs = false;
+    let hasPositionalGoal = false;
 
-    for (const arg of parsed.args) {
+    for (let i = 0; i < parsed.args.length; i++) {
+        const arg = parsed.args[i];
         const eqIdx = arg.indexOf('=');
         if (eqIdx !== -1) {
             const key = arg.substring(0, eqIdx).toLowerCase();
             const value = arg.substring(eqIdx + 1);
+
+            if (hasPositionalGoal) {
+                warnings.push('Mixed positional and named arguments; positional goal was overridden by named arguments');
+                hasPositionalGoal = false;
+            }
             hasNamedArgs = true;
 
             if (ULTRAFIX_KNOWN_KEYS.has(key)) {
-                applyUltrafixKeyValue(meta, key, value);
+                const err = applyUltrafixKeyValue(meta, key, value);
+                if (err) warnings.push(err);
             } else {
-                unknownKeys.push(key);
+                warnings.push(`Unknown key '${key}' ignored`);
             }
-        } else if (!hasNamedArgs && parsed.args.indexOf(arg) === 0) {
-            const n = parsePositiveNumber(arg);
-            if (n !== undefined) meta.goal = n;
+        } else if (!hasNamedArgs && i === 0) {
+            const n = parsePositiveInt(arg);
+            if (n === undefined || n < 1 || n > 10) {
+                warnings.push(`Invalid positional goal '${arg}'; must be an integer between 1 and 10`);
+            } else {
+                meta.goal = n;
+                hasPositionalGoal = true;
+            }
+        } else {
+            warnings.push(`Extra argument '${arg}' ignored`);
         }
     }
 
-    if (unknownKeys.length > 0) {
-        meta.warning = `Unknown ultrafix keys ignored: ${unknownKeys.join(', ')}`;
+    if (warnings.length > 0) {
+        meta.warning = warnings.join('; ');
     }
 
     return meta;

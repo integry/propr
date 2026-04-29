@@ -84,7 +84,7 @@ export async function saveUltrafixRatingGoal(goal: number): Promise<boolean> {
 
 export async function loadUltrafixMaxCycles(): Promise<number> {
     const cycles = await getConfig<number>('ultrafix_max_cycles', DEFAULT_ULTRAFIX_MAX_CYCLES);
-    if (typeof cycles !== 'number' || isNaN(cycles) || cycles < 1 || cycles > 50) {
+    if (typeof cycles !== 'number' || isNaN(cycles) || !Number.isInteger(cycles) || cycles < 1) {
         logger.warn({ stored_value: cycles }, 'Invalid ultrafix_max_cycles in DB, using default');
         return DEFAULT_ULTRAFIX_MAX_CYCLES;
     }
@@ -94,8 +94,8 @@ export async function loadUltrafixMaxCycles(): Promise<number> {
 
 export async function saveUltrafixMaxCycles(cycles: number): Promise<boolean> {
     const value = Math.floor(cycles);
-    if (isNaN(value) || value < 1 || value > 50) {
-        throw new Error('ultrafix_max_cycles must be an integer between 1 and 50');
+    if (isNaN(value) || value < 1) {
+        throw new Error('ultrafix_max_cycles must be a positive integer');
     }
     await saveConfig('ultrafix_max_cycles', value);
     logger.info({ ultrafix_max_cycles: value }, 'Successfully saved ultrafix max cycles');
@@ -104,7 +104,7 @@ export async function saveUltrafixMaxCycles(cycles: number): Promise<boolean> {
 
 export async function loadUltrafixPauseSeconds(): Promise<number> {
     const pause = await getConfig<number>('ultrafix_pause_seconds', DEFAULT_ULTRAFIX_PAUSE_SECONDS);
-    if (typeof pause !== 'number' || isNaN(pause) || pause < 0 || pause > 600) {
+    if (typeof pause !== 'number' || isNaN(pause) || !Number.isInteger(pause) || pause < 0) {
         logger.warn({ stored_value: pause }, 'Invalid ultrafix_pause_seconds in DB, using default');
         return DEFAULT_ULTRAFIX_PAUSE_SECONDS;
     }
@@ -114,8 +114,8 @@ export async function loadUltrafixPauseSeconds(): Promise<number> {
 
 export async function saveUltrafixPauseSeconds(seconds: number): Promise<boolean> {
     const value = Math.floor(seconds);
-    if (isNaN(value) || value < 0 || value > 600) {
-        throw new Error('ultrafix_pause_seconds must be an integer between 0 and 600');
+    if (isNaN(value) || value < 0) {
+        throw new Error('ultrafix_pause_seconds must be a non-negative integer');
     }
     await saveConfig('ultrafix_pause_seconds', value);
     logger.info({ ultrafix_pause_seconds: value }, 'Successfully saved ultrafix pause seconds');

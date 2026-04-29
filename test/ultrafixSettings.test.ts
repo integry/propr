@@ -110,20 +110,16 @@ describe('parseSettingValue for ultrafix_max_cycles', () => {
     assert.strictEqual(parseSettingValue('ultrafix_max_cycles', '1'), 1);
   });
 
-  test('should accept maximum value 50', () => {
-    assert.strictEqual(parseSettingValue('ultrafix_max_cycles', '50'), 50);
+  test('should accept large values (no upper limit)', () => {
+    assert.strictEqual(parseSettingValue('ultrafix_max_cycles', '10000'), 10000);
   });
 
   test('should reject value 0', () => {
-    assert.throws(() => parseSettingValue('ultrafix_max_cycles', '0'), /must be a number between 1 and 50/);
-  });
-
-  test('should reject value 51', () => {
-    assert.throws(() => parseSettingValue('ultrafix_max_cycles', '51'), /must be a number between 1 and 50/);
+    assert.throws(() => parseSettingValue('ultrafix_max_cycles', '0'), /must be a positive integer/);
   });
 
   test('should reject non-numeric value', () => {
-    assert.throws(() => parseSettingValue('ultrafix_max_cycles', 'xyz'), /must be a number between 1 and 50/);
+    assert.throws(() => parseSettingValue('ultrafix_max_cycles', 'xyz'), /must be a positive integer/);
   });
 });
 
@@ -136,19 +132,15 @@ describe('parseSettingValue for ultrafix_pause_seconds', () => {
     assert.strictEqual(parseSettingValue('ultrafix_pause_seconds', '0'), 0);
   });
 
-  test('should accept maximum value 600', () => {
-    assert.strictEqual(parseSettingValue('ultrafix_pause_seconds', '600'), 600);
+  test('should accept large values (no upper limit)', () => {
+    assert.strictEqual(parseSettingValue('ultrafix_pause_seconds', '86400'), 86400);
   });
 
   test('should reject value -1', () => {
-    assert.throws(() => parseSettingValue('ultrafix_pause_seconds', '-1'), /must be a number between 0 and 600/);
-  });
-
-  test('should reject value 601', () => {
-    assert.throws(() => parseSettingValue('ultrafix_pause_seconds', '601'), /must be a number between 0 and 600/);
+    assert.throws(() => parseSettingValue('ultrafix_pause_seconds', '-1'), /must be a non-negative integer/);
   });
 
   test('should reject non-numeric value', () => {
-    assert.throws(() => parseSettingValue('ultrafix_pause_seconds', 'abc'), /must be a number between 0 and 600/);
+    assert.throws(() => parseSettingValue('ultrafix_pause_seconds', 'abc'), /must be a non-negative integer/);
   });
 });

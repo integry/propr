@@ -356,8 +356,34 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         { repoOwner: owner, repoName: repo, pullRequestNumber: prNumber, redisClient, correlatedLogger },
     );
 
-    // 4. Persist ultrafix state in Redis before enqueueing the first step
-    const { initialAction } = await deps.startLoop(redisClient, {
+    // 4. Add `ultrafix` label to the PR
+    const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+    const hasUltrafixLabel = prData.prLabels.some(l => l.name === 'ultrafix');
+    if (!hasUltrafixLabel) {
+        await safeUpdateLabels(
+            { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+            [],
+            ['ultrafix'],
+        );
+    }
+
+    // 5. Determine the initial action based on pending review state
+    const initialAction: 'review' | 'fix' = hasPendingReview ? 'fix' : 'review';
+
+    // 6. Post a circuit-breaker comment
+    await withRetry(
+        () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner,
+            repo,
+            issue_number: prNumber,
+            body: `🔄 **Ultrafix loop started** (goal: ${effectiveGoal}/10, max cycles: ${effectiveMaxCycles})\n\nFirst action: \`/${initialAction}\`\n\n> 💡 **Tip:** Remove the \`ultrafix\` label from this PR to stop further ultrafix cycles.`,
+        }),
+        { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
+        `post_ultrafix_comment_${owner}_${repo}_${prNumber}`
+    );
+
+    // 7. Persist ultrafix state in Redis after label + comment are committed
+    await deps.startLoop(redisClient, {
         owner,
         repo,
         pr: prNumber,
@@ -372,35 +398,12 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         `/ultrafix initialized, first action: ${initialAction}`,
     );
 
-    // 5. Add `ultrafix` label to the PR
-    const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-    const hasUltrafixLabel = prData.prLabels.some(l => l.name === 'ultrafix');
-    if (!hasUltrafixLabel) {
-        await safeUpdateLabels(
-            { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-            [],
-            ['ultrafix'],
-        );
-    }
-
-    // 6. Post a circuit-breaker comment
-    await withRetry(
-        () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner,
-            repo,
-            issue_number: prNumber,
-            body: `🔄 **Ultrafix loop started** (goal: ${effectiveGoal}/10, max cycles: ${effectiveMaxCycles})\n\nFirst action: \`/${initialAction}\`\n\n> 💡 **Tip:** Remove the \`ultrafix\` label from this PR to stop further ultrafix cycles.`,
-        }),
-        { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
-        `post_ultrafix_comment_${owner}_${repo}_${prNumber}`
-    );
-
-    // 7. Build a command meta for the first action (review or fix), carrying ultrafix metadata
+    // 9. Build a command meta for the first action (review or fix), carrying ultrafix metadata
     const firstActionMeta: CommandMeta = initialAction === 'review'
         ? { mode: 'review', models: effectiveReviewModel ? [effectiveReviewModel] : [], instructions: commandMeta.instructions }
         : { mode: 'fix', instructions: commandMeta.instructions };
 
-    // 8. Enqueue the first step with ultrafix metadata
+    // 10. Enqueue the first step with ultrafix metadata
     await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
         payload,
         redisClient,

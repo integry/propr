@@ -170,13 +170,13 @@ export function extractSettingSaves(fields: SettingFields): { error?: string; sa
     saves.push(configManager.saveUltrafixRatingGoal(v));
   }
   if (fields.ultrafix_max_cycles !== undefined) {
-    const v = validateIntRange(fields.ultrafix_max_cycles, 1, 50);
-    if (v === null) return { error: 'ultrafix_max_cycles must be a number between 1 and 50', saves: [] };
+    const v = parseInt(String(fields.ultrafix_max_cycles), 10);
+    if (isNaN(v) || v < 1) return { error: 'ultrafix_max_cycles must be a positive integer', saves: [] };
     saves.push(configManager.saveUltrafixMaxCycles(v));
   }
   if (fields.ultrafix_pause_seconds !== undefined) {
-    const v = validateIntRange(fields.ultrafix_pause_seconds, 0, 600);
-    if (v === null) return { error: 'ultrafix_pause_seconds must be a number between 0 and 600', saves: [] };
+    const v = parseInt(String(fields.ultrafix_pause_seconds), 10);
+    if (isNaN(v) || v < 0) return { error: 'ultrafix_pause_seconds must be a non-negative integer', saves: [] };
     saves.push(configManager.saveUltrafixPauseSeconds(v));
   }
   return { saves };
