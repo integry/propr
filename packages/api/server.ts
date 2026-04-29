@@ -42,8 +42,15 @@ import {
   processDetectedIssue as processDetectedIssueBase,
   handleCommentDeleted,
   handleCommentEdited,
-  processCommentEvent
+  processCommentEvent,
+  setUltrafixDeps,
+  loadUltrafixRatingGoal,
+  loadUltrafixMaxCycles,
+  loadUltrafixPauseSeconds,
+  loadPrReviewModel
 } from '@propr/core';
+import { startLoop, clearState } from '../../src/jobs/ultrafixOrchestrationService.js';
+import { getPendingReviewState } from '../../src/jobs/reviewCommentGatherer.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
@@ -405,6 +412,19 @@ async function start(): Promise<void> {
 
     try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+
+    // Wire up ultrafix dependencies for /ultrafix slash command support
+    setUltrafixDeps({
+      loadUltrafixRatingGoal,
+      loadUltrafixMaxCycles,
+      loadUltrafixPauseSeconds,
+      loadPrReviewModel,
+      startLoop,
+      clearState,
+      getPendingReviewState,
+    });
+    console.log('[ultrafix] Ultrafix dependencies initialized');
+
     try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
 
     // Use httpServer.listen instead of app.listen for Socket.IO support
