@@ -203,16 +203,30 @@ export async function handleCheckRunEvent(
     correlationId: string
 ): Promise<void> {
     const log = logger.withCorrelation(correlationId);
+    const [owner, repoName] = payload.repository.full_name.split('/');
+
+    log.debug({
+        owner,
+        repoName,
+        action: payload.action,
+        conclusion: payload.check_run.conclusion,
+        checkRunName: payload.check_run.name,
+        prCount: payload.check_run.pull_requests?.length ?? 0,
+    }, 'check_run event received');
 
     if (payload.action !== 'completed') return;
 
     const conclusion = payload.check_run.conclusion;
-    if (conclusion !== 'success' && conclusion !== 'skipped') return;
+    if (conclusion !== 'success' && conclusion !== 'skipped') {
+        log.debug({ owner, repoName, conclusion }, 'check_run skipped: not success/skipped');
+        return;
+    }
 
     const pullRequests = payload.check_run.pull_requests;
-    if (!pullRequests || pullRequests.length === 0) return;
-
-    const [owner, repoName] = payload.repository.full_name.split('/');
+    if (!pullRequests || pullRequests.length === 0) {
+        log.debug({ owner, repoName }, 'check_run skipped: no associated PRs');
+        return;
+    }
 
     for (const pr of pullRequests) {
         const prNumber = pr.number;
