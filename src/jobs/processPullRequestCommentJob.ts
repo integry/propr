@@ -30,6 +30,7 @@ import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
 import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
+import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
@@ -264,6 +265,7 @@ async function handlePostExecution(params: PostExecutionParams, taskUrl: string)
             ...(unprocessedReviewComments.length > 0 && {
                 consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id),
             }),
+            ...(job.data.ultrafixMeta && { ultrafixCycle: true }),
         }
     });
 
@@ -377,6 +379,31 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         { state, job, taskId, stateManager, context, unprocessedReviewComments, llm },
         taskUrl,
     );
+
+    // Ultrafix loop continuation: after a fix step, schedule the next review
+    if (job.data.ultrafixMeta) {
+        try {
+            const continuationResult = await continueUltrafixLoop({
+                owner: repoOwner,
+                repo: repoName,
+                pullRequestNumber,
+                completedAction: 'fix',
+                ultrafixMeta: job.data.ultrafixMeta,
+                redisClient,
+                correlatedLogger,
+                correlationId,
+            });
+            correlatedLogger.info(
+                { pullRequestNumber, ...continuationResult },
+                'Ultrafix loop continuation after fix',
+            );
+        } catch (contErr) {
+            correlatedLogger.error(
+                { error: (contErr as Error).message, pullRequestNumber },
+                'Ultrafix loop continuation failed after fix',
+            );
+        }
+    }
 
     return { status: 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
