@@ -286,8 +286,8 @@ export class GeminiAgent implements Agent {
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'GEMINI_CLI=1', ...envVars, '-w', '/home/node/workspace',
-            this.config.dockerImage, 'gemini', '--yolo', '--output-format', outputFormat
+            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'GEMINI_CLI=1', '-e', 'GEMINI_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
+            this.config.dockerImage, 'gemini', '--yolo', '--skip-trust', '--output-format', outputFormat
         ];
         if (modelName) { dockerArgs.push('-m', modelName); logger.info({ issueNumber, requestedModel: modelName, agentAlias: this.config.alias }, 'Model specified for Gemini agent'); }
         else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Gemini agent will use default'); }
