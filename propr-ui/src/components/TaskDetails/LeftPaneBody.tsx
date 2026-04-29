@@ -17,13 +17,22 @@ interface LeftPaneBodyProps {
   onTodoHover: (id: string | null) => void;
 }
 
-/** Extract the latest ultrafix metadata from COMPLETED history entries. */
+/** Extract the most informative ultrafix metadata from history entries.
+ *  Prefers entries with enriched continuation fields (score, nextAction, stopReason)
+ *  over entries that only have the base ultrafixCycle flag. */
 function getUltrafixMeta(history: HistoryItem[]): HistoryItemMetadata | null {
+  let bestMeta: HistoryItemMetadata | null = null;
   for (let i = history.length - 1; i >= 0; i--) {
     const meta = history[i].metadata;
-    if (meta?.ultrafixCycle) return meta;
+    if (!meta?.ultrafixCycle) continue;
+    // If this entry has enriched continuation fields, return it immediately
+    if (meta.ultrafixScore != null || meta.ultrafixNextAction || meta.ultrafixStopReason) {
+      return meta;
+    }
+    // Otherwise, keep the latest base entry as fallback
+    if (!bestMeta) bestMeta = meta;
   }
-  return null;
+  return bestMeta;
 }
 
 const LeftPaneBody: React.FC<LeftPaneBodyProps> = ({

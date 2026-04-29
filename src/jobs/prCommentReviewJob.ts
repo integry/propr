@@ -429,8 +429,24 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 'Ultrafix loop continuation after review',
             );
 
-            // Patch the COMPLETED history entry with continuation details
+            // Patch the COMPLETED history entry with continuation details in both Redis and SQLite
+            const continuationMeta: Record<string, unknown> = {
+                ...(continuationResult.score != null && { ultrafixScore: continuationResult.score }),
+                ...(continuationResult.cycleCount != null && { ultrafixCycleCount: continuationResult.cycleCount }),
+                ...(continuationResult.nextAction && { ultrafixNextAction: continuationResult.nextAction }),
+                ...(!continuationResult.continued && { ultrafixStopReason: continuationResult.reason }),
+            };
             try {
+                // Update Redis (canonical in-memory state) so the UI sees it immediately
+                await stateManager.updateHistoryMetadata(taskId, TaskStates.COMPLETED, continuationMeta);
+            } catch (redisPatchErr) {
+                correlatedLogger.warn(
+                    { error: (redisPatchErr as Error).message, taskId },
+                    'Failed to patch ultrafix metadata into Redis history entry',
+                );
+            }
+            try {
+                // Also patch the persisted SQLite row for durability
                 const latestHistory = await db('task_history')
                     .where({ task_id: taskId, state: 'completed' })
                     .orderBy('timestamp', 'desc')
@@ -438,21 +454,14 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 if (latestHistory) {
                     const existingMeta = typeof latestHistory.metadata === 'string'
                         ? JSON.parse(latestHistory.metadata) : (latestHistory.metadata ?? {});
-                    const patchedMeta = {
-                        ...existingMeta,
-                        ...(continuationResult.score != null && { ultrafixScore: continuationResult.score }),
-                        ...(continuationResult.cycleCount != null && { ultrafixCycleCount: continuationResult.cycleCount }),
-                        ...(continuationResult.nextAction && { ultrafixNextAction: continuationResult.nextAction }),
-                        ...(!continuationResult.continued && { ultrafixStopReason: continuationResult.reason }),
-                    };
                     await db('task_history')
                         .where({ history_id: latestHistory.history_id })
-                        .update({ metadata: JSON.stringify(patchedMeta) });
+                        .update({ metadata: JSON.stringify({ ...existingMeta, ...continuationMeta }) });
                 }
             } catch (patchErr) {
                 correlatedLogger.warn(
                     { error: (patchErr as Error).message, taskId },
-                    'Failed to patch ultrafix metadata into history entry',
+                    'Failed to patch ultrafix metadata into SQLite history entry',
                 );
             }
         } catch (contErr) {
