@@ -266,6 +266,49 @@ describe('stopLoop', () => {
     });
 });
 
+// --- Mode transition verification ---
+
+describe('mode transitions', () => {
+    test('review -> fix -> review alternation is enforced', () => {
+        const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1, goal: 9, maxCycles: 10 });
+
+        // Start: no lastAction → review
+        let decision = determineNextAction(state, null);
+        assert.strictEqual(decision.action, 'review');
+
+        // After review → fix
+        state.lastAction = 'review';
+        decision = determineNextAction(state, 5);
+        assert.strictEqual(decision.action, 'fix');
+
+        // After fix → review
+        state.lastAction = 'fix';
+        state.cycleCount = 1;
+        decision = determineNextAction(state, 5);
+        assert.strictEqual(decision.action, 'review');
+
+        // After review again → fix
+        state.lastAction = 'review';
+        decision = determineNextAction(state, 6);
+        assert.strictEqual(decision.action, 'fix');
+    });
+
+    test('fix never follows fix', () => {
+        const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1, goal: 9 });
+        state.lastAction = 'fix';
+        state.cycleCount = 1;
+        const decision = determineNextAction(state, 4);
+        assert.strictEqual(decision.action, 'review', 'After fix, next must be review');
+    });
+
+    test('review never follows review (when score is below goal)', () => {
+        const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1, goal: 9 });
+        state.lastAction = 'review';
+        const decision = determineNextAction(state, 4);
+        assert.strictEqual(decision.action, 'fix', 'After review with low score, next must be fix');
+    });
+});
+
 // --- Serialization round-trip ---
 
 describe('Serialization', () => {
