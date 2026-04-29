@@ -395,5 +395,68 @@ describe('buildCommandMeta', () => {
         const meta = buildCommandMeta(parsed);
         assert.strictEqual((meta as { reviewModel: string }).reviewModel, 'claude-sonnet-4-6');
     });
+
+    test('ultrafix goal at lower boundary (1) is accepted', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=1')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal: number }).goal, 1);
+    });
+
+    test('ultrafix goal at upper boundary (10) is accepted', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=10')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal: number }).goal, 10);
+    });
+
+    test('ultrafix goal=0 is rejected (must be positive)', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=0')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+    });
+
+    test('ultrafix goal above 10 is accepted by parser (validation is downstream)', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=11')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal: number }).goal, 11);
+    });
+
+    test('ultrafix max at lower boundary (1) is accepted', () => {
+        const parsed = parseSlashCommand('/ultrafix max=1')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { maxCycles: number }).maxCycles, 1);
+    });
+
+    test('ultrafix max=0 is rejected (must be positive)', () => {
+        const parsed = parseSlashCommand('/ultrafix max=0')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, undefined);
+    });
+
+    test('ultrafix large max is accepted by parser (validation is downstream)', () => {
+        const parsed = parseSlashCommand('/ultrafix max=51')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { maxCycles: number }).maxCycles, 51);
+    });
+
+    test('ultrafix pause=0 is accepted (no pause)', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=0')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { pauseSeconds: number }).pauseSeconds, 0);
+    });
+
+    test('ultrafix negative pause is rejected', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=-1')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, undefined);
+    });
+
+    test('ultrafix combines positional goal with named args', () => {
+        // When positional goal is provided with named max, both should work
+        const parsed = parseSlashCommand('/ultrafix 8 max=3')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        // The positional arg is treated as goal if it's a bare number
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
+    });
 });
 

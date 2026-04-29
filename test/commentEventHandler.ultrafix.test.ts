@@ -412,6 +412,56 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
     });
 
+    test('/ultrafix is batched when a delayed job exists for the same PR', async () => {
+        // Simulate a delayed ultrafix job for PR 42
+        mockDelayedJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-delayed', config);
+
+        // Should NOT enqueue a new job (batching guard)
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        // Should store comment for batch via rpush
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+    });
+
+    test('/ultrafix is batched when a waiting job exists for the same PR', async () => {
+        // Simulate a waiting job for PR 42
+        mockWaitingJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-waiting', config);
+
+        // Should NOT enqueue a new job
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('/ultrafix enqueued job carries correct ultrafixMeta fields', async () => {
+        const event = createPRCommentEvent('/ultrafix goal=9 max=3 pause=30 model=claude-sonnet-4-6');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-meta', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        const ultrafixMeta = jobData.ultrafixMeta as Record<string, unknown>;
+        assert.strictEqual(ultrafixMeta.mode, 'ultrafix');
+        assert.strictEqual(ultrafixMeta.goal, 9);
+        assert.strictEqual(ultrafixMeta.maxCycles, 3);
+        assert.strictEqual(ultrafixMeta.pauseSeconds, 30);
+        assert.strictEqual(ultrafixMeta.reviewModel, 'claude-sonnet-4-6');
+    });
+
     test('/ultrafix circuit-breaker comment mentions label removal', async () => {
         const event = createPRCommentEvent('/ultrafix');
         const config = createTestConfig();
