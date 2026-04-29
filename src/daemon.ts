@@ -16,6 +16,9 @@ import {
     handleCommentEdited,
     processCommentEvent,
     setUltrafixDeps,
+    setUltrafixCheckRunHook,
+    areAllChecksPassing,
+    getCurrentPRHead,
     loadUltrafixRatingGoal,
     loadUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
@@ -39,6 +42,7 @@ import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetectio
 import type { DetectedIssue } from './daemon/issueDetection.js';
 import { startLoop } from './jobs/ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
+import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -157,6 +161,18 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         loadPrReviewModel,
         startLoop,
         getPendingReviewState,
+    });
+
+    // Wire up check_run dependencies for ultrafix readiness gating
+    setCheckRunDeps({
+        areAllChecksPassing,
+        getCurrentPRHead,
+    });
+
+    // Wire up check_run hook to resume deferred ultrafix continuations
+    setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number, _headSha: string) => {
+        const log = logger.withCorrelation(generateCorrelationId());
+        await resumeDeferredContinuation(owner, repo, prNumber, redisClient, log as unknown as Logger);
     });
 
     const repos = getRepos();

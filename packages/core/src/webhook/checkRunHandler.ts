@@ -22,6 +22,20 @@ export { mergePR, type MergePROptions, type MergePRResult };
 // Export types and internal functions for testing
 export type { PRMergeContext };
 
+// --- Ultrafix check_run hook ---
+
+type UltrafixCheckRunHook = (owner: string, repo: string, prNumber: number, headSha: string) => Promise<void>;
+
+let _ultrafixCheckRunHook: UltrafixCheckRunHook | null = null;
+
+/**
+ * Register a callback that fires when a check_run completes successfully.
+ * Used by the ultrafix system to wake deferred continuations.
+ */
+export function setUltrafixCheckRunHook(hook: UltrafixCheckRunHook): void {
+    _ultrafixCheckRunHook = hook;
+}
+
 interface PRContext {
     owner: string;
     repoName: string;
@@ -217,6 +231,15 @@ export async function handleCheckRunEvent(
             await processPRAutoMerge(ctx, headSha);
         } catch (error) {
             log.error({ owner, repoName, prNumber, error: (error as Error).message }, 'Error processing auto-merge for PR');
+        }
+
+        // Wake any deferred ultrafix continuation for this PR
+        if (_ultrafixCheckRunHook) {
+            try {
+                await _ultrafixCheckRunHook(owner, repoName, prNumber, headSha);
+            } catch (error) {
+                log.warn({ owner, repoName, prNumber, error: (error as Error).message }, 'Ultrafix check_run hook failed');
+            }
         }
     }
 }
