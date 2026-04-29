@@ -108,6 +108,11 @@ export function filterUnprocessedComments(
     const { pullRequestNumber, correlatedLogger } = options;
     return commentsToProcess
         .filter(comment => {
+            // Skip "already processed" check for ultrafix synthetic comments
+            if (comment.author === 'propr-ultrafix') {
+                return true;
+            }
+
             const alreadyProcessed = prCommentsForValidation.some(prComment => {
                 const isBotComment = prComment.user.login === botUsername;
                 if (!isBotComment) return false;
