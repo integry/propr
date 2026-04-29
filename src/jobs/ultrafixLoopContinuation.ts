@@ -388,7 +388,7 @@ export async function resumeDeferredContinuation(
 
 /** Build ultrafix history metadata from the current ultrafix state. */
 export function buildUltrafixHistoryMeta(
-    ultrafixMeta: UltrafixCommandMeta, ufState: { cycleCount?: number; goal?: string; maxCycles?: number } | null,
+    ultrafixMeta: UltrafixCommandMeta, ufState: { cycleCount?: number; goal?: number | string; maxCycles?: number } | null,
 ): Record<string, unknown> {
     return { ultrafixCycle: true, ultrafixGoal: ultrafixMeta.goal ?? ufState?.goal, ultrafixCycleCount: ufState?.cycleCount ?? 0, ultrafixMaxCycles: ultrafixMeta.maxCycles ?? ufState?.maxCycles };
 }
