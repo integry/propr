@@ -30,8 +30,7 @@ import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
 import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
-import { continueUltrafixLoop, buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixLoopContinuation.js';
-import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import { handleUltrafixContinuation, resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
@@ -213,25 +212,6 @@ function getWebUiUrl(): string {
     return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
 }
 
-async function handleUltrafixContinuation(
-    action: UltrafixAction,
-    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
-): Promise<void> {
-    if (!params.job.data.ultrafixMeta) return;
-    const { job, stateManager, taskId, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } = params;
-    try {
-        const continuationResult = await continueUltrafixLoop({
-            owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: action,
-            ultrafixMeta: job.data.ultrafixMeta!, redisClient, correlatedLogger, correlationId,
-            currentJobId: job.id,
-        });
-        correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
-        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), correlatedLogger);
-    } catch (contErr) {
-        correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
-    }
-}
-
 function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: UnprocessedComment[], taskUrl: string): string {
     // Filter out ultrafix synthetic comments (id: 0) from the displayed comment IDs
     const realComments = unprocessedComments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
@@ -270,13 +250,6 @@ async function commitAndPush(
     return { commitResult, changesSummary, commitMessage };
 }
 
-async function resolveUltrafixHistoryMeta(
-    job: Job<CommentJobData>, issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number }
-): Promise<Record<string, unknown> | undefined> {
-    if (!job.data.ultrafixMeta) return undefined;
-    return buildUltrafixHistoryMeta(job.data.ultrafixMeta, await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber));
-}
-
 async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string }> {
     const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm } = params;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
@@ -295,7 +268,7 @@ async function handlePostExecution(params: PostExecutionParams, taskUrl: string)
         await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger });
     }
 
-    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber });
+    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
