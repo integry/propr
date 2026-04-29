@@ -431,7 +431,9 @@ async function start(): Promise<void> {
     // Wire up check_run hook to resume deferred ultrafix continuations when CI passes
     setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number) => {
       const log = logger.withCorrelation(generateCorrelationId());
-      await resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
+      log.info({ owner, repo, prNumber }, '[ultrafix] check_run hook triggered, attempting to resume deferred continuation');
+      const result = await resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
+      log.info({ owner, repo, prNumber, result }, '[ultrafix] resume deferred continuation result');
     });
     console.log('[ultrafix] Check run hook initialized');
 
