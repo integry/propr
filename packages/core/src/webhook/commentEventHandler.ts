@@ -24,6 +24,7 @@ export interface UltrafixDeps {
     loadUltrafixPauseSeconds: () => Promise<number>;
     loadPrReviewModel: () => Promise<string>;
     startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
+    clearState: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
 
@@ -416,9 +417,12 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             ultrafixMeta: commandMeta,
         });
     } catch (error) {
-        // Rollback: remove the ultrafix label if we added it, and post a failure comment
+        // Rollback: remove the ultrafix label if we added it, clear loop state, and post a failure comment
         correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed after side effects, rolling back');
         try {
+            // Clear any persisted ultrafix loop state to avoid orphaned records
+            await deps.clearState(redisClient, owner, repo, prNumber);
+
             if (labelWasAdded) {
                 await safeUpdateLabels(
                     { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },

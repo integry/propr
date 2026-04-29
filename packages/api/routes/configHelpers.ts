@@ -156,7 +156,7 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
   return (value < min || value > max) ? null : value;
 }
 
-export function extractSettingSaves(fields: SettingFields): { error?: string; saves: Promise<boolean>[] } {
+export function extractSettingSaves(fields: SettingFields): { error?: string; saves: Array<() => Promise<boolean>> } {
   // Phase 1: Validate all fields first, collecting save thunks. No saves are started yet.
   const thunks: Array<() => Promise<boolean>> = [];
 
@@ -191,8 +191,8 @@ export function extractSettingSaves(fields: SettingFields): { error?: string; sa
     thunks.push(() => configManager.saveUltrafixPauseSeconds(v));
   }
 
-  // Phase 2: All validation passed — start saves now.
-  return { saves: thunks.map(fn => fn()) };
+  // Phase 2: All validation passed — return thunks so the caller controls execution order.
+  return { saves: thunks };
 }
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;

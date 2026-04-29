@@ -186,7 +186,11 @@ const SettingsPage: React.FC = () => {
                   let value: string | number | boolean;
                   const numericFields = ['auto_followup_score_threshold', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
                   if (numericFields.includes(e.target.name)) {
-                    value = parseInt(e.target.value, 10);
+                    const raw = e.target.value;
+                    // Only accept strings that are strictly integer digits (with optional leading minus)
+                    // to avoid silent coercion of values like "1e6" or "2.5"
+                    if (raw === '' || !/^-?\d+$/.test(raw)) return;
+                    value = Number(raw);
                   } else if (e.target.name === 'auto_resolve_merge_conflicts') {
                     value = (e.target as HTMLInputElement).checked;
                   } else {

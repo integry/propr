@@ -233,7 +233,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         ...otherSettings
       } = settings;
 
-      // Validate all fields BEFORE creating any save promises to ensure atomicity.
+      // Validate all fields BEFORE executing any saves.
+      // Note: individual saves are not transactional — if a later save fails,
+      // earlier writes may already be committed. Validation up front minimises
+      // this risk but does not eliminate it entirely.
       const extracted = extractSettingSaves({
         auto_followup_score_threshold,
         auto_resolve_merge_conflicts,
@@ -247,9 +250,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: extracted.error } };
       }
 
-      const savePromises: Promise<boolean>[] = [configManager.saveSettings(otherSettings), ...extracted.saves];
-
-      await Promise.all(savePromises);
+      // Execute saves sequentially so a failure stops before touching remaining settings
+      await configManager.saveSettings(otherSettings);
+      for (const saveFn of extracted.saves) {
+        await saveFn();
+      }
       await publishConfigUpdate('settings_update');
       return { status: 200, body: { success: true, settings } };
     });

@@ -40,7 +40,7 @@ import {
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
-import { startLoop } from './jobs/ultrafixOrchestrationService.js';
+import { startLoop, clearState } from './jobs/ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
 import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
 
@@ -160,6 +160,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         loadUltrafixPauseSeconds,
         loadPrReviewModel,
         startLoop,
+        clearState,
         getPendingReviewState,
     });
 

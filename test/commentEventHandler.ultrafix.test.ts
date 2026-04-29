@@ -161,12 +161,15 @@ const mockGetPendingReviewState = mock.fn(async () => ({
     hasPendingReview: false,
 }));
 
+const mockClearState = mock.fn(async () => {});
+
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
     loadUltrafixMaxCycles: mock.fn(async () => 5),
     loadUltrafixPauseSeconds: mock.fn(async () => 60),
     loadPrReviewModel: mock.fn(async () => ''),
     startLoop: mockStartLoop,
+    clearState: mockClearState,
     getPendingReviewState: mockGetPendingReviewState,
 });
 
