@@ -233,9 +233,13 @@ async function handleUltrafixContinuation(
 }
 
 function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: UnprocessedComment[], taskUrl: string): string {
+    // Filter out ultrafix synthetic comments (id: 0) from the displayed comment IDs
+    const realComments = unprocessedComments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
     const plural = unprocessedComments.length > 1 ? 's' : '';
-    const commentIds = unprocessedComments.map(c => String(c.id) + '✓').join(', ');
-    return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${plural}: ${commentIds}_`;
+    const commentIdsSuffix = realComments.length > 0
+        ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id) + '✓').join(', ')}_`
+        : '';
+    return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}`;
 }
 
 interface PostExecutionParams {

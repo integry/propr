@@ -3,6 +3,18 @@ import type { UnprocessedComment } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 
+/** Filter out ultrafix synthetic comments (author='propr-ultrafix' or id=0) */
+function filterRealComments(comments: UnprocessedComment[]): UnprocessedComment[] {
+    return comments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
+}
+
+/** Build the processing comment IDs suffix, or empty string if no real comments */
+function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
+    const real = filterRealComments(comments);
+    if (real.length === 0) return '';
+    return `_Processing comment ID${real.length > 1 ? 's' : ''}: ${real.map(c => String(c.id) + '✓').join(', ')}_`;
+}
+
 export interface CommentContext {
     changesSummary: string;
     commitMessage: string;
@@ -91,7 +103,7 @@ export async function buildCompletionComment(
 
         prCommentBody += `\n\n---\n`;
         prCommentBody += buildSlashCommandsBlock();
-        prCommentBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
+        prCommentBody += buildCommentIdsSuffix(unprocessedComments);
 
         return prCommentBody;
     } else {
@@ -110,7 +122,7 @@ export async function buildCompletionComment(
 
         noChangesBody += `\n\n---\n`;
         noChangesBody += buildSlashCommandsBlock();
-        noChangesBody += `_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
+        noChangesBody += buildCommentIdsSuffix(unprocessedComments);
 
         return noChangesBody;
     }

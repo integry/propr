@@ -380,11 +380,15 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const assignments = await resolveReviewAssignments(job.data.requestedModels, llm, correlatedLogger);
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
 
-    const commentIds = state.unprocessedComments.map(c => String(c.id)).join(', ');
+    // Filter out ultrafix synthetic comments (id: 0) from displayed IDs
+    const realComments = state.unprocessedComments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
+    const commentIdsSuffix = realComments.length > 0
+        ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id)).join(', ')}_`
+        : '';
     const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${commentIds}_`,
+        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}`,
     });
 
     job.data.title = `Review: ${prData!.data.title}`;
