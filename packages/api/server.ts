@@ -44,13 +44,16 @@ import {
   handleCommentEdited,
   processCommentEvent,
   setUltrafixDeps,
+  setUltrafixCheckRunHook,
   loadUltrafixRatingGoal,
   loadUltrafixMaxCycles,
   loadUltrafixPauseSeconds,
-  loadPrReviewModel
+  loadPrReviewModel,
+  logger
 } from '@propr/core';
 import { startLoop, clearState } from '../../src/jobs/ultrafixOrchestrationService.js';
 import { getPendingReviewState } from '../../src/jobs/reviewCommentGatherer.js';
+import { resumeDeferredContinuation } from '../../src/jobs/ultrafixLoopContinuation.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
@@ -424,6 +427,13 @@ async function start(): Promise<void> {
       getPendingReviewState,
     });
     console.log('[ultrafix] Ultrafix dependencies initialized');
+
+    // Wire up check_run hook to resume deferred ultrafix continuations when CI passes
+    setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number) => {
+      const log = logger.withCorrelation(generateCorrelationId());
+      await resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
+    });
+    console.log('[ultrafix] Check run hook initialized');
 
     try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
 

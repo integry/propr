@@ -397,4 +397,5 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
 export { buildMetricsSection } from './prCommentMetrics.js';
 export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
-export { PRFile, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents, agentResultToClaudeResponse } from './prFileUtils.js';
+export type { PRFile } from './prFileUtils.js';
+export { fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents, agentResultToClaudeResponse } from './prFileUtils.js';

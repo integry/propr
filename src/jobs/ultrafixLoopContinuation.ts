@@ -46,6 +46,8 @@ export interface UltrafixContinuationParams {
     redisClient: Redis;
     correlatedLogger: Logger;
     correlationId: string;
+    /** The ID of the current job running this continuation, to exclude from queue checks */
+    currentJobId?: string;
 }
 
 // --- Dependency injection for check_run status ---
@@ -423,7 +425,7 @@ export async function patchUltrafixContinuationMeta(
 async function evaluateReadiness(
     params: UltrafixContinuationParams,
 ): Promise<import('./ultrafixOrchestrationService.js').UltrafixReadinessResult> {
-    const { owner, repo, pullRequestNumber, redisClient, correlatedLogger } = params;
+    const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, currentJobId } = params;
 
     // 1. CI checks passing (fail-closed: assume NOT passing if deps not wired or on error)
     let allChecksPassing = false;
@@ -446,14 +448,18 @@ async function evaluateReadiness(
         );
     }
 
-    // 2. Follow-up ultrafix jobs in queue
+    // 2. Follow-up ultrafix jobs in queue (excluding the current job)
     let followUpJobsExist = false;
     try {
         followUpJobsExist = await hasFollowUpJobsForPR(
             owner, repo, pullRequestNumber,
             async () => {
                 const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']);
-                return jobs as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>;
+                // Filter out the current job to avoid false positives
+                const filtered = currentJobId
+                    ? jobs.filter(j => j.id !== currentJobId)
+                    : jobs;
+                return filtered as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>;
             },
         );
     } catch (err) {

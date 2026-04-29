@@ -205,7 +205,9 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
 
         const checkRuns = checkRunsResponse.data.check_runs;
 
-        const allCheckRunsPass = checkRuns.length > 0 && checkRuns.every(
+        // If no check runs exist, treat as passing (repo has no CI configured).
+        // Otherwise, all checks must be completed with success/skipped conclusion.
+        const allCheckRunsPass = checkRuns.length === 0 || checkRuns.every(
             (run: { status: string; conclusion: string | null }) =>
                 run.status === 'completed' && (run.conclusion === 'success' || run.conclusion === 'skipped')
         );
