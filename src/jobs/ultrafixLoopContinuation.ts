@@ -269,7 +269,7 @@ export async function continueUltrafixLoop(
     }
 
     // 7. Readiness gating — verify all conditions before enqueueing
-    const readiness = await evaluateReadiness(params, updatedState);
+    const readiness = await evaluateReadiness(params);
     correlatedLogger.info(
         { pullRequestNumber, ready: readiness.ready, reasons: readiness.reasons },
         'Ultrafix loop: readiness check',
@@ -323,12 +323,11 @@ export async function continueUltrafixLoop(
  * deferred record. If still not ready, leaves the deferred record in place.
  */
 export async function resumeDeferredContinuation(
-    owner: string,
-    repo: string,
-    pr: number,
+    prId: { owner: string; repo: string; pr: number },
     redisClient: Redis,
     correlatedLogger: Logger,
 ): Promise<ContinuationResult> {
+    const { owner, repo, pr } = prId;
     const deferred = await loadDeferredContinuation(redisClient, owner, repo, pr);
     if (!deferred) {
         return { continued: false, reason: 'no_deferred_continuation' };
@@ -353,7 +352,7 @@ export async function resumeDeferredContinuation(
     };
 
     // Re-evaluate readiness
-    const readiness = await evaluateReadiness(params, state);
+    const readiness = await evaluateReadiness(params);
     correlatedLogger.info(
         { pr, ready: readiness.ready, reasons: readiness.reasons },
         'Ultrafix deferred resume: readiness re-check',
@@ -391,7 +390,6 @@ export async function resumeDeferredContinuation(
  */
 async function evaluateReadiness(
     params: UltrafixContinuationParams,
-    _state: import('./ultrafixOrchestrationService.js').UltrafixLoopState,
 ): Promise<import('./ultrafixOrchestrationService.js').UltrafixReadinessResult> {
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger } = params;
 
