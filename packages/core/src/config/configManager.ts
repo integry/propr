@@ -183,12 +183,11 @@ export async function loadAutoFollowupScoreThreshold(): Promise<number> {
  * @throws Error if threshold is not a valid integer in range 0-9
  */
 export async function saveAutoFollowupScoreThreshold(threshold: number): Promise<boolean> {
-    const value = Math.floor(threshold);
-    if (isNaN(value) || value < 0 || value > 9) {
+    if (!Number.isInteger(threshold) || threshold < 0 || threshold > 9) {
         throw new Error('auto_followup_score_threshold must be an integer between 0 and 9');
     }
-    await saveConfig('auto_followup_score_threshold', value);
-    logger.info({ auto_followup_score_threshold: value }, 'Successfully saved auto-followup score threshold');
+    await saveConfig('auto_followup_score_threshold', threshold);
+    logger.info({ auto_followup_score_threshold: threshold }, 'Successfully saved auto-followup score threshold');
     return true;
 }
 

@@ -460,14 +460,30 @@ describe('buildCommandMeta', () => {
         assert.ok('warning' in meta && meta.warning);
     });
 
-    test('ultrafix warns when mixing positional goal with named args', () => {
+    test('ultrafix keeps positional goal when mixed with named args', () => {
         const parsed = parseSlashCommand('/ultrafix 8 max=3')!;
         const meta = buildCommandMeta(parsed);
         assert.strictEqual(meta.mode, 'ultrafix');
-        // Named args override: positional goal is set but warning is emitted
+        // Positional goal is preserved alongside named args
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
         assert.strictEqual((meta as { maxCycles?: number }).maxCycles, 3);
-        assert.ok('warning' in meta && meta.warning);
-        assert.ok(meta.warning!.includes('Mixed positional'));
+    });
+
+    test('ultrafix named goal= overrides positional goal', () => {
+        const parsed = parseSlashCommand('/ultrafix 8 goal=5 max=3')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        // Named goal= explicitly overrides the positional goal
+        assert.strictEqual((meta as { goal?: number }).goal, 5);
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, 3);
+    });
+
+    test('ultrafix positional goal with model named arg', () => {
+        const parsed = parseSlashCommand('/ultrafix 8 model=claude-sonnet-4-6')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
+        assert.strictEqual((meta as { reviewModel?: string }).reviewModel, 'claude-sonnet-4-6');
     });
 
     test('ultrafix warns on extra positional arguments', () => {

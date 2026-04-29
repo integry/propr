@@ -144,11 +144,6 @@ interface SettingFields {
   ultrafix_pause_seconds?: unknown;
 }
 
-function validateIntRange(raw: unknown, min: number, max: number): number | null {
-  const value = typeof raw === 'number' ? raw : Number(String(raw));
-  return (!Number.isInteger(value) || value < min || value > max) ? null : value;
-}
-
 function validateStrictInt(raw: unknown, min: number, max: number): number | null {
   const str = String(raw);
   if (!/^-?\d+$/.test(str)) return null;
@@ -162,8 +157,8 @@ export function extractSettingSaves(fields: SettingFields): { error?: string; sa
   const thunks: Array<() => Promise<boolean>> = [];
 
   if (fields.auto_followup_score_threshold !== undefined) {
-    const v = validateIntRange(fields.auto_followup_score_threshold, 0, 9);
-    if (v === null) return { error: 'auto_followup_score_threshold must be a number between 0 and 9', saves: [] };
+    const v = validateStrictInt(fields.auto_followup_score_threshold, 0, 9);
+    if (v === null) return { error: 'auto_followup_score_threshold must be an integer between 0 and 9', saves: [] };
     thunks.push(() => configManager.saveAutoFollowupScoreThreshold(v));
   }
   if (fields.auto_resolve_merge_conflicts !== undefined) {
@@ -177,8 +172,8 @@ export function extractSettingSaves(fields: SettingFields): { error?: string; sa
     thunks.push(() => configManager.savePrReviewModel(val));
   }
   if (fields.ultrafix_rating_goal !== undefined) {
-    const v = validateIntRange(fields.ultrafix_rating_goal, 1, 10);
-    if (v === null) return { error: 'ultrafix_rating_goal must be a number between 1 and 10', saves: [] };
+    const v = validateStrictInt(fields.ultrafix_rating_goal, 1, 10);
+    if (v === null) return { error: 'ultrafix_rating_goal must be an integer between 1 and 10', saves: [] };
     thunks.push(() => configManager.saveUltrafixRatingGoal(v));
   }
   if (fields.ultrafix_max_cycles !== undefined) {

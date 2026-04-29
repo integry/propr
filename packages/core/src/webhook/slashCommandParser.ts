@@ -168,10 +168,11 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
 
 const ULTRAFIX_KNOWN_KEYS = new Set(['goal', 'max', 'pause', 'model']);
 
-/** Parse a string as a positive integer, or return undefined. */
+/** Parse a string as a positive integer, or return undefined. Rejects scientific notation and decimals. */
 function parsePositiveInt(value: string, allowZero = false): number | undefined {
+    if (!/^-?\d+$/.test(value)) return undefined;
     const n = Number(value);
-    if (Number.isNaN(n) || !Number.isFinite(n) || !Number.isInteger(n)) return undefined;
+    if (!Number.isSafeInteger(n)) return undefined;
     return allowZero ? (n >= 0 ? n : undefined) : (n > 0 ? n : undefined);
 }
 
@@ -219,7 +220,6 @@ function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
 
     const warnings: string[] = [];
     let hasNamedArgs = false;
-    let hasPositionalGoal = false;
 
     for (let i = 0; i < parsed.args.length; i++) {
         const arg = parsed.args[i];
@@ -228,11 +228,8 @@ function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
             const key = arg.substring(0, eqIdx).toLowerCase();
             const value = arg.substring(eqIdx + 1);
 
-            if (hasPositionalGoal) {
-                warnings.push('Mixed positional and named arguments; positional goal was discarded in favour of named arguments');
-                meta.goal = undefined;
-                hasPositionalGoal = false;
-            }
+            // When mixing positional goal with named args, keep the positional goal
+            // unless a named goal= is explicitly provided (handled by applyUltrafixKeyValue)
             hasNamedArgs = true;
 
             if (ULTRAFIX_KNOWN_KEYS.has(key)) {
@@ -247,7 +244,6 @@ function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
                 warnings.push(`Invalid positional goal '${arg}'; must be an integer between 1 and 10`);
             } else {
                 meta.goal = n;
-                hasPositionalGoal = true;
             }
         } else {
             warnings.push(`Extra argument '${arg}' ignored`);

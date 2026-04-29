@@ -36,12 +36,11 @@ export async function loadUltrafixRatingGoal(): Promise<number> {
 }
 
 export async function saveUltrafixRatingGoal(goal: number): Promise<boolean> {
-    const value = Math.floor(goal);
-    if (isNaN(value) || value < 1 || value > 10) {
+    if (!Number.isInteger(goal) || goal < 1 || goal > 10) {
         throw new Error('ultrafix_rating_goal must be an integer between 1 and 10');
     }
-    await saveConfig('ultrafix_rating_goal', value);
-    logger.info({ ultrafix_rating_goal: value }, 'Successfully saved ultrafix rating goal');
+    await saveConfig('ultrafix_rating_goal', goal);
+    logger.info({ ultrafix_rating_goal: goal }, 'Successfully saved ultrafix rating goal');
     return true;
 }
 
@@ -56,12 +55,11 @@ export async function loadUltrafixMaxCycles(): Promise<number> {
 }
 
 export async function saveUltrafixMaxCycles(cycles: number): Promise<boolean> {
-    const value = Math.floor(cycles);
-    if (isNaN(value) || value < 1 || !Number.isSafeInteger(value)) {
+    if (!Number.isInteger(cycles) || cycles < 1 || !Number.isSafeInteger(cycles)) {
         throw new Error('ultrafix_max_cycles must be a positive safe integer');
     }
-    await saveConfig('ultrafix_max_cycles', value);
-    logger.info({ ultrafix_max_cycles: value }, 'Successfully saved ultrafix max cycles');
+    await saveConfig('ultrafix_max_cycles', cycles);
+    logger.info({ ultrafix_max_cycles: cycles }, 'Successfully saved ultrafix max cycles');
     return true;
 }
 
@@ -76,11 +74,10 @@ export async function loadUltrafixPauseSeconds(): Promise<number> {
 }
 
 export async function saveUltrafixPauseSeconds(seconds: number): Promise<boolean> {
-    const value = Math.floor(seconds);
-    if (isNaN(value) || value < 0 || !Number.isSafeInteger(value)) {
+    if (!Number.isInteger(seconds) || seconds < 0 || !Number.isSafeInteger(seconds)) {
         throw new Error('ultrafix_pause_seconds must be a non-negative safe integer');
     }
-    await saveConfig('ultrafix_pause_seconds', value);
-    logger.info({ ultrafix_pause_seconds: value }, 'Successfully saved ultrafix pause seconds');
+    await saveConfig('ultrafix_pause_seconds', seconds);
+    logger.info({ ultrafix_pause_seconds: seconds }, 'Successfully saved ultrafix pause seconds');
     return true;
 }
