@@ -227,19 +227,24 @@ export function isCooldownElapsed(state: UltrafixLoopState, nowMs?: number): boo
  * Check whether there are follow-up jobs (waiting, active, or delayed)
  * for the same PR in the issue queue.
  *
+ * Only considers jobs with `ultrafixMeta` (i.e. ultrafix implementation
+ * follow-up work), not arbitrary PR jobs. This avoids false positives from
+ * unrelated issue-queue work on the same PR.
+ *
  * `getQueueJobs` is injected so this function stays side-effect free in tests.
  */
 export async function hasFollowUpJobsForPR(
     owner: string,
     repo: string,
     pr: number,
-    getQueueJobs: () => Promise<Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number } }>>,
+    getQueueJobs: () => Promise<Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>>,
 ): Promise<boolean> {
     const jobs = await getQueueJobs();
     return jobs.some(j =>
         j.data.repoOwner === owner &&
         j.data.repoName === repo &&
-        j.data.pullRequestNumber === pr,
+        j.data.pullRequestNumber === pr &&
+        j.data.ultrafixMeta != null,
     );
 }
 
@@ -259,19 +264,19 @@ export async function hasPendingBatchedComments(
  * Aggregate readiness check. Returns { ready, reasons } where reasons
  * lists every blocking condition that is currently true.
  *
+ * Note: cooldown is NOT checked here — it is enforced via the enqueue delay
+ * in `enqueueNextStep()`. Including it as a readiness gate would cause
+ * double-application of the pause (once as a defer, then again as a delay).
+ *
  * Side-effect free: callers supply the external check results.
  */
 export function checkReadiness(opts: {
-    cooldownElapsed: boolean;
     allChecksPassing: boolean;
     hasFollowUpJobs: boolean;
     hasPendingComments: boolean;
 }): UltrafixReadinessResult {
     const reasons: string[] = [];
 
-    if (!opts.cooldownElapsed) {
-        reasons.push('cooldown_not_elapsed');
-    }
     if (!opts.allChecksPassing) {
         reasons.push('checks_not_passing');
     }
@@ -342,6 +347,6 @@ export function parseDeferredKey(key: string): { owner: string; repo: string; pr
     if (parts.length < 3) return null;
     const pr = parseInt(parts[parts.length - 1], 10);
     if (isNaN(pr)) return null;
-    // owner and repo may contain colons (unlikely but safe)
+    // GitHub owner/repo cannot contain colons, so simple split is sufficient
     return { owner: parts[0], repo: parts[1], pr };
 }

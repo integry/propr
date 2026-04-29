@@ -21,10 +21,10 @@ import {
 } from '@propr/core';
 import {
     loadState,
+    loadDeferredContinuation,
     recordAction,
     clearState,
     determineNextAction,
-    isCooldownElapsed,
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
     checkReadiness,
@@ -329,8 +329,7 @@ export async function resumeDeferredContinuation(
     redisClient: Redis,
     correlatedLogger: Logger,
 ): Promise<ContinuationResult> {
-    const { loadDeferredContinuation: loadDeferred } = await import('./ultrafixOrchestrationService.js');
-    const deferred = await loadDeferred(redisClient, owner, repo, pr);
+    const deferred = await loadDeferredContinuation(redisClient, owner, repo, pr);
     if (!deferred) {
         return { continued: false, reason: 'no_deferred_continuation' };
     }
@@ -392,15 +391,12 @@ export async function resumeDeferredContinuation(
  */
 async function evaluateReadiness(
     params: UltrafixContinuationParams,
-    state: import('./ultrafixOrchestrationService.js').UltrafixLoopState,
+    _state: import('./ultrafixOrchestrationService.js').UltrafixLoopState,
 ): Promise<import('./ultrafixOrchestrationService.js').UltrafixReadinessResult> {
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger } = params;
 
-    // 1. Cooldown check (pure)
-    const cooldownElapsed = isCooldownElapsed(state);
-
-    // 2. CI checks passing
-    let allChecksPassing = true; // default to true if deps not wired
+    // 1. CI checks passing (fail-closed: assume NOT passing if deps not wired or on error)
+    let allChecksPassing = false;
     if (_areAllChecksPassing && _getCurrentPRHead) {
         try {
             const headSha = await _getCurrentPRHead(owner, repo, pullRequestNumber);
@@ -410,19 +406,24 @@ async function evaluateReadiness(
         } catch (err) {
             correlatedLogger.warn(
                 { error: (err as Error).message, pullRequestNumber },
-                'Ultrafix readiness: failed to check CI status, assuming passing',
+                'Ultrafix readiness: failed to check CI status, assuming NOT passing (fail-closed)',
             );
         }
+    } else {
+        correlatedLogger.warn(
+            { pullRequestNumber },
+            'Ultrafix readiness: check_run deps not wired, assuming checks NOT passing',
+        );
     }
 
-    // 3. Follow-up jobs in queue
+    // 2. Follow-up ultrafix jobs in queue
     let followUpJobsExist = false;
     try {
         followUpJobsExist = await hasFollowUpJobsForPR(
             owner, repo, pullRequestNumber,
             async () => {
                 const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']);
-                return jobs as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number } }>;
+                return jobs as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>;
             },
         );
     } catch (err) {
@@ -432,7 +433,7 @@ async function evaluateReadiness(
         );
     }
 
-    // 4. Pending batched comments in Redis
+    // 3. Pending batched comments in Redis
     let pendingComments = false;
     try {
         const pendingKey = getPendingPrCommentsKey(owner, repo, pullRequestNumber);
@@ -445,7 +446,6 @@ async function evaluateReadiness(
     }
 
     return checkReadiness({
-        cooldownElapsed,
         allChecksPassing,
         hasFollowUpJobs: followUpJobsExist,
         hasPendingComments: pendingComments,

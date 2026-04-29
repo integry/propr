@@ -86,25 +86,33 @@ describe('hasFollowUpJobsForPR', () => {
         assert.strictEqual(result, false);
     });
 
-    test('returns true when matching job exists', async () => {
+    test('returns true when matching ultrafix job exists', async () => {
         const jobs = [
-            { data: { repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42 } },
+            { data: { repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42, ultrafixMeta: { goal: 7 } } },
         ];
         const result = await hasFollowUpJobsForPR('acme', 'web', 42, async () => jobs);
         assert.strictEqual(result, true);
     });
 
-    test('returns false when jobs are for different PR', async () => {
+    test('returns false when matching job exists but is not ultrafix', async () => {
         const jobs = [
-            { data: { repoOwner: 'acme', repoName: 'web', pullRequestNumber: 99 } },
+            { data: { repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42 } },
         ];
         const result = await hasFollowUpJobsForPR('acme', 'web', 42, async () => jobs);
         assert.strictEqual(result, false);
     });
 
-    test('returns false when jobs are for different repo', async () => {
+    test('returns false when ultrafix jobs are for different PR', async () => {
         const jobs = [
-            { data: { repoOwner: 'other', repoName: 'web', pullRequestNumber: 42 } },
+            { data: { repoOwner: 'acme', repoName: 'web', pullRequestNumber: 99, ultrafixMeta: { goal: 7 } } },
+        ];
+        const result = await hasFollowUpJobsForPR('acme', 'web', 42, async () => jobs);
+        assert.strictEqual(result, false);
+    });
+
+    test('returns false when ultrafix jobs are for different repo', async () => {
+        const jobs = [
+            { data: { repoOwner: 'other', repoName: 'web', pullRequestNumber: 42, ultrafixMeta: { goal: 7 } } },
         ];
         const result = await hasFollowUpJobsForPR('acme', 'web', 42, async () => jobs);
         assert.strictEqual(result, false);
@@ -133,7 +141,6 @@ describe('hasPendingBatchedComments', () => {
 describe('checkReadiness', () => {
     test('returns ready when all conditions pass', () => {
         const result = checkReadiness({
-            cooldownElapsed: true,
             allChecksPassing: true,
             hasFollowUpJobs: false,
             hasPendingComments: false,
@@ -142,20 +149,8 @@ describe('checkReadiness', () => {
         assert.strictEqual(result.reasons.length, 0);
     });
 
-    test('returns not ready when cooldown not elapsed', () => {
-        const result = checkReadiness({
-            cooldownElapsed: false,
-            allChecksPassing: true,
-            hasFollowUpJobs: false,
-            hasPendingComments: false,
-        });
-        assert.strictEqual(result.ready, false);
-        assert.ok(result.reasons.includes('cooldown_not_elapsed'));
-    });
-
     test('returns not ready when checks not passing', () => {
         const result = checkReadiness({
-            cooldownElapsed: true,
             allChecksPassing: false,
             hasFollowUpJobs: false,
             hasPendingComments: false,
@@ -166,7 +161,6 @@ describe('checkReadiness', () => {
 
     test('returns not ready when follow-up jobs exist', () => {
         const result = checkReadiness({
-            cooldownElapsed: true,
             allChecksPassing: true,
             hasFollowUpJobs: true,
             hasPendingComments: false,
@@ -177,7 +171,6 @@ describe('checkReadiness', () => {
 
     test('returns not ready when pending comments exist', () => {
         const result = checkReadiness({
-            cooldownElapsed: true,
             allChecksPassing: true,
             hasFollowUpJobs: false,
             hasPendingComments: true,
@@ -188,13 +181,12 @@ describe('checkReadiness', () => {
 
     test('aggregates multiple blocking reasons', () => {
         const result = checkReadiness({
-            cooldownElapsed: false,
             allChecksPassing: false,
             hasFollowUpJobs: true,
             hasPendingComments: true,
         });
         assert.strictEqual(result.ready, false);
-        assert.strictEqual(result.reasons.length, 4);
+        assert.strictEqual(result.reasons.length, 3);
     });
 });
 
@@ -246,6 +238,126 @@ describe('deferred continuation persistence', () => {
         await clearDeferredContinuation(redis as any, 'acme', 'web', 42);
         const loaded = await loadDeferredContinuation(redis as any, 'acme', 'web', 42);
         assert.strictEqual(loaded, null);
+    });
+});
+
+// --- Behavioral: defer when checks red, resume when green ---
+
+describe('defer and resume behavior', () => {
+    let redis: ReturnType<typeof createMockRedis>;
+
+    beforeEach(() => {
+        redis = createMockRedis();
+    });
+
+    test('checkReadiness blocks when checks are not passing', () => {
+        const result = checkReadiness({
+            allChecksPassing: false,
+            hasFollowUpJobs: false,
+            hasPendingComments: false,
+        });
+        assert.strictEqual(result.ready, false);
+        assert.ok(result.reasons.includes('checks_not_passing'));
+    });
+
+    test('checkReadiness allows progression when checks turn green', () => {
+        const result = checkReadiness({
+            allChecksPassing: true,
+            hasFollowUpJobs: false,
+            hasPendingComments: false,
+        });
+        assert.strictEqual(result.ready, true);
+        assert.strictEqual(result.reasons.length, 0);
+    });
+
+    test('deferred continuation is saved and can be loaded for resume', async () => {
+        // Simulate: checks red → defer
+        const deferred: UltrafixDeferredContinuation = {
+            owner: 'acme',
+            repo: 'web',
+            pr: 42,
+            nextAction: 'fix',
+            savedAt: new Date().toISOString(),
+            reason: 'checks_not_passing',
+        };
+        await saveDeferredContinuation(redis as any, deferred);
+
+        // Later: check_run fires → load deferred
+        const loaded = await loadDeferredContinuation(redis as any, 'acme', 'web', 42);
+        assert.ok(loaded);
+        assert.strictEqual(loaded!.nextAction, 'fix');
+        assert.strictEqual(loaded!.reason, 'checks_not_passing');
+    });
+
+    test('resume clears deferred record after successful wake', async () => {
+        const deferred: UltrafixDeferredContinuation = {
+            owner: 'acme',
+            repo: 'web',
+            pr: 42,
+            nextAction: 'review',
+            savedAt: new Date().toISOString(),
+            reason: 'checks_not_passing',
+        };
+        await saveDeferredContinuation(redis as any, deferred);
+
+        // Simulate: checks now green → readiness passes → clear deferred
+        const readiness = checkReadiness({
+            allChecksPassing: true,
+            hasFollowUpJobs: false,
+            hasPendingComments: false,
+        });
+        assert.strictEqual(readiness.ready, true);
+
+        await clearDeferredContinuation(redis as any, 'acme', 'web', 42);
+        const afterClear = await loadDeferredContinuation(redis as any, 'acme', 'web', 42);
+        assert.strictEqual(afterClear, null);
+    });
+
+    test('resume keeps deferred record when still not ready', async () => {
+        const deferred: UltrafixDeferredContinuation = {
+            owner: 'acme',
+            repo: 'web',
+            pr: 42,
+            nextAction: 'fix',
+            savedAt: new Date().toISOString(),
+            reason: 'checks_not_passing, follow_up_jobs_active',
+        };
+        await saveDeferredContinuation(redis as any, deferred);
+
+        // checks_run fires but follow-up jobs still active
+        const readiness = checkReadiness({
+            allChecksPassing: true,
+            hasFollowUpJobs: true,
+            hasPendingComments: false,
+        });
+        assert.strictEqual(readiness.ready, false);
+
+        // Deferred record should stay
+        const loaded = await loadDeferredContinuation(redis as any, 'acme', 'web', 42);
+        assert.ok(loaded);
+        assert.strictEqual(loaded!.nextAction, 'fix');
+    });
+
+    test('no overlap: blocks when competing ultrafix job exists', () => {
+        const result = checkReadiness({
+            allChecksPassing: true,
+            hasFollowUpJobs: true,
+            hasPendingComments: false,
+        });
+        assert.strictEqual(result.ready, false);
+        assert.ok(result.reasons.includes('follow_up_jobs_active'));
+    });
+
+    test('cooldown is not a readiness condition (handled by enqueue delay)', () => {
+        // checkReadiness does not accept cooldownElapsed — verify the API
+        const result = checkReadiness({
+            allChecksPassing: true,
+            hasFollowUpJobs: false,
+            hasPendingComments: false,
+        });
+        assert.strictEqual(result.ready, true);
+        // No 'cooldown_not_elapsed' reason possible
+        assert.ok(!result.reasons.includes('cooldown_not_elapsed'));
     });
 });
 
