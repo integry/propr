@@ -31,7 +31,7 @@ import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUt
 import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { continueUltrafixLoop, buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixLoopContinuation.js';
-import { loadState as loadUltrafixState } from './ultrafixOrchestrationService.js';
+import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
@@ -214,7 +214,7 @@ function getWebUiUrl(): string {
 }
 
 async function handleUltrafixContinuation(
-    action: string,
+    action: UltrafixAction,
     params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;

@@ -19,7 +19,7 @@ import {
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
 import { continueUltrafixLoop, buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixLoopContinuation.js';
-import { loadState as loadUltrafixState } from './ultrafixOrchestrationService.js';
+import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
 import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
@@ -324,7 +324,7 @@ async function fetchReviewContext(
 }
 
 async function handleUltrafixContinuation(
-    action: string,
+    action: UltrafixAction,
     params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
