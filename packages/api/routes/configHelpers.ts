@@ -152,6 +152,35 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
   return (value < min || value > max) ? null : value;
 }
 
+function validatePrReviewModel(raw: unknown): { error?: string; value?: string } {
+  if (typeof raw !== 'string') return { error: 'pr_review_model must be a string' };
+  const val = raw.trim();
+  // Reject whitespace-only input — only an explicitly empty string clears the setting.
+  if (val === '' && raw.length > 0) {
+    return { error: 'pr_review_model must not be whitespace-only; use an empty string to clear' };
+  }
+  // Empty string is valid (means "use default agent model"), but strings with invalid
+  // characters are not. Model values should look like an identifier
+  // (e.g. "claude-sonnet-4-6", "gemini:gemini-pro", "codex:gpt-5.4").
+  if (val !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(val)) {
+    return { error: 'pr_review_model contains invalid characters; expected a model identifier (e.g. "claude-sonnet-4-6")' };
+  }
+  // Validate that the model resolves to a known model in the system.
+  // Supports "agent:model" format (e.g. "codex:gpt-5.4") - extract model part for validation.
+  if (val !== '') {
+    let modelPart = val;
+    const colonIdx = val.indexOf(':');
+    if (colonIdx > 0 && colonIdx < val.length - 1) {
+      modelPart = val.substring(colonIdx + 1);
+    }
+    const resolved = resolveModelAlias(modelPart);
+    if (!MODEL_INFO_MAP[resolved]) {
+      return { error: `pr_review_model "${val}" does not resolve to a known model` };
+    }
+  }
+  return { value: val };
+}
+
 export function extractSettingSaves(fields: SettingFields): { error?: string; saves: Array<() => Promise<boolean>> } {
   // Phase 1: Validate all fields first, collecting save thunks. No saves are started yet.
   const thunks: Array<() => Promise<boolean>> = [];
@@ -167,31 +196,9 @@ export function extractSettingSaves(fields: SettingFields): { error?: string; sa
     thunks.push(() => configManager.saveAutoResolveMergeConflicts(val));
   }
   if (fields.pr_review_model !== undefined) {
-    if (typeof fields.pr_review_model !== 'string') return { error: 'pr_review_model must be a string', saves: [] };
-    const val = fields.pr_review_model.trim();
-    // Reject whitespace-only input — only an explicitly empty string clears the setting.
-    if (val === '' && fields.pr_review_model.length > 0) {
-      return { error: 'pr_review_model must not be whitespace-only; use an empty string to clear', saves: [] };
-    }
-    // Empty string is valid (means "use default agent model"), but strings with invalid
-    // characters are not. Model values should look like an identifier
-    // (e.g. "claude-sonnet-4-6", "gemini:gemini-pro", "codex:gpt-5.4").
-    if (val !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(val)) {
-      return { error: 'pr_review_model contains invalid characters; expected a model identifier (e.g. "claude-sonnet-4-6")', saves: [] };
-    }
-    // Validate that the model resolves to a known model in the system.
-    // Supports "agent:model" format (e.g. "codex:gpt-5.4") - extract model part for validation.
-    if (val !== '') {
-      let modelPart = val;
-      const colonIdx = val.indexOf(':');
-      if (colonIdx > 0 && colonIdx < val.length - 1) {
-        modelPart = val.substring(colonIdx + 1);
-      }
-      const resolved = resolveModelAlias(modelPart);
-      if (!MODEL_INFO_MAP[resolved]) {
-        return { error: `pr_review_model "${val}" does not resolve to a known model`, saves: [] };
-      }
-    }
+    const result = validatePrReviewModel(fields.pr_review_model);
+    if (result.error) return { error: result.error, saves: [] };
+    const val = result.value!;
     thunks.push(() => configManager.savePrReviewModel(val));
   }
   if (fields.ultrafix_rating_goal !== undefined) {
