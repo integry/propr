@@ -247,6 +247,16 @@ function buildTaskInfoFromState(
   return taskInfo;
 }
 
+function enrichRedisHistoryItem(item: Record<string, unknown>): Record<string, unknown> {
+  const enrichedItem = { ...item };
+  const metadata = item.metadata as Record<string, unknown> | undefined;
+  if (metadata?.sessionId) {
+    enrichedItem.promptPath = `/api/execution/${metadata.sessionId}/prompt`;
+    enrichedItem.logsPath = `/api/execution/${metadata.sessionId}/logs`;
+  }
+  return enrichedItem;
+}
+
 async function getHistoryFromRedis(
   redisClient: RedisClientType,
   taskId: string
@@ -255,15 +265,7 @@ async function getHistoryFromRedis(
   if (!stateData) return null;
   try {
     const state = JSON.parse(stateData) as { history?: Array<Record<string, unknown>>; issueRef?: Record<string, unknown> };
-    const history = (state.history || []).map(item => {
-      const enrichedItem = { ...item };
-      if ((item.metadata as Record<string, unknown>)?.sessionId) {
-        enrichedItem.promptPath = `/api/execution/${(item.metadata as Record<string, unknown>).sessionId}/prompt`;
-        enrichedItem.logsPath = `/api/execution/${(item.metadata as Record<string, unknown>).sessionId}/logs`;
-      }
-      return enrichedItem;
-    });
-    
+    const history = (state.history || []).map(enrichRedisHistoryItem);
     const taskInfo = state.issueRef
       ? buildTaskInfoFromState(taskId, state.issueRef as Record<string, unknown>, state.history || [])
       : null;
