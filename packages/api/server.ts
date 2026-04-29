@@ -51,9 +51,6 @@ import {
   loadPrReviewModel,
   logger
 } from '@propr/core';
-import { startLoop, clearState } from '../../src/jobs/ultrafixOrchestrationService.js';
-import { getPendingReviewState } from '../../src/jobs/reviewCommentGatherer.js';
-import { resumeDeferredContinuation } from '../../src/jobs/ultrafixLoopContinuation.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
@@ -417,21 +414,26 @@ async function start(): Promise<void> {
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
 
     // Wire up ultrafix dependencies for /ultrafix slash command support
+    // Use non-literal paths so TypeScript doesn't pull src/jobs/ into rootDir
+    const jobsBase = '../../src/jobs';
+    const orchMod = await import(`${jobsBase}/ultrafixOrchestrationService.js`);
+    const gathererMod = await import(`${jobsBase}/reviewCommentGatherer.js`);
     setUltrafixDeps({
       loadUltrafixRatingGoal,
       loadUltrafixMaxCycles,
       loadUltrafixPauseSeconds,
       loadPrReviewModel,
-      startLoop,
-      clearState,
-      getPendingReviewState,
+      startLoop: orchMod.startLoop,
+      clearState: orchMod.clearState,
+      getPendingReviewState: gathererMod.getPendingReviewState,
     });
     console.log('[ultrafix] Ultrafix dependencies initialized');
 
     // Wire up check_run hook to resume deferred ultrafix continuations when CI passes
+    const contMod = await import(`${jobsBase}/ultrafixLoopContinuation.js`);
     setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number) => {
       const log = logger.withCorrelation(generateCorrelationId());
-      await resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
+      await contMod.resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
     });
     console.log('[ultrafix] Check run hook initialized');
 
