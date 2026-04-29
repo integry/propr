@@ -177,6 +177,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
         modifiedFiles: result.modifiedFiles,
         commitMessage: result.commitMessage || null,
         conversationLog: result.conversationLog,
-        tokenUsage: result.tokenUsage
+        tokenUsage: result.tokenUsage,
+        usageMetrics: result.usageMetrics
     };
 }

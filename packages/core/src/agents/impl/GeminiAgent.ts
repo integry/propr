@@ -98,7 +98,14 @@ export class GeminiAgent implements Agent {
         if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
         const modelUsed = parsedModel || effectiveModel || 'unknown';
         const finalTokenUsage = (tokenUsage.input_tokens || tokenUsage.output_tokens) ? tokenUsage : undefined;
-        const response: AgentExecutionResult = { success: result.exitCode === 0, executionTimeMs: executionTime, logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''), exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [], commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog, tokenUsage: finalTokenUsage };
+        const response: AgentExecutionResult = {
+            success: result.exitCode === 0, executionTimeMs: executionTime,
+            logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
+            exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [],
+            commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog,
+            tokenUsage: finalTokenUsage,
+            usageMetrics: usageMetrics ?? undefined
+        };
 
         // Persist LLM log for visibility in the LLM Logs UI (including Agent Tank usage if available)
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
