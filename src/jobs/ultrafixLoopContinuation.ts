@@ -422,87 +422,59 @@ export async function patchUltrafixContinuationMeta(
     }
 }
 
-/**
- * Evaluate all readiness conditions for the ultrafix loop.
- * Gathers external state and delegates to the pure `checkReadiness` helper.
- */
+async function evaluateCIChecksPassing(
+    params: Pick<UltrafixContinuationParams, 'owner' | 'repo' | 'pullRequestNumber' | 'completedAction' | 'correlatedLogger'>,
+): Promise<boolean> {
+    const { owner, repo, pullRequestNumber, completedAction, correlatedLogger } = params;
+    if (!_getCurrentPRHead) {
+        correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix readiness: check_run deps not wired, assuming checks NOT passing');
+        return false;
+    }
+    try {
+        const headSha = await _getCurrentPRHead(owner, repo, pullRequestNumber);
+        if (!headSha) return false;
+        if (_getCheckRunsStatus) {
+            const status = await _getCheckRunsStatus(owner, repo, headSha);
+            correlatedLogger.debug({ pullRequestNumber, ...status, completedAction }, 'Ultrafix readiness: check runs status');
+            if (completedAction === 'fix' && status.count === 0) {
+                correlatedLogger.info({ pullRequestNumber }, 'Ultrafix readiness: 0 checks after fix, CI likely not started yet');
+                return false;
+            }
+            return status.allPassing;
+        }
+        if (_areAllChecksPassing) {
+            return _areAllChecksPassing(owner, repo, headSha);
+        }
+        return false;
+    } catch (err) {
+        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to check CI status, assuming NOT passing (fail-closed)');
+        return false;
+    }
+}
+
 async function evaluateReadiness(
     params: UltrafixContinuationParams,
 ): Promise<import('./ultrafixOrchestrationService.js').UltrafixReadinessResult> {
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, currentJobId, completedAction } = params;
 
-    // 1. CI checks passing (fail-closed: assume NOT passing if deps not wired or on error)
-    // Special case: after a fix, if there are 0 checks, CI likely hasn't started yet - treat as not ready
-    let allChecksPassing = false;
-    if (_getCurrentPRHead) {
-        try {
-            const headSha = await _getCurrentPRHead(owner, repo, pullRequestNumber);
-            if (headSha) {
-                // Use detailed status if available, otherwise fall back to simple check
-                if (_getCheckRunsStatus) {
-                    const status = await _getCheckRunsStatus(owner, repo, headSha);
-                    correlatedLogger.debug(
-                        { pullRequestNumber, ...status, completedAction },
-                        'Ultrafix readiness: check runs status',
-                    );
-                    // After a fix with 0 checks, CI likely hasn't started yet - defer
-                    if (completedAction === 'fix' && status.count === 0) {
-                        correlatedLogger.info(
-                            { pullRequestNumber },
-                            'Ultrafix readiness: 0 checks after fix, CI likely not started yet',
-                        );
-                        allChecksPassing = false;
-                    } else {
-                        allChecksPassing = status.allPassing;
-                    }
-                } else if (_areAllChecksPassing) {
-                    allChecksPassing = await _areAllChecksPassing(owner, repo, headSha);
-                }
-            }
-        } catch (err) {
-            correlatedLogger.warn(
-                { error: (err as Error).message, pullRequestNumber },
-                'Ultrafix readiness: failed to check CI status, assuming NOT passing (fail-closed)',
-            );
-        }
-    } else {
-        correlatedLogger.warn(
-            { pullRequestNumber },
-            'Ultrafix readiness: check_run deps not wired, assuming checks NOT passing',
-        );
-    }
+    const allChecksPassing = await evaluateCIChecksPassing({ owner, repo, pullRequestNumber, completedAction, correlatedLogger });
 
-    // 2. Follow-up ultrafix jobs in queue (excluding the current job)
     let followUpJobsExist = false;
     try {
-        followUpJobsExist = await hasFollowUpJobsForPR(
-            owner, repo, pullRequestNumber,
-            async () => {
-                const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']);
-                // Filter out the current job to avoid false positives
-                const filtered = currentJobId
-                    ? jobs.filter(j => j.id !== currentJobId)
-                    : jobs;
-                return filtered as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>;
-            },
-        );
+        followUpJobsExist = await hasFollowUpJobsForPR(owner, repo, pullRequestNumber, async () => {
+            const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']);
+            const filtered = currentJobId ? jobs.filter(j => j.id !== currentJobId) : jobs;
+            return filtered as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>;
+        });
     } catch (err) {
-        correlatedLogger.warn(
-            { error: (err as Error).message, pullRequestNumber },
-            'Ultrafix readiness: failed to inspect queue, assuming no conflicts',
-        );
+        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to inspect queue, assuming no conflicts');
     }
 
-    // 3. Pending batched comments in Redis
     let pendingComments = false;
     try {
-        const pendingKey = getPendingPrCommentsKey(owner, repo, pullRequestNumber);
-        pendingComments = await hasPendingBatchedComments(redisClient, pendingKey);
+        pendingComments = await hasPendingBatchedComments(redisClient, getPendingPrCommentsKey(owner, repo, pullRequestNumber));
     } catch (err) {
-        correlatedLogger.warn(
-            { error: (err as Error).message, pullRequestNumber },
-            'Ultrafix readiness: failed to check pending comments, assuming none',
-        );
+        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to check pending comments, assuming none');
     }
 
     return checkReadiness({
