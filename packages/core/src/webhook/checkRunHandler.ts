@@ -233,7 +233,7 @@ export async function handleCheckRunEvent(
             log.error({ owner, repoName, prNumber, error: (error as Error).message }, 'Error processing auto-merge for PR');
         }
 
-        // Wake any deferred ultrafix continuation for this PR
+        // Wake any deferred ultrafix continuation for this PR (only on success)
         if (_ultrafixCheckRunHook) {
             try {
                 await _ultrafixCheckRunHook(owner, repoName, prNumber, headSha);
