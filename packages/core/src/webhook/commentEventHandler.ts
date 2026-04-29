@@ -344,12 +344,11 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
 
     // 3. Query pending review state to decide initial action
     const octokit = await getAuthenticatedOctokit();
-    const commentsResponse = await withRetry(
-        () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: prNumber, per_page: 100 }),
+    const prComments = await withRetry(
+        () => octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: prNumber, per_page: 100 }),
         { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
         `get_pr_comments_${owner}_${repo}_${prNumber}`
-    ) as { data: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }> };
-    const prComments = commentsResponse.data;
+    ) as Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>;
 
     const { hasPendingReview } = await deps.getPendingReviewState(
         prComments as Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>,
@@ -359,7 +358,8 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     // 4. Add `ultrafix` label to the PR
     const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     const hasUltrafixLabel = prData.prLabels.some(l => l.name === 'ultrafix');
-    if (!hasUltrafixLabel) {
+    const labelWasAdded = !hasUltrafixLabel;
+    if (labelWasAdded) {
         await safeUpdateLabels(
             { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
             [],
@@ -370,50 +370,73 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     // 5. Determine the initial action based on pending review state
     const initialAction: 'review' | 'fix' = hasPendingReview ? 'fix' : 'review';
 
-    // 6. Post a circuit-breaker comment
-    await withRetry(
-        () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+    try {
+        // 6. Post a circuit-breaker comment
+        await withRetry(
+            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: `🔄 **Ultrafix loop started** (goal: ${effectiveGoal}/10, max cycles: ${effectiveMaxCycles})\n\nFirst action: \`/${initialAction}\`\n\n> 💡 **Tip:** Remove the \`ultrafix\` label from this PR to stop further ultrafix cycles.`,
+            }),
+            { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
+            `post_ultrafix_comment_${owner}_${repo}_${prNumber}`
+        );
+
+        // 7. Persist ultrafix state in Redis after label + comment are committed
+        await deps.startLoop(redisClient, {
             owner,
             repo,
-            issue_number: prNumber,
-            body: `🔄 **Ultrafix loop started** (goal: ${effectiveGoal}/10, max cycles: ${effectiveMaxCycles})\n\nFirst action: \`/${initialAction}\`\n\n> 💡 **Tip:** Remove the \`ultrafix\` label from this PR to stop further ultrafix cycles.`,
-        }),
-        { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
-        `post_ultrafix_comment_${owner}_${repo}_${prNumber}`
-    );
+            pr: prNumber,
+            goal: effectiveGoal,
+            maxCycles: effectiveMaxCycles,
+            pauseSeconds: effectivePauseSeconds,
+            reviewModel: effectiveReviewModel,
+        }, hasPendingReview);
 
-    // 7. Persist ultrafix state in Redis after label + comment are committed
-    await deps.startLoop(redisClient, {
-        owner,
-        repo,
-        pr: prNumber,
-        goal: effectiveGoal,
-        maxCycles: effectiveMaxCycles,
-        pauseSeconds: effectivePauseSeconds,
-        reviewModel: effectiveReviewModel,
-    }, hasPendingReview);
+        correlatedLogger.info(
+            { pullRequestNumber: prNumber, initialAction, effectiveGoal, effectiveMaxCycles, effectivePauseSeconds, effectiveReviewModel },
+            `/ultrafix initialized, first action: ${initialAction}`,
+        );
 
-    correlatedLogger.info(
-        { pullRequestNumber: prNumber, initialAction, effectiveGoal, effectiveMaxCycles, effectivePauseSeconds, effectiveReviewModel },
-        `/ultrafix initialized, first action: ${initialAction}`,
-    );
+        // 9. Build a command meta for the first action (review or fix), carrying ultrafix metadata
+        const firstActionMeta: CommandMeta = initialAction === 'review'
+            ? { mode: 'review', models: effectiveReviewModel ? [effectiveReviewModel] : [], instructions: commandMeta.instructions }
+            : { mode: 'fix', instructions: commandMeta.instructions };
 
-    // 9. Build a command meta for the first action (review or fix), carrying ultrafix metadata
-    const firstActionMeta: CommandMeta = initialAction === 'review'
-        ? { mode: 'review', models: effectiveReviewModel ? [effectiveReviewModel] : [], instructions: commandMeta.instructions }
-        : { mode: 'fix', instructions: commandMeta.instructions };
-
-    // 10. Enqueue the first step with ultrafix metadata
-    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
-        payload,
-        redisClient,
-        PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
-        MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN,
-        correlationId,
-        commandMeta: firstActionMeta,
-        prefetchedPRData: prData,
-        ultrafixMeta: commandMeta,
-    });
+        // 10. Enqueue the first step with ultrafix metadata
+        await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
+            payload,
+            redisClient,
+            PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+            MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN,
+            correlationId,
+            commandMeta: firstActionMeta,
+            prefetchedPRData: prData,
+            ultrafixMeta: commandMeta,
+        });
+    } catch (error) {
+        // Rollback: remove the ultrafix label if we added it, and post a failure comment
+        correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed after side effects, rolling back');
+        try {
+            if (labelWasAdded) {
+                await safeUpdateLabels(
+                    { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+                    ['ultrafix'],
+                    [],
+                );
+            }
+            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: `❌ **Ultrafix loop failed to start.** The ultrafix label has been removed. Please try again.\n\nError: ${(error as Error).message}`,
+            });
+        } catch (rollbackError) {
+            correlatedLogger.error({ pullRequestNumber: prNumber, rollbackError }, '/ultrafix rollback also failed');
+        }
+        throw error;
+    }
 }
 
 export async function processCommentEvent(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {

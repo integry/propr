@@ -233,7 +233,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         ...otherSettings
       } = settings;
 
-      const savePromises: Promise<boolean>[] = [configManager.saveSettings(otherSettings)];
+      // Validate all fields BEFORE creating any save promises to ensure atomicity.
       const extracted = extractSettingSaves({
         auto_followup_score_threshold,
         auto_resolve_merge_conflicts,
@@ -246,7 +246,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       if (extracted.error) {
         return { status: 400, body: { error: extracted.error } };
       }
-      savePromises.push(...extracted.saves);
+
+      const savePromises: Promise<boolean>[] = [configManager.saveSettings(otherSettings), ...extracted.saves];
 
       await Promise.all(savePromises);
       await publishConfigUpdate('settings_update');

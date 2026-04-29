@@ -26,7 +26,7 @@ export interface HistoryItemMetadata {
   description?: string;
   commitResult?: { commitHash?: string; commitMessage?: string };
   tokenUsage?: TokenUsage;
-  commandMode?: 'default' | 'review' | 'fix';
+  commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
   consumedReviewCommentIds?: number[];
   ultrafixCycle?: boolean;
   ultrafixGoal?: number;
@@ -57,7 +57,7 @@ export interface TaskInfo {
   modelName?: string;
   model?: string;
   llmProvider?: string;
-  commandMode?: 'default' | 'review' | 'fix';
+  commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
   ultrafixCycle?: boolean;
 }
 

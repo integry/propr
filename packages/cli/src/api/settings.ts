@@ -198,10 +198,10 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
   switch (key) {
     case "worker_concurrency":
     case "auto_followup_score_threshold": {
-      const parsed = parseInt(value, 10);
-      if (isNaN(parsed)) {
-        throw new Error(`Invalid value for ${key}: must be a number`);
+      if (!/^-?\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be an integer`);
       }
+      const parsed = Number(value);
       if (key === "auto_followup_score_threshold" && (parsed < 0 || parsed > 9)) {
         throw new Error(`Invalid value for ${key}: must be between 0 and 9`);
       }
@@ -211,22 +211,31 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       return parsed;
     }
     case "ultrafix_rating_goal": {
-      const parsed = parseInt(value, 10);
-      if (isNaN(parsed) || parsed < 1 || parsed > 10) {
+      if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be a positive integer between 1 and 10`);
+      }
+      const parsed = Number(value);
+      if (parsed < 1 || parsed > 10) {
         throw new Error(`Invalid value for ${key}: must be a number between 1 and 10`);
       }
       return parsed;
     }
     case "ultrafix_max_cycles": {
-      const parsed = parseInt(value, 10);
-      if (isNaN(parsed) || parsed < 1) {
+      if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be a positive integer`);
+      }
+      const parsed = Number(value);
+      if (parsed < 1) {
         throw new Error(`Invalid value for ${key}: must be a positive integer`);
       }
       return parsed;
     }
     case "ultrafix_pause_seconds": {
-      const parsed = parseInt(value, 10);
-      if (isNaN(parsed) || parsed < 0) {
+      if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be a non-negative integer`);
+      }
+      const parsed = Number(value);
+      if (parsed < 0) {
         throw new Error(`Invalid value for ${key}: must be a non-negative integer`);
       }
       return parsed;

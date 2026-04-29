@@ -145,41 +145,54 @@ interface SettingFields {
 }
 
 function validateIntRange(raw: unknown, min: number, max: number): number | null {
-  const value = parseInt(String(raw), 10);
-  return (isNaN(value) || value < min || value > max) ? null : value;
+  const value = typeof raw === 'number' ? raw : Number(String(raw));
+  return (!Number.isInteger(value) || value < min || value > max) ? null : value;
+}
+
+function validateStrictInt(raw: unknown, min: number, max: number): number | null {
+  const str = String(raw);
+  if (!/^-?\d+$/.test(str)) return null;
+  const value = Number(str);
+  return (value < min || value > max) ? null : value;
 }
 
 export function extractSettingSaves(fields: SettingFields): { error?: string; saves: Promise<boolean>[] } {
-  const saves: Promise<boolean>[] = [];
+  // Phase 1: Validate all fields first, collecting save thunks. No saves are started yet.
+  const thunks: Array<() => Promise<boolean>> = [];
+
   if (fields.auto_followup_score_threshold !== undefined) {
     const v = validateIntRange(fields.auto_followup_score_threshold, 0, 9);
     if (v === null) return { error: 'auto_followup_score_threshold must be a number between 0 and 9', saves: [] };
-    saves.push(configManager.saveAutoFollowupScoreThreshold(v));
+    thunks.push(() => configManager.saveAutoFollowupScoreThreshold(v));
   }
   if (fields.auto_resolve_merge_conflicts !== undefined) {
     if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [] };
-    saves.push(configManager.saveAutoResolveMergeConflicts(fields.auto_resolve_merge_conflicts));
+    const val = fields.auto_resolve_merge_conflicts;
+    thunks.push(() => configManager.saveAutoResolveMergeConflicts(val));
   }
   if (fields.pr_review_model !== undefined) {
     if (typeof fields.pr_review_model !== 'string') return { error: 'pr_review_model must be a string', saves: [] };
-    saves.push(configManager.savePrReviewModel(fields.pr_review_model));
+    const val = fields.pr_review_model;
+    thunks.push(() => configManager.savePrReviewModel(val));
   }
   if (fields.ultrafix_rating_goal !== undefined) {
     const v = validateIntRange(fields.ultrafix_rating_goal, 1, 10);
     if (v === null) return { error: 'ultrafix_rating_goal must be a number between 1 and 10', saves: [] };
-    saves.push(configManager.saveUltrafixRatingGoal(v));
+    thunks.push(() => configManager.saveUltrafixRatingGoal(v));
   }
   if (fields.ultrafix_max_cycles !== undefined) {
-    const v = parseInt(String(fields.ultrafix_max_cycles), 10);
-    if (isNaN(v) || v < 1) return { error: 'ultrafix_max_cycles must be a positive integer', saves: [] };
-    saves.push(configManager.saveUltrafixMaxCycles(v));
+    const v = validateStrictInt(fields.ultrafix_max_cycles, 1, Infinity);
+    if (v === null) return { error: 'ultrafix_max_cycles must be a positive integer', saves: [] };
+    thunks.push(() => configManager.saveUltrafixMaxCycles(v));
   }
   if (fields.ultrafix_pause_seconds !== undefined) {
-    const v = parseInt(String(fields.ultrafix_pause_seconds), 10);
-    if (isNaN(v) || v < 0) return { error: 'ultrafix_pause_seconds must be a non-negative integer', saves: [] };
-    saves.push(configManager.saveUltrafixPauseSeconds(v));
+    const v = validateStrictInt(fields.ultrafix_pause_seconds, 0, Infinity);
+    if (v === null) return { error: 'ultrafix_pause_seconds must be a non-negative integer', saves: [] };
+    thunks.push(() => configManager.saveUltrafixPauseSeconds(v));
   }
-  return { saves };
+
+  // Phase 2: All validation passed — start saves now.
+  return { saves: thunks.map(fn => fn()) };
 }
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
