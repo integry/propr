@@ -292,6 +292,7 @@ export async function continueUltrafixLoop(
             nextAction: decision.action,
             savedAt: new Date().toISOString(),
             reason: readiness.reasons.join(', '),
+            ultrafixMeta: params.ultrafixMeta,
         });
         correlatedLogger.info(
             { pullRequestNumber, nextAction: decision.action, blockingReasons: readiness.reasons },
@@ -348,12 +349,21 @@ export async function resumeDeferredContinuation(
     }
 
     const correlationId = generateCorrelationId();
+    // Use ultrafixMeta from deferred record, or reconstruct from state as fallback
+    const ultrafixMeta = deferred.ultrafixMeta ?? {
+        mode: 'ultrafix' as const,
+        goal: state.goal,
+        maxCycles: state.maxCycles,
+        pauseSeconds: state.pauseSeconds,
+        reviewModel: state.reviewModel || undefined,
+        instructions: '',
+    };
     const params: UltrafixContinuationParams = {
         owner,
         repo,
         pullRequestNumber: pr,
         completedAction: state.lastAction ?? 'review',
-        ultrafixMeta: undefined,
+        ultrafixMeta,
         redisClient,
         correlatedLogger,
         correlationId,

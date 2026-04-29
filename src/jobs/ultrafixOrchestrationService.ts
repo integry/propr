@@ -66,6 +66,8 @@ export interface UltrafixDeferredContinuation {
     nextAction: UltrafixAction;
     savedAt: string;
     reason: string;
+    /** UltrafixMeta to pass to the next job when resuming */
+    ultrafixMeta?: import('@propr/core').UltrafixCommandMeta;
 }
 
 // --- Constants ---
