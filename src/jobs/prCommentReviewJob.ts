@@ -8,7 +8,7 @@ import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError } from '@propr/core';
+import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError, loadPrReviewModel } from '@propr/core';
 import {
     fetchLinkedIssueContext,
     buildCommentHistory, updateTaskTitleForPR
@@ -121,7 +121,7 @@ async function resolveDefaultAgentAndModel(
     return { resolvedAlias, resolvedModel };
 }
 
-async function resolveReviewAssignments(
+export async function resolveReviewAssignments(
     requestedModels: string[] | undefined,
     llm: string | null | undefined,
     correlatedLogger: Logger
@@ -131,7 +131,24 @@ async function resolveReviewAssignments(
 
     const assignments: ReviewAssignment[] = [];
 
-    const modelsToReview = (requestedModels && requestedModels.length > 0) ? requestedModels : [llm || 'default'];
+    let modelsToReview: string[];
+    if (requestedModels && requestedModels.length > 0) {
+        modelsToReview = requestedModels;
+    } else if (llm) {
+        modelsToReview = [llm];
+    } else {
+        // Fall back to configured pr_review_model before using the default agent model
+        let prReviewModel = '';
+        try {
+            prReviewModel = await loadPrReviewModel();
+        } catch (err) {
+            correlatedLogger.debug({ error: (err as Error).message }, 'Failed to load pr_review_model setting');
+        }
+        modelsToReview = prReviewModel ? [prReviewModel] : ['default'];
+        if (prReviewModel) {
+            correlatedLogger.info({ prReviewModel }, 'Using configured pr_review_model as default review model');
+        }
+    }
 
     for (const modelLabel of modelsToReview) {
         try {
