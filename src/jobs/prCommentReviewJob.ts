@@ -8,7 +8,7 @@ import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError, loadPrReviewModel } from '@propr/core';
+import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError, loadPrReviewModel, db } from '@propr/core';
 import {
     fetchLinkedIssueContext,
     buildCommentHistory, updateTaskTitleForPR
@@ -19,6 +19,7 @@ import {
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
+import { loadState as loadUltrafixState } from './ultrafixOrchestrationService.js';
 import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
@@ -384,6 +385,18 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
     const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
 
+    // Build ultrafix metadata if this is part of an ultrafix loop
+    let ultrafixHistoryMeta: Record<string, unknown> | undefined;
+    if (job.data.ultrafixMeta) {
+        const ufState = await loadUltrafixState(redisClient, repoOwner, repoName, pullRequestNumber);
+        ultrafixHistoryMeta = {
+            ultrafixCycle: true,
+            ultrafixGoal: job.data.ultrafixMeta.goal ?? ufState?.goal,
+            ultrafixCycleCount: ufState?.cycleCount ?? 0,
+            ultrafixMaxCycles: job.data.ultrafixMeta.maxCycles ?? ufState?.maxCycles,
+        };
+    }
+
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',
         historyMetadata: {
@@ -392,7 +405,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 model: r.assignment.model, label: r.assignment.label,
                 success: r.analysisResult.success, commentUrl: r.commentUrl, error: r.error,
             })),
-            ...(job.data.ultrafixMeta && { ultrafixCycle: true }),
+            ...ultrafixHistoryMeta,
         },
     });
 
@@ -415,6 +428,33 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 { pullRequestNumber, ...continuationResult },
                 'Ultrafix loop continuation after review',
             );
+
+            // Patch the COMPLETED history entry with continuation details
+            try {
+                const latestHistory = await db('task_history')
+                    .where({ task_id: taskId, state: 'completed' })
+                    .orderBy('timestamp', 'desc')
+                    .first();
+                if (latestHistory) {
+                    const existingMeta = typeof latestHistory.metadata === 'string'
+                        ? JSON.parse(latestHistory.metadata) : (latestHistory.metadata ?? {});
+                    const patchedMeta = {
+                        ...existingMeta,
+                        ...(continuationResult.score != null && { ultrafixScore: continuationResult.score }),
+                        ...(continuationResult.cycleCount != null && { ultrafixCycleCount: continuationResult.cycleCount }),
+                        ...(continuationResult.nextAction && { ultrafixNextAction: continuationResult.nextAction }),
+                        ...(!continuationResult.continued && { ultrafixStopReason: continuationResult.reason }),
+                    };
+                    await db('task_history')
+                        .where({ history_id: latestHistory.history_id })
+                        .update({ metadata: JSON.stringify(patchedMeta) });
+                }
+            } catch (patchErr) {
+                correlatedLogger.warn(
+                    { error: (patchErr as Error).message, taskId },
+                    'Failed to patch ultrafix metadata into history entry',
+                );
+            }
         } catch (contErr) {
             correlatedLogger.error(
                 { error: (contErr as Error).message, pullRequestNumber },

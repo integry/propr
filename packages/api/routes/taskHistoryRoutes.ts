@@ -76,7 +76,7 @@ async function getHistoryFromDb(
     if (!task || historyRecords.length === 0) return null;
 
     const [repoOwner, repoName] = (task.repository as string).split('/');
-    const { title, subtitle, pullRequestNumber, issueNumber, commandMode } = parseJobData(task.initial_job_data);
+    const { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta } = parseJobData(task.initial_job_data);
     const isPr = task.task_type === 'pr-comment' || taskId.startsWith('pr-comments-batch-') || !!pullRequestNumber;
 
     const taskInfo: Record<string, unknown> = {
@@ -92,6 +92,7 @@ async function getHistoryFromDb(
 
     if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
     if (commandMode) taskInfo.commandMode = commandMode;
+    if (hasUltrafixMeta) taskInfo.ultrafixCycle = true;
 
     const llmExecutions = await db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc');
     const llmLog = await db('llm_logs')
@@ -121,6 +122,16 @@ async function getHistoryFromDb(
     const history = historyRecords.map((record: Record<string, unknown>) =>
       mapDbHistoryRecord(record, executionsByHistoryId, executionsBySessionId)
     );
+
+    // If ultrafixCycle not yet set from job data, check history metadata
+    if (!taskInfo.ultrafixCycle) {
+      const hasUltrafixHistory = history.some((h: Record<string, unknown>) => {
+        const meta = h.metadata as Record<string, unknown> | undefined;
+        return meta?.ultrafixCycle === true;
+      });
+      if (hasUltrafixHistory) taskInfo.ultrafixCycle = true;
+    }
+
     console.log(`Fetched ${history.length} history records from SQLite for task ${taskId}`);
     return { history, taskInfo, usageMetrics, usageMetricRecords };
   } catch (error) {
@@ -136,8 +147,9 @@ function extractIssueNumberFromTitle(title: string | null | undefined): number |
   return issueMatch ? parseInt(issueMatch[1], 10) : null;
 }
 
-function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null; commandMode: string | null } {
+function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null; commandMode: string | null; hasUltrafixMeta: boolean } {
   let title = null, subtitle = null, pullRequestNumber = null, issueNumber = null, commandMode = null;
+  let hasUltrafixMeta = false;
   if (initialJobData) {
     try {
       const jobData = typeof initialJobData === 'string' ? JSON.parse(initialJobData) : initialJobData;
@@ -147,11 +159,12 @@ function parseJobData(initialJobData: unknown): { title: string | null; subtitle
       pullRequestNumber = jobData.pullRequestNumber || ref?.pullRequestNumber || null;
       issueNumber = jobData.issueNumber || ref?.issueNumber || null;
       commandMode = jobData.commandMode || null;
+      hasUltrafixMeta = !!jobData.ultrafixMeta;
       if (!title && ref) title = ref.title;
       if (!issueNumber && title) issueNumber = extractIssueNumberFromTitle(title);
     } catch (e) { console.error('Failed to parse initial_job_data', e); }
   }
-  return { title, subtitle, pullRequestNumber, issueNumber, commandMode };
+  return { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta };
 }
 
 function mapDbHistoryRecord(
@@ -238,12 +251,22 @@ async function getHistoryFromRedis(
           || extractIssueNumberFromTitle(ref.title as string | null | undefined);
         if (issueNumber) taskInfo.issueNumber = issueNumber;
       }
-      // Extract commandMode from history metadata if available
-      const commandMode = (state.history || []).find(
+      // Extract commandMode and ultrafixCycle from history metadata if available
+      const historyWithMeta = (state.history || []).find(
         h => h.metadata && typeof h.metadata === 'object' && 'commandMode' in h.metadata
-      )?.metadata as Record<string, string> | undefined;
-      if (commandMode?.commandMode) {
-        taskInfo.commandMode = commandMode.commandMode;
+      )?.metadata as Record<string, unknown> | undefined;
+      if (historyWithMeta?.commandMode) {
+        taskInfo.commandMode = historyWithMeta.commandMode;
+      }
+      if (historyWithMeta?.ultrafixCycle) {
+        taskInfo.ultrafixCycle = true;
+      }
+      // Also check other history entries for ultrafixCycle if not found above
+      if (!taskInfo.ultrafixCycle) {
+        const ultrafixEntry = (state.history || []).find(
+          h => h.metadata && typeof h.metadata === 'object' && 'ultrafixCycle' in h.metadata
+        );
+        if (ultrafixEntry) taskInfo.ultrafixCycle = true;
       }
     }
     return { history, taskInfo };
@@ -284,6 +307,9 @@ function buildTaskInfoFromJob(job: Job<JobData, JobReturnValue>, taskId: string)
     const issueNumber = (job.data as Record<string, unknown>).issueNumber as number | null | undefined
       || extractIssueNumberFromTitle(job.data.title);
     if (issueNumber) taskInfo.issueNumber = issueNumber;
+  }
+  if ((job.data as Record<string, unknown>).ultrafixMeta) {
+    taskInfo.ultrafixCycle = true;
   }
   return taskInfo;
 }

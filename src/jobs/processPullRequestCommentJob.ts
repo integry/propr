@@ -31,6 +31,7 @@ import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUt
 import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
+import { loadState as loadUltrafixState } from './ultrafixOrchestrationService.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
@@ -257,6 +258,18 @@ async function handlePostExecution(params: PostExecutionParams, taskUrl: string)
         );
     }
 
+    // Build ultrafix metadata if this is part of an ultrafix loop
+    let ultrafixHistoryMeta: Record<string, unknown> | undefined;
+    if (job.data.ultrafixMeta) {
+        const ufState = await loadUltrafixState(redisClient, context.repoOwner, context.repoName, context.pullRequestNumber);
+        ultrafixHistoryMeta = {
+            ultrafixCycle: true,
+            ultrafixGoal: job.data.ultrafixMeta.goal ?? ufState?.goal,
+            ultrafixCycleCount: ufState?.cycleCount ?? 0,
+            ultrafixMaxCycles: job.data.ultrafixMeta.maxCycles ?? ufState?.maxCycles,
+        };
+    }
+
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
         historyMetadata: {
@@ -265,7 +278,7 @@ async function handlePostExecution(params: PostExecutionParams, taskUrl: string)
             ...(unprocessedReviewComments.length > 0 && {
                 consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id),
             }),
-            ...(job.data.ultrafixMeta && { ultrafixCycle: true }),
+            ...ultrafixHistoryMeta,
         }
     });
 
@@ -397,6 +410,32 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
                 { pullRequestNumber, ...continuationResult },
                 'Ultrafix loop continuation after fix',
             );
+
+            // Patch the COMPLETED history entry with continuation details
+            try {
+                const latestHistory = await db('task_history')
+                    .where({ task_id: taskId, state: 'completed' })
+                    .orderBy('timestamp', 'desc')
+                    .first();
+                if (latestHistory) {
+                    const existingMeta = typeof latestHistory.metadata === 'string'
+                        ? JSON.parse(latestHistory.metadata) : (latestHistory.metadata ?? {});
+                    const patchedMeta = {
+                        ...existingMeta,
+                        ...(continuationResult.cycleCount != null && { ultrafixCycleCount: continuationResult.cycleCount }),
+                        ...(continuationResult.nextAction && { ultrafixNextAction: continuationResult.nextAction }),
+                        ...(!continuationResult.continued && { ultrafixStopReason: continuationResult.reason }),
+                    };
+                    await db('task_history')
+                        .where({ history_id: latestHistory.history_id })
+                        .update({ metadata: JSON.stringify(patchedMeta) });
+                }
+            } catch (patchErr) {
+                correlatedLogger.warn(
+                    { error: (patchErr as Error).message, taskId },
+                    'Failed to patch ultrafix metadata into history entry',
+                );
+            }
         } catch (contErr) {
             correlatedLogger.error(
                 { error: (contErr as Error).message, pullRequestNumber },
