@@ -18,6 +18,7 @@ import {
 } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
+import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
@@ -374,9 +375,36 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 model: r.assignment.model, label: r.assignment.label,
                 success: r.analysisResult.success, commentUrl: r.commentUrl, error: r.error,
             })),
+            ...(job.data.ultrafixMeta && { ultrafixCycle: true }),
         },
     });
 
     correlatedLogger.info({ pullRequestNumber, successCount, failCount, totalReviews: assignments.length }, 'Review processing completed');
+
+    // Ultrafix loop continuation: after a review step, check if the loop should continue
+    if (job.data.ultrafixMeta) {
+        try {
+            const continuationResult = await continueUltrafixLoop({
+                owner: repoOwner,
+                repo: repoName,
+                pullRequestNumber,
+                completedAction: 'review',
+                ultrafixMeta: job.data.ultrafixMeta,
+                redisClient,
+                correlatedLogger,
+                correlationId,
+            });
+            correlatedLogger.info(
+                { pullRequestNumber, ...continuationResult },
+                'Ultrafix loop continuation after review',
+            );
+        } catch (contErr) {
+            correlatedLogger.error(
+                { error: (contErr as Error).message, pullRequestNumber },
+                'Ultrafix loop continuation failed after review',
+            );
+        }
+    }
+
     return { status: 'complete', pullRequestNumber, reviewsPosted: successCount, reviewsFailed: failCount };
 }
