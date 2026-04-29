@@ -264,7 +264,17 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
           };
         }
       }
-      await configManager.saveSettings(otherSettings);
+      try {
+        await configManager.saveSettings(otherSettings);
+      } catch (saveError) {
+        console.error(`Settings save failed for general settings (${completedSaves.length} earlier setting(s) already committed):`, saveError);
+        return {
+          status: 500,
+          body: {
+            error: `Failed to save general settings. ${completedSaves.length} earlier setting(s) were already saved. Please retry or check system logs.`
+          }
+        };
+      }
       await publishConfigUpdate('settings_update');
       return { status: 200, body: { success: true, settings } };
     });

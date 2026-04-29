@@ -433,7 +433,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
                 owner,
                 repo,
                 issue_number: prNumber,
-                body: `❌ **Ultrafix loop failed to start.** The ultrafix label has been removed. Please try again.\n\nError: ${(error as Error).message}`,
+                body: `❌ **Ultrafix loop failed to start.** The ultrafix label has been removed. Please try again.\n\nIf the problem persists, check the system logs for details.`,
             });
         } catch (rollbackError) {
             correlatedLogger.error({ pullRequestNumber: prNumber, rollbackError }, '/ultrafix rollback also failed');

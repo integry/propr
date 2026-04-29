@@ -1,6 +1,6 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
-import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges } from '@propr/core';
+import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, resolveModelAlias, MODEL_INFO_MAP } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
 
 interface AgentConfig {
@@ -169,11 +169,22 @@ export function extractSettingSaves(fields: SettingFields): { error?: string; sa
   if (fields.pr_review_model !== undefined) {
     if (typeof fields.pr_review_model !== 'string') return { error: 'pr_review_model must be a string', saves: [] };
     const val = fields.pr_review_model.trim();
-    // Empty string is valid (means "use default agent model"), but whitespace-only or
-    // strings with invalid characters are not. Model values should look like an identifier
+    // Reject whitespace-only input — only an explicitly empty string clears the setting.
+    if (val === '' && fields.pr_review_model.length > 0) {
+      return { error: 'pr_review_model must not be whitespace-only; use an empty string to clear', saves: [] };
+    }
+    // Empty string is valid (means "use default agent model"), but strings with invalid
+    // characters are not. Model values should look like an identifier
     // (e.g. "claude-sonnet-4-6", "gemini:gemini-pro", "codex").
     if (val !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(val)) {
       return { error: 'pr_review_model contains invalid characters; expected a model identifier (e.g. "claude-sonnet-4-6")', saves: [] };
+    }
+    // Validate that the model resolves to a known model in the system.
+    if (val !== '') {
+      const resolved = resolveModelAlias(val);
+      if (!MODEL_INFO_MAP[resolved]) {
+        return { error: `pr_review_model "${val}" does not resolve to a known model`, saves: [] };
+      }
     }
     thunks.push(() => configManager.savePrReviewModel(val));
   }

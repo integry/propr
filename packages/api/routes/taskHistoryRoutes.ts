@@ -236,15 +236,17 @@ function buildTaskInfoFromState(
       || extractIssueNumberFromTitle(ref.title as string | null | undefined);
     if (issueNumber) taskInfo.issueNumber = issueNumber;
   }
-  const findMetaWith = (key: string) => historyEntries.find(
+  // Search from the end to find the latest/current metadata value rather than the earliest.
+  // This matters for ultrafix flows that alternate review/fix states.
+  const findLastMetaWith = (key: string) => [...historyEntries].reverse().find(
     h => h.metadata && typeof h.metadata === 'object' && key in h.metadata
   )?.metadata as Record<string, unknown> | undefined;
-  const historyWithMeta = findMetaWith('commandMode');
+  const historyWithMeta = findLastMetaWith('commandMode');
   if (historyWithMeta?.commandMode) taskInfo.commandMode = historyWithMeta.commandMode;
   if (historyWithMeta?.ultrafixCycle === true) {
     taskInfo.ultrafixCycle = true;
   } else {
-    const ultrafixMeta = findMetaWith('ultrafixCycle');
+    const ultrafixMeta = findLastMetaWith('ultrafixCycle');
     if (ultrafixMeta?.ultrafixCycle === true) {
       taskInfo.ultrafixCycle = true;
     }
