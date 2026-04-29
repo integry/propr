@@ -9,7 +9,7 @@ import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitC
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
 import { createLogFiles } from '@propr/core';
-import { UsageLimitError, AgentRegistry, resolveLlmLabel } from '@propr/core';
+import { UsageLimitError, AgentRegistry, resolveLlmLabel, areAllChecksPassing, getCurrentPRHead } from '@propr/core';
 import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
@@ -31,7 +31,51 @@ import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUt
 import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { continueUltrafixLoop, buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixLoopContinuation.js';
-import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import { loadState as loadUltrafixState, saveDeferredContinuation, type UltrafixAction } from './ultrafixOrchestrationService.js';
+
+/**
+ * For ultrafix jobs, re-check CI readiness before executing.
+ * If CI isn't passing, defer and let check_run hook resume later.
+ * Returns true if ready to proceed, false if deferred.
+ */
+async function checkUltrafixReadiness(
+    job: Job<CommentJobData>,
+    repoOwner: string,
+    repoName: string,
+    pullRequestNumber: number,
+    correlatedLogger: Logger
+): Promise<boolean> {
+    if (!job.data.ultrafixMeta) return true; // Not an ultrafix job
+
+    try {
+        const headSha = await getCurrentPRHead(repoOwner, repoName, pullRequestNumber);
+        if (!headSha) {
+            correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix pre-check: could not get PR head SHA');
+            return true; // Proceed anyway if we can't check
+        }
+
+        const checksPassing = await areAllChecksPassing(repoOwner, repoName, headSha);
+        if (checksPassing) {
+            correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks passing, proceeding');
+            return true;
+        }
+
+        // CI not passing - defer this job
+        correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks not passing, deferring');
+        await saveDeferredContinuation(redisClient, {
+            owner: repoOwner,
+            repo: repoName,
+            pr: pullRequestNumber,
+            nextAction: job.data.commandMode as 'review' | 'fix',
+            savedAt: new Date().toISOString(),
+            reason: 'pre_execution_ci_check_failed',
+        });
+        return false;
+    } catch (err) {
+        correlatedLogger.warn({ pullRequestNumber, error: (err as Error).message }, 'Ultrafix pre-check: error checking CI, proceeding anyway');
+        return true;
+    }
+}
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
@@ -459,6 +503,14 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
 
     const lockAcquired = await acquirePRLock({ lockKey, correlationId, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
+
+    // For ultrafix jobs, re-check CI readiness before executing
+    const ultrafixReady = await checkUltrafixReadiness(job, repoOwner, repoName, pullRequestNumber, correlatedLogger);
+    if (!ultrafixReady) {
+        // Release lock and defer - check_run hook will resume when CI passes
+        await redisClient.del(lockKey);
+        return { status: 'deferred', reason: 'ultrafix_ci_not_ready' };
+    }
 
     try {
         await stateManager.createTaskState(taskId, { number: pullRequestNumber, repoOwner, repoName, comments: job.data.comments, modelName } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
