@@ -20,7 +20,6 @@ interface ConfigRoutesDeps {
   redisClient: RedisClientType;
 }
 
-
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
 
 export function createConfigRoutes(deps: ConfigRoutesDeps) {
@@ -73,8 +72,6 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await configManager.saveFollowupKeywords(followup_keywords);
-
-      // Publish config update event
       await publishConfigUpdate('followup_keywords_update');
 
       return { status: 200, body: { success: true, followup_keywords } };
@@ -102,8 +99,6 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords);
-
-      // Publish config update event
       await publishConfigUpdate('followup_ignore_keywords_update');
 
       return { status: 200, body: { success: true, followup_ignore_keywords } };
@@ -380,11 +375,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
             // Resolve version to actual semver
             const resolvedVersion = await resolveVersion(agentType, versionType, agent.cliVersion);
             processedAgent.cliVersionResolved = resolvedVersion;
-
-            // Compute content hash and update docker image tag
-            const contentHash = computeContentHash(agentType);
-            const imageTag = generateImageTag(agentType, resolvedVersion, contentHash);
-            processedAgent.dockerImage = imageTag;
+            processedAgent.dockerImage = generateImageTag(agentType, resolvedVersion, computeContentHash(agentType));
 
           } catch (versionError) {
             console.warn(`Failed to resolve version for agent ${agent.alias}:`, versionError);
@@ -404,8 +395,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
       // Refresh the AgentRegistry to apply changes immediately
       try {
-        const registry = AgentRegistry.getInstance();
-        await registry.refresh();
+        await AgentRegistry.getInstance().refresh();
       } catch (refreshError) {
         console.error('Warning: Failed to refresh agent registry:', refreshError);
       }
