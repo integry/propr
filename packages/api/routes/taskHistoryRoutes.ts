@@ -238,6 +238,23 @@ function findLatestMetadata(
   return { commandModeMeta, ultrafixCycleMeta };
 }
 
+function resolveIssueNumber(ref: Record<string, unknown>): number | null {
+  const direct = ref.issueNumber as number | null | undefined;
+  if (direct) return direct;
+  return extractIssueNumberFromTitle(ref.title as string | null | undefined);
+}
+
+function applyMetadataFlags(
+  taskInfo: Record<string, unknown>,
+  historyEntries: Array<Record<string, unknown>>
+): void {
+  const { commandModeMeta, ultrafixCycleMeta } = findLatestMetadata(historyEntries);
+  if (commandModeMeta?.commandMode) taskInfo.commandMode = commandModeMeta.commandMode;
+  if (commandModeMeta?.ultrafixCycle === true || ultrafixCycleMeta?.ultrafixCycle === true) {
+    taskInfo.ultrafixCycle = true;
+  }
+}
+
 function buildTaskInfoFromState(
   taskId: string,
   ref: Record<string, unknown>,
@@ -250,15 +267,10 @@ function buildTaskInfoFromState(
     title: ref.title || null, subtitle: ref.subtitle || null, modelName: ref.modelName
   };
   if (isPr) {
-    const issueNumber = ref.issueNumber as number | null | undefined
-      || extractIssueNumberFromTitle(ref.title as string | null | undefined);
+    const issueNumber = resolveIssueNumber(ref);
     if (issueNumber) taskInfo.issueNumber = issueNumber;
   }
-  const { commandModeMeta, ultrafixCycleMeta } = findLatestMetadata(historyEntries);
-  if (commandModeMeta?.commandMode) taskInfo.commandMode = commandModeMeta.commandMode;
-  if (commandModeMeta?.ultrafixCycle === true || ultrafixCycleMeta?.ultrafixCycle === true) {
-    taskInfo.ultrafixCycle = true;
-  }
+  applyMetadataFlags(taskInfo, historyEntries);
   return taskInfo;
 }
 

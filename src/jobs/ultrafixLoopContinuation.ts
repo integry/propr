@@ -20,6 +20,7 @@ import {
 import {
     loadState,
     loadDeferredContinuation,
+    claimDeferredContinuation,
     recordAction,
     clearState,
     determineNextAction,
@@ -331,19 +332,19 @@ export async function resumeDeferredContinuation(
     correlatedLogger: Logger,
 ): Promise<ContinuationResult> {
     const { owner, repo, pr } = prId;
-    const deferred = await loadDeferredContinuation(redisClient, owner, repo, pr);
+    // Atomically claim the deferred record so concurrent check_run events
+    // for the same PR cannot double-enqueue the next step.
+    const deferred = await claimDeferredContinuation(redisClient, owner, repo, pr);
     if (!deferred) {
         return { continued: false, reason: 'no_deferred_continuation' };
     }
 
     const state = await loadState(redisClient, owner, repo, pr);
     if (!state || !state.active) {
-        await clearDeferredContinuation(redisClient, owner, repo, pr);
         return { continued: false, reason: 'no_active_loop' };
     }
 
     const correlationId = generateCorrelationId();
-    // Use ultrafixMeta from deferred record, or reconstruct from state as fallback
     const ultrafixMeta = deferred.ultrafixMeta ?? {
         mode: 'ultrafix' as const,
         goal: state.goal,
@@ -363,7 +364,6 @@ export async function resumeDeferredContinuation(
         correlationId,
     };
 
-    // Re-evaluate readiness
     const readiness = await evaluateReadiness(params);
     correlatedLogger.info(
         { pr, ready: readiness.ready, reasons: readiness.reasons },
@@ -371,6 +371,8 @@ export async function resumeDeferredContinuation(
     );
 
     if (!readiness.ready) {
+        // Not ready yet — re-save so a future check_run can try again
+        await saveDeferredContinuation(redisClient, deferred);
         return {
             continued: false,
             reason: `still_deferred: ${readiness.reasons.join(', ')}`,
@@ -378,8 +380,6 @@ export async function resumeDeferredContinuation(
         };
     }
 
-    // Ready — enqueue and clear deferred record
-    await clearDeferredContinuation(redisClient, owner, repo, pr);
     const delayMs = (state.pauseSeconds || 60) * 1000;
     await enqueueNextStep(params, deferred.nextAction, delayMs);
 

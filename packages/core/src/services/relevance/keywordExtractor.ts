@@ -4,6 +4,20 @@ import logger from '../../utils/logger.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { loadSettings } from '../../config/configManager.js';
 
+// --- Settings cache (avoids a DB round-trip on every LLM extraction call) ---
+
+const SETTINGS_CACHE_TTL_MS = 30_000;
+let _settingsCache: { value: Record<string, unknown>; expiresAt: number } | null = null;
+
+async function getCachedSettings(): Promise<Record<string, unknown>> {
+  if (_settingsCache && Date.now() < _settingsCache.expiresAt) {
+    return _settingsCache.value;
+  }
+  const settings = await loadSettings().catch(() => ({} as Record<string, unknown>));
+  _settingsCache = { value: settings as Record<string, unknown>, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS };
+  return _settingsCache.value;
+}
+
 // --- Basic Keyword Extraction (regex-based) ---
 
 /** Words to filter out during keyword extraction */
@@ -105,7 +119,7 @@ export async function extractKeywordsWithLLM(
   const startTime = Date.now();
   let success = false;
   let errorMessage: string | undefined;
-  const cachedSettings = await loadSettings().catch(() => ({} as Record<string, unknown>));
+  const cachedSettings = await getCachedSettings();
 
   try {
     const llmPrompt = KEYWORD_EXTRACTION_PROMPT.replace('{USER_REQUEST}', prompt);
