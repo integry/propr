@@ -435,6 +435,22 @@ async function processStandardWebhookEvent(
     }
 }
 
+async function handlePreviewRouting(
+    payload: unknown, eventType: WebhookEventType, correlationId: string, deliveryId: string | undefined,
+): Promise<boolean> {
+    if (!ENABLE_PREVIEW_ROUTING) return false;
+    if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
+        handleProcessorLabelChange(payload, correlationId);
+    }
+    await handleInfrastructureEvents(payload, eventType, correlationId);
+    if (processorPrNumber) {
+        logger.withCorrelation(correlationId).info({ processorPrNumber }, 'Forwarding webhook to designated processor PR instance');
+        await forwardToProcessor(payload, processorPrNumber, eventType, { deliveryId: deliveryId || correlationId, correlationId });
+        return true;
+    }
+    return false;
+}
+
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
@@ -443,24 +459,9 @@ export async function processWebhookEvent(
 ): Promise<void> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
-    // 1. Handle Processor Label Changes (Watch for 'preview-env' label on ProPR repo PRs)
-    if (ENABLE_PREVIEW_ROUTING && eventType === 'pull_request' && isPullRequestEvent(payload)) {
-        handleProcessorLabelChange(payload, correlationId);
-    }
+    if (await handlePreviewRouting(payload, eventType, correlationId, deliveryId)) return;
 
-    // 2. Handle Infrastructure Events (Always run for PR events when preview routing is enabled)
-    if (ENABLE_PREVIEW_ROUTING) {
-        await handleInfrastructureEvents(payload, eventType, correlationId);
-    }
-
-    // 3. Routing Decision: Forward to preview instance if applicable
-    if (ENABLE_PREVIEW_ROUTING && processorPrNumber) {
-        correlatedLogger.info({ processorPrNumber }, 'Forwarding webhook to designated processor PR instance');
-        await forwardToProcessor(payload, processorPrNumber, eventType, { deliveryId: deliveryId || correlationId, correlationId });
-        return;
-    }
-
-    // 4. Plan Issue Tracking (runs before standard processing to update status)
+    // Plan Issue Tracking (runs before standard processing to update status)
     await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
     // 5. Auto-merge: Handle check_run events to merge PRs when all checks pass
@@ -483,9 +484,7 @@ export async function processWebhookEvent(
 
     // 6. Epic PR handling
     if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
-        // Create Epic PR when first child PR merges to epic branch
         await handleEpicPRCreationOnMerge(payload, correlationId, correlatedLogger);
-        // Delete base-{branchName} label when Epic PR is merged to main
         await handleEpicPRLabelCleanup(payload, correlationId, correlatedLogger);
     }
 

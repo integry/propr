@@ -443,8 +443,7 @@ export {
     saveUltrafixPauseSeconds
 } from './configManagerUltrafix.js';
 
-export { validatePrReviewModelValue } from './prReviewModelValidator.js';
-export type { PrReviewModelValidationResult } from './prReviewModelValidator.js';
+export { validatePrReviewModelValue, type PrReviewModelValidationResult } from './prReviewModelValidator.js';
 
 // --- Auto Resolve Merge Conflicts ---
 
