@@ -47,7 +47,9 @@ export async function updateTrace(
       draftId,
       step,
       status,
-      data
+      data,
+      draftStatus: 'generating',
+      generationTrace: trace
     });
   } catch (error) {
     // Log but don't throw - database is already updated, so clients can still

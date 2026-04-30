@@ -143,10 +143,10 @@ const PlansPage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [searchQuery, debouncedSearch, setSearchParams]);
 
-  // Handle draft update from WebSocket - refresh drafts list when any draft changes
-  const handleDraftUpdate = useCallback(async () => {
-    console.log('[PlansPage] Received draft update via WebSocket');
-    // Silently refresh drafts list and repository counts to reflect the latest state
+  // Handle draft update from WebSocket - skip step-level generation progress events
+  const handleDraftUpdate = useCallback(async (payload: import('@propr/shared').DraftUpdatePayload) => {
+    if (payload.draftStatus === 'generating') return;
+
     await Promise.all([
       loadDrafts(currentPage, repoFilter, statusFilter, false),
       loadAllRepositories(),

@@ -57,6 +57,10 @@ export interface DraftUpdatePayload {
   timestamp: string;
   /** Step-specific data (e.g., progress percentage, file counts) */
   data?: Record<string, unknown>;
+  /** Current draft status (e.g., 'generating', 'review', 'failed') — allows the UI to react without fetching */
+  draftStatus?: string;
+  /** Full generation trace snapshot — allows the UI to update progress without fetching */
+  generationTrace?: { steps: Array<{ name: string; status: string; data?: Record<string, unknown> }> };
 }
 
 /** Event payload for plan step updates */

@@ -108,6 +108,8 @@ class EventPublisher {
     step: string;
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
     data?: Record<string, unknown>;
+    draftStatus?: string;
+    generationTrace?: { steps: Array<{ name: string; status: string; data?: Record<string, unknown> }> };
   }): Promise<void> {
     const payload: DraftUpdatePayload = {
       eventType: DRAFT_UPDATE,
@@ -115,7 +117,9 @@ class EventPublisher {
       step: params.step,
       status: params.status,
       timestamp: new Date().toISOString(),
-      data: params.data
+      data: params.data,
+      draftStatus: params.draftStatus,
+      generationTrace: params.generationTrace
     };
     await this.publish(REDIS_CHANNELS.DRAFTS, payload);
   }

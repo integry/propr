@@ -10,6 +10,7 @@ import { PathValidationService } from './pathValidationService.js';
 import {
   updateTrace, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
 } from './planningHelpers.js';
+import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
 
 // Re-export everything from the taskPlanning module
@@ -141,6 +142,29 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
     name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
   });
+
+  // Emit final completion event so the UI can transition without polling
+  try {
+    const currentDraft = await db('task_drafts').where({ draft_id: draftId }).select('generation_trace').first();
+    let finalTrace = { steps: [] as Array<{ name: string; status: string; data?: Record<string, unknown> }> };
+    if (currentDraft?.generation_trace) {
+      try {
+        finalTrace = typeof currentDraft.generation_trace === 'string'
+          ? JSON.parse(currentDraft.generation_trace)
+          : currentDraft.generation_trace;
+      } catch { /* use empty trace */ }
+    }
+    const eventPublisher = getEventPublisher();
+    await eventPublisher.publishDraftUpdate({
+      draftId,
+      step: 'complete',
+      status: 'completed',
+      draftStatus: 'review',
+      generationTrace: finalTrace
+    });
+  } catch (error) {
+    correlatedLogger.warn({ error: (error as Error).message }, 'Failed to publish completion event');
+  }
 
   return validatedPlan;
 }

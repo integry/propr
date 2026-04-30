@@ -3,7 +3,7 @@
  */
 
 import { Knex } from 'knex';
-import { generatePlan } from '@propr/core';
+import { generatePlan, getEventPublisher } from '@propr/core';
 import type { GenerateRequestBody, BackgroundGenerationOptions } from './types.js';
 import { VALID_GRANULARITIES } from './validation.js';
 
@@ -68,15 +68,29 @@ export function runBackgroundGeneration(options: BackgroundGenerationOptions): v
           step.status === 'pending' ? { ...step, status: 'failed' } : step
         );
 
+        const failedTrace = {
+          steps: updatedSteps,
+          error: error instanceof Error ? error.message : 'Plan generation failed',
+          failedAt: new Date().toISOString()
+        };
+
         await db('task_drafts').where({ draft_id: draftId }).update({
           status: 'failed',
-          generation_trace: JSON.stringify({
-            steps: updatedSteps,
-            error: error instanceof Error ? error.message : 'Plan generation failed',
-            failedAt: new Date().toISOString()
-          }),
+          generation_trace: JSON.stringify(failedTrace),
           updated_at: db.fn.now()
         });
+
+        // Emit failure event so the UI can transition without polling
+        try {
+          const eventPublisher = getEventPublisher();
+          await eventPublisher.publishDraftUpdate({
+            draftId,
+            step: 'complete',
+            status: 'failed',
+            draftStatus: 'failed',
+            generationTrace: failedTrace
+          });
+        } catch { /* best-effort */ }
       } catch (dbError) {
         console.error(`[generate] Failed to update draft status after error:`, dbError);
       }
