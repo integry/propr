@@ -10,7 +10,7 @@ import {
     handlePlanPRCommentTracking,
     type CommentEventType
 } from './planIssueTracking.js';
-import { handleCheckRunEvent } from './checkRunHandler.js';
+import { handleCheckRunEvent, handleStatusEvent, type StatusEventPayload } from './checkRunHandler.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import type {
@@ -37,7 +37,7 @@ const execAsync = promisify(exec);
 /** Runtime-accessible list of supported webhook event types — single source of truth. */
 export const SUPPORTED_WEBHOOK_EVENTS = [
   'issues', 'issue_comment', 'pull_request_review_comment',
-  'pull_request', 'check_run', 'push',
+  'pull_request', 'check_run', 'push', 'status',
 ] as const;
 
 /** Derived union type — always in sync with the runtime array. */
@@ -157,6 +157,10 @@ function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
 
 function isPushEvent(payload: unknown): payload is PushEvent {
     return typeof payload === 'object' && payload !== null && 'ref' in payload && 'commits' in payload && !('action' in payload);
+}
+
+function isStatusEvent(payload: unknown): payload is StatusEventPayload {
+    return typeof payload === 'object' && payload !== null && 'sha' in payload && 'state' in payload && !('action' in payload) && !('commits' in payload);
 }
 
 // --- PROCESSOR LABEL MANAGEMENT: Track 'preview-env' label on ProPR repo PRs ---
@@ -465,6 +469,15 @@ export async function processWebhookEvent(
             await handleCheckRunEvent(payload, correlationId);
         } catch (checkRunError) {
             correlatedLogger.warn({ error: checkRunError }, 'Check run handler failed, continuing');
+        }
+    }
+
+    // 5b. Handle legacy commit status events for ultrafix loop continuation
+    if (eventType === 'status' && isStatusEvent(payload)) {
+        try {
+            await handleStatusEvent(payload, correlationId);
+        } catch (statusError) {
+            correlatedLogger.warn({ error: statusError }, 'Status event handler failed, continuing');
         }
     }
 

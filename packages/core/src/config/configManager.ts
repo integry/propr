@@ -3,6 +3,7 @@ import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { getIndexingProgress } from '../services/relevance/indexingCancellation.js';
 import { MODEL_INFO_MAP } from '@propr/shared';
+import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 
 // --- Interfaces ---
 
@@ -250,6 +251,7 @@ export async function saveSettings(settings: ConfigSettings): Promise<boolean> {
     const merged = { ...existing, ...settings };
 
     await saveConfig('settings', merged);
+    invalidateSettingsCache();
     logger.info({ settings: merged }, 'Successfully saved settings');
     return true;
 }

@@ -443,3 +443,27 @@ export async function hasActiveTasksForPR(
         return { hasActive: false, activeTasks: [] };
     }
 }
+
+/**
+ * Finds open PRs whose head SHA matches the given commit.
+ * Used by the status event handler to map a commit status update to PRs.
+ */
+export async function findPRsForCommit(
+    owner: string,
+    repoName: string,
+    commitSha: string
+): Promise<Array<{ number: number }>> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+        const { data: pulls } = await octokit.request(
+            'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+            { owner, repo: repoName, commit_sha: commitSha, headers: { accept: 'application/vnd.github.groot-preview+json' } }
+        );
+        return pulls
+            .filter((pr: { state: string }) => pr.state === 'open')
+            .map((pr: { number: number }) => ({ number: pr.number }));
+    } catch (error) {
+        logger.warn({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to find PRs for commit');
+        return [];
+    }
+}

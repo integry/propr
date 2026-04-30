@@ -18,6 +18,10 @@ async function getCachedSettings(): Promise<Record<string, unknown>> {
   return _settingsCache.value;
 }
 
+export function invalidateSettingsCache(): void {
+  _settingsCache = null;
+}
+
 // --- Basic Keyword Extraction (regex-based) ---
 
 /** Words to filter out during keyword extraction */

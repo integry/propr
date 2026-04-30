@@ -244,6 +244,16 @@ function resolveIssueNumber(ref: Record<string, unknown>): number | null {
   return extractIssueNumberFromTitle(ref.title as string | null | undefined);
 }
 
+function resolveTaskTypeAndIssue(
+  taskId: string,
+  ref: Record<string, unknown>
+): { type: string; issueNumber?: number } {
+  const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
+  if (!isPr) return { type: 'issue' };
+  const issueNumber = resolveIssueNumber(ref) ?? undefined;
+  return { type: 'pr-comment', issueNumber };
+}
+
 function applyMetadataFlags(
   taskInfo: Record<string, unknown>,
   historyEntries: Array<Record<string, unknown>>
@@ -260,16 +270,13 @@ function buildTaskInfoFromState(
   ref: Record<string, unknown>,
   historyEntries: Array<Record<string, unknown>>
 ): Record<string, unknown> {
-  const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
+  const { type, issueNumber } = resolveTaskTypeAndIssue(taskId, ref);
   const taskInfo: Record<string, unknown> = {
     repoOwner: ref.repoOwner, repoName: ref.repoName, number: ref.number,
-    type: isPr ? 'pr-comment' : 'issue', comments: ref.comments,
+    type, comments: ref.comments,
     title: ref.title || null, subtitle: ref.subtitle || null, modelName: ref.modelName
   };
-  if (isPr) {
-    const issueNumber = resolveIssueNumber(ref);
-    if (issueNumber) taskInfo.issueNumber = issueNumber;
-  }
+  if (issueNumber) taskInfo.issueNumber = issueNumber;
   applyMetadataFlags(taskInfo, historyEntries);
   return taskInfo;
 }

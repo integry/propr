@@ -11,11 +11,20 @@ import {
     getPRAutoMergeInfo,
     linkedIssueHasAutoMergeLabel,
     hasActiveTasksForPR,
+    findPRsForCommit,
     type MergePROptions,
     type MergePRResult,
     type PRAutoMergeInfo
 } from './checkRunHelpers.js';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
+
+export interface StatusEventPayload {
+    sha: string;
+    state: string;
+    repository: { full_name: string };
+    context?: string;
+    [key: string]: unknown;
+}
 
 export { mergePR, type MergePROptions, type MergePRResult };
 
@@ -254,6 +263,39 @@ export async function handleCheckRunEvent(
             } catch (error) {
                 log.warn({ owner, repoName, prNumber, error: (error as Error).message }, 'Ultrafix check_run hook failed');
             }
+        }
+    }
+}
+
+/**
+ * Handles legacy commit `status` webhook events.
+ * When a commit status reports success, looks up associated open PRs
+ * and fires the ultrafix hook so deferred continuations can resume.
+ */
+export async function handleStatusEvent(
+    payload: StatusEventPayload,
+    correlationId: string
+): Promise<void> {
+    const log = logger.withCorrelation(correlationId);
+    const [owner, repoName] = payload.repository.full_name.split('/');
+
+    log.debug({ owner, repoName, state: payload.state, sha: payload.sha, context: payload.context }, 'status event received');
+
+    if (payload.state !== 'success') return;
+
+    if (!_ultrafixCheckRunHook) return;
+
+    const prs = await findPRsForCommit(owner, repoName, payload.sha);
+    if (prs.length === 0) {
+        log.debug({ owner, repoName, sha: payload.sha }, 'status event: no open PRs for commit');
+        return;
+    }
+
+    for (const pr of prs) {
+        try {
+            await _ultrafixCheckRunHook(owner, repoName, pr.number, payload.sha);
+        } catch (error) {
+            log.warn({ owner, repoName, prNumber: pr.number, error: (error as Error).message }, 'Ultrafix status hook failed');
         }
     }
 }
