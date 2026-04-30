@@ -11,7 +11,8 @@ import type { Redis } from 'ioredis';
 import { getCurrentPRHead, areAllChecksPassing } from '@propr/core';
 import type { CommentJobData } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
-import { continueUltrafixLoop, buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixLoopContinuation.js';
+import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
+import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, saveDeferredContinuation, type UltrafixAction } from './ultrafixOrchestrationService.js';
 
 /** Re-check CI readiness for ultrafix jobs before executing. Returns true if ready. */
