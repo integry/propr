@@ -220,6 +220,24 @@ function enrichMetadataWithExecution(
   };
 }
 
+// Search from the end to find the latest/current metadata value rather than the earliest.
+// This matters for ultrafix flows that alternate review/fix states.
+function findLatestMetadata(
+  historyEntries: Array<Record<string, unknown>>
+): { commandModeMeta?: Record<string, unknown>; ultrafixCycleMeta?: Record<string, unknown> } {
+  let commandModeMeta: Record<string, unknown> | undefined;
+  let ultrafixCycleMeta: Record<string, unknown> | undefined;
+  for (let i = historyEntries.length - 1; i >= 0; i--) {
+    const h = historyEntries[i];
+    if (!h.metadata || typeof h.metadata !== 'object') continue;
+    const meta = h.metadata as Record<string, unknown>;
+    if (!commandModeMeta && 'commandMode' in meta) commandModeMeta = meta;
+    if (!ultrafixCycleMeta && 'ultrafixCycle' in meta) ultrafixCycleMeta = meta;
+    if (commandModeMeta && ultrafixCycleMeta) break;
+  }
+  return { commandModeMeta, ultrafixCycleMeta };
+}
+
 function buildTaskInfoFromState(
   taskId: string,
   ref: Record<string, unknown>,
@@ -236,18 +254,7 @@ function buildTaskInfoFromState(
       || extractIssueNumberFromTitle(ref.title as string | null | undefined);
     if (issueNumber) taskInfo.issueNumber = issueNumber;
   }
-  // Search from the end to find the latest/current metadata value rather than the earliest.
-  // This matters for ultrafix flows that alternate review/fix states.
-  let commandModeMeta: Record<string, unknown> | undefined;
-  let ultrafixCycleMeta: Record<string, unknown> | undefined;
-  for (let i = historyEntries.length - 1; i >= 0; i--) {
-    const h = historyEntries[i];
-    if (!h.metadata || typeof h.metadata !== 'object') continue;
-    const meta = h.metadata as Record<string, unknown>;
-    if (!commandModeMeta && 'commandMode' in meta) commandModeMeta = meta;
-    if (!ultrafixCycleMeta && 'ultrafixCycle' in meta) ultrafixCycleMeta = meta;
-    if (commandModeMeta && ultrafixCycleMeta) break;
-  }
+  const { commandModeMeta, ultrafixCycleMeta } = findLatestMetadata(historyEntries);
   if (commandModeMeta?.commandMode) taskInfo.commandMode = commandModeMeta.commandMode;
   if (commandModeMeta?.ultrafixCycle === true || ultrafixCycleMeta?.ultrafixCycle === true) {
     taskInfo.ultrafixCycle = true;
