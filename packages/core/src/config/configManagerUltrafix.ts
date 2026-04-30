@@ -14,6 +14,12 @@ export async function loadPrReviewModel(): Promise<string> {
 }
 
 export async function savePrReviewModel(model: string): Promise<boolean> {
+    if (typeof model !== 'string') {
+        throw new Error('pr_review_model must be a string');
+    }
+    if (model !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(model)) {
+        throw new Error('pr_review_model contains invalid characters');
+    }
     await saveConfig('pr_review_model', model);
     logger.info({ pr_review_model: model }, 'Successfully saved PR review model');
     return true;

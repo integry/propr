@@ -288,7 +288,13 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         const explicitModel = label.substring(colonIdx + 1);
         const agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
         if (agent) {
-            return { agentAlias: agent.config.alias, model: explicitModel };
+            const modelSupported = agent.config.supportedModels.some(
+                m => m.toLowerCase() === explicitModel.toLowerCase()
+            );
+            if (modelSupported) {
+                return { agentAlias: agent.config.alias, model: explicitModel };
+            }
+            // Agent exists but doesn't support this model — fall through to other strategies
         }
     }
 

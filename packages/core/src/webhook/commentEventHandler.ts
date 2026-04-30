@@ -429,11 +429,14 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
                     [],
                 );
             }
+            const labelNote = labelWasAdded
+                ? 'The ultrafix label has been removed.'
+                : 'The existing ultrafix label was left in place — remove it manually if you do not want further ultrafix cycles.';
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner,
                 repo,
                 issue_number: prNumber,
-                body: `❌ **Ultrafix loop failed to start.** The ultrafix label has been removed. Please try again.\n\nIf the problem persists, check the system logs for details.`,
+                body: `❌ **Ultrafix loop failed to start.** ${labelNote} Please try again.\n\nIf the problem persists, check the system logs for details.`,
             });
         } catch (rollbackError) {
             correlatedLogger.error({ pullRequestNumber: prNumber, rollbackError }, '/ultrafix rollback also failed');

@@ -1,6 +1,6 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
-import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, resolveModelAlias, MODEL_INFO_MAP } from '@propr/core';
+import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, resolveModelAlias, MODEL_INFO_MAP, AgentRegistry } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
 
 interface AgentConfig {
@@ -152,7 +152,7 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
   return (value < min || value > max) ? null : value;
 }
 
-function validatePrReviewModel(raw: unknown): { error?: string; value?: string } {
+async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; value?: string }> {
   if (typeof raw !== 'string') return { error: 'pr_review_model must be a string' };
   const val = raw.trim();
   // Reject whitespace-only input — only an explicitly empty string clears the setting.
@@ -166,22 +166,42 @@ function validatePrReviewModel(raw: unknown): { error?: string; value?: string }
     return { error: 'pr_review_model contains invalid characters; expected a model identifier (e.g. "claude-sonnet-4-6")' };
   }
   // Validate that the model resolves to a known model in the system.
-  // Supports "agent:model" format (e.g. "codex:gpt-5.4") - extract model part for validation.
+  // For "agent:model" format, also verify the agent supports the specified model.
   if (val !== '') {
-    let modelPart = val;
     const colonIdx = val.indexOf(':');
     if (colonIdx > 0 && colonIdx < val.length - 1) {
-      modelPart = val.substring(colonIdx + 1);
-    }
-    const resolved = resolveModelAlias(modelPart);
-    if (!MODEL_INFO_MAP[resolved]) {
-      return { error: `pr_review_model "${val}" does not resolve to a known model` };
+      const agentAlias = val.substring(0, colonIdx);
+      const modelPart = val.substring(colonIdx + 1);
+      const resolved = resolveModelAlias(modelPart);
+      if (!MODEL_INFO_MAP[resolved]) {
+        return { error: `pr_review_model "${val}" does not resolve to a known model` };
+      }
+      const registry = AgentRegistry.getInstance();
+      await registry.ensureInitialized();
+      const agent = registry.getAgentByAlias(agentAlias);
+      if (!agent) {
+        return { error: `pr_review_model agent "${agentAlias}" is not a recognized agent alias` };
+      }
+      if (!agent.config.enabled) {
+        return { error: `pr_review_model agent "${agentAlias}" is not enabled` };
+      }
+      const modelSupported = agent.config.supportedModels.some(
+        m => m.toLowerCase() === resolved.toLowerCase()
+      );
+      if (!modelSupported) {
+        return { error: `pr_review_model "${val}": model "${modelPart}" is not supported by agent "${agentAlias}"` };
+      }
+    } else {
+      const resolved = resolveModelAlias(val);
+      if (!MODEL_INFO_MAP[resolved]) {
+        return { error: `pr_review_model "${val}" does not resolve to a known model` };
+      }
     }
   }
   return { value: val };
 }
 
-export function extractSettingSaves(fields: SettingFields): { error?: string; saves: Array<() => Promise<boolean>> } {
+export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: Array<() => Promise<boolean>> }> {
   // Phase 1: Validate all fields first, collecting save thunks. No saves are started yet.
   const thunks: Array<() => Promise<boolean>> = [];
 
@@ -196,7 +216,7 @@ export function extractSettingSaves(fields: SettingFields): { error?: string; sa
     thunks.push(() => configManager.saveAutoResolveMergeConflicts(val));
   }
   if (fields.pr_review_model !== undefined) {
-    const result = validatePrReviewModel(fields.pr_review_model);
+    const result = await validatePrReviewModel(fields.pr_review_model);
     if (result.error) return { error: result.error, saves: [] };
     const val = result.value!;
     thunks.push(() => configManager.savePrReviewModel(val));
