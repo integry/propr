@@ -14,10 +14,8 @@ import {
     withRetry,
     retryConfigs,
     safeRemoveLabel,
-} from '@propr/core';
-import type { UltrafixCommandMeta } from '@propr/core';
-import {
     getPendingPrCommentsKey,
+    type UltrafixCommandMeta,
 } from '@propr/core';
 import {
     loadState,
@@ -148,9 +146,7 @@ async function enqueueNextStep(
     const jobId = `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${Date.now()}`;
 
     const commandMode = nextAction === 'review' ? 'review' as const : 'fix' as const;
-    const requestedModels = nextAction === 'review' && ultrafixMeta?.reviewModel
-        ? [ultrafixMeta.reviewModel]
-        : undefined;
+    const requestedModels = nextAction === 'review' && ultrafixMeta?.reviewModel ? [ultrafixMeta.reviewModel] : undefined;
 
     await issueQueue.add('processPullRequestComment', {
         pullRequestNumber,
@@ -420,10 +416,7 @@ async function evaluateCIChecksPassing(
             }
             return status.allPassing;
         }
-        if (_areAllChecksPassing) {
-            return _areAllChecksPassing(owner, repo, headSha);
-        }
-        return false;
+        return _areAllChecksPassing ? _areAllChecksPassing(owner, repo, headSha) : false;
     } catch (err) {
         correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to check CI status, assuming NOT passing (fail-closed)');
         return false;
