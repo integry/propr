@@ -126,9 +126,15 @@ function normalizeMetrics(
         normalized.records = records as SubscriptionUsageRecord[];
     }
 
-    // delta / usage_metrics (when it's the delta sub-object)
-    const delta = raw.delta ?? raw.usage_metrics;
+    // delta / usage_metrics (when it's the delta sub-object).
+    // If usage_metrics is the full wrapper (contains its own `delta` key),
+    // unwrap to the inner delta to avoid treating preCall/postCall as metrics.
+    let delta = raw.delta ?? raw.usage_metrics;
     if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
+        const wrapper = delta as Record<string, unknown>;
+        if ('delta' in wrapper && typeof wrapper.delta === 'object' && wrapper.delta !== null) {
+            delta = wrapper.delta;
+        }
         normalized.delta = delta as Record<string, unknown>;
     }
 

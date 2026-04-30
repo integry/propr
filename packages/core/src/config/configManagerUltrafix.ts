@@ -1,5 +1,6 @@
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configManager.js';
+import { validatePrReviewModelValue } from './prReviewModelValidator.js';
 
 // --- PR Review Model ---
 
@@ -17,8 +18,9 @@ export async function savePrReviewModel(model: string): Promise<boolean> {
     if (typeof model !== 'string') {
         throw new Error('pr_review_model must be a string');
     }
-    if (model !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(model)) {
-        throw new Error('pr_review_model contains invalid characters');
+    const result = await validatePrReviewModelValue(model);
+    if (!result.valid) {
+        throw new Error(result.error ?? 'pr_review_model validation failed');
     }
     await saveConfig('pr_review_model', model);
     logger.info({ pr_review_model: model }, 'Successfully saved PR review model');
