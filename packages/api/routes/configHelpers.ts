@@ -1,6 +1,6 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
-import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, resolveModelAlias, MODEL_INFO_MAP, AgentRegistry } from '@propr/core';
+import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, validatePrReviewModelValue } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
 
 interface AgentConfig {
@@ -155,49 +155,11 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
 async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; value?: string }> {
   if (typeof raw !== 'string') return { error: 'pr_review_model must be a string' };
   const val = raw.trim();
-  // Reject whitespace-only input — only an explicitly empty string clears the setting.
   if (val === '' && raw.length > 0) {
     return { error: 'pr_review_model must not be whitespace-only; use an empty string to clear' };
   }
-  // Empty string is valid (means "use default agent model"), but strings with invalid
-  // characters are not. Model values should look like an identifier
-  // (e.g. "claude-sonnet-4-6", "gemini:gemini-pro", "codex:gpt-5.4").
-  if (val !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(val)) {
-    return { error: 'pr_review_model contains invalid characters; expected a model identifier (e.g. "claude-sonnet-4-6")' };
-  }
-  // Validate that the model resolves to a known model in the system.
-  // For "agent:model" format, also verify the agent supports the specified model.
-  if (val !== '') {
-    const colonIdx = val.indexOf(':');
-    if (colonIdx > 0 && colonIdx < val.length - 1) {
-      const agentAlias = val.substring(0, colonIdx);
-      const modelPart = val.substring(colonIdx + 1);
-      const resolved = resolveModelAlias(modelPart);
-      if (!MODEL_INFO_MAP[resolved]) {
-        return { error: `pr_review_model "${val}" does not resolve to a known model` };
-      }
-      const registry = AgentRegistry.getInstance();
-      await registry.ensureInitialized();
-      const agent = registry.getAgentByAlias(agentAlias);
-      if (!agent) {
-        return { error: `pr_review_model agent "${agentAlias}" is not a recognized agent alias` };
-      }
-      if (!agent.config.enabled) {
-        return { error: `pr_review_model agent "${agentAlias}" is not enabled` };
-      }
-      const modelSupported = agent.config.supportedModels.some(
-        m => m.toLowerCase() === resolved.toLowerCase()
-      );
-      if (!modelSupported) {
-        return { error: `pr_review_model "${val}": model "${modelPart}" is not supported by agent "${agentAlias}"` };
-      }
-    } else {
-      const resolved = resolveModelAlias(val);
-      if (!MODEL_INFO_MAP[resolved]) {
-        return { error: `pr_review_model "${val}" does not resolve to a known model` };
-      }
-    }
-  }
+  const result = await validatePrReviewModelValue(val);
+  if (!result.valid) return { error: result.error };
   return { value: val };
 }
 

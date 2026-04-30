@@ -370,8 +370,11 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     // 5. Determine the initial action based on pending review state
     const initialAction: 'review' | 'fix' = hasPendingReview ? 'fix' : 'review';
 
+    // 6. Persist ultrafix state and enqueue the first job. If either fails, roll
+    //    back everything (state, label, post failure comment). Once both have
+    //    committed, the loop is live and we must NOT roll them back — even if the
+    //    subsequent "started" comment post fails.
     try {
-        // 6. Persist ultrafix state in Redis
         await deps.startLoop(redisClient, {
             owner,
             repo,
@@ -403,25 +406,11 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             prefetchedPRData: prData,
             ultrafixMeta: commandMeta,
         });
-
-        // 9. Post the circuit-breaker comment AFTER state and job are committed,
-        //    so a failure in startLoop/enqueue never leaves a contradictory
-        //    "started" comment on the PR.
-        await withRetry(
-            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner,
-                repo,
-                issue_number: prNumber,
-                body: `🔄 **Ultrafix loop started** (goal: ${effectiveGoal}/10, max cycles: ${effectiveMaxCycles})\n\nFirst action: \`/${initialAction}\`\n\n> 💡 **Tip:** Remove the \`ultrafix\` label from this PR to stop further ultrafix cycles.`,
-            }),
-            { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
-            `post_ultrafix_comment_${owner}_${repo}_${prNumber}`
-        );
     } catch (error) {
-        // Rollback: remove the ultrafix label if we added it, clear loop state, and post a failure comment
-        correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed after side effects, rolling back');
+        // Rollback: remove the ultrafix label if we added it, clear loop state, and post a failure comment.
+        // This is safe because the enqueued job has NOT committed if we land here.
+        correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed before job enqueue, rolling back');
         try {
-            // Clear any persisted ultrafix loop state to avoid orphaned records
             await deps.clearState(redisClient, owner, repo, prNumber);
 
             if (labelWasAdded) {
@@ -444,6 +433,24 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             correlatedLogger.error({ pullRequestNumber: prNumber, rollbackError }, '/ultrafix rollback also failed');
         }
         throw error;
+    }
+
+    // 9. Post the circuit-breaker comment. State and job are already committed,
+    //    so treat a comment-post failure as non-fatal — the loop will proceed
+    //    regardless and the user can still stop it by removing the label.
+    try {
+        await withRetry(
+            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: `🔄 **Ultrafix loop started** (goal: ${effectiveGoal}/10, max cycles: ${effectiveMaxCycles})\n\nFirst action: \`/${initialAction}\`\n\n> 💡 **Tip:** Remove the \`ultrafix\` label from this PR to stop further ultrafix cycles.`,
+            }),
+            { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
+            `post_ultrafix_comment_${owner}_${repo}_${prNumber}`
+        );
+    } catch (commentError) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, error: commentError }, '/ultrafix started successfully but failed to post the confirmation comment');
     }
 }
 

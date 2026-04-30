@@ -45,10 +45,6 @@ import {
   processCommentEvent,
   setUltrafixDeps,
   setUltrafixCheckRunHook,
-  loadUltrafixRatingGoal,
-  loadUltrafixMaxCycles,
-  loadUltrafixPauseSeconds,
-  loadPrReviewModel,
   logger
 } from '@propr/core';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
@@ -414,21 +410,13 @@ async function start(): Promise<void> {
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
 
     // Wire up ultrafix dependencies for /ultrafix slash command support.
-    // Resolve path via import.meta.url so we are explicit about the runtime layout
-    // (dist/packages/api/server.js → dist/src/jobs/) rather than relying on a
-    // fragile relative literal that breaks if the build output structure changes.
+    // ultrafixBootstrap consolidates all job-layer deps behind a single stable
+    // import so that server.ts does not depend on the internal file layout of
+    // src/jobs/. If files move within that directory, only the bootstrap needs
+    // updating.
     const jobsBase = new URL('../../src/jobs', import.meta.url).href;
-    const orchMod = await import(`${jobsBase}/ultrafixOrchestrationService.js`);
-    const gathererMod = await import(`${jobsBase}/reviewCommentGatherer.js`);
-    setUltrafixDeps({
-      loadUltrafixRatingGoal,
-      loadUltrafixMaxCycles,
-      loadUltrafixPauseSeconds,
-      loadPrReviewModel,
-      startLoop: orchMod.startLoop,
-      clearState: orchMod.clearState,
-      getPendingReviewState: gathererMod.getPendingReviewState,
-    });
+    const { createUltrafixDeps } = await import(`${jobsBase}/ultrafixBootstrap.js`);
+    setUltrafixDeps(createUltrafixDeps());
     console.log('[ultrafix] Ultrafix dependencies initialized');
 
     // Wire up check_run hook to resume deferred ultrafix continuations when CI passes

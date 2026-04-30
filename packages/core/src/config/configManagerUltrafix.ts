@@ -1,8 +1,5 @@
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configManager.js';
-import { resolveModelAlias } from './modelAliases.js';
-import { MODEL_INFO_MAP } from './modelDefinitions.js';
-import { AgentRegistry } from '../agents/AgentRegistry.js';
 
 // --- PR Review Model ---
 
@@ -22,37 +19,6 @@ export async function savePrReviewModel(model: string): Promise<boolean> {
     }
     if (model !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(model)) {
         throw new Error('pr_review_model contains invalid characters');
-    }
-    if (model !== '') {
-        const colonIdx = model.indexOf(':');
-        if (colonIdx > 0 && colonIdx < model.length - 1) {
-            const agentAlias = model.substring(0, colonIdx);
-            const modelPart = model.substring(colonIdx + 1);
-            const resolved = resolveModelAlias(modelPart);
-            if (!MODEL_INFO_MAP[resolved]) {
-                throw new Error(`pr_review_model "${model}" does not resolve to a known model`);
-            }
-            const registry = AgentRegistry.getInstance();
-            await registry.ensureInitialized();
-            const agent = registry.getAgentByAlias(agentAlias);
-            if (!agent) {
-                throw new Error(`pr_review_model agent "${agentAlias}" is not a recognized agent alias`);
-            }
-            if (!agent.config.enabled) {
-                throw new Error(`pr_review_model agent "${agentAlias}" is not enabled`);
-            }
-            const modelSupported = agent.config.supportedModels.some(
-                (m: string) => m.toLowerCase() === resolved.toLowerCase()
-            );
-            if (!modelSupported) {
-                throw new Error(`pr_review_model "${model}": model "${modelPart}" is not supported by agent "${agentAlias}"`);
-            }
-        } else {
-            const resolved = resolveModelAlias(model);
-            if (!MODEL_INFO_MAP[resolved]) {
-                throw new Error(`pr_review_model "${model}" does not resolve to a known model`);
-            }
-        }
     }
     await saveConfig('pr_review_model', model);
     logger.info({ pr_review_model: model }, 'Successfully saved PR review model');
