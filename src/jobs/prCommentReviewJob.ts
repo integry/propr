@@ -18,7 +18,8 @@ import {
 } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
-import { continueUltrafixLoop, buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixLoopContinuation.js';
+import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
+import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
 import type { Redis } from 'ioredis';
 

@@ -202,6 +202,9 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be an integer`);
       }
       const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be an integer up to ${Number.MAX_SAFE_INTEGER}`);
+      }
       if (key === "auto_followup_score_threshold" && (parsed < 0 || parsed > 9)) {
         throw new Error(`Invalid value for ${key}: must be between 0 and 9`);
       }

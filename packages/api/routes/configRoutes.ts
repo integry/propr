@@ -238,35 +238,37 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: extracted.error } };
       }
 
-      // Execute all saves sequentially. If any save fails, report the error
-      // but note that earlier writes in the sequence may already be committed
-      // (there is no cross-key transaction support). Validation up front minimises
-      // this risk; runtime failures here indicate an infrastructure problem.
-      const completedSaves: number[] = [];
-      for (let i = 0; i < extracted.saves.length; i++) {
-        try {
-          await extracted.saves[i]();
-          completedSaves.push(i);
-        } catch (saveError) {
-          console.error(`Settings save failed at step ${i + 1}/${extracted.saves.length} (${completedSaves.length} already committed):`, saveError);
-          return {
-            status: 500,
-            body: {
-              error: `Failed to save setting (step ${i + 1}). ${completedSaves.length} earlier setting(s) were already saved. Please retry or check system logs.`
-            }
-          };
-        }
-      }
+      // Save general settings first — they accept arbitrary data and are more
+      // likely to fail, so saving them before specialized keys avoids partial
+      // commits of validated settings when the general save rejects input.
       try {
         await configManager.saveSettings(otherSettings);
       } catch (saveError) {
-        console.error(`Settings save failed for general settings (${completedSaves.length} earlier setting(s) already committed):`, saveError);
+        console.error('Settings save failed for general settings:', saveError);
         return {
           status: 500,
-          body: {
-            error: `Failed to save general settings. ${completedSaves.length} earlier setting(s) were already saved. Please retry or check system logs.`
-          }
+          body: { error: 'Failed to save general settings. No settings were committed. Please retry or check system logs.' }
         };
+      }
+
+      // Specialized settings are already validated by extractSettingSaves().
+      // Failures here indicate infrastructure problems, not bad input.
+      const committedNames: string[] = ['general'];
+      for (let i = 0; i < extracted.saves.length; i++) {
+        try {
+          await extracted.saves[i].execute();
+          committedNames.push(extracted.saves[i].name);
+        } catch (saveError) {
+          const failedName = extracted.saves[i].name;
+          console.error(`Settings save failed for "${failedName}" (already committed: [${committedNames.join(', ')}]):`, saveError);
+          return {
+            status: 500,
+            body: {
+              error: `Failed to save "${failedName}".${committedNames.length ? ` Already committed: ${committedNames.join(', ')}.` : ''} Please retry or check system logs.`,
+              committed: committedNames,
+            }
+          };
+        }
       }
       await publishConfigUpdate('settings_update');
       return { status: 200, body: { success: true, settings } };

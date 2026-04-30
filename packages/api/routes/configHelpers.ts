@@ -1,6 +1,6 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
-import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, resolveModelAlias, MODEL_INFO_MAP, AgentRegistry } from '@propr/core';
+import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, validatePrReviewModelValue } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
 
 interface AgentConfig {
@@ -155,89 +155,51 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
 async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; value?: string }> {
   if (typeof raw !== 'string') return { error: 'pr_review_model must be a string' };
   const val = raw.trim();
-  // Reject whitespace-only input — only an explicitly empty string clears the setting.
   if (val === '' && raw.length > 0) {
     return { error: 'pr_review_model must not be whitespace-only; use an empty string to clear' };
   }
-  // Empty string is valid (means "use default agent model"), but strings with invalid
-  // characters are not. Model values should look like an identifier
-  // (e.g. "claude-sonnet-4-6", "gemini:gemini-pro", "codex:gpt-5.4").
-  if (val !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(val)) {
-    return { error: 'pr_review_model contains invalid characters; expected a model identifier (e.g. "claude-sonnet-4-6")' };
-  }
-  // Validate that the model resolves to a known model in the system.
-  // For "agent:model" format, also verify the agent supports the specified model.
-  if (val !== '') {
-    const colonIdx = val.indexOf(':');
-    if (colonIdx > 0 && colonIdx < val.length - 1) {
-      const agentAlias = val.substring(0, colonIdx);
-      const modelPart = val.substring(colonIdx + 1);
-      const resolved = resolveModelAlias(modelPart);
-      if (!MODEL_INFO_MAP[resolved]) {
-        return { error: `pr_review_model "${val}" does not resolve to a known model` };
-      }
-      const registry = AgentRegistry.getInstance();
-      await registry.ensureInitialized();
-      const agent = registry.getAgentByAlias(agentAlias);
-      if (!agent) {
-        return { error: `pr_review_model agent "${agentAlias}" is not a recognized agent alias` };
-      }
-      if (!agent.config.enabled) {
-        return { error: `pr_review_model agent "${agentAlias}" is not enabled` };
-      }
-      const modelSupported = agent.config.supportedModels.some(
-        m => m.toLowerCase() === resolved.toLowerCase()
-      );
-      if (!modelSupported) {
-        return { error: `pr_review_model "${val}": model "${modelPart}" is not supported by agent "${agentAlias}"` };
-      }
-    } else {
-      const resolved = resolveModelAlias(val);
-      if (!MODEL_INFO_MAP[resolved]) {
-        return { error: `pr_review_model "${val}" does not resolve to a known model` };
-      }
-    }
-  }
+  const result = await validatePrReviewModelValue(val);
+  if (!result.valid) return { error: result.error };
   return { value: val };
 }
 
-export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: Array<() => Promise<boolean>> }> {
-  // Phase 1: Validate all fields first, collecting save thunks. No saves are started yet.
-  const thunks: Array<() => Promise<boolean>> = [];
+export interface LabeledSave { name: string; execute: () => Promise<boolean> }
+
+export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSave[] }> {
+  const thunks: LabeledSave[] = [];
 
   if (fields.auto_followup_score_threshold !== undefined) {
     const v = validateStrictInt(fields.auto_followup_score_threshold, 0, 9);
     if (v === null) return { error: 'auto_followup_score_threshold must be an integer between 0 and 9', saves: [] };
-    thunks.push(() => configManager.saveAutoFollowupScoreThreshold(v));
+    thunks.push({ name: 'auto_followup_score_threshold', execute: () => configManager.saveAutoFollowupScoreThreshold(v) });
   }
   if (fields.auto_resolve_merge_conflicts !== undefined) {
     if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [] };
     const val = fields.auto_resolve_merge_conflicts;
-    thunks.push(() => configManager.saveAutoResolveMergeConflicts(val));
+    thunks.push({ name: 'auto_resolve_merge_conflicts', execute: () => configManager.saveAutoResolveMergeConflicts(val) });
   }
   if (fields.pr_review_model !== undefined) {
     const result = await validatePrReviewModel(fields.pr_review_model);
     if (result.error) return { error: result.error, saves: [] };
     const val = result.value!;
-    thunks.push(() => configManager.savePrReviewModel(val));
+    thunks.push({ name: 'pr_review_model', execute: () => configManager.savePrReviewModel(val) });
   }
   if (fields.ultrafix_rating_goal !== undefined) {
     const v = validateStrictInt(fields.ultrafix_rating_goal, 1, 10);
     if (v === null) return { error: 'ultrafix_rating_goal must be an integer between 1 and 10', saves: [] };
-    thunks.push(() => configManager.saveUltrafixRatingGoal(v));
+    thunks.push({ name: 'ultrafix_rating_goal', execute: () => configManager.saveUltrafixRatingGoal(v) });
   }
   if (fields.ultrafix_max_cycles !== undefined) {
     const v = validateStrictInt(fields.ultrafix_max_cycles, 1, Infinity);
     if (v === null) return { error: 'ultrafix_max_cycles must be a positive integer', saves: [] };
-    thunks.push(() => configManager.saveUltrafixMaxCycles(v));
+    thunks.push({ name: 'ultrafix_max_cycles', execute: () => configManager.saveUltrafixMaxCycles(v) });
   }
   if (fields.ultrafix_pause_seconds !== undefined) {
     const v = validateStrictInt(fields.ultrafix_pause_seconds, 0, Infinity);
     if (v === null) return { error: 'ultrafix_pause_seconds must be a non-negative integer', saves: [] };
-    thunks.push(() => configManager.saveUltrafixPauseSeconds(v));
+    thunks.push({ name: 'ultrafix_pause_seconds', execute: () => configManager.saveUltrafixPauseSeconds(v) });
   }
 
-  // Phase 2: All validation passed — return thunks so the caller controls execution order.
   return { saves: thunks };
 }
 

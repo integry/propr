@@ -14,12 +14,8 @@ import {
     withRetry,
     retryConfigs,
     safeRemoveLabel,
-} from '@propr/core';
-import type { UltrafixCommandMeta } from '@propr/core';
-import { TaskStates, db } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
-import {
     getPendingPrCommentsKey,
+    type UltrafixCommandMeta,
 } from '@propr/core';
 import {
     loadState,
@@ -150,9 +146,7 @@ async function enqueueNextStep(
     const jobId = `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${Date.now()}`;
 
     const commandMode = nextAction === 'review' ? 'review' as const : 'fix' as const;
-    const requestedModels = nextAction === 'review' && ultrafixMeta?.reviewModel
-        ? [ultrafixMeta.reviewModel]
-        : undefined;
+    const requestedModels = nextAction === 'review' && ultrafixMeta?.reviewModel ? [ultrafixMeta.reviewModel] : undefined;
 
     await issueQueue.add('processPullRequestComment', {
         pullRequestNumber,
@@ -402,36 +396,6 @@ export async function resumeDeferredContinuation(
     };
 }
 
-/** Build ultrafix history metadata from the current ultrafix state. */
-export function buildUltrafixHistoryMeta(
-    ultrafixMeta: UltrafixCommandMeta, ufState: { cycleCount?: number; goal?: number | string; maxCycles?: number } | null,
-): Record<string, unknown> {
-    return { ultrafixCycle: true, ultrafixGoal: ultrafixMeta.goal ?? ufState?.goal, ultrafixCycleCount: ufState?.cycleCount ?? 0, ultrafixMaxCycles: ultrafixMeta.maxCycles ?? ufState?.maxCycles };
-}
-
-/** Build continuation metadata from a ContinuationResult. */
-export function buildContinuationMeta(r: ContinuationResult): Record<string, unknown> {
-    return { ...(r.score != null && { ultrafixScore: r.score }), ...(r.cycleCount != null && { ultrafixCycleCount: r.cycleCount }), ...(r.nextAction && { ultrafixNextAction: r.nextAction }), ...(!r.continued && { ultrafixStopReason: r.reason }) };
-}
-
-/** Patch the COMPLETED history entry with ultrafix continuation metadata in both Redis and SQLite. */
-export async function patchUltrafixContinuationMeta(
-    stateManager: WorkerStateManager, taskId: string, continuationMeta: Record<string, unknown>, correlatedLogger: Logger,
-): Promise<void> {
-    try { await stateManager.updateHistoryMetadata(taskId, TaskStates.COMPLETED, continuationMeta); } catch (e) {
-        correlatedLogger.warn({ error: (e as Error).message, taskId }, 'Failed to patch ultrafix metadata into Redis history entry');
-    }
-    try {
-        const row = await db('task_history').where({ task_id: taskId, state: 'completed' }).orderBy('timestamp', 'desc').first();
-        if (row) {
-            const existing = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata ?? {});
-            await db('task_history').where({ history_id: row.history_id }).update({ metadata: JSON.stringify({ ...existing, ...continuationMeta }) });
-        }
-    } catch (e) {
-        correlatedLogger.warn({ error: (e as Error).message, taskId }, 'Failed to patch ultrafix metadata into SQLite history entry');
-    }
-}
-
 async function evaluateCIChecksPassing(
     params: Pick<UltrafixContinuationParams, 'owner' | 'repo' | 'pullRequestNumber' | 'completedAction' | 'correlatedLogger'>,
 ): Promise<boolean> {
@@ -452,10 +416,7 @@ async function evaluateCIChecksPassing(
             }
             return status.allPassing;
         }
-        if (_areAllChecksPassing) {
-            return _areAllChecksPassing(owner, repo, headSha);
-        }
-        return false;
+        return _areAllChecksPassing ? _areAllChecksPassing(owner, repo, headSha) : false;
     } catch (err) {
         correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to check CI status, assuming NOT passing (fail-closed)');
         return false;
