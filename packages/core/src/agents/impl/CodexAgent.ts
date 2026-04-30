@@ -364,9 +364,11 @@ export class CodexAgent implements Agent {
 
         // Add model if specified
         if (modelName) {
+            // Strip agent prefix if present (e.g., "codex:gpt-5.4" -> "gpt-5.4")
+            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
             const codexIndex = dockerArgs.indexOf('codex');
-            dockerArgs.splice(codexIndex + 2, 0, '--model', modelName);
-            logger.info({ issueNumber, requestedModel: modelName, agentAlias: this.config.alias }, 'Using specific model for Codex agent execution');
+            dockerArgs.splice(codexIndex + 2, 0, '--model', cleanModelName);
+            logger.info({ issueNumber, requestedModel: cleanModelName, agentAlias: this.config.alias }, 'Using specific model for Codex agent execution');
         } else {
             logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Codex agent will use default');
         }

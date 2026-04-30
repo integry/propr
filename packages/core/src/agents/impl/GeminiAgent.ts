@@ -289,7 +289,12 @@ export class GeminiAgent implements Agent {
             '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'GEMINI_CLI=1', '-e', 'GEMINI_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
             this.config.dockerImage, 'gemini', '--yolo', '--skip-trust', '--output-format', outputFormat
         ];
-        if (modelName) { dockerArgs.push('-m', modelName); logger.info({ issueNumber, requestedModel: modelName, agentAlias: this.config.alias }, 'Model specified for Gemini agent'); }
+        if (modelName) {
+            // Strip agent prefix if present (e.g., "gemini:gemini-3-flash-preview" -> "gemini-3-flash-preview")
+            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+            dockerArgs.push('-m', cleanModelName);
+            logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Gemini agent');
+        }
         else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Gemini agent will use default'); }
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Gemini agent');
         return dockerArgs;

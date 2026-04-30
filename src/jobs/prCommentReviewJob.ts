@@ -134,20 +134,26 @@ export async function resolveReviewAssignments(
 
     let modelsToReview: string[];
     if (requestedModels && requestedModels.length > 0) {
+        // Explicit model(s) specified in /review command
         modelsToReview = requestedModels;
-    } else if (llm) {
-        modelsToReview = [llm];
     } else {
-        // Fall back to configured pr_review_model before using the default agent model
+        // No explicit models - use pr_review_model config, ignoring llm from PR labels
+        // (labels specify implementation model, not review model)
         let prReviewModel = '';
         try {
             prReviewModel = await loadPrReviewModel();
         } catch (err) {
             correlatedLogger.debug({ error: (err as Error).message }, 'Failed to load pr_review_model setting');
         }
-        modelsToReview = prReviewModel ? [prReviewModel] : ['default'];
         if (prReviewModel) {
+            modelsToReview = [prReviewModel];
             correlatedLogger.info({ prReviewModel }, 'Using configured pr_review_model as default review model');
+        } else if (llm) {
+            // Fall back to llm from labels only if no pr_review_model configured
+            modelsToReview = [llm];
+            correlatedLogger.info({ llm }, 'No pr_review_model configured, falling back to llm from labels');
+        } else {
+            modelsToReview = ['default'];
         }
     }
 

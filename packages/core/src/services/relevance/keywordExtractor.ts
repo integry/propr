@@ -2,6 +2,7 @@ import { parseLlmJson } from '../../utils/jsonUtils.js';
 import { Agent } from '../../agents/types.js';
 import logger from '../../utils/logger.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { loadSettings } from '../../config/configManager.js';
 
 // --- Basic Keyword Extraction (regex-based) ---
 
@@ -108,9 +109,13 @@ export async function extractKeywordsWithLLM(
   try {
     const llmPrompt = KEYWORD_EXTRACTION_PROMPT.replace('{USER_REQUEST}', prompt);
 
-    correlatedLogger.debug({ promptLength: prompt.length }, 'Extracting keywords with LLM');
+    // Load configured context analysis model
+    const settings = await loadSettings();
+    const contextModel = settings.planner_context_model as string | undefined;
 
-    const analysisResult = await agent.analyze(llmPrompt);
+    correlatedLogger.debug({ promptLength: prompt.length, model: contextModel }, 'Extracting keywords with LLM');
+
+    const analysisResult = await agent.analyze(llmPrompt, { model: contextModel });
     const response = analysisResult.response;
 
     const parsed = parseLlmJson<{ primary: string[]; alternatives: string[] }>(response);
@@ -150,7 +155,9 @@ export async function extractKeywordsWithLLM(
     return { primary: [], alternatives: [], all: [] };
   } finally {
     const durationMs = Date.now() - startTime;
-    const modelUsed = agent.config.defaultModel || 'unknown';
+    // Use the configured context model or fall back to agent default
+    const settings = await loadSettings().catch(() => ({}));
+    const modelUsed = (settings as Record<string, unknown>).planner_context_model as string || agent.config.defaultModel || 'unknown';
 
     // Persist to llm_logs table
     const logEntry = createLlmLogFromAnalysis({
