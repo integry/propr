@@ -1,19 +1,7 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { generateCorrelationId } from '@propr/core';
-import { handleError } from '@propr/core';
-import { getAuthenticatedOctokit } from '@propr/core';
-import { cleanupWorktree } from '@propr/core';
-import type { WorktreeInfo } from '@propr/core';
-import { formatResetTime } from '@propr/core';
-import type { ClaudeCodeResponse } from '@propr/core';
-import type { ClaudeResult } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
-import { issueQueue, type CommentJobData, type UnprocessedComment } from '@propr/core';
-import { TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
-import { getDefaultModel, resolveModelAlias } from '@propr/core';
-import { getPendingPrCommentsKey } from '@propr/core';
+import type { WorktreeInfo, ClaudeCodeResponse, ClaudeResult, CommentJobData, UnprocessedComment, WorkerStateManager } from '@propr/core';
+import { generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree, formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel, resolveModelAlias, getPendingPrCommentsKey } from '@propr/core';
 import type { Redis } from 'ioredis';
 
 function parseGitHubHtmlError(html: string): string {
