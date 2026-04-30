@@ -410,17 +410,12 @@ async function start(): Promise<void> {
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
 
     // Wire up ultrafix dependencies for /ultrafix slash command support.
-    // ultrafixBootstrap consolidates all job-layer deps behind a single stable
-    // import so that server.ts does not depend on the internal file layout of
-    // src/jobs/. If files move within that directory, only the bootstrap needs
-    // updating.
-    const jobsBase = new URL('../../src/jobs', import.meta.url).href;
-    const { createUltrafixDeps } = await import(`${jobsBase}/ultrafixBootstrap.js`);
+    const { createUltrafixDeps } = await import('../../src/jobs/ultrafixBootstrap.js');
     setUltrafixDeps(createUltrafixDeps());
     console.log('[ultrafix] Ultrafix dependencies initialized');
 
     // Wire up check_run hook to resume deferred ultrafix continuations when CI passes
-    const contMod = await import(`${jobsBase}/ultrafixLoopContinuation.js`);
+    const contMod = await import('../../src/jobs/ultrafixLoopContinuation.js');
     // Wire up check_run deps so resumeDeferredContinuation can evaluate readiness
     contMod.setCheckRunDeps({
       areAllChecksPassing: configManager.areAllChecksPassing,

@@ -105,13 +105,12 @@ export async function extractKeywordsWithLLM(
   const startTime = Date.now();
   let success = false;
   let errorMessage: string | undefined;
+  const cachedSettings = await loadSettings().catch(() => ({} as Record<string, unknown>));
 
   try {
     const llmPrompt = KEYWORD_EXTRACTION_PROMPT.replace('{USER_REQUEST}', prompt);
 
-    // Load configured context analysis model
-    const settings = await loadSettings();
-    const contextModel = settings.planner_context_model as string | undefined;
+    const contextModel = cachedSettings.planner_context_model as string | undefined;
 
     correlatedLogger.debug({ promptLength: prompt.length, model: contextModel }, 'Extracting keywords with LLM');
 
@@ -155,9 +154,7 @@ export async function extractKeywordsWithLLM(
     return { primary: [], alternatives: [], all: [] };
   } finally {
     const durationMs = Date.now() - startTime;
-    // Use the configured context model or fall back to agent default
-    const settings = await loadSettings().catch(() => ({}));
-    const modelUsed = (settings as Record<string, unknown>).planner_context_model as string || agent.config.defaultModel || 'unknown';
+    const modelUsed = cachedSettings.planner_context_model as string || agent.config.defaultModel || 'unknown';
 
     // Persist to llm_logs table
     const logEntry = createLlmLogFromAnalysis({

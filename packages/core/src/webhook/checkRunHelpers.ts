@@ -192,16 +192,12 @@ export async function getCurrentPRHead(owner: string, repoName: string, prNumber
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getCommitStatusState(octokit: any, owner: string, repoName: string, ref: string): Promise<string> {
-    try {
-        const statusResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/status', {
-            owner,
-            repo: repoName,
-            ref
-        });
-        return statusResponse.data.state as string;
-    } catch {
-        return 'success';
-    }
+    const statusResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/status', {
+        owner,
+        repo: repoName,
+        ref
+    });
+    return statusResponse.data.state as string;
 }
 
 export interface CheckRunsStatus {

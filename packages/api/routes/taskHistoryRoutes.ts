@@ -238,18 +238,19 @@ function buildTaskInfoFromState(
   }
   // Search from the end to find the latest/current metadata value rather than the earliest.
   // This matters for ultrafix flows that alternate review/fix states.
-  const findLastMetaWith = (key: string) => [...historyEntries].reverse().find(
-    h => h.metadata && typeof h.metadata === 'object' && key in h.metadata
-  )?.metadata as Record<string, unknown> | undefined;
-  const historyWithMeta = findLastMetaWith('commandMode');
-  if (historyWithMeta?.commandMode) taskInfo.commandMode = historyWithMeta.commandMode;
-  if (historyWithMeta?.ultrafixCycle === true) {
+  let commandModeMeta: Record<string, unknown> | undefined;
+  let ultrafixCycleMeta: Record<string, unknown> | undefined;
+  for (let i = historyEntries.length - 1; i >= 0; i--) {
+    const h = historyEntries[i];
+    if (!h.metadata || typeof h.metadata !== 'object') continue;
+    const meta = h.metadata as Record<string, unknown>;
+    if (!commandModeMeta && 'commandMode' in meta) commandModeMeta = meta;
+    if (!ultrafixCycleMeta && 'ultrafixCycle' in meta) ultrafixCycleMeta = meta;
+    if (commandModeMeta && ultrafixCycleMeta) break;
+  }
+  if (commandModeMeta?.commandMode) taskInfo.commandMode = commandModeMeta.commandMode;
+  if (commandModeMeta?.ultrafixCycle === true || ultrafixCycleMeta?.ultrafixCycle === true) {
     taskInfo.ultrafixCycle = true;
-  } else {
-    const ultrafixMeta = findLastMetaWith('ultrafixCycle');
-    if (ultrafixMeta?.ultrafixCycle === true) {
-      taskInfo.ultrafixCycle = true;
-    }
   }
   return taskInfo;
 }

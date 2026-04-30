@@ -261,6 +261,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         } catch (saveError) {
           const failedName = extracted.saves[i].name;
           console.error(`Settings save failed for "${failedName}" (already committed: [${committedNames.join(', ')}]):`, saveError);
+          await publishConfigUpdate('settings_update');
           return {
             status: 500,
             body: {
@@ -271,7 +272,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         }
       }
       await publishConfigUpdate('settings_update');
-      return { status: 200, body: { success: true, settings } };
+      return { status: 200, body: { success: true, settings: { ...otherSettings, ...extracted.normalized } } };
     });
 
     res.status(result.status).json(result.body);
