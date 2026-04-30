@@ -225,7 +225,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       // Note: individual saves are not transactional — if a later save fails,
       // earlier writes may already be committed. Validation up front minimises
       // this risk but does not eliminate it entirely.
-      const extracted = extractSettingSaves({
+      const extracted = await extractSettingSaves({
         auto_followup_score_threshold,
         auto_resolve_merge_conflicts,
         pr_review_model,

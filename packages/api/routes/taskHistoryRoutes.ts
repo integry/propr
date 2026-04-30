@@ -315,7 +315,11 @@ function buildTaskInfoFromJob(job: Job<JobData, JobReturnValue>, taskId: string)
       || extractIssueNumberFromTitle(job.data.title);
     if (issueNumber) taskInfo.issueNumber = issueNumber;
   }
-  if ((job.data as Record<string, unknown>).ultrafixMeta) {
+  const jobDataRecord = job.data as Record<string, unknown>;
+  if (jobDataRecord.commandMode) {
+    taskInfo.commandMode = jobDataRecord.commandMode;
+  }
+  if (jobDataRecord.ultrafixMeta) {
     taskInfo.ultrafixCycle = true;
   }
   return taskInfo;
