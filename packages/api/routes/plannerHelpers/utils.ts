@@ -63,9 +63,9 @@ export function runBackgroundGeneration(options: BackgroundGenerationOptions): v
           }
         } catch { /* ignore parse errors */ }
 
-        // Mark any pending steps as failed and add error info
+        // Mark any non-completed steps as failed and add error info
         const updatedSteps = existingTrace.steps.map((step: { name: string; status: string; completedAt?: string }) =>
-          step.status === 'pending' ? { ...step, status: 'failed' } : step
+          step.status === 'pending' || step.status === 'in_progress' ? { ...step, status: 'failed' } : step
         );
 
         const failedTrace = {

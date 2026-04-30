@@ -98,10 +98,11 @@ export function useGenerationPolling({
         onCompleteRef.current();
       }
 
-      if (updatedDraft.status === 'draft') {
+      if (updatedDraft.status === 'failed' || updatedDraft.status === 'draft') {
         const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
-        if (trace?.error) {
-          setGenerationError(trace.error);
+        const errorMsg = trace?.error || (updatedDraft.status === 'failed' ? 'Plan generation failed' : null);
+        if (errorMsg) {
+          setGenerationError(errorMsg);
           setIsGenerating(false);
           isGeneratingRef.current = false;
         }
