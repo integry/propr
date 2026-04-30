@@ -173,6 +173,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     });
 
     // Wire up check_run hook to resume deferred ultrafix continuations
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number, _headSha: string) => {
         const log = logger.withCorrelation(generateCorrelationId());
         await resumeDeferredContinuation({ owner, repo, pr: prNumber }, redisClient, log as unknown as Logger);

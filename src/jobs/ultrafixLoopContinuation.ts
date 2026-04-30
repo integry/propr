@@ -19,7 +19,6 @@ import {
 } from '@propr/core';
 import {
     loadState,
-    loadDeferredContinuation,
     claimDeferredContinuation,
     recordAction,
     clearState,
