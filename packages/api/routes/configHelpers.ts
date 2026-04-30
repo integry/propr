@@ -201,43 +201,43 @@ async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; va
   return { value: val };
 }
 
-export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: Array<() => Promise<boolean>> }> {
-  // Phase 1: Validate all fields first, collecting save thunks. No saves are started yet.
-  const thunks: Array<() => Promise<boolean>> = [];
+export interface LabeledSave { name: string; execute: () => Promise<boolean> }
+
+export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSave[] }> {
+  const thunks: LabeledSave[] = [];
 
   if (fields.auto_followup_score_threshold !== undefined) {
     const v = validateStrictInt(fields.auto_followup_score_threshold, 0, 9);
     if (v === null) return { error: 'auto_followup_score_threshold must be an integer between 0 and 9', saves: [] };
-    thunks.push(() => configManager.saveAutoFollowupScoreThreshold(v));
+    thunks.push({ name: 'auto_followup_score_threshold', execute: () => configManager.saveAutoFollowupScoreThreshold(v) });
   }
   if (fields.auto_resolve_merge_conflicts !== undefined) {
     if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [] };
     const val = fields.auto_resolve_merge_conflicts;
-    thunks.push(() => configManager.saveAutoResolveMergeConflicts(val));
+    thunks.push({ name: 'auto_resolve_merge_conflicts', execute: () => configManager.saveAutoResolveMergeConflicts(val) });
   }
   if (fields.pr_review_model !== undefined) {
     const result = await validatePrReviewModel(fields.pr_review_model);
     if (result.error) return { error: result.error, saves: [] };
     const val = result.value!;
-    thunks.push(() => configManager.savePrReviewModel(val));
+    thunks.push({ name: 'pr_review_model', execute: () => configManager.savePrReviewModel(val) });
   }
   if (fields.ultrafix_rating_goal !== undefined) {
     const v = validateStrictInt(fields.ultrafix_rating_goal, 1, 10);
     if (v === null) return { error: 'ultrafix_rating_goal must be an integer between 1 and 10', saves: [] };
-    thunks.push(() => configManager.saveUltrafixRatingGoal(v));
+    thunks.push({ name: 'ultrafix_rating_goal', execute: () => configManager.saveUltrafixRatingGoal(v) });
   }
   if (fields.ultrafix_max_cycles !== undefined) {
     const v = validateStrictInt(fields.ultrafix_max_cycles, 1, Infinity);
     if (v === null) return { error: 'ultrafix_max_cycles must be a positive integer', saves: [] };
-    thunks.push(() => configManager.saveUltrafixMaxCycles(v));
+    thunks.push({ name: 'ultrafix_max_cycles', execute: () => configManager.saveUltrafixMaxCycles(v) });
   }
   if (fields.ultrafix_pause_seconds !== undefined) {
     const v = validateStrictInt(fields.ultrafix_pause_seconds, 0, Infinity);
     if (v === null) return { error: 'ultrafix_pause_seconds must be a non-negative integer', saves: [] };
-    thunks.push(() => configManager.saveUltrafixPauseSeconds(v));
+    thunks.push({ name: 'ultrafix_pause_seconds', execute: () => configManager.saveUltrafixPauseSeconds(v) });
   }
 
-  // Phase 2: All validation passed — return thunks so the caller controls execution order.
   return { saves: thunks };
 }
 

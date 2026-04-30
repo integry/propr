@@ -371,19 +371,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     const initialAction: 'review' | 'fix' = hasPendingReview ? 'fix' : 'review';
 
     try {
-        // 6. Post a circuit-breaker comment
-        await withRetry(
-            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner,
-                repo,
-                issue_number: prNumber,
-                body: `🔄 **Ultrafix loop started** (goal: ${effectiveGoal}/10, max cycles: ${effectiveMaxCycles})\n\nFirst action: \`/${initialAction}\`\n\n> 💡 **Tip:** Remove the \`ultrafix\` label from this PR to stop further ultrafix cycles.`,
-            }),
-            { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
-            `post_ultrafix_comment_${owner}_${repo}_${prNumber}`
-        );
-
-        // 7. Persist ultrafix state in Redis after label + comment are committed
+        // 6. Persist ultrafix state in Redis
         await deps.startLoop(redisClient, {
             owner,
             repo,
@@ -399,12 +387,12 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             `/ultrafix initialized, first action: ${initialAction}`,
         );
 
-        // 9. Build a command meta for the first action (review or fix), carrying ultrafix metadata
+        // 7. Build a command meta for the first action (review or fix), carrying ultrafix metadata
         const firstActionMeta: CommandMeta = initialAction === 'review'
             ? { mode: 'review', models: effectiveReviewModel ? [effectiveReviewModel] : [], instructions: commandMeta.instructions }
             : { mode: 'fix', instructions: commandMeta.instructions };
 
-        // 10. Enqueue the first step with ultrafix metadata
+        // 8. Enqueue the first step with ultrafix metadata
         await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
             payload,
             redisClient,
@@ -415,6 +403,20 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             prefetchedPRData: prData,
             ultrafixMeta: commandMeta,
         });
+
+        // 9. Post the circuit-breaker comment AFTER state and job are committed,
+        //    so a failure in startLoop/enqueue never leaves a contradictory
+        //    "started" comment on the PR.
+        await withRetry(
+            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: `🔄 **Ultrafix loop started** (goal: ${effectiveGoal}/10, max cycles: ${effectiveMaxCycles})\n\nFirst action: \`/${initialAction}\`\n\n> 💡 **Tip:** Remove the \`ultrafix\` label from this PR to stop further ultrafix cycles.`,
+            }),
+            { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
+            `post_ultrafix_comment_${owner}_${repo}_${prNumber}`
+        );
     } catch (error) {
         // Rollback: remove the ultrafix label if we added it, clear loop state, and post a failure comment
         correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed after side effects, rolling back');

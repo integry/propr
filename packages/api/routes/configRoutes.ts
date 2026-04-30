@@ -239,20 +239,22 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       // Execute all saves sequentially. If any save fails, report the error
-      // but note that earlier writes in the sequence may already be committed
-      // (there is no cross-key transaction support). Validation up front minimises
-      // this risk; runtime failures here indicate an infrastructure problem.
-      const completedSaves: number[] = [];
+      // along with which settings were already committed (there is no cross-key
+      // transaction support). Validation up front minimises the risk of partial
+      // writes; runtime failures here indicate an infrastructure problem.
+      const committedNames: string[] = [];
       for (let i = 0; i < extracted.saves.length; i++) {
         try {
-          await extracted.saves[i]();
-          completedSaves.push(i);
+          await extracted.saves[i].execute();
+          committedNames.push(extracted.saves[i].name);
         } catch (saveError) {
-          console.error(`Settings save failed at step ${i + 1}/${extracted.saves.length} (${completedSaves.length} already committed):`, saveError);
+          const failedName = extracted.saves[i].name;
+          console.error(`Settings save failed for "${failedName}" (already committed: [${committedNames.join(', ')}]):`, saveError);
           return {
             status: 500,
             body: {
-              error: `Failed to save setting (step ${i + 1}). ${completedSaves.length} earlier setting(s) were already saved. Please retry or check system logs.`
+              error: `Failed to save "${failedName}".${committedNames.length ? ` Already committed: ${committedNames.join(', ')}.` : ''} Please retry or check system logs.`,
+              committed: committedNames,
             }
           };
         }
@@ -260,11 +262,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       try {
         await configManager.saveSettings(otherSettings);
       } catch (saveError) {
-        console.error(`Settings save failed for general settings (${completedSaves.length} earlier setting(s) already committed):`, saveError);
+        console.error(`Settings save failed for general settings (already committed: [${committedNames.join(', ')}]):`, saveError);
         return {
           status: 500,
           body: {
-            error: `Failed to save general settings. ${completedSaves.length} earlier setting(s) were already saved. Please retry or check system logs.`
+            error: `Failed to save general settings.${committedNames.length ? ` Already committed: ${committedNames.join(', ')}.` : ''} Please retry or check system logs.`,
+            committed: committedNames,
           }
         };
       }
