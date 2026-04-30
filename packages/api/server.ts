@@ -409,16 +409,11 @@ async function start(): Promise<void> {
     try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
 
-    // Wire up ultrafix dependencies for /ultrafix slash command support.
-    // Non-literal paths prevent TypeScript from following these cross-rootDir imports.
-    const bootstrapPath = '../../src/jobs/ultrafixBootstrap.js';
-    const { createUltrafixDeps } = await import(bootstrapPath);
+    const { createUltrafixDeps } = await import('../../src/jobs/ultrafixBootstrap.js');
     setUltrafixDeps(createUltrafixDeps());
     console.log('[ultrafix] Ultrafix dependencies initialized');
 
-    // Wire up check_run hook to resume deferred ultrafix continuations when CI passes
-    const continuationPath = '../../src/jobs/ultrafixLoopContinuation.js';
-    const contMod = await import(continuationPath);
+    const contMod = await import('../../src/jobs/ultrafixLoopContinuation.js');
     // Wire up check_run deps so resumeDeferredContinuation can evaluate readiness
     contMod.setCheckRunDeps({
       areAllChecksPassing: configManager.areAllChecksPassing,
