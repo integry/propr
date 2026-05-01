@@ -4,6 +4,7 @@
 
 import { db } from '../../db/connection.js';
 import type { GenerationTrace } from './planningTypes.js';
+import type { StepStatus } from '@propr/shared';
 import { getEventPublisher } from '../../utils/eventPublisher.js';
 
 /**
@@ -13,7 +14,7 @@ import { getEventPublisher } from '../../utils/eventPublisher.js';
 export async function updateTrace(
   draftId: string,
   step: string,
-  status: 'pending' | 'in_progress' | 'completed' | 'failed',
+  status: StepStatus,
   data?: Record<string, unknown>
 ): Promise<GenerationTrace> {
   if (!db) return { steps: [] };

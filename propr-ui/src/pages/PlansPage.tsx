@@ -7,6 +7,7 @@ import { Filter, Search, X } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
+import type { DraftUpdatePayload } from '@propr/shared';
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -144,11 +145,16 @@ const PlansPage: React.FC = () => {
   }, [searchQuery, debouncedSearch, setSearchParams]);
 
   // Handle draft update from WebSocket - skip step-level generation progress events
-  const handleDraftUpdate = useCallback(async (payload: import('@propr/shared').DraftUpdatePayload) => {
+  const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
     if (payload.draftStatus === 'generating') return;
 
     const isOnCurrentPage = drafts.some(d => d.draft_id === payload.draftId);
-    if (isOnCurrentPage) {
+    const couldAffectCurrentView =
+      !isOnCurrentPage &&
+      payload.draftStatus &&
+      (statusFilter === 'all' || payload.draftStatus === statusFilter);
+
+    if (isOnCurrentPage || couldAffectCurrentView) {
       await Promise.all([
         loadDrafts(currentPage, repoFilter, statusFilter, false),
         loadAllRepositories(),

@@ -35,6 +35,7 @@ export {
   type CommandMode,
   type EventPayload,
   type DraftStatus,
+  type StepStatus,
   type DraftUpdateGenerationTrace,
 } from './events.js';
 

@@ -1,3 +1,5 @@
+import type { DraftStatus, StepStatus } from '@propr/shared';
+
 export interface GenerationStepData {
   keywords?: string[];
   files?: Array<{ path: string; reason: string; score: number }>;
@@ -11,7 +13,7 @@ export interface GenerationStepData {
 
 export interface GenerationStep {
   name: 'relevance' | 'context' | 'llm';
-  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  status: StepStatus;
   data?: GenerationStepData;
 }
 
@@ -31,7 +33,7 @@ export interface PlannerDraft {
   draft_id: string;
   repository: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed' | 'executing' | 'pr_created' | 'merged' | 'failed';
+  status: DraftStatus;
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
@@ -203,7 +205,7 @@ export interface DraftListItem {
   repository: string;
   name?: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'executed' | 'executing' | 'generating' | 'refining' | 'approved' | 'pr_created' | 'merged' | 'failed';
+  status: DraftStatus;
   updated_at: string;
   created_at: string;
   issue_summary?: IssueSummary | null;

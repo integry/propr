@@ -51,9 +51,12 @@ export interface TaskUpdatePayload {
 /** Known draft statuses used across the backend/frontend event contract */
 export type DraftStatus = 'draft' | 'generating' | 'refining' | 'review' | 'approved' | 'executed' | 'executing' | 'pr_created' | 'merged' | 'failed';
 
+/** Status of a generation trace step */
+export type StepStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+
 /** Generation trace snapshot carried in draft update payloads */
 export interface DraftUpdateGenerationTrace {
-  steps: Array<{ name: string; status: string; data?: Record<string, unknown> }>;
+  steps: Array<{ name: string; status: StepStatus; data?: Record<string, unknown> }>;
   error?: string;
   failedAt?: string;
 }
@@ -63,7 +66,7 @@ export interface DraftUpdatePayload {
   eventType: typeof DRAFT_UPDATE;
   draftId: string;
   step: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  status: StepStatus;
   timestamp: string;
   /** Step-specific data (e.g., progress percentage, file counts) */
   data?: Record<string, unknown>;
@@ -78,7 +81,7 @@ export interface PlanStepUpdatePayload {
   eventType: typeof PLAN_STEP_UPDATE;
   draftId: string;
   step: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  status: StepStatus;
   timestamp: string;
   data?: Record<string, unknown>;
 }

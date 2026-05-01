@@ -120,7 +120,7 @@ export function useGenerationPolling({
     };
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
-  // Safety-net poll — low-frequency resync while connected to catch missed socket events
+  // Guards against socket reconnects where the terminal event was missed during the gap
   useEffect(() => {
     if (!draftId || !isGenerating || !isConnected) return;
 

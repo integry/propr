@@ -10,6 +10,7 @@ import {
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type DraftStatus,
+  type StepStatus,
   type DraftUpdateGenerationTrace,
   type IndexingUpdatePayload,
   type TaskLiveUpdatePayload,
@@ -108,7 +109,7 @@ class EventPublisher {
   async publishDraftUpdate(params: {
     draftId: string;
     step: string;
-    status: 'pending' | 'in_progress' | 'completed' | 'failed';
+    status: StepStatus;
     data?: Record<string, unknown>;
     draftStatus?: DraftStatus;
     generationTrace?: DraftUpdateGenerationTrace;
