@@ -11,10 +11,15 @@ export async function loadPrReviewModel(): Promise<string> {
         return '';
     }
     if (model !== '') {
-        const result = await validatePrReviewModelValue(model);
-        if (!result.valid) {
-            logger.warn({ stored_value: model, reason: result.error }, 'Stored pr_review_model is no longer valid, using default');
-            return '';
+        try {
+            const result = await validatePrReviewModelValue(model);
+            if (!result.valid) {
+                logger.warn({ stored_value: model, reason: result.error }, 'Stored pr_review_model is no longer valid, using default');
+                return '';
+            }
+        } catch (error) {
+            logger.warn({ stored_value: model, error: (error as Error).message }, 'Failed to validate pr_review_model (agent registry unavailable), returning stored value');
+            return model;
         }
     }
     logger.info({ pr_review_model: model }, 'Successfully loaded PR review model');

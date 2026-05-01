@@ -232,7 +232,7 @@ export async function getCheckRunsStatus(owner: string, repoName: string, ref: s
             getCommitStatusInfo(octokit, owner, repoName, ref)
         ]);
         const checkRuns = checkRunsResponse.data.check_runs;
-        const count = checkRuns.length;
+        const count = checkRuns.length + commitStatus.totalCount;
         const crPending = checkRuns.some((run: { status: string }) => run.status !== 'completed');
         const crFailed = checkRuns.some((run: { status: string; conclusion: string | null }) =>
             run.status === 'completed' && run.conclusion !== 'success' && run.conclusion !== 'skipped'

@@ -44,8 +44,10 @@ const METRIC_KEY_LABELS: Record<string, string> = {
 function humanizeKey(key: string): string {
     if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
     return key
+        .replace(/[-_]/g, ' ')
         .replace(/([a-z])([A-Z])/g, '$1 $2')
-        .replace(/^./, c => c.toUpperCase());
+        .replace(/(\d) (\d)/g, '$1.$2')
+        .replace(/\b[a-zA-Z]/g, c => c.toUpperCase());
 }
 
 function extractPercentFromObject(obj: Record<string, unknown>): number | null {

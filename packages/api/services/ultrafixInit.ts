@@ -6,6 +6,8 @@
  * file paths directly.
  */
 
+import { fileURLToPath } from 'url';
+import path from 'path';
 import {
     setUltrafixDeps,
     setUltrafixCheckRunHook,
@@ -15,35 +17,41 @@ import {
 import type { Redis } from 'ioredis';
 import * as configManager from '@propr/core';
 
-async function importWithTsFallback(jsPath: string) {
-    try { return await import(jsPath); } catch { return await import(jsPath.replace(/\.js$/, '.ts')); }
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+async function importWithTsFallback(absolutePath: string) {
+    try { return await import(absolutePath); } catch { return await import(absolutePath.replace(/\.js$/, '.ts')); }
 }
 
-// Paths are relative to this file's location in packages/api/services/
-const BOOTSTRAP_PATH = '../../../src/jobs/ultrafixBootstrap.js';
-const CONTINUATION_PATH = '../../../src/jobs/ultrafixLoopContinuation.js';
+const BOOTSTRAP_PATH = path.resolve(__dirname, '../../../src/jobs/ultrafixBootstrap.js');
+const CONTINUATION_PATH = path.resolve(__dirname, '../../../src/jobs/ultrafixLoopContinuation.js');
 
 export async function initializeUltrafix(ioRedisClient: Redis): Promise<void> {
-    const { createUltrafixDeps } = await importWithTsFallback(BOOTSTRAP_PATH);
-    setUltrafixDeps(createUltrafixDeps());
-    console.log('[ultrafix] Ultrafix dependencies initialized');
+    try {
+        const { createUltrafixDeps } = await importWithTsFallback(BOOTSTRAP_PATH);
+        setUltrafixDeps(createUltrafixDeps());
+        logger.info({ bootstrapPath: BOOTSTRAP_PATH }, '[ultrafix] Ultrafix dependencies initialized');
 
-    const contMod = await importWithTsFallback(CONTINUATION_PATH);
-    contMod.setCheckRunDeps({
-        areAllChecksPassing: configManager.areAllChecksPassing,
-        getCurrentPRHead: configManager.getCurrentPRHead,
-        getCheckRunsStatus: configManager.getCheckRunsStatus,
-    });
+        const contMod = await importWithTsFallback(CONTINUATION_PATH);
+        contMod.setCheckRunDeps({
+            areAllChecksPassing: configManager.areAllChecksPassing,
+            getCurrentPRHead: configManager.getCurrentPRHead,
+            getCheckRunsStatus: configManager.getCheckRunsStatus,
+        });
 
-    setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number, headSha: string) => {
-        const log = logger.withCorrelation(generateCorrelationId());
-        log.debug({ owner, repo, prNumber, headSha }, '[ultrafix] check_run hook triggered');
-        const result = await contMod.resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
-        if (result.continued) {
-            log.info({ owner, repo, prNumber, result }, '[ultrafix] deferred continuation resumed');
-        } else {
-            log.debug({ owner, repo, prNumber, reason: result.reason }, '[ultrafix] no deferred continuation to resume');
-        }
-    });
-    console.log('[ultrafix] Check run hook initialized');
+        setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number, headSha: string) => {
+            const log = logger.withCorrelation(generateCorrelationId());
+            log.debug({ owner, repo, prNumber, headSha }, '[ultrafix] check_run hook triggered');
+            const result = await contMod.resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
+            if (result.continued) {
+                log.info({ owner, repo, prNumber, result }, '[ultrafix] deferred continuation resumed');
+            } else {
+                log.debug({ owner, repo, prNumber, reason: result.reason }, '[ultrafix] no deferred continuation to resume');
+            }
+        });
+        logger.info('[ultrafix] Check run hook initialized');
+    } catch (error) {
+        logger.error({ error: (error as Error).message, bootstrapPath: BOOTSTRAP_PATH, continuationPath: CONTINUATION_PATH },
+            '[ultrafix] Failed to initialize — server will continue without ultrafix support');
+    }
 }

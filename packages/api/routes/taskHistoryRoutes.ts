@@ -41,7 +41,6 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
         });
         return;
       }
-      console.log(`Task ${taskId} not found in SQLite, falling back to Redis`);
       let history: Array<Record<string, unknown>> = [];
       let taskInfo: Record<string, unknown> | null = null;
       const redisResult = await getHistoryFromRedis(redisClient, taskId);
@@ -92,8 +91,6 @@ async function fetchUsageMetrics(
 ): Promise<{ usageMetrics: Record<string, unknown> | null; usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }> }> {
   const llmLog = await db('llm_logs')
     .where({ draft_id: taskId, execution_type: 'implementation' }).orderBy('start_time', 'desc').first();
-  console.log(`[taskHistory] Fetching usage metrics for taskId: ${taskId}, llmLog found: ${!!llmLog}, has usage_metrics: ${!!llmLog?.usage_metrics}`);
-
   if (!llmLog) return { usageMetrics: null, usageMetricRecords: [] };
 
   let usageMetrics: Record<string, unknown> | null = null;
@@ -119,7 +116,6 @@ async function getHistoryFromDb(
   usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }>;
 } | null> {
   try {
-    console.log(`Fetching task history from SQLite for taskId: ${taskId}`);
     const task = await db('tasks').where({ task_id: taskId }).first();
     const historyRecords = await db('task_history').where({ task_id: taskId }).orderBy('timestamp', 'asc');
     if (!task || historyRecords.length === 0) return null;
@@ -143,11 +139,9 @@ async function getHistoryFromDb(
 
     applyMetadataFlags(taskInfo, history);
 
-    console.log(`Fetched ${history.length} history records from SQLite for task ${taskId}`);
     return { history, taskInfo, ...usage };
   } catch (error) {
     console.error('Error fetching task history from SQLite:', error);
-    console.log('Falling back to Redis for task history...');
     return null;
   }
 }
