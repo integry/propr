@@ -4,7 +4,7 @@
 
 import { Knex } from 'knex';
 import { generatePlan, getEventPublisher, parseGenerationTrace } from '@propr/core';
-import type { StepStatus, DraftUpdateGenerationTrace } from '@propr/shared';
+import type { DraftUpdateGenerationTrace } from '@propr/shared';
 import type { GenerateRequestBody, BackgroundGenerationOptions } from './types.js';
 import { VALID_GRANULARITIES } from './validation.js';
 
