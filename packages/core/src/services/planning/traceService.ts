@@ -7,6 +7,16 @@ import type { GenerationTrace } from './planningTypes.js';
 import type { StepStatus } from '@propr/shared';
 import { getEventPublisher } from '../../utils/eventPublisher.js';
 
+export function parseGenerationTrace(raw: unknown): GenerationTrace {
+  let parsed: GenerationTrace | undefined;
+  if (raw) {
+    try {
+      parsed = typeof raw === 'string' ? JSON.parse(raw) : (raw as GenerationTrace);
+    } catch { /* ignore parse errors */ }
+  }
+  return { steps: Array.isArray(parsed?.steps) ? parsed.steps : [] };
+}
+
 /**
  * Update the generation trace for a draft with step status and data.
  * Returns the updated trace so callers can use it without re-reading from DB.
@@ -24,15 +34,7 @@ export async function updateTrace(
     .select('generation_trace')
     .first();
 
-  let rawTrace: GenerationTrace | undefined;
-  if (draft?.generation_trace) {
-    try {
-      rawTrace = typeof draft.generation_trace === 'string'
-        ? JSON.parse(draft.generation_trace)
-        : (draft.generation_trace as GenerationTrace);
-    } catch { /* ignore parse errors */ }
-  }
-  const trace: GenerationTrace = { steps: Array.isArray(rawTrace?.steps) ? rawTrace.steps : [] };
+  const trace = parseGenerationTrace(draft?.generation_trace);
 
   const existingStepIndex = trace.steps.findIndex((s) => s.name === step);
   if (existingStepIndex >= 0) {
@@ -48,23 +50,16 @@ export async function updateTrace(
       updated_at: db.fn.now()
     });
 
-  // Publish WebSocket event for real-time updates (fire-and-forget pattern)
-  // Use try-catch to prevent event publishing failures from breaking core functionality
-  try {
-    const eventPublisher = getEventPublisher();
-    await eventPublisher.publishDraftUpdate({
-      draftId,
-      step,
-      status,
-      data,
-      draftStatus: 'generating',
-      generationTrace: trace
-    });
-  } catch (error) {
-    // Log but don't throw - database is already updated, so clients can still
-    // receive updates via fallback polling if WebSocket publishing fails
-    console.warn('[traceService] Failed to publish draft update event:', (error as Error).message);
-  }
+  // Publish WebSocket event for real-time updates (fire-and-forget)
+  const eventPublisher = getEventPublisher();
+  await eventPublisher.publishDraftUpdate({
+    draftId,
+    step,
+    status,
+    data,
+    draftStatus: 'generating',
+    generationTrace: trace
+  });
 
   return trace;
 }

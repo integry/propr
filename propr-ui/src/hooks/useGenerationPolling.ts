@@ -120,6 +120,15 @@ export function useGenerationPolling({
     };
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
+  // Safety-net poll while connected — catches missed WebSocket events (e.g. Redis outage)
+  useEffect(() => {
+    if (!draftId || !isGenerating || !isConnected) return;
+
+    const intervalId = setInterval(pollDraft, 30000);
+
+    return () => clearInterval(intervalId);
+  }, [draftId, isGenerating, isConnected, pollDraft]);
+
   // Resync on socket reconnection to catch any events missed during the gap
   const wasConnectedRef = useRef(true);
   useEffect(() => {

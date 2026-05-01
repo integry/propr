@@ -3,7 +3,7 @@
  */
 
 import { Knex } from 'knex';
-import { generatePlan, getEventPublisher } from '@propr/core';
+import { generatePlan, getEventPublisher, parseGenerationTrace } from '@propr/core';
 import type { StepStatus, DraftUpdateGenerationTrace } from '@propr/shared';
 import type { GenerateRequestBody, BackgroundGenerationOptions } from './types.js';
 import { VALID_GRANULARITIES } from './validation.js';
@@ -57,12 +57,7 @@ export function runBackgroundGeneration(options: BackgroundGenerationOptions): v
       try {
         // Get current trace to preserve any completed steps
         const draft = await db('task_drafts').where({ draft_id: draftId }).first();
-        let existingTrace = { steps: [] as { name: string; status: StepStatus; data?: Record<string, unknown> }[] };
-        try {
-          if (draft?.generation_trace) {
-            existingTrace = JSON.parse(draft.generation_trace);
-          }
-        } catch { /* ignore parse errors */ }
+        const existingTrace = parseGenerationTrace(draft?.generation_trace);
 
         // Mark any non-completed steps as failed and add error info
         const updatedSteps = existingTrace.steps.map((step) =>
@@ -82,16 +77,17 @@ export function runBackgroundGeneration(options: BackgroundGenerationOptions): v
         });
 
         // Emit failure event so the UI can transition without polling
-        try {
-          const eventPublisher = getEventPublisher();
-          await eventPublisher.publishDraftUpdate({
-            draftId,
-            step: 'complete',
-            status: 'failed',
-            draftStatus: 'failed',
-            generationTrace: failedTrace
-          });
-        } catch { /* best-effort */ }
+        const eventPublisher = getEventPublisher();
+        const published = await eventPublisher.publishDraftUpdate({
+          draftId,
+          step: 'complete',
+          status: 'failed',
+          draftStatus: 'failed',
+          generationTrace: failedTrace
+        });
+        if (!published) {
+          console.warn(`[generate] Failed to publish failure event for draft ${draftId} — client will resync via safety-net poll`);
+        }
       } catch (dbError) {
         console.error(`[generate] Failed to update draft status after error:`, dbError);
       }

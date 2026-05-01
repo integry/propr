@@ -63,17 +63,18 @@ class EventPublisher {
    * Publish an event to a Redis channel.
    * Silently fails if Redis is not available to avoid breaking main application flow.
    */
-  private async publish(channel: string, payload: EventPayload): Promise<void> {
+  private async publish(channel: string, payload: EventPayload): Promise<boolean> {
     try {
       await this.ensureInitialized();
-      if (!this.redis) return;
+      if (!this.redis) return false;
 
       const message = JSON.stringify(payload);
       await this.redis.publish(channel, message);
       logger.debug({ channel, eventType: payload.eventType }, 'Published event');
+      return true;
     } catch (error) {
-      // Log but don't throw - event publishing should not break main flow
       logger.warn({ error: (error as Error).message, channel }, 'Failed to publish event');
+      return false;
     }
   }
 
@@ -113,7 +114,7 @@ class EventPublisher {
     data?: Record<string, unknown>;
     draftStatus?: DraftStatus;
     generationTrace?: DraftUpdateGenerationTrace;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const payload: DraftUpdatePayload = {
       eventType: DRAFT_UPDATE,
       draftId: params.draftId,
@@ -124,7 +125,7 @@ class EventPublisher {
       draftStatus: params.draftStatus,
       generationTrace: params.generationTrace
     };
-    await this.publish(REDIS_CHANNELS.DRAFTS, payload);
+    return this.publish(REDIS_CHANNELS.DRAFTS, payload);
   }
 
   /**

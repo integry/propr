@@ -144,17 +144,16 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   });
 
   // Emit final completion event so the UI can transition without polling
-  try {
-    const eventPublisher = getEventPublisher();
-    await eventPublisher.publishDraftUpdate({
-      draftId,
-      step: 'complete',
-      status: 'completed',
-      draftStatus: 'review',
-      generationTrace: finalTrace
-    });
-  } catch (error) {
-    correlatedLogger.warn({ error: (error as Error).message }, 'Failed to publish completion event');
+  const eventPublisher = getEventPublisher();
+  const published = await eventPublisher.publishDraftUpdate({
+    draftId,
+    step: 'complete',
+    status: 'completed',
+    draftStatus: 'review',
+    generationTrace: finalTrace
+  });
+  if (!published) {
+    correlatedLogger.warn('Failed to publish completion event — client will resync via safety-net poll');
   }
 
   return validatedPlan;
