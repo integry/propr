@@ -24,7 +24,14 @@ export async function updateTrace(
     .select('generation_trace')
     .first();
 
-  const rawTrace = draft?.generation_trace as GenerationTrace | undefined;
+  let rawTrace: GenerationTrace | undefined;
+  if (draft?.generation_trace) {
+    try {
+      rawTrace = typeof draft.generation_trace === 'string'
+        ? JSON.parse(draft.generation_trace)
+        : (draft.generation_trace as GenerationTrace);
+    } catch { /* ignore parse errors */ }
+  }
   const trace: GenerationTrace = { steps: Array.isArray(rawTrace?.steps) ? rawTrace.steps : [] };
 
   const existingStepIndex = trace.steps.findIndex((s) => s.name === step);

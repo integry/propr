@@ -34,6 +34,7 @@ const getStageFromStatus = (status: string | undefined): StudioStage => {
     case 'executing':
     case 'pr_created':
     case 'merged':
+    case 'failed':
       return 'execute';
     default:
       return 'draft';

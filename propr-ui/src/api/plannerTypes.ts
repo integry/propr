@@ -12,7 +12,7 @@ export interface GenerationStepData {
 }
 
 export interface GenerationStep {
-  name: 'relevance' | 'context' | 'llm';
+  name: string;
   status: StepStatus;
   data?: GenerationStepData;
 }

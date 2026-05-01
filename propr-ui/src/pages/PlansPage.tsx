@@ -149,7 +149,7 @@ const PlansPage: React.FC = () => {
     // Skip step-level churn during generation, but allow the initial transition into generating
     if (payload.draftStatus === 'generating') {
       const existingDraft = drafts.find(d => d.draft_id === payload.draftId);
-      if (existingDraft?.status === 'generating') return;
+      if (!existingDraft || existingDraft.status === 'generating') return;
     }
 
     const isOnCurrentPage = drafts.some(d => d.draft_id === payload.draftId);

@@ -121,7 +121,7 @@ export function useGenerationPolling({
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
   // Resync on socket reconnection to catch any events missed during the gap
-  const wasConnectedRef = useRef(false);
+  const wasConnectedRef = useRef(true);
   useEffect(() => {
     if (!draftId || !isGenerating) return;
 
