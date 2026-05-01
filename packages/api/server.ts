@@ -43,10 +43,9 @@ import {
   handleCommentDeleted,
   handleCommentEdited,
   processCommentEvent,
-  setUltrafixDeps,
-  setUltrafixCheckRunHook,
   logger
 } from '@propr/core';
+import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
@@ -410,30 +409,7 @@ async function start(): Promise<void> {
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
 
     try {
-      async function importWithTsFallback(jsPath: string) {
-        try { return await import(jsPath); } catch { return await import(jsPath.replace(/\.js$/, '.ts')); }
-      }
-      const { createUltrafixDeps } = await importWithTsFallback('../../src/jobs/ultrafixBootstrap.js');
-      setUltrafixDeps(createUltrafixDeps());
-      console.log('[ultrafix] Ultrafix dependencies initialized');
-
-      const contMod = await importWithTsFallback('../../src/jobs/ultrafixLoopContinuation.js');
-      contMod.setCheckRunDeps({
-        areAllChecksPassing: configManager.areAllChecksPassing,
-        getCurrentPRHead: configManager.getCurrentPRHead,
-        getCheckRunsStatus: configManager.getCheckRunsStatus,
-      });
-      setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number, headSha: string) => {
-        const log = logger.withCorrelation(generateCorrelationId());
-        log.debug({ owner, repo, prNumber, headSha }, '[ultrafix] check_run hook triggered');
-        const result = await contMod.resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
-        if (result.continued) {
-          log.info({ owner, repo, prNumber, result }, '[ultrafix] deferred continuation resumed');
-        } else {
-          log.debug({ owner, repo, prNumber, reason: result.reason }, '[ultrafix] no deferred continuation to resume');
-        }
-      });
-      console.log('[ultrafix] Check run hook initialized');
+      await initializeUltrafix(ioRedisClient);
     } catch (error) {
       console.error('[ultrafix] Failed to initialize ultrafix — feature will be unavailable:', (error as Error).message);
     }

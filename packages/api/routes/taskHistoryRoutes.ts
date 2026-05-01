@@ -60,6 +60,55 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
   return { getTaskHistory };
 }
 
+function buildTaskInfoFromDb(
+  taskId: string,
+  task: Record<string, unknown>,
+  jobData: ReturnType<typeof parseJobData>
+): Record<string, unknown> {
+  const [repoOwner, repoName] = (task.repository as string).split('/');
+  const { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta } = jobData;
+  const isPr = task.task_type === 'pr-comment' || taskId.startsWith('pr-comments-batch-') || !!pullRequestNumber;
+
+  const taskInfo: Record<string, unknown> = {
+    repoOwner,
+    repoName,
+    number: task.issue_number,
+    type: isPr ? 'pr-comment' : (task.task_type || 'issue'),
+    correlationId: task.correlation_id,
+    title,
+    subtitle,
+    modelName: task.model_name
+  };
+
+  if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
+  if (commandMode) taskInfo.commandMode = commandMode;
+  if (hasUltrafixMeta) taskInfo.ultrafixCycle = true;
+  return taskInfo;
+}
+
+async function fetchUsageMetrics(
+  db: Knex,
+  taskId: string
+): Promise<{ usageMetrics: Record<string, unknown> | null; usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }> }> {
+  const llmLog = await db('llm_logs')
+    .where({ draft_id: taskId, execution_type: 'implementation' }).orderBy('start_time', 'desc').first();
+  console.log(`[taskHistory] Fetching usage metrics for taskId: ${taskId}, llmLog found: ${!!llmLog}, has usage_metrics: ${!!llmLog?.usage_metrics}`);
+
+  if (!llmLog) return { usageMetrics: null, usageMetricRecords: [] };
+
+  let usageMetrics: Record<string, unknown> | null = null;
+  if (llmLog.usage_metrics) {
+    try {
+      usageMetrics = typeof llmLog.usage_metrics === 'string' ? JSON.parse(llmLog.usage_metrics) : llmLog.usage_metrics;
+    } catch (e) { console.error('Failed to parse usage_metrics:', e); }
+  }
+  const records = await db('usage_metric_records').where({ llm_log_id: llmLog.log_id });
+  const usageMetricRecords = records.map((r: Record<string, unknown>) => ({
+    agent: r.agent_name as string, metricKey: r.metric_key as string, metricValue: r.metric_value as number
+  }));
+  return { usageMetrics, usageMetricRecords };
+}
+
 async function getHistoryFromDb(
   db: Knex,
   taskId: string
@@ -75,43 +124,12 @@ async function getHistoryFromDb(
     const historyRecords = await db('task_history').where({ task_id: taskId }).orderBy('timestamp', 'asc');
     if (!task || historyRecords.length === 0) return null;
 
-    const [repoOwner, repoName] = (task.repository as string).split('/');
-    const { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta } = parseJobData(task.initial_job_data);
-    const isPr = task.task_type === 'pr-comment' || taskId.startsWith('pr-comments-batch-') || !!pullRequestNumber;
+    const taskInfo = buildTaskInfoFromDb(taskId, task, parseJobData(task.initial_job_data));
 
-    const taskInfo: Record<string, unknown> = {
-      repoOwner,
-      repoName,
-      number: task.issue_number,
-      type: isPr ? 'pr-comment' : (task.task_type || 'issue'),
-      correlationId: task.correlation_id,
-      title,
-      subtitle,
-      modelName: task.model_name
-    };
-
-    if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
-    if (commandMode) taskInfo.commandMode = commandMode;
-    if (hasUltrafixMeta) taskInfo.ultrafixCycle = true;
-
-    const llmExecutions = await db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc');
-    const llmLog = await db('llm_logs')
-      .where({ draft_id: taskId, execution_type: 'implementation' }).orderBy('start_time', 'desc').first();
-    console.log(`[taskHistory] Fetching usage metrics for taskId: ${taskId}, llmLog found: ${!!llmLog}, has usage_metrics: ${!!llmLog?.usage_metrics}`);
-
-    let usageMetrics: Record<string, unknown> | null = null;
-    let usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }> = [];
-    if (llmLog) {
-      if (llmLog.usage_metrics) {
-        try {
-          usageMetrics = typeof llmLog.usage_metrics === 'string' ? JSON.parse(llmLog.usage_metrics) : llmLog.usage_metrics;
-        } catch (e) { console.error('Failed to parse usage_metrics:', e); }
-      }
-      const records = await db('usage_metric_records').where({ llm_log_id: llmLog.log_id });
-      usageMetricRecords = records.map((r: Record<string, unknown>) => ({
-        agent: r.agent_name as string, metricKey: r.metric_key as string, metricValue: r.metric_value as number
-      }));
-    }
+    const [llmExecutions, usage] = await Promise.all([
+      db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc'),
+      fetchUsageMetrics(db, taskId),
+    ]);
 
     const executionsByHistoryId = new Map<number, Record<string, unknown>>();
     const executionsBySessionId = new Map<string, Record<string, unknown>>();
@@ -123,12 +141,10 @@ async function getHistoryFromDb(
       mapDbHistoryRecord(record, executionsByHistoryId, executionsBySessionId)
     );
 
-    // Reconcile commandMode and ultrafixCycle from history metadata,
-    // which may be more current than initial_job_data for ultrafix flows.
     applyMetadataFlags(taskInfo, history);
 
     console.log(`Fetched ${history.length} history records from SQLite for task ${taskId}`);
-    return { history, taskInfo, usageMetrics, usageMetricRecords };
+    return { history, taskInfo, ...usage };
   } catch (error) {
     console.error('Error fetching task history from SQLite:', error);
     console.log('Falling back to Redis for task history...');

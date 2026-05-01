@@ -264,6 +264,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         } catch (saveError) {
           const failedName = extracted.saves[i].name;
           console.error(`Settings save failed for "${failedName}" (already committed: [${committedNames.join(', ')}]):`, saveError);
+          // Publish both events: the standard event so listeners reload already-committed
+          // values, and the partial_failure event for monitoring/alerting.
+          if (committedNames.length > 0) {
+            await publishConfigUpdate('settings_update');
+          }
           await publishConfigUpdate('settings_update_partial_failure');
           return {
             status: 500,
