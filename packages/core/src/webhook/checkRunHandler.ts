@@ -45,27 +45,6 @@ export function setUltrafixCheckRunHook(hook: UltrafixCheckRunHook): void {
     _ultrafixCheckRunHook = hook;
 }
 
-// Dedupe ultrafix hook invocations per PR+SHA to avoid redundant wake-ups
-// when multiple check_run/status events arrive for the same CI completion.
-const _recentHookCalls = new Map<string, number>();
-const HOOK_DEDUPE_TTL_MS = 30_000;
-
-function shouldFireUltrafixHook(owner: string, repo: string, prNumber: number, headSha: string): boolean {
-    const key = `${owner}/${repo}#${prNumber}@${headSha}`;
-    const now = Date.now();
-    const lastFired = _recentHookCalls.get(key);
-    if (lastFired && now - lastFired < HOOK_DEDUPE_TTL_MS) {
-        return false;
-    }
-    _recentHookCalls.set(key, now);
-    if (_recentHookCalls.size > 1000) {
-        for (const [k, ts] of _recentHookCalls) {
-            if (now - ts > HOOK_DEDUPE_TTL_MS) _recentHookCalls.delete(k);
-        }
-    }
-    return true;
-}
-
 interface PRContext {
     owner: string;
     repoName: string;
@@ -277,9 +256,9 @@ export async function handleCheckRunEvent(
             log.error({ owner, repoName, prNumber, error: (error as Error).message }, 'Error processing auto-merge for PR');
         }
 
-        // Wake any deferred ultrafix continuation for this PR (only on success).
-        // Dedupe by PR+SHA so fan-out from multiple check_runs doesn't fire redundantly.
-        if (_ultrafixCheckRunHook && shouldFireUltrafixHook(owner, repoName, prNumber, headSha)) {
+        // Wake any deferred ultrafix continuation for this PR.
+        // Idempotency is handled by the Redis GETDEL claim in claimDeferredContinuation.
+        if (_ultrafixCheckRunHook) {
             try {
                 await _ultrafixCheckRunHook(owner, repoName, prNumber, headSha);
             } catch (error) {
@@ -314,7 +293,6 @@ export async function handleStatusEvent(
     }
 
     for (const pr of prs) {
-        if (!shouldFireUltrafixHook(owner, repoName, pr.number, payload.sha)) continue;
         try {
             await _ultrafixCheckRunHook(owner, repoName, pr.number, payload.sha);
         } catch (error) {

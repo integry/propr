@@ -72,7 +72,7 @@ function buildTaskInfoFromDb(
   const taskInfo: Record<string, unknown> = {
     repoOwner,
     repoName,
-    number: task.issue_number,
+    number: (isPr && pullRequestNumber) || task.issue_number,
     type: isPr ? 'pr-comment' : (task.task_type || 'issue'),
     correlationId: task.correlation_id,
     title,
