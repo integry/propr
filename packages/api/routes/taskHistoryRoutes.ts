@@ -229,18 +229,18 @@ function enrichMetadataWithExecution(
 // This matters for ultrafix flows that alternate review/fix states.
 function findLatestMetadata(
   historyEntries: Array<Record<string, unknown>>
-): { commandModeMeta?: Record<string, unknown>; ultrafixCycleMeta?: Record<string, unknown> } {
-  let commandModeMeta: Record<string, unknown> | undefined;
-  let ultrafixCycleMeta: Record<string, unknown> | undefined;
+): { commandMode?: unknown; ultrafixCycle?: boolean } {
+  let commandMode: unknown;
+  let ultrafixCycle: boolean | undefined;
   for (let i = historyEntries.length - 1; i >= 0; i--) {
     const h = historyEntries[i];
     if (!h.metadata || typeof h.metadata !== 'object') continue;
     const meta = h.metadata as Record<string, unknown>;
-    if (!commandModeMeta && 'commandMode' in meta) commandModeMeta = meta;
-    if (!ultrafixCycleMeta && 'ultrafixCycle' in meta) ultrafixCycleMeta = meta;
-    if (commandModeMeta && ultrafixCycleMeta) break;
+    if (commandMode === undefined && 'commandMode' in meta) commandMode = meta.commandMode;
+    if (ultrafixCycle === undefined && meta.ultrafixCycle === true) ultrafixCycle = true;
+    if (commandMode !== undefined && ultrafixCycle !== undefined) break;
   }
-  return { commandModeMeta, ultrafixCycleMeta };
+  return { commandMode, ultrafixCycle };
 }
 
 function resolveIssueNumber(ref: Record<string, unknown>): number | null {
@@ -263,11 +263,9 @@ function applyMetadataFlags(
   taskInfo: Record<string, unknown>,
   historyEntries: Array<Record<string, unknown>>
 ): void {
-  const { commandModeMeta, ultrafixCycleMeta } = findLatestMetadata(historyEntries);
-  if (commandModeMeta?.commandMode) taskInfo.commandMode = commandModeMeta.commandMode;
-  if (commandModeMeta?.ultrafixCycle === true || ultrafixCycleMeta?.ultrafixCycle === true) {
-    taskInfo.ultrafixCycle = true;
-  }
+  const { commandMode, ultrafixCycle } = findLatestMetadata(historyEntries);
+  if (commandMode) taskInfo.commandMode = commandMode;
+  if (ultrafixCycle) taskInfo.ultrafixCycle = true;
 }
 
 function buildTaskInfoFromState(

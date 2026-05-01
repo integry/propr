@@ -20,7 +20,15 @@ import * as configManager from '@propr/core';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function importWithTsFallback(absolutePath: string) {
-    try { return await import(absolutePath); } catch { return await import(absolutePath.replace(/\.js$/, '.ts')); }
+    try {
+        return await import(absolutePath);
+    } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+            return await import(absolutePath.replace(/\.js$/, '.ts'));
+        }
+        throw err;
+    }
 }
 
 const BOOTSTRAP_PATH = path.resolve(__dirname, '../../../src/jobs/ultrafixBootstrap.js');

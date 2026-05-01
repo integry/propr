@@ -128,11 +128,11 @@ export async function extractKeywordsWithLLM(
   try {
     const llmPrompt = KEYWORD_EXTRACTION_PROMPT.replace('{USER_REQUEST}', prompt);
 
-    const contextModel = cachedSettings.planner_context_model as string | undefined;
+    const contextModel = (cachedSettings.planner_context_model as string | undefined) || undefined;
 
     correlatedLogger.debug({ promptLength: prompt.length, model: contextModel }, 'Extracting keywords with LLM');
 
-    const analysisResult = await agent.analyze(llmPrompt, { model: contextModel });
+    const analysisResult = await agent.analyze(llmPrompt, contextModel ? { model: contextModel } : {});
     const response = analysisResult.response;
 
     const parsed = parseLlmJson<{ primary: string[]; alternatives: string[] }>(response);
