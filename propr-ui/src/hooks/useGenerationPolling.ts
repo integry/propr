@@ -120,15 +120,15 @@ export function useGenerationPolling({
     };
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
-  // Guards against socket reconnects where the terminal event was missed during the gap
+  // Resync on socket reconnection to catch any events missed during the gap
+  const wasConnectedRef = useRef(false);
   useEffect(() => {
-    if (!draftId || !isGenerating || !isConnected) return;
+    if (!draftId || !isGenerating) return;
 
-    const intervalId = setInterval(pollDraft, 30000);
-
-    return () => {
-      clearInterval(intervalId);
-    };
+    if (isConnected && !wasConnectedRef.current) {
+      pollDraft();
+    }
+    wasConnectedRef.current = isConnected;
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
   const stopPolling = useCallback(() => {

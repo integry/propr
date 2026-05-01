@@ -146,13 +146,14 @@ const PlansPage: React.FC = () => {
 
   // Handle draft update from WebSocket - skip step-level generation progress events
   const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
-    if (payload.draftStatus === 'generating') return;
+    // Skip step-level churn during generation, but allow the initial transition into generating
+    if (payload.draftStatus === 'generating') {
+      const existingDraft = drafts.find(d => d.draft_id === payload.draftId);
+      if (existingDraft?.status === 'generating') return;
+    }
 
     const isOnCurrentPage = drafts.some(d => d.draft_id === payload.draftId);
-    const couldAffectCurrentView =
-      !isOnCurrentPage &&
-      payload.draftStatus &&
-      (statusFilter === 'all' || payload.draftStatus === statusFilter);
+    const couldAffectCurrentView = !isOnCurrentPage && !!payload.draftStatus;
 
     if (isOnCurrentPage || couldAffectCurrentView) {
       await Promise.all([
