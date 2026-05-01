@@ -4,6 +4,7 @@
 
 import { Knex } from 'knex';
 import { generatePlan, getEventPublisher } from '@propr/core';
+import type { StepStatus, DraftUpdateGenerationTrace } from '@propr/shared';
 import type { GenerateRequestBody, BackgroundGenerationOptions } from './types.js';
 import { VALID_GRANULARITIES } from './validation.js';
 
@@ -56,7 +57,7 @@ export function runBackgroundGeneration(options: BackgroundGenerationOptions): v
       try {
         // Get current trace to preserve any completed steps
         const draft = await db('task_drafts').where({ draft_id: draftId }).first();
-        let existingTrace = { steps: [] as { name: string; status: string; completedAt?: string }[] };
+        let existingTrace = { steps: [] as { name: string; status: StepStatus; data?: Record<string, unknown> }[] };
         try {
           if (draft?.generation_trace) {
             existingTrace = JSON.parse(draft.generation_trace);
@@ -64,11 +65,11 @@ export function runBackgroundGeneration(options: BackgroundGenerationOptions): v
         } catch { /* ignore parse errors */ }
 
         // Mark any non-completed steps as failed and add error info
-        const updatedSteps = existingTrace.steps.map((step: { name: string; status: string; completedAt?: string }) =>
-          step.status === 'pending' || step.status === 'in_progress' ? { ...step, status: 'failed' } : step
+        const updatedSteps = existingTrace.steps.map((step) =>
+          step.status === 'pending' || step.status === 'in_progress' ? { ...step, status: 'failed' as const } : step
         );
 
-        const failedTrace = {
+        const failedTrace: DraftUpdateGenerationTrace = {
           steps: updatedSteps,
           error: error instanceof Error ? error.message : 'Plan generation failed',
           failedAt: new Date().toISOString()
