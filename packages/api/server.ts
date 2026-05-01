@@ -42,8 +42,7 @@ import {
   processDetectedIssue as processDetectedIssueBase,
   handleCommentDeleted,
   handleCommentEdited,
-  processCommentEvent,
-  logger
+  processCommentEvent
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
