@@ -48,6 +48,16 @@ export interface TaskUpdatePayload {
   metadata?: Record<string, unknown>;
 }
 
+/** Known draft statuses used across the backend/frontend event contract */
+export type DraftStatus = 'draft' | 'generating' | 'refining' | 'review' | 'approved' | 'executed' | 'executing' | 'pr_created' | 'merged' | 'failed';
+
+/** Generation trace snapshot carried in draft update payloads */
+export interface DraftUpdateGenerationTrace {
+  steps: Array<{ name: string; status: string; data?: Record<string, unknown> }>;
+  error?: string;
+  failedAt?: string;
+}
+
 /** Event payload for draft updates */
 export interface DraftUpdatePayload {
   eventType: typeof DRAFT_UPDATE;
@@ -57,10 +67,10 @@ export interface DraftUpdatePayload {
   timestamp: string;
   /** Step-specific data (e.g., progress percentage, file counts) */
   data?: Record<string, unknown>;
-  /** Current draft status (e.g., 'generating', 'review', 'failed') — allows the UI to react without fetching */
-  draftStatus?: string;
+  /** Current draft status — allows the UI to react without fetching */
+  draftStatus?: DraftStatus;
   /** Full generation trace snapshot — allows the UI to update progress without fetching */
-  generationTrace?: { steps: Array<{ name: string; status: string; data?: Record<string, unknown> }> };
+  generationTrace?: DraftUpdateGenerationTrace;
 }
 
 /** Event payload for plan step updates */

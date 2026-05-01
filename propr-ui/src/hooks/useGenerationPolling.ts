@@ -34,10 +34,9 @@ export function useGenerationPolling({
 
     // Use the trace snapshot from the payload when available
     if (payload.generationTrace) {
-      const trace = payload.generationTrace as GenerationTrace & { error?: string };
-      setGenerationTrace(trace);
-      if (trace.error) {
-        setGenerationError(trace.error);
+      setGenerationTrace(payload.generationTrace as GenerationTrace);
+      if (payload.generationTrace.error) {
+        setGenerationError(payload.generationTrace.error);
         setIsGenerating(false);
         isGeneratingRef.current = false;
         return;
@@ -53,8 +52,7 @@ export function useGenerationPolling({
     }
 
     if (payload.draftStatus === 'failed') {
-      const trace = payload.generationTrace as (GenerationTrace & { error?: string }) | undefined;
-      setGenerationError(trace?.error || 'Plan generation failed');
+      setGenerationError(payload.generationTrace?.error || 'Plan generation failed');
       setIsGenerating(false);
       isGeneratingRef.current = false;
       return;
@@ -74,7 +72,7 @@ export function useGenerationPolling({
     };
   }, [draftId, isConnected, isGenerating, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, handleDraftUpdate]);
 
-  // Shared poll function — only used as HTTP fallback when WebSocket is disconnected
+  // Shared poll function — used as HTTP fallback and safety-net resync
   const pollDraft = useCallback(async () => {
     if (!isGeneratingRef.current || !draftId) return;
 
@@ -98,21 +96,18 @@ export function useGenerationPolling({
         onCompleteRef.current();
       }
 
-      if (updatedDraft.status === 'failed' || updatedDraft.status === 'draft') {
+      if (updatedDraft.status === 'failed') {
         const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
-        const errorMsg = trace?.error || (updatedDraft.status === 'failed' ? 'Plan generation failed' : null);
-        if (errorMsg) {
-          setGenerationError(errorMsg);
-          setIsGenerating(false);
-          isGeneratingRef.current = false;
-        }
+        setGenerationError(trace?.error || 'Plan generation failed');
+        setIsGenerating(false);
+        isGeneratingRef.current = false;
       }
     } catch (e) {
       console.error('[useGenerationPolling] Poll error:', e);
     }
   }, [draftId]);
 
-  // HTTP fallback polling — only active when WebSocket is NOT connected
+  // HTTP fallback polling — active when WebSocket is NOT connected
   useEffect(() => {
     if (!draftId || !isGenerating || isConnected) return;
 
@@ -121,6 +116,17 @@ export function useGenerationPolling({
 
     return () => {
       clearTimeout(initialPollTimeout);
+      clearInterval(intervalId);
+    };
+  }, [draftId, isGenerating, isConnected, pollDraft]);
+
+  // Safety-net poll — low-frequency resync while connected to catch missed socket events
+  useEffect(() => {
+    if (!draftId || !isGenerating || !isConnected) return;
+
+    const intervalId = setInterval(pollDraft, 30000);
+
+    return () => {
       clearInterval(intervalId);
     };
   }, [draftId, isGenerating, isConnected, pollDraft]);

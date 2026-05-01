@@ -120,7 +120,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     correlatedLogger.info({ originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount }, 'Granularity enforcement applied - added trace step');
   }
 
-  await updateTrace(draftId, 'llm', 'completed');
+  const finalTrace = await updateTrace(draftId, 'llm', 'completed');
 
   const updatedContextConfig = { ...parsedContextConfig, granularityEnforcement: enforcementMetadata };
 
@@ -145,15 +145,6 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   // Emit final completion event so the UI can transition without polling
   try {
-    const currentDraft = await db('task_drafts').where({ draft_id: draftId }).select('generation_trace').first();
-    let finalTrace = { steps: [] as Array<{ name: string; status: string; data?: Record<string, unknown> }> };
-    if (currentDraft?.generation_trace) {
-      try {
-        finalTrace = typeof currentDraft.generation_trace === 'string'
-          ? JSON.parse(currentDraft.generation_trace)
-          : currentDraft.generation_trace;
-      } catch { /* use empty trace */ }
-    }
     const eventPublisher = getEventPublisher();
     await eventPublisher.publishDraftUpdate({
       draftId,

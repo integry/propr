@@ -34,6 +34,8 @@ export {
   type QueueStatsData,
   type CommandMode,
   type EventPayload,
+  type DraftStatus,
+  type DraftUpdateGenerationTrace,
 } from './events.js';
 
 // Export usage configuration and metrics types

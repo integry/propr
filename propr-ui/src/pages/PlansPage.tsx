@@ -147,11 +147,16 @@ const PlansPage: React.FC = () => {
   const handleDraftUpdate = useCallback(async (payload: import('@propr/shared').DraftUpdatePayload) => {
     if (payload.draftStatus === 'generating') return;
 
-    await Promise.all([
-      loadDrafts(currentPage, repoFilter, statusFilter, false),
-      loadAllRepositories(),
-    ]);
-  }, [currentPage, repoFilter, statusFilter, loadDrafts, loadAllRepositories]);
+    const isOnCurrentPage = drafts.some(d => d.draft_id === payload.draftId);
+    if (isOnCurrentPage) {
+      await Promise.all([
+        loadDrafts(currentPage, repoFilter, statusFilter, false),
+        loadAllRepositories(),
+      ]);
+    } else {
+      await loadAllRepositories();
+    }
+  }, [currentPage, repoFilter, statusFilter, drafts, loadDrafts, loadAllRepositories]);
 
   // Subscribe to WebSocket events for draft updates
   useEffect(() => {

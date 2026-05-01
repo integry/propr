@@ -9,6 +9,8 @@ import {
   QUEUE_STATS_UPDATE,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
+  type DraftStatus,
+  type DraftUpdateGenerationTrace,
   type IndexingUpdatePayload,
   type TaskLiveUpdatePayload,
   type QueueStatsUpdatePayload,
@@ -108,8 +110,8 @@ class EventPublisher {
     step: string;
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
     data?: Record<string, unknown>;
-    draftStatus?: string;
-    generationTrace?: { steps: Array<{ name: string; status: string; data?: Record<string, unknown> }> };
+    draftStatus?: DraftStatus;
+    generationTrace?: DraftUpdateGenerationTrace;
   }): Promise<void> {
     const payload: DraftUpdatePayload = {
       eventType: DRAFT_UPDATE,

@@ -8,14 +8,15 @@ import { getEventPublisher } from '../../utils/eventPublisher.js';
 
 /**
  * Update the generation trace for a draft with step status and data.
+ * Returns the updated trace so callers can use it without re-reading from DB.
  */
 export async function updateTrace(
   draftId: string,
   step: string,
   status: 'pending' | 'in_progress' | 'completed' | 'failed',
   data?: Record<string, unknown>
-): Promise<void> {
-  if (!db) return;
+): Promise<GenerationTrace> {
+  if (!db) return { steps: [] };
 
   const draft = await db('task_drafts')
     .where({ draft_id: draftId })
@@ -56,4 +57,6 @@ export async function updateTrace(
     // receive updates via fallback polling if WebSocket publishing fails
     console.warn('[traceService] Failed to publish draft update event:', (error as Error).message);
   }
+
+  return trace;
 }
