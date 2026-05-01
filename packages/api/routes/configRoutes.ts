@@ -241,19 +241,22 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       // Save general settings first — they accept arbitrary data and are more
       // likely to fail, so saving them before specialized keys avoids partial
       // commits of validated settings when the general save rejects input.
-      try {
-        await configManager.saveSettings(otherSettings);
-      } catch (saveError) {
-        console.error('Settings save failed for general settings:', saveError);
-        return {
-          status: 500,
-          body: { error: 'Failed to save general settings. No settings were committed. Please retry or check system logs.' }
-        };
+      const hasGeneralSettings = Object.keys(otherSettings).length > 0;
+      if (hasGeneralSettings) {
+        try {
+          await configManager.saveSettings(otherSettings);
+        } catch (saveError) {
+          console.error('Settings save failed for general settings:', saveError);
+          return {
+            status: 500,
+            body: { error: 'Failed to save general settings. No settings were committed. Please retry or check system logs.' }
+          };
+        }
       }
 
       // Specialized settings are already validated by extractSettingSaves().
       // Failures here indicate infrastructure problems, not bad input.
-      const committedNames: string[] = ['general'];
+      const committedNames: string[] = hasGeneralSettings ? ['general'] : [];
       for (let i = 0; i < extracted.saves.length; i++) {
         try {
           await extracted.saves[i].execute();

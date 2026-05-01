@@ -209,35 +209,35 @@ export interface CheckRunsStatus {
 
 /**
  * Gets detailed status of check runs for a commit.
- * When no check runs exist, also queries the legacy commit status API
- * so repos using status integrations are not falsely treated as green.
+ * Always queries both the check-runs API and the legacy commit status API
+ * so repos that publish both signal types are handled correctly.
  */
 export async function getCheckRunsStatus(owner: string, repoName: string, ref: string): Promise<CheckRunsStatus> {
     try {
         const octokit = await getAuthenticatedOctokit();
-        const checkRunsResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
-            owner,
-            repo: repoName,
-            ref
-        });
+        const [checkRunsResponse, commitStatus] = await Promise.all([
+            octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+                owner,
+                repo: repoName,
+                ref
+            }),
+            getCommitStatusState(octokit, owner, repoName, ref)
+        ]);
         const checkRuns = checkRunsResponse.data.check_runs;
         const count = checkRuns.length;
-        const anyPending = checkRuns.some((run: { status: string }) => run.status !== 'completed');
-        const anyFailed = checkRuns.some((run: { status: string; conclusion: string | null }) =>
+        const crPending = checkRuns.some((run: { status: string }) => run.status !== 'completed');
+        const crFailed = checkRuns.some((run: { status: string; conclusion: string | null }) =>
             run.status === 'completed' && run.conclusion !== 'success' && run.conclusion !== 'skipped'
         );
 
-        if (count === 0) {
-            const commitStatus = await getCommitStatusState(octokit, owner, repoName, ref);
-            const statusPending = commitStatus === 'pending';
-            const statusFailed = commitStatus === 'failure' || commitStatus === 'error';
-            const allPassing = !statusPending && !statusFailed;
-            logger.debug({ owner, repoName, ref, count, allPassing, commitStatus }, 'Check runs status (fallback to commit status)');
-            return { count: 0, allPassing, anyPending: statusPending, anyFailed: statusFailed };
-        }
+        const statusPending = commitStatus === 'pending';
+        const statusFailed = commitStatus === 'failure' || commitStatus === 'error';
 
+        const anyPending = crPending || statusPending;
+        const anyFailed = crFailed || statusFailed;
         const allPassing = !anyPending && !anyFailed;
-        logger.debug({ owner, repoName, ref, count, allPassing, anyPending, anyFailed }, 'Check runs status');
+
+        logger.debug({ owner, repoName, ref, count, allPassing, anyPending, anyFailed, commitStatus }, 'Check runs status');
         return { count, allPassing, anyPending, anyFailed };
     } catch (error) {
         logger.warn({ owner, repoName, ref, error: (error as Error).message }, 'Failed to get check runs status');
@@ -247,42 +247,44 @@ export async function getCheckRunsStatus(owner: string, repoName: string, ref: s
 
 /**
  * Checks if all check runs have passed for a PR.
- * When no check runs exist, also queries the legacy commit status API
- * so repos using status integrations are not falsely treated as green.
+ * Always queries both the check-runs API and the legacy commit status API
+ * so repos that publish both signal types are handled correctly.
  */
 export async function areAllChecksPassing(owner: string, repoName: string, ref: string): Promise<boolean> {
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        const checkRunsResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
-            owner,
-            repo: repoName,
-            ref
-        });
+        const [checkRunsResponse, commitStatus] = await Promise.all([
+            octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+                owner,
+                repo: repoName,
+                ref
+            }),
+            getCommitStatusState(octokit, owner, repoName, ref)
+        ]);
 
         const checkRuns = checkRunsResponse.data.check_runs;
 
-        if (checkRuns.length === 0) {
-            const commitStatus = await getCommitStatusState(octokit, owner, repoName, ref);
-            const allPass = commitStatus !== 'pending' && commitStatus !== 'failure' && commitStatus !== 'error';
-            logger.debug({ owner, repoName, ref, totalCheckRuns: 0, commitStatus, allCheckRunsPass: allPass }, 'Checked PR status (fallback to commit status)');
-            return allPass;
-        }
-
-        const allCheckRunsPass = checkRuns.every(
+        const allCheckRunsPass = checkRuns.length === 0 || checkRuns.every(
             (run: { status: string; conclusion: string | null }) =>
                 run.status === 'completed' && (run.conclusion === 'success' || run.conclusion === 'skipped')
         );
+
+        const statusPass = commitStatus !== 'pending' && commitStatus !== 'failure' && commitStatus !== 'error';
+        const allPass = allCheckRunsPass && statusPass;
 
         logger.debug({
             owner,
             repoName,
             ref,
             totalCheckRuns: checkRuns.length,
-            allCheckRunsPass
+            commitStatus,
+            allCheckRunsPass,
+            statusPass,
+            allPass
         }, 'Checked PR status');
 
-        return allCheckRunsPass;
+        return allPass;
     } catch (error) {
         logger.warn({
             owner,

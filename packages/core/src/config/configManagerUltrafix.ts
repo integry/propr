@@ -10,6 +10,13 @@ export async function loadPrReviewModel(): Promise<string> {
         logger.warn({ stored_value: model }, 'Invalid pr_review_model in DB, using default');
         return '';
     }
+    if (model !== '') {
+        const result = await validatePrReviewModelValue(model);
+        if (!result.valid) {
+            logger.warn({ stored_value: model, reason: result.error }, 'Stored pr_review_model is no longer valid, using default');
+            return '';
+        }
+    }
     logger.info({ pr_review_model: model }, 'Successfully loaded PR review model');
     return model;
 }
