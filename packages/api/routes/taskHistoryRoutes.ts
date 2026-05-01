@@ -123,14 +123,9 @@ async function getHistoryFromDb(
       mapDbHistoryRecord(record, executionsByHistoryId, executionsBySessionId)
     );
 
-    // If ultrafixCycle not yet set from job data, check history metadata
-    if (!taskInfo.ultrafixCycle) {
-      const hasUltrafixHistory = history.some((h: Record<string, unknown>) => {
-        const meta = h.metadata as Record<string, unknown> | undefined;
-        return meta?.ultrafixCycle === true;
-      });
-      if (hasUltrafixHistory) taskInfo.ultrafixCycle = true;
-    }
+    // Reconcile commandMode and ultrafixCycle from history metadata,
+    // which may be more current than initial_job_data for ultrafix flows.
+    applyMetadataFlags(taskInfo, history);
 
     console.log(`Fetched ${history.length} history records from SQLite for task ${taskId}`);
     return { history, taskInfo, usageMetrics, usageMetricRecords };

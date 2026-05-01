@@ -410,13 +410,14 @@ async function start(): Promise<void> {
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
 
     try {
-      const ultrafixBootstrapPath = '../../src/jobs/ultrafixBootstrap.js';
-      const { createUltrafixDeps } = await import(ultrafixBootstrapPath);
+      async function importWithTsFallback(jsPath: string) {
+        try { return await import(jsPath); } catch { return await import(jsPath.replace(/\.js$/, '.ts')); }
+      }
+      const { createUltrafixDeps } = await importWithTsFallback('../../src/jobs/ultrafixBootstrap.js');
       setUltrafixDeps(createUltrafixDeps());
       console.log('[ultrafix] Ultrafix dependencies initialized');
 
-      const ultrafixContinuationPath = '../../src/jobs/ultrafixLoopContinuation.js';
-      const contMod = await import(ultrafixContinuationPath);
+      const contMod = await importWithTsFallback('../../src/jobs/ultrafixLoopContinuation.js');
       contMod.setCheckRunDeps({
         areAllChecksPassing: configManager.areAllChecksPassing,
         getCurrentPRHead: configManager.getCurrentPRHead,
@@ -424,9 +425,13 @@ async function start(): Promise<void> {
       });
       setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number, headSha: string) => {
         const log = logger.withCorrelation(generateCorrelationId());
-        log.info({ owner, repo, prNumber, headSha }, '[ultrafix] check_run hook triggered, attempting to resume deferred continuation');
+        log.debug({ owner, repo, prNumber, headSha }, '[ultrafix] check_run hook triggered');
         const result = await contMod.resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
-        log.info({ owner, repo, prNumber, result }, '[ultrafix] resume deferred continuation result');
+        if (result.continued) {
+          log.info({ owner, repo, prNumber, result }, '[ultrafix] deferred continuation resumed');
+        } else {
+          log.debug({ owner, repo, prNumber, reason: result.reason }, '[ultrafix] no deferred continuation to resume');
+        }
       });
       console.log('[ultrafix] Check run hook initialized');
     } catch (error) {
