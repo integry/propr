@@ -45,6 +45,17 @@ export async function validatePrReviewModelValue(model: string): Promise<PrRevie
         if (!MODEL_INFO_MAP[resolved]) {
             return { valid: false, error: `pr_review_model "${model}" does not resolve to a known model` };
         }
+        const registry = AgentRegistry.getInstance();
+        await registry.ensureInitialized();
+        const allAgents = registry.getAllAgents();
+        const canRun = allAgents.some(a =>
+            a.config.enabled && a.config.supportedModels.some(
+                (m: string) => m.toLowerCase() === resolved.toLowerCase()
+            )
+        );
+        if (!canRun) {
+            return { valid: false, error: `pr_review_model "${model}": no enabled agent supports this model` };
+        }
     }
 
     return { valid: true };

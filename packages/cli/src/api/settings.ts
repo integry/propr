@@ -256,8 +256,14 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
     case "analysis_model_fast":
     case "planner_context_model":
     case "planner_generation_model":
-    case "pr_review_model":
       return value;
+    case "pr_review_model": {
+      const trimmed = value.trim();
+      if (trimmed === '' && value.length > 0) {
+        throw new Error(`Invalid value for ${key}: must not be whitespace-only; use an empty string to clear`);
+      }
+      return trimmed;
+    }
     default:
       return value;
   }

@@ -41,7 +41,6 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
         });
         return;
       }
-      console.log(`Task ${taskId} not found in SQLite, falling back to Redis`);
       let history: Array<Record<string, unknown>> = [];
       let taskInfo: Record<string, unknown> | null = null;
       const redisResult = await getHistoryFromRedis(redisClient, taskId);
@@ -60,6 +59,53 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
   return { getTaskHistory };
 }
 
+function buildTaskInfoFromDb(
+  taskId: string,
+  task: Record<string, unknown>,
+  jobData: ReturnType<typeof parseJobData>
+): Record<string, unknown> {
+  const [repoOwner, repoName] = (task.repository as string).split('/');
+  const { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta } = jobData;
+  const isPr = task.task_type === 'pr-comment' || taskId.startsWith('pr-comments-batch-') || !!pullRequestNumber;
+
+  const taskInfo: Record<string, unknown> = {
+    repoOwner,
+    repoName,
+    number: (isPr && pullRequestNumber) || task.issue_number,
+    type: isPr ? 'pr-comment' : (task.task_type || 'issue'),
+    correlationId: task.correlation_id,
+    title,
+    subtitle,
+    modelName: task.model_name
+  };
+
+  if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
+  if (commandMode) taskInfo.commandMode = commandMode;
+  if (hasUltrafixMeta) taskInfo.ultrafixCycle = true;
+  return taskInfo;
+}
+
+async function fetchUsageMetrics(
+  db: Knex,
+  taskId: string
+): Promise<{ usageMetrics: Record<string, unknown> | null; usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }> }> {
+  const llmLog = await db('llm_logs')
+    .where({ draft_id: taskId, execution_type: 'implementation' }).orderBy('start_time', 'desc').first();
+  if (!llmLog) return { usageMetrics: null, usageMetricRecords: [] };
+
+  let usageMetrics: Record<string, unknown> | null = null;
+  if (llmLog.usage_metrics) {
+    try {
+      usageMetrics = typeof llmLog.usage_metrics === 'string' ? JSON.parse(llmLog.usage_metrics) : llmLog.usage_metrics;
+    } catch (e) { console.error('Failed to parse usage_metrics:', e); }
+  }
+  const records = await db('usage_metric_records').where({ llm_log_id: llmLog.log_id });
+  const usageMetricRecords = records.map((r: Record<string, unknown>) => ({
+    agent: r.agent_name as string, metricKey: r.metric_key as string, metricValue: r.metric_value as number
+  }));
+  return { usageMetrics, usageMetricRecords };
+}
+
 async function getHistoryFromDb(
   db: Knex,
   taskId: string
@@ -70,48 +116,16 @@ async function getHistoryFromDb(
   usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }>;
 } | null> {
   try {
-    console.log(`Fetching task history from SQLite for taskId: ${taskId}`);
     const task = await db('tasks').where({ task_id: taskId }).first();
     const historyRecords = await db('task_history').where({ task_id: taskId }).orderBy('timestamp', 'asc');
     if (!task || historyRecords.length === 0) return null;
 
-    const [repoOwner, repoName] = (task.repository as string).split('/');
-    const { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta } = parseJobData(task.initial_job_data);
-    const isPr = task.task_type === 'pr-comment' || taskId.startsWith('pr-comments-batch-') || !!pullRequestNumber;
+    const taskInfo = buildTaskInfoFromDb(taskId, task, parseJobData(task.initial_job_data));
 
-    const taskInfo: Record<string, unknown> = {
-      repoOwner,
-      repoName,
-      number: task.issue_number,
-      type: isPr ? 'pr-comment' : (task.task_type || 'issue'),
-      correlationId: task.correlation_id,
-      title,
-      subtitle,
-      modelName: task.model_name
-    };
-
-    if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
-    if (commandMode) taskInfo.commandMode = commandMode;
-    if (hasUltrafixMeta) taskInfo.ultrafixCycle = true;
-
-    const llmExecutions = await db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc');
-    const llmLog = await db('llm_logs')
-      .where({ draft_id: taskId, execution_type: 'implementation' }).orderBy('start_time', 'desc').first();
-    console.log(`[taskHistory] Fetching usage metrics for taskId: ${taskId}, llmLog found: ${!!llmLog}, has usage_metrics: ${!!llmLog?.usage_metrics}`);
-
-    let usageMetrics: Record<string, unknown> | null = null;
-    let usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }> = [];
-    if (llmLog) {
-      if (llmLog.usage_metrics) {
-        try {
-          usageMetrics = typeof llmLog.usage_metrics === 'string' ? JSON.parse(llmLog.usage_metrics) : llmLog.usage_metrics;
-        } catch (e) { console.error('Failed to parse usage_metrics:', e); }
-      }
-      const records = await db('usage_metric_records').where({ llm_log_id: llmLog.log_id });
-      usageMetricRecords = records.map((r: Record<string, unknown>) => ({
-        agent: r.agent_name as string, metricKey: r.metric_key as string, metricValue: r.metric_value as number
-      }));
-    }
+    const [llmExecutions, usage] = await Promise.all([
+      db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc'),
+      fetchUsageMetrics(db, taskId),
+    ]);
 
     const executionsByHistoryId = new Map<number, Record<string, unknown>>();
     const executionsBySessionId = new Map<string, Record<string, unknown>>();
@@ -123,20 +137,11 @@ async function getHistoryFromDb(
       mapDbHistoryRecord(record, executionsByHistoryId, executionsBySessionId)
     );
 
-    // If ultrafixCycle not yet set from job data, check history metadata
-    if (!taskInfo.ultrafixCycle) {
-      const hasUltrafixHistory = history.some((h: Record<string, unknown>) => {
-        const meta = h.metadata as Record<string, unknown> | undefined;
-        return meta?.ultrafixCycle === true;
-      });
-      if (hasUltrafixHistory) taskInfo.ultrafixCycle = true;
-    }
+    applyMetadataFlags(taskInfo, history);
 
-    console.log(`Fetched ${history.length} history records from SQLite for task ${taskId}`);
-    return { history, taskInfo, usageMetrics, usageMetricRecords };
+    return { history, taskInfo, ...usage };
   } catch (error) {
     console.error('Error fetching task history from SQLite:', error);
-    console.log('Falling back to Redis for task history...');
     return null;
   }
 }
@@ -220,37 +225,62 @@ function enrichMetadataWithExecution(
   };
 }
 
+// Search from the end to find the latest/current metadata value rather than the earliest.
+// This matters for ultrafix flows that alternate review/fix states.
+function findLatestMetadata(
+  historyEntries: Array<Record<string, unknown>>
+): { commandMode?: unknown; ultrafixCycle?: boolean } {
+  let commandMode: unknown;
+  let ultrafixCycle: boolean | undefined;
+  for (let i = historyEntries.length - 1; i >= 0; i--) {
+    const h = historyEntries[i];
+    if (!h.metadata || typeof h.metadata !== 'object') continue;
+    const meta = h.metadata as Record<string, unknown>;
+    if (commandMode === undefined && 'commandMode' in meta) commandMode = meta.commandMode;
+    if (ultrafixCycle === undefined && meta.ultrafixCycle === true) ultrafixCycle = true;
+    if (commandMode !== undefined && ultrafixCycle !== undefined) break;
+  }
+  return { commandMode, ultrafixCycle };
+}
+
+function resolveIssueNumber(ref: Record<string, unknown>): number | null {
+  const direct = ref.issueNumber as number | null | undefined;
+  if (direct) return direct;
+  return extractIssueNumberFromTitle(ref.title as string | null | undefined);
+}
+
+function resolveTaskTypeAndIssue(
+  taskId: string,
+  ref: Record<string, unknown>
+): { type: string; issueNumber?: number } {
+  const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
+  if (!isPr) return { type: 'issue' };
+  const issueNumber = resolveIssueNumber(ref) ?? undefined;
+  return { type: 'pr-comment', issueNumber };
+}
+
+function applyMetadataFlags(
+  taskInfo: Record<string, unknown>,
+  historyEntries: Array<Record<string, unknown>>
+): void {
+  const { commandMode, ultrafixCycle } = findLatestMetadata(historyEntries);
+  if (commandMode) taskInfo.commandMode = commandMode;
+  if (ultrafixCycle) taskInfo.ultrafixCycle = true;
+}
+
 function buildTaskInfoFromState(
   taskId: string,
   ref: Record<string, unknown>,
   historyEntries: Array<Record<string, unknown>>
 ): Record<string, unknown> {
-  const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
+  const { type, issueNumber } = resolveTaskTypeAndIssue(taskId, ref);
   const taskInfo: Record<string, unknown> = {
     repoOwner: ref.repoOwner, repoName: ref.repoName, number: ref.number,
-    type: isPr ? 'pr-comment' : 'issue', comments: ref.comments,
+    type, comments: ref.comments,
     title: ref.title || null, subtitle: ref.subtitle || null, modelName: ref.modelName
   };
-  if (isPr) {
-    const issueNumber = ref.issueNumber as number | null | undefined
-      || extractIssueNumberFromTitle(ref.title as string | null | undefined);
-    if (issueNumber) taskInfo.issueNumber = issueNumber;
-  }
-  // Search from the end to find the latest/current metadata value rather than the earliest.
-  // This matters for ultrafix flows that alternate review/fix states.
-  const findLastMetaWith = (key: string) => [...historyEntries].reverse().find(
-    h => h.metadata && typeof h.metadata === 'object' && key in h.metadata
-  )?.metadata as Record<string, unknown> | undefined;
-  const historyWithMeta = findLastMetaWith('commandMode');
-  if (historyWithMeta?.commandMode) taskInfo.commandMode = historyWithMeta.commandMode;
-  if (historyWithMeta?.ultrafixCycle === true) {
-    taskInfo.ultrafixCycle = true;
-  } else {
-    const ultrafixMeta = findLastMetaWith('ultrafixCycle');
-    if (ultrafixMeta?.ultrafixCycle === true) {
-      taskInfo.ultrafixCycle = true;
-    }
-  }
+  if (issueNumber) taskInfo.issueNumber = issueNumber;
+  applyMetadataFlags(taskInfo, historyEntries);
   return taskInfo;
 }
 

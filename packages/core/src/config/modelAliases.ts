@@ -286,15 +286,10 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
     if (colonIdx > 0 && colonIdx < label.length - 1) {
         const explicitAlias = label.substring(0, colonIdx);
         const explicitModel = label.substring(colonIdx + 1);
+        const resolvedModel = resolveModelAlias(explicitModel);
         const agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
         if (agent) {
-            const modelSupported = agent.config.supportedModels.some(
-                m => m.toLowerCase() === explicitModel.toLowerCase()
-            );
-            if (modelSupported) {
-                return { agentAlias: agent.config.alias, model: explicitModel };
-            }
-            // Agent exists but doesn't support this model — fall through to other strategies
+            return { agentAlias: agent.config.alias, model: resolvedModel };
         }
     }
 

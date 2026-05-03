@@ -314,6 +314,18 @@ export async function loadDeferredContinuation(
     return JSON.parse(raw) as UltrafixDeferredContinuation;
 }
 
+export async function claimDeferredContinuation(
+    redis: Redis,
+    owner: string,
+    repo: string,
+    pr: number,
+): Promise<UltrafixDeferredContinuation | null> {
+    const key = getUltrafixDeferredKey(owner, repo, pr);
+    const raw = await redis.getdel(key);
+    if (!raw) return null;
+    return JSON.parse(raw) as UltrafixDeferredContinuation;
+}
+
 export async function clearDeferredContinuation(
     redis: Redis,
     owner: string,

@@ -10,7 +10,7 @@ import {
     handlePlanPRCommentTracking,
     type CommentEventType
 } from './planIssueTracking.js';
-import { handleCheckRunEvent } from './checkRunHandler.js';
+import { handleCheckRunEvent, handleStatusEvent, type StatusEventPayload } from './checkRunHandler.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import type {
@@ -37,7 +37,7 @@ const execAsync = promisify(exec);
 /** Runtime-accessible list of supported webhook event types — single source of truth. */
 export const SUPPORTED_WEBHOOK_EVENTS = [
   'issues', 'issue_comment', 'pull_request_review_comment',
-  'pull_request', 'check_run', 'push',
+  'pull_request', 'check_run', 'push', 'status',
 ] as const;
 
 /** Derived union type — always in sync with the runtime array. */
@@ -157,6 +157,10 @@ function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
 
 function isPushEvent(payload: unknown): payload is PushEvent {
     return typeof payload === 'object' && payload !== null && 'ref' in payload && 'commits' in payload && !('action' in payload);
+}
+
+function isStatusEvent(payload: unknown): payload is StatusEventPayload {
+    return typeof payload === 'object' && payload !== null && 'sha' in payload && 'state' in payload && !('action' in payload) && !('commits' in payload);
 }
 
 // --- PROCESSOR LABEL MANAGEMENT: Track 'preview-env' label on ProPR repo PRs ---
@@ -431,6 +435,22 @@ async function processStandardWebhookEvent(
     }
 }
 
+async function handlePreviewRouting(
+    payload: unknown, eventType: WebhookEventType, correlationId: string, deliveryId: string | undefined,
+): Promise<boolean> {
+    if (!ENABLE_PREVIEW_ROUTING) return false;
+    if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
+        handleProcessorLabelChange(payload, correlationId);
+    }
+    await handleInfrastructureEvents(payload, eventType, correlationId);
+    if (processorPrNumber) {
+        logger.withCorrelation(correlationId).info({ processorPrNumber }, 'Forwarding webhook to designated processor PR instance');
+        await forwardToProcessor(payload, processorPrNumber, eventType, { deliveryId: deliveryId || correlationId, correlationId });
+        return true;
+    }
+    return false;
+}
+
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
@@ -439,24 +459,9 @@ export async function processWebhookEvent(
 ): Promise<void> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
-    // 1. Handle Processor Label Changes (Watch for 'preview-env' label on ProPR repo PRs)
-    if (ENABLE_PREVIEW_ROUTING && eventType === 'pull_request' && isPullRequestEvent(payload)) {
-        handleProcessorLabelChange(payload, correlationId);
-    }
+    if (await handlePreviewRouting(payload, eventType, correlationId, deliveryId)) return;
 
-    // 2. Handle Infrastructure Events (Always run for PR events when preview routing is enabled)
-    if (ENABLE_PREVIEW_ROUTING) {
-        await handleInfrastructureEvents(payload, eventType, correlationId);
-    }
-
-    // 3. Routing Decision: Forward to preview instance if applicable
-    if (ENABLE_PREVIEW_ROUTING && processorPrNumber) {
-        correlatedLogger.info({ processorPrNumber }, 'Forwarding webhook to designated processor PR instance');
-        await forwardToProcessor(payload, processorPrNumber, eventType, { deliveryId: deliveryId || correlationId, correlationId });
-        return;
-    }
-
-    // 4. Plan Issue Tracking (runs before standard processing to update status)
+    // Plan Issue Tracking (runs before standard processing to update status)
     await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
     // 5. Auto-merge: Handle check_run events to merge PRs when all checks pass
@@ -468,11 +473,18 @@ export async function processWebhookEvent(
         }
     }
 
+    // 5b. Handle legacy commit status events for ultrafix loop continuation
+    if (eventType === 'status' && isStatusEvent(payload)) {
+        try {
+            await handleStatusEvent(payload, correlationId);
+        } catch (statusError) {
+            correlatedLogger.warn({ error: statusError }, 'Status event handler failed, continuing');
+        }
+    }
+
     // 6. Epic PR handling
     if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
-        // Create Epic PR when first child PR merges to epic branch
         await handleEpicPRCreationOnMerge(payload, correlationId, correlatedLogger);
-        // Delete base-{branchName} label when Epic PR is merged to main
         await handleEpicPRLabelCleanup(payload, correlationId, correlatedLogger);
     }
 

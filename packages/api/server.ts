@@ -42,11 +42,9 @@ import {
   processDetectedIssue as processDetectedIssueBase,
   handleCommentDeleted,
   handleCommentEdited,
-  processCommentEvent,
-  setUltrafixDeps,
-  setUltrafixCheckRunHook,
-  logger
+  processCommentEvent
 } from '@propr/core';
+import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
@@ -409,31 +407,11 @@ async function start(): Promise<void> {
     try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
 
-    // Wire up ultrafix dependencies for /ultrafix slash command support.
-    // ultrafixBootstrap consolidates all job-layer deps behind a single stable
-    // import so that server.ts does not depend on the internal file layout of
-    // src/jobs/. If files move within that directory, only the bootstrap needs
-    // updating.
-    const jobsBase = new URL('../../src/jobs', import.meta.url).href;
-    const { createUltrafixDeps } = await import(`${jobsBase}/ultrafixBootstrap.js`);
-    setUltrafixDeps(createUltrafixDeps());
-    console.log('[ultrafix] Ultrafix dependencies initialized');
-
-    // Wire up check_run hook to resume deferred ultrafix continuations when CI passes
-    const contMod = await import(`${jobsBase}/ultrafixLoopContinuation.js`);
-    // Wire up check_run deps so resumeDeferredContinuation can evaluate readiness
-    contMod.setCheckRunDeps({
-      areAllChecksPassing: configManager.areAllChecksPassing,
-      getCurrentPRHead: configManager.getCurrentPRHead,
-      getCheckRunsStatus: configManager.getCheckRunsStatus,
-    });
-    setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number) => {
-      const log = logger.withCorrelation(generateCorrelationId());
-      log.info({ owner, repo, prNumber }, '[ultrafix] check_run hook triggered, attempting to resume deferred continuation');
-      const result = await contMod.resumeDeferredContinuation({ owner, repo, pr: prNumber }, ioRedisClient, log);
-      log.info({ owner, repo, prNumber, result }, '[ultrafix] resume deferred continuation result');
-    });
-    console.log('[ultrafix] Check run hook initialized');
+    try {
+      await initializeUltrafix(ioRedisClient);
+    } catch (error) {
+      console.error('[ultrafix] Failed to initialize ultrafix — feature will be unavailable:', (error as Error).message);
+    }
 
     try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
 

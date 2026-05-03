@@ -8,7 +8,7 @@ import {
     generateImageTag,
     AGENT_DEFAULT_VERSIONS
 } from '@propr/core';
-import type { CliVersionType, AgentType } from '@propr/core';
+import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
 import { withConfigLock, validateAgentsConfig } from './configHelpers.js';
 
 interface AgentsRoutesDeps {
@@ -39,7 +39,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       }
 
       // Resolve CLI versions for each agent
-      const processedAgents = [];
+      const processedAgents: AgentConfig[] = [];
       for (const agent of agents) {
         const processedAgent = { ...agent };
 
