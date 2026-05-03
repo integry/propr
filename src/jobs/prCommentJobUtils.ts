@@ -270,18 +270,23 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     const delay = (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
     const readableResetTime = formatResetTime(error.resetTimestamp);
 
+    // Use deterministic jobId to prevent duplicate jobs if requeue is triggered multiple times
+    const llmSlug = (job.data.llm || 'default').replace(/[^a-zA-Z0-9-]/g, '-');
+    const branchSlug = (job.data.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
+    const requeueJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${llmSlug}-${branchSlug}-ratelimit-retry`;
+
     if (octokit) {
         try {
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${job.id} will run again after delay.*`
+                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to PR.');
         }
     }
 
-    await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
+    await issueQueue.add(job.name, job.data, { jobId: requeueJobId, delay: Math.max(0, delay) });
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
