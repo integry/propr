@@ -14,6 +14,29 @@ interface ConversationResult {
   tokenUsage: TokenUsage | null;
 }
 
+interface CodexTodoItem {
+  text?: string;
+  completed?: boolean;
+  status?: string;
+}
+
+function mapCodexTodoStatus(item: CodexTodoItem): 'completed' | 'in_progress' | 'pending' {
+  if (item.status === 'completed' || item.completed) {
+    return 'completed';
+  }
+  if (item.status === 'in_progress' || item.status === 'active' || item.status === 'running') {
+    return 'in_progress';
+  }
+  return 'pending';
+}
+
+function mapCodexTodos(items: CodexTodoItem[]): Array<{ status: string; content: string }> {
+  return items.map(item => ({
+    status: mapCodexTodoStatus(item),
+    content: item.text || ''
+  }));
+}
+
 function pushCodexToolUseEvent(
   events: Array<Record<string, unknown>>,
   toolName: string,
@@ -59,10 +82,7 @@ function parseCompletedCodexItem(
   }
 
   if (event.item?.type === 'todo_list' && event.item.items) {
-    setTodos(event.item.items.map(item => ({
-      status: item.completed ? 'completed' : 'pending',
-      content: item.text
-    })));
+    setTodos(mapCodexTodos(event.item.items as CodexTodoItem[]));
     return true;
   }
 
@@ -119,6 +139,11 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
       continue;
     }
 
+    if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item.items) {
+      todos = mapCodexTodos(event.item.items as CodexTodoItem[]);
+      continue;
+    }
+
     if (event.type === 'item.completed' && parseCompletedCodexItem(event, events, nextTodos => {
       todos = nextTodos;
     }, timestamp)) {
@@ -126,6 +151,8 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
     }
   }
 
-  const currentTask = todos.find(t => t.status === 'pending')?.content || null;
+  const currentTask = todos.find(t => t.status === 'in_progress')?.content
+    || todos.find(t => t.status === 'pending')?.content
+    || null;
   return { events, todos, currentTask, tokenUsage: buildCodexTokenUsage(parsed) };
 }

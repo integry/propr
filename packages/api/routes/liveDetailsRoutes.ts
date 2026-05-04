@@ -105,12 +105,12 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
   }
 
   const state = JSON.parse(stateData) as { history: Array<{ state: string; metadata?: { sessionId?: string } }> };
-  const entry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.sessionId);
+  const entry = [...state.history].reverse().find(h => h.metadata?.sessionId);
 
-  console.log(`[live-details] Found claudeExecutionEntry: ${!!entry}, sessionId: ${entry?.metadata?.sessionId}`);
+  console.log(`[live-details] Found Redis history entry with sessionId: ${!!entry}, state: ${entry?.state}, sessionId: ${entry?.metadata?.sessionId}`);
 
   if (!entry) {
-    console.log('[live-details] No claude_execution entry with sessionId in Redis');
+    console.log('[live-details] No Redis history entry with sessionId found');
     return null;
   }
 
@@ -195,7 +195,15 @@ interface Message {
 }
 interface RawExecutionEvent {
   type?: string; role?: string; content?: string; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string;
-  item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean }> };
+  item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> };
+}
+function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
+  if (item.status === 'completed' || item.completed) return 'completed';
+  if (item.status === 'in_progress' || item.status === 'active' || item.status === 'running') return 'in_progress';
+  return 'pending';
+}
+function mapTodoItems(items: Array<{ text?: string; completed?: boolean; status?: string }>): Array<{ status: string; content: string }> {
+  return items.map(item => ({ status: mapTodoStatus(item), content: item.text || '' }));
 }
 function parseLine(line: string, events: Array<Record<string, unknown>>, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
   try {
@@ -378,7 +386,7 @@ function appendEventFromMetadata(row: ExecutionDetailRow, timestamp: string, eve
       return true;
     }
     if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
-      setTodos(rawEvent.item.items.map(item => ({ status: item.completed ? 'completed' : 'pending', content: item.text || '' })));
+      setTodos(mapTodoItems(rawEvent.item.items));
       return true;
     }
   } catch (error) {
@@ -396,7 +404,9 @@ function appendStoredMessageEvent(row: ExecutionDetailRow, timestamp: string, ev
       .join('\n\n')
       .trim();
     if (!text) return false;
-    events.push({ type: 'thought', content: text, timestamp });
+    if (row.event_type === 'assistant') {
+      events.push({ type: 'thought', content: text, timestamp });
+    }
     return true;
   } catch {
     return false;
