@@ -121,41 +121,12 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
   return entry.metadata!.sessionId!;
 }
 interface StoredLogData { files?: Record<string, string>; }
-interface ExecutionDetailRow {
-  event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null;
-  tool_name: string | null; tool_input: string | null; metadata: string | null;
-}
+interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
 interface StoredMessageContentBlock { type?: string; text?: string; content?: string; }
-interface StoredMessageToolContent {
-  type?: string;
-  text?: string;
-  name?: string;
-  id?: string;
-  tool_use_id?: string;
-  input?: {
-    todos?: Array<{ status: string; content: string }>;
-    subagent_type?: string;
-    description?: string;
-  };
-  content?: unknown;
-  is_error?: boolean;
-}
-interface PendingSubagent {
-  toolUseId: string;
-  subagentType: string;
-  description: string;
-  startTimestamp: string;
-}
-interface StoredMessageContext {
-  timestamp: string;
-  events: Array<Record<string, unknown>>;
-  pendingSubagents: Map<string, PendingSubagent>;
-  setTodos: (todos: Array<{ status: string; content: string }>) => void;
-}
-interface RawExecutionEvent {
-  type?: string; role?: string; content?: string; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string;
-  item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> };
-}
+interface StoredMessageToolContent { type?: string; text?: string; name?: string; id?: string; tool_use_id?: string; input?: { todos?: Array<{ status: string; content: string }>; subagent_type?: string; description?: string; }; content?: unknown; is_error?: boolean; }
+interface PendingSubagent { toolUseId: string; subagentType: string; description: string; startTimestamp: string; }
+interface StoredMessageContext { timestamp: string; events: Array<Record<string, unknown>>; pendingSubagents: Map<string, PendingSubagent>; setTodos: (todos: Array<{ status: string; content: string }>) => void; }
+interface RawExecutionEvent { type?: string; role?: string; content?: string; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
 function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
   if (item.status === 'completed' || item.completed) return 'completed';
   if (item.status === 'in_progress' || item.status === 'active' || item.status === 'running') return 'in_progress';
@@ -200,7 +171,6 @@ async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionI
     console.log('[live-details] No stored execution logs found in Redis for session fallback');
     return null;
   }
-
   let logData: StoredLogData;
   try {
     logData = JSON.parse(logJson) as StoredLogData;
@@ -208,13 +178,11 @@ async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionI
     console.error('[live-details] Failed to parse stored execution log metadata:', error);
     return null;
   }
-
   const outputPath = logData.files?.output;
   if (!outputPath || !(await fs.pathExists(outputPath))) {
     console.log('[live-details] Stored execution output file missing for session fallback');
     return null;
   }
-
   const output = await fs.readFile(outputPath, 'utf8');
   return parseCodexOutputToConversationResult(output);
 }
@@ -224,23 +192,15 @@ async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: 
     .orderBy('start_time', 'desc')
     .first('execution_id', 'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens');
 
-  if (!execution?.execution_id) {
-    return null;
-  }
-
+  if (!execution?.execution_id) return null;
   const details = await db('llm_execution_details')
     .where({ execution_id: execution.execution_id })
     .orderBy('sequence_number', 'asc')
     .select('event_type', 'event_timestamp', 'content', 'is_error', 'tool_name', 'tool_input', 'metadata');
-
-  if (!details.length) {
-    return null;
-  }
-
+  if (!details.length) return null;
   const result = parseExecutionDetailsRows(details as ExecutionDetailRow[]);
   const hasTokens = (execution.input_tokens ?? 0) || (execution.output_tokens ?? 0) ||
     (execution.cache_creation_input_tokens ?? 0) || (execution.cache_read_input_tokens ?? 0);
-
   return {
     ...result,
     tokenUsage: hasTokens ? {
@@ -255,7 +215,6 @@ function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<Conversa
   const events: Array<Record<string, unknown>> = [];
   let todos: Array<{ status: string; content: string }> = [];
   const pendingSubagents = new Map<string, PendingSubagent>();
-
   for (const row of details) {
     const timestamp = row.event_timestamp;
     const metadataHandled = appendEventFromMetadata(row, timestamp, events, nextTodos => { todos = nextTodos; });
@@ -270,11 +229,9 @@ function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<Conversa
     if (appendErrorEvent(row, timestamp, events)) continue;
     appendFallbackContentEvent(row, timestamp, events);
   }
-
   const currentTask = todos.find(t => t.status === 'in_progress')?.content
     || todos.find(t => t.status === 'pending')?.content
     || null;
-
   return { events, todos, currentTask };
 }
 function appendEventFromMetadata(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>, setTodos: (todos: Array<{ status: string; content: string }>) => void): boolean {
@@ -307,29 +264,20 @@ function appendEventFromMetadata(row: ExecutionDetailRow, timestamp: string, eve
   }
   return false;
 }
-function appendStoredMessageEvent(
-  row: ExecutionDetailRow,
-  context: StoredMessageContext
-): boolean {
+function appendStoredMessageEvent(row: ExecutionDetailRow, context: StoredMessageContext): boolean {
   if ((row.event_type !== 'user' && row.event_type !== 'assistant') || !row.content) return false;
   try {
     const parsedContent = JSON.parse(row.content) as { content?: StoredMessageToolContent[] };
     const contentBlocks = parsedContent.content;
     if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) return false;
-    if (row.event_type === 'assistant') {
-      return appendAssistantStoredMessageEvents(contentBlocks, context);
-    }
+    if (row.event_type === 'assistant') return appendAssistantStoredMessageEvents(contentBlocks, context);
     return appendUserStoredMessageEvents(contentBlocks, context);
   } catch {
     return false;
   }
 }
-function appendAssistantStoredMessageEvents(
-  contentBlocks: StoredMessageToolContent[],
-  context: StoredMessageContext
-): boolean {
+function appendAssistantStoredMessageEvents(contentBlocks: StoredMessageToolContent[], context: StoredMessageContext): boolean {
   let handled = false;
-
   for (const content of contentBlocks) {
     if (appendAssistantTextContent(content, context)) {
       handled = true;
@@ -339,25 +287,18 @@ function appendAssistantStoredMessageEvents(
       handled = true;
     }
   }
-
   return handled;
 }
 function appendAssistantTextContent(content: StoredMessageToolContent, context: StoredMessageContext): boolean {
   const textContent = typeof content.text === 'string'
     ? content.text
     : (typeof content.content === 'string' ? content.content : '');
-  if (content.type !== 'text' || !textContent) {
-    return false;
-  }
-
+  if (content.type !== 'text' || !textContent) return false;
   context.events.push({ type: 'thought', content: textContent, timestamp: context.timestamp });
   return true;
 }
 function appendAssistantToolUseContent(content: StoredMessageToolContent, context: StoredMessageContext): boolean {
-  if (content.type !== 'tool_use') {
-    return false;
-  }
-
+  if (content.type !== 'tool_use') return false;
   context.events.push({
     type: 'tool_use',
     toolName: content.name,
@@ -365,10 +306,7 @@ function appendAssistantToolUseContent(content: StoredMessageToolContent, contex
     id: content.id,
     timestamp: context.timestamp
   });
-
-  if (content.name === 'TodoWrite' && content.input?.todos) {
-    context.setTodos(content.input.todos);
-  }
+  if (content.name === 'TodoWrite' && content.input?.todos) context.setTodos(content.input.todos);
   if (content.name === 'Task' && content.id) {
     context.pendingSubagents.set(content.id, {
       toolUseId: content.id,
@@ -377,29 +315,18 @@ function appendAssistantToolUseContent(content: StoredMessageToolContent, contex
       startTimestamp: context.timestamp
     });
   }
-
   return true;
 }
-function appendUserStoredMessageEvents(
-  contentBlocks: StoredMessageToolContent[],
-  context: StoredMessageContext
-): boolean {
+function appendUserStoredMessageEvents(contentBlocks: StoredMessageToolContent[], context: StoredMessageContext): boolean {
   let handled = false;
-
   for (const content of contentBlocks) {
-    if (!appendUserToolResultContent(content, context)) {
-      continue;
-    }
+    if (!appendUserToolResultContent(content, context)) continue;
     handled = true;
   }
-
   return handled;
 }
 function appendUserToolResultContent(content: StoredMessageToolContent, context: StoredMessageContext): boolean {
-  if (content.type !== 'tool_result') {
-    return false;
-  }
-
+  if (content.type !== 'tool_result') return false;
   context.events.push({
     type: 'tool_result',
     toolUseId: content.tool_use_id,
@@ -407,11 +334,7 @@ function appendUserToolResultContent(content: StoredMessageToolContent, context:
     isError: content.is_error || false,
     timestamp: context.timestamp
   });
-
-  if (!content.tool_use_id || !context.pendingSubagents.has(content.tool_use_id)) {
-    return true;
-  }
-
+  if (!content.tool_use_id || !context.pendingSubagents.has(content.tool_use_id)) return true;
   const subagent = context.pendingSubagents.get(content.tool_use_id)!;
   context.events.push({
     type: 'thought',
