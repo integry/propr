@@ -2,6 +2,7 @@ import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
+import { getEnabledResummarizationTargets } from './indexingRouteHelpers.js';
 
 interface AgentConfig {
   id: string;
@@ -62,14 +63,14 @@ export async function withConfigLock(
  * Returns the number of repositories that were queued.
  */
 export async function queueResummarizationForAllRepos(): Promise<number> {
-  const monitoredRepos = await configManager.loadMonitoredRepos();
+  const monitoredRepos = getEnabledResummarizationTargets(await configManager.loadMonitoredReposRaw());
   const octokit = await getAuthenticatedOctokit();
   const { token } = await octokit.auth({ type: "installation" }) as { token: string };
 
   let repositoriesQueued = 0;
 
-  for (const repoFullName of monitoredRepos) {
-    const queued = await queueResummarizationForRepo(repoFullName, token);
+  for (const repoConfig of monitoredRepos) {
+    const queued = await queueResummarizationForRepo(repoConfig.name, token, repoConfig.baseBranch);
     if (queued) {
       repositoriesQueued++;
     }
@@ -82,14 +83,15 @@ export async function queueResummarizationForAllRepos(): Promise<number> {
  * Queue a resummarization job for a single repository.
  * Returns true if successfully queued, false if already queued or failed.
  */
-async function queueResummarizationForRepo(repoFullName: string, token: string): Promise<boolean> {
+async function queueResummarizationForRepo(repoFullName: string, token: string, baseBranch?: string): Promise<boolean> {
   const queue = await getIndexingQueue();
   const [owner, name] = repoFullName.split('/');
+  const effectiveBranch = baseBranch || 'HEAD';
 
   // Check if job already queued for this repository and branch
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
   const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
-    j.data.repository === repoFullName && (!j.data.baseBranch || j.data.baseBranch === 'HEAD')
+    j.data.repository === repoFullName && (j.data.baseBranch || 'HEAD') === effectiveBranch
   );
   if (alreadyQueued) {
     return false;
@@ -99,7 +101,7 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
   const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
   let repoPath: string;
   try {
-    repoPath = await ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token });
+    repoPath = await ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token, baseBranch });
   } catch {
     console.error(`Failed to clone repository ${repoFullName} for resummarization`);
     return false;
@@ -109,7 +111,8 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
   const fetchResult = await fetchLatestChanges({
     owner,
     repoName: name,
-    authToken: token
+    authToken: token,
+    branch: baseBranch
   });
 
   if (!fetchResult.success) {
@@ -126,10 +129,11 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
       repoPath,
       correlationId,
       priority: 'normal',
-      fullReindex: true
+      fullReindex: true,
+      baseBranch
     },
     {
-      jobId: `index-${repoFullName.replace('/', '-')}-prompt-change-${Date.now()}`,
+      jobId: `index-${repoFullName.replace('/', '-')}-${effectiveBranch.replace(/[^a-zA-Z0-9_.-]/g, '-')}-prompt-change-${Date.now()}`,
       priority: 2 // Lower priority than manual triggers
     }
   );

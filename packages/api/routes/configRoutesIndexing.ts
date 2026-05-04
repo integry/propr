@@ -3,6 +3,7 @@ import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
 import { queueResummarizationForAllRepos, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex, stopIndexingJob } from './configHelpers.js';
+import { shouldPublishOptimisticIndexing, validateStopIndexingInput } from './indexingRouteHelpers.js';
 
 interface IndexingRoutesDeps {
   redisClient: RedisClientType;
@@ -46,31 +47,21 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
-      // Publish indexing status before queueing to prevent race where a fast worker
-      // emits completed/failed before the route publishes the start event.
-      // Best-effort: don't let a transient Redis pub/sub failure prevent queueing work.
-      try {
-        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
-      } catch (pubErr) {
-        console.warn('Failed to publish optimistic indexing status:', pubErr);
-      }
-
       const result = await queueIndexingJob(repository, !!fullReindex, baseBranch);
       if (!result.success) {
-        // Only revert the optimistic status if the job isn't already running.
-        // When the error is "already queued", indexing is active for this repo/branch,
-        // so broadcasting idle would incorrectly tell clients the job stopped.
         const isAlreadyQueued = result.error?.includes('already queued');
-        if (!isAlreadyQueued) {
-          try {
-            await publishIndexingStatus(repository, baseBranch || 'HEAD', 'idle');
-          } catch {
-            // Best-effort rollback — don't mask the real error
-          }
-        }
         const statusCode = isAlreadyQueued ? 409 : 400;
         res.status(statusCode).json({ error: result.error });
         return;
+      }
+
+      if (shouldPublishOptimisticIndexing(result)) {
+        // Best-effort optimistic status for newly accepted jobs only.
+        try {
+          await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+        } catch (pubErr) {
+          console.warn('Failed to publish optimistic indexing status:', pubErr);
+        }
       }
 
       await logActivityHelper(
@@ -80,15 +71,6 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
       res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: !!fullReindex, baseBranch });
     } catch (error) {
-      // Revert the optimistic indexing status since queueing threw
-      const body = req.body || {};
-      if (body.repository && typeof body.repository === 'string') {
-        try {
-          await publishIndexingStatus(body.repository, body.baseBranch || 'HEAD', 'idle');
-        } catch {
-          // Best-effort rollback
-        }
-      }
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });
     }
@@ -132,13 +114,13 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
   async function stopIndexing(req: Request, res: Response): Promise<void> {
     try {
-      const { repository, branch } = req.body;
-
-      if (!repository || typeof repository !== 'string') {
-        res.status(400).json({ error: 'Repository is required' });
+      const validationError = validateStopIndexingInput(req.body);
+      if (validationError) {
+        res.status(400).json({ error: validationError });
         return;
       }
 
+      const { repository, branch } = req.body;
       const result = await stopIndexingJob(repository, branch);
 
       if (!result.success) {
