@@ -195,6 +195,15 @@ interface CommitStatusInfo {
     totalCount: number;
 }
 
+interface GitHubApiError extends Error {
+    status?: number;
+}
+
+function isIntegrationAccessError(error: unknown): boolean {
+    const err = error as GitHubApiError;
+    return err.status === 403 || err.message.includes('Resource not accessible by integration');
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getCommitStatusInfo(octokit: any, owner: string, repoName: string, ref: string): Promise<CommitStatusInfo> {
     const statusResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/status', {
@@ -223,7 +232,7 @@ export interface CheckRunsStatus {
 export async function getCheckRunsStatus(owner: string, repoName: string, ref: string): Promise<CheckRunsStatus> {
     try {
         const octokit = await getAuthenticatedOctokit();
-        const [checkRunsResponse, commitStatus] = await Promise.all([
+        const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
             octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
                 owner,
                 repo: repoName,
@@ -231,7 +240,31 @@ export async function getCheckRunsStatus(owner: string, repoName: string, ref: s
             }),
             getCommitStatusInfo(octokit, owner, repoName, ref)
         ]);
-        const checkRuns = checkRunsResponse.data.check_runs;
+
+        if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
+            throw checkRunsResult.reason;
+        }
+
+        const checkRuns = checkRunsResult.status === 'fulfilled'
+            ? checkRunsResult.value.data.check_runs
+            : [];
+        const commitStatus = commitStatusResult.status === 'fulfilled'
+            ? commitStatusResult.value
+            : { state: 'pending', totalCount: 0 };
+
+        if (checkRunsResult.status === 'rejected') {
+            logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
+        }
+
+        if (commitStatusResult.status === 'rejected') {
+            const error = commitStatusResult.reason as Error;
+            const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
+            logger[logMethod](
+                { owner, repoName, ref, error: error.message },
+                'Legacy commit status unavailable, continuing with check-runs only',
+            );
+        }
+
         const count = checkRuns.length + commitStatus.totalCount;
         const crPending = checkRuns.some((run: { status: string }) => run.status !== 'completed');
         const crFailed = checkRuns.some((run: { status: string; conclusion: string | null }) =>
@@ -263,7 +296,7 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        const [checkRunsResponse, commitStatus] = await Promise.all([
+        const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
             octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
                 owner,
                 repo: repoName,
@@ -272,7 +305,29 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
             getCommitStatusInfo(octokit, owner, repoName, ref)
         ]);
 
-        const checkRuns = checkRunsResponse.data.check_runs;
+        if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
+            throw checkRunsResult.reason;
+        }
+
+        const checkRuns = checkRunsResult.status === 'fulfilled'
+            ? checkRunsResult.value.data.check_runs
+            : [];
+        const commitStatus = commitStatusResult.status === 'fulfilled'
+            ? commitStatusResult.value
+            : { state: 'pending', totalCount: 0 };
+
+        if (checkRunsResult.status === 'rejected') {
+            logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
+        }
+
+        if (commitStatusResult.status === 'rejected') {
+            const error = commitStatusResult.reason as Error;
+            const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
+            logger[logMethod](
+                { owner, repoName, ref, error: error.message },
+                'Legacy commit status unavailable, continuing with check-runs only',
+            );
+        }
 
         const allCheckRunsPass = checkRuns.length === 0 || checkRuns.every(
             (run: { status: string; conclusion: string | null }) =>
