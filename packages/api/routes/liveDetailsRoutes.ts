@@ -7,14 +7,9 @@ import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
 import { parseCodexOutputToConversationResult } from './liveDetailsCodexParser.js';
 
-interface LiveDetailsRoutesDeps {
-  redisClient: RedisClientType;
-  db: Knex;
-}
-
+interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
-
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
     try {
       const { taskId: jobId } = req.params;
@@ -70,33 +65,14 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
       res.status(500).json({ error: 'Internal server error' });
     }
   }
-
   return { getLiveDetails };
 }
-
-function normalizeTaskId(jobId: string): string {
-  if (jobId.startsWith('issue-')) {
-    const parts = jobId.replace(/^issue-/, '').split('-');
-    parts.pop();
-    return parts.join('-');
-  }
-  return jobId;
-}
-
-async function findSessionId(
-  redisClient: RedisClientType,
-  db: Knex,
-  taskId: string
-): Promise<string | null> {
-  // Check Redis FIRST - it has the live/current execution state
-  // This is important for reprocessing: Redis has the new session, DB might have the old one
+function normalizeTaskId(jobId: string): string { if (!jobId.startsWith('issue-')) return jobId; const parts = jobId.replace(/^issue-/, '').split('-'); parts.pop(); return parts.join('-'); }
+async function findSessionId(redisClient: RedisClientType, db: Knex, taskId: string): Promise<string | null> {
   const redisSessionId = await findSessionIdFromRedis(redisClient, taskId);
   if (redisSessionId) return redisSessionId;
-
-  // Fall back to DB for completed/historical executions
   return findSessionIdFromDb(db, taskId);
 }
-
 async function findSessionIdFromDb(db: Knex, taskId: string): Promise<string | null> {
   try {
     console.log(`[live-details] Fetching sessionId from SQLite for taskId: ${taskId}`);
@@ -117,14 +93,12 @@ async function findSessionIdFromDb(db: Knex, taskId: string): Promise<string | n
     return null;
   }
 }
-
 async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: string): Promise<string | null> {
   console.log('[live-details] Trying Redis fallback');
   const stateKey = `worker:state:${taskId}`;
   const stateData = await redisClient.get(stateKey);
 
   console.log(`[live-details] stateKey: ${stateKey}, hasData: ${!!stateData}`);
-
   if (!stateData) {
     console.log('[live-details] No state data found in Redis');
     return null;
@@ -142,33 +116,12 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
 
   return entry.metadata!.sessionId!;
 }
-
-interface TokenUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
-}
-
-interface ConversationResult {
-  events: Array<Record<string, unknown>>;
-  todos: Array<{ status: string; content: string }>;
-  currentTask: string | null;
-  tokenUsage: TokenUsage | null;
-}
-
-interface StoredLogData {
-  files?: Record<string, string>;
-}
-
+interface TokenUsage { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number; }
+interface ConversationResult { events: Array<Record<string, unknown>>; todos: Array<{ status: string; content: string }>; currentTask: string | null; tokenUsage: TokenUsage | null; }
+interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow {
-  event_type: string;
-  event_timestamp: string;
-  content: string | null;
-  is_error: number | boolean | null;
-  tool_name: string | null;
-  tool_input: string | null;
-  metadata: string | null;
+  event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null;
+  tool_name: string | null; tool_input: string | null; metadata: string | null;
 }
 
 interface StoredMessageContentBlock {
@@ -189,32 +142,13 @@ interface ContentBlock {
   text?: string;
   content?: string;
 }
-
 function extractTextFromContentBlocks(content: unknown): string | null {
-  if (!Array.isArray(content)) return null;
-  if (content.length === 0) return null;
-
-  // Check if it looks like a content blocks array
+  if (!Array.isArray(content) || content.length === 0) return null;
   const first = content[0] as ContentBlock;
-  if (typeof first !== 'object' || first === null || !('type' in first)) {
-    return null;
-  }
-
-  const textParts = content
-    .map((block: ContentBlock) => {
-      if (block.type === 'text' && block.text) {
-        return block.text;
-      }
-      if (block.content) {
-        return block.content;
-      }
-      return '';
-    })
-    .filter(Boolean);
-
+  if (typeof first !== 'object' || first === null || !('type' in first)) return null;
+  const textParts = content.map((block: ContentBlock) => block.type === 'text' && block.text ? block.text : (block.content ?? '')).filter(Boolean);
   return textParts.length > 0 ? textParts.join('\n\n') : null;
 }
-
 async function parseConversationFile(conversationPath: string): Promise<ConversationResult> {
   const conversationContent = await fs.readFile(conversationPath, 'utf8');
   const lines = conversationContent.trim().split('\n').filter(line => line.trim());
@@ -249,35 +183,21 @@ async function parseConversationFile(conversationPath: string): Promise<Conversa
 
   return { events, todos, currentTask, tokenUsage: hasTokens ? tokenUsage : null };
 }
-
-interface ParseLineResult {
-  newTodos?: Array<{ status: string; content: string }>;
-  tokenUsage?: TokenUsage;
-}
-
+interface ParseLineResult { newTodos?: Array<{ status: string; content: string }>; tokenUsage?: TokenUsage; }
 interface MessageContent {
-  type: string;
-  text?: string;
-  name?: string;
-  input?: { todos?: Array<{ status: string; content: string }> };
-  id?: string;
-  tool_use_id?: string;
-  content?: unknown;
-  is_error?: boolean;
+  type: string; text?: string; name?: string; input?: { todos?: Array<{ status: string; content: string }> };
+  id?: string; tool_use_id?: string; content?: unknown; is_error?: boolean;
 }
-
 interface Message {
-  type?: string;
-  timestamp?: string;
+  type?: string; timestamp?: string;
   message?: { content?: MessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
 }
-
-function parseLine(
-  line: string,
-  events: Array<Record<string, unknown>>,
-  pendingSubagents: Map<string, PendingSubagent>
-): ParseLineResult {
+interface RawExecutionEvent {
+  type?: string; role?: string; content?: string; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string;
+  item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean }> };
+}
+function parseLine(line: string, events: Array<Record<string, unknown>>, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
   try {
     const message = JSON.parse(line) as Message;
     const timestamp = message.timestamp || new Date().toISOString();
@@ -304,13 +224,7 @@ function parseLine(
   }
   return {};
 }
-
-function parseAssistantContent(
-  contentArray: MessageContent[],
-  events: Array<Record<string, unknown>>,
-  timestamp: string,
-  pendingSubagents: Map<string, PendingSubagent>
-): ParseLineResult {
+function parseAssistantContent(contentArray: MessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
   let newTodos: Array<{ status: string; content: string }> | undefined;
 
   for (const content of contentArray) {
@@ -335,47 +249,24 @@ function parseAssistantContent(
 
   return { newTodos };
 }
-
-function parseUserContent(
-  contentArray: MessageContent[],
-  events: Array<Record<string, unknown>>,
-  timestamp: string,
-  pendingSubagents: Map<string, PendingSubagent>
-): void {
+function buildSubagentSummary(subagent: PendingSubagent, content: MessageContent, timestamp: string) {
+  const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
+  const durationSecs = Math.round(durationMs / 1000);
+  const subagentOutputText = extractTextFromContentBlocks(content.content);
+  const subagentIcon = getSubagentIcon(subagent.subagentType);
+  const summaryHeader = `${subagentIcon} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`;
+  return subagentOutputText ? `${summaryHeader}\n\n${subagentOutputText}` : summaryHeader;
+}
+function parseUserContent(contentArray: MessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): void {
   for (const content of contentArray) {
-    if (content.type === 'tool_result') {
-      events.push({
-        type: 'tool_result',
-        toolUseId: content.tool_use_id,
-        result: content.content,
-        isError: content.is_error || false,
-        timestamp
-      });
-
-      if (content.tool_use_id && pendingSubagents.has(content.tool_use_id)) {
-        const subagent = pendingSubagents.get(content.tool_use_id)!;
-        const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
-        const durationSecs = Math.round(durationMs / 1000);
-        const subagentOutputText = extractTextFromContentBlocks(content.content);
-        const subagentIcon = getSubagentIcon(subagent.subagentType);
-        const summaryHeader = `${subagentIcon} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`;
-        const thoughtContent = subagentOutputText
-          ? `${summaryHeader}\n\n${subagentOutputText}`
-          : summaryHeader;
-
-        events.push({
-          type: 'thought',
-          content: thoughtContent,
-          timestamp,
-          isSubagentSummary: true
-        });
-
-        pendingSubagents.delete(content.tool_use_id);
-      }
-    }
+    if (content.type !== 'tool_result') continue;
+    events.push({ type: 'tool_result', toolUseId: content.tool_use_id, result: content.content, isError: content.is_error || false, timestamp });
+    if (!content.tool_use_id || !pendingSubagents.has(content.tool_use_id)) continue;
+    const subagent = pendingSubagents.get(content.tool_use_id)!;
+    events.push({ type: 'thought', content: buildSubagentSummary(subagent, content, timestamp), timestamp, isSubagentSummary: true });
+    pendingSubagents.delete(content.tool_use_id);
   }
 }
-
 function getSubagentIcon(subagentType: string): string {
   switch (subagentType.toLowerCase()) {
     case 'explore':
@@ -388,11 +279,7 @@ function getSubagentIcon(subagentType: string): string {
       return '🤖';
   }
 }
-
-async function parseStoredExecutionOutput(
-  redisClient: RedisClientType,
-  sessionId: string
-): Promise<ConversationResult | null> {
+async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionId: string): Promise<ConversationResult | null> {
   const logJson = await redisClient.get(`execution:logs:session:${sessionId}`);
   if (!logJson) {
     console.log('[live-details] No stored execution logs found in Redis for session fallback');
@@ -416,12 +303,7 @@ async function parseStoredExecutionOutput(
   const output = await fs.readFile(outputPath, 'utf8');
   return parseCodexOutputToConversationResult(output);
 }
-
-async function parseExecutionDetailsFromDb(
-  db: Knex,
-  taskId: string,
-  sessionId: string
-): Promise<ConversationResult | null> {
+async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: string): Promise<ConversationResult | null> {
   const execution = await db('llm_executions')
     .where({ task_id: taskId, session_id: sessionId })
     .orderBy('start_time', 'desc')
@@ -454,145 +336,18 @@ async function parseExecutionDetailsFromDb(
     } : null
   };
 }
-
 function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<ConversationResult, 'tokenUsage'> {
   const events: Array<Record<string, unknown>> = [];
   let todos: Array<{ status: string; content: string }> = [];
 
   for (const row of details) {
     const timestamp = row.event_timestamp;
-
-    if (row.metadata) {
-      try {
-        const rawEvent = JSON.parse(row.metadata) as {
-          type?: string;
-          role?: string;
-          content?: string;
-          tool?: string;
-          params?: { file_path?: string; command?: string };
-          message?: string;
-          result?: string;
-          item?: {
-            type?: string;
-            text?: string;
-            command?: string;
-            aggregated_output?: string;
-            exit_code?: number | null;
-            items?: Array<{ text?: string; completed?: boolean }>;
-          };
-        };
-
-        if (rawEvent.type === 'message' && rawEvent.role === 'assistant' && rawEvent.content) {
-          events.push({ type: 'thought', content: rawEvent.content, timestamp });
-          continue;
-        }
-
-        if (rawEvent.type === 'tool_use') {
-          events.push({
-            type: 'tool_use',
-            toolName: rawEvent.tool,
-            input: rawEvent.params,
-            timestamp
-          });
-          continue;
-        }
-
-        if (rawEvent.type === 'error') {
-          events.push({
-            type: 'tool_result',
-            result: rawEvent.message || rawEvent.result || row.content || 'Execution error',
-            isError: true,
-            timestamp
-          });
-          continue;
-        }
-
-        if (rawEvent.item?.type === 'command_execution') {
-          if (rawEvent.item.command) {
-            events.push({
-              type: 'tool_use',
-              toolName: 'command_execution',
-              input: { command: rawEvent.item.command },
-              timestamp
-            });
-          }
-          if (rawEvent.item.aggregated_output) {
-            events.push({
-              type: 'tool_result',
-              result: rawEvent.item.aggregated_output,
-              isError: rawEvent.item.exit_code != null && rawEvent.item.exit_code !== 0,
-              timestamp
-            });
-          }
-          continue;
-        }
-
-        if ((rawEvent.item?.type === 'reasoning' || rawEvent.item?.type === 'agent_message') && rawEvent.item.text) {
-          events.push({ type: 'thought', content: rawEvent.item.text, timestamp });
-          continue;
-        }
-
-        if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
-          todos = rawEvent.item.items.map(item => ({
-            status: item.completed ? 'completed' : 'pending',
-            content: item.text || ''
-          }));
-          continue;
-        }
-      } catch (error) {
-        console.error('[live-details] Failed to parse execution detail metadata:', error);
-      }
-    }
-
-    if ((row.event_type === 'user' || row.event_type === 'assistant') && row.content) {
-      try {
-        const parsedContent = JSON.parse(row.content) as { content?: StoredMessageContentBlock[] };
-        const text = parsedContent.content
-          ?.filter(block => block.type === 'text' && (block.text || block.content))
-          .map(block => block.text || block.content || '')
-          .join('\n\n')
-          .trim();
-        if (text) {
-          events.push({ type: 'thought', content: text, timestamp });
-          continue;
-        }
-      } catch {
-        // Fall back to raw content handling below
-      }
-    }
-
-    if (row.event_type === 'tool_use' && row.tool_name) {
-      let input: { file_path?: string; command?: string } | undefined;
-      if (row.tool_input) {
-        try {
-          input = JSON.parse(row.tool_input) as { file_path?: string; command?: string };
-        } catch {
-          input = undefined;
-        }
-      }
-      events.push({ type: 'tool_use', toolName: row.tool_name, input, timestamp });
-      continue;
-    }
-
-    if (row.event_type === 'error') {
-      events.push({
-        type: 'tool_result',
-        result: row.content || 'Execution error',
-        isError: true,
-        timestamp
-      });
-      continue;
-    }
-
-    if (row.content) {
-      events.push({
-        type: row.tool_name ? 'tool_result' : 'thought',
-        content: row.tool_name ? undefined : row.content,
-        result: row.tool_name ? row.content : undefined,
-        isError: Boolean(row.is_error),
-        timestamp
-      });
-    }
+    const metadataHandled = appendEventFromMetadata(row, timestamp, events, nextTodos => { todos = nextTodos; });
+    if (metadataHandled) continue;
+    if (appendStoredMessageEvent(row, timestamp, events)) continue;
+    if (appendToolUseEvent(row, timestamp, events)) continue;
+    if (appendErrorEvent(row, timestamp, events)) continue;
+    appendFallbackContentEvent(row, timestamp, events);
   }
 
   const currentTask = todos.find(t => t.status === 'in_progress')?.content
@@ -600,4 +355,80 @@ function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<Conversa
     || null;
 
   return { events, todos, currentTask };
+}
+function appendEventFromMetadata(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>, setTodos: (todos: Array<{ status: string; content: string }>) => void): boolean {
+  if (!row.metadata) return false;
+  try {
+    const rawEvent = JSON.parse(row.metadata) as RawExecutionEvent;
+    if (rawEvent.type === 'message' && rawEvent.role === 'assistant' && rawEvent.content) {
+      events.push({ type: 'thought', content: rawEvent.content, timestamp });
+      return true;
+    }
+    if (rawEvent.type === 'tool_use') {
+      events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp });
+      return true;
+    }
+    if (rawEvent.type === 'error') {
+      events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || row.content || 'Execution error', isError: true, timestamp });
+      return true;
+    }
+    if (appendCommandExecutionEvents(rawEvent, timestamp, events)) return true;
+    if ((rawEvent.item?.type === 'reasoning' || rawEvent.item?.type === 'agent_message') && rawEvent.item.text) {
+      events.push({ type: 'thought', content: rawEvent.item.text, timestamp });
+      return true;
+    }
+    if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
+      setTodos(rawEvent.item.items.map(item => ({ status: item.completed ? 'completed' : 'pending', content: item.text || '' })));
+      return true;
+    }
+  } catch (error) {
+    console.error('[live-details] Failed to parse execution detail metadata:', error);
+  }
+  return false;
+}
+function appendStoredMessageEvent(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>): boolean {
+  if ((row.event_type !== 'user' && row.event_type !== 'assistant') || !row.content) return false;
+  try {
+    const parsedContent = JSON.parse(row.content) as { content?: StoredMessageContentBlock[] };
+    const text = parsedContent.content
+      ?.filter(block => block.type === 'text' && (block.text || block.content))
+      .map(block => block.text || block.content || '')
+      .join('\n\n')
+      .trim();
+    if (!text) return false;
+    events.push({ type: 'thought', content: text, timestamp });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function appendCommandExecutionEvents(rawEvent: RawExecutionEvent, timestamp: string, events: Array<Record<string, unknown>>): boolean {
+  if (rawEvent.item?.type !== 'command_execution') return false;
+  if (rawEvent.item.command) events.push({ type: 'tool_use', toolName: 'command_execution', input: { command: rawEvent.item.command }, timestamp });
+  if (rawEvent.item.aggregated_output) events.push({
+    type: 'tool_result', result: rawEvent.item.aggregated_output, isError: rawEvent.item.exit_code != null && rawEvent.item.exit_code !== 0, timestamp
+  });
+  return true;
+}
+function parseToolInput(toolInput: string | null): { file_path?: string; command?: string } | undefined {
+  if (!toolInput) return undefined;
+  try {
+    return JSON.parse(toolInput) as { file_path?: string; command?: string };
+  } catch {
+    return undefined;
+  }
+}
+function appendToolUseEvent(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>): boolean {
+  if (row.event_type !== 'tool_use' || !row.tool_name) return false;
+  events.push({ type: 'tool_use', toolName: row.tool_name, input: parseToolInput(row.tool_input), timestamp });
+  return true;
+}
+function appendErrorEvent(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>): boolean {
+  if (row.event_type !== 'error') return false;
+  events.push({ type: 'tool_result', result: row.content || 'Execution error', isError: true, timestamp });
+  return true;
+}
+function appendFallbackContentEvent(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>): void {
+  if (!row.content) return;
+  events.push({ type: row.tool_name ? 'tool_result' : 'thought', content: row.tool_name ? undefined : row.content, result: row.tool_name ? row.content : undefined, isError: Boolean(row.is_error), timestamp });
 }
