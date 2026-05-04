@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
