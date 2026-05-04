@@ -18,7 +18,7 @@ import os from 'os';
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
 
-const DEFAULT_GEMINI_TIMEOUT_MS = 3600000;
+const DEFAULT_GEMINI_TIMEOUT_MS = 300000;
 
 // Container path for Gemini config
 const CONTAINER_CONFIG_PATH = '/home/node/.gemini';

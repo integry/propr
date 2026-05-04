@@ -23,7 +23,7 @@ import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 export { UsageLimitError };
 
 const DEFAULT_CODEX_MAX_TURNS = 1000;
-const DEFAULT_CODEX_TIMEOUT_MS = 3600000;
+const DEFAULT_CODEX_TIMEOUT_MS = 300000;
 
 // Container path for Codex config
 const CONTAINER_CONFIG_PATH = '/home/node/.codex';

@@ -70,7 +70,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
 
       const previousAgents = await configManager.loadAgents();
       const settings = await configManager.loadSettings();
-      const currentDefault = (settings as Record<string, unknown>).default_agent_alias as string | undefined;
+      const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
       const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
 
       let newDefault = currentDefault;
@@ -95,19 +95,26 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
         throw syncError;
       }
 
-      // Refresh the AgentRegistry to apply changes immediately
       try {
         await AgentRegistry.getInstance().refresh();
       } catch (refreshError) {
-        console.error('Warning: Failed to refresh agent registry:', refreshError);
-      }
-
-      if (newDefault !== currentDefault) {
-        const registry = AgentRegistry.getInstance();
-        registry.setDefaultAgentAlias(newDefault || null);
+        try {
+          await configManager.saveAgents(previousAgents);
+          if (newDefault !== currentDefault) {
+            await configManager.saveSettings({ default_agent_alias: currentDefault } as Record<string, unknown>);
+          }
+          await AgentRegistry.getInstance().refresh();
+        } catch (rollbackError) {
+          console.error('Failed to roll back agent configuration after registry refresh failure:', rollbackError);
+        }
+        console.error('Failed to refresh agent registry after agents update:', refreshError);
+        return { status: 500, body: { error: 'Failed to apply agent configuration to the live registry' } };
       }
 
       await publishConfigUpdate('agents_update');
+      if (newDefault !== currentDefault) {
+        await publishConfigUpdate('settings_update');
+      }
       await logActivityHelper(`Updated agents configuration (${processedAgents.length} agents)`, 'agents-update', 'agents_updated', req.user?.username);
 
       return { status: 200, body: { success: true, agents: processedAgents } };

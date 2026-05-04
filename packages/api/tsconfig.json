@@ -14,6 +14,6 @@
     "resolveJsonModule": true,
     "declaration": true
   },
-  "include": ["*.ts", "../../src/jobs/**/*.ts"],
+  "include": ["*.ts"],
   "exclude": ["node_modules", "dist"]
 }

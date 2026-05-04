@@ -38,7 +38,7 @@ export { UsageLimitError };
 const DEFAULT_CLAUDE_MAX_TURNS = 1000;
 
 /** Default timeout for Claude execution in milliseconds */
-const DEFAULT_CLAUDE_TIMEOUT_MS = 3600000;
+const DEFAULT_CLAUDE_TIMEOUT_MS = 300000;
 
 /**
  * Parameters for persisting execution logs.
