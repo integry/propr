@@ -23,6 +23,13 @@ interface JsonPostHandlerConfig<T> {
 }
 
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
+function validateStringArray(value: unknown, fieldName: string): string[] | string {
+  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) {
+    return `${fieldName} must be an array of strings`;
+  }
+  return value;
+}
+
 function createJsonGetHandler<T>(
   load: () => Promise<T>,
   body: (value: T) => Record<string, unknown>,
@@ -103,7 +110,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     {
       lockKey: 'config:keywords:lock',
       pickValue: body => body.followup_keywords,
-      validate: followup_keywords => Array.isArray(followup_keywords) ? followup_keywords : 'followup_keywords must be an array of strings',
+      validate: followup_keywords => validateStringArray(followup_keywords, 'followup_keywords'),
       save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords),
       subtype: 'followup_keywords_update',
       body: followup_keywords => ({ followup_keywords })
@@ -119,7 +126,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     {
       lockKey: 'config:ignore-keywords:lock',
       pickValue: body => body.followup_ignore_keywords,
-      validate: followup_ignore_keywords => Array.isArray(followup_ignore_keywords) ? followup_ignore_keywords : 'followup_ignore_keywords must be an array of strings',
+      validate: followup_ignore_keywords => validateStringArray(followup_ignore_keywords, 'followup_ignore_keywords'),
       save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords),
       subtype: 'followup_ignore_keywords_update',
       body: followup_ignore_keywords => ({ followup_ignore_keywords })

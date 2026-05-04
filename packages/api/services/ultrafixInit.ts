@@ -28,16 +28,31 @@ async function pathExists(candidatePath: string): Promise<boolean> {
     }
 }
 
+function collectAncestorDirectories(startDir: string): string[] {
+    const directories: string[] = [];
+    let currentDir = path.resolve(startDir);
+
+    while (true) {
+        directories.push(currentDir);
+        const parentDir = path.dirname(currentDir);
+        if (parentDir === currentDir) {
+            break;
+        }
+        currentDir = parentDir;
+    }
+
+    return directories;
+}
+
 export async function resolveJobModulePath(filename: string): Promise<string> {
-    const rootCandidates = [
-        path.resolve(__dirname, '../../..'),
-        path.resolve(__dirname, '../../../..'),
-        process.cwd(),
-    ];
-    const baseCandidates = rootCandidates.flatMap((root) => [
-        path.resolve(root, 'src/jobs', filename),
-        path.resolve(root, 'dist/src/jobs', filename),
-    ]);
+    const searchRoots = Array.from(new Set([
+        ...collectAncestorDirectories(__dirname),
+        ...collectAncestorDirectories(process.cwd()),
+    ]));
+    const baseCandidates = searchRoots.flatMap((rootDir) => ([
+        path.join(rootDir, 'src/jobs', filename),
+        path.join(rootDir, 'dist/src/jobs', filename),
+    ]));
     const candidates = baseCandidates.flatMap((candidate) => {
         const tsCandidate = candidate.replace(/\.js$/, '.ts');
         return tsCandidate === candidate ? [candidate] : [candidate, tsCandidate];

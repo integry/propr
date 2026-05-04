@@ -5,7 +5,11 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
-import { parseCodexOutputToConversationResult } from './liveDetailsCodexParser.js';
+import {
+  parseClaudeConversationFile,
+  parseCodexOutputToConversationResult,
+  type ConversationResult
+} from './liveDetailsCodexParser.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
@@ -56,7 +60,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
         return;
       }
 
-      const result = await parseConversationFile(conversationPath);
+      const result = await parseClaudeConversationFile(conversationPath);
       console.log(`[live-details] Returning: ${result.events.length} events, ${result.todos.length} todos, currentTask: ${result.currentTask ? 'yes' : 'no'}`);
 
       res.json(result);
@@ -105,179 +109,34 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
   }
 
   const state = JSON.parse(stateData) as { history: Array<{ state: string; metadata?: { sessionId?: string } }> };
-  const entry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.sessionId);
+  const entry = [...state.history].reverse().find(h => h.metadata?.sessionId);
 
-  console.log(`[live-details] Found claudeExecutionEntry: ${!!entry}, sessionId: ${entry?.metadata?.sessionId}`);
+  console.log(`[live-details] Found Redis history entry with sessionId: ${!!entry}, state: ${entry?.state}, sessionId: ${entry?.metadata?.sessionId}`);
 
   if (!entry) {
-    console.log('[live-details] No claude_execution entry with sessionId in Redis');
+    console.log('[live-details] No Redis history entry with sessionId found');
     return null;
   }
 
   return entry.metadata!.sessionId!;
 }
-interface TokenUsage { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number; }
-interface ConversationResult { events: Array<Record<string, unknown>>; todos: Array<{ status: string; content: string }>; currentTask: string | null; tokenUsage: TokenUsage | null; }
 interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow {
   event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null;
   tool_name: string | null; tool_input: string | null; metadata: string | null;
 }
-
-interface StoredMessageContentBlock {
-  type?: string;
-  text?: string;
-  content?: string;
-}
-
-interface PendingSubagent {
-  toolUseId: string;
-  subagentType: string;
-  description: string;
-  startTimestamp: string;
-}
-
-interface ContentBlock {
-  type: string;
-  text?: string;
-  content?: string;
-}
-function extractTextFromContentBlocks(content: unknown): string | null {
-  if (!Array.isArray(content) || content.length === 0) return null;
-  const first = content[0] as ContentBlock;
-  if (typeof first !== 'object' || first === null || !('type' in first)) return null;
-  const textParts = content.map((block: ContentBlock) => block.type === 'text' && block.text ? block.text : (block.content ?? '')).filter(Boolean);
-  return textParts.length > 0 ? textParts.join('\n\n') : null;
-}
-async function parseConversationFile(conversationPath: string): Promise<ConversationResult> {
-  const conversationContent = await fs.readFile(conversationPath, 'utf8');
-  const lines = conversationContent.trim().split('\n').filter(line => line.trim());
-
-  const events: Array<Record<string, unknown>> = [];
-  let todos: Array<{ status: string; content: string }> = [];
-  const tokenUsage: TokenUsage = {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0
-  };
-  const pendingSubagents: Map<string, PendingSubagent> = new Map();
-
-  for (const line of lines) {
-    const parsed = parseLine(line, events, pendingSubagents);
-    if (parsed.newTodos) {
-      todos = parsed.newTodos;
-    }
-    if (parsed.tokenUsage) {
-      tokenUsage.input_tokens += parsed.tokenUsage.input_tokens;
-      tokenUsage.output_tokens += parsed.tokenUsage.output_tokens;
-      tokenUsage.cache_creation_input_tokens += parsed.tokenUsage.cache_creation_input_tokens;
-      tokenUsage.cache_read_input_tokens += parsed.tokenUsage.cache_read_input_tokens;
-    }
-  }
-
-  const inProgressTask = todos.find(t => t.status === 'in_progress');
-  const currentTask = inProgressTask ? inProgressTask.content : null;
-  const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
-                    tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
-
-  return { events, todos, currentTask, tokenUsage: hasTokens ? tokenUsage : null };
-}
-interface ParseLineResult { newTodos?: Array<{ status: string; content: string }>; tokenUsage?: TokenUsage; }
-interface MessageContent {
-  type: string; text?: string; name?: string; input?: { todos?: Array<{ status: string; content: string }> };
-  id?: string; tool_use_id?: string; content?: unknown; is_error?: boolean;
-}
-interface Message {
-  type?: string; timestamp?: string;
-  message?: { content?: MessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
-  usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
-}
+interface StoredMessageContentBlock { type?: string; text?: string; content?: string; }
 interface RawExecutionEvent {
   type?: string; role?: string; content?: string; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string;
-  item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean }> };
+  item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> };
 }
-function parseLine(line: string, events: Array<Record<string, unknown>>, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
-  try {
-    const message = JSON.parse(line) as Message;
-    const timestamp = message.timestamp || new Date().toISOString();
-
-    if (message.type === 'assistant' && message.message?.content) {
-      return parseAssistantContent(message.message.content, events, timestamp, pendingSubagents);
-    }
-    if (message.type === 'user' && message.message?.content) {
-      parseUserContent(message.message.content, events, timestamp, pendingSubagents);
-    }
-    const usage = message.usage || message.message?.usage;
-    if (usage) {
-      return {
-        tokenUsage: {
-          input_tokens: usage.input_tokens ?? 0,
-          output_tokens: usage.output_tokens ?? 0,
-          cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
-          cache_read_input_tokens: usage.cache_read_input_tokens ?? 0
-        }
-      };
-    }
-  } catch (parseError) {
-    console.error(`[live-details] Error parsing line:`, parseError);
-  }
-  return {};
+function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
+  if (item.status === 'completed' || item.completed) return 'completed';
+  if (item.status === 'in_progress' || item.status === 'active' || item.status === 'running') return 'in_progress';
+  return 'pending';
 }
-function parseAssistantContent(contentArray: MessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
-  let newTodos: Array<{ status: string; content: string }> | undefined;
-
-  for (const content of contentArray) {
-    if (content.type === 'text') {
-      events.push({ type: 'thought', content: content.text, timestamp });
-    } else if (content.type === 'tool_use') {
-      events.push({ type: 'tool_use', toolName: content.name, input: content.input, id: content.id, timestamp });
-      if (content.name === 'TodoWrite' && content.input?.todos) {
-        newTodos = content.input.todos;
-      }
-      if (content.name === 'Task' && content.id) {
-        const input = content.input as { subagent_type?: string; description?: string } | undefined;
-        pendingSubagents.set(content.id, {
-          toolUseId: content.id,
-          subagentType: input?.subagent_type || 'unknown',
-          description: input?.description || '',
-          startTimestamp: timestamp
-        });
-      }
-    }
-  }
-
-  return { newTodos };
-}
-function buildSubagentSummary(subagent: PendingSubagent, content: MessageContent, timestamp: string) {
-  const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
-  const durationSecs = Math.round(durationMs / 1000);
-  const subagentOutputText = extractTextFromContentBlocks(content.content);
-  const subagentIcon = getSubagentIcon(subagent.subagentType);
-  const summaryHeader = `${subagentIcon} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`;
-  return subagentOutputText ? `${summaryHeader}\n\n${subagentOutputText}` : summaryHeader;
-}
-function parseUserContent(contentArray: MessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): void {
-  for (const content of contentArray) {
-    if (content.type !== 'tool_result') continue;
-    events.push({ type: 'tool_result', toolUseId: content.tool_use_id, result: content.content, isError: content.is_error || false, timestamp });
-    if (!content.tool_use_id || !pendingSubagents.has(content.tool_use_id)) continue;
-    const subagent = pendingSubagents.get(content.tool_use_id)!;
-    events.push({ type: 'thought', content: buildSubagentSummary(subagent, content, timestamp), timestamp, isSubagentSummary: true });
-    pendingSubagents.delete(content.tool_use_id);
-  }
-}
-function getSubagentIcon(subagentType: string): string {
-  switch (subagentType.toLowerCase()) {
-    case 'explore':
-      return '🔍';
-    case 'plan':
-      return '📋';
-    case 'bash':
-      return '⚡';
-    default:
-      return '🤖';
-  }
+function mapTodoItems(items: Array<{ text?: string; completed?: boolean; status?: string }>): Array<{ status: string; content: string }> {
+  return items.map(item => ({ status: mapTodoStatus(item), content: item.text || '' }));
 }
 async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionId: string): Promise<ConversationResult | null> {
   const logJson = await redisClient.get(`execution:logs:session:${sessionId}`);
@@ -378,7 +237,7 @@ function appendEventFromMetadata(row: ExecutionDetailRow, timestamp: string, eve
       return true;
     }
     if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
-      setTodos(rawEvent.item.items.map(item => ({ status: item.completed ? 'completed' : 'pending', content: item.text || '' })));
+      setTodos(mapTodoItems(rawEvent.item.items));
       return true;
     }
   } catch (error) {
@@ -396,7 +255,9 @@ function appendStoredMessageEvent(row: ExecutionDetailRow, timestamp: string, ev
       .join('\n\n')
       .trim();
     if (!text) return false;
-    events.push({ type: 'thought', content: text, timestamp });
+    if (row.event_type === 'assistant') {
+      events.push({ type: 'thought', content: text, timestamp });
+    }
     return true;
   } catch {
     return false;
