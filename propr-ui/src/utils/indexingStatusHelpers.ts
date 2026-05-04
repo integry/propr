@@ -26,6 +26,10 @@ const getValidPhase = (
   return prevPhase ?? 'files';
 };
 
+const shouldRetainProgress = (phase: IndexingPhase): boolean => {
+  return phase === 'indexing' || phase === 'files' || phase === 'directories' || phase === 'completed';
+};
+
 // Helper to build progress object with defaults
 const buildProgressObject = (
   payload: IndexingUpdatePayload,
@@ -56,6 +60,8 @@ export const buildUpdatedStatus = (
     last_indexed_at: prevStatus?.last_indexed_at ?? null,
     last_indexed_hash: prevStatus?.last_indexed_hash ?? null,
     last_indexed_commit_message: prevStatus?.last_indexed_commit_message ?? null,
-    progress: buildProgressObject(payload, prevStatus?.progress, validPhase)
+    progress: shouldRetainProgress(payload.phase)
+      ? buildProgressObject(payload, prevStatus?.progress, validPhase)
+      : undefined
   };
 };

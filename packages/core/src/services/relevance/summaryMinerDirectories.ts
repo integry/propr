@@ -7,12 +7,14 @@ import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { startDirectoryPhase, updateDirectoryProgress, publishProgress } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
+import type { IndexingProgress } from './indexingCancellation.js';
 
 // --- Constants ---
 
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
 const BATCH_TOKEN_RATIO = 0.5; // Use 50% of max tokens for directory batches (smaller than file batches since prompts are shorter)
 const MAX_DIRS_PER_BATCH = 20; // Cap directories per batch to keep responses manageable
+const DIRECTORY_PROGRESS_PERCENT_STEP = 5;
 
 // --- Types ---
 
@@ -143,9 +145,23 @@ async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], 
 
 async function tryPublishDirectoryProgress(fullName: string, branch: string): Promise<void> {
   const progress = await updateDirectoryProgress(fullName, branch);
-  if (progress) {
+  if (progress && shouldPublishDirectoryProgress(progress)) {
     try { await publishProgress(fullName, branch, progress); } catch { /* best-effort */ }
   }
+}
+
+function shouldPublishDirectoryProgress(progress: IndexingProgress): boolean {
+  if (progress.phase !== 'directories' || progress.totalDirectories <= 0) {
+    return false;
+  }
+
+  if (progress.processedDirectories === 1 || progress.processedDirectories >= progress.totalDirectories) {
+    return true;
+  }
+
+  const previousPercentBucket = Math.floor((((progress.processedDirectories - 1) / progress.totalDirectories) * 100) / DIRECTORY_PROGRESS_PERCENT_STEP);
+  const currentPercentBucket = Math.floor(((progress.processedDirectories / progress.totalDirectories) * 100) / DIRECTORY_PROGRESS_PERCENT_STEP);
+  return currentPercentBucket > previousPercentBucket;
 }
 
 /**

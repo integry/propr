@@ -3,7 +3,7 @@ import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
 import { queueResummarizationForAllRepos, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex, stopIndexingJob } from './configHelpers.js';
-import { shouldPublishOptimisticIndexing, validateStopIndexingInput } from './indexingRouteHelpers.js';
+import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 
 interface IndexingRoutesDeps {
   redisClient: RedisClientType;
@@ -24,20 +24,6 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     }
   }
 
-  function validateIndexingInput(body: Record<string, unknown>): string | null {
-    const { repository, baseBranch } = body;
-    if (!repository || typeof repository !== 'string') {
-      return 'repository is required and must be a string (e.g., "owner/repo")';
-    }
-    if (!(repository as string).match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/)) {
-      return 'Invalid repository format. Expected "owner/repo"';
-    }
-    if (baseBranch !== undefined && typeof baseBranch !== 'string') {
-      return 'baseBranch must be a string';
-    }
-    return null;
-  }
-
   async function triggerIndexing(req: Request, res: Response): Promise<void> {
     try {
       const { repository, fullReindex, baseBranch } = req.body;
@@ -55,13 +41,11 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
-      if (shouldPublishOptimisticIndexing(result)) {
-        // Best-effort optimistic status for newly accepted jobs only.
-        try {
-          await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
-        } catch (pubErr) {
-          console.warn('Failed to publish optimistic indexing status:', pubErr);
-        }
+      // Best-effort optimistic status for newly accepted jobs only.
+      try {
+        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+      } catch (pubErr) {
+        console.warn('Failed to publish optimistic indexing status:', pubErr);
       }
 
       await logActivityHelper(

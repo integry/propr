@@ -10,6 +10,25 @@ import {
 } from '../api/proprApi';
 import { triggerRepositoryIndexing } from '../api/repoIndexingApi';
 
+const socketState = vi.hoisted(() => ({
+  isConnected: false,
+  subscribeToIndexingUpdates: vi.fn(),
+  unsubscribeFromIndexingUpdates: vi.fn(),
+  onIndexingUpdate: vi.fn(),
+  indexingHandler: undefined as ((payload: {
+    repository: string;
+    branch?: string;
+    phase: 'indexing' | 'files' | 'directories' | 'completed' | 'failed' | 'idle';
+    progress?: number;
+    totalFiles?: number;
+    processedFiles?: number;
+    totalDirectories?: number;
+    processedDirectories?: number;
+    timestamp: string;
+    eventType: 'indexing_update';
+  }) => void) | undefined
+}));
+
 vi.mock('../api/proprApi', () => ({
   getRepoConfig: vi.fn(),
   updateRepoConfig: vi.fn(),
@@ -27,10 +46,14 @@ vi.mock('../api/repoIndexingApi', () => ({
 
 vi.mock('../contexts/useSocket', () => ({
   useSocket: () => ({
-    isConnected: false,
-    subscribeToIndexingUpdates: vi.fn(),
-    unsubscribeFromIndexingUpdates: vi.fn(),
-    onIndexingUpdate: vi.fn(() => vi.fn())
+    isConnected: socketState.isConnected,
+    subscribeToIndexingUpdates: socketState.subscribeToIndexingUpdates,
+    unsubscribeFromIndexingUpdates: socketState.unsubscribeFromIndexingUpdates,
+    onIndexingUpdate: (callback: typeof socketState.indexingHandler) => {
+      socketState.onIndexingUpdate(callback);
+      socketState.indexingHandler = callback;
+      return vi.fn();
+    }
   })
 }));
 
@@ -46,6 +69,11 @@ describe('useRepositoryManagement', () => {
     vi.useFakeTimers();
     vi.stubGlobal('confirm', vi.fn(() => true));
     vi.stubGlobal('alert', vi.fn());
+    socketState.isConnected = false;
+    socketState.indexingHandler = undefined;
+    socketState.subscribeToIndexingUpdates.mockReset();
+    socketState.unsubscribeFromIndexingUpdates.mockReset();
+    socketState.onIndexingUpdate.mockReset();
 
     mockGetRepoConfig.mockResolvedValue({
       repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }]
@@ -104,5 +132,59 @@ describe('useRepositoryManagement', () => {
     });
 
     await waitFor(() => expect(mockGetRepositoriesIndexingStatus).toHaveBeenCalledTimes(2));
+  });
+
+  it('applies branch-aware websocket updates and clears stale progress for terminal states', async () => {
+    socketState.isConnected = true;
+
+    const { result } = renderHook(() => useRepositoryManagement());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(socketState.subscribeToIndexingUpdates).toHaveBeenCalledTimes(1);
+    expect(socketState.onIndexingUpdate).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      socketState.indexingHandler?.({
+        eventType: 'indexing_update',
+        repository: 'integry/propr',
+        branch: 'release/2026',
+        phase: 'directories',
+        progress: 75,
+        totalFiles: 100,
+        processedFiles: 100,
+        totalDirectories: 20,
+        processedDirectories: 15,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      full_name: 'integry/propr',
+      branch: 'release/2026',
+      indexing_status: 'indexing',
+      progress: {
+        phase: 'directories',
+        totalDirectories: 20,
+        processedDirectories: 15,
+        percentComplete: 75
+      }
+    });
+
+    await act(async () => {
+      socketState.indexingHandler?.({
+        eventType: 'indexing_update',
+        repository: 'integry/propr',
+        branch: 'release/2026',
+        phase: 'idle',
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      full_name: 'integry/propr',
+      branch: 'release/2026',
+      indexing_status: 'idle'
+    });
+    expect(result.current.indexingStatuses['integry/propr:release/2026'].progress).toBeUndefined();
   });
 });

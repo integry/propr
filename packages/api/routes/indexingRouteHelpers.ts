@@ -9,21 +9,43 @@ export interface QueueIndexingDecision {
   error?: string;
 }
 
+const REPOSITORY_NAME_REGEX = /^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/;
+
 export function getEnabledResummarizationTargets(monitoredRepos: MonitoredRepoConfig[]): Array<{ name: string; baseBranch?: string }> {
   return monitoredRepos
     .filter(repo => repo.enabled)
     .map(repo => ({ name: repo.name, baseBranch: repo.baseBranch }));
 }
 
-export function shouldPublishOptimisticIndexing(result: QueueIndexingDecision): boolean {
-  return result.success;
+function validateRepositoryName(repository: unknown): string | null {
+  if (!repository || typeof repository !== 'string') {
+    return 'repository is required and must be a string (e.g., "owner/repo")';
+  }
+  if (!repository.match(REPOSITORY_NAME_REGEX)) {
+    return 'Invalid repository format. Expected "owner/repo"';
+  }
+
+  return null;
+}
+
+export function validateIndexingInput(body: Record<string, unknown>): string | null {
+  const { repository, baseBranch } = body;
+  const repositoryError = validateRepositoryName(repository);
+  if (repositoryError) {
+    return repositoryError;
+  }
+  if (baseBranch !== undefined && typeof baseBranch !== 'string') {
+    return 'baseBranch must be a string';
+  }
+
+  return null;
 }
 
 export function validateStopIndexingInput(body: Record<string, unknown>): string | null {
   const { repository, branch } = body;
-
-  if (!repository || typeof repository !== 'string') {
-    return 'Repository is required';
+  const repositoryError = validateRepositoryName(repository);
+  if (repositoryError) {
+    return repositoryError;
   }
   if (branch !== undefined && typeof branch !== 'string') {
     return 'branch must be a string';

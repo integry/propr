@@ -133,7 +133,7 @@ async function queueResummarizationForRepo(repoFullName: string, token: string, 
       baseBranch
     },
     {
-      jobId: `index-${repoFullName.replace('/', '-')}-${effectiveBranch.replace(/[^a-zA-Z0-9_.-]/g, '-')}-prompt-change-${Date.now()}`,
+      jobId: `index-${repoFullName.replace('/', '-')}-${sanitizeJobIdSegment(effectiveBranch)}-prompt-change-${Date.now()}`,
       priority: 2 // Lower priority than manual triggers
     }
   );
@@ -143,6 +143,10 @@ async function queueResummarizationForRepo(repoFullName: string, token: string, 
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_AGENT_TYPES = ['claude', 'codex', 'gemini'];
+
+function sanitizeJobIdSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]/g, '-');
+}
 
 /**
  * Validate an array of agent configurations.
@@ -318,10 +322,11 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   }
 
   const correlationId = generateCorrelationId();
+  const sanitizedBranch = sanitizeJobIdSegment(effectiveBranch);
   const job = await queue.add(
     'indexRepository',
     { repository, repoPath, correlationId, priority: 'high', fullReindex, baseBranch },
-    { jobId: `index-${repository.replace('/', '-')}-${Date.now()}`, priority: 1 }
+    { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
   );
 
   return { success: true, jobId: job.id, correlationId };
