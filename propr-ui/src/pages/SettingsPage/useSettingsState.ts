@@ -67,61 +67,112 @@ export function useSettingsState() {
   const [agentTankAvailable, setAgentTankAvailable] = useState<boolean | null>(null);
   const [agentTankCheckingStatus, setAgentTankCheckingStatus] = useState(false);
 
-  // Auto-save function
-  const performAutoSave = useCallback(async (options: {
-    settings: Settings;
-    whitelist: string[];
-    prLabel: string;
-    primaryLabels: string[];
-    keywords: string[];
-    ignoreKeywords: string[];
-  }) => {
-    const { settings: settingsToSave, whitelist: whitelistToSave, prLabel: prLabelToSave, primaryLabels: primaryLabelsToSave, keywords: keywordsToSave, ignoreKeywords: ignoreKeywordsToSave } = options;
+  const beginSave = useCallback(() => {
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
     setSaveStatus('saving');
     setGlobalError(null);
+  }, []);
+
+  const completeSave = useCallback(() => {
+    setSaveStatus('saved');
+    saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+  }, []);
+
+  const failSave = useCallback((err: unknown, fallbackMessage: string) => {
+    setSaveStatus('error');
+    setGlobalError((err as Error).message || fallbackMessage);
+  }, []);
+
+  const saveSettingsOnly = useCallback(async (settingsToSave: Settings) => {
+    beginSave();
     try {
       const concurrency = parseInt(settingsToSave.worker_concurrency);
       if (settingsToSave.worker_concurrency && isNaN(concurrency)) {
         throw new Error('Worker concurrency must be a number');
       }
+      await updateSettings({
+        worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
+        analysis_model_fast: settingsToSave.analysis_model_fast,
+        planner_context_model: settingsToSave.planner_context_model,
+        planner_generation_model: settingsToSave.planner_generation_model,
+        default_agent_alias: settingsToSave.default_agent_alias,
+        auto_followup_score_threshold: settingsToSave.auto_followup_score_threshold,
+        auto_resolve_merge_conflicts: settingsToSave.auto_resolve_merge_conflicts,
+        pr_review_model: settingsToSave.pr_review_model,
+        ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
+        ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
+        ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
+      });
+      completeSave();
+    } catch (err) {
+      failSave(err, 'Failed to save settings');
+    }
+  }, [beginSave, completeSave, failSave]);
+
+  const saveWhitelistOnly = useCallback(async (whitelistToSave: string[]) => {
+    beginSave();
+    try {
+      await updateSettings({ github_user_whitelist: whitelistToSave });
+      completeSave();
+    } catch (err) {
+      failSave(err, 'Failed to save whitelist');
+    }
+  }, [beginSave, completeSave, failSave]);
+
+  const savePrLabelOnly = useCallback(async (prLabelToSave: string) => {
+    beginSave();
+    try {
       if (!prLabelToSave.trim()) {
         throw new Error('PR Label cannot be empty');
       }
+      await updatePrLabel(prLabelToSave.trim());
+      completeSave();
+    } catch (err) {
+      failSave(err, 'Failed to save PR label');
+    }
+  }, [beginSave, completeSave, failSave]);
+
+  const savePrimaryLabelsOnly = useCallback(async (primaryLabelsToSave: string[]) => {
+    beginSave();
+    try {
       if (primaryLabelsToSave.length === 0) {
         throw new Error('At least one primary processing label is required');
       }
-      await Promise.all([
-        updateSettings({
-          worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
-          github_user_whitelist: whitelistToSave,
-          analysis_model_fast: settingsToSave.analysis_model_fast,
-          planner_context_model: settingsToSave.planner_context_model,
-          planner_generation_model: settingsToSave.planner_generation_model,
-          default_agent_alias: settingsToSave.default_agent_alias,
-          auto_followup_score_threshold: settingsToSave.auto_followup_score_threshold,
-          auto_resolve_merge_conflicts: settingsToSave.auto_resolve_merge_conflicts,
-          pr_review_model: settingsToSave.pr_review_model,
-          ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
-          ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
-          ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
-        }),
-        updatePrLabel(prLabelToSave.trim()),
-        updatePrimaryProcessingLabels(primaryLabelsToSave),
-        updateFollowupKeywords(keywordsToSave),
-        updateFollowupIgnoreKeywords(ignoreKeywordsToSave)
-      ]);
-      setSaveStatus('saved');
-      saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+      await updatePrimaryProcessingLabels(primaryLabelsToSave);
+      completeSave();
     } catch (err) {
-      setSaveStatus('error');
-      setGlobalError((err as Error).message || 'Failed to save settings');
+      failSave(err, 'Failed to save primary processing labels');
     }
-  }, []);
+  }, [beginSave, completeSave, failSave]);
 
-  const lists = useListManagement(settings, prLabel, performAutoSave);
+  const saveKeywordsOnly = useCallback(async (keywordsToSave: string[]) => {
+    beginSave();
+    try {
+      await updateFollowupKeywords(keywordsToSave);
+      completeSave();
+    } catch (err) {
+      failSave(err, 'Failed to save follow-up keywords');
+    }
+  }, [beginSave, completeSave, failSave]);
+
+  const saveIgnoreKeywordsOnly = useCallback(async (ignoreKeywordsToSave: string[]) => {
+    beginSave();
+    try {
+      await updateFollowupIgnoreKeywords(ignoreKeywordsToSave);
+      completeSave();
+    } catch (err) {
+      failSave(err, 'Failed to save follow-up ignore keywords');
+    }
+  }, [beginSave, completeSave, failSave]);
+
+  const lists = useListManagement(
+    saveWhitelistOnly,
+    savePrimaryLabelsOnly,
+    saveKeywordsOnly,
+    saveIgnoreKeywordsOnly
+  );
 
   // Load all data with Promise.all
   useEffect(() => {
@@ -168,15 +219,15 @@ export function useSettingsState() {
     };
   }, []);
 
-  const triggerAutoSave = useCallback(() => {
-    performAutoSave({ settings, whitelist: lists.whitelist, prLabel, primaryLabels: lists.primaryLabels, keywords: lists.keywords, ignoreKeywords: lists.ignoreKeywords });
-  }, [settings, lists.whitelist, prLabel, lists.primaryLabels, lists.keywords, lists.ignoreKeywords, performAutoSave]);
+  const triggerSettingsSave = useCallback(() => {
+    saveSettingsOnly(settings);
+  }, [settings, saveSettingsOnly]);
 
   const handleModelSelectionChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const newSettings = { ...settings, [e.target.name]: e.target.value };
     setSettings(newSettings);
-    performAutoSave({ settings: newSettings, whitelist: lists.whitelist, prLabel, primaryLabels: lists.primaryLabels, keywords: lists.keywords, ignoreKeywords: lists.ignoreKeywords });
-  }, [settings, lists.whitelist, prLabel, lists.primaryLabels, lists.keywords, lists.ignoreKeywords, performAutoSave]);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
 
   const handleSummarizationChange = useCallback((newSettings: SummarizationSettings, isPromptChange = false) => {
     setSummarizationSettings(newSettings);
@@ -227,8 +278,8 @@ export function useSettingsState() {
   const handleDefaultAgentChange = useCallback((agentAlias: string) => {
     const newSettings = { ...settings, default_agent_alias: agentAlias };
     setSettings(newSettings);
-    performAutoSave({ settings: newSettings, whitelist: lists.whitelist, prLabel, primaryLabels: lists.primaryLabels, keywords: lists.keywords, ignoreKeywords: lists.ignoreKeywords });
-  }, [settings, lists.whitelist, prLabel, lists.primaryLabels, lists.keywords, lists.ignoreKeywords, performAutoSave]);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
 
   const handleAgentTankChange = useCallback((newSettings: { enabled: boolean; url: string }) => {
     setAgentTankSettings(newSettings);
@@ -272,9 +323,10 @@ export function useSettingsState() {
     summarizationSettings, isReindexing, agentTankSettings,
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,
-    triggerAutoSave, handleModelSelectionChange,
+    triggerSettingsSave, handleModelSelectionChange,
     handleSummarizationChange, handleSummarizationModelChange,
     handleDefaultAgentChange, handleReindexAll, handleAgentTankChange,
+    savePrLabelOnly,
     ...lists,
   };
 }

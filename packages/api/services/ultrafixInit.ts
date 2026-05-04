@@ -29,12 +29,15 @@ async function pathExists(candidatePath: string): Promise<boolean> {
 }
 
 export async function resolveJobModulePath(filename: string): Promise<string> {
-    const baseCandidates = [
-        path.resolve(__dirname, '../../../../src/jobs', filename),
-        path.resolve(__dirname, '../../../../dist/src/jobs', filename),
-        path.resolve(process.cwd(), 'dist/src/jobs', filename),
-        path.resolve(process.cwd(), 'src/jobs', filename),
+    const rootCandidates = [
+        path.resolve(__dirname, '../../..'),
+        path.resolve(__dirname, '../../../..'),
+        process.cwd(),
     ];
+    const baseCandidates = rootCandidates.flatMap((root) => [
+        path.resolve(root, 'src/jobs', filename),
+        path.resolve(root, 'dist/src/jobs', filename),
+    ]);
     const candidates = baseCandidates.flatMap((candidate) => {
         const tsCandidate = candidate.replace(/\.js$/, '.ts');
         return tsCandidate === candidate ? [candidate] : [candidate, tsCandidate];

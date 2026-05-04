@@ -38,7 +38,7 @@ const SettingsPage: React.FC = () => {
     setNewPrimaryLabel,
     setNewKeyword,
     setNewIgnoreKeyword,
-    triggerAutoSave,
+    triggerSettingsSave,
     handleModelSelectionChange,
     addWhitelistItem,
     removeWhitelistItem,
@@ -52,7 +52,8 @@ const SettingsPage: React.FC = () => {
     handleSummarizationModelChange,
     handleDefaultAgentChange,
     handleReindexAll,
-    handleAgentTankChange
+    handleAgentTankChange,
+    savePrLabelOnly
   } = useSettingsState();
 
   if (loading) {
@@ -102,7 +103,7 @@ const SettingsPage: React.FC = () => {
             <AgentTankSection
               settings={agentTankSettings}
               onChange={handleAgentTankChange}
-              onBlur={triggerAutoSave}
+              onBlur={triggerSettingsSave}
               isAvailable={agentTankAvailable}
               isCheckingStatus={agentTankCheckingStatus}
             />
@@ -142,7 +143,7 @@ const SettingsPage: React.FC = () => {
             <PrLabelSection
               prLabel={prLabel}
               onLabelChange={(e) => setPrLabel(e.target.value)}
-              onBlur={triggerAutoSave}
+              onBlur={() => savePrLabelOnly(prLabel)}
             />
 
             <TagListSection
@@ -200,7 +201,7 @@ const SettingsPage: React.FC = () => {
                   }
                   setSettings(prev => ({ ...prev, [e.target.name]: value }));
                 }}
-                onBlur={triggerAutoSave}
+                onBlur={triggerSettingsSave}
               />
             </div>
 
