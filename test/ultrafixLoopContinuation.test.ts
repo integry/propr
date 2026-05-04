@@ -131,6 +131,7 @@ describe('Ultrafix loop continuation logic', () => {
         test('recordAction increments cycleCount after fix', async () => {
             const { recordAction, startLoop } = await import('../src/jobs/ultrafixOrchestrationService.js');
             await startLoop(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, false);
+            await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'review' });
 
             const updated = await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'fix' });
             assert.ok(updated);
@@ -151,7 +152,7 @@ describe('Ultrafix loop continuation logic', () => {
     describe('terminal conditions: state cleared', () => {
         test('state is cleared on max cycles reached', async () => {
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
-            const state = makeState({ lastAction: 'fix', cycleCount: 5, maxCycles: 5 });
+            const state = makeState({ lastAction: 'fix', cycleCount: 5, reviewCount: 5, fixCount: 5, maxCycles: 5 });
             await saveState(redis as any, state);
 
             const decision = determineNextAction(state, 4);
@@ -205,6 +206,7 @@ describe('Ultrafix loop continuation logic', () => {
             assert.strictEqual(decision.action, 'fix');
 
             // Record fix
+            await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'review' });
             let updated = await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'fix' });
             assert.strictEqual(updated!.cycleCount, 1);
 
@@ -227,17 +229,42 @@ describe('Ultrafix loop continuation logic', () => {
 
             await startLoop(redis as any, { owner: 'acme', repo: 'web', pr: 42, goal: 9, maxCycles: 2 }, false);
 
-            // Cycle 1: fix
-            await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'fix' });
-            // Cycle 1: review
             await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'review' });
-            // Cycle 2: fix
+            await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'fix' });
+            await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'review' });
             const afterCycle2 = await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'fix' });
             assert.strictEqual(afterCycle2!.cycleCount, 2);
 
             const decision = determineNextAction(afterCycle2!, 5);
             assert.strictEqual(decision.action, null);
             assert.ok(decision.reason.includes('Max cycles'));
+        });
+
+        test('max cycle limit allows five review and five fix steps', async () => {
+            const { recordAction, startLoop, determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
+
+            await startLoop(redis as any, { owner: 'acme', repo: 'web', pr: 42, goal: 10, maxCycles: 5 }, false);
+
+            let stepCount = 1; // initial review is enqueued by startLoop
+            let action: 'review' | 'fix' = 'review';
+            let updated = await loadState(redis as any, 'acme', 'web', 42);
+
+            while (updated && stepCount < 10) {
+                updated = await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action });
+                const decision = determineNextAction(updated!, action === 'review' ? 1 : null);
+                assert.notStrictEqual(decision.action, null, `loop stopped early after ${stepCount} steps`);
+                action = decision.action!;
+                stepCount += 1;
+            }
+
+            updated = await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action });
+            const finalDecision = determineNextAction(updated!, action === 'review' ? 1 : null);
+            assert.strictEqual(stepCount, 10);
+            assert.strictEqual(updated!.reviewCount, 5);
+            assert.strictEqual(updated!.fixCount, 5);
+            assert.strictEqual(updated!.cycleCount, 5);
+            assert.strictEqual(finalDecision.action, null);
+            assert.ok(finalDecision.reason.includes('Max cycles'));
         });
     });
 });

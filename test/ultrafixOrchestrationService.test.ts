@@ -58,6 +58,8 @@ describe('createDefaultState', () => {
         assert.strictEqual(state.pauseSeconds, 60);
         assert.strictEqual(state.reviewModel, '');
         assert.strictEqual(state.cycleCount, 0);
+        assert.strictEqual(state.reviewCount, 0);
+        assert.strictEqual(state.fixCount, 0);
         assert.strictEqual(state.lastAction, null);
         assert.strictEqual(state.lastActionTimestamp, null);
         assert.strictEqual(state.active, true);
@@ -94,7 +96,7 @@ describe('determineNextAction', () => {
         return {
             owner: 'o', repo: 'r', pr: 1,
             goal: 7, maxCycles: 5, pauseSeconds: 60,
-            reviewModel: '', cycleCount: 0,
+            reviewModel: '', cycleCount: 0, reviewCount: 0, fixCount: 0,
             lastAction: null, lastActionTimestamp: null,
             active: true,
             ...overrides,
@@ -120,9 +122,31 @@ describe('determineNextAction', () => {
     });
 
     test('stops when max cycles reached', () => {
-        const decision = determineNextAction(makeState({ maxCycles: 3, cycleCount: 3 }), 5);
+        const decision = determineNextAction(makeState({ maxCycles: 3, cycleCount: 3, reviewCount: 3, fixCount: 3, lastAction: 'fix' }), 5);
         assert.strictEqual(decision.action, null);
         assert.ok(decision.reason.includes('Max cycles'));
+    });
+
+    test('allows the last fix step when reviews have already hit the limit', () => {
+        const decision = determineNextAction(makeState({
+            maxCycles: 5,
+            cycleCount: 4,
+            reviewCount: 5,
+            fixCount: 4,
+            lastAction: 'review',
+        }), 4);
+        assert.strictEqual(decision.action, 'fix');
+    });
+
+    test('allows the last review step when fixes have already hit the limit', () => {
+        const decision = determineNextAction(makeState({
+            maxCycles: 5,
+            cycleCount: 4,
+            reviewCount: 4,
+            fixCount: 5,
+            lastAction: 'fix',
+        }), null);
+        assert.strictEqual(decision.action, 'review');
     });
 
     test('returns review when no previous action', () => {
@@ -158,6 +182,8 @@ describe('Redis persistence', () => {
         const redis = createMockRedis();
         const state = createDefaultState({ owner: 'acme', repo: 'web', pr: 10 });
         state.cycleCount = 2;
+        state.reviewCount = 2;
+        state.fixCount = 2;
         state.lastAction = 'fix';
         state.lastActionTimestamp = '2026-04-28T20:00:00Z';
 
@@ -224,16 +250,21 @@ describe('recordAction', () => {
         assert.ok(updated);
         assert.strictEqual(updated!.lastAction, 'review');
         assert.strictEqual(updated!.cycleCount, 0);
+        assert.strictEqual(updated!.reviewCount, 1);
+        assert.strictEqual(updated!.fixCount, 0);
     });
 
     test('increments cycle count after fix', async () => {
         const redis = createMockRedis();
         await startLoop(redis as any, { owner: 'o', repo: 'r', pr: 1 }, false);
+        await recordAction(redis as any, { owner: 'o', repo: 'r', pr: 1, action: 'review' });
 
         const updated = await recordAction(redis as any, { owner: 'o', repo: 'r', pr: 1, action: 'fix' });
         assert.ok(updated);
         assert.strictEqual(updated!.lastAction, 'fix');
         assert.strictEqual(updated!.cycleCount, 1);
+        assert.strictEqual(updated!.reviewCount, 1);
+        assert.strictEqual(updated!.fixCount, 1);
     });
 
     test('returns null for non-existent state', async () => {

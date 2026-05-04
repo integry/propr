@@ -239,7 +239,11 @@ describe('Ultrafix worker integration — full continuation flow', () => {
     });
 
     test('completed fix continues with review', async () => {
-        await startLoop(redis as any, { owner: O, repo: R, pr: PR, goal: 8 }, false);
+        const state = createDefaultState({ owner: O, repo: R, pr: PR, goal: 8 });
+        state.lastAction = 'review';
+        state.reviewCount = 1;
+        state.fixCount = 0;
+        await saveState(redis as any, state);
 
         const result = await simulateContinuation({
             redis, owner: O, repo: R, pr: PR,
@@ -387,11 +391,13 @@ describe('Ultrafix worker integration — full continuation flow', () => {
     test('stops at max cycles even if score is still low', async () => {
         const state = createDefaultState({ owner: O, repo: R, pr: PR, goal: 9, maxCycles: 2 });
         state.cycleCount = 1;
+        state.reviewCount = 2;
+        state.fixCount = 1;
         state.lastAction = 'review';
         state.lastActionTimestamp = new Date().toISOString();
         await saveState(redis as any, state);
 
-        // Completing a fix will bump cycleCount to 2 = maxCycles
+        // Completing a fix finishes the second review+fix pair.
         const result = await simulateContinuation({
             redis, owner: O, repo: R, pr: PR,
             completedAction: 'fix',

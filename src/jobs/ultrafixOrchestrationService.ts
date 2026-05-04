@@ -29,6 +29,10 @@ export interface UltrafixLoopState {
     reviewModel: string;
     /** Current cycle number (starts at 0, incremented after each fix) */
     cycleCount: number;
+    /** Number of completed review steps in this loop */
+    reviewCount: number;
+    /** Number of completed fix steps in this loop */
+    fixCount: number;
     /** Last action taken */
     lastAction: UltrafixAction | null;
     /** ISO timestamp of last action */
@@ -100,10 +104,29 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         pauseSeconds: options.pauseSeconds ?? DEFAULT_PAUSE_SECONDS,
         reviewModel: options.reviewModel ?? '',
         cycleCount: 0,
+        reviewCount: 0,
+        fixCount: 0,
         lastAction: null,
         lastActionTimestamp: null,
         active: true,
     };
+}
+
+function getActionCounts(state: UltrafixLoopState): { reviewCount: number; fixCount: number } {
+    if (typeof state.reviewCount === 'number' && typeof state.fixCount === 'number') {
+        return { reviewCount: state.reviewCount, fixCount: state.fixCount };
+    }
+
+    // Backward compatibility for state created before explicit per-action counts.
+    if (state.lastAction === 'review') {
+        return { reviewCount: state.cycleCount + 1, fixCount: state.cycleCount };
+    }
+
+    if (state.lastAction === 'fix') {
+        return { reviewCount: state.cycleCount, fixCount: state.cycleCount };
+    }
+
+    return { reviewCount: 0, fixCount: 0 };
 }
 
 // --- Decision logic ---
@@ -121,6 +144,8 @@ export function determineInitialAction(hasPendingReviews: boolean): UltrafixActi
  * Determine whether the loop should continue and what action to take next.
  */
 export function determineNextAction(state: UltrafixLoopState, currentScore: number | null): NextActionDecision {
+    const { reviewCount, fixCount } = getActionCounts(state);
+
     if (!state.active) {
         return { action: null, reason: 'Loop is inactive' };
     }
@@ -130,21 +155,22 @@ export function determineNextAction(state: UltrafixLoopState, currentScore: numb
         return { action: null, reason: `Goal met: score ${currentScore} >= ${state.goal}` };
     }
 
-    // Check if max cycles reached
-    if (state.cycleCount >= state.maxCycles) {
-        return { action: null, reason: `Max cycles reached: ${state.cycleCount} >= ${state.maxCycles}` };
-    }
-
     // Determine next action based on last action
     if (state.lastAction === null) {
         return { action: 'review', reason: 'No previous action, starting with review' };
     }
 
     if (state.lastAction === 'review') {
+        if (fixCount >= state.maxCycles) {
+            return { action: null, reason: `Max cycles reached: ${fixCount} ${fixCount === 1 ? 'fix step has' : 'fix steps have'} completed (limit ${state.maxCycles})` };
+        }
         return { action: 'fix', reason: 'Last action was review, next is fix' };
     }
 
     // lastAction === 'fix'
+    if (reviewCount >= state.maxCycles) {
+        return { action: null, reason: `Max cycles reached: ${reviewCount} ${reviewCount === 1 ? 'review step has' : 'review steps have'} completed (limit ${state.maxCycles})` };
+    }
     return { action: 'review', reason: 'Last action was fix, next is review' };
 }
 
@@ -190,13 +216,13 @@ export async function recordAction(redis: Redis, params: { owner: string; repo: 
     const state = await loadState(redis, owner, repo, pr);
     if (!state) return null;
 
+    const { reviewCount, fixCount } = getActionCounts(state);
     state.lastAction = action;
     state.lastActionTimestamp = new Date().toISOString();
 
-    // Increment cycle count after a fix (one cycle = review + fix)
-    if (action === 'fix') {
-        state.cycleCount += 1;
-    }
+    state.reviewCount = reviewCount + (action === 'review' ? 1 : 0);
+    state.fixCount = fixCount + (action === 'fix' ? 1 : 0);
+    state.cycleCount = Math.min(state.reviewCount, state.fixCount);
 
     await saveState(redis, state);
     return state;
