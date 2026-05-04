@@ -7,6 +7,7 @@ import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
 import {
   parseClaudeConversationFile,
+  parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult,
   type ConversationResult
 } from './liveDetailsCodexParser.js';
@@ -71,7 +72,15 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   }
   return { getLiveDetails };
 }
-function normalizeTaskId(jobId: string): string { if (!jobId.startsWith('issue-')) return jobId; const parts = jobId.replace(/^issue-/, '').split('-'); parts.pop(); return parts.join('-'); }
+function normalizeTaskId(jobId: string): string {
+  if (!jobId.startsWith('issue-')) {
+    return jobId;
+  }
+
+  const parts = jobId.replace(/^issue-/, '').split('-');
+  parts.pop();
+  return parts.join('-');
+}
 async function findSessionId(redisClient: RedisClientType, db: Knex, taskId: string): Promise<string | null> {
   const redisSessionId = await findSessionIdFromRedis(redisClient, taskId);
   if (redisSessionId) return redisSessionId;
@@ -108,8 +117,23 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
     return null;
   }
 
-  const state = JSON.parse(stateData) as { history: Array<{ state: string; metadata?: { sessionId?: string } }> };
-  const entry = [...state.history].reverse().find(h => h.metadata?.sessionId);
+  let state: unknown;
+  try {
+    state = JSON.parse(stateData);
+  } catch (error) {
+    console.error('[live-details] Failed to parse Redis state data:', error);
+    return null;
+  }
+
+  const history = Array.isArray((state as { history?: unknown }).history)
+    ? (state as { history: Array<{ state: string; metadata?: { sessionId?: string } }> }).history
+    : null;
+  if (!history) {
+    console.log('[live-details] Redis state data has no usable history array');
+    return null;
+  }
+
+  const entry = [...history].reverse().find(h => h.metadata?.sessionId);
 
   console.log(`[live-details] Found Redis history entry with sessionId: ${!!entry}, state: ${entry?.state}, sessionId: ${entry?.metadata?.sessionId}`);
 
@@ -127,6 +151,7 @@ interface StoredMessageToolContent { type?: string; text?: string; name?: string
 interface PendingSubagent { toolUseId: string; subagentType: string; description: string; startTimestamp: string; }
 interface StoredMessageContext { timestamp: string; events: Array<Record<string, unknown>>; pendingSubagents: Map<string, PendingSubagent>; setTodos: (todos: Array<{ status: string; content: string }>) => void; }
 interface RawExecutionEvent { type?: string; role?: string; content?: string; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
+interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; session_id?: string; conversation_id?: string; item?: unknown; }
 function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
   if (item.status === 'completed' || item.completed) return 'completed';
   if (item.status === 'in_progress' || item.status === 'active' || item.status === 'running') return 'in_progress';
@@ -184,7 +209,42 @@ async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionI
     return null;
   }
   const output = await fs.readFile(outputPath, 'utf8');
+  return parseStoredOutputContent(output);
+}
+
+function parseStoredOutputContent(output: string): ConversationResult | null {
+  if (!output.trim()) {
+    return null;
+  }
+
+  if (looksLikeClaudeOutput(output)) {
+    return parseClaudeOutputToConversationResult(output);
+  }
+
   return parseCodexOutputToConversationResult(output);
+}
+
+function looksLikeClaudeOutput(output: string): boolean {
+  const firstLine = output
+    .split('\n')
+    .map(line => line.trim())
+    .find(line => line.length > 0);
+
+  if (!firstLine) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
+    return parsed.type === 'assistant'
+      || parsed.type === 'user'
+      || parsed.type === 'result'
+      || !!parsed.message
+      || !!parsed.session_id
+      || !!parsed.conversation_id;
+  } catch {
+    return false;
+  }
 }
 async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: string): Promise<ConversationResult | null> {
   const execution = await db('llm_executions')

@@ -316,6 +316,10 @@ function parseLine(
 
 export async function parseClaudeConversationFile(conversationPath: string): Promise<ConversationResult> {
   const conversationContent = await fs.readFile(conversationPath, 'utf8');
+  return parseClaudeOutputToConversationResult(conversationContent);
+}
+
+export function parseClaudeOutputToConversationResult(conversationContent: string): ConversationResult {
   const lines = conversationContent.trim().split('\n').filter(line => line.trim());
   const events: Array<Record<string, unknown>> = [];
   let todos: Array<{ status: string; content: string }> = [];

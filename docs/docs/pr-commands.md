@@ -164,7 +164,7 @@ Set the target score goal to 8 (positional argument).
 
 Use named arguments for full control:
 - **goal** — Target review score to reach, 1-10 (system default: 7)
-- **max** — Maximum fix cycles before giving up (system default: 5)
+- **max** — Maximum review→fix iterations before giving up. One cycle means one `/review` and the matching `/fix` pass. `max=5` allows up to 5 reviews and 5 fixes. (system default: 5)
 - **pause** — Seconds to wait between cycles (system default: 60)
 - **model** — Override the review model for all cycles
 
@@ -181,7 +181,7 @@ Add multiline instructions after the command to guide both review and fix passes
 2. After each `/fix` pass, ProPR waits for:
    - All CI/CD checks to turn green.
    - The PR to be inactive (no new pushes or comments) for the configured pause duration.
-3. The loop continues — alternating `/review` and `/fix` — until the review score reaches the **goal** or the **max** cycle count is hit.
+3. The loop continues — alternating `/review` and `/fix` — until the review score reaches the **goal** or the **max** review→fix iteration count is hit.
 4. A summary comment is posted at the end with the final status.
 
 ### Waiting Rules

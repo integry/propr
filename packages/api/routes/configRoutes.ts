@@ -16,11 +16,15 @@ interface ConfigRoutesDeps {
 interface JsonPostHandlerConfig<T> {
   lockKey: string;
   pickValue: (body: Record<string, unknown>) => unknown;
-  validate: (value: unknown) => T | string;
+  validate: (value: unknown) => ValidationResult<T>;
   save: (value: T) => Promise<unknown>;
   subtype: string;
   body: (value: T) => Record<string, unknown>;
 }
+
+type ValidationResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string };
 
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
@@ -28,6 +32,19 @@ function validateStringArray(value: unknown, fieldName: string): string[] | stri
     return `${fieldName} must be an array of strings`;
   }
   return value;
+}
+
+function success<T>(value: T): ValidationResult<T> {
+  return { ok: true, value };
+}
+
+function failure<T>(error: string): ValidationResult<T> {
+  return { ok: false, error };
+}
+
+function validateStringArrayResult(value: unknown, fieldName: string): ValidationResult<string[]> {
+  const validated = validateStringArray(value, fieldName);
+  return typeof validated === 'string' ? failure(validated) : success(validated);
 }
 
 function createJsonGetHandler<T>(
@@ -90,12 +107,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     const result = await withConfigLock(redisClient, lockKey, async () => {
       const rawValue = pickValue(req.body as Record<string, unknown>);
       const validated = validate(rawValue);
-      if (typeof validated === 'string') {
-        return { status: 400, body: { error: validated } };
+      if (!validated.ok) {
+        return { status: 400, body: { error: validated.error } };
       }
-      await save(validated);
+      await save(validated.value);
       await publishConfigUpdate(subtype);
-      return { status: 200, body: { success: true, ...body(validated) } };
+      return { status: 200, body: { success: true, ...body(validated.value) } };
     });
     res.status(result.status).json(result.body);
   };
@@ -110,7 +127,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     {
       lockKey: 'config:keywords:lock',
       pickValue: body => body.followup_keywords,
-      validate: followup_keywords => validateStringArray(followup_keywords, 'followup_keywords'),
+      validate: followup_keywords => validateStringArrayResult(followup_keywords, 'followup_keywords'),
       save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords),
       subtype: 'followup_keywords_update',
       body: followup_keywords => ({ followup_keywords })
@@ -126,7 +143,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     {
       lockKey: 'config:ignore-keywords:lock',
       pickValue: body => body.followup_ignore_keywords,
-      validate: followup_ignore_keywords => validateStringArray(followup_ignore_keywords, 'followup_ignore_keywords'),
+      validate: followup_ignore_keywords => validateStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'),
       save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords),
       subtype: 'followup_ignore_keywords_update',
       body: followup_ignore_keywords => ({ followup_ignore_keywords })
@@ -257,7 +274,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     {
       lockKey: 'config:pr-label:lock',
       pickValue: body => body.pr_label,
-      validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== '' ? pr_label.trim() : 'pr_label must be a non-empty string',
+      validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== ''
+        ? success(pr_label.trim())
+        : failure('pr_label must be a non-empty string'),
       save: pr_label => configManager.savePrLabel(pr_label),
       subtype: 'pr_label_update',
       body: pr_label => ({ pr_label })
@@ -273,7 +292,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     {
       lockKey: 'config:ai-primary-tag:lock',
       pickValue: body => body.ai_primary_tag,
-      validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== '' ? ai_primary_tag.trim() : 'ai_primary_tag must be a non-empty string',
+      validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== ''
+        ? success(ai_primary_tag.trim())
+        : failure('ai_primary_tag must be a non-empty string'),
       save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag),
       subtype: 'ai_primary_tag_update',
       body: ai_primary_tag => ({ ai_primary_tag })
