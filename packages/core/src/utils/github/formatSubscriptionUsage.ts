@@ -126,10 +126,23 @@ function normalizeMetrics(
         normalized.records = records as SubscriptionUsageRecord[];
     }
 
-    // delta / usage_metrics (when it's the delta sub-object)
-    const delta = raw.delta ?? raw.usage_metrics;
+    // delta / usage_metrics
+    // Support both the direct delta object shape and the storage-shaped
+    // payload where usage_metrics wraps the delta under its own key.
+    const delta = raw.delta;
     if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
         normalized.delta = delta as Record<string, unknown>;
+    } else {
+        const usageMetrics = raw.usage_metrics;
+        if (usageMetrics && typeof usageMetrics === 'object' && !Array.isArray(usageMetrics)) {
+            const usageMetricsObject = usageMetrics as Record<string, unknown>;
+            const nestedDelta = usageMetricsObject.delta;
+            const resolvedDelta =
+                nestedDelta && typeof nestedDelta === 'object' && !Array.isArray(nestedDelta)
+                    ? nestedDelta
+                    : usageMetricsObject;
+            normalized.delta = resolvedDelta as Record<string, unknown>;
+        }
     }
 
     // agent
