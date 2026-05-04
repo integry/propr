@@ -171,6 +171,12 @@ interface ExecutionDetailRow {
   metadata: string | null;
 }
 
+interface StoredMessageContentBlock {
+  type?: string;
+  text?: string;
+  content?: string;
+}
+
 interface PendingSubagent {
   toolUseId: string;
   subagentType: string;
@@ -535,6 +541,23 @@ function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<Conversa
         }
       } catch (error) {
         console.error('[live-details] Failed to parse execution detail metadata:', error);
+      }
+    }
+
+    if ((row.event_type === 'user' || row.event_type === 'assistant') && row.content) {
+      try {
+        const parsedContent = JSON.parse(row.content) as { content?: StoredMessageContentBlock[] };
+        const text = parsedContent.content
+          ?.filter(block => block.type === 'text' && (block.text || block.content))
+          .map(block => block.text || block.content || '')
+          .join('\n\n')
+          .trim();
+        if (text) {
+          events.push({ type: 'thought', content: text, timestamp });
+          continue;
+        }
+      } catch {
+        // Fall back to raw content handling below
       }
     }
 
