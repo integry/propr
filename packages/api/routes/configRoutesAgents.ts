@@ -68,7 +68,32 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
         processedAgents.push(processedAgent);
       }
 
-      await configManager.saveAgents(processedAgents);
+      const previousAgents = await configManager.loadAgents();
+      const settings = await configManager.loadSettings();
+      const currentDefault = (settings as Record<string, unknown>).default_agent_alias as string | undefined;
+      const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
+
+      let newDefault = currentDefault;
+      if (enabledAgents.length === 0) {
+        newDefault = undefined;
+      } else if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) {
+        newDefault = enabledAgents[0].alias;
+      }
+
+      try {
+        await configManager.saveAgents(processedAgents);
+        if (newDefault !== currentDefault) {
+          await configManager.saveSettings({ default_agent_alias: newDefault } as Record<string, unknown>);
+        }
+      } catch (syncError) {
+        try {
+          await configManager.saveAgents(previousAgents);
+        } catch (rollbackError) {
+          console.error('Failed to roll back agents configuration after sync error:', rollbackError);
+        }
+        console.error('Failed to sync default agent alias after agents update:', syncError);
+        throw syncError;
+      }
 
       // Refresh the AgentRegistry to apply changes immediately
       try {
@@ -77,34 +102,9 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
         console.error('Warning: Failed to refresh agent registry:', refreshError);
       }
 
-      // Sync default_agent_alias: ensure it points to a valid enabled agent
-      // Note: this read-check-write is not atomic; concurrent requests could produce
-      // inconsistent state, but this is acceptable for a settings endpoint that is
-      // rarely called concurrently.
-      try {
-        const settings = await configManager.loadSettings();
-        const currentDefault = (settings as Record<string, unknown>).default_agent_alias as string | undefined;
-        const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
-
-        let newDefault = currentDefault;
-        if (enabledAgents.length === 0) {
-          // No enabled agents - clear default
-          newDefault = undefined;
-        } else if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) {
-          // Current default is missing or points to a removed/disabled agent - set to first enabled
-          newDefault = enabledAgents[0].alias;
-        }
-
-        if (newDefault !== currentDefault) {
-          await configManager.saveSettings({ default_agent_alias: newDefault } as Record<string, unknown>);
-          // Update the registry's cached alias
-          const registry = AgentRegistry.getInstance();
-          registry.setDefaultAgentAlias(newDefault || null);
-        }
-      } catch (syncError) {
-        // Log at error level — configuration corruption should not be silently swallowed
-        console.error('Failed to sync default agent alias after agents update:', syncError);
-        throw syncError;
+      if (newDefault !== currentDefault) {
+        const registry = AgentRegistry.getInstance();
+        registry.setDefaultAgentAlias(newDefault || null);
       }
 
       await publishConfigUpdate('agents_update');

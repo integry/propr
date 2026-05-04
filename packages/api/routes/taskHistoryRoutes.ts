@@ -274,8 +274,9 @@ function buildTaskInfoFromState(
   historyEntries: Array<Record<string, unknown>>
 ): Record<string, unknown> {
   const { type, issueNumber } = resolveTaskTypeAndIssue(taskId, ref);
+  const number = type === 'pr-comment' ? ref.pullRequestNumber || ref.number : ref.number;
   const taskInfo: Record<string, unknown> = {
-    repoOwner: ref.repoOwner, repoName: ref.repoName, number: ref.number,
+    repoOwner: ref.repoOwner, repoName: ref.repoName, number,
     type, comments: ref.comments,
     title: ref.title || null, subtitle: ref.subtitle || null, modelName: ref.modelName
   };

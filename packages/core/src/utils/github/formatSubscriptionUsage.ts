@@ -1,3 +1,5 @@
+import { humanizeMetricKey } from '../../agents/impl/utils/usageTrackingWrapper.js';
+
 /**
  * Shared formatter for Agent Tank subscription usage in GitHub comments.
  *
@@ -25,29 +27,10 @@ export interface SubscriptionUsageMetrics {
     agent?: string;
 }
 
-/**
- * Map of raw Agent Tank metric keys to human-readable labels.
- * Mirrors the canonical map in usageTrackingWrapper to stay self-contained.
- */
-const METRIC_KEY_LABELS: Record<string, string> = {
-    session: 'Session',
-    weeklyAll: 'Weekly',
-    weeklySonnet: 'Sonnet',
-    weeklyOpus: 'Opus',
-    weeklyHaiku: 'Haiku',
-    fiveHour: 'Five Hour',
-    weekly: 'Weekly',
-    daily: 'Daily',
-    monthly: 'Monthly',
-};
-
 function humanizeKey(key: string): string {
-    if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
-    return key
+    return humanizeMetricKey(key)
         .replace(/[-_]/g, ' ')
-        .replace(/([a-z])([A-Z])/g, '$1 $2')
-        .replace(/(\d) (\d)/g, '$1.$2')
-        .replace(/\b[a-zA-Z]/g, c => c.toUpperCase());
+        .replace(/(\d) (\d)/g, '$1.$2');
 }
 
 function extractPercentFromObject(obj: Record<string, unknown>): number | null {
