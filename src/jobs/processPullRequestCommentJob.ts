@@ -382,7 +382,12 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
         reason: `${agentType} agent execution completed`,
         claudeResult: { success: state.claudeResult.success, sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, executionTime: state.claudeResult.executionTime },
-        historyMetadata: { sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, model: state.claudeResult.model }
+        historyMetadata: {
+            sessionId: state.claudeResult.sessionId,
+            conversationId: state.claudeResult.conversationId,
+            model: state.claudeResult.model,
+            tokenUsage: state.claudeResult.tokenUsage
+        }
     });
 
     const postResult = await handlePostExecution(
