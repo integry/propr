@@ -13,6 +13,8 @@ interface AgentConfig {
   supportedModels: string[];
 }
 
+export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
+
 /**
  * Execute an operation with a Redis-based distributed lock.
  * This ensures only one config update can happen at a time for a given lock key.

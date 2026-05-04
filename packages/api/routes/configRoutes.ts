@@ -3,7 +3,7 @@ import { RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
 import * as configManager from '@propr/core';
 import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
-import { withConfigLock, extractSettingSaves } from './configHelpers.js';
+import { withConfigLock, extractSettingSaves, SETTINGS_CONFIG_LOCK_KEY } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
@@ -12,7 +12,178 @@ interface ConfigRoutesDeps {
   redisClient: RedisClientType;
 }
 
+interface SettingsStore {
+  saveSettings: typeof configManager.saveSettings;
+  saveConfig: typeof configManager.saveConfig;
+  loadSettings: typeof configManager.loadSettings;
+  loadAutoFollowupScoreThreshold: typeof configManager.loadAutoFollowupScoreThreshold;
+  saveAutoFollowupScoreThreshold: typeof configManager.saveAutoFollowupScoreThreshold;
+  loadAutoResolveMergeConflicts: typeof configManager.loadAutoResolveMergeConflicts;
+  saveAutoResolveMergeConflicts: typeof configManager.saveAutoResolveMergeConflicts;
+  loadPrReviewModel: typeof configManager.loadPrReviewModel;
+  savePrReviewModel: typeof configManager.savePrReviewModel;
+  loadUltrafixRatingGoal: typeof configManager.loadUltrafixRatingGoal;
+  saveUltrafixRatingGoal: typeof configManager.saveUltrafixRatingGoal;
+  loadUltrafixMaxCycles: typeof configManager.loadUltrafixMaxCycles;
+  saveUltrafixMaxCycles: typeof configManager.saveUltrafixMaxCycles;
+  loadUltrafixPauseSeconds: typeof configManager.loadUltrafixPauseSeconds;
+  saveUltrafixPauseSeconds: typeof configManager.saveUltrafixPauseSeconds;
+}
+
+interface SaveSettingsRequest {
+  settings: Record<string, unknown>;
+  publishConfigUpdate: (subtype: string) => Promise<void>;
+  configStore?: SettingsStore;
+}
+
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
+
+export async function saveSettingsWithRollback({
+  settings,
+  publishConfigUpdate,
+  configStore = configManager
+}: SaveSettingsRequest): Promise<{ status: number; body: Record<string, unknown> }> {
+  if (!settings || typeof settings !== 'object') {
+    return { status: 400, body: { error: 'settings object is required' } };
+  }
+
+  const {
+    auto_followup_score_threshold,
+    auto_resolve_merge_conflicts,
+    pr_review_model,
+    ultrafix_rating_goal,
+    ultrafix_max_cycles,
+    ultrafix_pause_seconds,
+    ...otherSettings
+  } = settings;
+
+  const extracted = await extractSettingSaves({
+    auto_followup_score_threshold,
+    auto_resolve_merge_conflicts,
+    pr_review_model,
+    ultrafix_rating_goal,
+    ultrafix_max_cycles,
+    ultrafix_pause_seconds
+  });
+
+  if (extracted.error) {
+    return { status: 400, body: { error: extracted.error } };
+  }
+
+  const specializedSaves = extracted.saves.map(({ name }) => {
+    switch (name) {
+      case 'auto_followup_score_threshold':
+        return { name, execute: () => configStore.saveAutoFollowupScoreThreshold(extracted.normalized.auto_followup_score_threshold as number) };
+      case 'auto_resolve_merge_conflicts':
+        return { name, execute: () => configStore.saveAutoResolveMergeConflicts(extracted.normalized.auto_resolve_merge_conflicts as boolean) };
+      case 'pr_review_model':
+        return { name, execute: () => configStore.savePrReviewModel(extracted.normalized.pr_review_model as string) };
+      case 'ultrafix_rating_goal':
+        return { name, execute: () => configStore.saveUltrafixRatingGoal(extracted.normalized.ultrafix_rating_goal as number) };
+      case 'ultrafix_max_cycles':
+        return { name, execute: () => configStore.saveUltrafixMaxCycles(extracted.normalized.ultrafix_max_cycles as number) };
+      case 'ultrafix_pause_seconds':
+        return { name, execute: () => configStore.saveUltrafixPauseSeconds(extracted.normalized.ultrafix_pause_seconds as number) };
+      default:
+        throw new Error(`Unsupported settings save "${name}"`);
+    }
+  });
+
+  const hasGeneralSettings = Object.keys(otherSettings).length > 0;
+  const previousSettings = hasGeneralSettings ? await configStore.loadSettings() : null;
+  const rollbackActions = new Map<string, () => Promise<unknown>>();
+
+  if (previousSettings) {
+    rollbackActions.set('general', () => configStore.saveConfig('settings', previousSettings));
+  }
+  if (auto_followup_score_threshold !== undefined) {
+    const previous = await configStore.loadAutoFollowupScoreThreshold();
+    rollbackActions.set('auto_followup_score_threshold', () => configStore.saveAutoFollowupScoreThreshold(previous));
+  }
+  if (auto_resolve_merge_conflicts !== undefined) {
+    const previous = await configStore.loadAutoResolveMergeConflicts();
+    rollbackActions.set('auto_resolve_merge_conflicts', () => configStore.saveAutoResolveMergeConflicts(previous));
+  }
+  if (pr_review_model !== undefined) {
+    const previous = await configStore.loadPrReviewModel();
+    rollbackActions.set('pr_review_model', () => configStore.savePrReviewModel(previous));
+  }
+  if (ultrafix_rating_goal !== undefined) {
+    const previous = await configStore.loadUltrafixRatingGoal();
+    rollbackActions.set('ultrafix_rating_goal', () => configStore.saveUltrafixRatingGoal(previous));
+  }
+  if (ultrafix_max_cycles !== undefined) {
+    const previous = await configStore.loadUltrafixMaxCycles();
+    rollbackActions.set('ultrafix_max_cycles', () => configStore.saveUltrafixMaxCycles(previous));
+  }
+  if (ultrafix_pause_seconds !== undefined) {
+    const previous = await configStore.loadUltrafixPauseSeconds();
+    rollbackActions.set('ultrafix_pause_seconds', () => configStore.saveUltrafixPauseSeconds(previous));
+  }
+
+  if (hasGeneralSettings) {
+    try {
+      await configStore.saveSettings(otherSettings);
+    } catch (saveError) {
+      console.error('Settings save failed for general settings:', saveError);
+      return {
+        status: 500,
+        body: { error: 'Failed to save general settings. No settings were committed. Please retry or check system logs.' }
+      };
+    }
+  }
+
+  const committedNames: string[] = hasGeneralSettings ? ['general'] : [];
+  for (let i = 0; i < specializedSaves.length; i++) {
+    try {
+      await specializedSaves[i].execute();
+      committedNames.push(specializedSaves[i].name);
+    } catch (saveError) {
+      const failedName = specializedSaves[i].name;
+      console.error(`Settings save failed for "${failedName}" (already committed: [${committedNames.join(', ')}]):`, saveError);
+
+      const rollbackTargets = committedNames.slice().reverse();
+      let rollbackFailed = false;
+      for (const name of rollbackTargets) {
+        const rollback = rollbackActions.get(name);
+        if (!rollback) {
+          continue;
+        }
+        try {
+          await rollback();
+        } catch (rollbackError) {
+          rollbackFailed = true;
+          console.error(`Failed to roll back settings after "${failedName}" save failure (target: "${name}")`, rollbackError);
+        }
+      }
+
+      if (!rollbackFailed) {
+        return {
+          status: 500,
+          body: {
+            error: `Failed to save "${failedName}". Earlier changes were rolled back.`,
+            rolled_back: committedNames,
+          }
+        };
+      }
+
+      if (committedNames.length > 0) {
+        await publishConfigUpdate('settings_update');
+      }
+      await publishConfigUpdate('settings_update_partial_failure');
+      return {
+        status: 500,
+        body: {
+          error: `Failed to save "${failedName}".${committedNames.length ? ` Already committed: ${committedNames.join(', ')}.` : ''} Please retry or check system logs.`,
+          committed: committedNames,
+        }
+      };
+    }
+  }
+
+  await publishConfigUpdate('settings_update');
+  return { status: 200, body: { success: true, settings: { ...otherSettings, ...extracted.normalized } } };
+}
 
 export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const { redisClient } = deps;
@@ -204,83 +375,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   }
 
   async function postSettings(req: Request, res: Response): Promise<void> {
-    const result = await withConfigLock(redisClient, 'config:settings:lock', async () => {
-      const { settings } = req.body;
-
-      if (!settings || typeof settings !== 'object') {
-        return { status: 400, body: { error: 'settings object is required' } };
-      }
-
-      const {
-        auto_followup_score_threshold,
-        auto_resolve_merge_conflicts,
-        pr_review_model,
-        ultrafix_rating_goal,
-        ultrafix_max_cycles,
-        ultrafix_pause_seconds,
-        ...otherSettings
-      } = settings;
-
-      // Validate all fields BEFORE executing any saves.
-      // Note: individual saves are not transactional — if a later save fails,
-      // earlier writes may already be committed. Validation up front minimises
-      // this risk but does not eliminate it entirely.
-      const extracted = await extractSettingSaves({
-        auto_followup_score_threshold,
-        auto_resolve_merge_conflicts,
-        pr_review_model,
-        ultrafix_rating_goal,
-        ultrafix_max_cycles,
-        ultrafix_pause_seconds
+    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async () => {
+      return saveSettingsWithRollback({
+        settings: req.body.settings,
+        publishConfigUpdate
       });
-
-      if (extracted.error) {
-        return { status: 400, body: { error: extracted.error } };
-      }
-
-      // Save general settings first — they accept arbitrary data and are more
-      // likely to fail, so saving them before specialized keys avoids partial
-      // commits of validated settings when the general save rejects input.
-      const hasGeneralSettings = Object.keys(otherSettings).length > 0;
-      if (hasGeneralSettings) {
-        try {
-          await configManager.saveSettings(otherSettings);
-        } catch (saveError) {
-          console.error('Settings save failed for general settings:', saveError);
-          return {
-            status: 500,
-            body: { error: 'Failed to save general settings. No settings were committed. Please retry or check system logs.' }
-          };
-        }
-      }
-
-      // Specialized settings are already validated by extractSettingSaves().
-      // Failures here indicate infrastructure problems, not bad input.
-      const committedNames: string[] = hasGeneralSettings ? ['general'] : [];
-      for (let i = 0; i < extracted.saves.length; i++) {
-        try {
-          await extracted.saves[i].execute();
-          committedNames.push(extracted.saves[i].name);
-        } catch (saveError) {
-          const failedName = extracted.saves[i].name;
-          console.error(`Settings save failed for "${failedName}" (already committed: [${committedNames.join(', ')}]):`, saveError);
-          // Publish both events: the standard event so listeners reload already-committed
-          // values, and the partial_failure event for monitoring/alerting.
-          if (committedNames.length > 0) {
-            await publishConfigUpdate('settings_update');
-          }
-          await publishConfigUpdate('settings_update_partial_failure');
-          return {
-            status: 500,
-            body: {
-              error: `Failed to save "${failedName}".${committedNames.length ? ` Already committed: ${committedNames.join(', ')}.` : ''} Please retry or check system logs.`,
-              committed: committedNames,
-            }
-          };
-        }
-      }
-      await publishConfigUpdate('settings_update');
-      return { status: 200, body: { success: true, settings: { ...otherSettings, ...extracted.normalized } } };
     });
 
     res.status(result.status).json(result.body);

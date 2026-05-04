@@ -9,12 +9,123 @@ import {
     AGENT_DEFAULT_VERSIONS
 } from '@propr/core';
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
-import { withConfigLock, validateAgentsConfig } from './configHelpers.js';
+import { withConfigLock, validateAgentsConfig, SETTINGS_CONFIG_LOCK_KEY } from './configHelpers.js';
 
 interface AgentsRoutesDeps {
   redisClient: RedisClientType;
   publishConfigUpdate: (subtype: string) => Promise<void>;
   logActivityHelper: (description: string, idSuffix: string, type: string, username?: string) => Promise<void>;
+}
+
+interface AgentConfigStore {
+  loadAgents: typeof configManager.loadAgents;
+  loadSettings: typeof configManager.loadSettings;
+  saveAgents: typeof configManager.saveAgents;
+  saveSettings: typeof configManager.saveSettings;
+}
+
+interface AgentRegistrySync {
+  refresh: () => Promise<void>;
+  setDefaultAgentAlias: (alias: string | null) => void;
+}
+
+interface ApplyAgentsUpdateParams {
+  agents: AgentConfig[];
+  username?: string;
+  publishConfigUpdate: AgentsRoutesDeps['publishConfigUpdate'];
+  logActivityHelper: AgentsRoutesDeps['logActivityHelper'];
+  configStore?: AgentConfigStore;
+  registry?: AgentRegistrySync;
+}
+
+export async function applyAgentsUpdate({
+  agents,
+  username,
+  publishConfigUpdate,
+  logActivityHelper,
+  configStore = configManager,
+  registry = AgentRegistry.getInstance()
+}: ApplyAgentsUpdateParams): Promise<{ status: number; body: Record<string, unknown> }> {
+  const validationError = validateAgentsConfig(agents);
+  if (validationError) {
+    return { status: 400, body: { error: validationError } };
+  }
+
+  const processedAgents: AgentConfig[] = [];
+  for (const agent of agents) {
+    const processedAgent = { ...agent };
+
+    if (agent.cliVersionType) {
+      try {
+        const agentType = agent.type as AgentType;
+        const versionType = agent.cliVersionType as CliVersionType;
+        const resolvedVersion = await resolveVersion(agentType, versionType, agent.cliVersion);
+        processedAgent.cliVersionResolved = resolvedVersion;
+        processedAgent.dockerImage = generateImageTag(agentType, resolvedVersion, computeContentHash(agentType));
+      } catch (versionError) {
+        console.warn(`Failed to resolve version for agent ${agent.alias}:`, versionError);
+      }
+    } else {
+      const agentType = agent.type as AgentType;
+      processedAgent.cliVersionType = 'default';
+      processedAgent.cliVersionResolved = AGENT_DEFAULT_VERSIONS[agentType];
+    }
+
+    processedAgents.push(processedAgent);
+  }
+
+  const previousAgents = await configStore.loadAgents();
+  const settings = await configStore.loadSettings();
+  const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
+  const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
+
+  let newDefault = currentDefault;
+  if (enabledAgents.length === 0) {
+    newDefault = undefined;
+  } else if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) {
+    newDefault = enabledAgents[0].alias;
+  }
+
+  try {
+    await configStore.saveAgents(processedAgents);
+    if (newDefault !== currentDefault) {
+      await configStore.saveSettings({ default_agent_alias: newDefault } as Record<string, unknown>);
+    }
+  } catch (syncError) {
+    try {
+      await configStore.saveAgents(previousAgents);
+    } catch (rollbackError) {
+      console.error('Failed to roll back agents configuration after sync error:', rollbackError);
+    }
+    console.error('Failed to sync default agent alias after agents update:', syncError);
+    throw syncError;
+  }
+
+  try {
+    await registry.refresh();
+    registry.setDefaultAgentAlias(newDefault ?? null);
+  } catch (refreshError) {
+    try {
+      await configStore.saveAgents(previousAgents);
+      if (newDefault !== currentDefault) {
+        await configStore.saveSettings({ default_agent_alias: currentDefault } as Record<string, unknown>);
+      }
+      await registry.refresh();
+      registry.setDefaultAgentAlias(currentDefault ?? null);
+    } catch (rollbackError) {
+      console.error('Failed to roll back agent configuration after registry refresh failure:', rollbackError);
+    }
+    console.error('Failed to refresh agent registry after agents update:', refreshError);
+    return { status: 500, body: { error: 'Failed to apply agent configuration to the live registry' } };
+  }
+
+  await publishConfigUpdate('agents_update');
+  if (newDefault !== currentDefault) {
+    await publishConfigUpdate('settings_update');
+  }
+  await logActivityHelper(`Updated agents configuration (${processedAgents.length} agents)`, 'agents-update', 'agents_updated', username);
+
+  return { status: 200, body: { success: true, agents: processedAgents } };
 }
 
 export function createAgentsRoutes(deps: AgentsRoutesDeps) {
@@ -30,94 +141,13 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
   }
 
   async function postAgents(req: Request, res: Response): Promise<void> {
-    const result = await withConfigLock(redisClient, 'config:agents:lock', async () => {
-      const { agents } = req.body;
-
-      const validationError = validateAgentsConfig(agents);
-      if (validationError) {
-        return { status: 400, body: { error: validationError } };
-      }
-
-      // Resolve CLI versions for each agent
-      const processedAgents: AgentConfig[] = [];
-      for (const agent of agents) {
-        const processedAgent = { ...agent };
-
-        // If agent has version configuration, resolve it
-        if (agent.cliVersionType) {
-          try {
-            const agentType = agent.type as AgentType;
-            const versionType = agent.cliVersionType as CliVersionType;
-
-            // Resolve version to actual semver
-            const resolvedVersion = await resolveVersion(agentType, versionType, agent.cliVersion);
-            processedAgent.cliVersionResolved = resolvedVersion;
-            processedAgent.dockerImage = generateImageTag(agentType, resolvedVersion, computeContentHash(agentType));
-
-          } catch (versionError) {
-            console.warn(`Failed to resolve version for agent ${agent.alias}:`, versionError);
-            // Keep existing values if resolution fails
-          }
-        } else {
-          // Default: use default version if no type specified
-          const agentType = agent.type as AgentType;
-          processedAgent.cliVersionType = 'default';
-          processedAgent.cliVersionResolved = AGENT_DEFAULT_VERSIONS[agentType];
-        }
-
-        processedAgents.push(processedAgent);
-      }
-
-      const previousAgents = await configManager.loadAgents();
-      const settings = await configManager.loadSettings();
-      const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
-      const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
-
-      let newDefault = currentDefault;
-      if (enabledAgents.length === 0) {
-        newDefault = undefined;
-      } else if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) {
-        newDefault = enabledAgents[0].alias;
-      }
-
-      try {
-        await configManager.saveAgents(processedAgents);
-        if (newDefault !== currentDefault) {
-          await configManager.saveSettings({ default_agent_alias: newDefault } as Record<string, unknown>);
-        }
-      } catch (syncError) {
-        try {
-          await configManager.saveAgents(previousAgents);
-        } catch (rollbackError) {
-          console.error('Failed to roll back agents configuration after sync error:', rollbackError);
-        }
-        console.error('Failed to sync default agent alias after agents update:', syncError);
-        throw syncError;
-      }
-
-      try {
-        await AgentRegistry.getInstance().refresh();
-      } catch (refreshError) {
-        try {
-          await configManager.saveAgents(previousAgents);
-          if (newDefault !== currentDefault) {
-            await configManager.saveSettings({ default_agent_alias: currentDefault } as Record<string, unknown>);
-          }
-          await AgentRegistry.getInstance().refresh();
-        } catch (rollbackError) {
-          console.error('Failed to roll back agent configuration after registry refresh failure:', rollbackError);
-        }
-        console.error('Failed to refresh agent registry after agents update:', refreshError);
-        return { status: 500, body: { error: 'Failed to apply agent configuration to the live registry' } };
-      }
-
-      await publishConfigUpdate('agents_update');
-      if (newDefault !== currentDefault) {
-        await publishConfigUpdate('settings_update');
-      }
-      await logActivityHelper(`Updated agents configuration (${processedAgents.length} agents)`, 'agents-update', 'agents_updated', req.user?.username);
-
-      return { status: 200, body: { success: true, agents: processedAgents } };
+    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async () => {
+      return applyAgentsUpdate({
+        agents: req.body.agents,
+        username: req.user?.username,
+        publishConfigUpdate,
+        logActivityHelper
+      });
     });
 
     res.status(result.status).json(result.body);
