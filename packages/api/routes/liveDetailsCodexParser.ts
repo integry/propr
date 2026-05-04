@@ -99,7 +99,7 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
       continue;
     }
 
-    if (event.type === 'tool_use') {
+    if (event.type === 'tool_use' && event.tool) {
       pushCodexToolUseEvent(
         events,
         event.tool,
