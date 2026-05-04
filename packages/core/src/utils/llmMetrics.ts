@@ -5,23 +5,12 @@ import { getAnalysisQueue } from '../queue/taskQueue.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { getCachePricingMultipliers } from './tokenCalculation.js';
-import type {
-    RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing,
-    ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics,
-    ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent,
-    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData,
-    TokenUsage
-} from './llmMetrics.types.js';
+import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
 const REDIS_PORT: number = parseInt(process.env.REDIS_PORT ?? '6379', 10);
 
-const connectionOptions: RedisConnectionOptions = {
-    host: REDIS_HOST,
-    port: REDIS_PORT,
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-};
+const connectionOptions: RedisConnectionOptions = { host: REDIS_HOST, port: REDIS_PORT, maxRetriesPerRequest: null, enableReadyCheck: false };
 
 function extractMetricsFromClaudeResult(claudeResult: ClaudeResult | null): ExtractedMetrics {
     const model = claudeResult?.model ?? process.env.CLAUDE_MODEL ?? 'unknown';
@@ -35,29 +24,11 @@ interface CumulativeTokenUsage {
     inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number;
     totalInputWithCache: number;  // input + cache_creation + cache_read (for cost calc and display)
 }
-
 interface GenericConversationStep {
-    message?: ConversationStep['message'] | string;
-    timestamp?: string;
-    type?: string;
-    isError?: boolean;
-    metadata?: Record<string, unknown>;
-    role?: string;
-    content?: string;
-    tool?: string;
-    params?: unknown;
-    result?: string;
-    usage?: TokenUsage;
-    item?: {
-        type?: string;
-        text?: string;
-        command?: string;
-        aggregated_output?: string;
-        exit_code?: number | null;
-        items?: Array<{ text?: string; completed?: boolean }>;
-    };
+    message?: ConversationStep['message'] | string; timestamp?: string; type?: string; isError?: boolean; metadata?: Record<string, unknown>;
+    role?: string; content?: string; tool?: string; params?: unknown; result?: string; usage?: TokenUsage;
+    item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean }> };
 }
-
 function calculateTokens(conversationLog: ConversationStep[] | undefined, reportedTokenUsage?: TokenUsage): CumulativeTokenUsage {
     let aggrInput = 0, aggrOutput = 0, aggrCacheCreate = 0, aggrCacheRead = 0;
     if (conversationLog && Array.isArray(conversationLog)) {
@@ -143,6 +114,11 @@ function extractToolUsage(content: MessageContent[] | undefined): { toolName: st
         : { toolName: null, toolInput: null, toolUseId: null };
 }
 
+function buildPayload(content: string | null, isError = false, toolName: string | null = null, toolInput: unknown | null = null): { content: string | null; toolName: string | null; toolInput: unknown | null; toolUseId: string | null; isError: boolean } { return { content, toolName, toolInput, toolUseId: null, isError }; }
+function getCommandExecutionPayload(step: GenericConversationStep) { return buildPayload(step.item?.aggregated_output ?? JSON.stringify(step), step.item?.exit_code != null && step.item.exit_code !== 0, 'command_execution', step.item?.command ? { command: step.item.command } : null); }
+function getReasoningPayload(step: GenericConversationStep) { return buildPayload(step.item?.text ?? null); }
+function getFallbackPayload(step: GenericConversationStep) { return buildPayload(JSON.stringify(step), step.isError ?? false); }
+
 function getGenericStepPayload(step: GenericConversationStep): {
     content: string | null;
     toolName: string | null;
@@ -150,83 +126,19 @@ function getGenericStepPayload(step: GenericConversationStep): {
     toolUseId: string | null;
     isError: boolean;
 } {
-    if (step.message) {
-        return {
-            content: JSON.stringify(step.message),
-            toolName: null,
-            toolInput: null,
-            toolUseId: null,
-            isError: step.isError ?? false
-        };
-    }
-
-    if (step.type === 'message' && step.role === 'assistant') {
-        return {
-            content: step.content ?? JSON.stringify(step),
-            toolName: null,
-            toolInput: null,
-            toolUseId: null,
-            isError: false
-        };
-    }
-
-    if (step.type === 'tool_use') {
-        return {
-            content: JSON.stringify(step),
-            toolName: step.tool ?? null,
-            toolInput: step.params ?? null,
-            toolUseId: null,
-            isError: false
-        };
-    }
-
-    if (step.type === 'error') {
-        return {
-            content: step.message ?? step.result ?? JSON.stringify(step),
-            toolName: null,
-            toolInput: null,
-            toolUseId: null,
-            isError: true
-        };
-    }
-
-    if (step.item?.type === 'command_execution') {
-        return {
-            content: step.item.aggregated_output ?? JSON.stringify(step),
-            toolName: 'command_execution',
-            toolInput: step.item.command ? { command: step.item.command } : null,
-            toolUseId: null,
-            isError: step.item.exit_code != null && step.item.exit_code !== 0
-        };
-    }
-
-    if ((step.item?.type === 'reasoning' || step.item?.type === 'agent_message') && step.item.text) {
-        return {
-            content: step.item.text,
-            toolName: null,
-            toolInput: null,
-            toolUseId: null,
-            isError: false
-        };
-    }
-
-    return {
-        content: JSON.stringify(step),
-        toolName: null,
-        toolInput: null,
-        toolUseId: null,
-        isError: step.isError ?? false
-    };
+    if (step.message) return buildPayload(JSON.stringify(step.message), step.isError ?? false);
+    if (step.type === 'message' && step.role === 'assistant') return buildPayload(step.content ?? JSON.stringify(step));
+    if (step.type === 'tool_use') return buildPayload(JSON.stringify(step), false, step.tool ?? null, step.params ?? null);
+    if (step.type === 'error') return buildPayload(step.message ?? step.result ?? JSON.stringify(step), true);
+    if (step.item?.type === 'command_execution') return getCommandExecutionPayload(step);
+    if ((step.item?.type === 'reasoning' || step.item?.type === 'agent_message') && step.item.text) return getReasoningPayload(step);
+    return getFallbackPayload(step);
 }
-
-function calculateMessageCost(messageTokens: number, totalTokens: number, costUsd: number): number | null {
-    return totalTokens > 0 && costUsd > 0 ? (messageTokens / totalTokens) * costUsd : null;
-}
-
-function calculateDurationMs(step: ConversationStep, index: number, conversationLog: ConversationStep[]): number | null {
-    if (index <= 0 || !step.timestamp || !conversationLog[index - 1].timestamp) return null;
-    return new Date(step.timestamp).getTime() - new Date(conversationLog[index - 1].timestamp!).getTime();
-}
+function calculateMessageCost(messageTokens: number, totalTokens: number, costUsd: number): number | null { return totalTokens > 0 && costUsd > 0 ? (messageTokens / totalTokens) * costUsd : null; }
+function calculateDurationMs(step: ConversationStep, index: number, conversationLog: ConversationStep[]): number | null { return index <= 0 || !step.timestamp || !conversationLog[index - 1].timestamp ? null : new Date(step.timestamp).getTime() - new Date(conversationLog[index - 1].timestamp!).getTime(); }
+function getStepTokenUsage(step: ConversationStep, genericStep: GenericConversationStep) { return { inputTokens: step.message?.usage?.input_tokens ?? genericStep.usage?.input_tokens ?? null, outputTokens: step.message?.usage?.output_tokens ?? genericStep.usage?.output_tokens ?? null }; }
+function getStepContent(step: ConversationStep, hasClaudeMessage: boolean, genericPayload: ReturnType<typeof getGenericStepPayload> | null): string | null { return hasClaudeMessage ? JSON.stringify(step.message) : genericPayload?.content ?? null; }
+function getStepMetadata(step: ConversationStep, hasClaudeMessage: boolean): string | null { return hasClaudeMessage ? (step.metadata ? JSON.stringify(step.metadata) : null) : JSON.stringify(step); }
 
 function buildConversationDetail(params: ConversationDetailParams): ConversationDetail {
     const { step, index, executionId, conversationLog, totalTokens, costUsd } = params;
@@ -235,16 +147,14 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
     const { toolName, toolInput, toolUseId } = hasClaudeMessage
         ? extractToolUsage(step.message?.content)
         : getGenericStepPayload(genericStep);
-    const genericUsage = genericStep.usage;
-    const inputTokens = step.message?.usage?.input_tokens ?? genericUsage?.input_tokens ?? null;
-    const outputTokens = step.message?.usage?.output_tokens ?? genericUsage?.output_tokens ?? null;
+    const { inputTokens, outputTokens } = getStepTokenUsage(step, genericStep);
     const messageTokens = (inputTokens ?? 0) + (outputTokens ?? 0);
     const genericPayload = hasClaudeMessage ? null : getGenericStepPayload(genericStep);
     return {
         execution_id: executionId, sequence_number: index,
         event_timestamp: step.timestamp ?? new Date().toISOString(),
         event_type: step.type ?? 'unknown',
-        content: hasClaudeMessage ? JSON.stringify(step.message) : genericPayload?.content ?? null,
+        content: getStepContent(step, hasClaudeMessage, genericPayload),
         duration_ms: calculateDurationMs(step, index, conversationLog),
         token_count_input: inputTokens,
         token_count_output: outputTokens,
@@ -252,15 +162,10 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
         is_error: hasClaudeMessage ? (step.isError ?? false) : (genericPayload?.isError ?? false), tool_name: toolName,
         tool_input: toolInput ? JSON.stringify(toolInput) : null,
         tool_use_id: toolUseId,
-        metadata: hasClaudeMessage
-            ? (step.metadata ? JSON.stringify(step.metadata) : null)
-            : JSON.stringify(step)
+        metadata: getStepMetadata(step, hasClaudeMessage)
     };
 }
-
-interface ProcessConversationLogParams {
-    claudeResult: ClaudeResult; executionId: string; costUsd: number; correlationId?: string; taskId?: string | null;
-}
+interface ProcessConversationLogParams { claudeResult: ClaudeResult; executionId: string; costUsd: number; correlationId?: string; taskId?: string | null; }
 
 async function processConversationLog(params: ProcessConversationLogParams): Promise<void> {
     const { claudeResult, executionId, costUsd, correlationId, taskId } = params;
@@ -296,13 +201,7 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
         await db('llm_execution_details').insert(detailsArray);
     }
 }
-
-async function enqueueAnalysisTask(
-    taskId: string,
-    executionId: string,
-    sessionId: string,
-    correlationId?: string
-): Promise<void> {
+async function enqueueAnalysisTask(taskId: string, executionId: string, sessionId: string, correlationId?: string): Promise<void> {
     try {
         const queue = await getAnalysisQueue();
         await queue.add('analyzeExecution', {
@@ -321,7 +220,6 @@ async function enqueueAnalysisTask(
         logger.error({ error: (queueError as Error).message, correlationId, taskId }, 'Failed to enqueue task for analysis');
     }
 }
-
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<void> {
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, correlationId, executionType } = metrics;
 
@@ -363,17 +261,8 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
     }
 }
-
-async function storeMetricsToRedis(metricsRedis: InstanceType<typeof Redis>, llmMetrics: LLMMetricsData, correlationId?: string): Promise<void> {
-    const llmMetricsKey = `llm:metrics:${correlationId}`;
-    await metricsRedis.setex(llmMetricsKey, 30 * 24 * 3600, JSON.stringify(llmMetrics));
-}
-
-async function storeTimeSeriesEntry(metricsRedis: InstanceType<typeof Redis>, entry: Record<string, unknown>): Promise<void> {
-    await metricsRedis.lpush('llm:metrics:timeseries', JSON.stringify(entry));
-    await metricsRedis.ltrim('llm:metrics:timeseries', 0, 999);
-}
-
+async function storeMetricsToRedis(metricsRedis: InstanceType<typeof Redis>, llmMetrics: LLMMetricsData, correlationId?: string): Promise<void> { await metricsRedis.setex(`llm:metrics:${correlationId}`, 30 * 24 * 3600, JSON.stringify(llmMetrics)); }
+async function storeTimeSeriesEntry(metricsRedis: InstanceType<typeof Redis>, entry: Record<string, unknown>): Promise<void> { await metricsRedis.lpush('llm:metrics:timeseries', JSON.stringify(entry)); await metricsRedis.ltrim('llm:metrics:timeseries', 0, 999); }
 function logConversationDebug(claudeResult: ClaudeResult | null, correlationId?: string, taskId?: string | null): void {
     if (claudeResult?.conversationLog && claudeResult.conversationLog.length > 0) {
         logger.info({
@@ -383,13 +272,6 @@ function logConversationDebug(claudeResult: ClaudeResult | null, correlationId?:
         }, 'DEBUG: ConversationLog structure');
     }
 }
-
-/**
- * Records LLM metrics for a completed Claude execution
- * @param claudeResult - Result from Claude execution
- * @param issueRef - Issue reference
- * @param options - Additional options including jobType, correlationId, taskId, and executionType
- */
 export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
     const { jobType = 'issue', correlationId, taskId = null, executionType } = options;
     const metricsRedis = new Redis(connectionOptions);
@@ -438,7 +320,6 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         await metricsRedis.quit();
     }
 }
-
 async function getTotalMetrics(metricsRedis: InstanceType<typeof Redis>): Promise<LLMMetricsSummary> {
     const [totalSuccessful, totalFailed, totalCostUsd, totalTurns, totalExecutionTimeMs] = await Promise.all([
         metricsRedis.get('llm:metrics:total:successful').then(v => parseInt(v ?? '0')),
@@ -453,7 +334,6 @@ async function getTotalMetrics(metricsRedis: InstanceType<typeof Redis>): Promis
         avgCostPerRequest: avg(totalCostUsd), totalTurns, avgTurnsPerRequest: avg(totalTurns),
         avgExecutionTimeSec: avg(totalExecutionTimeMs) / 1000 };
 }
-
 async function getModelMetrics(metricsRedis: InstanceType<typeof Redis>): Promise<Record<string, ModelMetrics>> {
     const modelsUsed = await metricsRedis.smembers('llm:metrics:models:used');
     const entries = await Promise.all(modelsUsed.map(async (model) => {
@@ -472,7 +352,6 @@ async function getModelMetrics(metricsRedis: InstanceType<typeof Redis>): Promis
     }));
     return Object.fromEntries(entries);
 }
-
 async function getDailyMetrics(metricsRedis: InstanceType<typeof Redis>): Promise<DailyMetric[]> {
     const today = new Date();
     const dateKeys = Array.from({ length: 7 }, (_, i) => {
@@ -487,7 +366,6 @@ async function getDailyMetrics(metricsRedis: InstanceType<typeof Redis>): Promis
         return { date: dateKey, successful, failed, total: successful + failed, costUsd };
     }));
 }
-
 async function getHighCostAlerts(metricsRedis: InstanceType<typeof Redis>): Promise<HighCostAlert[]> {
     return (await metricsRedis.lrange('llm:metrics:alerts:highcost', 0, 9))
         .map((a: string) => { try { return JSON.parse(a) as HighCostAlert; } catch { return null; } })
