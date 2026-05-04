@@ -270,7 +270,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     'Failed to load PR label',
     '/api/config/pr-label GET'
   );
-  const postPrLabel = createJsonPostHandler(
+  const postPrLabel = createJsonPostHandler<string>(
     {
       lockKey: 'config:pr-label:lock',
       pickValue: body => body.pr_label,
@@ -288,7 +288,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     'Failed to load AI primary tag',
     '/api/config/ai-primary-tag GET'
   );
-  const postAiPrimaryTag = createJsonPostHandler(
+  const postAiPrimaryTag = createJsonPostHandler<string>(
     {
       lockKey: 'config:ai-primary-tag:lock',
       pickValue: body => body.ai_primary_tag,
