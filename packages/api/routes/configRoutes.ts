@@ -13,6 +13,15 @@ interface ConfigRoutesDeps {
   redisClient: RedisClientType;
 }
 
+interface JsonPostHandlerConfig<T> {
+  lockKey: string;
+  pickValue: (body: Record<string, unknown>) => unknown;
+  validate: (value: unknown) => T | string;
+  save: (value: T) => Promise<unknown>;
+  subtype: string;
+  body: (value: T) => Record<string, unknown>;
+}
+
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
 function createJsonGetHandler<T>(
   load: () => Promise<T>,
@@ -62,12 +71,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const agentTankRoutes = createAgentTankRoutes();
   const agentsRoutes = createAgentsRoutes({ redisClient, publishConfigUpdate, logActivityHelper });
   const createJsonPostHandler = <T>(
-    lockKey: string,
-    pickValue: (body: Record<string, unknown>) => unknown,
-    validate: (value: unknown) => T | string,
-    save: (value: T) => Promise<unknown>,
-    subtype: string,
-    body: (value: T) => Record<string, unknown>
+    {
+      lockKey,
+      pickValue,
+      validate,
+      save,
+      subtype,
+      body
+    }: JsonPostHandlerConfig<T>
   ) => async (req: Request, res: Response): Promise<void> => {
     const result = await withConfigLock(redisClient, lockKey, async () => {
       const rawValue = pickValue(req.body as Record<string, unknown>);
@@ -89,12 +100,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     '/api/config/followup-keywords GET'
   );
   const postFollowupKeywords = createJsonPostHandler(
-    'config:keywords:lock',
-    body => body.followup_keywords,
-    followup_keywords => Array.isArray(followup_keywords) ? followup_keywords : 'followup_keywords must be an array of strings',
-    followup_keywords => configManager.saveFollowupKeywords(followup_keywords),
-    'followup_keywords_update',
-    followup_keywords => ({ followup_keywords })
+    {
+      lockKey: 'config:keywords:lock',
+      pickValue: body => body.followup_keywords,
+      validate: followup_keywords => Array.isArray(followup_keywords) ? followup_keywords : 'followup_keywords must be an array of strings',
+      save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords),
+      subtype: 'followup_keywords_update',
+      body: followup_keywords => ({ followup_keywords })
+    }
   );
   const getFollowupIgnoreKeywords = createJsonGetHandler(
     () => configManager.loadFollowupIgnoreKeywords(),
@@ -103,12 +116,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     '/api/config/followup-ignore-keywords GET'
   );
   const postFollowupIgnoreKeywords = createJsonPostHandler(
-    'config:ignore-keywords:lock',
-    body => body.followup_ignore_keywords,
-    followup_ignore_keywords => Array.isArray(followup_ignore_keywords) ? followup_ignore_keywords : 'followup_ignore_keywords must be an array of strings',
-    followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords),
-    'followup_ignore_keywords_update',
-    followup_ignore_keywords => ({ followup_ignore_keywords })
+    {
+      lockKey: 'config:ignore-keywords:lock',
+      pickValue: body => body.followup_ignore_keywords,
+      validate: followup_ignore_keywords => Array.isArray(followup_ignore_keywords) ? followup_ignore_keywords : 'followup_ignore_keywords must be an array of strings',
+      save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords),
+      subtype: 'followup_ignore_keywords_update',
+      body: followup_ignore_keywords => ({ followup_ignore_keywords })
+    }
   );
 
   async function getRepos(_req: Request, res: Response): Promise<void> {
