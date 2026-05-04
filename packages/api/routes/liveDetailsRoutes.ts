@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
+import { parseCodexStreamOutput } from '@propr/core';
 
 interface LiveDetailsRoutesDeps {
   redisClient: RedisClientType;
@@ -43,8 +44,13 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
 
       const pathExists = await fs.pathExists(conversationPath);
       if (!pathExists) {
-        console.log('[live-details] Claude conversation file not found');
-        res.json({ events: [], todos: [], currentTask: null });
+        console.log('[live-details] Claude conversation file not found, trying stored execution output fallback');
+        const fallbackResult = await parseStoredExecutionOutput(redisClient, sessionId);
+        if (!fallbackResult) {
+          res.json({ events: [], todos: [], currentTask: null });
+          return;
+        }
+        res.json(fallbackResult);
         return;
       }
 
@@ -142,6 +148,10 @@ interface ConversationResult {
   todos: Array<{ status: string; content: string }>;
   currentTask: string | null;
   tokenUsage: TokenUsage | null;
+}
+
+interface StoredLogData {
+  files?: Record<string, string>;
 }
 
 interface PendingSubagent {
@@ -369,4 +379,127 @@ function getSubagentIcon(subagentType: string): string {
     default:
       return '🤖';
   }
+}
+
+async function parseStoredExecutionOutput(
+  redisClient: RedisClientType,
+  sessionId: string
+): Promise<ConversationResult | null> {
+  const logJson = await redisClient.get(`execution:logs:session:${sessionId}`);
+  if (!logJson) {
+    console.log('[live-details] No stored execution logs found in Redis for session fallback');
+    return null;
+  }
+
+  let logData: StoredLogData;
+  try {
+    logData = JSON.parse(logJson) as StoredLogData;
+  } catch (error) {
+    console.error('[live-details] Failed to parse stored execution log metadata:', error);
+    return null;
+  }
+
+  const outputPath = logData.files?.output;
+  if (!outputPath || !(await fs.pathExists(outputPath))) {
+    console.log('[live-details] Stored execution output file missing for session fallback');
+    return null;
+  }
+
+  const output = await fs.readFile(outputPath, 'utf8');
+  return parseCodexOutputToConversationResult(output);
+}
+
+function parseCodexOutputToConversationResult(output: string): ConversationResult | null {
+  const parsed = parseCodexStreamOutput(output);
+  if (!parsed.conversationLog || parsed.conversationLog.length === 0) {
+    return null;
+  }
+
+  const events: Array<Record<string, unknown>> = [];
+  let todos: Array<{ status: string; content: string }> = [];
+
+  for (const event of parsed.conversationLog) {
+    const timestamp = (event as { timestamp?: string }).timestamp;
+
+    if (event.type === 'message' && event.role === 'assistant' && event.content) {
+      events.push({ type: 'thought', content: event.content, timestamp });
+      continue;
+    }
+
+    if (event.type === 'tool_use') {
+      events.push({
+        type: 'tool_use',
+        toolName: event.tool,
+        input: event.params as { file_path?: string; command?: string } | undefined,
+        timestamp
+      });
+      continue;
+    }
+
+    if (event.type === 'error') {
+      events.push({
+        type: 'tool_result',
+        result: event.message || event.result || 'Execution error',
+        isError: true,
+        timestamp
+      });
+      continue;
+    }
+
+    if (event.type === 'item.started' && event.item?.type === 'command_execution' && event.item.command) {
+      events.push({
+        type: 'tool_use',
+        toolName: 'command_execution',
+        input: { command: event.item.command },
+        timestamp
+      });
+      continue;
+    }
+
+    if (event.type === 'item.completed') {
+      if ((event.item?.type === 'reasoning' || event.item?.type === 'agent_message') && event.item.text) {
+        events.push({ type: 'thought', content: event.item.text, timestamp });
+        continue;
+      }
+
+      if (event.item?.type === 'command_execution') {
+        if (event.item.command) {
+          events.push({
+            type: 'tool_use',
+            toolName: 'command_execution',
+            input: { command: event.item.command },
+            timestamp
+          });
+        }
+        if (event.item.aggregated_output) {
+          events.push({
+            type: 'tool_result',
+            result: event.item.aggregated_output,
+            isError: event.item.exit_code != null && event.item.exit_code !== 0,
+            timestamp
+          });
+        }
+        continue;
+      }
+
+      if (event.item?.type === 'todo_list' && event.item.items) {
+        todos = event.item.items.map(item => ({
+          status: item.completed ? 'completed' : 'pending',
+          content: item.text
+        }));
+      }
+    }
+  }
+
+  const currentTask = todos.find(t => t.status === 'pending')?.content || null;
+  const tokenUsage = parsed.tokenUsage
+    ? {
+        input_tokens: parsed.tokenUsage.input_tokens ?? 0,
+        output_tokens: parsed.tokenUsage.output_tokens ?? 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0
+      }
+    : null;
+
+  return { events, todos, currentTask, tokenUsage };
 }
