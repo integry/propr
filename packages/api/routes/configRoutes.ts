@@ -247,12 +247,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     '/api/config/pr-label GET'
   );
   const postPrLabel = createJsonPostHandler(
-    'config:pr-label:lock',
-    body => body.pr_label,
-    pr_label => typeof pr_label === 'string' && pr_label.trim() !== '' ? pr_label.trim() : 'pr_label must be a non-empty string',
-    pr_label => configManager.savePrLabel(pr_label),
-    'pr_label_update',
-    pr_label => ({ pr_label })
+    {
+      lockKey: 'config:pr-label:lock',
+      pickValue: body => body.pr_label,
+      validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== '' ? pr_label.trim() : 'pr_label must be a non-empty string',
+      save: pr_label => configManager.savePrLabel(pr_label),
+      subtype: 'pr_label_update',
+      body: pr_label => ({ pr_label })
+    }
   );
   const getAiPrimaryTag = createJsonGetHandler(
     () => configManager.loadAiPrimaryTag(),
@@ -261,12 +263,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     '/api/config/ai-primary-tag GET'
   );
   const postAiPrimaryTag = createJsonPostHandler(
-    'config:ai-primary-tag:lock',
-    body => body.ai_primary_tag,
-    ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== '' ? ai_primary_tag.trim() : 'ai_primary_tag must be a non-empty string',
-    ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag),
-    'ai_primary_tag_update',
-    ai_primary_tag => ({ ai_primary_tag })
+    {
+      lockKey: 'config:ai-primary-tag:lock',
+      pickValue: body => body.ai_primary_tag,
+      validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== '' ? ai_primary_tag.trim() : 'ai_primary_tag must be a non-empty string',
+      save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag),
+      subtype: 'ai_primary_tag_update',
+      body: ai_primary_tag => ({ ai_primary_tag })
+    }
   );
 
   async function getPrimaryProcessingLabels(_req: Request, res: Response): Promise<void> {
