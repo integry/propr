@@ -46,11 +46,18 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
       if (!pathExists) {
         console.log('[live-details] Claude conversation file not found, trying stored execution output fallback');
         const fallbackResult = await parseStoredExecutionOutput(redisClient, sessionId);
-        if (!fallbackResult) {
+        if (fallbackResult) {
+          res.json(fallbackResult);
+          return;
+        }
+
+        console.log('[live-details] Stored execution output fallback unavailable, trying database fallback');
+        const dbFallbackResult = await parseExecutionDetailsFromDb(db, taskId, sessionId);
+        if (!dbFallbackResult) {
           res.json({ events: [], todos: [], currentTask: null });
           return;
         }
-        res.json(fallbackResult);
+        res.json(dbFallbackResult);
         return;
       }
 
@@ -152,6 +159,16 @@ interface ConversationResult {
 
 interface StoredLogData {
   files?: Record<string, string>;
+}
+
+interface ExecutionDetailRow {
+  event_type: string;
+  event_timestamp: string;
+  content: string | null;
+  is_error: number | boolean | null;
+  tool_name: string | null;
+  tool_input: string | null;
+  metadata: string | null;
 }
 
 interface PendingSubagent {
@@ -407,6 +424,174 @@ async function parseStoredExecutionOutput(
 
   const output = await fs.readFile(outputPath, 'utf8');
   return parseCodexOutputToConversationResult(output);
+}
+
+async function parseExecutionDetailsFromDb(
+  db: Knex,
+  taskId: string,
+  sessionId: string
+): Promise<ConversationResult | null> {
+  const execution = await db('llm_executions')
+    .where({ task_id: taskId, session_id: sessionId })
+    .orderBy('start_time', 'desc')
+    .first('execution_id', 'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens');
+
+  if (!execution?.execution_id) {
+    return null;
+  }
+
+  const details = await db('llm_execution_details')
+    .where({ execution_id: execution.execution_id })
+    .orderBy('sequence_number', 'asc')
+    .select('event_type', 'event_timestamp', 'content', 'is_error', 'tool_name', 'tool_input', 'metadata');
+
+  if (!details.length) {
+    return null;
+  }
+
+  const result = parseExecutionDetailsRows(details as ExecutionDetailRow[]);
+  const hasTokens = (execution.input_tokens ?? 0) || (execution.output_tokens ?? 0) ||
+    (execution.cache_creation_input_tokens ?? 0) || (execution.cache_read_input_tokens ?? 0);
+
+  return {
+    ...result,
+    tokenUsage: hasTokens ? {
+      input_tokens: execution.input_tokens ?? 0,
+      output_tokens: execution.output_tokens ?? 0,
+      cache_creation_input_tokens: execution.cache_creation_input_tokens ?? 0,
+      cache_read_input_tokens: execution.cache_read_input_tokens ?? 0
+    } : null
+  };
+}
+
+function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<ConversationResult, 'tokenUsage'> {
+  const events: Array<Record<string, unknown>> = [];
+  let todos: Array<{ status: string; content: string }> = [];
+
+  for (const row of details) {
+    const timestamp = row.event_timestamp;
+
+    if (row.metadata) {
+      try {
+        const rawEvent = JSON.parse(row.metadata) as {
+          type?: string;
+          role?: string;
+          content?: string;
+          tool?: string;
+          params?: { file_path?: string; command?: string };
+          message?: string;
+          result?: string;
+          item?: {
+            type?: string;
+            text?: string;
+            command?: string;
+            aggregated_output?: string;
+            exit_code?: number | null;
+            items?: Array<{ text?: string; completed?: boolean }>;
+          };
+        };
+
+        if (rawEvent.type === 'message' && rawEvent.role === 'assistant' && rawEvent.content) {
+          events.push({ type: 'thought', content: rawEvent.content, timestamp });
+          continue;
+        }
+
+        if (rawEvent.type === 'tool_use') {
+          events.push({
+            type: 'tool_use',
+            toolName: rawEvent.tool,
+            input: rawEvent.params,
+            timestamp
+          });
+          continue;
+        }
+
+        if (rawEvent.type === 'error') {
+          events.push({
+            type: 'tool_result',
+            result: rawEvent.message || rawEvent.result || row.content || 'Execution error',
+            isError: true,
+            timestamp
+          });
+          continue;
+        }
+
+        if (rawEvent.item?.type === 'command_execution') {
+          if (rawEvent.item.command) {
+            events.push({
+              type: 'tool_use',
+              toolName: 'command_execution',
+              input: { command: rawEvent.item.command },
+              timestamp
+            });
+          }
+          if (rawEvent.item.aggregated_output) {
+            events.push({
+              type: 'tool_result',
+              result: rawEvent.item.aggregated_output,
+              isError: rawEvent.item.exit_code != null && rawEvent.item.exit_code !== 0,
+              timestamp
+            });
+          }
+          continue;
+        }
+
+        if ((rawEvent.item?.type === 'reasoning' || rawEvent.item?.type === 'agent_message') && rawEvent.item.text) {
+          events.push({ type: 'thought', content: rawEvent.item.text, timestamp });
+          continue;
+        }
+
+        if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
+          todos = rawEvent.item.items.map(item => ({
+            status: item.completed ? 'completed' : 'pending',
+            content: item.text || ''
+          }));
+          continue;
+        }
+      } catch (error) {
+        console.error('[live-details] Failed to parse execution detail metadata:', error);
+      }
+    }
+
+    if (row.event_type === 'tool_use' && row.tool_name) {
+      let input: { file_path?: string; command?: string } | undefined;
+      if (row.tool_input) {
+        try {
+          input = JSON.parse(row.tool_input) as { file_path?: string; command?: string };
+        } catch {
+          input = undefined;
+        }
+      }
+      events.push({ type: 'tool_use', toolName: row.tool_name, input, timestamp });
+      continue;
+    }
+
+    if (row.event_type === 'error') {
+      events.push({
+        type: 'tool_result',
+        result: row.content || 'Execution error',
+        isError: true,
+        timestamp
+      });
+      continue;
+    }
+
+    if (row.content) {
+      events.push({
+        type: row.tool_name ? 'tool_result' : 'thought',
+        content: row.tool_name ? undefined : row.content,
+        result: row.tool_name ? row.content : undefined,
+        isError: Boolean(row.is_error),
+        timestamp
+      });
+    }
+  }
+
+  const currentTask = todos.find(t => t.status === 'in_progress')?.content
+    || todos.find(t => t.status === 'pending')?.content
+    || null;
+
+  return { events, todos, currentTask };
 }
 
 function parseCodexOutputToConversationResult(output: string): ConversationResult | null {

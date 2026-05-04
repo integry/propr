@@ -98,6 +98,7 @@ export class CodexAgent implements Agent {
                 modelUsed,
                 sessionId: parsedOutput.sessionId,
                 conversationId: parsedOutput.conversationId,
+                conversationLog: parsedOutput.conversationLog,
                 modifiedFiles: [],
                 commitMessage: null,
                 summary: parsedOutput.result ?? undefined,
