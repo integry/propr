@@ -65,7 +65,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     lockKey: string,
     pickValue: (body: Record<string, unknown>) => unknown,
     validate: (value: unknown) => T | string,
-    save: (value: T) => Promise<void>,
+    save: (value: T) => Promise<unknown>,
     subtype: string,
     body: (value: T) => Record<string, unknown>
   ) => async (req: Request, res: Response): Promise<void> => {
