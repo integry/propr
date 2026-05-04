@@ -5,7 +5,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
-import { parseCodexStreamOutput } from '@propr/core';
+import { parseCodexOutputToConversationResult } from './liveDetailsCodexParser.js';
 
 interface LiveDetailsRoutesDeps {
   redisClient: RedisClientType;
@@ -161,7 +161,6 @@ interface PendingSubagent {
   startTimestamp: string;
 }
 
-// Extract text from Claude content blocks (e.g., Agent/Task tool results)
 interface ContentBlock {
   type: string;
   text?: string;
@@ -199,14 +198,12 @@ async function parseConversationFile(conversationPath: string): Promise<Conversa
 
   const events: Array<Record<string, unknown>> = [];
   let todos: Array<{ status: string; content: string }> = [];
-  // Accumulate token usage across all messages (not just the last one)
   const tokenUsage: TokenUsage = {
     input_tokens: 0,
     output_tokens: 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0
   };
-  // Track pending subagent calls to generate summaries when they complete
   const pendingSubagents: Map<string, PendingSubagent> = new Map();
 
   for (const line of lines) {
@@ -215,7 +212,6 @@ async function parseConversationFile(conversationPath: string): Promise<Conversa
       todos = parsed.newTodos;
     }
     if (parsed.tokenUsage) {
-      // Accumulate token usage from each message
       tokenUsage.input_tokens += parsed.tokenUsage.input_tokens;
       tokenUsage.output_tokens += parsed.tokenUsage.output_tokens;
       tokenUsage.cache_creation_input_tokens += parsed.tokenUsage.cache_creation_input_tokens;
@@ -225,8 +221,6 @@ async function parseConversationFile(conversationPath: string): Promise<Conversa
 
   const inProgressTask = todos.find(t => t.status === 'in_progress');
   const currentTask = inProgressTask ? inProgressTask.content : null;
-
-  // Return null if no tokens were counted
   const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
                     tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
 
@@ -271,7 +265,6 @@ function parseLine(
     if (message.type === 'user' && message.message?.content) {
       parseUserContent(message.message.content, events, timestamp, pendingSubagents);
     }
-    // Extract token usage from result message or message.usage
     const usage = message.usage || message.message?.usage;
     if (usage) {
       return {
@@ -305,7 +298,6 @@ function parseAssistantContent(
       if (content.name === 'TodoWrite' && content.input?.todos) {
         newTodos = content.input.todos;
       }
-      // Track Task tool calls (subagent spawns)
       if (content.name === 'Task' && content.id) {
         const input = content.input as { subagent_type?: string; description?: string } | undefined;
         pendingSubagents.set(content.id, {
@@ -337,20 +329,13 @@ function parseUserContent(
         timestamp
       });
 
-      // Check if this is a subagent completing
       if (content.tool_use_id && pendingSubagents.has(content.tool_use_id)) {
         const subagent = pendingSubagents.get(content.tool_use_id)!;
         const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
         const durationSecs = Math.round(durationMs / 1000);
-
-        // Extract the actual text content from the subagent's result
         const subagentOutputText = extractTextFromContentBlocks(content.content);
-
-        // Add a summary thought event for the subagent with its output
         const subagentIcon = getSubagentIcon(subagent.subagentType);
         const summaryHeader = `${subagentIcon} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`;
-
-        // Include the subagent's output text if available
         const thoughtContent = subagentOutputText
           ? `${summaryHeader}\n\n${subagentOutputText}`
           : summaryHeader;
@@ -407,99 +392,4 @@ async function parseStoredExecutionOutput(
 
   const output = await fs.readFile(outputPath, 'utf8');
   return parseCodexOutputToConversationResult(output);
-}
-
-function parseCodexOutputToConversationResult(output: string): ConversationResult | null {
-  const parsed = parseCodexStreamOutput(output);
-  if (!parsed.conversationLog || parsed.conversationLog.length === 0) {
-    return null;
-  }
-
-  const events: Array<Record<string, unknown>> = [];
-  let todos: Array<{ status: string; content: string }> = [];
-
-  for (const event of parsed.conversationLog) {
-    const timestamp = (event as { timestamp?: string }).timestamp;
-
-    if (event.type === 'message' && event.role === 'assistant' && event.content) {
-      events.push({ type: 'thought', content: event.content, timestamp });
-      continue;
-    }
-
-    if (event.type === 'tool_use') {
-      events.push({
-        type: 'tool_use',
-        toolName: event.tool,
-        input: event.params as { file_path?: string; command?: string } | undefined,
-        timestamp
-      });
-      continue;
-    }
-
-    if (event.type === 'error') {
-      events.push({
-        type: 'tool_result',
-        result: event.message || event.result || 'Execution error',
-        isError: true,
-        timestamp
-      });
-      continue;
-    }
-
-    if (event.type === 'item.started' && event.item?.type === 'command_execution' && event.item.command) {
-      events.push({
-        type: 'tool_use',
-        toolName: 'command_execution',
-        input: { command: event.item.command },
-        timestamp
-      });
-      continue;
-    }
-
-    if (event.type === 'item.completed') {
-      if ((event.item?.type === 'reasoning' || event.item?.type === 'agent_message') && event.item.text) {
-        events.push({ type: 'thought', content: event.item.text, timestamp });
-        continue;
-      }
-
-      if (event.item?.type === 'command_execution') {
-        if (event.item.command) {
-          events.push({
-            type: 'tool_use',
-            toolName: 'command_execution',
-            input: { command: event.item.command },
-            timestamp
-          });
-        }
-        if (event.item.aggregated_output) {
-          events.push({
-            type: 'tool_result',
-            result: event.item.aggregated_output,
-            isError: event.item.exit_code != null && event.item.exit_code !== 0,
-            timestamp
-          });
-        }
-        continue;
-      }
-
-      if (event.item?.type === 'todo_list' && event.item.items) {
-        todos = event.item.items.map(item => ({
-          status: item.completed ? 'completed' : 'pending',
-          content: item.text
-        }));
-      }
-    }
-  }
-
-  const currentTask = todos.find(t => t.status === 'pending')?.content || null;
-  const tokenUsage = parsed.tokenUsage
-    ? {
-        input_tokens: parsed.tokenUsage.input_tokens ?? 0,
-        output_tokens: parsed.tokenUsage.output_tokens ?? 0,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0
-      }
-    : null;
-
-  return { events, todos, currentTask, tokenUsage };
 }
