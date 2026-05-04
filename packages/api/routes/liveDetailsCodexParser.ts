@@ -27,6 +27,12 @@ interface PendingSubagent {
   description: string;
   startTimestamp: string;
 }
+interface CodexEventContext {
+  events: Array<Record<string, unknown>>;
+  setTodos: (nextTodos: Array<{ status: string; content: string }>) => void;
+  pendingCommandStarts: Map<string, number>;
+  timestamp?: string;
+}
 interface ParseLineResult { newTodos?: Array<{ status: string; content: string }>; tokenUsage?: TokenUsage; }
 interface MessageContent {
   type: string; text?: string; name?: string;
@@ -77,11 +83,9 @@ function pushCodexToolResultEvent(
 
 function parseCompletedCodexItem(
   event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
-  events: Array<Record<string, unknown>>,
-  setTodos: (nextTodos: Array<{ status: string; content: string }>) => void,
-  pendingCommandStarts: Map<string, number>,
-  timestamp?: string
+  context: CodexEventContext
 ): boolean {
+  const { events, setTodos, pendingCommandStarts, timestamp } = context;
   if ((event.item?.type === 'reasoning' || event.item?.type === 'agent_message') && event.item.text) {
     events.push({ type: 'thought', content: event.item.text, timestamp });
     return true;
@@ -179,17 +183,15 @@ function appendStartedCommandEvent(
 
 function updateTodosFromEvent(
   event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
-  setTodos: (nextTodos: Array<{ status: string; content: string }>) => void,
-  events: Array<Record<string, unknown>>,
-  pendingCommandStarts: Map<string, number>,
-  timestamp?: string
+  context: CodexEventContext
 ): boolean {
+  const { setTodos } = context;
   if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item.items) {
     setTodos(mapCodexTodos(event.item.items as CodexTodoItem[]));
     return true;
   }
   if (event.type !== 'item.completed') return false;
-  return parseCompletedCodexItem(event, events, setTodos, pendingCommandStarts, timestamp);
+  return parseCompletedCodexItem(event, context);
 }
 
 function extractTextFromContentBlocks(content: unknown): string | null {
@@ -358,15 +360,21 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
 
   for (const event of parsed.conversationLog) {
     const timestamp = (event as { timestamp?: string }).timestamp;
+    const eventContext: CodexEventContext = {
+      events,
+      setTodos: nextTodos => {
+        todos = nextTodos;
+      },
+      pendingCommandStarts,
+      timestamp
+    };
 
     if (
       appendAssistantMessageEvent(event, events, timestamp)
       || appendToolUseConversationEvent(event, events, timestamp)
       || appendErrorConversationEvent(event, events, timestamp)
       || appendStartedCommandEvent(event, events, pendingCommandStarts, timestamp)
-      || updateTodosFromEvent(event, nextTodos => {
-        todos = nextTodos;
-      }, events, pendingCommandStarts, timestamp)
+      || updateTodosFromEvent(event, eventContext)
     ) {
       continue;
     }

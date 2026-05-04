@@ -146,6 +146,12 @@ interface PendingSubagent {
   description: string;
   startTimestamp: string;
 }
+interface StoredMessageContext {
+  timestamp: string;
+  events: Array<Record<string, unknown>>;
+  pendingSubagents: Map<string, PendingSubagent>;
+  setTodos: (todos: Array<{ status: string; content: string }>) => void;
+}
 interface RawExecutionEvent {
   type?: string; role?: string; content?: string; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string;
   item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> };
@@ -254,7 +260,12 @@ function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<Conversa
     const timestamp = row.event_timestamp;
     const metadataHandled = appendEventFromMetadata(row, timestamp, events, nextTodos => { todos = nextTodos; });
     if (metadataHandled) continue;
-    if (appendStoredMessageEvent(row, timestamp, events, pendingSubagents, nextTodos => { todos = nextTodos; })) continue;
+    if (appendStoredMessageEvent(row, {
+      timestamp,
+      events,
+      pendingSubagents,
+      setTodos: nextTodos => { todos = nextTodos; }
+    })) continue;
     if (appendToolUseEvent(row, timestamp, events)) continue;
     if (appendErrorEvent(row, timestamp, events)) continue;
     appendFallbackContentEvent(row, timestamp, events);
@@ -298,82 +309,118 @@ function appendEventFromMetadata(row: ExecutionDetailRow, timestamp: string, eve
 }
 function appendStoredMessageEvent(
   row: ExecutionDetailRow,
-  timestamp: string,
-  events: Array<Record<string, unknown>>,
-  pendingSubagents: Map<string, PendingSubagent>,
-  setTodos: (todos: Array<{ status: string; content: string }>) => void
+  context: StoredMessageContext
 ): boolean {
   if ((row.event_type !== 'user' && row.event_type !== 'assistant') || !row.content) return false;
   try {
     const parsedContent = JSON.parse(row.content) as { content?: StoredMessageToolContent[] };
     const contentBlocks = parsedContent.content;
     if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) return false;
-
-    let handled = false;
-
     if (row.event_type === 'assistant') {
-      for (const content of contentBlocks) {
-        const textContent = typeof content.text === 'string'
-          ? content.text
-          : (typeof content.content === 'string' ? content.content : '');
-        if (content.type === 'text' && textContent) {
-          events.push({ type: 'thought', content: textContent, timestamp });
-          handled = true;
-          continue;
-        }
-        if (content.type !== 'tool_use') {
-          continue;
-        }
-
-        events.push({ type: 'tool_use', toolName: content.name, input: content.input, id: content.id, timestamp });
-        handled = true;
-
-        if (content.name === 'TodoWrite' && content.input?.todos) {
-          setTodos(content.input.todos);
-        }
-        if (content.name === 'Task' && content.id) {
-          pendingSubagents.set(content.id, {
-            toolUseId: content.id,
-            subagentType: content.input?.subagent_type || 'unknown',
-            description: content.input?.description || '',
-            startTimestamp: timestamp
-          });
-        }
-      }
-      return handled;
+      return appendAssistantStoredMessageEvents(contentBlocks, context);
     }
-
-    for (const content of contentBlocks) {
-      if (content.type !== 'tool_result') {
-        continue;
-      }
-
-      events.push({
-        type: 'tool_result',
-        toolUseId: content.tool_use_id,
-        result: content.content,
-        isError: content.is_error || false,
-        timestamp
-      });
-      handled = true;
-
-      if (!content.tool_use_id || !pendingSubagents.has(content.tool_use_id)) {
-        continue;
-      }
-
-      const subagent = pendingSubagents.get(content.tool_use_id)!;
-      events.push({
-        type: 'thought',
-        content: buildSubagentSummary(subagent, content, timestamp),
-        timestamp,
-        isSubagentSummary: true
-      });
-      pendingSubagents.delete(content.tool_use_id);
-    }
-    return handled;
+    return appendUserStoredMessageEvents(contentBlocks, context);
   } catch {
     return false;
   }
+}
+function appendAssistantStoredMessageEvents(
+  contentBlocks: StoredMessageToolContent[],
+  context: StoredMessageContext
+): boolean {
+  let handled = false;
+
+  for (const content of contentBlocks) {
+    if (appendAssistantTextContent(content, context)) {
+      handled = true;
+      continue;
+    }
+    if (appendAssistantToolUseContent(content, context)) {
+      handled = true;
+    }
+  }
+
+  return handled;
+}
+function appendAssistantTextContent(content: StoredMessageToolContent, context: StoredMessageContext): boolean {
+  const textContent = typeof content.text === 'string'
+    ? content.text
+    : (typeof content.content === 'string' ? content.content : '');
+  if (content.type !== 'text' || !textContent) {
+    return false;
+  }
+
+  context.events.push({ type: 'thought', content: textContent, timestamp: context.timestamp });
+  return true;
+}
+function appendAssistantToolUseContent(content: StoredMessageToolContent, context: StoredMessageContext): boolean {
+  if (content.type !== 'tool_use') {
+    return false;
+  }
+
+  context.events.push({
+    type: 'tool_use',
+    toolName: content.name,
+    input: content.input,
+    id: content.id,
+    timestamp: context.timestamp
+  });
+
+  if (content.name === 'TodoWrite' && content.input?.todos) {
+    context.setTodos(content.input.todos);
+  }
+  if (content.name === 'Task' && content.id) {
+    context.pendingSubagents.set(content.id, {
+      toolUseId: content.id,
+      subagentType: content.input?.subagent_type || 'unknown',
+      description: content.input?.description || '',
+      startTimestamp: context.timestamp
+    });
+  }
+
+  return true;
+}
+function appendUserStoredMessageEvents(
+  contentBlocks: StoredMessageToolContent[],
+  context: StoredMessageContext
+): boolean {
+  let handled = false;
+
+  for (const content of contentBlocks) {
+    if (!appendUserToolResultContent(content, context)) {
+      continue;
+    }
+    handled = true;
+  }
+
+  return handled;
+}
+function appendUserToolResultContent(content: StoredMessageToolContent, context: StoredMessageContext): boolean {
+  if (content.type !== 'tool_result') {
+    return false;
+  }
+
+  context.events.push({
+    type: 'tool_result',
+    toolUseId: content.tool_use_id,
+    result: content.content,
+    isError: content.is_error || false,
+    timestamp: context.timestamp
+  });
+
+  if (!content.tool_use_id || !context.pendingSubagents.has(content.tool_use_id)) {
+    return true;
+  }
+
+  const subagent = context.pendingSubagents.get(content.tool_use_id)!;
+  context.events.push({
+    type: 'thought',
+    content: buildSubagentSummary(subagent, content, context.timestamp),
+    timestamp: context.timestamp,
+    isSubagentSummary: true
+  });
+  context.pendingSubagents.delete(content.tool_use_id);
+  return true;
 }
 function appendCommandExecutionEvents(rawEvent: RawExecutionEvent, timestamp: string, events: Array<Record<string, unknown>>): boolean {
   if (rawEvent.item?.type !== 'command_execution') return false;
