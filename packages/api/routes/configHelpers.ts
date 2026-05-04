@@ -165,7 +165,7 @@ async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; va
   return { value: val };
 }
 
-export interface LabeledSave { name: string; execute: () => Promise<boolean> }
+export interface LabeledSave { name: string; execute: () => Promise<unknown> }
 
 export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSave[]; normalized: Record<string, unknown> }> {
   const thunks: LabeledSave[] = [];

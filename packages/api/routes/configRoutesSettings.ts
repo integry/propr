@@ -104,28 +104,14 @@ function createSpecializedSaves(
   }));
 }
 
-async function createRollbackActions(
+async function createGeneralRollbackActions(
   configStore: SettingsStore,
-  settings: Record<string, unknown>,
   hasGeneralSettings: boolean
 ): Promise<RollbackActionMap> {
   const rollbackActions: RollbackActionMap = new Map();
   if (hasGeneralSettings) {
     const previousSettings = await configStore.loadSettings();
     rollbackActions.set('general', () => configStore.saveConfig('settings', previousSettings));
-  }
-
-  const rollbackEntries = await Promise.all(
-    (Object.keys(SPECIALIZED_SETTING_HANDLERS) as SpecializedSettingName[])
-      .filter(name => settings[name] !== undefined)
-      .map(async name => {
-        const previous = await loadSpecializedValue(configStore, name);
-        return [name, () => saveSpecializedValue(configStore, name, previous)] as const;
-      })
-  );
-
-  for (const [name, rollback] of rollbackEntries) {
-    rollbackActions.set(name, rollback);
   }
   return rollbackActions;
 }
@@ -208,7 +194,7 @@ export async function saveSettingsWithRollback({
     extracted.saves.map(({ name }) => name as SpecializedSettingName),
     extracted.normalized
   );
-  const rollbackActions = await createRollbackActions(configStore, settings, hasGeneralSettings);
+  const rollbackActions = await createGeneralRollbackActions(configStore, hasGeneralSettings);
   const generalSettingsSaveError = await saveGeneralSettings(configStore, otherSettings);
   if (generalSettingsSaveError) {
     return generalSettingsSaveError;
@@ -217,6 +203,8 @@ export async function saveSettingsWithRollback({
   const committedNames: Array<'general' | SpecializedSettingName> = hasGeneralSettings ? ['general'] : [];
   for (const save of specializedSaves) {
     try {
+      const previousValue = await loadSpecializedValue(configStore, save.name);
+      rollbackActions.set(save.name, () => saveSpecializedValue(configStore, save.name, previousValue));
       await save.execute();
       committedNames.push(save.name);
     } catch (saveError) {

@@ -126,6 +126,26 @@ interface ExecutionDetailRow {
   tool_name: string | null; tool_input: string | null; metadata: string | null;
 }
 interface StoredMessageContentBlock { type?: string; text?: string; content?: string; }
+interface StoredMessageToolContent {
+  type?: string;
+  text?: string;
+  name?: string;
+  id?: string;
+  tool_use_id?: string;
+  input?: {
+    todos?: Array<{ status: string; content: string }>;
+    subagent_type?: string;
+    description?: string;
+  };
+  content?: unknown;
+  is_error?: boolean;
+}
+interface PendingSubagent {
+  toolUseId: string;
+  subagentType: string;
+  description: string;
+  startTimestamp: string;
+}
 interface RawExecutionEvent {
   type?: string; role?: string; content?: string; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string;
   item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> };
@@ -137,6 +157,36 @@ function mapTodoStatus(item: { completed?: boolean; status?: string }): 'complet
 }
 function mapTodoItems(items: Array<{ text?: string; completed?: boolean; status?: string }>): Array<{ status: string; content: string }> {
   return items.map(item => ({ status: mapTodoStatus(item), content: item.text || '' }));
+}
+function extractTextFromContentBlocks(content: unknown): string | null {
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const textParts = content
+    .map((block) => {
+      if (!block || typeof block !== 'object') return '';
+      const typedBlock = block as StoredMessageContentBlock;
+      return typedBlock.type === 'text' && typedBlock.text ? typedBlock.text : (typedBlock.content ?? '');
+    })
+    .filter(Boolean);
+  return textParts.length > 0 ? textParts.join('\n\n') : null;
+}
+function getSubagentIcon(subagentType: string): string {
+  switch (subagentType.toLowerCase()) {
+    case 'explore':
+      return '🔍';
+    case 'plan':
+      return '📋';
+    case 'bash':
+      return '⚡';
+    default:
+      return '🤖';
+  }
+}
+function buildSubagentSummary(subagent: PendingSubagent, content: StoredMessageToolContent, timestamp: string): string {
+  const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
+  const durationSecs = Math.round(durationMs / 1000);
+  const subagentOutputText = extractTextFromContentBlocks(content.content);
+  const summaryHeader = `${getSubagentIcon(subagent.subagentType)} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`;
+  return subagentOutputText ? `${summaryHeader}\n\n${subagentOutputText}` : summaryHeader;
 }
 async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionId: string): Promise<ConversationResult | null> {
   const logJson = await redisClient.get(`execution:logs:session:${sessionId}`);
@@ -198,12 +248,13 @@ async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: 
 function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<ConversationResult, 'tokenUsage'> {
   const events: Array<Record<string, unknown>> = [];
   let todos: Array<{ status: string; content: string }> = [];
+  const pendingSubagents = new Map<string, PendingSubagent>();
 
   for (const row of details) {
     const timestamp = row.event_timestamp;
     const metadataHandled = appendEventFromMetadata(row, timestamp, events, nextTodos => { todos = nextTodos; });
     if (metadataHandled) continue;
-    if (appendStoredMessageEvent(row, timestamp, events)) continue;
+    if (appendStoredMessageEvent(row, timestamp, events, pendingSubagents, nextTodos => { todos = nextTodos; })) continue;
     if (appendToolUseEvent(row, timestamp, events)) continue;
     if (appendErrorEvent(row, timestamp, events)) continue;
     appendFallbackContentEvent(row, timestamp, events);
@@ -245,20 +296,81 @@ function appendEventFromMetadata(row: ExecutionDetailRow, timestamp: string, eve
   }
   return false;
 }
-function appendStoredMessageEvent(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>): boolean {
+function appendStoredMessageEvent(
+  row: ExecutionDetailRow,
+  timestamp: string,
+  events: Array<Record<string, unknown>>,
+  pendingSubagents: Map<string, PendingSubagent>,
+  setTodos: (todos: Array<{ status: string; content: string }>) => void
+): boolean {
   if ((row.event_type !== 'user' && row.event_type !== 'assistant') || !row.content) return false;
   try {
-    const parsedContent = JSON.parse(row.content) as { content?: StoredMessageContentBlock[] };
-    const text = parsedContent.content
-      ?.filter(block => block.type === 'text' && (block.text || block.content))
-      .map(block => block.text || block.content || '')
-      .join('\n\n')
-      .trim();
-    if (!text) return false;
+    const parsedContent = JSON.parse(row.content) as { content?: StoredMessageToolContent[] };
+    const contentBlocks = parsedContent.content;
+    if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) return false;
+
+    let handled = false;
+
     if (row.event_type === 'assistant') {
-      events.push({ type: 'thought', content: text, timestamp });
+      for (const content of contentBlocks) {
+        const textContent = typeof content.text === 'string'
+          ? content.text
+          : (typeof content.content === 'string' ? content.content : '');
+        if (content.type === 'text' && textContent) {
+          events.push({ type: 'thought', content: textContent, timestamp });
+          handled = true;
+          continue;
+        }
+        if (content.type !== 'tool_use') {
+          continue;
+        }
+
+        events.push({ type: 'tool_use', toolName: content.name, input: content.input, id: content.id, timestamp });
+        handled = true;
+
+        if (content.name === 'TodoWrite' && content.input?.todos) {
+          setTodos(content.input.todos);
+        }
+        if (content.name === 'Task' && content.id) {
+          pendingSubagents.set(content.id, {
+            toolUseId: content.id,
+            subagentType: content.input?.subagent_type || 'unknown',
+            description: content.input?.description || '',
+            startTimestamp: timestamp
+          });
+        }
+      }
+      return handled;
     }
-    return true;
+
+    for (const content of contentBlocks) {
+      if (content.type !== 'tool_result') {
+        continue;
+      }
+
+      events.push({
+        type: 'tool_result',
+        toolUseId: content.tool_use_id,
+        result: content.content,
+        isError: content.is_error || false,
+        timestamp
+      });
+      handled = true;
+
+      if (!content.tool_use_id || !pendingSubagents.has(content.tool_use_id)) {
+        continue;
+      }
+
+      const subagent = pendingSubagents.get(content.tool_use_id)!;
+      events.push({
+        type: 'thought',
+        content: buildSubagentSummary(subagent, content, timestamp),
+        timestamp,
+        isSubagentSummary: true
+      });
+      pendingSubagents.delete(content.tool_use_id);
+    }
+    return handled;
   } catch {
     return false;
   }

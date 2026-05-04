@@ -79,6 +79,7 @@ function parseCompletedCodexItem(
   event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
   events: Array<Record<string, unknown>>,
   setTodos: (nextTodos: Array<{ status: string; content: string }>) => void,
+  pendingCommandStarts: Map<string, number>,
   timestamp?: string
 ): boolean {
   if ((event.item?.type === 'reasoning' || event.item?.type === 'agent_message') && event.item.text) {
@@ -88,7 +89,12 @@ function parseCompletedCodexItem(
 
   if (event.item?.type === 'command_execution') {
     if (event.item.command) {
-      pushCodexToolUseEvent(events, 'command_execution', { command: event.item.command }, timestamp);
+      const startedCount = pendingCommandStarts.get(event.item.command) ?? 0;
+      if (startedCount > 0) {
+        pendingCommandStarts.set(event.item.command, startedCount - 1);
+      } else {
+        pushCodexToolUseEvent(events, 'command_execution', { command: event.item.command }, timestamp);
+      }
     }
     if (event.item.aggregated_output) {
       pushCodexToolResultEvent(
@@ -114,11 +120,18 @@ function buildCodexTokenUsage(parsed: ReturnType<typeof parseCodexStreamOutput>)
     return null;
   }
 
+  const tokenUsage = parsed.tokenUsage as {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+
   return {
-    input_tokens: parsed.tokenUsage.input_tokens ?? 0,
-    output_tokens: parsed.tokenUsage.output_tokens ?? 0,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0
+    input_tokens: tokenUsage.input_tokens ?? 0,
+    output_tokens: tokenUsage.output_tokens ?? 0,
+    cache_creation_input_tokens: tokenUsage.cache_creation_input_tokens ?? 0,
+    cache_read_input_tokens: tokenUsage.cache_read_input_tokens ?? 0
   };
 }
 
@@ -155,10 +168,12 @@ function appendErrorConversationEvent(
 function appendStartedCommandEvent(
   event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
   events: Array<Record<string, unknown>>,
+  pendingCommandStarts: Map<string, number>,
   timestamp?: string
 ): boolean {
   if (event.type !== 'item.started' || event.item?.type !== 'command_execution' || !event.item.command) return false;
   pushCodexToolUseEvent(events, 'command_execution', { command: event.item.command }, timestamp);
+  pendingCommandStarts.set(event.item.command, (pendingCommandStarts.get(event.item.command) ?? 0) + 1);
   return true;
 }
 
@@ -166,6 +181,7 @@ function updateTodosFromEvent(
   event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
   setTodos: (nextTodos: Array<{ status: string; content: string }>) => void,
   events: Array<Record<string, unknown>>,
+  pendingCommandStarts: Map<string, number>,
   timestamp?: string
 ): boolean {
   if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item.items) {
@@ -173,7 +189,7 @@ function updateTodosFromEvent(
     return true;
   }
   if (event.type !== 'item.completed') return false;
-  return parseCompletedCodexItem(event, events, setTodos, timestamp);
+  return parseCompletedCodexItem(event, events, setTodos, pendingCommandStarts, timestamp);
 }
 
 function extractTextFromContentBlocks(content: unknown): string | null {
@@ -338,6 +354,7 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
 
   const events: Array<Record<string, unknown>> = [];
   let todos: Array<{ status: string; content: string }> = [];
+  const pendingCommandStarts = new Map<string, number>();
 
   for (const event of parsed.conversationLog) {
     const timestamp = (event as { timestamp?: string }).timestamp;
@@ -346,10 +363,10 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
       appendAssistantMessageEvent(event, events, timestamp)
       || appendToolUseConversationEvent(event, events, timestamp)
       || appendErrorConversationEvent(event, events, timestamp)
-      || appendStartedCommandEvent(event, events, timestamp)
+      || appendStartedCommandEvent(event, events, pendingCommandStarts, timestamp)
       || updateTodosFromEvent(event, nextTodos => {
         todos = nextTodos;
-      }, events, timestamp)
+      }, events, pendingCommandStarts, timestamp)
     ) {
       continue;
     }

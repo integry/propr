@@ -5,7 +5,7 @@
  * repo source tree (tsx/dev) or the root dist output (compiled app).
  */
 
-import { access } from 'fs/promises';
+import { access, readdir } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import {
@@ -44,15 +44,45 @@ function collectAncestorDirectories(startDir: string): string[] {
     return directories;
 }
 
+async function collectPackageDirectories(rootDir: string): Promise<string[]> {
+    const packageParents = [
+        path.join(rootDir, 'packages'),
+        path.join(rootDir, 'dist/packages'),
+    ];
+    const packageDirs: string[] = [];
+
+    for (const packageParent of packageParents) {
+        try {
+            const entries = await readdir(packageParent, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory()) {
+                    packageDirs.push(path.join(packageParent, entry.name));
+                }
+            }
+        } catch {
+            // Ignore missing package roots while continuing other candidate locations.
+        }
+    }
+
+    return packageDirs;
+}
+
 export async function resolveJobModulePath(filename: string): Promise<string> {
     const searchRoots = Array.from(new Set([
         ...collectAncestorDirectories(__dirname),
         ...collectAncestorDirectories(process.cwd()),
     ]));
-    const baseCandidates = searchRoots.flatMap((rootDir) => ([
-        path.join(rootDir, 'src/jobs', filename),
-        path.join(rootDir, 'dist/src/jobs', filename),
-    ]));
+    const packageRoots = (await Promise.all(searchRoots.map(collectPackageDirectories))).flat();
+    const baseCandidates = [
+        ...searchRoots.flatMap((rootDir) => ([
+            path.join(rootDir, 'src/jobs', filename),
+            path.join(rootDir, 'dist/src/jobs', filename),
+        ])),
+        ...packageRoots.flatMap((packageDir) => ([
+            path.join(packageDir, 'src/jobs', filename),
+            path.join(packageDir, 'dist/src/jobs', filename),
+        ])),
+    ];
     const candidates = baseCandidates.flatMap((candidate) => {
         const tsCandidate = candidate.replace(/\.js$/, '.ts');
         return tsCandidate === candidate ? [candidate] : [candidate, tsCandidate];
