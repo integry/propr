@@ -70,6 +70,13 @@ async function rollbackAgentConfigState({
   }
 }
 
+function resolveDefaultAgentAlias(processedAgents: AgentConfig[], currentDefault: string | undefined): string | undefined {
+  const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
+  if (enabledAgents.length === 0) return undefined;
+  if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) return enabledAgents[0].alias;
+  return currentDefault;
+}
+
 export async function applyAgentsUpdate({
   agents,
   username,
@@ -110,14 +117,7 @@ export async function applyAgentsUpdate({
   const previousAgents = await configStore.loadAgents();
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
-  const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
-
-  let newDefault = currentDefault;
-  if (enabledAgents.length === 0) {
-    newDefault = undefined;
-  } else if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) {
-    newDefault = enabledAgents[0].alias;
-  }
+  const newDefault = resolveDefaultAgentAlias(processedAgents, currentDefault);
 
   try {
     await lock?.assertLockHeld();

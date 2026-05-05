@@ -14,14 +14,8 @@ const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
 interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: number; }
 interface RedisScriptClient { eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>; }
-interface LostConfigLockDetails {
-  detected: boolean;
-  reason: 'ownership_lost' | 'renewal_error' | null;
-}
-export interface ConfigLockContext {
-  assertLockHeld: () => Promise<void>;
-  hasLockBeenLost: () => boolean;
-}
+interface LostConfigLockDetails { detected: boolean; reason: 'ownership_lost' | 'renewal_error' | null; }
+export interface ConfigLockContext { assertLockHeld: () => Promise<void>; hasLockBeenLost: () => boolean; }
 const EXTEND_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("expire", KEYS[1], tonumber(ARGV[2]))
 end
@@ -36,9 +30,7 @@ function buildLockLossResponse(reason: LostConfigLockDetails['reason']): { statu
     : 'Configuration update lock renewal failed before the operation completed. Verify the current configuration before retrying.';
   return { status: 409, body: { error, lock_lost: true } };
 }
-function supportsAtomicLockScripting(redisClient: RedisClientType): boolean {
-  return typeof (redisClient as RedisClientType & RedisScriptClient).eval === 'function';
-}
+function supportsAtomicLockScripting(redisClient: RedisClientType): boolean { return typeof (redisClient as RedisClientType & RedisScriptClient).eval === 'function'; }
 
 async function renewLock(redisClient: RedisClientType, lockKey: string, lockValue: string, timeoutSeconds: number): Promise<boolean> {
   const scriptClient = redisClient as RedisClientType & RedisScriptClient;
@@ -47,9 +39,7 @@ async function renewLock(redisClient: RedisClientType, lockKey: string, lockValu
     return result === 1;
   }
   const currentLockValue = await redisClient.get(lockKey);
-  if (currentLockValue !== lockValue) {
-    return false;
-  }
+  if (currentLockValue !== lockValue) return false;
   await redisClient.expire(lockKey, timeoutSeconds);
   return true;
 }
@@ -77,9 +67,7 @@ export async function withConfigLock(
   let renewalStopped = false;
   const lostLock: LostConfigLockDetails = { detected: false, reason: null };
   const markLockLost = (reason: LostConfigLockDetails['reason'], error?: unknown): void => {
-    if (renewalStopped || lostLock.detected) {
-      return;
-    }
+    if (renewalStopped || lostLock.detected) return;
     lostLock.detected = true;
     lostLock.reason = reason;
     if (renewalTimer) {
@@ -93,15 +81,11 @@ export async function withConfigLock(
     console.error(`Failed to renew config lock ${lockKey}:`, error);
   };
   const throwLockLossError = (): never => {
-    if (lostLock.reason === 'renewal_error') {
-      throw new Error(`Config lock ${lockKey} renewal failed before protected operation completed`);
-    }
+    if (lostLock.reason === 'renewal_error') throw new Error(`Config lock ${lockKey} renewal failed before protected operation completed`);
     throw new Error(`Config lock ${lockKey} ownership lost before protected operation completed`);
   };
   const scheduleRenewal = (): void => {
-    if (renewalStopped || renewalIntervalMs <= 0) {
-      return;
-    }
+    if (renewalStopped || renewalIntervalMs <= 0) return;
     renewalTimer = setTimeout(() => {
       void renewLock(redisClient, lockKey, lockValue, lockTimeout)
         .then(renewed => {
@@ -118,9 +102,7 @@ export async function withConfigLock(
   };
   const context: ConfigLockContext = {
     assertLockHeld: async () => {
-      if (lostLock.detected) {
-        throwLockLossError();
-      }
+      if (lostLock.detected) throwLockLossError();
       const renewed = await renewLock(redisClient, lockKey, lockValue, lockTimeout);
       if (!renewed) {
         markLockLost(supportsAtomicLockScripting(redisClient) ? 'ownership_lost' : 'renewal_error');
@@ -135,27 +117,20 @@ export async function withConfigLock(
     if (!acquired) return { status: 409, body: { error: 'Configuration is being updated. Please try again.' } };
     try {
       scheduleRenewal();
-
       const result = await operation(context);
       if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
       return result;
     } finally {
       renewalStopped = true;
-      if (renewalTimer) {
-        clearTimeout(renewalTimer);
-      }
+      if (renewalTimer) clearTimeout(renewalTimer);
       await releaseLock(redisClient, lockKey, lockValue);
     }
   } catch (error) {
-    if (lostLock.detected) {
-      return buildLockLossResponse(lostLock.reason);
-    }
+    if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
     console.error(`Error in config operation with lock ${lockKey}:`, error);
     try {
       renewalStopped = true;
-      if (renewalTimer) {
-        clearTimeout(renewalTimer);
-      }
+      if (renewalTimer) clearTimeout(renewalTimer);
       await releaseLock(redisClient, lockKey, lockValue);
     } catch (unlockError) {
       console.error('Error releasing lock:', unlockError);
@@ -168,9 +143,7 @@ export async function queueResummarizationForAllRepos(): Promise<number> {
   const monitoredRepos = await configManager.loadMonitoredRepos();
   const octokit = await getAuthenticatedOctokit();
   const { token } = await octokit.auth({ type: "installation" }) as { token: string };
-
   let repositoriesQueued = 0;
-
   for (const repoFullName of monitoredRepos) {
     const queued = await queueResummarizationForRepo(repoFullName, token);
     if (queued) repositoriesQueued++;
@@ -193,9 +166,7 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
   }
 
   const fetchResult = await fetchLatestChanges({ owner, repoName: name, authToken: token });
-  if (!fetchResult.success) {
-    console.warn(`Failed to fetch latest changes for ${repoFullName}: ${fetchResult.error}`);
-  }
+  if (!fetchResult.success) console.warn(`Failed to fetch latest changes for ${repoFullName}: ${fetchResult.error}`);
   const correlationId = generateCorrelationId();
   await queue.add(
     'indexRepository',
@@ -211,7 +182,6 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
       priority: 2 // Lower priority than manual triggers
     }
   );
-
   return true;
 }
 
@@ -243,7 +213,6 @@ export interface LabeledSaveDescriptor { name: string }
 export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSaveDescriptor[]; normalized: Record<string, unknown> }> {
   const saves: LabeledSaveDescriptor[] = [];
   const normalized: Record<string, unknown> = {};
-
   if (fields.auto_followup_score_threshold !== undefined) {
     const v = validateStrictInt(fields.auto_followup_score_threshold, 0, 9);
     if (v === null) return { error: 'auto_followup_score_threshold must be an integer between 0 and 9', saves: [], normalized };
@@ -281,7 +250,6 @@ export async function extractSettingSaves(fields: SettingFields): Promise<{ erro
     normalized.ultrafix_pause_seconds = v;
     saves.push({ name: 'ultrafix_pause_seconds' });
   }
-
   return { saves, normalized };
 }
 
@@ -300,33 +268,15 @@ export function validateAgentsConfig(agents: AgentConfig[]): string | null {
 }
 
 function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): string | null {
-  if (!agent.id || typeof agent.id !== 'string') {
-    return `Agent missing required 'id' field`;
-  }
-  if (!agent.type || !VALID_AGENT_TYPES.includes(agent.type)) {
-    return `Agent '${agent.id}' has invalid type. Must be one of: ${VALID_AGENT_TYPES.join(', ')}`;
-  }
-  if (!agent.alias || typeof agent.alias !== 'string') {
-    return `Agent '${agent.id}' missing required 'alias' field`;
-  }
-  if (!ALIAS_REGEX.test(agent.alias)) {
-    return `Agent '${agent.id}' has invalid alias '${agent.alias}'. Must match pattern ^[a-z0-9-]+$`;
-  }
-  if (typeof agent.enabled !== 'boolean') {
-    return `Agent '${agent.id}' missing required 'enabled' field`;
-  }
-  if (!agent.dockerImage || typeof agent.dockerImage !== 'string') {
-    return `Agent '${agent.id}' missing required 'dockerImage' field`;
-  }
-  if (!agent.configPath || typeof agent.configPath !== 'string') {
-    return `Agent '${agent.id}' missing required 'configPath' field`;
-  }
-  if (!Array.isArray(agent.supportedModels)) {
-    return `Agent '${agent.id}' missing required 'supportedModels' field`;
-  }
-  if (seenAliases.has(agent.alias)) {
-    return `Duplicate agent alias '${agent.alias}' found`;
-  }
+  if (!agent.id || typeof agent.id !== 'string') return `Agent missing required 'id' field`;
+  if (!agent.type || !VALID_AGENT_TYPES.includes(agent.type)) return `Agent '${agent.id}' has invalid type. Must be one of: ${VALID_AGENT_TYPES.join(', ')}`;
+  if (!agent.alias || typeof agent.alias !== 'string') return `Agent '${agent.id}' missing required 'alias' field`;
+  if (!ALIAS_REGEX.test(agent.alias)) return `Agent '${agent.id}' has invalid alias '${agent.alias}'. Must match pattern ^[a-z0-9-]+$`;
+  if (typeof agent.enabled !== 'boolean') return `Agent '${agent.id}' missing required 'enabled' field`;
+  if (!agent.dockerImage || typeof agent.dockerImage !== 'string') return `Agent '${agent.id}' missing required 'dockerImage' field`;
+  if (!agent.configPath || typeof agent.configPath !== 'string') return `Agent '${agent.id}' missing required 'configPath' field`;
+  if (!Array.isArray(agent.supportedModels)) return `Agent '${agent.id}' missing required 'supportedModels' field`;
+  if (seenAliases.has(agent.alias)) return `Duplicate agent alias '${agent.alias}' found`;
   return null;
 }
 
@@ -365,7 +315,6 @@ export async function checkAndExecuteDelayedReindex(redisClient: RedisClientType
       console.log(`Executed delayed reindex for ${count} repositories`);
       return true;
     }
-
     return false;
   } catch (error) {
     console.error('Error checking/executing delayed reindex:', error);
@@ -381,7 +330,6 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   if (!settings.agent_alias) {
     return { success: false, error: 'No agent configured for summarization. Configure one in settings first.' };
   }
-
   const queue = await getIndexingQueue();
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
   if (existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repository)) {
@@ -398,7 +346,6 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   } catch (cloneError) {
     return { success: false, error: `Failed to clone repository: ${(cloneError as Error).message}` };
   }
-
   const fetchResult = await fetchLatestChanges({ owner, repoName: name, authToken: token, branch: baseBranch });
   if (!fetchResult.success) console.warn(`Failed to fetch latest changes for ${repository}: ${fetchResult.error}`);
   const correlationId = generateCorrelationId();
@@ -407,7 +354,6 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
     { repository, repoPath, correlationId, priority: 'high', fullReindex, baseBranch },
     { jobId: `index-${repository.replace('/', '-')}-${Date.now()}`, priority: 1 }
   );
-
   return { success: true, jobId: job.id, correlationId };
 }
 
