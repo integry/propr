@@ -4,17 +4,43 @@
 
 import { db } from '../../db/connection.js';
 import type { GenerationTrace } from './planningTypes.js';
-import type { StepStatus } from '@propr/shared';
+import type { DraftUpdateGenerationTrace, StepStatus } from '@propr/shared';
 import { getEventPublisher } from '../../utils/eventPublisher.js';
 
-export function parseGenerationTrace(raw: unknown): GenerationTrace {
-  let parsed: GenerationTrace | undefined;
+type ParsedGenerationTrace = GenerationTrace & Pick<DraftUpdateGenerationTrace, 'error' | 'failedAt'>;
+
+export function parseGenerationTrace(raw: unknown): ParsedGenerationTrace {
+  let parsed: ParsedGenerationTrace | undefined;
   if (raw) {
     try {
-      parsed = typeof raw === 'string' ? JSON.parse(raw) : (raw as GenerationTrace);
+      parsed = typeof raw === 'string' ? JSON.parse(raw) : (raw as ParsedGenerationTrace);
     } catch { /* ignore parse errors */ }
   }
-  return { steps: Array.isArray(parsed?.steps) ? parsed.steps : [] };
+
+  return {
+    steps: Array.isArray(parsed?.steps) ? parsed.steps : [],
+    ...(typeof parsed?.error === 'string' ? { error: parsed.error } : {}),
+    ...(typeof parsed?.failedAt === 'string' ? { failedAt: parsed.failedAt } : {})
+  };
+}
+
+function buildDraftUpdateTraceSnapshot(trace: ParsedGenerationTrace): DraftUpdateGenerationTrace {
+  return {
+    steps: trace.steps.map((step) => {
+      if (!step.data || !Array.isArray(step.data.includedFiles)) {
+        return step;
+      }
+
+      const restData = { ...step.data };
+      delete restData.includedFiles;
+      return {
+        ...step,
+        ...(Object.keys(restData).length > 0 ? { data: restData } : {})
+      };
+    }),
+    ...(typeof trace.error === 'string' ? { error: trace.error } : {}),
+    ...(typeof trace.failedAt === 'string' ? { failedAt: trace.failedAt } : {})
+  };
 }
 
 /**
@@ -58,7 +84,7 @@ export async function updateTrace(
     status,
     data,
     draftStatus: 'generating',
-    generationTrace: trace
+    generationTrace: buildDraftUpdateTraceSnapshot(trace)
   });
 
   return trace;

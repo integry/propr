@@ -106,6 +106,7 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
 
       return parseJsonFields({
         ...currentDraft,
+        status: payload.draftStatus ?? currentDraft.status,
         generation_trace: payload.generationTrace ?? currentDraft.generation_trace,
       } as unknown as Record<string, unknown>) as unknown as PlannerDraft;
     });

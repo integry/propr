@@ -27,6 +27,14 @@ vi.mock('../contexts/useSocket', () => ({
 
 const mockGetDraft = vi.mocked(getDraft);
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe('useDraft', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -137,6 +145,77 @@ describe('useDraft', () => {
           },
         }))
       );
+    });
+
+    await waitFor(() => {
+      expect(mockGetDraft).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('applies terminal draft status from the socket before the follow-up fetch resolves', async () => {
+    const deferredFetch = createDeferred<Awaited<ReturnType<typeof getDraft>>>();
+
+    mockGetDraft
+      .mockResolvedValueOnce({
+        draft_id: 'draft-1',
+        repository: 'integry/propr',
+        initial_prompt: 'Test prompt',
+        status: 'generating',
+        attachments: [],
+        created_at: '2026-05-05T00:00:00Z',
+        generation_trace: {
+          steps: [
+            { name: 'relevance', status: 'in_progress' },
+          ],
+        },
+      })
+      .mockImplementationOnce(() => deferredFetch.promise);
+
+    const { result } = renderHook(() => useDraft('draft-1'));
+
+    await waitFor(() => {
+      expect(result.current.draft?.status).toBe('generating');
+    });
+
+    await act(async () => {
+      await Promise.all(
+        [...draftUpdateListeners].map(listener => listener({
+          eventType: 'draft:update',
+          draftId: 'draft-1',
+          step: 'complete',
+          status: 'completed',
+          timestamp: '2026-05-05T00:00:10Z',
+          draftStatus: 'review',
+          generationTrace: {
+            steps: [
+              { name: 'relevance', status: 'completed' },
+              { name: 'context', status: 'completed' },
+              { name: 'llm', status: 'completed' },
+            ],
+          },
+        }))
+      );
+    });
+
+    expect(result.current.draft?.status).toBe('review');
+
+    await act(async () => {
+      deferredFetch.resolve({
+        draft_id: 'draft-1',
+        repository: 'integry/propr',
+        initial_prompt: 'Test prompt',
+        status: 'review',
+        attachments: [],
+        created_at: '2026-05-05T00:00:00Z',
+        generation_trace: {
+          steps: [
+            { name: 'relevance', status: 'completed' },
+            { name: 'context', status: 'completed' },
+            { name: 'llm', status: 'completed' },
+          ],
+        },
+      });
+      await deferredFetch.promise;
     });
 
     await waitFor(() => {

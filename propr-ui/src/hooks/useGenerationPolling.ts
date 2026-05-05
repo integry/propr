@@ -3,6 +3,10 @@ import { getDraft, GenerationTrace } from '../api/proprApi';
 import { useSocket } from '../contexts/useSocket';
 import { DraftUpdatePayload } from '@propr/shared';
 
+const DISCONNECTED_INITIAL_POLL_MS = 1000;
+const DISCONNECTED_POLL_INTERVAL_MS = 3000;
+const CONNECTED_RESYNC_POLL_INTERVAL_MS = 10000;
+
 interface UseGenerationPollingOptions {
   draftId: string;
   onComplete: () => void;
@@ -111,8 +115,8 @@ export function useGenerationPolling({
   useEffect(() => {
     if (!draftId || !isGenerating || isConnected) return;
 
-    const initialPollTimeout = setTimeout(pollDraft, 1000);
-    const intervalId = setInterval(pollDraft, 3000);
+    const initialPollTimeout = setTimeout(pollDraft, DISCONNECTED_INITIAL_POLL_MS);
+    const intervalId = setInterval(pollDraft, DISCONNECTED_POLL_INTERVAL_MS);
 
     return () => {
       clearTimeout(initialPollTimeout);
@@ -120,8 +124,19 @@ export function useGenerationPolling({
     };
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
+  // Low-frequency connected-state resync to recover from missed socket events.
+  useEffect(() => {
+    if (!draftId || !isGenerating || !isConnected) return;
+
+    const intervalId = setInterval(pollDraft, CONNECTED_RESYNC_POLL_INTERVAL_MS);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [draftId, isGenerating, isConnected, pollDraft]);
+
   // Resync on socket reconnection to catch any events missed during the gap
-  const wasConnectedRef = useRef(true);
+  const wasConnectedRef = useRef(isConnected);
   useEffect(() => {
     if (!draftId || !isGenerating) return;
 
