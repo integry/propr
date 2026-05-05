@@ -218,7 +218,7 @@ async function applyCommittedAgentsUpdate({
   settingsWereUpdated: boolean;
   defaultChanged: boolean;
   lock?: ConfigLockContext;
-}): Promise<{ status?: number; body?: Record<string, unknown> }> {
+}): Promise<{ status: number; body: Record<string, unknown> } | void> {
   try {
     if (settingsWereUpdated) {
       configStore.handleSettingsSaveSideEffects();
@@ -227,7 +227,7 @@ async function applyCommittedAgentsUpdate({
     await registry.refresh();
     await lock?.assertLockHeld();
     registry.setDefaultAgentAlias(newDefault ?? null);
-    return {};
+    return;
   } catch (refreshError) {
     const rollbackSucceeded = await rollbackAgentConfigState({
       configStore,
@@ -313,7 +313,7 @@ export async function applyAgentsUpdate({
       defaultChanged,
       lock
     });
-    if (liveApplyResult.status && liveApplyResult.body) {
+    if (liveApplyResult) {
       return liveApplyResult;
     }
   } catch (syncError) {
