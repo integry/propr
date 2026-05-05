@@ -1,3 +1,4 @@
+import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { generateClaudePrompt, IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
 
@@ -284,8 +285,7 @@ export async function storeCodexPromptInRedis(options: StoreCodexPromptOptions):
     if (!codexOutput.sessionId && !codexOutput.conversationId) return;
 
     try {
-        const Redis = await import('ioredis');
-        const redis = new Redis.default({
+        const redis = new Redis({
             host: process.env.REDIS_HOST || 'redis',
             port: parseInt(process.env.REDIS_PORT || '6379', 10)
         });
