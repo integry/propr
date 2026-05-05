@@ -20,16 +20,10 @@ interface JsonPostHandlerConfig<T> {
   save: (value: T) => Promise<unknown>;
   subtype: string;
   body: (value: T) => Record<string, unknown>;
-  activity?: {
-    description: (value: T) => string;
-    idSuffix: string;
-    type: string;
-  };
+  activity?: { description: (value: T) => string; idSuffix: string; type: string };
 }
 
-type ValidationResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: string };
+type ValidationResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
@@ -59,12 +53,7 @@ function validateJsonObjectBody(value: unknown): ValidationResult<Record<string,
   return success(value as Record<string, unknown>);
 }
 
-function createJsonGetHandler<T>(
-  load: () => Promise<T>,
-  body: (value: T) => Record<string, unknown>,
-  errorMessage: string,
-  logContext: string
-) {
+function createJsonGetHandler<T>(load: () => Promise<T>, body: (value: T) => Record<string, unknown>, errorMessage: string, logContext: string) {
   return async (_req: Request, res: Response): Promise<void> => {
     try {
       res.json(body(await load()));
@@ -80,11 +69,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   const publishConfigUpdate = async (subtype: string): Promise<void> => {
     try {
-      await redisClient.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({
-        type: 'config_update',
-        subtype,
-        timestamp: Date.now()
-      }));
+      await redisClient.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({ type: 'config_update', subtype, timestamp: Date.now() }));
     } catch (error) {
       console.error(`Failed to publish config update event for ${subtype}:`, error);
     }
@@ -106,17 +91,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const indexingRoutes = createIndexingRoutes({ redisClient, publishConfigUpdate, logActivityHelper });
   const agentTankRoutes = createAgentTankRoutes();
   const agentsRoutes = createAgentsRoutes({ redisClient, publishConfigUpdate, logActivityHelper });
-  const createJsonPostHandler = <T>(
-    {
-      lockKey,
-      pickValue,
-      validate,
-      save,
-      subtype,
-      body,
-      activity
-    }: JsonPostHandlerConfig<T>
-  ) => async (req: Request, res: Response): Promise<void> => {
+  const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
     if (!bodyValidation.ok) {
       res.status(400).json({ error: bodyValidation.error });
@@ -150,32 +125,28 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     'Failed to load followup keywords',
     '/api/config/followup-keywords GET'
   );
-  const postFollowupKeywords = createJsonPostHandler(
-    {
-      lockKey: 'config:keywords:lock',
-      pickValue: body => body.followup_keywords,
-      validate: followup_keywords => validateStringArrayResult(followup_keywords, 'followup_keywords'),
-      save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords),
-      subtype: 'followup_keywords_update',
-      body: followup_keywords => ({ followup_keywords })
-    }
-  );
+  const postFollowupKeywords = createJsonPostHandler({
+    lockKey: 'config:keywords:lock',
+    pickValue: body => body.followup_keywords,
+    validate: followup_keywords => validateStringArrayResult(followup_keywords, 'followup_keywords'),
+    save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords),
+    subtype: 'followup_keywords_update',
+    body: followup_keywords => ({ followup_keywords })
+  });
   const getFollowupIgnoreKeywords = createJsonGetHandler(
     () => configManager.loadFollowupIgnoreKeywords(),
     followup_ignore_keywords => ({ followup_ignore_keywords }),
     'Failed to load followup ignore keywords',
     '/api/config/followup-ignore-keywords GET'
   );
-  const postFollowupIgnoreKeywords = createJsonPostHandler(
-    {
-      lockKey: 'config:ignore-keywords:lock',
-      pickValue: body => body.followup_ignore_keywords,
-      validate: followup_ignore_keywords => validateStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'),
-      save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords),
-      subtype: 'followup_ignore_keywords_update',
-      body: followup_ignore_keywords => ({ followup_ignore_keywords })
-    }
-  );
+  const postFollowupIgnoreKeywords = createJsonPostHandler({
+    lockKey: 'config:ignore-keywords:lock',
+    pickValue: body => body.followup_ignore_keywords,
+    validate: followup_ignore_keywords => validateStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'),
+    save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords),
+    subtype: 'followup_ignore_keywords_update',
+    body: followup_ignore_keywords => ({ followup_ignore_keywords })
+  });
 
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
@@ -243,15 +214,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const [
-        settings,
-        autoFollowupThreshold,
-        autoResolveMergeConflicts,
-        prReviewModel,
-        ultrafixRatingGoal,
-        ultrafixMaxCycles,
-        ultrafixPauseSeconds
-      ] = await Promise.all([
+      const [settings, autoFollowupThreshold, autoResolveMergeConflicts, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds] = await Promise.all([
         configManager.loadSettings(),
         configManager.loadAutoFollowupScoreThreshold(),
         configManager.loadAutoResolveMergeConflicts(),
@@ -267,7 +230,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '',
         planner_generation_model: process.env.PLANNER_GENERATION_MODEL || ''
       };
-      const mergedSettings = {
+      res.json({
         worker_concurrency: settings.worker_concurrency || envDefaults.worker_concurrency,
         github_user_whitelist: settings.github_user_whitelist || envDefaults.github_user_whitelist,
         analysis_model_fast: settings.analysis_model_fast || envDefaults.analysis_model_fast,
@@ -279,8 +242,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         ultrafix_rating_goal: ultrafixRatingGoal,
         ultrafix_max_cycles: ultrafixMaxCycles,
         ultrafix_pause_seconds: ultrafixPauseSeconds
-      };
-      res.json(mergedSettings);
+      });
     } catch (error) {
       console.error('Error in /api/config/settings GET:', error);
       res.status(500).json({ error: 'Failed to load settings' });
@@ -299,13 +261,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       return;
     }
 
-    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
-      return saveSettingsWithRollback({
-        settings: settingsValidation.value,
-        publishConfigUpdate,
-        lock
-      });
-    });
+    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock =>
+      saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, lock })
+    );
     if (result.status === 200) {
       try {
         const updatedKeys = Object.keys(settingsValidation.value);
@@ -324,46 +282,34 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     'Failed to load PR label',
     '/api/config/pr-label GET'
   );
-  const postPrLabel = createJsonPostHandler<string>(
-    {
-      lockKey: 'config:pr-label:lock',
-      pickValue: body => body.pr_label,
-      validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== ''
-        ? success(pr_label.trim())
-        : failure('pr_label must be a non-empty string'),
-      save: pr_label => configManager.savePrLabel(pr_label),
-      subtype: 'pr_label_update',
-      body: pr_label => ({ pr_label }),
-      activity: {
-        description: pr_label => `Updated PR label to "${pr_label}"`,
-        idSuffix: 'pr-label-update',
-        type: 'config_updated'
-      }
-    }
-  );
+  const postPrLabel = createJsonPostHandler<string>({
+    lockKey: 'config:pr-label:lock',
+    pickValue: body => body.pr_label,
+    validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== ''
+      ? success(pr_label.trim())
+      : failure('pr_label must be a non-empty string'),
+    save: pr_label => configManager.savePrLabel(pr_label),
+    subtype: 'pr_label_update',
+    body: pr_label => ({ pr_label }),
+    activity: { description: pr_label => `Updated PR label to "${pr_label}"`, idSuffix: 'pr-label-update', type: 'config_updated' }
+  });
   const getAiPrimaryTag = createJsonGetHandler(
     () => configManager.loadAiPrimaryTag(),
     ai_primary_tag => ({ ai_primary_tag }),
     'Failed to load AI primary tag',
     '/api/config/ai-primary-tag GET'
   );
-  const postAiPrimaryTag = createJsonPostHandler<string>(
-    {
-      lockKey: 'config:ai-primary-tag:lock',
-      pickValue: body => body.ai_primary_tag,
-      validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== ''
-        ? success(ai_primary_tag.trim())
-        : failure('ai_primary_tag must be a non-empty string'),
-      save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag),
-      subtype: 'ai_primary_tag_update',
-      body: ai_primary_tag => ({ ai_primary_tag }),
-      activity: {
-        description: ai_primary_tag => `Updated AI primary tag to "${ai_primary_tag}"`,
-        idSuffix: 'ai-primary-tag-update',
-        type: 'config_updated'
-      }
-    }
-  );
+  const postAiPrimaryTag = createJsonPostHandler<string>({
+    lockKey: 'config:ai-primary-tag:lock',
+    pickValue: body => body.ai_primary_tag,
+    validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== ''
+      ? success(ai_primary_tag.trim())
+      : failure('ai_primary_tag must be a non-empty string'),
+    save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag),
+    subtype: 'ai_primary_tag_update',
+    body: ai_primary_tag => ({ ai_primary_tag }),
+    activity: { description: ai_primary_tag => `Updated AI primary tag to "${ai_primary_tag}"`, idSuffix: 'ai-primary-tag-update', type: 'config_updated' }
+  });
 
   async function getPrimaryProcessingLabels(_req: Request, res: Response): Promise<void> {
     try {
@@ -411,10 +357,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function getSummarizationSettings(_req: Request, res: Response): Promise<void> {
     try {
       const settings = await configManager.loadSummarizationSettings();
-      res.json({
-        ...settings,
-        default_prompt: DEFAULT_INSTRUCTIONS
-      });
+      res.json({ ...settings, default_prompt: DEFAULT_INSTRUCTIONS });
     } catch (error) {
       console.error('Error in /api/config/summarization GET:', error);
       res.status(500).json({ error: 'Failed to load summarization settings' });
