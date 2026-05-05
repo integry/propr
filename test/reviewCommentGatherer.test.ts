@@ -292,6 +292,201 @@ describe('gatherUnprocessedReviewComments logic', () => {
 });
 
 // ---------------------------------------------------------------------------
+// extractReviewScore — score extraction from review body
+// ---------------------------------------------------------------------------
+
+const SCORE_RE = /Score:\s*(\d{1,2})\s*\/\s*10/;
+
+function extractReviewScore(body: string): number | null {
+    const cleaned = stripReviewBoilerplate(body);
+    const match = cleaned.match(SCORE_RE);
+    if (!match) return null;
+    const score = parseInt(match[1], 10);
+    if (score < 1 || score > 10) return null;
+    return score;
+}
+
+describe('extractReviewScore', () => {
+    test('extracts a valid score from a standard review body', () => {
+        const body = [
+            '## Score',
+            'Score: 7/10',
+            'The code is well-structured.',
+            '<!-- propr:ai-review model="claude-opus-4-1" -->',
+        ].join('\n');
+        assert.strictEqual(extractReviewScore(body), 7);
+    });
+
+    test('extracts score 10/10', () => {
+        const body = '## Score\nScore: 10/10\nPerfect.\n<!-- propr:ai-review model="x" -->';
+        assert.strictEqual(extractReviewScore(body), 10);
+    });
+
+    test('extracts score 1/10', () => {
+        const body = '## Score\nScore: 1/10\nNeeds work.\n<!-- propr:ai-review model="x" -->';
+        assert.strictEqual(extractReviewScore(body), 1);
+    });
+
+    test('handles extra whitespace around score', () => {
+        const body = 'Score:  8 / 10\n<!-- propr:ai-review model="x" -->';
+        assert.strictEqual(extractReviewScore(body), 8);
+    });
+
+    test('returns null for missing score', () => {
+        const body = '## Review\nNo score here.\n<!-- propr:ai-review model="x" -->';
+        assert.strictEqual(extractReviewScore(body), null);
+    });
+
+    test('returns null for score of 0 (out of range)', () => {
+        const body = 'Score: 0/10\n<!-- propr:ai-review model="x" -->';
+        assert.strictEqual(extractReviewScore(body), null);
+    });
+
+    test('returns null for score > 10', () => {
+        const body = 'Score: 11/10\n<!-- propr:ai-review model="x" -->';
+        assert.strictEqual(extractReviewScore(body), null);
+    });
+
+    test('returns null for malformed score line', () => {
+        const body = 'Score: seven/10\n<!-- propr:ai-review model="x" -->';
+        assert.strictEqual(extractReviewScore(body), null);
+    });
+
+    test('returns null for empty body', () => {
+        assert.strictEqual(extractReviewScore(''), null);
+    });
+
+    test('extracts first score when multiple appear', () => {
+        const body = 'Score: 5/10\nSome text\nScore: 8/10\n<!-- propr:ai-review model="x" -->';
+        assert.strictEqual(extractReviewScore(body), 5);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// getPendingReviewState — combined orchestration helper (simulated)
+// ---------------------------------------------------------------------------
+
+describe('getPendingReviewState logic', () => {
+    interface PRComment2 {
+        id: number;
+        body: string | null;
+        user: { login: string };
+        created_at: string;
+    }
+
+    function makeScoredComment(id: number, score: number, created_at?: string): PRComment2 {
+        return {
+            id,
+            body: `## Review\nFindings here\n## Score\nScore: ${score}/10\nJustification.\n<!-- propr:ai-review model="claude-opus-4-1" -->`,
+            user: { login: 'propr-bot' },
+            created_at: created_at ?? new Date().toISOString(),
+        };
+    }
+
+    function simulatePendingReviewState(
+        allComments: PRComment2[],
+        processedIds: string[] = [],
+    ) {
+        // Reuse gather logic
+        const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+        const aiReviewComments = allComments.filter(c => c.body && isReviewComment(c.body));
+        const processedSet = new Set(processedIds);
+        const unprocessedComments: { id: number; body: string; author: string; created_at: string }[] = [];
+        for (const comment of aiReviewComments) {
+            if (processedSet.has(String(comment.id))) continue;
+            if (ERROR_MARKER_RE.test(comment.body!)) continue;
+            if (new Date(comment.created_at).getTime() < cutoff) continue;
+            unprocessedComments.push({
+                id: comment.id,
+                body: stripReviewBoilerplate(comment.body!),
+                author: comment.user.login,
+                created_at: comment.created_at,
+            });
+        }
+        // Find latest score from newest comment first
+        const sorted = [...unprocessedComments].sort(
+            (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        );
+        let latestScore: number | null = null;
+        for (const comment of sorted) {
+            const score = extractReviewScore(comment.body);
+            if (score !== null) {
+                latestScore = score;
+                break;
+            }
+        }
+        return {
+            unprocessedComments,
+            latestScore,
+            hasPendingReview: unprocessedComments.length > 0,
+        };
+    }
+
+    test('returns latest score from most recent comment', () => {
+        const older = makeScoredComment(1, 4, '2026-04-27T10:00:00Z');
+        const newer = makeScoredComment(2, 7, '2026-04-28T10:00:00Z');
+        const state = simulatePendingReviewState([older, newer]);
+        assert.strictEqual(state.latestScore, 7);
+        assert.strictEqual(state.hasPendingReview, true);
+        assert.strictEqual(state.unprocessedComments.length, 2);
+    });
+
+    test('skips error comments when finding latest score', () => {
+        const good = makeScoredComment(1, 6, '2026-04-27T10:00:00Z');
+        const errComment: PRComment2 = {
+            id: 2,
+            body: '## Review\nFailed\nScore: 9/10\n<!-- propr:ai-review model="x" error="true" -->',
+            user: { login: 'propr-bot' },
+            created_at: '2026-04-28T10:00:00Z',
+        };
+        const state = simulatePendingReviewState([good, errComment]);
+        assert.strictEqual(state.latestScore, 6);
+        assert.strictEqual(state.unprocessedComments.length, 1);
+    });
+
+    test('returns null score when no comments have valid scores', () => {
+        const noScore: PRComment2 = {
+            id: 1,
+            body: '## Review\nNo score here.\n<!-- propr:ai-review model="x" -->',
+            user: { login: 'propr-bot' },
+            created_at: new Date().toISOString(),
+        };
+        const state = simulatePendingReviewState([noScore]);
+        assert.strictEqual(state.latestScore, null);
+        assert.strictEqual(state.hasPendingReview, true);
+    });
+
+    test('returns hasPendingReview false when no unprocessed comments', () => {
+        const state = simulatePendingReviewState([]);
+        assert.strictEqual(state.hasPendingReview, false);
+        assert.strictEqual(state.latestScore, null);
+        assert.strictEqual(state.unprocessedComments.length, 0);
+    });
+
+    test('skips processed comments and finds score from remaining', () => {
+        const processed = makeScoredComment(1, 3, '2026-04-27T10:00:00Z');
+        const unprocessed = makeScoredComment(2, 8, '2026-04-28T10:00:00Z');
+        const state = simulatePendingReviewState([processed, unprocessed], ['1']);
+        assert.strictEqual(state.latestScore, 8);
+        assert.strictEqual(state.unprocessedComments.length, 1);
+    });
+
+    test('handles mix of scored and unscored comments', () => {
+        const unscored: PRComment2 = {
+            id: 1,
+            body: '## Review\nFindings only.\n<!-- propr:ai-review model="x" -->',
+            user: { login: 'propr-bot' },
+            created_at: '2026-04-28T12:00:00Z',
+        };
+        const scored = makeScoredComment(2, 5, '2026-04-28T10:00:00Z');
+        const state = simulatePendingReviewState([unscored, scored]);
+        // Most recent (unscored) has no score, so falls through to scored one
+        assert.strictEqual(state.latestScore, 5);
+        assert.strictEqual(state.unprocessedComments.length, 2);
+    });
+});
+
+// ---------------------------------------------------------------------------
 // extractReviewModel — model extraction from marker
 // ---------------------------------------------------------------------------
 

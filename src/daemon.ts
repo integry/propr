@@ -15,6 +15,15 @@ import {
     handleCommentDeleted,
     handleCommentEdited,
     processCommentEvent,
+    setUltrafixDeps,
+    setUltrafixCheckRunHook,
+    areAllChecksPassing,
+    getCurrentPRHead,
+    getCheckRunsStatus,
+    loadUltrafixRatingGoal,
+    loadUltrafixMaxCycles,
+    loadUltrafixPauseSeconds,
+    loadPrReviewModel,
     AgentRegistry
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
@@ -32,6 +41,9 @@ import {
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
+import { startLoop, clearState } from './jobs/ultrafixOrchestrationService.js';
+import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
+import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -140,6 +152,32 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     }
 
     await loadAllConfigs();
+
+    // Wire up ultrafix dependencies so packages/core can call into app-level services
+    // without cross-package imports.
+    setUltrafixDeps({
+        loadUltrafixRatingGoal,
+        loadUltrafixMaxCycles,
+        loadUltrafixPauseSeconds,
+        loadPrReviewModel,
+        startLoop,
+        clearState,
+        getPendingReviewState,
+    });
+
+    // Wire up check_run dependencies for ultrafix readiness gating
+    setCheckRunDeps({
+        areAllChecksPassing,
+        getCurrentPRHead,
+        getCheckRunsStatus,
+    });
+
+    // Wire up check_run hook to resume deferred ultrafix continuations
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number, _headSha: string) => {
+        const log = logger.withCorrelation(generateCorrelationId());
+        await resumeDeferredContinuation({ owner, repo, pr: prNumber }, redisClient, log as unknown as Logger);
+    });
 
     const repos = getRepos();
 

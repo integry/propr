@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getTaskHistory,
   getTaskAnalysis,
+  getTaskLiveDetails,
   stopTaskExecution,
   StopExecutionResponse,
   deleteTask
@@ -49,6 +50,24 @@ export const useTaskData = (taskId: string | undefined) => {
     } catch (err) {
       console.error('Error fetching task history:', err);
       throw err;
+    }
+  }, [taskId]);
+
+  const fetchPersistedLiveDetails = useCallback(async () => {
+    if (!taskId) return null;
+
+    try {
+      const data = await getTaskLiveDetails(taskId) as LiveDetails;
+      setLiveDetails({
+        events: data.events || [],
+        todos: data.todos || [],
+        currentTask: data.currentTask || null,
+        tokenUsage: data.tokenUsage || null,
+      });
+      return data;
+    } catch (err) {
+      console.error('Error fetching persisted live details:', err);
+      return null;
     }
   }, [taskId]);
 
@@ -115,6 +134,7 @@ export const useTaskData = (taskId: string | undefined) => {
       try {
         setLoading(true);
         await fetchTaskHistory();
+        await fetchPersistedLiveDetails();
       } catch (err) {
         setError((err as Error).message);
         console.error('Error fetching task history:', err);
@@ -124,7 +144,7 @@ export const useTaskData = (taskId: string | undefined) => {
     };
 
     fetchInitialData();
-  }, [taskId, fetchTaskHistory]);
+  }, [taskId, fetchTaskHistory, fetchPersistedLiveDetails]);
 
   // Subscribe to WebSocket events for this task
   useEffect(() => {

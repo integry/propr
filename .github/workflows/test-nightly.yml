@@ -10,7 +10,7 @@ on:
 jobs:
   e2e-tests:
     name: Run E2E Test Suite
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, propr]
     permissions:
       contents: read
       issues: write

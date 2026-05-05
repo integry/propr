@@ -1,7 +1,7 @@
 import type { ClaudeCodeResponse, ClaudeResult } from '@propr/core';
 import { getDetailedUsageStats, calculateCostWithCachePricing } from '@propr/core';
 import type { DetailedUsageStats } from '@propr/core';
-import { getModelName, getModelPricing, getOpenRouterId, getDefaultModel } from '@propr/core';
+import { getModelName, getModelPricing, getOpenRouterId, getDefaultModel, formatSubscriptionUsage } from '@propr/core';
 
 function formatDuration(ms: number): string {
     const seconds = Math.floor(ms / 1000);
@@ -33,6 +33,26 @@ async function calculateCost(
     return cost;
 }
 
+function getUsageStatsWithFallback(claudeResult: ClaudeCodeResponse): DetailedUsageStats {
+    const detailedStats = getDetailedUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
+    if (detailedStats.totalTokens > 0) {
+        return detailedStats;
+    }
+
+    const usage = claudeResult.tokenUsage;
+    const inputTokens = (usage?.input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0);
+    const outputTokens = usage?.output_tokens ?? 0;
+
+    return {
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens: usage?.cache_creation_input_tokens ?? 0,
+        cacheReadTokens: usage?.cache_read_input_tokens ?? 0,
+        totalInputWithCache: inputTokens,
+        totalTokens: inputTokens + outputTokens
+    };
+}
+
 export async function buildMetricsSection(
     claudeResult: ClaudeCodeResponse,
     llm: string | null | undefined,
@@ -44,7 +64,7 @@ export async function buildMetricsSection(
     const executionTime = claudeResult.executionTime ? formatDuration(claudeResult.executionTime) : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 
-    const detailedStats = getDetailedUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
+    const detailedStats = getUsageStatsWithFallback(claudeResult);
     const { totalInputWithCache: inputTokens, outputTokens, totalTokens } = detailedStats;
 
     const cost = await calculateCost(claudeResult, detailedStats, modelId);
@@ -58,6 +78,9 @@ export async function buildMetricsSection(
     if (executionTime) section += `* **Time:** ${executionTime}\n`;
     if (totalTokens > 0) section += `* **Tokens:** ${totalTokens.toLocaleString()} (${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out)\n`;
     if (cost != null && cost > 0) section += `* **Cost:** $${cost.toFixed(2)}\n`;
+
+    const subscriptionUsage = formatSubscriptionUsage(claudeResult.usageMetrics);
+    if (subscriptionUsage) section += `* **Subscription:** ${subscriptionUsage}\n`;
 
     return section;
 }

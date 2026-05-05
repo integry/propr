@@ -1,6 +1,6 @@
 import React from 'react';
 import { TaskInfo } from './types';
-import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw } from 'lucide-react';
 
 interface TaskHeaderProps {
   taskInfo: TaskInfo | null;
@@ -126,6 +126,12 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${commandModeBadge.bgColor} ${commandModeBadge.color}`}>
             {commandModeBadge.icon}
             {commandModeBadge.label}
+          </span>
+        )}
+        {taskInfo?.ultrafixCycle && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">
+            <RefreshCw className="h-3.5 w-3.5" />
+            Ultrafix
           </span>
         )}
       </div>

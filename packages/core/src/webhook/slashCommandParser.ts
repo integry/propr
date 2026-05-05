@@ -1,11 +1,11 @@
 /**
  * Slash command parser for PR comment intake.
  *
- * Recognizes `/review`, `/fix`, `/merge`, `/switch`, and `/use` commands from PR comments.
+ * Recognizes `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix` commands from PR comments.
  * Splits the comment into command name, arguments, and trailing multiline instructions.
  */
 
-export type SlashCommandName = 'review' | 'fix' | 'merge' | 'switch' | 'use';
+export type SlashCommandName = 'review' | 'fix' | 'merge' | 'switch' | 'use' | 'ultrafix';
 
 export interface ParsedSlashCommand {
     /** The recognized command */
@@ -54,9 +54,25 @@ export interface UseCommandMeta {
     warning?: string;
 }
 
-export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta | SwitchCommandMeta | UseCommandMeta;
+export interface UltrafixCommandMeta {
+    mode: 'ultrafix';
+    /** Target number of passing review cycles (undefined = not provided, use DB default) */
+    goal?: number;
+    /** Maximum fix cycles before giving up (undefined = not provided, use DB default) */
+    maxCycles?: number;
+    /** Seconds to pause between cycles (undefined = not provided, use DB default) */
+    pauseSeconds?: number;
+    /** Model to use for review cycles (undefined = not provided, use DB default) */
+    reviewModel?: string;
+    /** Extra instructions from lines below the command */
+    instructions: string;
+    /** Warning message if unknown keys were encountered */
+    warning?: string;
+}
 
-const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge|switch|use)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
+export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta | SwitchCommandMeta | UseCommandMeta | UltrafixCommandMeta;
+
+const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge|switch|use|ultrafix)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
 
 /**
  * Parse a PR comment body for a slash command.
@@ -100,6 +116,7 @@ function normalizeModelLabel(label: string): string {
  * For `/merge`: returns a simple merge marker.
  * For `/switch`: extracts single model target and optional instructions.
  * For `/use`: extracts single model for one-time override and optional instructions.
+ * For `/ultrafix`: parses positional goal or named key=value arguments.
  */
 export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
     switch (parsed.command) {
@@ -143,5 +160,99 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
             }
             return useMeta;
         }
+        case 'ultrafix': {
+            return parseUltrafixArgs(parsed);
+        }
     }
+}
+
+const ULTRAFIX_KNOWN_KEYS = new Set(['goal', 'max', 'pause', 'model']);
+
+/** Parse a string as a positive integer, or return undefined. Rejects scientific notation and decimals. */
+function parsePositiveInt(value: string, allowZero = false): number | undefined {
+    if (!/^-?\d+$/.test(value)) return undefined;
+    const n = Number(value);
+    if (!Number.isSafeInteger(n)) return undefined;
+    return allowZero ? (n >= 0 ? n : undefined) : (n > 0 ? n : undefined);
+}
+
+/** Apply a single key=value pair to the ultrafix meta object. Returns an error string if invalid, or undefined on success. */
+function applyUltrafixKeyValue(meta: UltrafixCommandMeta, key: string, value: string): string | undefined {
+    switch (key) {
+        case 'goal': {
+            const n = parsePositiveInt(value);
+            if (n === undefined || n < 1 || n > 10) return `goal must be an integer between 1 and 10, got '${value}'`;
+            meta.goal = n;
+            return undefined;
+        }
+        case 'max': {
+            const n = parsePositiveInt(value);
+            if (n === undefined || n < 1) return `max must be a positive integer, got '${value}'`;
+            meta.maxCycles = n;
+            return undefined;
+        }
+        case 'pause': {
+            const n = parsePositiveInt(value, true);
+            if (n === undefined) return `pause must be a non-negative integer, got '${value}'`;
+            meta.pauseSeconds = n;
+            return undefined;
+        }
+        case 'model':
+            meta.reviewModel = normalizeModelLabel(value);
+            return undefined;
+        default:
+            return undefined;
+    }
+}
+
+/**
+ * Parse `/ultrafix` arguments supporting positional and key=value forms.
+ *
+ * - `/ultrafix` → all defaults
+ * - `/ultrafix 8` → goal=8
+ * - `/ultrafix goal=8 max=10 pause=60 model=claude-sonnet-4-6`
+ */
+function parseUltrafixArgs(parsed: ParsedSlashCommand): UltrafixCommandMeta {
+    const meta: UltrafixCommandMeta = {
+        mode: 'ultrafix',
+        instructions: parsed.instructions,
+    };
+
+    const warnings: string[] = [];
+    let positionalGoalSet = false;
+
+    for (let i = 0; i < parsed.args.length; i++) {
+        const arg = parsed.args[i];
+        const eqIdx = arg.indexOf('=');
+        if (eqIdx !== -1) {
+            const key = arg.substring(0, eqIdx).toLowerCase();
+            const value = arg.substring(eqIdx + 1);
+
+            if (ULTRAFIX_KNOWN_KEYS.has(key)) {
+                const err = applyUltrafixKeyValue(meta, key, value);
+                if (err) warnings.push(err);
+            } else {
+                warnings.push(`Unknown key '${key}' ignored`);
+            }
+        } else if (!positionalGoalSet && /^\d+$/.test(arg)) {
+            // Treat the first bare number as the goal, regardless of position
+            // relative to named args. A named goal= later will override this.
+            positionalGoalSet = true;
+            const n = parsePositiveInt(arg);
+            if (n === undefined || n < 1 || n > 10) {
+                warnings.push(`Invalid positional goal '${arg}'; must be an integer between 1 and 10`);
+            } else if (meta.goal === undefined) {
+                // Only set if no named goal= was already provided
+                meta.goal = n;
+            }
+        } else {
+            warnings.push(`Extra argument '${arg}' ignored`);
+        }
+    }
+
+    if (warnings.length > 0) {
+        meta.warning = warnings.join('; ');
+    }
+
+    return meta;
 }

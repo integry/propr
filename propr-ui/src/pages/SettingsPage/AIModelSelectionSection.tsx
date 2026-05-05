@@ -2,13 +2,21 @@ import React from 'react';
 // CI trigger
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
-import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
+import {
+  buildAllModelOptions,
+  buildSummarizationOptions,
+  buildContextAnalysisOptions,
+  buildPlanGenerationOptions,
+  buildPrReviewOptions,
+  buildImplementationAgentOptions
+} from './modelSelectionHelpers';
 
 interface AIModelSelectionSettings {
   analysis_model_fast: string;
   planner_context_model: string;
   planner_generation_model: string;
   default_agent_alias: string;
+  pr_review_model: string;
 }
 
 interface AIModelSelectionSectionProps {
@@ -21,24 +29,22 @@ interface AIModelSelectionSectionProps {
   className?: string;
 }
 
-interface ModelOption {
-  value: string;
-  label: string;
-  enabled: boolean;
-  isRecommended?: boolean;
-}
+// Teal monospace chip for recommended badge
+const RecommendedChip = () => (
+  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium font-mono bg-teal-100 text-teal-700 uppercase tracking-wide">
+    REC
+  </span>
+);
 
-// Models recommended for summarization (cost-effective options)
-const RECOMMENDED_SUMMARIZATION_ALIASES = ['haiku', 'flash', 'flash-lite', 'gpt5-mini', 'o4-mini'];
-
-// Models recommended for context analysis (fast, cost-effective options)
-const RECOMMENDED_CONTEXT_ANALYSIS_ALIASES = ['haiku', 'flash', 'flash-lite', 'gpt5-mini', 'o4-mini'];
-
-// Models recommended for plan generation (high capability options)
-const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro'];
-
-// Models recommended for implementation (high capability options)
-const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude'];
+const NoAgentsMessage = ({ label }: { label: string }) => (
+  <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
+    No {label} available. Please enable an agent in the{' '}
+    <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
+      AI Agents
+    </a>{' '}
+    page first.
+  </div>
+);
 
 const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   settings,
@@ -49,119 +55,18 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   onDefaultAgentChange,
   className
 }) => {
-  // Helper to get pretty name from MODEL_INFO_MAP
-  const getModelLabel = (agentAlias: string, modelId: string) => {
-    const info = MODEL_INFO_MAP[modelId];
-    return info ? `${agentAlias} - ${info.name}` : `${agentAlias} - ${modelId}`;
-  };
-
-  // Check if a model is recommended for summarization
-  const isRecommendedForSummarization = (modelId: string) => {
-    const info = MODEL_INFO_MAP[modelId];
-    return info && RECOMMENDED_SUMMARIZATION_ALIASES.includes(info.shortAlias);
-  };
-
-  // Check if a model is recommended for context analysis
-  const isRecommendedForContextAnalysis = (modelId: string) => {
-    const info = MODEL_INFO_MAP[modelId];
-    return info && RECOMMENDED_CONTEXT_ANALYSIS_ALIASES.includes(info.shortAlias);
-  };
-
-  // Check if a model is recommended for plan generation
-  const isRecommendedForPlanGeneration = (modelId: string) => {
-    const info = MODEL_INFO_MAP[modelId];
-    return info && RECOMMENDED_PLAN_GENERATION_ALIASES.includes(info.shortAlias);
-  };
-
-  // Check if an agent is recommended for implementation
-  const isAgentRecommendedForImplementation = (agentAlias: string) => {
-    return RECOMMENDED_IMPLEMENTATION_ALIASES.some(alias =>
-      agentAlias.toLowerCase().includes(alias.toLowerCase())
-    );
-  };
-
-  // Generate model options from agents with human-readable names
-  const modelOptions: ModelOption[] = agents.flatMap(agent =>
-    agent.supportedModels.map(model => ({
-      value: `${agent.alias}:${model}`,
-      label: getModelLabel(agent.alias, model),
-      enabled: agent.enabled
-    }))
-  );
-
+  const enabledAgents = agents.filter(a => a.enabled);
+  const modelOptions = buildAllModelOptions(agents);
   const enabledOptions = modelOptions.filter(opt => opt.enabled);
   const disabledOptions = modelOptions.filter(opt => !opt.enabled);
-
-  // Get only enabled agents for summarization dropdown
-  const enabledAgents = agents.filter(a => a.enabled);
-
-  // Model options for summarization (only enabled agents, sorted by recommendation)
-  const summarizationOptions: ModelOption[] = enabledAgents.flatMap(agent =>
-    agent.supportedModels.map(model => ({
-      value: `${agent.alias}:${model}`,
-      label: getModelLabel(agent.alias, model),
-      enabled: agent.enabled,
-      isRecommended: isRecommendedForSummarization(model)
-    }))
-  ).sort((a, b) => {
-    if (a.isRecommended && !b.isRecommended) return -1;
-    if (!a.isRecommended && b.isRecommended) return 1;
-    return 0;
-  });
-
-  // Model options for context analysis (only enabled agents, sorted by recommendation - faster models)
-  const contextAnalysisOptions: ModelOption[] = enabledAgents.flatMap(agent =>
-    agent.supportedModels.map(model => ({
-      value: `${agent.alias}:${model}`,
-      label: getModelLabel(agent.alias, model),
-      enabled: agent.enabled,
-      isRecommended: isRecommendedForContextAnalysis(model)
-    }))
-  ).sort((a, b) => {
-    if (a.isRecommended && !b.isRecommended) return -1;
-    if (!a.isRecommended && b.isRecommended) return 1;
-    return 0;
-  });
-
-  // Model options for plan generation (only enabled agents, sorted by recommendation - high capability models)
-  const planGenerationOptions: ModelOption[] = enabledAgents.flatMap(agent =>
-    agent.supportedModels.map(model => ({
-      value: `${agent.alias}:${model}`,
-      label: getModelLabel(agent.alias, model),
-      enabled: agent.enabled,
-      isRecommended: isRecommendedForPlanGeneration(model)
-    }))
-  ).sort((a, b) => {
-    if (a.isRecommended && !b.isRecommended) return -1;
-    if (!a.isRecommended && b.isRecommended) return 1;
-    return 0;
-  });
-
-  // Agent options for default implementation agent (only enabled agents, sorted by recommendation)
-  interface AgentOption {
-    value: string;
-    label: string;
-    isRecommended: boolean;
-  }
-  const implementationAgentOptions: AgentOption[] = enabledAgents.map(agent => ({
-    value: agent.alias,
-    label: agent.alias,
-    isRecommended: isAgentRecommendedForImplementation(agent.alias)
-  })).sort((a, b) => {
-    if (a.isRecommended && !b.isRecommended) return -1;
-    if (!a.isRecommended && b.isRecommended) return 1;
-    return 0;
-  });
+  const summarizationOptions = buildSummarizationOptions(enabledAgents);
+  const contextAnalysisOptions = buildContextAnalysisOptions(enabledAgents);
+  const planGenerationOptions = buildPlanGenerationOptions(enabledAgents);
+  const prReviewOptions = buildPrReviewOptions(enabledAgents);
+  const implementationAgentOptions = buildImplementationAgentOptions(enabledAgents);
 
   const hasAgents = agents.length > 0;
   const hasEnabledAgents = enabledAgents.length > 0;
-
-  // Teal monospace chip for recommended badge
-  const RecommendedChip = () => (
-    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium font-mono bg-teal-100 text-teal-700 uppercase tracking-wide">
-      REC
-    </span>
-  );
 
   return (
     <div className={className || ''}>
@@ -175,7 +80,6 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
             <h5 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Implementation</h5>
           </div>
           <div className="space-y-3 pl-6">
-            {/* Default Implementation Agent */}
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="default_agent_alias">
                 Default Implementation Agent
@@ -189,19 +93,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                 >
                   {implementationAgentOptions.map(opt => (
                     <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                      {opt.isRecommended ? ' (Recommended)' : ''}
+                      {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
                     </option>
                   ))}
                 </select>
               ) : (
-                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
-                  No enabled agents available. Please enable an agent in the{' '}
-                  <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
-                    AI Agents
-                  </a>{' '}
-                  page first.
-                </div>
+                <NoAgentsMessage label="enabled agents" />
               )}
               <p className="mt-1 text-xs text-gray-500">
                 The agent used for code implementation tasks when no specific agent is specified.
@@ -223,7 +120,6 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
             <h5 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Planning</h5>
           </div>
           <div className="space-y-3 pl-6">
-            {/* Plan Context Analysis Model */}
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="planner_context_model">
                 Plan Context Analysis Model
@@ -239,19 +135,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   <option value="">Select a model...</option>
                   {contextAnalysisOptions.map(opt => (
                     <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                      {opt.isRecommended ? ' (Recommended)' : ''}
+                      {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
                     </option>
                   ))}
                 </select>
               ) : (
-                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
-                  No enabled agents available. Please enable an agent in the{' '}
-                  <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
-                    AI Agents
-                  </a>{' '}
-                  page first.
-                </div>
+                <NoAgentsMessage label="enabled agents" />
               )}
               <p className="mt-1 text-xs text-gray-500">
                 Used for matching prompts to relevant files using semantic analysis.
@@ -264,7 +153,6 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               </p>
             </div>
 
-            {/* Plan Generation Model */}
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="planner_generation_model">
                 Plan Generation Model
@@ -280,19 +168,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   <option value="">Select a model...</option>
                   {planGenerationOptions.map(opt => (
                     <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                      {opt.isRecommended ? ' (Recommended)' : ''}
+                      {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
                     </option>
                   ))}
                 </select>
               ) : (
-                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
-                  No enabled agents available. Please enable an agent in the{' '}
-                  <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
-                    AI Agents
-                  </a>{' '}
-                  page first.
-                </div>
+                <NoAgentsMessage label="enabled agents" />
               )}
               <p className="mt-1 text-xs text-gray-500">
                 Used for generating detailed implementation plans from context.
@@ -305,7 +186,6 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               </p>
             </div>
 
-            {/* Summarization Model */}
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="summarization_model">
                 Summarization Model
@@ -320,19 +200,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   <option value="">Select a model...</option>
                   {summarizationOptions.map(opt => (
                     <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                      {opt.isRecommended ? ' (Recommended)' : ''}
+                      {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
                     </option>
                   ))}
                 </select>
               ) : (
-                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
-                  No enabled agents available. Please enable an agent in the{' '}
-                  <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
-                    AI Agents
-                  </a>{' '}
-                  page first.
-                </div>
+                <NoAgentsMessage label="enabled agents" />
               )}
               <p className="mt-1 text-xs text-gray-500">
                 Used to generate file and directory summaries for semantic search.
@@ -354,10 +227,42 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
             <h5 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Review</h5>
           </div>
           <div className="space-y-3 pl-6">
-            {/* Post-implementation Analysis Model */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="pr_review_model">
+                Default PR Review Model
+              </label>
+              {hasEnabledAgents ? (
+                <select
+                  id="pr_review_model"
+                  name="pr_review_model"
+                  value={settings.pr_review_model}
+                  onChange={onSettingChange}
+                  className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
+                >
+                  <option value="">Use default agent model</option>
+                  {prReviewOptions.map(opt => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <NoAgentsMessage label="enabled agents" />
+              )}
+              <p className="mt-1 text-xs text-gray-500">
+                The model used to review pull requests and provide feedback.
+                {hasEnabledAgents && (
+                  <span className="flex items-center gap-1.5 mt-1">
+                    <RecommendedChip />
+                    <span>models are high-capability models best suited for thorough PR reviews.</span>
+                  </span>
+                )}
+              </p>
+            </div>
+
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="analysis_model_fast">
-                Post-implementation Analysis Model
+                Post-Implementation Analysis Model
               </label>
               {hasAgents ? (
                 <select
@@ -371,33 +276,23 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   {enabledOptions.length > 0 && (
                     <optgroup label="Enabled Agents">
                       {enabledOptions.map(opt => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
                       ))}
                     </optgroup>
                   )}
                   {disabledOptions.length > 0 && (
                     <optgroup label="Disabled Agents">
                       {disabledOptions.map(opt => (
-                        <option key={opt.value} value={opt.value} disabled>
-                          {opt.label}
-                        </option>
+                        <option key={opt.value} value={opt.value} disabled>{opt.label}</option>
                       ))}
                     </optgroup>
                   )}
                 </select>
               ) : (
-                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
-                  No agents configured. Please add an agent in the{' '}
-                  <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
-                    AI Agents
-                  </a>{' '}
-                  page first.
-                </div>
+                <NoAgentsMessage label="agents configured" />
               )}
               <p className="mt-1 text-xs text-gray-500">
-                Analyzes code changes after implementation.
+                Analyzes the agent run, prompt, and diff after implementation. This is not used for PR review.
               </p>
             </div>
           </div>

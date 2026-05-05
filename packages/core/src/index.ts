@@ -22,12 +22,17 @@ export { ensureGitRepository } from './utils/git/gitValidation.js';
 export { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
 export type { LabelContext, UpdateResults } from './utils/github/labelOperations.js';
 export { createLogFiles, generateCompletionComment } from './utils/github/logFiles.js';
+export { formatSubscriptionUsage } from './utils/github/formatSubscriptionUsage.js';
+export type { SubscriptionUsageRecord, SubscriptionUsageMetrics } from './utils/github/formatSubscriptionUsage.js';
 
 export { getGitHubInstallationToken, getAuthenticatedOctokit } from './auth/githubAuth.js';
 export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
 export { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS } from './auth/systemTaskAuth.js';
 
 export * from './config/configManager.js';
+// Note: loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel
+// are re-exported via configManager.ts (which re-exports from configManagerUltrafix.ts).
+// Do NOT add explicit re-exports here — they would conflict with the wildcard export above.
 export {
     createPlanIssue,
     getPlanIssuesByDraft,
@@ -108,13 +113,16 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
+export { areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from './webhook/checkRunHelpers.js';
+export type { CheckRunsStatus } from './webhook/checkRunHelpers.js';
+export { handleCheckRunEvent, handleStatusEvent, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
-export { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.js';
-export type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';
+export { handleCommentDeleted, handleCommentEdited, processCommentEvent, setUltrafixDeps } from './webhook/commentEventHandler.js';
+export type { CommentPayload, CommentEventConfig, CommentEventType, UltrafixDeps } from './webhook/commentEventHandler.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
 export { parseSlashCommand, buildCommandMeta } from './webhook/slashCommandParser.js';
-export type { ParsedSlashCommand, SlashCommandName, CommandMeta, ReviewCommandMeta, FixCommandMeta, MergeCommandMeta } from './webhook/slashCommandParser.js';
+export type { ParsedSlashCommand, SlashCommandName, CommandMeta, ReviewCommandMeta, FixCommandMeta, MergeCommandMeta, UltrafixCommandMeta } from './webhook/slashCommandParser.js';
 export { handlePullRequestConflictDetection, handlePushConflictDetection, handleMergeCommand } from './webhook/mergeConflictDetector.js';
 export type { ConflictDetectionOutcome, ConflictDetectionResult, HandleMergeCommandOptions } from './webhook/mergeConflictDetector.js';
 export {

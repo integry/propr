@@ -8,7 +8,7 @@ import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError } from '@propr/core';
+import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError, loadPrReviewModel } from '@propr/core';
 import {
     fetchLinkedIssueContext,
     buildCommentHistory, updateTaskTitleForPR
@@ -18,6 +18,9 @@ import {
 } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
+import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
+import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
+import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
 import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
@@ -120,7 +123,7 @@ async function resolveDefaultAgentAndModel(
     return { resolvedAlias, resolvedModel };
 }
 
-async function resolveReviewAssignments(
+export async function resolveReviewAssignments(
     requestedModels: string[] | undefined,
     llm: string | null | undefined,
     correlatedLogger: Logger
@@ -130,7 +133,30 @@ async function resolveReviewAssignments(
 
     const assignments: ReviewAssignment[] = [];
 
-    const modelsToReview = (requestedModels && requestedModels.length > 0) ? requestedModels : [llm || 'default'];
+    let modelsToReview: string[];
+    if (requestedModels && requestedModels.length > 0) {
+        // Explicit model(s) specified in /review command
+        modelsToReview = requestedModels;
+    } else {
+        // No explicit models - use pr_review_model config, ignoring llm from PR labels
+        // (labels specify implementation model, not review model)
+        let prReviewModel = '';
+        try {
+            prReviewModel = await loadPrReviewModel();
+        } catch (err) {
+            correlatedLogger.debug({ error: (err as Error).message }, 'Failed to load pr_review_model setting');
+        }
+        if (prReviewModel) {
+            modelsToReview = [prReviewModel];
+            correlatedLogger.info({ prReviewModel }, 'Using configured pr_review_model as default review model');
+        } else if (llm) {
+            // Fall back to llm from labels only if no pr_review_model configured
+            modelsToReview = [llm];
+            correlatedLogger.info({ llm }, 'No pr_review_model configured, falling back to llm from labels');
+        } else {
+            modelsToReview = ['default'];
+        }
+    }
 
     for (const modelLabel of modelsToReview) {
         try {
@@ -276,6 +302,60 @@ async function updateReviewCompletionComment(
     }
 }
 
+function getWebUiTaskUrl(taskId: string): string {
+    const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
+    return `${webUiUrl}/tasks/${taskId}`;
+}
+
+async function fetchReviewContext(
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+    prData: PRData,
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlationId: string; correlatedLogger: Logger }
+) {
+    const { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger } = params;
+    const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
+    const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const linkedIssueResult = await fetchLinkedIssueContext(octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
+    const commentHistory = buildCommentHistory(commentsByTime, prData, correlationId);
+
+    correlatedLogger.info({ pullRequestNumber }, 'Fetching PR diff for review');
+    const prFiles = await fetchPRFiles({ octokit, repoOwner, repoName, pullRequestNumber });
+    const prDiff = formatPRDiff(prFiles);
+    correlatedLogger.info({ pullRequestNumber, fileCount: prFiles.length, diffLength: prDiff.length }, 'Fetched PR diff');
+
+    const fileContentsMap = await fetchPRFileContents({ octokit, repoOwner, repoName, prHeadRef: prData.data.head.ref, files: prFiles });
+    const fileContents = formatFileContents(fileContentsMap);
+    correlatedLogger.info({ pullRequestNumber, filesWithContent: fileContentsMap.size, contentLength: fileContents.length }, 'Fetched full file contents');
+
+    return { commentHistory, linkedIssueResult, prDiff, fileContents };
+}
+
+async function handleUltrafixContinuation(
+    action: UltrafixAction,
+    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
+): Promise<void> {
+    if (!params.job.data.ultrafixMeta) return;
+    const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } = params;
+    try {
+        const continuationResult = await continueUltrafixLoop({
+            owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: action,
+            ultrafixMeta: job.data.ultrafixMeta!, redisClient, correlatedLogger, correlationId,
+            currentJobId: job.id,
+        });
+        correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
+        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), correlatedLogger);
+    } catch (contErr) {
+        correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
+    }
+}
+
+async function resolveUltrafixHistoryMeta(
+    job: Job<CommentJobData>, redisClient: Redis, issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number }
+): Promise<Record<string, unknown> | undefined> {
+    if (!job.data.ultrafixMeta) return undefined;
+    return buildUltrafixHistoryMeta(job.data.ultrafixMeta, await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber));
+}
+
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments } = params;
     let { llm } = params;
@@ -293,54 +373,30 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     llm = resolvedLlm;
     const { combinedCommentBody, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
-
-    const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
-    const taskUrl = `${webUiUrl}/tasks/${taskId}`;
+    const taskUrl = getWebUiTaskUrl(taskId);
 
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting review processing',
         historyMetadata: { commandMode: 'review' }
     });
 
-    const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
-    const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
-    const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
+    const { commentHistory, linkedIssueResult, prDiff, fileContents } = await fetchReviewContext(
+        state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger }
+    );
 
-    correlatedLogger.info({ pullRequestNumber }, 'Fetching PR diff for review');
-    const prFiles = await fetchPRFiles({
-        octokit: state.octokit,
-        repoOwner,
-        repoName,
-        pullRequestNumber,
-    });
-    const prDiff = formatPRDiff(prFiles);
-    correlatedLogger.info({ pullRequestNumber, fileCount: prFiles.length, diffLength: prDiff.length }, 'Fetched PR diff');
-
-    // Fetch full file contents to provide complete context for review
-    const prHeadRef = prData!.data.head.ref;
-    const fileContentsMap = await fetchPRFileContents({
-        octokit: state.octokit,
-        repoOwner,
-        repoName,
-        prHeadRef,
-        files: prFiles,
-    });
-    const fileContents = formatFileContents(fileContentsMap);
-    correlatedLogger.info({ pullRequestNumber, filesWithContent: fileContentsMap.size, contentLength: fileContents.length }, 'Fetched full file contents');
-
-    const requestedModels = job.data.requestedModels;
-    const commandInstructions = job.data.commandInstructions;
-    const assignments = await resolveReviewAssignments(requestedModels, llm, correlatedLogger);
+    const assignments = await resolveReviewAssignments(job.data.requestedModels, llm, correlatedLogger);
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
 
-    const commentIds = state.unprocessedComments.map(c => String(c.id)).join(', ');
+    // Filter out ultrafix synthetic comments (id: 0) from displayed IDs
+    const realComments = state.unprocessedComments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
+    const commentIdsSuffix = realComments.length > 0
+        ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id)).join(', ')}_`
+        : '';
     const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${commentIds}_`,
+        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}`,
     });
-    correlatedLogger.info({ pullRequestNumber, commentId: state.startingWorkComment.data.id }, 'Posted starting review comment');
 
     job.data.title = `Review: ${prData!.data.title}`;
     job.data.subtitle = `Code review with ${assignments.map(a => a.label).join(', ')}`;
@@ -352,7 +408,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const reviewCtx: RunReviewsContext = {
         registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
         taskId, taskUrl, combinedCommentBody, commentHistory,
-        originalTaskSpec: linkedIssueResult.context || '', commandInstructions, prDiff, fileContents, correlatedLogger,
+        originalTaskSpec: linkedIssueResult.context || '', commandInstructions: job.data.commandInstructions, prDiff, fileContents, correlatedLogger,
     };
 
     const reviewResults: ReviewResult[] = [];
@@ -366,6 +422,8 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
     const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
 
+    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, redisClient, { repoOwner, repoName, pullRequestNumber });
+
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',
         historyMetadata: {
@@ -374,9 +432,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 model: r.assignment.model, label: r.assignment.label,
                 success: r.analysisResult.success, commentUrl: r.commentUrl, error: r.error,
             })),
+            ...ultrafixHistoryMeta,
         },
     });
 
     correlatedLogger.info({ pullRequestNumber, successCount, failCount, totalReviews: assignments.length }, 'Review processing completed');
+    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
+
     return { status: 'complete', pullRequestNumber, reviewsPosted: successCount, reviewsFailed: failCount };
 }

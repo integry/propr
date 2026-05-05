@@ -28,6 +28,32 @@ function extractCommitMessage(summary: string | undefined): string | null {
     return cleaned || null;
 }
 
+function extractExecutionError(
+    claudeOutput: ReturnType<typeof parseStreamJsonOutput>,
+    stderr: string
+): string | undefined {
+    if (claudeOutput.success) {
+        return undefined;
+    }
+
+    const resultText = claudeOutput.finalResult?.result?.trim();
+    if (resultText) {
+        return resultText;
+    }
+
+    const parsedError = claudeOutput.error?.trim();
+    if (parsedError) {
+        return parsedError;
+    }
+
+    const stderrText = stderr.trim();
+    if (stderrText) {
+        return stderrText;
+    }
+
+    return undefined;
+}
+
 /**
  * Result of processing a Docker execution result.
  */
@@ -83,6 +109,7 @@ export function processDockerResult(
     // Extract commit message from Claude's summary
     const summary = claudeOutput.finalResult?.result ?? undefined;
     const commitMessage = extractCommitMessage(summary);
+    const executionError = extractExecutionError(claudeOutput, result.stderr || '');
 
     // Build the agent execution response
     const response: AgentExecutionResult = {
@@ -98,6 +125,7 @@ export function processDockerResult(
         modifiedFiles: [],
         commitMessage,
         summary,
+        error: executionError,
         prompt,
         conversationLog: fullConversationLog,
         tokenUsage: correctedTokenUsage
