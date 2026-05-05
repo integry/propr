@@ -12,10 +12,6 @@ export function getEnabledResummarizationTargets(monitoredRepos: MonitoredRepoCo
     .map(repo => ({ name: repo.name, baseBranch: repo.baseBranch }));
 }
 
-export function shouldPublishOptimisticIndexing(result: { success: boolean }): boolean {
-  return result.success;
-}
-
 function validateRepositoryName(repository: unknown): string | null {
   if (!repository || typeof repository !== 'string') {
     return 'repository is required and must be a string (e.g., "owner/repo")';

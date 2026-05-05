@@ -16,12 +16,25 @@ export interface QueueIndexingResult {
 
 export async function queueResummarizationForAllRepos(): Promise<number> {
   const monitoredRepos = getEnabledResummarizationTargets(await configManager.loadMonitoredReposRaw());
+  const queue = await getIndexingQueue();
+  const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
+  const queuedRepoBranches = new Set(
+    existingJobs.map((job: { data: IndexingJobData }) =>
+      getRepoBranchKey(job.data.repository, job.data.baseBranch)
+    )
+  );
   const octokit = await getAuthenticatedOctokit();
   const { token } = await octokit.auth({ type: 'installation' }) as { token: string };
   let repositoriesQueued = 0;
 
   for (const repoConfig of monitoredRepos) {
-    const queued = await queueResummarizationForRepo(repoConfig.name, token, repoConfig.baseBranch);
+    const queued = await queueResummarizationForRepo(
+      repoConfig.name,
+      token,
+      repoConfig.baseBranch,
+      queue,
+      queuedRepoBranches
+    );
     if (queued) {
       repositoriesQueued++;
     }
@@ -29,15 +42,22 @@ export async function queueResummarizationForAllRepos(): Promise<number> {
   return repositoriesQueued;
 }
 
-async function queueResummarizationForRepo(repoFullName: string, token: string, baseBranch?: string): Promise<boolean> {
-  const queue = await getIndexingQueue();
+async function queueResummarizationForRepo(
+  repoFullName: string,
+  token: string,
+  baseBranch?: string,
+  queueArg?: Awaited<ReturnType<typeof getIndexingQueue>>,
+  queuedRepoBranches?: Set<string>
+): Promise<boolean> {
+  const queue = queueArg ?? await getIndexingQueue();
   const [owner, name] = repoFullName.split('/');
   const effectiveBranch = baseBranch || 'HEAD';
-
-  const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
-  const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
-    j.data.repository === repoFullName && (j.data.baseBranch || 'HEAD') === effectiveBranch
-  );
+  const repoBranchKey = getRepoBranchKey(repoFullName, baseBranch);
+  const alreadyQueued = queuedRepoBranches
+    ? queuedRepoBranches.has(repoBranchKey)
+    : (await queue.getJobs(['waiting', 'active', 'delayed'])).some((j: { data: IndexingJobData }) =>
+      getRepoBranchKey(j.data.repository, j.data.baseBranch) === repoBranchKey
+    );
   if (alreadyQueued) {
     return false;
   }
@@ -78,11 +98,16 @@ async function queueResummarizationForRepo(repoFullName: string, token: string, 
       priority: 2
     }
   );
+  queuedRepoBranches?.add(repoBranchKey);
   return true;
 }
 
 function sanitizeJobIdSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, '-');
+}
+
+function getRepoBranchKey(repository: string, branch?: string): string {
+  return `${repository}:${branch || 'HEAD'}`;
 }
 
 const DELAYED_REINDEX_KEY = 'config:summarization:delayed-reindex';
@@ -197,6 +222,7 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
         const state = await job.getState();
         if (state === 'active') {
           await requestIndexingCancellation(repository, jobBranch);
+          await updateRepositoryStatus(repository, 'idle', jobBranch);
           cancelledActiveBranches.push(jobBranch);
         } else {
           await job.remove();

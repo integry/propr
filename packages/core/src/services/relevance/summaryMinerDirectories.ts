@@ -90,8 +90,7 @@ export async function aggregateDirectories(
       if (dirInfo) {
         dirsToProcess.push(dirInfo);
       } else {
-        await handleSkippedDirectory(dirPath, branch, dirSummaryCache, fullName);
-        dirsProcessed++;
+        dirsProcessed += await handleSkippedDirectory(dirPath, branch, dirSummaryCache, fullName);
       }
     }
 
@@ -127,12 +126,18 @@ export async function aggregateDirectories(
   log.info({ directoryCount: totalDirs, batchCount: totalBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
 }
 
-async function handleSkippedDirectory(dirPath: string, branch: string, dirSummaryCache: Map<string, string>, fullName: string): Promise<void> {
+async function handleSkippedDirectory(
+  dirPath: string,
+  branch: string,
+  dirSummaryCache: Map<string, string>,
+  fullName: string
+): Promise<number> {
   const existing = await db('directory_summaries').where({ path: dirPath, branch }).first();
   if (existing) {
     dirSummaryCache.set(dirPath, existing.summary);
   }
   await tryPublishDirectoryProgress(fullName, branch);
+  return 1;
 }
 
 async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], branch: string, dirSummaryCache: Map<string, string>): Promise<void> {
