@@ -54,7 +54,7 @@ interface Message {
   message?: { content?: ClaudeMessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
 }
-interface ContentBlock { type: string; text?: string; content?: string; }
+interface ContentBlock { type: string; text?: string; content?: unknown; }
 export interface ClaudeMessageContext {
   timestamp: string;
   events: Array<Record<string, unknown>>;
@@ -185,7 +185,12 @@ function extractTextFromContentBlocks(content: unknown): string | null {
   const first = content[0] as ContentBlock;
   if (typeof first !== 'object' || first === null || !('type' in first)) return null;
   const textParts = content
-    .map((block: ContentBlock) => block.type === 'text' && block.text ? block.text : (block.content ?? ''))
+    .map((block: ContentBlock) => {
+      if (block.type === 'text' && typeof block.text === 'string' && block.text) {
+        return block.text;
+      }
+      return typeof block.content === 'string' ? block.content : '';
+    })
     .filter(Boolean);
   return textParts.length > 0 ? textParts.join('\n\n') : null;
 }

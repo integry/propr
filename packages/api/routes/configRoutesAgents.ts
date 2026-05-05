@@ -160,7 +160,11 @@ export async function applyAgentsUpdate({
   if (newDefault !== currentDefault) {
     await publishConfigUpdate('settings_update');
   }
-  await logActivityHelper(`Updated agents configuration (${processedAgents.length} agents)`, 'agents-update', 'agents_updated', username);
+  try {
+    await logActivityHelper(`Updated agents configuration (${processedAgents.length} agents)`, 'agents-update', 'agents_updated', username);
+  } catch (error) {
+    console.error('Failed to log agents configuration update activity:', error);
+  }
 
   return { status: 200, body: { success: true, agents: processedAgents } };
 }

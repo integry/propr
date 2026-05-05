@@ -14,6 +14,10 @@ const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
 interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: number; }
 interface RedisScriptClient { eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>; }
+interface LostConfigLockDetails {
+  detected: boolean;
+  reason: 'ownership_lost' | 'renewal_error' | null;
+}
 const EXTEND_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("expire", KEYS[1], tonumber(ARGV[2]))
 end
@@ -56,6 +60,7 @@ export async function withConfigLock(
   const renewalIntervalMs = options.renewalIntervalMs ?? DEFAULT_LOCK_RENEWAL_INTERVAL_MS;
   let renewalTimer: NodeJS.Timeout | null = null;
   let renewalStopped = false;
+  const lostLock: LostConfigLockDetails = { detected: false, reason: null };
 
   try {
     const acquired = await redisClient.set(lockKey, lockValue, { NX: true, EX: lockTimeout });
@@ -63,15 +68,32 @@ export async function withConfigLock(
     try {
       if (renewalIntervalMs > 0) {
         renewalTimer = setInterval(() => {
-          void renewLock(redisClient, lockKey, lockValue, lockTimeout).catch(error => {
-            if (!renewalStopped) {
-              console.error(`Failed to renew config lock ${lockKey}:`, error);
-            }
-          });
+          void renewLock(redisClient, lockKey, lockValue, lockTimeout)
+            .then(renewed => {
+              if (!renewed && !renewalStopped) {
+                lostLock.detected = true;
+                lostLock.reason = 'ownership_lost';
+                console.error(`Lost ownership of config lock ${lockKey} before the protected operation completed`);
+              }
+            })
+            .catch(error => {
+              if (!renewalStopped) {
+                lostLock.detected = true;
+                lostLock.reason = 'renewal_error';
+                console.error(`Failed to renew config lock ${lockKey}:`, error);
+              }
+            });
         }, renewalIntervalMs);
       }
 
-      return await operation();
+      const result = await operation();
+      if (lostLock.detected) {
+        const error = lostLock.reason === 'ownership_lost'
+          ? 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.'
+          : 'Configuration update lock renewal failed before the operation completed. Verify the current configuration before retrying.';
+        return { status: 409, body: { error, lock_lost: true } };
+      }
+      return result;
     } finally {
       renewalStopped = true;
       if (renewalTimer) {

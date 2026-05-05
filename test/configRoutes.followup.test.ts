@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import { applyAgentsUpdate } from '../packages/api/routes/configRoutesAgents.ts';
 import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
+import { appendClaudeUserMessageEvents } from '../packages/api/routes/liveDetailsCodexParser.ts';
 import {
     detectStoredOutputFormat,
     findLatestHistoryEntryWithSessionId,
@@ -494,6 +495,89 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(redisState.get('config:test:lock'), 'someone-else');
     });
 
+    test('withConfigLock reports lock loss when ownership changes during renewal', async () => {
+        const redisState = new Map<string, string>();
+        const redisClient = {
+            set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+                if (opts.NX && redisState.has(key)) return null;
+                redisState.set(key, value);
+                return 'OK';
+            }),
+            get: mock.fn(async (key: string) => redisState.get(key) ?? null),
+            expire: mock.fn(async (_key: string, _seconds: number) => 1),
+            del: mock.fn(async (key: string) => {
+                redisState.delete(key);
+                return 1;
+            }),
+        };
+
+        const result = await withConfigLock(
+            redisClient as never,
+            'config:test:lock',
+            async () => {
+                await new Promise(resolve => setTimeout(resolve, 5));
+                redisState.set('config:test:lock', 'someone-else');
+                await new Promise(resolve => setTimeout(resolve, 20));
+                return { status: 200, body: { success: true } };
+            },
+            { timeoutSeconds: 1, renewalIntervalMs: 10 },
+        );
+
+        assert.strictEqual(result.status, 409);
+        assert.deepStrictEqual(result.body, {
+            error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
+            lock_lost: true,
+        });
+        assert.strictEqual(redisState.get('config:test:lock'), 'someone-else');
+    });
+
+    test('applyAgentsUpdate does not fail after commit when activity logging throws', async () => {
+        const registry = {
+            refresh: mock.fn(async () => {}),
+            setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
+        };
+        const configStore = {
+            loadAgents: async () => currentAgents as never[],
+            loadSettings: async () => currentSettings,
+            saveAgents: async (agents: never[]) => {
+                currentAgents = agents as Array<Record<string, unknown>>;
+                return true;
+            },
+            saveSettings: async (settings: Record<string, unknown>) => {
+                currentSettings = { ...currentSettings, ...settings };
+                return true;
+            },
+        };
+
+        const result = await applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    dockerImage: 'new:image',
+                    configPath: '/tmp/claude',
+                    supportedModels: [],
+                },
+            ],
+            username: 'alice',
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {
+                throw new Error('redis unavailable');
+            },
+            configStore,
+            registry,
+        });
+
+        assert.strictEqual(result.status, 200);
+        assert.deepStrictEqual(result.body, {
+            success: true,
+            agents: currentAgents,
+        });
+        assert.strictEqual(currentSettings.default_agent_alias, 'new-default');
+    });
+
     test('parseStoredOutputContent parses Claude JSONL output', () => {
         const parsed = parseStoredOutputContent('{"type":"assistant","message":{"content":[{"type":"text","text":"Claude says hi"}]}}\n');
 
@@ -539,5 +623,40 @@ describe('config route follow-up helpers', () => {
 
     test('detectStoredOutputFormat does not classify message-only JSON as Claude', () => {
         assert.strictEqual(detectStoredOutputFormat('{"message":"plain message"}\n'), 'unknown');
+    });
+
+    test('appendClaudeUserMessageEvents omits object content from subagent summaries', () => {
+        const events: Array<Record<string, unknown>> = [];
+        const handled = appendClaudeUserMessageEvents(
+            [
+                {
+                    type: 'tool_result',
+                    tool_use_id: 'subagent-1',
+                    content: [{ type: 'tool_result', content: { nested: true } }],
+                },
+            ],
+            {
+                timestamp: '2026-05-05T00:00:10.000Z',
+                events,
+                pendingSubagents: new Map([
+                    ['subagent-1', {
+                        toolUseId: 'subagent-1',
+                        subagentType: 'explore',
+                        description: 'Inspect repository state',
+                        startTimestamp: '2026-05-05T00:00:00.000Z',
+                    }],
+                ]),
+                setTodos: () => {},
+            },
+        );
+
+        assert.strictEqual(handled, true);
+        assert.strictEqual(events.length, 2);
+        assert.deepStrictEqual(events[1], {
+            type: 'thought',
+            content: '🔍 **explore** subagent completed in 10s: Inspect repository state',
+            timestamp: '2026-05-05T00:00:10.000Z',
+            isSubagentSummary: true,
+        });
     });
 });
