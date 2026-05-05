@@ -5,25 +5,14 @@ import {
   updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, validatePrReviewModelValue
 } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
-
 interface AgentConfig { id: string; type: string; alias: string; enabled: boolean; dockerImage: string; configPath: string; supportedModels: string[]; }
-
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
-
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
 interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: number; }
 interface RedisScriptClient { eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>; }
-interface RedisTransaction {
-  expire: (key: string, seconds: number) => RedisTransaction;
-  del: (key: string) => RedisTransaction;
-  exec: () => Promise<unknown[] | null>;
-}
-interface RedisWatchClient {
-  watch?: (...keys: string[]) => Promise<void>;
-  unwatch?: () => Promise<void>;
-  multi?: () => RedisTransaction;
-}
+interface RedisTransaction { expire: (key: string, seconds: number) => RedisTransaction; del: (key: string) => RedisTransaction; exec: () => Promise<unknown[] | null>; }
+interface RedisWatchClient { watch?: (...keys: string[]) => Promise<void>; unwatch?: () => Promise<void>; multi?: () => RedisTransaction; }
 interface LostConfigLockDetails { detected: boolean; reason: 'ownership_lost' | 'renewal_error' | null; }
 export interface ConfigLockContext { assertLockHeld: () => Promise<void>; hasLockBeenLost: () => boolean; }
 const EXTEND_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -41,27 +30,16 @@ function buildLockLossResponse(reason: LostConfigLockDetails['reason']): { statu
   return { status: 409, body: { error, lock_lost: true } };
 }
 function supportsAtomicLockScripting(redisClient: RedisClientType): boolean { return typeof (redisClient as RedisClientType & RedisScriptClient).eval === 'function'; }
-
-async function runWatchedLockOperation(
-  redisClient: RedisClientType,
-  lockKey: string,
-  lockValue: string,
-  apply: (transaction: RedisTransaction) => RedisTransaction
-): Promise<boolean | null> {
+async function runWatchedLockOperation(redisClient: RedisClientType, lockKey: string, lockValue: string, apply: (transaction: RedisTransaction) => RedisTransaction): Promise<boolean | null> {
   const watchClient = redisClient as RedisClientType & RedisWatchClient;
-  if (typeof watchClient.watch !== 'function' || typeof watchClient.multi !== 'function') {
-    return null;
-  }
-
+  if (typeof watchClient.watch !== 'function' || typeof watchClient.multi !== 'function') return null;
   let watchActive = false;
   try {
     await watchClient.watch(lockKey);
     watchActive = true;
     const currentLockValue = await redisClient.get(lockKey);
     if (currentLockValue !== lockValue) {
-      if (typeof watchClient.unwatch === 'function') {
-        await watchClient.unwatch();
-      }
+      if (typeof watchClient.unwatch === 'function') await watchClient.unwatch();
       return false;
     }
     const result = await apply(watchClient.multi()).exec();
@@ -94,7 +72,6 @@ async function renewLock(redisClient: RedisClientType, lockKey: string, lockValu
   if (watchedResult !== null) return watchedResult;
   throw new Error(`Atomic config lock renewal is unavailable for ${lockKey}`);
 }
-
 async function releaseLock(redisClient: RedisClientType, lockKey: string, lockValue: string): Promise<void> {
   const scriptClient = redisClient as RedisClientType & RedisScriptClient;
   if (typeof scriptClient.eval === 'function') {
@@ -110,13 +87,7 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
   if (watchedResult !== null) return;
   console.warn(`Atomic config lock release is unavailable for ${lockKey}; allowing the TTL to expire naturally`);
 }
-
-export async function withConfigLock(
-  redisClient: RedisClientType,
-  lockKey: string,
-  operation: (context: ConfigLockContext) => Promise<{ status: number; body: Record<string, unknown> }>,
-  options: ConfigLockOptions = {}
-): Promise<{ status: number; body: Record<string, unknown> }> {
+export async function withConfigLock(redisClient: RedisClientType, lockKey: string, operation: (context: ConfigLockContext) => Promise<{ status: number; body: Record<string, unknown> }>, options: ConfigLockOptions = {}): Promise<{ status: number; body: Record<string, unknown> }> {
   const lockValue = `${Date.now()}-${Math.random()}`;
   const lockTimeout = options.timeoutSeconds ?? DEFAULT_LOCK_TIMEOUT_SECONDS;
   const renewalIntervalMs = options.renewalIntervalMs ?? DEFAULT_LOCK_RENEWAL_INTERVAL_MS;
@@ -127,10 +98,7 @@ export async function withConfigLock(
     if (renewalStopped || lostLock.detected) return;
     lostLock.detected = true;
     lostLock.reason = reason;
-    if (renewalTimer) {
-      clearTimeout(renewalTimer);
-      renewalTimer = null;
-    }
+    if (renewalTimer) { clearTimeout(renewalTimer); renewalTimer = null; }
     if (reason === 'ownership_lost') {
       console.error(`Lost ownership of config lock ${lockKey} before the protected operation completed`);
       return;
@@ -146,10 +114,7 @@ export async function withConfigLock(
     renewalTimer = setTimeout(() => {
       void renewLock(redisClient, lockKey, lockValue, lockTimeout)
         .then(renewed => {
-          if (!renewed) {
-            markLockLost('ownership_lost');
-            return;
-          }
+          if (!renewed) return markLockLost('ownership_lost');
           scheduleRenewal();
         })
         .catch(error => {
@@ -169,7 +134,6 @@ export async function withConfigLock(
     hasLockBeenLost: () => lostLock.detected
   };
   let lockAcquired = false;
-
   try {
     const acquired = await redisClient.set(lockKey, lockValue, { NX: true, EX: lockTimeout });
     if (!acquired) return { status: 409, body: { error: 'Configuration is being updated. Please try again.' } };
@@ -192,7 +156,6 @@ export async function withConfigLock(
     }
   }
 }
-
 export async function queueResummarizationForAllRepos(): Promise<number> {
   const monitoredRepos = await configManager.loadMonitoredRepos();
   const octokit = await getAuthenticatedOctokit();
@@ -204,7 +167,6 @@ export async function queueResummarizationForAllRepos(): Promise<number> {
   }
   return repositoriesQueued;
 }
-
 async function queueResummarizationForRepo(repoFullName: string, token: string): Promise<boolean> {
   const queue = await getIndexingQueue();
   const [owner, name] = repoFullName.split('/');
@@ -238,20 +200,8 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
   );
   return true;
 }
-
-interface SettingFields {
-  auto_followup_score_threshold?: unknown; auto_resolve_merge_conflicts?: unknown; pr_review_model?: unknown;
-  ultrafix_rating_goal?: unknown; ultrafix_max_cycles?: unknown; ultrafix_pause_seconds?: unknown;
-}
-
-export type SettingSaveName =
-  | 'auto_followup_score_threshold'
-  | 'auto_resolve_merge_conflicts'
-  | 'pr_review_model'
-  | 'ultrafix_rating_goal'
-  | 'ultrafix_max_cycles'
-  | 'ultrafix_pause_seconds';
-
+interface SettingFields { auto_followup_score_threshold?: unknown; auto_resolve_merge_conflicts?: unknown; pr_review_model?: unknown; ultrafix_rating_goal?: unknown; ultrafix_max_cycles?: unknown; ultrafix_pause_seconds?: unknown; }
+export type SettingSaveName = 'auto_followup_score_threshold' | 'auto_resolve_merge_conflicts' | 'pr_review_model' | 'ultrafix_rating_goal' | 'ultrafix_max_cycles' | 'ultrafix_pause_seconds';
 function validateStrictInt(raw: unknown, min: number, max: number): number | null {
   const str = String(raw);
   if (!/^-?\d+$/.test(str)) return null;
@@ -259,7 +209,6 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
   if (!Number.isSafeInteger(value)) return null;
   return (value < min || value > max) ? null : value;
 }
-
 async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; value?: string }> {
   if (typeof raw !== 'string') return { error: 'pr_review_model must be a string' };
   const val = raw.trim();
@@ -270,7 +219,6 @@ async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; va
   if (!result.valid) return { error: result.error };
   return { value: val };
 }
-
 export interface LabeledSaveDescriptor { name: SettingSaveName }
 export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSaveDescriptor[]; normalized: Record<string, unknown> }> {
   const saves: LabeledSaveDescriptor[] = [];
@@ -314,21 +262,17 @@ export async function extractSettingSaves(fields: SettingFields): Promise<{ erro
   }
   return { saves, normalized };
 }
-
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_AGENT_TYPES = ['claude', 'codex', 'gemini'];
-
 export function validateAgentsConfig(agents: AgentConfig[]): string | null {
   if (!Array.isArray(agents)) return 'agents must be an array';
   const seenAliases = new Set<string>();
   for (const agent of agents) {
-    const error = validateSingleAgent(agent, seenAliases);
-    if (error) return error;
+    const error = validateSingleAgent(agent, seenAliases); if (error) return error;
     seenAliases.add(agent.alias);
   }
   return null;
 }
-
 function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): string | null {
   if (!agent.id || typeof agent.id !== 'string') return `Agent missing required 'id' field`;
   if (!agent.type || !VALID_AGENT_TYPES.includes(agent.type)) return `Agent '${agent.id}' has invalid type. Must be one of: ${VALID_AGENT_TYPES.join(', ')}`;
@@ -341,7 +285,6 @@ function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): stri
   if (seenAliases.has(agent.alias)) return `Duplicate agent alias '${agent.alias}' found`;
   return null;
 }
-
 export interface QueueIndexingResult { success: boolean; error?: string; jobId?: string; correlationId?: string; }
 const DELAYED_REINDEX_KEY = 'config:summarization:delayed-reindex';
 const REINDEX_DELAY_MS = 10 * 60 * 1000;
@@ -356,7 +299,6 @@ export async function scheduleDelayedReindex(redisClient: RedisClientType): Prom
     return false;
   }
 }
-
 export async function cancelDelayedReindex(redisClient: RedisClientType): Promise<void> {
   try {
     await redisClient.del(DELAYED_REINDEX_KEY);
@@ -365,7 +307,6 @@ export async function cancelDelayedReindex(redisClient: RedisClientType): Promis
     console.error('Error cancelling delayed reindex:', error);
   }
 }
-
 export async function checkAndExecuteDelayedReindex(redisClient: RedisClientType): Promise<boolean> {
   try {
     const scheduledTimeStr = await redisClient.get(DELAYED_REINDEX_KEY);
@@ -383,25 +324,17 @@ export async function checkAndExecuteDelayedReindex(redisClient: RedisClientType
     return false;
   }
 }
-
 export async function queueIndexingJob(repository: string, fullReindex: boolean, baseBranch?: string): Promise<QueueIndexingResult> {
   const settings = await configManager.loadSummarizationSettings();
-  if (!settings.enabled) {
-    return { success: false, error: 'Summarization is not enabled. Enable it in settings first.' };
-  }
-  if (!settings.agent_alias) {
-    return { success: false, error: 'No agent configured for summarization. Configure one in settings first.' };
-  }
+  if (!settings.enabled) return { success: false, error: 'Summarization is not enabled. Enable it in settings first.' };
+  if (!settings.agent_alias) return { success: false, error: 'No agent configured for summarization. Configure one in settings first.' };
   const queue = await getIndexingQueue();
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
-  if (existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repository)) {
-    return { success: false, error: 'Indexing job already queued for this repository' };
-  }
+  if (existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repository)) return { success: false, error: 'Indexing job already queued for this repository' };
   const [owner, name] = repository.split('/');
   const octokit = await getAuthenticatedOctokit();
   const { token } = await octokit.auth({ type: "installation" }) as { token: string };
   const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
-
   let repoPath: string;
   try {
     repoPath = await ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token, baseBranch });
@@ -418,7 +351,6 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   );
   return { success: true, jobId: job.id, correlationId };
 }
-
 export async function stopIndexingJob(repository: string, branch?: string): Promise<{ success: boolean; message?: string }> {
   try {
     const queue = await getIndexingQueue();
@@ -430,8 +362,7 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
     });
     if (job) {
       const state = await job.getState();
-      if (state === 'active') await requestIndexingCancellation(repository);
-      else await job.remove();
+      if (state === 'active') await requestIndexingCancellation(repository); else await job.remove();
     }
     await updateRepositoryStatus(repository, 'idle', branch || 'HEAD');
     return { success: true };
