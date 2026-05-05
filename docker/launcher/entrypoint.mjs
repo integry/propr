@@ -86,7 +86,7 @@ function docker(args, { capture = false } = {}) {
 }
 
 function dockerRunDetached(name, args) {
-    const full = ['run', '-d', '--name', name, '--network', NETWORK, '--restart', 'unless-stopped', ...args];
+    const full = ['run', '-d', '--init', '--name', name, '--network', NETWORK, '--restart', 'unless-stopped', ...args];
     const res = docker(full, { capture: true });
     if (res.status !== 0) {
         throw new Error(`Failed to start ${name}: ${res.stderr}`);
