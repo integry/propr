@@ -24,6 +24,7 @@ interface AgentConfigStore {
   loadSettings: typeof configManager.loadSettings;
   saveAgents: typeof configManager.saveAgents;
   saveSettings: typeof configManager.saveSettings;
+  handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
 }
 
 interface AgentRegistrySync {
@@ -152,14 +153,18 @@ async function persistAgentConfigurationAtomically({
       await configStore.loadSettings() as Record<string, unknown>,
       settingsPatch
     );
+    const settingsWereUpdated = mergedSettings !== null;
     trx = await db.transaction();
     await upsertConfigValue(trx, 'agents', agents);
-    if (mergedSettings) {
+    if (settingsWereUpdated) {
       await lock?.assertLockHeld();
       await upsertConfigValue(trx, 'settings', mergedSettings);
     }
     await lock?.assertLockHeld();
     await trx.commit();
+    if (settingsWereUpdated) {
+      configStore.handleSettingsSaveSideEffects();
+    }
   } catch (error) {
     if (trx) {
       try {

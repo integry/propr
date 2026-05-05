@@ -251,9 +251,13 @@ export async function saveSettings(settings: ConfigSettings): Promise<boolean> {
     const merged = { ...existing, ...settings };
 
     await saveConfig('settings', merged);
-    invalidateSettingsCache();
+    handleSettingsSaveSideEffects();
     logger.info({ settings: merged }, 'Successfully saved settings');
     return true;
+}
+
+export function handleSettingsSaveSideEffects(): void {
+    invalidateSettingsCache();
 }
 
 export async function loadPrLabel(): Promise<string> {

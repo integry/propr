@@ -65,6 +65,7 @@ test('saveSettingsWithRollback returns a specific failure without partial-commit
       },
       configStore: {
         loadSettings: async () => ({ existing: true }),
+        handleSettingsSaveSideEffects: () => {},
         saveSettings: async () => true,
         saveConfig: async () => true,
         loadAutoFollowupScoreThreshold: async () => 4,

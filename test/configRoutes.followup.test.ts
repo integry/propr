@@ -53,6 +53,7 @@ describe('config route follow-up helpers', () => {
         const configStore = {
             loadAgents: async () => currentAgents as never[],
             loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
             saveAgents: async (agents: never[]) => {
                 currentAgents = agents as Array<Record<string, unknown>>;
                 return true;
@@ -102,6 +103,7 @@ describe('config route follow-up helpers', () => {
                 }
                 return true;
             },
+            handleSettingsSaveSideEffects: () => {},
             loadSettings: async () => ({ ...currentSettings }),
             loadAutoFollowupScoreThreshold: async () => currentAutoFollowup,
             saveAutoFollowupScoreThreshold: async (value: number) => {
@@ -172,6 +174,7 @@ describe('config route follow-up helpers', () => {
                 return true;
             },
             saveConfig: async (_key: string, _value: unknown) => true,
+            handleSettingsSaveSideEffects: () => {},
             loadSettings: async () => ({ ...currentSettings }),
             loadAutoFollowupScoreThreshold: async () => currentAutoFollowup,
             saveAutoFollowupScoreThreshold: async (value: number) => {

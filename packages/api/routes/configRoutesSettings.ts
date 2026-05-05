@@ -1,12 +1,12 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { extractSettingSaves, ConfigRouteError, upsertConfigValue, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
-import { invalidateSettingsCache } from '../../core/src/services/relevance/keywordExtractor.js';
 import type { Knex } from 'knex';
 
 interface SettingsStore {
   saveSettings: typeof configManager.saveSettings;
   saveConfig: typeof configManager.saveConfig;
+  handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
   loadSettings: typeof configManager.loadSettings;
   loadAutoFollowupScoreThreshold: typeof configManager.loadAutoFollowupScoreThreshold;
   saveAutoFollowupScoreThreshold: typeof configManager.saveAutoFollowupScoreThreshold;
@@ -89,7 +89,7 @@ async function persistSettingsAtomically({
 
     await lock?.assertLockHeld();
     await trx.commit();
-    invalidateSettingsCache();
+    configStore.handleSettingsSaveSideEffects();
   } catch (error) {
     if (trx) {
       try {

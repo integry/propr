@@ -7,17 +7,56 @@ import {
   updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, validatePrReviewModelValue
 } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
-interface AgentConfig { id: string; type: string; alias: string; enabled: boolean; dockerImage: string; configPath: string; supportedModels: string[]; }
+
+interface AgentConfig {
+  id: string;
+  type: string;
+  alias: string;
+  enabled: boolean;
+  dockerImage: string;
+  configPath: string;
+  supportedModels: string[];
+}
+
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
-const DEFAULT_LOCK_TIMEOUT_SECONDS = 30, DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
-interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: number; }
-interface RedisScriptClient { eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>; }
-interface RedisTransaction { expire: (key: string, seconds: number) => RedisTransaction; del: (key: string) => RedisTransaction; exec: () => Promise<unknown[] | null>; }
-interface RedisWatchClient { watch?: (...keys: string[]) => Promise<void>; unwatch?: () => Promise<void>; multi?: () => RedisTransaction; }
-interface LostConfigLockDetails { detected: boolean; reason: 'ownership_lost' | 'renewal_error' | null; } export interface ConfigLockContext { assertLockHeld: () => Promise<void>; hasLockBeenLost: () => boolean; }
+const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
+const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
+
+interface ConfigLockOptions {
+  timeoutSeconds?: number;
+  renewalIntervalMs?: number;
+}
+
+interface RedisScriptClient {
+  eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>;
+}
+
+interface RedisTransaction {
+  expire: (key: string, seconds: number) => RedisTransaction;
+  del: (key: string) => RedisTransaction;
+  exec: () => Promise<unknown[] | null>;
+}
+
+interface RedisWatchClient {
+  watch?: (...keys: string[]) => Promise<void>;
+  unwatch?: () => Promise<void>;
+  multi?: () => RedisTransaction;
+}
+
+interface LostConfigLockDetails {
+  detected: boolean;
+  reason: 'ownership_lost' | 'renewal_error' | null;
+}
+
+export interface ConfigLockContext {
+  assertLockHeld: () => Promise<void>;
+  hasLockBeenLost: () => boolean;
+}
+
 export class ConfigRouteError extends Error {
   status: number;
   body: Record<string, unknown>;
+
   constructor(status: number, body: Record<string, unknown>, message?: string) {
     super(message ?? (typeof body.error === 'string' ? body.error : 'Configuration update failed'));
     this.name = 'ConfigRouteError';
@@ -39,17 +78,25 @@ function buildLockLossResponse(reason: LostConfigLockDetails['reason']): { statu
     : 'Configuration update lock renewal failed before the operation completed. Verify the current configuration before retrying.';
   return { status: 409, body: { error, lock_lost: true } };
 }
-function supportsAtomicLockScripting(redisClient: RedisClientType): boolean { return typeof (redisClient as RedisClientType & RedisScriptClient).eval === 'function'; }
+
+function supportsAtomicLockScripting(redisClient: RedisClientType): boolean {
+  return typeof (redisClient as RedisClientType & RedisScriptClient).eval === 'function';
+}
+
 async function runWatchedLockOperation(redisClient: RedisClientType, lockKey: string, lockValue: string, apply: (transaction: RedisTransaction) => RedisTransaction): Promise<boolean | null> {
   const watchClient = redisClient as RedisClientType & RedisWatchClient;
-  if (typeof watchClient.watch !== 'function' || typeof watchClient.multi !== 'function') return null;
+  if (typeof watchClient.watch !== 'function' || typeof watchClient.multi !== 'function') {
+    return null;
+  }
   let watchActive = false;
   try {
     await watchClient.watch(lockKey);
     watchActive = true;
     const currentLockValue = await redisClient.get(lockKey);
     if (currentLockValue !== lockValue) {
-      if (typeof watchClient.unwatch === 'function') await watchClient.unwatch();
+      if (typeof watchClient.unwatch === 'function') {
+        await watchClient.unwatch();
+      }
       return false;
     }
     const result = await apply(watchClient.multi()).exec();
@@ -78,9 +125,12 @@ async function renewLock(redisClient: RedisClientType, lockKey: string, lockValu
     lockValue,
     transaction => transaction.expire(lockKey, timeoutSeconds)
   );
-  if (watchedResult !== null) return watchedResult;
+  if (watchedResult !== null) {
+    return watchedResult;
+  }
   throw new Error(`Atomic config lock renewal is unavailable for ${lockKey}`);
 }
+
 async function releaseLock(redisClient: RedisClientType, lockKey: string, lockValue: string): Promise<void> {
   const scriptClient = redisClient as RedisClientType & RedisScriptClient;
   if (typeof scriptClient.eval === 'function') {
@@ -93,9 +143,12 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
     lockValue,
     transaction => transaction.del(lockKey)
   );
-  if (watchedResult !== null) return;
+  if (watchedResult !== null) {
+    return;
+  }
   console.warn(`Atomic config lock release is unavailable for ${lockKey}; allowing the TTL to expire naturally`);
 }
+
 export async function upsertConfigValue(trx: Knex.Transaction, key: string, value: unknown): Promise<void> {
   const jsonValue = JSON.stringify(value);
   await trx('system_configs')
@@ -111,7 +164,13 @@ export async function upsertConfigValue(trx: Knex.Transaction, key: string, valu
       updated_at: db.fn.now()
     });
 }
-export async function withConfigLock(redisClient: RedisClientType, lockKey: string, operation: (context: ConfigLockContext) => Promise<{ status: number; body: Record<string, unknown> }>, options: ConfigLockOptions = {}): Promise<{ status: number; body: Record<string, unknown> }> {
+
+export async function withConfigLock(
+  redisClient: RedisClientType,
+  lockKey: string,
+  operation: (context: ConfigLockContext) => Promise<{ status: number; body: Record<string, unknown> }>,
+  options: ConfigLockOptions = {}
+): Promise<{ status: number; body: Record<string, unknown> }> {
   const lockValue = `${Date.now()}-${Math.random()}`;
   const lockTimeout = options.timeoutSeconds ?? DEFAULT_LOCK_TIMEOUT_SECONDS;
   const renewalIntervalMs = options.renewalIntervalMs ?? DEFAULT_LOCK_RENEWAL_INTERVAL_MS;
@@ -160,14 +219,20 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
   let lockAcquired = false;
   try {
     const acquired = await redisClient.set(lockKey, lockValue, { NX: true, EX: lockTimeout });
-    if (!acquired) return { status: 409, body: { error: 'Configuration is being updated. Please try again.' } };
+    if (!acquired) {
+      return { status: 409, body: { error: 'Configuration is being updated. Please try again.' } };
+    }
     lockAcquired = true;
     scheduleRenewal();
     const result = await operation(context);
-    if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
+    if (lostLock.detected) {
+      return buildLockLossResponse(lostLock.reason);
+    }
     return result;
   } catch (error) {
-    if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
+    if (lostLock.detected) {
+      return buildLockLossResponse(lostLock.reason);
+    }
     if (error instanceof ConfigRouteError) {
       return { status: error.status, body: error.body };
     }
