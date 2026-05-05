@@ -1,5 +1,8 @@
+import { db } from '@propr/core';
 import * as configManager from '@propr/core';
-import { extractSettingSaves, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
+import { extractSettingSaves, ConfigRouteError, upsertConfigValue, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
+import { invalidateSettingsCache } from '../../core/src/services/relevance/keywordExtractor.js';
+import type { Knex } from 'knex';
 
 interface SettingsStore {
   saveSettings: typeof configManager.saveSettings;
@@ -29,139 +32,66 @@ interface SaveSettingsRequest {
 type SaveResponse = { status: number; body: Record<string, unknown> };
 type SpecializedSettingName = SettingSaveName;
 
-type SpecializedValueMap = {
-  auto_followup_score_threshold: number;
-  auto_resolve_merge_conflicts: boolean;
-  pr_review_model: string;
-  ultrafix_rating_goal: number;
-  ultrafix_max_cycles: number;
-  ultrafix_pause_seconds: number;
-};
-
-type SpecializedSave = { name: SpecializedSettingName; execute: () => Promise<unknown> };
-type RollbackActionMap = Map<'general' | SpecializedSettingName, () => Promise<unknown>>;
-
-const SPECIALIZED_SETTING_HANDLERS: {
-  [K in SpecializedSettingName]: {
-    load: (store: SettingsStore) => Promise<SpecializedValueMap[K]>;
-    save: (store: SettingsStore, value: SpecializedValueMap[K]) => Promise<unknown>;
-  };
-} = {
-  auto_followup_score_threshold: {
-    load: store => store.loadAutoFollowupScoreThreshold(),
-    save: (store, value) => store.saveAutoFollowupScoreThreshold(value)
-  },
-  auto_resolve_merge_conflicts: {
-    load: store => store.loadAutoResolveMergeConflicts(),
-    save: (store, value) => store.saveAutoResolveMergeConflicts(value)
-  },
-  pr_review_model: {
-    load: store => store.loadPrReviewModel(),
-    save: (store, value) => store.savePrReviewModel(value)
-  },
-  ultrafix_rating_goal: {
-    load: store => store.loadUltrafixRatingGoal(),
-    save: (store, value) => store.saveUltrafixRatingGoal(value)
-  },
-  ultrafix_max_cycles: {
-    load: store => store.loadUltrafixMaxCycles(),
-    save: (store, value) => store.saveUltrafixMaxCycles(value)
-  },
-  ultrafix_pause_seconds: {
-    load: store => store.loadUltrafixPauseSeconds(),
-    save: (store, value) => store.saveUltrafixPauseSeconds(value)
-  }
-};
-
-function loadSpecializedValue<K extends SpecializedSettingName>(
-  configStore: SettingsStore,
-  name: K
-): Promise<SpecializedValueMap[K]> {
-  return SPECIALIZED_SETTING_HANDLERS[name].load(configStore);
-}
-
-function saveSpecializedValue<K extends SpecializedSettingName>(
-  configStore: SettingsStore,
-  name: K,
-  value: SpecializedValueMap[K]
-): Promise<unknown> {
-  return SPECIALIZED_SETTING_HANDLERS[name].save(configStore, value);
-}
-
-function createSpecializedSaves(
-  configStore: SettingsStore,
-  names: SpecializedSettingName[],
-  normalized: Record<string, unknown>
-): SpecializedSave[] {
-  return names.map(name => ({
-    name,
-    execute: () => saveSpecializedValue(configStore, name, normalized[name] as SpecializedValueMap[typeof name])
-  }));
-}
-
-async function createGeneralRollbackActions(
-  configStore: SettingsStore,
-  hasGeneralSettings: boolean,
-  lock?: ConfigLockContext
-): Promise<RollbackActionMap> {
-  const rollbackActions: RollbackActionMap = new Map();
-  if (hasGeneralSettings) {
-    const previousSettings = await configStore.loadSettings();
-    rollbackActions.set('general', async () => {
-      await lock?.assertLockHeld();
-      return configStore.saveConfig('settings', previousSettings);
-    });
-  }
-  return rollbackActions;
-}
-
-async function rollbackCommittedSettings(
-  committedNames: Array<'general' | SpecializedSettingName>,
-  rollbackActions: RollbackActionMap,
-  failedName: SpecializedSettingName,
-  lock?: ConfigLockContext
-): Promise<boolean> {
-  let rollbackFailed = false;
-  for (const name of committedNames.slice().reverse()) {
-    const rollback = rollbackActions.get(name);
-    if (!rollback) {
-      continue;
-    }
-    try {
-      await lock?.assertLockHeld();
-      await rollback();
-    } catch (rollbackError) {
-      if (lock?.hasLockBeenLost()) {
-        throw rollbackError;
-      }
-      rollbackFailed = true;
-      console.error(`Failed to roll back settings after "${failedName}" save failure (target: "${name}")`, rollbackError);
+function buildMergedSettings(previousSettings: Record<string, unknown>, updates: Record<string, unknown>): Record<string, unknown> {
+  const mergedSettings = { ...previousSettings, ...updates };
+  for (const [key, value] of Object.entries(mergedSettings)) {
+    if (value === undefined) {
+      delete mergedSettings[key];
     }
   }
-  return rollbackFailed;
+  return mergedSettings;
 }
 
-async function saveGeneralSettings(
+async function persistSettingsAtomically(
   configStore: SettingsStore,
   otherSettings: Record<string, unknown>,
+  normalizedSpecializedSettings: Record<string, unknown>,
+  specializedNames: SpecializedSettingName[],
   lock?: ConfigLockContext
-): Promise<SaveResponse | null> {
-  if (Object.keys(otherSettings).length === 0) {
-    return null;
-  }
+): Promise<void> {
+  let trx: Knex.Transaction | null = null;
   try {
     await lock?.assertLockHeld();
-    await configStore.saveSettings(otherSettings);
-    return null;
-  } catch (saveError) {
-    if (lock?.hasLockBeenLost()) {
-      throw saveError;
+    const mergedSettings = Object.keys(otherSettings).length > 0
+      ? buildMergedSettings(await configStore.loadSettings() as Record<string, unknown>, otherSettings)
+      : null;
+    trx = await db.transaction();
+
+    if (mergedSettings) {
+      try {
+        await upsertConfigValue(trx, 'settings', mergedSettings);
+      } catch (saveError) {
+        console.error('Settings save failed for general settings:', saveError);
+        throw new ConfigRouteError(500, {
+          error: 'Failed to save general settings. No settings were committed. Please retry or check system logs.'
+        });
+      }
     }
-    console.error('Settings save failed for general settings:', saveError);
-    return {
-      status: 500,
-      body: { error: 'Failed to save general settings. No settings were committed. Please retry or check system logs.' }
-    };
+
+    for (const name of specializedNames) {
+      try {
+        await lock?.assertLockHeld();
+        await upsertConfigValue(trx, name, normalizedSpecializedSettings[name]);
+      } catch (saveError) {
+        console.error(`Settings save failed for "${name}":`, saveError);
+        throw new ConfigRouteError(500, {
+          error: `Failed to save "${name}". No settings were committed. Please retry or check system logs.`
+        });
+      }
+    }
+
+    await lock?.assertLockHeld();
+    await trx.commit();
+    invalidateSettingsCache();
+  } catch (error) {
+    if (trx) {
+      try {
+        await trx.rollback();
+      } catch {
+        // Ignore rollback errors after a failed transaction; the original error is more actionable.
+      }
+    }
+    throw error;
   }
 }
 
@@ -206,59 +136,26 @@ export async function saveSettingsWithRollback({
     return { status: 400, body: { error: extracted.error } };
   }
 
-  const hasGeneralSettings = Object.keys(otherSettings).length > 0;
-  const specializedSaves = createSpecializedSaves(
-    configStore,
-    extracted.saves.map(({ name }) => name),
-    extracted.normalized
-  );
-  const rollbackActions = await createGeneralRollbackActions(configStore, hasGeneralSettings, lock);
-  const generalSettingsSaveError = await saveGeneralSettings(configStore, otherSettings, lock);
-  if (generalSettingsSaveError) {
-    return generalSettingsSaveError;
-  }
-
-  const committedNames: Array<'general' | SpecializedSettingName> = hasGeneralSettings ? ['general'] : [];
-  for (const save of specializedSaves) {
-    try {
-      await lock?.assertLockHeld();
-      const previousValue = await loadSpecializedValue(configStore, save.name);
-      rollbackActions.set(save.name, async () => {
-        await lock?.assertLockHeld();
-        return saveSpecializedValue(configStore, save.name, previousValue);
-      });
-      await save.execute();
-      committedNames.push(save.name);
-    } catch (saveError) {
-      const failedName = save.name;
-      console.error(`Settings save failed for "${failedName}" (already committed: [${committedNames.join(', ')}]):`, saveError);
-      if (lock?.hasLockBeenLost()) {
-        throw saveError;
-      }
-      const rollbackFailed = await rollbackCommittedSettings(committedNames, rollbackActions, failedName, lock);
-
-      if (!rollbackFailed) {
-        return {
-          status: 500,
-          body: {
-            error: `Failed to save "${failedName}". Earlier changes were rolled back.`,
-            rolled_back: committedNames
-          }
-        };
-      }
-
-      if (committedNames.length > 0) {
-        await publishConfigUpdate('settings_update');
-      }
-      await publishConfigUpdate('settings_update_partial_failure');
-      return {
-        status: 500,
-        body: {
-          error: `Failed to save "${failedName}".${committedNames.length ? ` Already committed: ${committedNames.join(', ')}.` : ''} Please retry or check system logs.`,
-          committed: committedNames
-        }
-      };
+  try {
+    await persistSettingsAtomically(
+      configStore,
+      otherSettings,
+      extracted.normalized,
+      extracted.saves.map(({ name }) => name),
+      lock
+    );
+  } catch (error) {
+    if (error instanceof ConfigRouteError) {
+      return { status: error.status, body: error.body };
     }
+    if (lock?.hasLockBeenLost()) {
+      throw error;
+    }
+    console.error('Settings save failed before commit:', error);
+    return {
+      status: 500,
+      body: { error: 'Failed to save settings. No settings were committed. Please retry or check system logs.' }
+    };
   }
 
   await publishConfigUpdate('settings_update');

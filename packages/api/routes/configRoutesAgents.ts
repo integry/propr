@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
+import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import {
     AgentRegistry,
@@ -9,7 +10,8 @@ import {
     AGENT_DEFAULT_VERSIONS
 } from '@propr/core';
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
-import { withConfigLock, validateAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, type ConfigLockContext } from './configHelpers.js';
+import type { Knex } from 'knex';
+import { withConfigLock, validateAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, type ConfigLockContext } from './configHelpers.js';
 
 interface AgentsRoutesDeps {
   redisClient: RedisClientType;
@@ -60,12 +62,12 @@ async function rollbackAgentConfigState({
   errorContext
 }: RollbackAgentConfigStateParams): Promise<boolean> {
   try {
-    await lock?.assertLockHeld();
-    await configStore.saveAgents(previousAgents);
-    if (defaultChanged) {
-      await lock?.assertLockHeld();
-      await configStore.saveSettings({ default_agent_alias: currentDefault } as Record<string, unknown>);
-    }
+    await persistAgentConfigurationAtomically({
+      configStore,
+      agents: previousAgents,
+      settingsPatch: defaultChanged ? { default_agent_alias: currentDefault } : null,
+      lock
+    });
     await lock?.assertLockHeld();
     await registry.refresh();
     await lock?.assertLockHeld();
@@ -119,6 +121,57 @@ async function prepareAgentsUpdate(agents: AgentConfig[]): Promise<{ error?: str
   return { processedAgents };
 }
 
+function buildMergedSettings(previousSettings: Record<string, unknown>, settingsPatch: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!settingsPatch) {
+    return null;
+  }
+  const mergedSettings = { ...previousSettings, ...settingsPatch };
+  for (const [key, value] of Object.entries(mergedSettings)) {
+    if (value === undefined) {
+      delete mergedSettings[key];
+    }
+  }
+  return mergedSettings;
+}
+
+async function persistAgentConfigurationAtomically({
+  configStore,
+  agents,
+  settingsPatch,
+  lock
+}: {
+  configStore: AgentConfigStore;
+  agents: AgentConfig[];
+  settingsPatch: Record<string, unknown> | null;
+  lock?: ConfigLockContext;
+}): Promise<void> {
+  let trx: Knex.Transaction | null = null;
+  try {
+    await lock?.assertLockHeld();
+    const mergedSettings = buildMergedSettings(
+      await configStore.loadSettings() as Record<string, unknown>,
+      settingsPatch
+    );
+    trx = await db.transaction();
+    await upsertConfigValue(trx, 'agents', agents);
+    if (mergedSettings) {
+      await lock?.assertLockHeld();
+      await upsertConfigValue(trx, 'settings', mergedSettings);
+    }
+    await lock?.assertLockHeld();
+    await trx.commit();
+  } catch (error) {
+    if (trx) {
+      try {
+        await trx.rollback();
+      } catch {
+        // Ignore rollback failures after a failed transaction; the original error is more useful.
+      }
+    }
+    throw error;
+  }
+}
+
 export async function applyAgentsUpdate({
   agents,
   processedAgents: providedProcessedAgents,
@@ -145,35 +198,26 @@ export async function applyAgentsUpdate({
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
   const newDefault = resolveDefaultAgentAlias(processedAgents, currentDefault);
+  const defaultChanged = newDefault !== currentDefault;
 
   try {
-    await lock?.assertLockHeld();
-    await configStore.saveAgents(processedAgents);
-    if (newDefault !== currentDefault) {
-      await lock?.assertLockHeld();
-      await configStore.saveSettings({ default_agent_alias: newDefault } as Record<string, unknown>);
-    }
-  } catch (syncError) {
-    const rollbackSucceeded = await rollbackAgentConfigState({
+    await persistAgentConfigurationAtomically({
       configStore,
-      registry,
-      previousAgents,
-      currentDefault,
-      defaultChanged: newDefault !== currentDefault,
-      lock,
-      errorContext: 'Failed to roll back persisted agent configuration after save failure:'
+      agents: processedAgents,
+      settingsPatch: defaultChanged ? { default_agent_alias: newDefault } : null,
+      lock
     });
-    console.error('Failed to sync default agent alias after agents update:', syncError);
-    if (!rollbackSucceeded) {
-      return {
-        status: 500,
-        body: {
-          error: 'Failed to persist agent configuration, and automatic rollback did not complete. Persisted config may be partially updated.',
-          out_of_sync: true
-        }
-      };
+  } catch (syncError) {
+    if (lock?.hasLockBeenLost()) {
+      throw syncError;
     }
-    throw syncError;
+    console.error('Failed to persist agent configuration atomically:', syncError);
+    return {
+      status: 500,
+      body: {
+        error: 'Failed to persist agent configuration. No changes were committed. Please retry or check system logs.'
+      }
+    };
   }
 
   try {
@@ -187,7 +231,7 @@ export async function applyAgentsUpdate({
       registry,
       previousAgents,
       currentDefault,
-      defaultChanged: newDefault !== currentDefault,
+      defaultChanged,
       lock,
       errorContext: 'Failed to roll back agent configuration after registry refresh failure:'
     });
@@ -205,7 +249,7 @@ export async function applyAgentsUpdate({
   }
 
   await publishConfigUpdate('agents_update');
-  if (newDefault !== currentDefault) {
+  if (defaultChanged) {
     await publishConfigUpdate('settings_update');
   }
   try {

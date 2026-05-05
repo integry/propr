@@ -1,5 +1,7 @@
 import { RedisClientType } from 'redis';
+import { db } from '@propr/core';
 import * as configManager from '@propr/core';
+import type { Knex } from 'knex';
 import {
   getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit,
   updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, validatePrReviewModelValue
@@ -15,6 +17,17 @@ interface RedisTransaction { expire: (key: string, seconds: number) => RedisTran
 interface RedisWatchClient { watch?: (...keys: string[]) => Promise<void>; unwatch?: () => Promise<void>; multi?: () => RedisTransaction; }
 interface LostConfigLockDetails { detected: boolean; reason: 'ownership_lost' | 'renewal_error' | null; }
 export interface ConfigLockContext { assertLockHeld: () => Promise<void>; hasLockBeenLost: () => boolean; }
+export class ConfigRouteError extends Error {
+  status: number;
+  body: Record<string, unknown>;
+
+  constructor(status: number, body: Record<string, unknown>, message?: string) {
+    super(message ?? (typeof body.error === 'string' ? body.error : 'Configuration update failed'));
+    this.name = 'ConfigRouteError';
+    this.status = status;
+    this.body = body;
+  }
+}
 const EXTEND_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("expire", KEYS[1], tonumber(ARGV[2]))
 end
@@ -87,6 +100,21 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
   if (watchedResult !== null) return;
   console.warn(`Atomic config lock release is unavailable for ${lockKey}; allowing the TTL to expire naturally`);
 }
+export async function upsertConfigValue(trx: Knex.Transaction, key: string, value: unknown): Promise<void> {
+  const jsonValue = JSON.stringify(value);
+  await trx('system_configs')
+    .insert({
+      key,
+      value: jsonValue,
+      updated_at: db.fn.now(),
+      created_at: db.fn.now()
+    })
+    .onConflict('key')
+    .merge({
+      value: jsonValue,
+      updated_at: db.fn.now()
+    });
+}
 export async function withConfigLock(redisClient: RedisClientType, lockKey: string, operation: (context: ConfigLockContext) => Promise<{ status: number; body: Record<string, unknown> }>, options: ConfigLockOptions = {}): Promise<{ status: number; body: Record<string, unknown> }> {
   const lockValue = `${Date.now()}-${Math.random()}`;
   const lockTimeout = options.timeoutSeconds ?? DEFAULT_LOCK_TIMEOUT_SECONDS;
@@ -144,6 +172,9 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
     return result;
   } catch (error) {
     if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
+    if (error instanceof ConfigRouteError) {
+      return { status: error.status, body: error.body };
+    }
     console.error(`Error in config operation with lock ${lockKey}:`, error);
     return { status: 500, body: { error: 'Failed to update configuration' } };
   } finally {

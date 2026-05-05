@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
+import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY } from './configHelpers.js';
@@ -26,6 +27,77 @@ interface JsonPostHandlerConfig<T> {
 type ValidationResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
+const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
+const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
+const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
+const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
+const SETTINGS_SNAPSHOT_KEYS = [
+  'settings',
+  'auto_followup_score_threshold',
+  'auto_resolve_merge_conflicts',
+  'pr_review_model',
+  'ultrafix_rating_goal',
+  'ultrafix_max_cycles',
+  'ultrafix_pause_seconds'
+] as const;
+
+function parseStoredConfigValue(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function asIntegerOrDefault(value: unknown, defaultValue: number, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= minimum
+    && value <= maximum
+    ? value
+    : defaultValue;
+}
+
+async function loadSettingsSnapshot(): Promise<{
+  settings: Record<string, unknown>;
+  autoFollowupThreshold: number;
+  autoResolveMergeConflicts: boolean;
+  prReviewModel: string;
+  ultrafixRatingGoal: number;
+  ultrafixMaxCycles: number;
+  ultrafixPauseSeconds: number;
+}> {
+  const rows = await db('system_configs')
+    .select('key', 'value')
+    .whereIn('key', [...SETTINGS_SNAPSHOT_KEYS]);
+  const values = new Map<string, unknown>();
+  for (const row of rows as Array<{ key: string; value: unknown }>) {
+    values.set(row.key, parseStoredConfigValue(row.value));
+  }
+
+  const settingsValue = values.get('settings');
+  const settings = settingsValue && typeof settingsValue === 'object' && !Array.isArray(settingsValue)
+    ? settingsValue as Record<string, unknown>
+    : {};
+
+  return {
+    settings,
+    autoFollowupThreshold: asIntegerOrDefault(values.get('auto_followup_score_threshold'), DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, 0, 9),
+    autoResolveMergeConflicts: typeof values.get('auto_resolve_merge_conflicts') === 'boolean'
+      ? values.get('auto_resolve_merge_conflicts') as boolean
+      : false,
+    prReviewModel: typeof values.get('pr_review_model') === 'string'
+      ? values.get('pr_review_model') as string
+      : '',
+    ultrafixRatingGoal: asIntegerOrDefault(values.get('ultrafix_rating_goal'), DEFAULT_ULTRAFIX_RATING_GOAL, 1, 10),
+    ultrafixMaxCycles: asIntegerOrDefault(values.get('ultrafix_max_cycles'), DEFAULT_ULTRAFIX_MAX_CYCLES, 1),
+    ultrafixPauseSeconds: asIntegerOrDefault(values.get('ultrafix_pause_seconds'), DEFAULT_ULTRAFIX_PAUSE_SECONDS, 0)
+  };
+}
+
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) {
     return `${fieldName} must be an array of strings`;
@@ -219,15 +291,15 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const [settings, autoFollowupThreshold, autoResolveMergeConflicts, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds] = await Promise.all([
-        configManager.loadSettings(),
-        configManager.loadAutoFollowupScoreThreshold(),
-        configManager.loadAutoResolveMergeConflicts(),
-        configManager.loadPrReviewModel(),
-        configManager.loadUltrafixRatingGoal(),
-        configManager.loadUltrafixMaxCycles(),
-        configManager.loadUltrafixPauseSeconds()
-      ]);
+      const {
+        settings,
+        autoFollowupThreshold,
+        autoResolveMergeConflicts,
+        prReviewModel,
+        ultrafixRatingGoal,
+        ultrafixMaxCycles,
+        ultrafixPauseSeconds
+      } = await loadSettingsSnapshot();
       const envDefaults = {
         worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
         github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()),

@@ -67,8 +67,10 @@ interface ClaudeParseContext {
   timestamp: string;
   pendingSubagents: Map<string, PendingSubagent>;
 }
-let malformedClaudeLineWarnings = 0;
 const MAX_MALFORMED_CLAUDE_LINE_WARNINGS = 5;
+interface ClaudeWarningState {
+  malformedLineWarnings: number;
+}
 
 export function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
   if (item.status === 'completed' || item.completed) {
@@ -338,7 +340,12 @@ function parseUserContent(contentArray: ClaudeMessageContent[], context: ClaudeP
   });
 }
 
-function parseLine(line: string, events: Array<Record<string, unknown>>, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
+function parseLine(
+  line: string,
+  events: Array<Record<string, unknown>>,
+  pendingSubagents: Map<string, PendingSubagent>,
+  warningState: ClaudeWarningState
+): ParseLineResult {
   try {
     const message = JSON.parse(line) as Message;
     const timestamp = message.timestamp || new Date().toISOString();
@@ -354,8 +361,8 @@ function parseLine(line: string, events: Array<Record<string, unknown>>, pending
       return { tokenUsage: buildTokenUsage(usage) };
     }
   } catch (parseError) {
-    if (malformedClaudeLineWarnings < MAX_MALFORMED_CLAUDE_LINE_WARNINGS) {
-      malformedClaudeLineWarnings += 1;
+    if (warningState.malformedLineWarnings < MAX_MALFORMED_CLAUDE_LINE_WARNINGS) {
+      warningState.malformedLineWarnings += 1;
       console.warn('[live-details] Skipping malformed Claude transcript line', parseError);
     }
   }
@@ -378,9 +385,10 @@ export function parseClaudeOutputToConversationResult(conversationContent: strin
     cache_read_input_tokens: 0
   };
   const pendingSubagents: Map<string, PendingSubagent> = new Map();
+  const warningState: ClaudeWarningState = { malformedLineWarnings: 0 };
 
   for (const line of lines) {
-    const parsed = parseLine(line, events, pendingSubagents);
+    const parsed = parseLine(line, events, pendingSubagents, warningState);
     if (parsed.newTodos) {
       todos = parsed.newTodos;
     }
