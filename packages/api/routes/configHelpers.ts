@@ -96,6 +96,7 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
   );
   if (watchedResult !== null) return;
   console.warn(`Atomic config lock release is unavailable for ${lockKey}; allowing the TTL to expire naturally`);
+}
 export async function upsertConfigValue(trx: Knex.Transaction, key: string, value: unknown): Promise<void> {
   const jsonValue = JSON.stringify(value);
   await trx('system_configs')
@@ -184,6 +185,7 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
       }
     }
   }
+}
 export async function queueResummarizationForAllRepos(): Promise<number> {
   const monitoredRepos = await configManager.loadMonitoredRepos();
   const octokit = await getAuthenticatedOctokit();
