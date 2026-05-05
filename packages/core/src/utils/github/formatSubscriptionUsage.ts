@@ -14,6 +14,7 @@
 /** Minimal record shape accepted by the formatter. */
 export interface SubscriptionUsageRecord {
     agent: string;
+    // Records are expected to already be normalized at the storage boundary.
     metricKey: string;
     metricValue: number;
 }
@@ -148,9 +149,9 @@ function normalizeMetrics(
         normalized.records = records as SubscriptionUsageRecord[];
     }
 
-    // delta / usage_metrics
-    // Support both the direct delta object shape and the storage-shaped
-    // payload where usage_metrics wraps the delta under its own key.
+    // delta / usage_metrics.delta
+    // Only fall back to the nested delta object so sibling metadata fields
+    // inside usage_metrics are never interpreted as usage metrics.
     const delta = raw.delta;
     if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
         normalized.delta = delta as Record<string, unknown>;
@@ -159,11 +160,9 @@ function normalizeMetrics(
         if (usageMetrics && typeof usageMetrics === 'object' && !Array.isArray(usageMetrics)) {
             const usageMetricsObject = usageMetrics as Record<string, unknown>;
             const nestedDelta = usageMetricsObject.delta;
-            const resolvedDelta =
-                nestedDelta && typeof nestedDelta === 'object' && !Array.isArray(nestedDelta)
-                    ? nestedDelta
-                    : usageMetricsObject;
-            normalized.delta = resolvedDelta as Record<string, unknown>;
+            if (nestedDelta && typeof nestedDelta === 'object' && !Array.isArray(nestedDelta)) {
+                normalized.delta = nestedDelta as Record<string, unknown>;
+            }
         }
     }
 

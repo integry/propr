@@ -44,7 +44,10 @@ export async function buildMetricsSection(
     const executionTime = claudeResult.executionTime ? formatDuration(claudeResult.executionTime) : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 
-    const detailedStats = getDetailedUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
+    const detailedStats = getDetailedUsageStats({
+        tokenUsage: claudeResult.tokenUsage,
+        conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'],
+    });
     const { totalInputWithCache: inputTokens, outputTokens, totalTokens } = detailedStats;
 
     const cost = await calculateCost(claudeResult, detailedStats, modelId);

@@ -229,14 +229,15 @@ describe('formatSubscriptionUsage', () => {
         assert.strictEqual(result, 'Session +12%, Weekly +3%');
     });
 
-    test('accepts snake_case usage_metrics as delta fallback', () => {
+    test('ignores snake_case usage_metrics siblings when delta is absent', () => {
         const result = formatSubscriptionUsage({
             usage_metrics: {
                 session: { percent: 7 },
+                source: 'agent-tank',
             },
             agent: 'claude',
         } as Record<string, unknown>);
-        assert.ok(result.includes('Session +7%'), 'Should extract from snake_case delta');
+        assert.strictEqual(result, '');
     });
 
     test('accepts nested snake_case usage_metrics.delta fallback', () => {
@@ -251,6 +252,20 @@ describe('formatSubscriptionUsage', () => {
         } as Record<string, unknown>);
         assert.ok(result.includes('Session +7%'), 'Should extract nested session delta');
         assert.ok(result.includes('Weekly +2%'), 'Should extract nested weeklyAll delta');
+    });
+
+    test('ignores usage_metrics metadata outside nested delta', () => {
+        const result = formatSubscriptionUsage({
+            usage_metrics: {
+                delta: {
+                    weeklyAll: { percent: 2 },
+                },
+                session: { percent: 99 },
+                source: 'agent-tank',
+            },
+            agent: 'claude',
+        } as Record<string, unknown>);
+        assert.strictEqual(result, 'Weekly +2%');
     });
 
     test('prefers usage_metric_records over usage_metrics when both present', () => {
