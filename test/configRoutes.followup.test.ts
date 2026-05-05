@@ -2,6 +2,7 @@ import { test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
 import * as configManager from '../packages/core/src/index.ts';
 import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/configRoutesAgents.ts';
+import { normalizeAgentsConfig } from '../packages/api/routes/configHelpers.ts';
 import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
 import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
@@ -514,6 +515,35 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
     });
 
+    test('postAgents rejects requests with a missing agents array before acquiring the shared settings lock', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+        };
+        const routes = createAgentsRoutes({
+            redisClient: redisClient as never,
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postAgents({ body: {} } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 400);
+        assert.deepStrictEqual(res.body, { error: 'agents must be an array' });
+        assert.strictEqual(redisClient.set.mock.calls.length, 0);
+    });
+
     test('postAgents resolves agent versions before acquiring the shared settings lock', async () => {
         let lockAcquired = false;
         const redisClient = {
@@ -565,6 +595,74 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(res.statusCode, 200);
         assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
+    });
+
+    test('postAgents reports transient version resolution failures as server errors', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+        };
+        const resolveVersionMock = mock.method(configManager, 'resolveVersion', async () => {
+            throw new Error('network timeout');
+        });
+
+        const routes = createAgentsRoutes({
+            redisClient: redisClient as never,
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postAgents({
+            body: {
+                agents: [
+                    {
+                        id: 'new-agent',
+                        alias: 'new-default',
+                        type: 'claude',
+                        enabled: true,
+                        dockerImage: 'new:image',
+                        configPath: '/tmp/claude',
+                        supportedModels: [],
+                        cliVersionType: 'default',
+                    },
+                ],
+            },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 502);
+        assert.deepStrictEqual(res.body, {
+            error: "Failed to resolve version for agent 'new-default': network timeout",
+        });
+        assert.strictEqual(redisClient.set.mock.calls.length, 0);
+        assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
+    });
+
+    test('normalizeAgentsConfig trims supportedModels entries', () => {
+        const normalized = normalizeAgentsConfig([
+            {
+                id: 'agent-1',
+                alias: ' agent-1 ',
+                type: 'claude',
+                enabled: true,
+                dockerImage: 'claude:image',
+                configPath: '/tmp/claude',
+                supportedModels: [' claude-sonnet-4-6 ', 'claude-opus-4-6'],
+            },
+        ] as never);
+
+        assert.deepStrictEqual(normalized[0]?.supportedModels, ['claude-sonnet-4-6', 'claude-opus-4-6']);
+        assert.strictEqual(normalized[0]?.alias, 'agent-1');
     });
 
     test('findLatestHistoryEntryWithSessionId returns the latest live execution session entry', () => {

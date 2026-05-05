@@ -158,6 +158,64 @@ test('saveSettingsWithRollback scrubs specialized keys from the general settings
   }
 });
 
+test('saveSettingsWithRollback clears general settings when given an empty settings object', async () => {
+  const originalTransaction = db.transaction.bind(db);
+  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const writes = new Map<string, unknown>();
+
+  const trx = Object.assign(
+    ((table: string) => ({
+      insert: (row: { key: string; value: string }) => ({
+        onConflict: (_column: string) => ({
+          merge: async () => {
+            assert.equal(table, 'system_configs');
+            writes.set(row.key, JSON.parse(row.value));
+          }
+        })
+      })
+    })) as unknown as typeof db,
+    {
+      commit: async () => {},
+      rollback: async () => {}
+    }
+  );
+
+  testDb.transaction = async () => trx as never;
+
+  try {
+    const result = await saveSettingsWithRollback({
+      settings: {},
+      publishConfigUpdate: async () => {},
+      configStore: {
+        loadSettings: async () => ({
+          worker_concurrency: 8,
+          planner_generation_model: 'gpt-test'
+        }),
+        handleSettingsSaveSideEffects: () => {},
+        saveSettings: async () => true,
+        saveConfig: async () => true,
+        loadAutoFollowupScoreThreshold: async () => 4,
+        saveAutoFollowupScoreThreshold: async () => true,
+        loadAutoResolveMergeConflicts: async () => false,
+        saveAutoResolveMergeConflicts: async () => true,
+        loadPrReviewModel: async () => '',
+        savePrReviewModel: async () => true,
+        loadUltrafixRatingGoal: async () => 8,
+        saveUltrafixRatingGoal: async () => true,
+        loadUltrafixMaxCycles: async () => 5,
+        saveUltrafixMaxCycles: async () => true,
+        loadUltrafixPauseSeconds: async () => 60,
+        saveUltrafixPauseSeconds: async () => true
+      }
+    });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(writes.get('settings'), {});
+  } finally {
+    testDb.transaction = originalTransaction;
+  }
+});
+
 test('Claude malformed-line warning cap resets for each parse', () => {
   const originalWarn = console.warn;
   let warnings = 0;

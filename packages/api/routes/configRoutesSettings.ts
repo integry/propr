@@ -65,12 +65,14 @@ async function persistSettingsAtomically({
   let trx: Knex.Transaction | null = null;
   try {
     await lock?.assertLockHeld();
-    const shouldPersistGeneralSettings = Object.keys(otherSettings).length > 0 || specializedNames.length > 0;
+    const shouldPersistGeneralSettings = true;
     const mergedSettings = shouldPersistGeneralSettings
-      ? buildMergedSettings(
-        stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
-        otherSettings
-      ) ?? {}
+      ? Object.keys(otherSettings).length === 0 && specializedNames.length === 0
+        ? {}
+        : buildMergedSettings(
+          stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
+          otherSettings
+        ) ?? {}
       : null;
     trx = await db.transaction();
     const transaction = trx;

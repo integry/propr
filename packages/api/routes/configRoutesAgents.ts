@@ -90,11 +90,22 @@ function resolveDefaultAgentAlias(processedAgents: AgentConfig[], currentDefault
   return currentDefault;
 }
 
-async function prepareAgentsUpdate(agents: AgentConfig[]): Promise<{ error?: string; processedAgents?: AgentConfig[] }> {
+function classifyVersionResolutionError(error: unknown): { message: string; status: number } {
+  const message = error instanceof Error ? error.message : 'Unknown version resolution error';
+  if (message === 'Version spec required for tag type' || message === 'Version spec required' || message.startsWith('Version \'')) {
+    return { message, status: 400 };
+  }
+  return { message, status: 502 };
+}
+
+async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
+  if (!Array.isArray(agents)) {
+    return { error: 'agents must be an array', status: 400 };
+  }
   const normalizedAgents = normalizeAgentsConfig(agents);
   const validationError = validateAgentsConfig(normalizedAgents);
   if (validationError) {
-    return { error: validationError };
+    return { error: validationError, status: 400 };
   }
 
   const processedAgents: AgentConfig[] = [];
@@ -109,8 +120,8 @@ async function prepareAgentsUpdate(agents: AgentConfig[]): Promise<{ error?: str
         processedAgent.cliVersionResolved = resolvedVersion;
         processedAgent.dockerImage = generateImageTag(agentType, resolvedVersion, computeContentHash(agentType));
       } catch (versionError) {
-        const message = versionError instanceof Error ? versionError.message : 'Unknown version resolution error';
-        return { error: `Failed to resolve version for agent '${agent.alias}': ${message}` };
+        const { message, status } = classifyVersionResolutionError(versionError);
+        return { error: `Failed to resolve version for agent '${agent.alias}': ${message}`, status };
       }
     } else {
       const agentType = agent.type as AgentType;
@@ -181,7 +192,7 @@ export async function applyAgentsUpdate({
   if (!processedAgents) {
     const prepared = await prepareAgentsUpdate(agents);
     if (prepared.error) {
-      return { status: 400, body: { error: prepared.error } };
+      return { status: prepared.status ?? 400, body: { error: prepared.error } };
     }
     processedAgents = prepared.processedAgents;
   }
@@ -276,7 +287,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
     }
     const prepared = await prepareAgentsUpdate(req.body.agents);
     if (prepared.error) {
-      res.status(400).json({ error: prepared.error });
+      res.status(prepared.status ?? 400).json({ error: prepared.error });
       return;
     }
     if (!prepared.processedAgents) {

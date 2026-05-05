@@ -7,10 +7,17 @@ export function normalizeAgentAlias(alias: string): string {
   return alias.trim();
 }
 
+function normalizeSupportedModel(model: string): string {
+  return model.trim();
+}
+
 export function normalizeAgentsConfig(agents: AgentConfig[]): AgentConfig[] {
   return agents.map(agent => ({
     ...agent,
-    alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias
+    alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias,
+    supportedModels: Array.isArray(agent.supportedModels)
+      ? agent.supportedModels.map(model => typeof model === 'string' ? normalizeSupportedModel(model) : model)
+      : agent.supportedModels
   }));
 }
 
