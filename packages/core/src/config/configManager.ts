@@ -1,5 +1,4 @@
 import logger from '../utils/logger.js';
-import { db } from '../db/connection.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 import { getConfig, saveConfig } from './configStore.js';
 export {
