@@ -98,14 +98,32 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     }
   }, [draftId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const applySocketSnapshot = useCallback((payload: DraftUpdatePayload) => {
+    setDraft(currentDraft => {
+      if (!currentDraft || currentDraft.draft_id !== payload.draftId) {
+        return currentDraft;
+      }
+
+      return parseJsonFields({
+        ...currentDraft,
+        generation_trace: payload.generationTrace ?? currentDraft.generation_trace,
+      } as unknown as Record<string, unknown>) as unknown as PlannerDraft;
+    });
+  }, []);
+
   // Handle draft update from WebSocket
   const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId) return;
 
     console.log('[useDraft] Received draft update via WebSocket:', payload);
-    // Refresh draft data when we receive an update
-    await fetchDraft(false);
-  }, [draftId, fetchDraft]);
+    applySocketSnapshot(payload);
+
+    // Progress updates are self-sufficient in the socket payload; only resync when the
+    // draft leaves generation and the UI needs the full server representation.
+    if (payload.draftStatus && payload.draftStatus !== 'generating') {
+      await fetchDraft(false);
+    }
+  }, [draftId, applySocketSnapshot, fetchDraft]);
 
   // Subscribe to WebSocket events for this draft when generating
   useEffect(() => {
