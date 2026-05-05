@@ -352,14 +352,32 @@ export async function applyAgentsUpdate({
     };
   }
 
-  await publishAgentUpdates({
-    processedAgents,
-    defaultChanged,
-    publishConfigUpdate,
-    logActivityHelper,
-    username
-  });
+  let publishResult: { status: number; body: Record<string, unknown> } | null = null;
+  try {
+    await publishAgentUpdates({
+      processedAgents,
+      defaultChanged,
+      publishConfigUpdate,
+      logActivityHelper,
+      username
+    });
+  } catch (error) {
+    if (lock?.hasLockBeenLost()) {
+      throw error;
+    }
+    console.error('Failed to publish agent configuration updates after commit:', error);
+    publishResult = {
+      status: 500,
+      body: {
+        error: 'Agent configuration was saved, but publishing the config update notification failed. Other processes may still be using stale configuration.',
+        committed: true
+      }
+    };
+  }
 
+  if (publishResult) {
+    return publishResult;
+  }
   return { status: 200, body: { success: true, agents: processedAgents } };
 }
 

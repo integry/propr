@@ -1218,6 +1218,46 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(currentSettings.default_agent_alias, 'new-default');
     });
 
+    test('applyAgentsUpdate reports committed state when publishing agent updates fails after commit', async () => {
+        const registry = {
+            refresh: mock.fn(async () => {}),
+            setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
+        };
+        const configStore = {
+            loadAgents: async () => currentAgents as never[],
+            loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
+        };
+
+        const result = await applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    dockerImage: 'new:image',
+                    configPath: '/tmp/claude',
+                    supportedModels: [],
+                },
+            ],
+            publishConfigUpdate: async () => {
+                throw new Error('publish failed');
+            },
+            logActivityHelper: async () => {},
+            configStore,
+            registry,
+        });
+
+        assert.strictEqual(result.status, 500);
+        assert.deepStrictEqual(result.body, {
+            error: 'Agent configuration was saved, but publishing the config update notification failed. Other processes may still be using stale configuration.',
+            committed: true,
+        });
+        assert.strictEqual(registry.refresh.mock.calls.length, 1);
+        assert.strictEqual(registry.setDefaultAgentAlias.mock.calls[0].arguments[0], 'new-default');
+    });
+
     test('parseStoredOutputContent parses Claude JSONL output', () => {
         const parsed = parseStoredOutputContent('{"type":"assistant","message":{"content":[{"type":"text","text":"Claude says hi"}]}}\n');
 
