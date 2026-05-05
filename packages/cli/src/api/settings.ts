@@ -48,6 +48,27 @@ export interface SystemSettings {
    * contributor branches and ask an agent to resolve any conflicts.
    */
   auto_resolve_merge_conflicts: boolean;
+
+  /**
+   * Model identifier used for full PR reviews.
+   * Empty string means use the default agent model.
+   */
+  pr_review_model: string;
+
+  /**
+   * Target quality rating (1-10) that ultrafix cycles aim to reach.
+   */
+  ultrafix_rating_goal: number;
+
+  /**
+   * Maximum number of ultrafix improvement cycles before stopping.
+   */
+  ultrafix_max_cycles: number;
+
+  /**
+   * Pause duration in seconds between ultrafix cycles.
+   */
+  ultrafix_pause_seconds: number;
 }
 
 /**
@@ -95,6 +116,27 @@ export interface UpdateSettingsOptions {
    * contributor branches and ask an agent to resolve any conflicts.
    */
   auto_resolve_merge_conflicts?: boolean;
+
+  /**
+   * Model identifier used for full PR reviews.
+   * Empty string means use the default agent model.
+   */
+  pr_review_model?: string;
+
+  /**
+   * Target quality rating (1-10) that ultrafix cycles aim to reach.
+   */
+  ultrafix_rating_goal?: number;
+
+  /**
+   * Maximum number of ultrafix improvement cycles before stopping.
+   */
+  ultrafix_max_cycles?: number;
+
+  /**
+   * Pause duration in seconds between ultrafix cycles.
+   */
+  ultrafix_pause_seconds?: number;
 }
 
 /**
@@ -128,6 +170,10 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "planner_generation_model",
   "auto_followup_score_threshold",
   "auto_resolve_merge_conflicts",
+  "pr_review_model",
+  "ultrafix_rating_goal",
+  "ultrafix_max_cycles",
+  "ultrafix_pause_seconds",
 ];
 
 /**
@@ -152,15 +198,48 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
   switch (key) {
     case "worker_concurrency":
     case "auto_followup_score_threshold": {
-      const parsed = parseInt(value, 10);
-      if (isNaN(parsed)) {
-        throw new Error(`Invalid value for ${key}: must be a number`);
+      if (!/^-?\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be an integer`);
+      }
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be an integer up to ${Number.MAX_SAFE_INTEGER}`);
       }
       if (key === "auto_followup_score_threshold" && (parsed < 0 || parsed > 9)) {
         throw new Error(`Invalid value for ${key}: must be between 0 and 9`);
       }
       if (key === "worker_concurrency" && parsed < 1) {
         throw new Error(`Invalid value for ${key}: must be at least 1`);
+      }
+      return parsed;
+    }
+    case "ultrafix_rating_goal": {
+      if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be a positive integer between 1 and 10`);
+      }
+      const parsed = Number(value);
+      if (parsed < 1 || parsed > 10) {
+        throw new Error(`Invalid value for ${key}: must be a number between 1 and 10`);
+      }
+      return parsed;
+    }
+    case "ultrafix_max_cycles": {
+      if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be a positive integer`);
+      }
+      const parsed = Number(value);
+      if (parsed < 1 || !Number.isSafeInteger(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be a positive integer up to ${Number.MAX_SAFE_INTEGER}`);
+      }
+      return parsed;
+    }
+    case "ultrafix_pause_seconds": {
+      if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be a non-negative integer`);
+      }
+      const parsed = Number(value);
+      if (parsed < 0 || !Number.isSafeInteger(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be a non-negative integer up to ${Number.MAX_SAFE_INTEGER}`);
       }
       return parsed;
     }
@@ -178,6 +257,13 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
     case "planner_context_model":
     case "planner_generation_model":
       return value;
+    case "pr_review_model": {
+      const trimmed = value.trim();
+      if (trimmed === '' && value.length > 0) {
+        throw new Error(`Invalid value for ${key}: must not be whitespace-only; use an empty string to clear`);
+      }
+      return trimmed;
+    }
     default:
       return value;
   }

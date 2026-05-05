@@ -98,7 +98,14 @@ export class GeminiAgent implements Agent {
         if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
         const modelUsed = parsedModel || effectiveModel || 'unknown';
         const finalTokenUsage = (tokenUsage.input_tokens || tokenUsage.output_tokens) ? tokenUsage : undefined;
-        const response: AgentExecutionResult = { success: result.exitCode === 0, executionTimeMs: executionTime, logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''), exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [], commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog, tokenUsage: finalTokenUsage };
+        const response: AgentExecutionResult = {
+            success: result.exitCode === 0, executionTimeMs: executionTime,
+            logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
+            exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [],
+            commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog,
+            tokenUsage: finalTokenUsage,
+            usageMetrics: usageMetrics ?? undefined
+        };
 
         // Persist LLM log for visibility in the LLM Logs UI (including Agent Tank usage if available)
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -279,10 +286,15 @@ export class GeminiAgent implements Agent {
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'GEMINI_CLI=1', ...envVars, '-w', '/home/node/workspace',
-            this.config.dockerImage, 'gemini', '--yolo', '--output-format', outputFormat
+            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'GEMINI_CLI=1', '-e', 'GEMINI_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
+            this.config.dockerImage, 'gemini', '--yolo', '--skip-trust', '--output-format', outputFormat
         ];
-        if (modelName) { dockerArgs.push('-m', modelName); logger.info({ issueNumber, requestedModel: modelName, agentAlias: this.config.alias }, 'Model specified for Gemini agent'); }
+        if (modelName) {
+            // Strip agent prefix if present (e.g., "gemini:gemini-3-flash-preview" -> "gemini-3-flash-preview")
+            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+            dockerArgs.push('-m', cleanModelName);
+            logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Gemini agent');
+        }
         else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Gemini agent will use default'); }
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Gemini agent');
         return dockerArgs;

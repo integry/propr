@@ -1,10 +1,12 @@
+import { humanizeMetricKey } from '../../agents/impl/utils/usageTrackingWrapper.js';
+
 /**
  * Shared formatter for Agent Tank subscription usage in GitHub comments.
  *
  * Converts usage metric records (or raw delta data) into a short,
- * GitHub-comment-friendly text line.  Prefers `usage_metric_records`
+ * GitHub-comment-friendly text line. Prefers `usage_metric_records`
  * when available because they are already normalized and human-readable
- * at the storage boundary.  Falls back to `usage_metrics.delta` when
+ * at the storage boundary. Falls back to `usage_metrics.delta` when
  * structured records are not present.
  *
  * Returns an empty string when all values are zero or missing so callers
@@ -14,7 +16,6 @@
 /** Minimal record shape accepted by the formatter. */
 export interface SubscriptionUsageRecord {
     agent: string;
-    // Records are expected to already be normalized at the storage boundary.
     metricKey: string;
     metricValue: number;
 }
@@ -26,27 +27,10 @@ export interface SubscriptionUsageMetrics {
     agent?: string;
 }
 
-/**
- * Map of raw Agent Tank metric keys to human-readable labels.
- * Mirrors the canonical map in usageTrackingWrapper to stay self-contained.
- */
-const METRIC_KEY_LABELS: Record<string, string> = {
-    session: 'Session',
-    weeklyAll: 'Weekly',
-    weeklySonnet: 'Sonnet',
-    weeklyOpus: 'Opus',
-    weeklyHaiku: 'Haiku',
-    fiveHour: 'Five Hour',
-    weekly: 'Weekly',
-    daily: 'Daily',
-    monthly: 'Monthly',
-};
-
 function humanizeKey(key: string): string {
-    if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
-    return key
-        .replace(/([a-z])([A-Z])/g, '$1 $2')
-        .replace(/^./, c => c.toUpperCase());
+    return humanizeMetricKey(key)
+        .replace(/[-_]/g, ' ')
+        .replace(/(\d) (\d)/g, '$1.$2');
 }
 
 function clampPercent(value: number): number {
@@ -70,10 +54,17 @@ function extractRecordsFromArray(
     for (const item of items) {
         if (!item || typeof item !== 'object') continue;
         const entry = item as Record<string, unknown>;
-        const pv = extractPercentFromObject(entry);
-        if (pv !== null && pv > 0) {
-            const rawName = typeof entry.metricKey === 'string' ? entry.metricKey : key;
-            records.push({ agent, metricKey: humanizeKey(rawName), metricValue: pv });
+        const rawName =
+            typeof entry.model === 'string' ? entry.model :
+            typeof entry.metricKey === 'string' ? entry.metricKey :
+            key;
+        const percentValue = extractPercentFromObject(entry);
+        if (percentValue !== null && percentValue > 0) {
+            records.push({
+                agent,
+                metricKey: humanizeKey(rawName),
+                metricValue: percentValue,
+            });
         }
     }
     return records;
@@ -134,7 +125,7 @@ function extractRecordsFromDelta(
 
 /**
  * Normalize a possibly snake_case payload into the camelCase shape
- * the formatter expects.  This handles older or partially migrated
+ * the formatter expects. This handles older or partially migrated
  * callers that pass through the storage-shaped `usage_metrics` /
  * `usage_metric_records` directly.
  */
@@ -150,20 +141,20 @@ function normalizeMetrics(
     }
 
     // delta / usage_metrics.delta
-    // Only fall back to the nested delta object so sibling metadata fields
-    // inside usage_metrics are never interpreted as usage metrics.
-    const delta = raw.delta;
-    if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
-        normalized.delta = delta as Record<string, unknown>;
-    } else {
+    // Only use the nested delta object so sibling metadata fields inside
+    // usage_metrics are never interpreted as usage metrics.
+    let delta = raw.delta;
+    if (!delta || typeof delta !== 'object' || Array.isArray(delta)) {
         const usageMetrics = raw.usage_metrics;
         if (usageMetrics && typeof usageMetrics === 'object' && !Array.isArray(usageMetrics)) {
-            const usageMetricsObject = usageMetrics as Record<string, unknown>;
-            const nestedDelta = usageMetricsObject.delta;
+            const nestedDelta = (usageMetrics as Record<string, unknown>).delta;
             if (nestedDelta && typeof nestedDelta === 'object' && !Array.isArray(nestedDelta)) {
-                normalized.delta = nestedDelta as Record<string, unknown>;
+                delta = nestedDelta;
             }
         }
+    }
+    if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
+        normalized.delta = delta as Record<string, unknown>;
     }
 
     // agent
@@ -183,7 +174,7 @@ function normalizeMetrics(
  *   (`usage_metric_records`, `usage_metrics`) field names.
  * @returns A formatted string like `Session +16%, Weekly +4%`
  *   or an empty string when there is nothing to display.
- *   Returns only the content — callers are responsible for rendering
+ *   Returns only the content - callers are responsible for rendering
  *   their own bullet style or prefix.
  */
 export function formatSubscriptionUsage(
@@ -191,13 +182,9 @@ export function formatSubscriptionUsage(
 ): string {
     if (!usageMetrics) return '';
 
-    // Normalize snake_case fields to camelCase
     const metrics = normalizeMetrics(usageMetrics as Record<string, unknown>);
 
-    // Prefer structured records when available
     let records = metrics.records;
-
-    // Fall back to extracting from delta
     if ((!records || records.length === 0) && metrics.delta) {
         const agent = metrics.agent || 'unknown';
         records = extractRecordsFromDelta(agent, metrics.delta);
@@ -208,7 +195,6 @@ export function formatSubscriptionUsage(
     const meaningful = aggregateRecords(records);
     if (meaningful.length === 0) return '';
 
-    // Build compact representation: "Session +16%, Weekly +4%"
     const parts = meaningful.map(r => {
         const value = Number.isInteger(r.metricValue)
             ? r.metricValue.toString()

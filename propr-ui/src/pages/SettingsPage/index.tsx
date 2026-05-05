@@ -38,7 +38,7 @@ const SettingsPage: React.FC = () => {
     setNewPrimaryLabel,
     setNewKeyword,
     setNewIgnoreKeyword,
-    triggerAutoSave,
+    triggerSettingsSave,
     handleModelSelectionChange,
     addWhitelistItem,
     removeWhitelistItem,
@@ -52,7 +52,8 @@ const SettingsPage: React.FC = () => {
     handleSummarizationModelChange,
     handleDefaultAgentChange,
     handleReindexAll,
-    handleAgentTankChange
+    handleAgentTankChange,
+    savePrLabelOnly
   } = useSettingsState();
 
   if (loading) {
@@ -82,7 +83,8 @@ const SettingsPage: React.FC = () => {
                 analysis_model_fast: settings.analysis_model_fast,
                 planner_context_model: settings.planner_context_model,
                 planner_generation_model: settings.planner_generation_model,
-                default_agent_alias: settings.default_agent_alias
+                default_agent_alias: settings.default_agent_alias,
+                pr_review_model: settings.pr_review_model
               }}
               summarizationSettings={summarizationSettings}
               agents={agents}
@@ -101,7 +103,7 @@ const SettingsPage: React.FC = () => {
             <AgentTankSection
               settings={agentTankSettings}
               onChange={handleAgentTankChange}
-              onBlur={triggerAutoSave}
+              onBlur={triggerSettingsSave}
               isAvailable={agentTankAvailable}
               isCheckingStatus={agentTankCheckingStatus}
             />
@@ -141,7 +143,7 @@ const SettingsPage: React.FC = () => {
             <PrLabelSection
               prLabel={prLabel}
               onLabelChange={(e) => setPrLabel(e.target.value)}
-              onBlur={triggerAutoSave}
+              onBlur={() => savePrLabelOnly(prLabel)}
             />
 
             <TagListSection
@@ -176,12 +178,22 @@ const SettingsPage: React.FC = () => {
                 settings={{
                   worker_concurrency: settings.worker_concurrency,
                   auto_followup_score_threshold: settings.auto_followup_score_threshold,
-                  auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts
+                  auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts,
+                  ultrafix_rating_goal: settings.ultrafix_rating_goal,
+                  ultrafix_max_cycles: settings.ultrafix_max_cycles,
+                  ultrafix_pause_seconds: settings.ultrafix_pause_seconds
                 }}
                 onSettingChange={(e) => {
                   let value: string | number | boolean;
-                  if (e.target.name === 'auto_followup_score_threshold') {
-                    value = parseInt(e.target.value, 10);
+                  const numericFields = ['auto_followup_score_threshold', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
+                  if (numericFields.includes(e.target.name)) {
+                    const raw = e.target.value;
+                    // Only accept strings that are strictly integer digits (with optional leading minus)
+                    // to avoid silent coercion of values like "1e6" or "2.5"
+                    if (raw === '' || !/^-?\d+$/.test(raw)) return;
+                    const parsed = Number(raw);
+                    if (!Number.isSafeInteger(parsed)) return;
+                    value = parsed;
                   } else if (e.target.name === 'auto_resolve_merge_conflicts') {
                     value = (e.target as HTMLInputElement).checked;
                   } else {
@@ -189,7 +201,7 @@ const SettingsPage: React.FC = () => {
                   }
                   setSettings(prev => ({ ...prev, [e.target.name]: value }));
                 }}
-                onBlur={triggerAutoSave}
+                onBlur={triggerSettingsSave}
               />
             </div>
 

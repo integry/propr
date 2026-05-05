@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
@@ -190,35 +191,168 @@ export async function getCurrentPRHead(owner: string, repoName: string, prNumber
     }
 }
 
+interface CommitStatusInfo {
+    state: string;
+    totalCount: number;
+}
+
+interface GitHubApiError extends Error {
+    status?: number;
+}
+
+function isIntegrationAccessError(error: unknown): boolean {
+    const err = error as GitHubApiError;
+    return err.status === 403 || err.message.includes('Resource not accessible by integration');
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getCommitStatusInfo(octokit: any, owner: string, repoName: string, ref: string): Promise<CommitStatusInfo> {
+    const statusResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/status', {
+        owner,
+        repo: repoName,
+        ref
+    });
+    return {
+        state: statusResponse.data.state as string,
+        totalCount: (statusResponse.data.total_count ?? statusResponse.data.statuses?.length ?? 0) as number,
+    };
+}
+
+export interface CheckRunsStatus {
+    count: number;
+    allPassing: boolean;
+    anyPending: boolean;
+    anyFailed: boolean;
+}
+
+/**
+ * Gets detailed status of check runs for a commit.
+ * Always queries both the check-runs API and the legacy commit status API
+ * so repos that publish both signal types are handled correctly.
+ */
+export async function getCheckRunsStatus(owner: string, repoName: string, ref: string): Promise<CheckRunsStatus> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+        const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
+            octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+                owner,
+                repo: repoName,
+                ref
+            }),
+            getCommitStatusInfo(octokit, owner, repoName, ref)
+        ]);
+
+        if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
+            throw checkRunsResult.reason;
+        }
+
+        const checkRuns = checkRunsResult.status === 'fulfilled'
+            ? checkRunsResult.value.data.check_runs
+            : [];
+        const commitStatus = commitStatusResult.status === 'fulfilled'
+            ? commitStatusResult.value
+            : { state: 'pending', totalCount: 0 };
+
+        if (checkRunsResult.status === 'rejected') {
+            logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
+        }
+
+        if (commitStatusResult.status === 'rejected') {
+            const error = commitStatusResult.reason as Error;
+            const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
+            logger[logMethod](
+                { owner, repoName, ref, error: error.message },
+                'Legacy commit status unavailable, continuing with check-runs only',
+            );
+        }
+
+        const count = checkRuns.length + commitStatus.totalCount;
+        const crPending = checkRuns.some((run: { status: string }) => run.status !== 'completed');
+        const crFailed = checkRuns.some((run: { status: string; conclusion: string | null }) =>
+            run.status === 'completed' && run.conclusion !== 'success' && run.conclusion !== 'skipped'
+        );
+
+        const hasStatusContexts = commitStatus.totalCount > 0;
+        const statusPending = hasStatusContexts && commitStatus.state === 'pending';
+        const statusFailed = hasStatusContexts && (commitStatus.state === 'failure' || commitStatus.state === 'error');
+
+        const anyPending = crPending || statusPending;
+        const anyFailed = crFailed || statusFailed;
+        const allPassing = !anyPending && !anyFailed;
+
+        logger.debug({ owner, repoName, ref, count, allPassing, anyPending, anyFailed, commitStatus: commitStatus.state, statusContexts: commitStatus.totalCount }, 'Check runs status');
+        return { count, allPassing, anyPending, anyFailed };
+    } catch (error) {
+        logger.warn({ owner, repoName, ref, error: (error as Error).message }, 'Failed to get check runs status');
+        return { count: 0, allPassing: false, anyPending: false, anyFailed: false };
+    }
+}
+
 /**
  * Checks if all check runs have passed for a PR.
+ * Always queries both the check-runs API and the legacy commit status API
+ * so repos that publish both signal types are handled correctly.
  */
 export async function areAllChecksPassing(owner: string, repoName: string, ref: string): Promise<boolean> {
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        const checkRunsResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
-            owner,
-            repo: repoName,
-            ref
-        });
+        const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
+            octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+                owner,
+                repo: repoName,
+                ref
+            }),
+            getCommitStatusInfo(octokit, owner, repoName, ref)
+        ]);
 
-        const checkRuns = checkRunsResponse.data.check_runs;
+        if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
+            throw checkRunsResult.reason;
+        }
 
-        const allCheckRunsPass = checkRuns.length > 0 && checkRuns.every(
+        const checkRuns = checkRunsResult.status === 'fulfilled'
+            ? checkRunsResult.value.data.check_runs
+            : [];
+        const commitStatus = commitStatusResult.status === 'fulfilled'
+            ? commitStatusResult.value
+            : { state: 'pending', totalCount: 0 };
+
+        if (checkRunsResult.status === 'rejected') {
+            logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
+        }
+
+        if (commitStatusResult.status === 'rejected') {
+            const error = commitStatusResult.reason as Error;
+            const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
+            logger[logMethod](
+                { owner, repoName, ref, error: error.message },
+                'Legacy commit status unavailable, continuing with check-runs only',
+            );
+        }
+
+        const allCheckRunsPass = checkRuns.length === 0 || checkRuns.every(
             (run: { status: string; conclusion: string | null }) =>
                 run.status === 'completed' && (run.conclusion === 'success' || run.conclusion === 'skipped')
         );
+
+        // Repos with no legacy status contexts report 'pending' — treat as passing.
+        const statusPass = commitStatus.totalCount === 0 ||
+            (commitStatus.state !== 'pending' && commitStatus.state !== 'failure' && commitStatus.state !== 'error');
+        const allPass = allCheckRunsPass && statusPass;
 
         logger.debug({
             owner,
             repoName,
             ref,
             totalCheckRuns: checkRuns.length,
-            allCheckRunsPass
+            commitStatus: commitStatus.state,
+            statusContexts: commitStatus.totalCount,
+            allCheckRunsPass,
+            statusPass,
+            allPass
         }, 'Checked PR status');
 
-        return allCheckRunsPass;
+        return allPass;
     } catch (error) {
         logger.warn({
             owner,
@@ -377,5 +511,29 @@ export async function hasActiveTasksForPR(
         }, 'Failed to check for active tasks');
         // On error, assume no active tasks to avoid blocking legitimate merges
         return { hasActive: false, activeTasks: [] };
+    }
+}
+
+/**
+ * Finds open PRs whose head SHA matches the given commit.
+ * Used by the status event handler to map a commit status update to PRs.
+ */
+export async function findPRsForCommit(
+    owner: string,
+    repoName: string,
+    commitSha: string
+): Promise<Array<{ number: number }>> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+        const { data: pulls } = await octokit.request(
+            'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+            { owner, repo: repoName, commit_sha: commitSha, headers: { accept: 'application/vnd.github.groot-preview+json' } }
+        );
+        return pulls
+            .filter((pr: { state: string }) => pr.state === 'open')
+            .map((pr: { number: number }) => ({ number: pr.number }));
+    } catch (error) {
+        logger.warn({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to find PRs for commit');
+        return [];
     }
 }

@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # PR Slash Commands
 
-ProPR supports five slash commands that you can use in pull request comments to trigger automated actions: `/review`, `/fix`, `/merge`, `/switch`, and `/use`. Each command serves a distinct purpose in the PR workflow.
+ProPR supports six slash commands that you can use in pull request comments to trigger automated actions: `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix`. Each command serves a distinct purpose in the PR workflow.
 
 ## `/review` — Request an AI Code Review
 
@@ -139,6 +139,67 @@ Override the model and provide instructions for the run.
 2. Trailing instructions are passed to the AI as context for the run.
 3. Only one model argument is accepted; extra arguments are ignored with a warning.
 4. After the run completes, subsequent commands revert to the PR's configured model.
+
+## `/ultrafix` — Automated Review→Fix Loop
+
+Runs an automated loop of `/review` followed by `/fix` cycles until the review score reaches a target goal or a maximum number of cycles is exhausted.
+
+### Usage
+
+```
+/ultrafix
+```
+
+Run with system defaults (goal=7, max=5, pause=60 unless changed by an admin in settings).
+
+```
+/ultrafix 8
+```
+
+Set the target score goal to 8 (positional argument).
+
+```
+/ultrafix goal=8 max=10 pause=60 model=claude-sonnet-4-6
+```
+
+Use named arguments for full control:
+- **goal** — Target review score to reach, 1-10 (system default: 7)
+- **max** — Maximum review→fix iterations before giving up. One cycle means one `/review` and the matching `/fix` pass. `max=5` allows up to 5 reviews and 5 fixes. (system default: 5)
+- **pause** — Seconds to wait between cycles (system default: 60)
+- **model** — Override the review model for all cycles
+
+```
+/ultrafix
+Focus only on security issues
+```
+
+Add multiline instructions after the command to guide both review and fix passes.
+
+### Behavior
+
+1. If unprocessed AI review comments already exist on the PR, the loop starts with `/fix`. Otherwise it starts with `/review`.
+2. After each `/fix` pass, ProPR waits for:
+   - All CI/CD checks to turn green.
+   - The PR to be inactive (no new pushes or comments) for the configured pause duration.
+3. The loop continues — alternating `/review` and `/fix` — until the review score reaches the **goal** or the **max** review→fix iteration count is hit.
+4. A summary comment is posted at the end with the final status.
+
+### Waiting Rules
+
+Between each cycle iteration, `/ultrafix` enforces:
+- **Green checks** — waits for all required status checks and CI jobs to pass before proceeding to the next step.
+- **Cooldown** — if `pause` is set, waits the specified number of seconds after checks pass.
+- **PR inactivity** — ensures no new commits or comments have appeared on the PR during the wait period to avoid conflicts.
+
+### Circuit Breaker — The `ultrafix` Label
+
+The `/ultrafix` loop is controlled by a PR label named `ultrafix`:
+
+- **Starting**: When `/ultrafix` is invoked, the `ultrafix` label is automatically added to the PR. The loop runs as long as this label is present.
+- **Stopping**: Removing the `ultrafix` label from the PR at any time will stop the loop after the current cycle completes. This is the manual circuit breaker.
+- **Restarting**: Re-adding the `ultrafix` label (or posting another `/ultrafix` comment) restarts the loop.
+
+This mechanism gives humans a simple, visible way to halt an automated loop without needing to post a comment.
 
 ## Typical Workflow
 

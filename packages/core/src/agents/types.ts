@@ -1,5 +1,6 @@
 import { IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
 import type { CliVersionType } from '../config/configManager.js';
+import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js';
 
 /**
  * Configuration for a specific agent instance.
@@ -124,6 +125,9 @@ export interface AgentExecutionResult {
 
     // Token usage metrics
     tokenUsage?: TokenUsage;
+
+    // Agent Tank subscription usage metrics (for tracking session/weekly usage)
+    usageMetrics?: UsageTrackingMetrics;
 
     // Additional fields for compatibility with existing ClaudeCodeResponse
     rawOutput?: string;
