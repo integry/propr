@@ -1,8 +1,13 @@
 import { test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
 import { applyAgentsUpdate } from '../packages/api/routes/configRoutesAgents.ts';
+import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
-import { findLatestHistoryEntryWithSessionId } from '../packages/api/routes/liveDetailsRoutes.ts';
+import {
+    detectStoredOutputFormat,
+    findLatestHistoryEntryWithSessionId,
+    parseStoredOutputContent,
+} from '../packages/api/routes/liveDetailsRoutes.ts';
 
 describe('config route follow-up helpers', () => {
     let currentSettings: Record<string, unknown>;
@@ -332,6 +337,65 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(currentSettings.default_agent_alias, 'old-default');
     });
 
+    test('applyAgentsUpdate rolls persisted config back when registry refresh fails', async () => {
+        let refreshCalls = 0;
+        const registry = {
+            refresh: mock.fn(async () => {
+                refreshCalls += 1;
+                if (refreshCalls === 1) {
+                    throw new Error('refresh failed');
+                }
+            }),
+            setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
+        };
+        const configStore = {
+            loadAgents: async () => currentAgents as never[],
+            loadSettings: async () => currentSettings,
+            saveAgents: async (agents: never[]) => {
+                currentAgents = agents as Array<Record<string, unknown>>;
+                return true;
+            },
+            saveSettings: async (settings: Record<string, unknown>) => {
+                currentSettings = { ...currentSettings, ...settings };
+                return true;
+            },
+        };
+
+        const result = await applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    dockerImage: 'new:image',
+                    configPath: '/tmp/claude',
+                    supportedModels: [],
+                },
+            ],
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+            configStore,
+            registry,
+        });
+
+        assert.strictEqual(result.status, 500);
+        assert.deepStrictEqual(currentAgents, [
+            {
+                id: 'old-agent',
+                alias: 'old-default',
+                type: 'claude',
+                enabled: true,
+                dockerImage: 'old:image',
+                configPath: '/tmp/claude',
+                supportedModels: [],
+            },
+        ]);
+        assert.strictEqual(currentSettings.default_agent_alias, 'old-default');
+        assert.strictEqual(registry.refresh.mock.calls.length, 2);
+        assert.strictEqual(registry.setDefaultAgentAlias.mock.calls[0].arguments[0], 'old-default');
+    });
+
     test('saveSettingsWithRollback rejects array payloads', async () => {
         const result = await saveSettingsWithRollback({
             settings: [] as unknown as Record<string, unknown>,
@@ -368,5 +432,112 @@ describe('config route follow-up helpers', () => {
             state: 'claude_execution',
             metadata: { sessionId: 'live-session' },
         });
+    });
+
+    test('withConfigLock renews the lock while a long operation is running', async () => {
+        const redisState = new Map<string, string>();
+        const redisClient = {
+            set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+                if (opts.NX && redisState.has(key)) return null;
+                redisState.set(key, value);
+                return 'OK';
+            }),
+            get: mock.fn(async (key: string) => redisState.get(key) ?? null),
+            expire: mock.fn(async (_key: string, _seconds: number) => 1),
+            del: mock.fn(async (key: string) => {
+                redisState.delete(key);
+                return 1;
+            }),
+        };
+
+        const result = await withConfigLock(
+            redisClient as never,
+            'config:test:lock',
+            async () => {
+                await new Promise(resolve => setTimeout(resolve, 35));
+                return { status: 200, body: { success: true } };
+            },
+            { timeoutSeconds: 1, renewalIntervalMs: 10 },
+        );
+
+        assert.strictEqual(result.status, 200);
+        assert.ok(redisClient.expire.mock.calls.length >= 2);
+        assert.strictEqual(redisState.has('config:test:lock'), false);
+    });
+
+    test('withConfigLock does not delete a lock that has been replaced by another owner', async () => {
+        const redisState = new Map<string, string>();
+        const redisClient = {
+            set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+                if (opts.NX && redisState.has(key)) return null;
+                redisState.set(key, value);
+                return 'OK';
+            }),
+            get: mock.fn(async (key: string) => redisState.get(key) ?? null),
+            expire: mock.fn(async (_key: string, _seconds: number) => 1),
+            del: mock.fn(async (key: string) => {
+                redisState.delete(key);
+                return 1;
+            }),
+        };
+
+        await withConfigLock(
+            redisClient as never,
+            'config:test:lock',
+            async () => {
+                redisState.set('config:test:lock', 'someone-else');
+                return { status: 200, body: { success: true } };
+            },
+            { renewalIntervalMs: 0 },
+        );
+
+        assert.strictEqual(redisState.get('config:test:lock'), 'someone-else');
+    });
+
+    test('parseStoredOutputContent parses Claude JSONL output', () => {
+        const parsed = parseStoredOutputContent('{"type":"assistant","message":{"content":[{"type":"text","text":"Claude says hi"}]}}\n');
+
+        assert.strictEqual(parsed.format, 'claude');
+        assert.ok(parsed.parsed);
+        assert.deepStrictEqual(parsed.parsed?.events, [
+            { type: 'thought', content: 'Claude says hi', timestamp: parsed.parsed?.events[0].timestamp },
+        ]);
+    });
+
+    test('parseStoredOutputContent parses Codex assistant output', () => {
+        const parsed = parseStoredOutputContent('{"type":"message","role":"assistant","content":"Codex says hi"}\n');
+
+        assert.strictEqual(parsed.format, 'codex');
+        assert.ok(parsed.parsed);
+        assert.deepStrictEqual(parsed.parsed?.events, [
+            { type: 'thought', content: 'Codex says hi', timestamp: undefined },
+        ]);
+    });
+
+    test('parseStoredOutputContent treats Codex error-first output as Codex, not Claude', () => {
+        const parsed = parseStoredOutputContent('{"type":"error","message":"boom"}\n');
+
+        assert.strictEqual(parsed.format, 'codex');
+        assert.ok(parsed.parsed);
+        assert.deepStrictEqual(parsed.parsed?.events, [
+            { type: 'tool_result', result: 'boom', isError: true, timestamp: undefined },
+        ]);
+    });
+
+    test('parseStoredOutputContent falls back to raw output for unsupported streams', () => {
+        const parsed = parseStoredOutputContent('{"event":"gemini","message":"hello from gemini"}\n');
+
+        assert.strictEqual(parsed.format, 'unknown');
+        assert.strictEqual(parsed.parsed, null);
+        assert.deepStrictEqual(parsed.rawFallback, {
+            events: [{ type: 'thought', content: '{"event":"gemini","message":"hello from gemini"}' }],
+            todos: [],
+            currentTask: null,
+            tokenUsage: null,
+        });
+    });
+
+    test('detectStoredOutputFormat does not classify message-only JSON as Claude', () => {
+        assert.strictEqual(detectStoredOutputFormat('{"message":"plain message"}\n'), 'unknown');
     });
 });

@@ -15,6 +15,76 @@ interface AgentConfig {
 
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
 
+const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
+const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
+
+interface ConfigLockOptions {
+  timeoutSeconds?: number;
+  renewalIntervalMs?: number;
+}
+
+interface RedisScriptClient {
+  eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>;
+}
+
+const EXTEND_LOCK_SCRIPT = `
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("expire", KEYS[1], tonumber(ARGV[2]))
+end
+return 0
+`;
+
+const RELEASE_LOCK_SCRIPT = `
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0
+`;
+
+async function renewLock(
+  redisClient: RedisClientType,
+  lockKey: string,
+  lockValue: string,
+  timeoutSeconds: number
+): Promise<boolean> {
+  const scriptClient = redisClient as RedisClientType & RedisScriptClient;
+  if (typeof scriptClient.eval === 'function') {
+    const result = await scriptClient.eval(EXTEND_LOCK_SCRIPT, {
+      keys: [lockKey],
+      arguments: [lockValue, String(timeoutSeconds)]
+    });
+    return result === 1;
+  }
+
+  const currentLockValue = await redisClient.get(lockKey);
+  if (currentLockValue !== lockValue) {
+    return false;
+  }
+
+  await redisClient.expire(lockKey, timeoutSeconds);
+  return true;
+}
+
+async function releaseLock(
+  redisClient: RedisClientType,
+  lockKey: string,
+  lockValue: string
+): Promise<void> {
+  const scriptClient = redisClient as RedisClientType & RedisScriptClient;
+  if (typeof scriptClient.eval === 'function') {
+    await scriptClient.eval(RELEASE_LOCK_SCRIPT, {
+      keys: [lockKey],
+      arguments: [lockValue]
+    });
+    return;
+  }
+
+  const currentLockValue = await redisClient.get(lockKey);
+  if (currentLockValue === lockValue) {
+    await redisClient.del(lockKey);
+  }
+}
+
 /**
  * Execute an operation with a Redis-based distributed lock.
  * This ensures only one config update can happen at a time for a given lock key.
@@ -22,10 +92,14 @@ export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
 export async function withConfigLock(
   redisClient: RedisClientType,
   lockKey: string,
-  operation: () => Promise<{ status: number; body: Record<string, unknown> }>
+  operation: () => Promise<{ status: number; body: Record<string, unknown> }>,
+  options: ConfigLockOptions = {}
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const lockValue = `${Date.now()}-${Math.random()}`;
-  const lockTimeout = 30;
+  const lockTimeout = options.timeoutSeconds ?? DEFAULT_LOCK_TIMEOUT_SECONDS;
+  const renewalIntervalMs = options.renewalIntervalMs ?? DEFAULT_LOCK_RENEWAL_INTERVAL_MS;
+  let renewalTimer: NodeJS.Timeout | null = null;
+  let renewalStopped = false;
 
   try {
     const acquired = await redisClient.set(lockKey, lockValue, {
@@ -38,20 +112,32 @@ export async function withConfigLock(
     }
 
     try {
+      if (renewalIntervalMs > 0) {
+        renewalTimer = setInterval(() => {
+          void renewLock(redisClient, lockKey, lockValue, lockTimeout).catch(error => {
+            if (!renewalStopped) {
+              console.error(`Failed to renew config lock ${lockKey}:`, error);
+            }
+          });
+        }, renewalIntervalMs);
+      }
+
       return await operation();
     } finally {
-      const currentLockValue = await redisClient.get(lockKey);
-      if (currentLockValue === lockValue) {
-        await redisClient.del(lockKey);
+      renewalStopped = true;
+      if (renewalTimer) {
+        clearInterval(renewalTimer);
       }
+      await releaseLock(redisClient, lockKey, lockValue);
     }
   } catch (error) {
     console.error(`Error in config operation with lock ${lockKey}:`, error);
     try {
-      const currentLockValue = await redisClient.get(lockKey);
-      if (currentLockValue === lockValue) {
-        await redisClient.del(lockKey);
+      renewalStopped = true;
+      if (renewalTimer) {
+        clearInterval(renewalTimer);
       }
+      await releaseLock(redisClient, lockKey, lockValue);
     } catch (unlockError) {
       console.error('Error releasing lock:', unlockError);
     }

@@ -9,6 +9,7 @@ import {
   appendClaudeAssistantMessageEvents,
   appendClaudeUserMessageEvents,
   deriveCurrentTask,
+  isConversationResultEmpty,
   mapTodoItems,
   parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
@@ -68,6 +69,11 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
         console.log('[live-details] Stored execution output fallback unavailable, trying database fallback');
         const dbFallbackResult = await parseExecutionDetailsFromDb(db, taskId, sessionId);
         if (!dbFallbackResult) {
+          const rawStoredOutput = await loadStoredExecutionOutput(redisClient, sessionId);
+          if (rawStoredOutput?.rawFallback) {
+            res.json(rawStoredOutput.rawFallback);
+            return;
+          }
           res.json({ events: [], todos: [], currentTask: null });
           return;
         }
@@ -158,6 +164,12 @@ interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
 interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
 interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; session_id?: string; conversation_id?: string; item?: unknown; }
+export type StoredOutputFormat = 'claude' | 'codex' | 'unknown';
+export interface ParsedStoredOutput {
+  parsed: ConversationResult | null;
+  rawFallback: ConversationResult | null;
+  format: StoredOutputFormat;
+}
 function getClaudeProjectDirName(workspacePath: string): string {
   const normalizedPath = path.resolve(workspacePath).replace(/\\/g, '/');
   const collapsed = normalizedPath.replace(/\/+/g, '-');
@@ -185,6 +197,10 @@ async function findClaudeConversationPath(sessionId: string): Promise<string | n
   return null;
 }
 async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionId: string): Promise<ConversationResult | null> {
+  const parsedOutput = await loadStoredExecutionOutput(redisClient, sessionId);
+  return parsedOutput?.parsed ?? null;
+}
+async function loadStoredExecutionOutput(redisClient: RedisClientType, sessionId: string): Promise<ParsedStoredOutput | null> {
   const logJson = await redisClient.get(`execution:logs:session:${sessionId}`);
   if (!logJson) {
     console.log('[live-details] No stored execution logs found in Redis for session fallback');
@@ -210,31 +226,91 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, taskId: 
   if (!output?.trim()) {
     return null;
   }
-  return parseStoredOutputContent(output);
+  const parsedOutput = parseStoredOutputContent(output);
+  return parsedOutput.parsed ?? parsedOutput.rawFallback;
 }
-function parseStoredOutputContent(output: string): ConversationResult | null {
-  if (!output.trim()) return null;
-  return looksLikeClaudeOutput(output)
-    ? parseClaudeOutputToConversationResult(output)
-    : parseCodexOutputToConversationResult(output);
+export function parseStoredOutputContent(output: string): ParsedStoredOutput {
+  if (!output.trim()) {
+    return { parsed: null, rawFallback: null, format: 'unknown' };
+  }
+
+  const format = detectStoredOutputFormat(output);
+  if (format === 'claude') {
+    const parsed = parseClaudeOutputToConversationResult(output);
+    return {
+      parsed: isConversationResultEmpty(parsed) ? null : parsed,
+      rawFallback: buildRawOutputConversationResult(output),
+      format
+    };
+  }
+
+  if (format === 'codex') {
+    const parsed = parseCodexOutputToConversationResult(output);
+    return {
+      parsed: isConversationResultEmpty(parsed) ? null : parsed,
+      rawFallback: buildRawOutputConversationResult(output),
+      format
+    };
+  }
+
+  const codexParsed = parseCodexOutputToConversationResult(output);
+  if (!isConversationResultEmpty(codexParsed)) {
+    return { parsed: codexParsed, rawFallback: buildRawOutputConversationResult(output), format: 'codex' };
+  }
+
+  const claudeParsed = parseClaudeOutputToConversationResult(output);
+  if (!isConversationResultEmpty(claudeParsed)) {
+    return { parsed: claudeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'claude' };
+  }
+
+  return {
+    parsed: null,
+    rawFallback: buildRawOutputConversationResult(output),
+    format
+  };
 }
-function looksLikeClaudeOutput(output: string): boolean {
+export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   const firstLine = output
     .split('\n')
     .map(line => line.trim())
     .find(line => line.length > 0);
-  if (!firstLine) return false;
+  if (!firstLine) return 'unknown';
   try {
     const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
-    return parsed.type === 'assistant'
-      || parsed.type === 'user'
+    if (parsed.type === 'message'
+      || parsed.type === 'tool_use'
+      || parsed.type === 'error'
       || parsed.type === 'result'
-      || !!parsed.message
+      || parsed.type === 'turn.started'
+      || parsed.type === 'turn.completed'
+      || parsed.type === 'item.started'
+      || parsed.type === 'item.updated'
+      || parsed.type === 'item.completed'
+      || parsed.item !== undefined) {
+      return 'codex';
+    }
+
+    if (parsed.type === 'assistant'
+      || parsed.type === 'user'
       || !!parsed.session_id
-      || !!parsed.conversation_id;
+      || !!parsed.conversation_id) {
+      return 'claude';
+    }
+
+    return 'unknown';
   } catch {
-    return false;
+    return 'unknown';
   }
+}
+function buildRawOutputConversationResult(output: string): ConversationResult | null {
+  const trimmed = output.trim();
+  if (!trimmed) return null;
+  return {
+    events: [{ type: 'thought', content: trimmed }],
+    todos: [],
+    currentTask: null,
+    tokenUsage: null
+  };
 }
 async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: string): Promise<ConversationResult | null> {
   const execution = await db('llm_executions')

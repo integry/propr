@@ -15,6 +15,14 @@ export interface ConversationResult {
   tokenUsage: TokenUsage | null;
 }
 
+export function isConversationResultEmpty(result: ConversationResult | null): boolean {
+  if (!result) return true;
+  return result.events.length === 0
+    && result.todos.length === 0
+    && result.currentTask === null
+    && result.tokenUsage === null;
+}
+
 export interface TodoItem {
   status: string;
   content: string;
