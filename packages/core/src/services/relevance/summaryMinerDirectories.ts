@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
-import { startDirectoryPhase, updateDirectoryProgress, publishProgress } from './indexingCancellation.js';
+import { startDirectoryPhase, updateDirectoryProgress, publishProgress, isIndexingCancelled } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
 import type { IndexingProgress } from './indexingCancellation.js';
@@ -145,7 +145,7 @@ async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], 
 
 async function tryPublishDirectoryProgress(fullName: string, branch: string): Promise<void> {
   const progress = await updateDirectoryProgress(fullName, branch);
-  if (progress && shouldPublishDirectoryProgress(progress)) {
+  if (progress && shouldPublishDirectoryProgress(progress) && !await isIndexingCancelled(fullName, branch)) {
     try { await publishProgress(fullName, branch, progress); } catch { /* best-effort */ }
   }
 }

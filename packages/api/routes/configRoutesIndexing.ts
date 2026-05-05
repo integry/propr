@@ -3,7 +3,7 @@ import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
 import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
-import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
+import { shouldPublishOptimisticIndexing, validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 
 interface IndexingRoutesDeps {
   redisClient: RedisClientType;
@@ -43,7 +43,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       }
 
       // Best-effort optimistic status for newly accepted jobs only.
-      if (result.success) {
+      if (shouldPublishOptimisticIndexing(result)) {
         try {
           await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
         } catch (pubErr) {

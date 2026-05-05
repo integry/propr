@@ -164,9 +164,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         inputTokens: batchInputTokens,
         outputTokens: batchOutputTokens,
       }, branch);
-      if (updatedProgress) {
-        try { await publishProgress(fullName, branch, updatedProgress); } catch { /* best-effort */ }
-      }
+      await publishBatchProgressIfActive(fullName, branch, updatedProgress);
 
       currentBatch = [];
       currentTokens = 0;
@@ -211,9 +209,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       inputTokens: batchInputTokens,
       outputTokens: batchOutputTokens,
     }, branch);
-    if (updatedProgress) {
-      try { await publishProgress(fullName, branch, updatedProgress); } catch { /* best-effort */ }
-    }
+    await publishBatchProgressIfActive(fullName, branch, updatedProgress);
   }
 
   log.info({ totalBatches: batchNumber, successfulBatches, failedBatches, filesProcessed, filesFailed }, 'Batch processing complete');
@@ -225,6 +221,18 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     filesProcessed,
     filesFailed
   };
+}
+
+async function publishBatchProgressIfActive(
+  repository: string,
+  branch: string,
+  progress: Awaited<ReturnType<typeof updateIndexingProgress>>
+): Promise<void> {
+  if (!progress || await isIndexingCancelled(repository, branch)) {
+    return;
+  }
+
+  try { await publishProgress(repository, branch, progress); } catch { /* best-effort */ }
 }
 
 interface ProcessSingleBatchOptions {

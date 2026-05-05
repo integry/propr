@@ -251,4 +251,48 @@ describe('useRepositoryManagement', () => {
     });
     expect(result.current.indexingStatuses['integry/propr:release/2026'].progress).toBeUndefined();
   });
+
+  it('ignores late progress events after a terminal websocket update', async () => {
+    socketState.isConnected = true;
+
+    const { result } = renderHook(() => useRepositoryManagement());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.handleReindexRepo('integry/propr', 'release/2026');
+    });
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      indexing_status: 'indexing'
+    });
+
+    await act(async () => {
+      socketState.indexingHandler?.({
+        eventType: 'indexing_update',
+        repository: 'integry/propr',
+        branch: 'release/2026',
+        phase: 'idle',
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    await act(async () => {
+      socketState.indexingHandler?.({
+        eventType: 'indexing_update',
+        repository: 'integry/propr',
+        branch: 'release/2026',
+        phase: 'files',
+        progress: 20,
+        totalFiles: 100,
+        processedFiles: 20,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      indexing_status: 'idle'
+    });
+    expect(result.current.indexingStatuses['integry/propr:release/2026'].progress).toBeUndefined();
+  });
 });

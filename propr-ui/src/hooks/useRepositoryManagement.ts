@@ -17,6 +17,22 @@ import { IndexingUpdatePayload } from '@propr/shared';
 import { buildUpdatedStatus } from '../utils/indexingStatusHelpers';
 
 const generateId = (): string => crypto.randomUUID();
+const TERMINAL_INDEXING_STATUSES = new Set<RepositoryIndexingStatus['indexing_status']>(['idle', 'completed', 'failed']);
+
+function shouldIgnoreStaleProgressUpdate(
+  payload: IndexingUpdatePayload,
+  currentStatus: RepositoryIndexingStatus | undefined,
+  hasPendingOptimisticUpdate: boolean
+): boolean {
+  if (payload.phase !== 'files' && payload.phase !== 'directories') {
+    return false;
+  }
+  if (hasPendingOptimisticUpdate) {
+    return false;
+  }
+
+  return currentStatus ? TERMINAL_INDEXING_STATUSES.has(currentStatus.indexing_status) : false;
+}
 
 export type Repo = MonitoredRepo;
 
@@ -105,10 +121,25 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
 
   const handleIndexingUpdate = useCallback((payload: IndexingUpdatePayload) => {
     const key = getRepoStatusKey(payload.repository, payload.branch);
-    if (payload.phase === 'indexing' || payload.phase === 'files' || payload.phase === 'directories') {
-      pendingOptimisticUpdatesRef.current.delete(key);
-    }
-    setIndexingStatuses(prev => ({ ...prev, [key]: buildUpdatedStatus(payload, prev[key]) }));
+    setIndexingStatuses(prev => {
+      const hasPendingOptimisticUpdate = pendingOptimisticUpdatesRef.current.has(key);
+      if (shouldIgnoreStaleProgressUpdate(payload, prev[key], hasPendingOptimisticUpdate)) {
+        return prev;
+      }
+
+      if (
+        payload.phase === 'indexing' ||
+        payload.phase === 'files' ||
+        payload.phase === 'directories' ||
+        payload.phase === 'completed' ||
+        payload.phase === 'failed' ||
+        payload.phase === 'idle'
+      ) {
+        pendingOptimisticUpdatesRef.current.delete(key);
+      }
+
+      return { ...prev, [key]: buildUpdatedStatus(payload, prev[key]) };
+    });
   }, []);
 
   const loadAvailableRepos = useCallback(async () => {
