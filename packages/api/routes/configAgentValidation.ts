@@ -34,11 +34,10 @@ export function validateAgentsConfig(agents: AgentConfig[]): string | null {
   return null;
 }
 
-function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): string | null {
+function validateAgentBaseFields(agent: AgentConfig, normalizedAlias: string): string | null {
   if (!agent.id || typeof agent.id !== 'string') return `Agent missing required 'id' field`;
   if (!agent.type || !VALID_AGENT_TYPES.includes(agent.type)) return `Agent '${agent.id}' has invalid type. Must be one of: ${VALID_AGENT_TYPES.join(', ')}`;
   if (!agent.alias || typeof agent.alias !== 'string') return `Agent '${agent.id}' missing required 'alias' field`;
-  const normalizedAlias = normalizeAgentAlias(agent.alias);
   if (!normalizedAlias) return `Agent '${agent.id}' missing required 'alias' field`;
   if (!ALIAS_REGEX.test(normalizedAlias)) return `Agent '${agent.id}' has invalid alias '${agent.alias}'. Must match pattern ^[a-z0-9-]+$`;
   if (typeof agent.enabled !== 'boolean') return `Agent '${agent.id}' missing required 'enabled' field`;
@@ -48,6 +47,10 @@ function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): stri
   if (!agent.supportedModels.every(model => typeof model === 'string' && model.trim().length > 0)) {
     return `Agent '${agent.id}' has invalid 'supportedModels'. Each supported model must be a non-empty string`;
   }
+  return null;
+}
+
+function validateAgentCliVersion(agent: AgentConfig): string | null {
   if (agent.cliVersionType !== undefined && !VALID_CLI_VERSION_TYPES.includes(agent.cliVersionType)) {
     return `Agent '${agent.id}' has invalid cliVersionType '${String(agent.cliVersionType)}'. Must be one of: ${VALID_CLI_VERSION_TYPES.join(', ')}`;
   }
@@ -63,6 +66,15 @@ function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): stri
   if (agent.cliVersionType && agent.cliVersionType !== 'default' && !agent.cliVersion) {
     return `Agent '${agent.id}' missing required cliVersion for cliVersionType '${agent.cliVersionType}'`;
   }
+  return null;
+}
+
+function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): string | null {
+  const normalizedAlias = normalizeAgentAlias(agent.alias);
+  const baseFieldError = validateAgentBaseFields(agent, normalizedAlias);
+  if (baseFieldError) return baseFieldError;
+  const cliVersionError = validateAgentCliVersion(agent);
+  if (cliVersionError) return cliVersionError;
   if (seenAliases.has(normalizedAlias)) return `Duplicate agent alias '${normalizedAlias}' found`;
   return null;
 }

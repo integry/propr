@@ -139,6 +139,23 @@ async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; p
 
   return { processedAgents };
 }
+
+async function loadProcessedAgents(
+  agents: AgentConfig[],
+  providedProcessedAgents?: AgentConfig[]
+): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
+  if (providedProcessedAgents) {
+    return { processedAgents: providedProcessedAgents };
+  }
+  const prepared = await prepareAgentsUpdate(agents);
+  if (prepared.error || !prepared.processedAgents) {
+    return prepared.error
+      ? prepared
+      : { status: 500, error: 'Failed to prepare agent configuration update' };
+  }
+  return { processedAgents: prepared.processedAgents };
+}
+
 async function persistAgentConfigurationAtomically({
   configStore,
   agents,
@@ -183,6 +200,76 @@ async function persistAgentConfigurationAtomically({
   }
 }
 
+async function applyCommittedAgentsUpdate({
+  configStore,
+  registry,
+  previousAgents,
+  currentDefault,
+  newDefault,
+  settingsWereUpdated,
+  defaultChanged,
+  lock
+}: {
+  configStore: AgentConfigStore;
+  registry: AgentRegistrySync;
+  previousAgents: AgentConfig[];
+  currentDefault: string | undefined;
+  newDefault: string | undefined;
+  settingsWereUpdated: boolean;
+  defaultChanged: boolean;
+  lock?: ConfigLockContext;
+}): Promise<{ status?: number; body?: Record<string, unknown> }> {
+  try {
+    if (settingsWereUpdated) {
+      configStore.handleSettingsSaveSideEffects();
+    }
+    await lock?.assertLockHeld();
+    await registry.refresh();
+    await lock?.assertLockHeld();
+    registry.setDefaultAgentAlias(newDefault ?? null);
+    return {};
+  } catch (refreshError) {
+    const rollbackSucceeded = await rollbackAgentConfigState({
+      configStore,
+      registry,
+      previousAgents,
+      currentDefault,
+      defaultChanged,
+      lock,
+      errorContext: 'Failed to roll back agent configuration after live apply failure:'
+    });
+    console.error('Failed to apply agent configuration after commit:', refreshError);
+    if (!rollbackSucceeded) {
+      return {
+        status: 500,
+        body: {
+          error: 'Failed to apply committed agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
+          out_of_sync: true
+        }
+      };
+    }
+    return { status: 500, body: { error: 'Failed to apply agent configuration to the live registry' } };
+  }
+}
+
+async function publishAgentUpdates(
+  processedAgents: AgentConfig[],
+  defaultChanged: boolean,
+  publishConfigUpdate: AgentsRoutesDeps['publishConfigUpdate'],
+  logActivityHelper: AgentsRoutesDeps['logActivityHelper'],
+  username?: string
+): Promise<void> {
+  await publishConfigUpdate('agents_update');
+  if (defaultChanged) {
+    await publishConfigUpdate('settings_update');
+  }
+  try {
+    await logActivityHelper(`Updated agents configuration (${processedAgents.length} agents)`, 'agents-update', 'agents_updated', username);
+  } catch (error) {
+    console.error('Failed to log agents configuration update activity:', error);
+  }
+}
+
 export async function applyAgentsUpdate({
   agents,
   processedAgents: providedProcessedAgents,
@@ -193,14 +280,11 @@ export async function applyAgentsUpdate({
   registry = AgentRegistry.getInstance(),
   lock
 }: ApplyAgentsUpdateParams): Promise<{ status: number; body: Record<string, unknown> }> {
-  let processedAgents = providedProcessedAgents;
-  if (!processedAgents) {
-    const prepared = await prepareAgentsUpdate(agents);
-    if (prepared.error) {
-      return { status: prepared.status ?? 400, body: { error: prepared.error } };
-    }
-    processedAgents = prepared.processedAgents;
+  const preparedAgents = await loadProcessedAgents(agents, providedProcessedAgents);
+  if (preparedAgents.error) {
+    return { status: preparedAgents.status ?? 400, body: { error: preparedAgents.error } };
   }
+  const processedAgents = preparedAgents.processedAgents;
   if (!processedAgents) {
     return { status: 500, body: { error: 'Failed to prepare agent configuration update' } };
   }
@@ -219,35 +303,18 @@ export async function applyAgentsUpdate({
       settingsPatch: defaultChanged ? { default_agent_alias: newDefault } : null,
       lock
     });
-    try {
-      if (settingsWereUpdated) {
-        configStore.handleSettingsSaveSideEffects();
-      }
-      await lock?.assertLockHeld();
-      await registry.refresh();
-      await lock?.assertLockHeld();
-      registry.setDefaultAgentAlias(newDefault ?? null);
-    } catch (refreshError) {
-      const rollbackSucceeded = await rollbackAgentConfigState({
-        configStore,
-        registry,
-        previousAgents,
-        currentDefault,
-        defaultChanged,
-        lock,
-        errorContext: 'Failed to roll back agent configuration after live apply failure:'
-      });
-      console.error('Failed to apply agent configuration after commit:', refreshError);
-      if (!rollbackSucceeded) {
-        return {
-          status: 500,
-          body: {
-            error: 'Failed to apply committed agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
-            out_of_sync: true
-          }
-        };
-      }
-      return { status: 500, body: { error: 'Failed to apply agent configuration to the live registry' } };
+    const liveApplyResult = await applyCommittedAgentsUpdate({
+      configStore,
+      registry,
+      previousAgents,
+      currentDefault,
+      newDefault,
+      settingsWereUpdated,
+      defaultChanged,
+      lock
+    });
+    if (liveApplyResult.status && liveApplyResult.body) {
+      return liveApplyResult;
     }
   } catch (syncError) {
     if (lock?.hasLockBeenLost()) {
@@ -262,15 +329,7 @@ export async function applyAgentsUpdate({
     };
   }
 
-  await publishConfigUpdate('agents_update');
-  if (defaultChanged) {
-    await publishConfigUpdate('settings_update');
-  }
-  try {
-    await logActivityHelper(`Updated agents configuration (${processedAgents.length} agents)`, 'agents-update', 'agents_updated', username);
-  } catch (error) {
-    console.error('Failed to log agents configuration update activity:', error);
-  }
+  await publishAgentUpdates(processedAgents, defaultChanged, publishConfigUpdate, logActivityHelper, username);
 
   return { status: 200, body: { success: true, agents: processedAgents } };
 }
