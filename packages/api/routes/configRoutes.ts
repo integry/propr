@@ -103,7 +103,7 @@ async function saveThenPublishConfigUpdate({
   await save();
   try {
     await publish();
-  } catch (error) {
+  } catch {
     return {
       status: 500,
       body: {
