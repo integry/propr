@@ -1,4 +1,5 @@
 import { RedisClientType } from 'redis';
+import * as configManager from '@propr/core';
 import {
   getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit,
   updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges
