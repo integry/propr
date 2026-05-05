@@ -1,7 +1,7 @@
 import { test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
 import { applyAgentsUpdate } from '../packages/api/routes/configRoutesAgents.ts';
-import { saveSettingsWithRollback } from '../packages/api/routes/configRoutes.ts';
+import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { findLatestHistoryEntryWithSessionId } from '../packages/api/routes/liveDetailsRoutes.ts';
 
 describe('config route follow-up helpers', () => {
@@ -274,6 +274,62 @@ describe('config route follow-up helpers', () => {
             error: 'Failed to apply agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
             out_of_sync: true,
         });
+    });
+
+    test('applyAgentsUpdate restores the previous default alias when settings save fails after agents persist', async () => {
+        const registry = {
+            refresh: mock.fn(async () => {}),
+            setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
+        };
+        let saveSettingsCalls = 0;
+        const configStore = {
+            loadAgents: async () => currentAgents as never[],
+            loadSettings: async () => currentSettings,
+            saveAgents: async (agents: never[]) => {
+                currentAgents = agents as Array<Record<string, unknown>>;
+                return true;
+            },
+            saveSettings: async (settings: Record<string, unknown>) => {
+                saveSettingsCalls += 1;
+                if (saveSettingsCalls === 1) {
+                    currentSettings = { ...currentSettings, ...settings };
+                    throw new Error('settings save failed');
+                }
+                currentSettings = { ...currentSettings, ...settings };
+                return true;
+            },
+        };
+
+        await assert.rejects(async () => applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    dockerImage: 'new:image',
+                    configPath: '/tmp/claude',
+                    supportedModels: [],
+                },
+            ],
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+            configStore,
+            registry,
+        }));
+
+        assert.deepStrictEqual(currentAgents, [
+            {
+                id: 'old-agent',
+                alias: 'old-default',
+                type: 'claude',
+                enabled: true,
+                dockerImage: 'old:image',
+                configPath: '/tmp/claude',
+                supportedModels: [],
+            },
+        ]);
+        assert.strictEqual(currentSettings.default_agent_alias, 'old-default');
     });
 
     test('saveSettingsWithRollback rejects array payloads', async () => {

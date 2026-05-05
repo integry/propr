@@ -47,6 +47,12 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
       console.log(`[live-details] Checking Claude conversation path: ${conversationPath}`);
       const pathExists = await fs.pathExists(conversationPath);
       if (!pathExists) {
+        console.log('[live-details] Claude conversation file not found, trying active Redis output');
+        const activeRedisResult = await parseActiveExecutionOutput(redisClient, taskId);
+        if (activeRedisResult) {
+          res.json(activeRedisResult);
+          return;
+        }
         console.log('[live-details] Claude conversation file not found, trying stored execution output fallback');
         const fallbackResult = await parseStoredExecutionOutput(redisClient, sessionId);
         if (fallbackResult) {
@@ -143,7 +149,7 @@ export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSes
 }
 interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
-interface RawExecutionEvent { type?: string; role?: string; content?: string; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
+interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
 interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; session_id?: string; conversation_id?: string; item?: unknown; }
 function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
   if (item.status === 'completed' || item.completed) return 'completed';
@@ -172,6 +178,13 @@ async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionI
     return null;
   }
   const output = await fs.readFile(outputPath, 'utf8');
+  return parseStoredOutputContent(output);
+}
+async function parseActiveExecutionOutput(redisClient: RedisClientType, taskId: string): Promise<ConversationResult | null> {
+  const output = await redisClient.get(`agent:output:${taskId}`);
+  if (!output?.trim()) {
+    return null;
+  }
   return parseStoredOutputContent(output);
 }
 function parseStoredOutputContent(output: string): ConversationResult | null {
@@ -228,7 +241,12 @@ function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<Conversa
   const pendingSubagents = new Map<string, PendingSubagent>();
   for (const row of details) {
     const timestamp = row.event_timestamp;
-    const metadataHandled = appendEventFromMetadata(row, timestamp, events, nextTodos => { todos = nextTodos; });
+    const metadataHandled = appendEventFromMetadata(row, {
+      timestamp,
+      events,
+      pendingSubagents,
+      setTodos: nextTodos => { todos = nextTodos; }
+    });
     if (metadataHandled) continue;
     if (appendStoredMessageEvent(row, {
       timestamp,
@@ -243,35 +261,64 @@ function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<Conversa
   const currentTask = deriveCurrentTask(todos);
   return { events, todos, currentTask };
 }
-function appendEventFromMetadata(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>, setTodos: (todos: TodoItem[]) => void): boolean {
+function appendEventFromMetadata(row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
   if (!row.metadata) return false;
   try {
     const rawEvent = JSON.parse(row.metadata) as RawExecutionEvent;
-    if (rawEvent.type === 'message' && rawEvent.role === 'assistant' && rawEvent.content) {
-      events.push({ type: 'thought', content: rawEvent.content, timestamp });
+    if (appendMetadataMessageEvent(rawEvent, context)) {
       return true;
     }
     if (rawEvent.type === 'tool_use') {
-      events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp });
+      context.events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp: context.timestamp });
       return true;
     }
     if (rawEvent.type === 'error') {
-      events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || row.content || 'Execution error', isError: true, timestamp });
+      context.events.push({
+        type: 'tool_result',
+        result: rawEvent.message || rawEvent.result || row.content || 'Execution error',
+        isError: true,
+        timestamp: context.timestamp
+      });
       return true;
     }
-    if (appendCommandExecutionEvents(rawEvent, timestamp, events)) return true;
+    if (appendCommandExecutionEvents(rawEvent, context.timestamp, context.events)) return true;
     if ((rawEvent.item?.type === 'reasoning' || rawEvent.item?.type === 'agent_message') && rawEvent.item.text) {
-      events.push({ type: 'thought', content: rawEvent.item.text, timestamp });
+      context.events.push({ type: 'thought', content: rawEvent.item.text, timestamp: context.timestamp });
       return true;
     }
     if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
-      setTodos(mapTodoItems(rawEvent.item.items));
+      context.setTodos(mapTodoItems(rawEvent.item.items));
       return true;
     }
   } catch (error) {
     console.error('[live-details] Failed to parse execution detail metadata:', error);
   }
   return false;
+}
+function appendMetadataMessageEvent(rawEvent: RawExecutionEvent, context: ClaudeMessageContext): boolean {
+  if (rawEvent.type !== 'message' || !rawEvent.content) return false;
+  if (rawEvent.role === 'assistant') {
+    if (typeof rawEvent.content === 'string') {
+      context.events.push({ type: 'thought', content: rawEvent.content, timestamp: context.timestamp });
+      return true;
+    }
+    const assistantContent = extractMessageContentBlocks(rawEvent.content);
+    return assistantContent ? appendClaudeAssistantMessageEvents(assistantContent, context) : false;
+  }
+  if (rawEvent.role === 'user') {
+    const userContent = extractMessageContentBlocks(rawEvent.content);
+    return userContent ? appendClaudeUserMessageEvents(userContent, context) : false;
+  }
+  return false;
+}
+function extractMessageContentBlocks(content: unknown): ClaudeMessageContent[] | null {
+  if (Array.isArray(content)) {
+    return content as ClaudeMessageContent[];
+  }
+  if (content && typeof content === 'object' && Array.isArray((content as { content?: unknown }).content)) {
+    return (content as { content: ClaudeMessageContent[] }).content;
+  }
+  return null;
 }
 function appendStoredMessageEvent(row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
   if ((row.event_type !== 'user' && row.event_type !== 'assistant') || !row.content) return false;

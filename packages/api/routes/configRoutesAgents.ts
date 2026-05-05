@@ -62,7 +62,7 @@ async function rollbackAgentConfigState({
     registry.setDefaultAgentAlias(currentDefault ?? null);
     return true;
   } catch (rollbackError) {
-    console.error('Failed to roll back agent configuration after registry refresh failure:', rollbackError);
+    console.error('Failed to roll back agent configuration after agents update failure:', rollbackError);
     return false;
   }
 }
@@ -121,11 +121,13 @@ export async function applyAgentsUpdate({
       await configStore.saveSettings({ default_agent_alias: newDefault } as Record<string, unknown>);
     }
   } catch (syncError) {
-    try {
-      await configStore.saveAgents(previousAgents);
-    } catch (rollbackError) {
-      console.error('Failed to roll back agents configuration after sync error:', rollbackError);
-    }
+    await rollbackAgentConfigState({
+      configStore,
+      registry,
+      previousAgents,
+      currentDefault,
+      defaultChanged: newDefault !== currentDefault
+    });
     console.error('Failed to sync default agent alias after agents update:', syncError);
     throw syncError;
   }
@@ -176,6 +178,11 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
   }
 
   async function postAgents(req: Request, res: Response): Promise<void> {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      res.status(400).json({ error: 'Request body must be a JSON object' });
+      return;
+    }
+
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async () => {
       return applyAgentsUpdate({
         agents: req.body.agents,

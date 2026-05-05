@@ -266,9 +266,15 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   }
 
   async function postSettings(req: Request, res: Response): Promise<void> {
+    const bodyValidation = validateJsonObjectBody(req.body);
+    if (!bodyValidation.ok) {
+      res.status(400).json({ error: bodyValidation.error });
+      return;
+    }
+
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async () => {
       return saveSettingsWithRollback({
-        settings: req.body.settings,
+        settings: bodyValidation.value.settings,
         publishConfigUpdate
       });
     });
