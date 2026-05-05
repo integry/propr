@@ -36,17 +36,21 @@ interface IntegerSettingConfig {
   minimum: number;
   maximum?: number;
 }
+interface InvalidIntegerSetting {
+  name: string;
+  value: unknown;
+}
 
 function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
   if (value === undefined || value === null) return null;
   const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value.trim()) : value;
   return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= minimum && candidate <= maximum ? candidate : null;
 }
-function getIntegerSettingOrThrow({ name, value, defaultValue, minimum, maximum = Number.MAX_SAFE_INTEGER }: IntegerSettingConfig): number {
+function getIntegerSettingOrDefault({ name, value, defaultValue, minimum, maximum = Number.MAX_SAFE_INTEGER }: IntegerSettingConfig): { value: number; invalid?: InvalidIntegerSetting } {
   const parsed = parseStoredIntegerSetting(value, minimum, maximum);
-  if (parsed !== null) return parsed;
-  if (value === undefined || value === null) return defaultValue;
-  throw new Error(`Stored ${name} is invalid: ${JSON.stringify(value)}`);
+  if (parsed !== null) return { value: parsed };
+  if (value === undefined || value === null) return { value: defaultValue };
+  return { value: defaultValue, invalid: { name, value } };
 }
 
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
@@ -255,22 +259,32 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       ]);
       const settings = loadedSettings as Record<string, unknown>;
       const envDefaults = { worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10), github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()), analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || 'claude-3-5-haiku-20241022', planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '', planner_generation_model: process.env.PLANNER_GENERATION_MODEL || '' };
+      const invalidIntegerSettings: Record<string, unknown> = {};
+      const autoFollowup = getIntegerSettingOrDefault({ name: 'auto_followup_score_threshold', value: autoFollowupThreshold, defaultValue: DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, minimum: 0, maximum: 9 });
+      const ultrafixGoal = getIntegerSettingOrDefault({ name: 'ultrafix_rating_goal', value: ultrafixRatingGoal, defaultValue: DEFAULT_ULTRAFIX_RATING_GOAL, minimum: 1, maximum: 10 });
+      const ultrafixCycles = getIntegerSettingOrDefault({ name: 'ultrafix_max_cycles', value: ultrafixMaxCycles, defaultValue: DEFAULT_ULTRAFIX_MAX_CYCLES, minimum: 1 });
+      const ultrafixPause = getIntegerSettingOrDefault({ name: 'ultrafix_pause_seconds', value: ultrafixPauseSeconds, defaultValue: DEFAULT_ULTRAFIX_PAUSE_SECONDS, minimum: 0 });
+      for (const entry of [autoFollowup, ultrafixGoal, ultrafixCycles, ultrafixPause]) {
+        if (entry.invalid) {
+          invalidIntegerSettings[entry.invalid.name] = entry.invalid.value;
+        }
+      }
       res.json({
         worker_concurrency: settings.worker_concurrency ?? envDefaults.worker_concurrency,
         github_user_whitelist: settings.github_user_whitelist ?? envDefaults.github_user_whitelist,
         analysis_model_fast: settings.analysis_model_fast ?? envDefaults.analysis_model_fast,
         planner_context_model: settings.planner_context_model ?? envDefaults.planner_context_model,
         planner_generation_model: settings.planner_generation_model ?? envDefaults.planner_generation_model,
-        auto_followup_score_threshold: getIntegerSettingOrThrow({ name: 'auto_followup_score_threshold', value: autoFollowupThreshold, defaultValue: DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, minimum: 0, maximum: 9 }),
+        auto_followup_score_threshold: autoFollowup.value,
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
         pr_review_model: prReviewModel,
-        ultrafix_rating_goal: getIntegerSettingOrThrow({ name: 'ultrafix_rating_goal', value: ultrafixRatingGoal, defaultValue: DEFAULT_ULTRAFIX_RATING_GOAL, minimum: 1, maximum: 10 }),
-        ultrafix_max_cycles: getIntegerSettingOrThrow({ name: 'ultrafix_max_cycles', value: ultrafixMaxCycles, defaultValue: DEFAULT_ULTRAFIX_MAX_CYCLES, minimum: 1 }),
-        ultrafix_pause_seconds: getIntegerSettingOrThrow({ name: 'ultrafix_pause_seconds', value: ultrafixPauseSeconds, defaultValue: DEFAULT_ULTRAFIX_PAUSE_SECONDS, minimum: 0 })
+        ultrafix_rating_goal: ultrafixGoal.value,
+        ultrafix_max_cycles: ultrafixCycles.value,
+        ultrafix_pause_seconds: ultrafixPause.value,
+        ...(Object.keys(invalidIntegerSettings).length > 0 ? { invalid_settings: invalidIntegerSettings } : {})
       });
     } catch (error) {
       console.error('Error in /api/config/settings GET:', error);
-      if (error instanceof Error && error.message.startsWith('Stored ')) return void res.status(500).json({ error: error.message, invalid_settings: true });
       res.status(500).json({ error: 'Failed to load settings' });
     }
   }

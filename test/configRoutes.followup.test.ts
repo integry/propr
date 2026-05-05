@@ -977,7 +977,7 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(ultrafixPauseMock.mock.calls.length, 1);
     });
 
-    test('getSettings returns a 500 when persisted integer-backed settings are invalid', async () => {
+    test('getSettings falls back to defaults when persisted integer-backed settings are invalid', async () => {
         const routes = createConfigRoutes({ redisClient: {} as never });
         const autoFollowupMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => 'invalid' as never);
         const autoResolveMock = mock.method(configManager, 'loadAutoResolveMergeConflicts', async () => false);
@@ -1001,10 +1001,22 @@ describe('config route follow-up helpers', () => {
 
         await routes.getSettings({} as never, res as never);
 
-        assert.strictEqual(res.statusCode, 500);
+        assert.strictEqual(res.statusCode, 200);
         assert.deepStrictEqual(res.body, {
-            error: 'Stored auto_followup_score_threshold is invalid: "invalid"',
-            invalid_settings: true,
+            worker_concurrency: 5,
+            github_user_whitelist: [],
+            analysis_model_fast: 'claude-3-5-haiku-20241022',
+            planner_context_model: '',
+            planner_generation_model: '',
+            auto_followup_score_threshold: 4,
+            auto_resolve_merge_conflicts: false,
+            pr_review_model: '',
+            ultrafix_rating_goal: 8,
+            ultrafix_max_cycles: 9,
+            ultrafix_pause_seconds: 12,
+            invalid_settings: {
+                auto_followup_score_threshold: 'invalid',
+            },
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1013,6 +1025,41 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(ultrafixGoalMock.mock.calls.length, 1);
         assert.strictEqual(ultrafixCyclesMock.mock.calls.length, 1);
         assert.strictEqual(ultrafixPauseMock.mock.calls.length, 1);
+    });
+
+    test('applyAgentsUpdate preserves a submitted dockerImage when version resolution is not requested', async () => {
+        const contentHashMock = mock.method(configManager, 'computeContentHash', () => 'abc123');
+        const registry = {
+            refresh: mock.fn(async () => {}),
+            setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
+        };
+
+        const result = await applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    dockerImage: 'private.registry/propr/custom:1.2.3',
+                    configPath: '/tmp/claude',
+                    supportedModels: [],
+                },
+            ],
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+            configStore: {
+                loadAgents: async () => currentAgents as never[],
+                loadSettings: async () => currentSettings,
+                handleSettingsSaveSideEffects: () => {},
+            },
+            registry,
+        });
+
+        assert.strictEqual(result.status, 200);
+        assert.strictEqual((result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage, 'private.registry/propr/custom:1.2.3');
+        assert.strictEqual(contentHashMock.mock.calls.length, 0);
+        contentHashMock.mock.restore();
     });
 
     test('normalizeAgentsConfig trims supportedModels entries', () => {
