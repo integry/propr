@@ -22,19 +22,9 @@ export const SPECIALIZED_SETTING_NAMES = [
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
 interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: number; }
-interface RedisScriptClient {
-  eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>;
-}
-interface RedisTransaction {
-  expire: (key: string, seconds: number) => RedisTransaction;
-  del: (key: string) => RedisTransaction;
-  exec: () => Promise<unknown[] | null>;
-}
-interface RedisWatchClient {
-  watch?: (...keys: string[]) => Promise<void>;
-  unwatch?: () => Promise<void>;
-  multi?: () => RedisTransaction;
-}
+interface RedisScriptClient { eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>; }
+interface RedisTransaction { expire: (key: string, seconds: number) => RedisTransaction; del: (key: string) => RedisTransaction; exec: () => Promise<unknown[] | null>; }
+interface RedisWatchClient { watch?: (...keys: string[]) => Promise<void>; unwatch?: () => Promise<void>; multi?: () => RedisTransaction; }
 interface LostConfigLockDetails { detected: boolean; reason: 'ownership_lost' | 'renewal_error' | null; }
 export interface ConfigLockContext {
   assertLockHeld: () => Promise<void>;
@@ -44,7 +34,6 @@ export interface ConfigLockContext {
 export class ConfigRouteError extends Error {
   status: number;
   body: Record<string, unknown>;
-
   constructor(status: number, body: Record<string, unknown>, message?: string) {
     super(message ?? (typeof body.error === 'string' ? body.error : 'Configuration update failed'));
     this.name = 'ConfigRouteError';
@@ -122,12 +111,7 @@ async function renewLock(redisClient: RedisClientType, lockKey: string, lockValu
     const result = await scriptClient.eval(EXTEND_LOCK_SCRIPT, { keys: [lockKey], arguments: [lockValue, String(timeoutSeconds)] });
     return result === 1;
   }
-  const watchedResult = await runWatchedLockOperation(
-    redisClient,
-    lockKey,
-    lockValue,
-    transaction => transaction.expire(lockKey, timeoutSeconds)
-  );
+  const watchedResult = await runWatchedLockOperation(redisClient, lockKey, lockValue, transaction => transaction.expire(lockKey, timeoutSeconds));
   if (watchedResult !== null) {
     return watchedResult;
   }
@@ -139,12 +123,7 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
     await scriptClient.eval(RELEASE_LOCK_SCRIPT, { keys: [lockKey], arguments: [lockValue] });
     return;
   }
-  const watchedResult = await runWatchedLockOperation(
-    redisClient,
-    lockKey,
-    lockValue,
-    transaction => transaction.del(lockKey)
-  );
+  const watchedResult = await runWatchedLockOperation(redisClient, lockKey, lockValue, transaction => transaction.del(lockKey));
   if (watchedResult !== null) {
     return;
   }
@@ -165,10 +144,7 @@ export async function upsertConfigValue(trx: Knex.Transaction, key: string, valu
       updated_at: db.fn.now()
     });
 }
-export function buildMergedSettings(
-  previousSettings: Record<string, unknown>,
-  settingsPatch: Record<string, unknown> | null
-): Record<string, unknown> | null {
+export function buildMergedSettings(previousSettings: Record<string, unknown>, settingsPatch: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!settingsPatch) {
     return null;
   }
@@ -180,7 +156,6 @@ export function buildMergedSettings(
   }
   return mergedSettings;
 }
-
 export function stripSpecializedSettings(settings: Record<string, unknown>): Record<string, unknown> {
   const sanitized = { ...settings };
   for (const key of SPECIALIZED_SETTING_NAMES) {
@@ -188,13 +163,7 @@ export function stripSpecializedSettings(settings: Record<string, unknown>): Rec
   }
   return sanitized;
 }
-
-export async function withConfigLock(
-  redisClient: RedisClientType,
-  lockKey: string,
-  operation: (context: ConfigLockContext) => Promise<{ status: number; body: Record<string, unknown> }>,
-  options: ConfigLockOptions = {}
-): Promise<{ status: number; body: Record<string, unknown> }> {
+export async function withConfigLock(redisClient: RedisClientType, lockKey: string, operation: (context: ConfigLockContext) => Promise<{ status: number; body: Record<string, unknown> }>, options: ConfigLockOptions = {}): Promise<{ status: number; body: Record<string, unknown> }> {
   const lockValue = `${Date.now()}-${Math.random()}`;
   const lockTimeout = options.timeoutSeconds ?? DEFAULT_LOCK_TIMEOUT_SECONDS;
   const renewalIntervalMs = options.renewalIntervalMs ?? DEFAULT_LOCK_RENEWAL_INTERVAL_MS;
