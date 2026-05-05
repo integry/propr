@@ -32,6 +32,33 @@ function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
   return result;
 }
 
+function mergeGenerationTrace(
+  currentTrace: PlannerDraft['generation_trace'],
+  incomingTrace: DraftUpdatePayload['generationTrace']
+): PlannerDraft['generation_trace'] {
+  if (!incomingTrace) {
+    return currentTrace;
+  }
+
+  const currentSteps = new Map((currentTrace?.steps ?? []).map((step) => [step.name, step]));
+  return {
+    ...currentTrace,
+    ...incomingTrace,
+    steps: incomingTrace.steps.map((step) => {
+      const currentStep = currentSteps.get(step.name);
+      const mergedData = step.data
+        ? { ...currentStep?.data, ...step.data }
+        : currentStep?.data;
+
+      return {
+        ...currentStep,
+        ...step,
+        ...(mergedData ? { data: mergedData } : {})
+      };
+    })
+  };
+}
+
 export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDraftResult => {
   const { initialData } = options;
   const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
@@ -107,7 +134,7 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
       return parseJsonFields({
         ...currentDraft,
         status: payload.draftStatus ?? currentDraft.status,
-        generation_trace: payload.generationTrace ?? currentDraft.generation_trace,
+        generation_trace: mergeGenerationTrace(currentDraft.generation_trace, payload.generationTrace),
       } as unknown as Record<string, unknown>) as unknown as PlannerDraft;
     });
   }, []);

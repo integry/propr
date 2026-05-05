@@ -1,9 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import PlansPage from './PlansPage';
 import type { PaginatedDraftsResponse, RepositoriesResponse } from '../api/proprApi';
 import { getDrafts, getDraftRepositories } from '../api/proprApi';
+import type { DraftUpdatePayload } from '@propr/shared';
+
+const draftUpdateListeners = new Set<(payload: DraftUpdatePayload) => void | Promise<void>>();
+const socketState = {
+  isConnected: false,
+  onDraftUpdate: vi.fn((callback: (payload: DraftUpdatePayload) => void | Promise<void>) => {
+    draftUpdateListeners.add(callback);
+    return () => {
+      draftUpdateListeners.delete(callback);
+    };
+  }),
+};
 
 vi.mock('../hooks/useDocumentTitle', () => ({
   useDocumentTitle: vi.fn(),
@@ -17,10 +29,7 @@ vi.mock('../api/proprApi', () => ({
 }));
 
 vi.mock('../contexts/useSocket', () => ({
-  useSocket: () => ({
-    isConnected: false,
-    onDraftUpdate: vi.fn(),
-  }),
+  useSocket: () => socketState,
 }));
 
 vi.mock('./PlansPageComponents', () => ({
@@ -35,6 +44,8 @@ const mockGetDraftRepositories = vi.mocked(getDraftRepositories);
 describe('PlansPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    draftUpdateListeners.clear();
+    socketState.isConnected = false;
   });
 
   it('renders repository filter counts and respects the repository query param', async () => {
@@ -84,5 +95,116 @@ describe('PlansPage', () => {
     expect(screen.getByText('All Repos')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /All Repos/ }).textContent).toContain('4');
     expect(screen.getByRole('button', { name: /agent/ }).textContent).toContain('1');
+  });
+
+  it('refreshes repository metadata for relevant socket status changes on the current page', async () => {
+    socketState.isConnected = true;
+    mockGetDraftRepositories
+      .mockResolvedValueOnce({ repositories: [{ repo: 'integry/propr', count: 1 }], total: 1 })
+      .mockResolvedValueOnce({ repositories: [{ repo: 'integry/propr', count: 1 }], total: 1 });
+    mockGetDrafts
+      .mockResolvedValueOnce({
+        drafts: [{
+          draft_id: 'draft-1',
+          repository: 'integry/propr',
+          initial_prompt: 'Test draft',
+          status: 'draft',
+          updated_at: '2026-04-27T00:00:00Z',
+          created_at: '2026-04-27T00:00:00Z',
+        }],
+        total: 1,
+        page: 1,
+        limit: 20,
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({
+        drafts: [{
+          draft_id: 'draft-1',
+          repository: 'integry/propr',
+          initial_prompt: 'Test draft',
+          status: 'review',
+          updated_at: '2026-04-27T00:00:01Z',
+          created_at: '2026-04-27T00:00:00Z',
+        }],
+        total: 1,
+        page: 1,
+        limit: 20,
+        hasMore: false,
+      });
+
+    render(
+      <MemoryRouter initialEntries={['/plans?repository=integry/propr']}>
+        <Routes>
+          <Route path="/plans" element={<PlansPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(draftUpdateListeners.size).toBeGreaterThan(0));
+
+    await waitFor(() => expect(mockGetDraftRepositories).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockGetDrafts).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await Promise.all(
+        [...draftUpdateListeners].map(listener => listener({
+          eventType: 'draft:update',
+          draftId: 'draft-1',
+          step: 'complete',
+          status: 'completed',
+          timestamp: '2026-05-05T00:00:10Z',
+          draftStatus: 'review',
+        }))
+      );
+    });
+
+    await waitFor(() => expect(mockGetDraftRepositories).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockGetDrafts).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not reload the filtered list for off-page events from another repository', async () => {
+    socketState.isConnected = true;
+    mockGetDraftRepositories.mockResolvedValue({ repositories: [{ repo: 'integry/propr', count: 1 }], total: 1 });
+    mockGetDrafts.mockResolvedValue({
+      drafts: [{
+        draft_id: 'draft-1',
+        repository: 'integry/propr',
+        initial_prompt: 'Test draft',
+        status: 'draft',
+        updated_at: '2026-04-27T00:00:00Z',
+        created_at: '2026-04-27T00:00:00Z',
+      }],
+      total: 1,
+      page: 1,
+      limit: 20,
+      hasMore: false,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/plans?repository=integry/propr&status=review']}>
+        <Routes>
+          <Route path="/plans" element={<PlansPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(draftUpdateListeners.size).toBeGreaterThan(0));
+    await waitFor(() => expect(mockGetDrafts).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await Promise.all(
+        [...draftUpdateListeners].map(listener => listener({
+          eventType: 'draft:update',
+          draftId: 'draft-2',
+          step: 'complete',
+          status: 'completed',
+          timestamp: '2026-05-05T00:00:10Z',
+          draftStatus: 'review',
+        }))
+      );
+    });
+
+    expect(mockGetDrafts).toHaveBeenCalledTimes(1);
+    expect(mockGetDraftRepositories).toHaveBeenCalledTimes(1);
   });
 });

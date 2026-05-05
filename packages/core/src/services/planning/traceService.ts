@@ -78,7 +78,7 @@ export async function updateTrace(
 
   // Publish WebSocket event for real-time updates (fire-and-forget)
   const eventPublisher = getEventPublisher();
-  await eventPublisher.publishDraftUpdate({
+  const published = await eventPublisher.publishDraftUpdate({
     draftId,
     step,
     status,
@@ -86,6 +86,9 @@ export async function updateTrace(
     draftStatus: 'generating',
     generationTrace: buildDraftUpdateTraceSnapshot(trace)
   });
+  if (!published) {
+    console.warn(`[trace] Failed to publish progress event for draft ${draftId}, step ${step} — client will resync via fallback polling`);
+  }
 
   return trace;
 }

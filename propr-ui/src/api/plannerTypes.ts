@@ -1,4 +1,4 @@
-import type { DraftStatus, StepStatus } from '@propr/shared';
+import type { DraftStatus, DraftUpdateGenerationTrace, StepStatus } from '@propr/shared';
 
 export interface GenerationStepData {
   keywords?: string[];
@@ -17,7 +17,7 @@ export interface GenerationStep {
   data?: GenerationStepData;
 }
 
-export interface GenerationTrace {
+export interface GenerationTrace extends Omit<DraftUpdateGenerationTrace, 'steps'> {
   steps: GenerationStep[];
 }
 

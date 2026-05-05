@@ -8,6 +8,24 @@ import type { DraftUpdateGenerationTrace } from '@propr/shared';
 import type { GenerateRequestBody, BackgroundGenerationOptions } from './types.js';
 import { VALID_GRANULARITIES } from './validation.js';
 
+function buildFailureTraceSnapshot(trace: DraftUpdateGenerationTrace): DraftUpdateGenerationTrace {
+  return {
+    ...trace,
+    steps: trace.steps.map((step) => {
+      if (!step.data || !Array.isArray(step.data.includedFiles)) {
+        return step;
+      }
+
+      const restData = { ...step.data };
+      delete restData.includedFiles;
+      return {
+        ...step,
+        ...(Object.keys(restData).length > 0 ? { data: restData } : {})
+      };
+    })
+  };
+}
+
 export async function updateDraftContextConfig(
   db: Knex,
   draftId: string,
@@ -78,12 +96,13 @@ export function runBackgroundGeneration(options: BackgroundGenerationOptions): v
 
         // Emit failure event so the UI can transition without polling
         const eventPublisher = getEventPublisher();
+        const failureSnapshot = buildFailureTraceSnapshot(failedTrace);
         const published = await eventPublisher.publishDraftUpdate({
           draftId,
           step: 'complete',
           status: 'failed',
           draftStatus: 'failed',
-          generationTrace: failedTrace
+          generationTrace: failureSnapshot
         });
         if (!published) {
           console.warn(`[generate] Failed to publish failure event for draft ${draftId} — client will resync via safety-net poll`);

@@ -56,6 +56,20 @@ describe('useDraft', () => {
   });
 
   it('applies generation socket snapshots without refetching the draft', async () => {
+    mockGetDraft.mockResolvedValueOnce({
+      draft_id: 'draft-1',
+      repository: 'integry/propr',
+      initial_prompt: 'Test prompt',
+      status: 'generating',
+      attachments: [],
+      created_at: '2026-05-05T00:00:00Z',
+      generation_trace: {
+        steps: [
+          { name: 'relevance', status: 'in_progress', data: { includedFiles: ['src/a.ts'] } },
+        ],
+      },
+    });
+
     const { result } = renderHook(() => useDraft('draft-1'));
 
     await waitFor(() => {
@@ -85,7 +99,7 @@ describe('useDraft', () => {
 
     expect(mockGetDraft).toHaveBeenCalledTimes(1);
     expect(result.current.draft?.generation_trace?.steps).toEqual([
-      { name: 'relevance', status: 'completed' },
+      { name: 'relevance', status: 'completed', data: { includedFiles: ['src/a.ts'] } },
       { name: 'context', status: 'in_progress' },
     ]);
   });
