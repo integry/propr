@@ -84,7 +84,6 @@ async function rollbackAgentConfigState({
     }
     await lock?.assertLockHeld();
     await registry.refresh();
-    await lock?.assertLockHeld();
     registry.setDefaultAgentAlias(currentDefault ?? null);
     return true;
   } catch (rollbackError) {
@@ -103,12 +102,23 @@ function resolveDefaultAgentAlias(processedAgents: AgentConfig[], currentDefault
   return currentDefault;
 }
 
+function requiresExplicitVersionSpec(versionType: CliVersionType): boolean {
+  return versionType === 'tag' || versionType === 'specific' || versionType === 'custom';
+}
+
+function hasVersionSpec(versionSpec: string | undefined): boolean {
+  return typeof versionSpec === 'string' && versionSpec.trim().length > 0;
+}
+
 function classifyVersionResolutionError(error: unknown): { message: string; status: number } {
   const message = error instanceof Error ? error.message : 'Unknown version resolution error';
-  if (message === 'Version spec required for tag type' || message === 'Version spec required' || message.startsWith('Version \'')) {
-    return { message, status: 400 };
+  if (error instanceof TypeError || message.includes('fetch')) {
+    return { message, status: 502 };
   }
-  return { message, status: 502 };
+  if (message.startsWith('NPM registry returned ')) {
+    return { message, status: 502 };
+  }
+  return { message, status: 400 };
 }
 
 async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
@@ -126,9 +136,12 @@ async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; p
     const processedAgent = { ...agent };
 
     if (agent.cliVersionType) {
+      const versionType = agent.cliVersionType as CliVersionType;
+      if (requiresExplicitVersionSpec(versionType) && !hasVersionSpec(agent.cliVersion)) {
+        return { error: `Failed to resolve version for agent '${agent.alias}': version spec is required for ${versionType} version type`, status: 400 };
+      }
       try {
         const agentType = agent.type as AgentType;
-        const versionType = agent.cliVersionType as CliVersionType;
         const resolvedVersion = await resolveVersion(agentType, versionType, agent.cliVersion);
         processedAgent.cliVersionResolved = resolvedVersion;
         processedAgent.dockerImage = generateImageTag(agentType, resolvedVersion, computeContentHash(agentType));
@@ -188,7 +201,6 @@ async function persistAgentConfigurationAtomically({
     const transaction = trx;
     await upsertConfigValue(transaction, 'agents', agents);
     if (settingsWereUpdated) {
-      await lock?.assertLockHeld();
       await upsertConfigValue(transaction, 'settings', mergedSettings);
     }
     await lock?.assertLockHeld();
@@ -233,7 +245,6 @@ async function applyCommittedAgentsUpdate({
     }
     await lock?.assertLockHeld();
     await registry.refresh();
-    await lock?.assertLockHeld();
     registry.setDefaultAgentAlias(newDefault ?? null);
     return;
   } catch (refreshError) {
@@ -297,7 +308,6 @@ export async function applyAgentsUpdate({
     return { status: 500, body: { error: 'Failed to prepare agent configuration update' } };
   }
 
-  await lock?.assertLockHeld();
   const previousAgents = await configStore.loadAgents();
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;

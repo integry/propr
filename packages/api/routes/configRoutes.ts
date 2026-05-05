@@ -47,6 +47,7 @@ function validateStringArray(value: unknown, fieldName: string): string[] | stri
   return value;
 }
 
+// These endpoints intentionally persist trimmed, de-duplicated string arrays.
 function normalizeStringEntries(values: string[]): string[] {
   const normalized: string[] = [];
   const seen = new Set<string>();
@@ -67,7 +68,7 @@ function success<T>(value: T): ValidationResult<T> {
 function failure<T>(error: string): ValidationResult<T> {
   return { ok: false, error };
 }
-function validateStringArrayResult(value: unknown, fieldName: string): ValidationResult<string[]> {
+function parseNormalizedStringArrayResult(value: unknown, fieldName: string): ValidationResult<string[]> {
   const validated = validateStringArray(value, fieldName);
   return typeof validated === 'string' ? failure(validated) : success(normalizeStringEntries(validated));
 }
@@ -126,8 +127,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       res.status(400).json({ error: validated.error });
       return;
     }
-    const result = await withConfigLock(redisClient, lockKey, async lock => {
-      await lock.assertLockHeld();
+    const result = await withConfigLock(redisClient, lockKey, async () => {
       await save(validated.value);
       await publishConfigUpdate(subtype);
       return { status: 200, body: { success: true, ...body(validated.value) } };
@@ -142,9 +142,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     res.status(result.status).json(result.body);
   };
   const getFollowupKeywords = createJsonGetHandler(() => configManager.loadFollowupKeywords(), followup_keywords => ({ followup_keywords }), 'Failed to load followup keywords', '/api/config/followup-keywords GET');
-  const postFollowupKeywords = createJsonPostHandler({ lockKey: 'config:keywords:lock', pickValue: body => body.followup_keywords, validate: followup_keywords => validateStringArrayResult(followup_keywords, 'followup_keywords'), save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords), subtype: 'followup_keywords_update', body: followup_keywords => ({ followup_keywords }) });
+  const postFollowupKeywords = createJsonPostHandler({ lockKey: 'config:keywords:lock', pickValue: body => body.followup_keywords, validate: followup_keywords => parseNormalizedStringArrayResult(followup_keywords, 'followup_keywords'), save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords), subtype: 'followup_keywords_update', body: followup_keywords => ({ followup_keywords }) });
   const getFollowupIgnoreKeywords = createJsonGetHandler(() => configManager.loadFollowupIgnoreKeywords(), followup_ignore_keywords => ({ followup_ignore_keywords }), 'Failed to load followup ignore keywords', '/api/config/followup-ignore-keywords GET');
-  const postFollowupIgnoreKeywords = createJsonPostHandler({ lockKey: 'config:ignore-keywords:lock', pickValue: body => body.followup_ignore_keywords, validate: followup_ignore_keywords => validateStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'), save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords), subtype: 'followup_ignore_keywords_update', body: followup_ignore_keywords => ({ followup_ignore_keywords }) });
+  const postFollowupIgnoreKeywords = createJsonPostHandler({ lockKey: 'config:ignore-keywords:lock', pickValue: body => body.followup_ignore_keywords, validate: followup_ignore_keywords => parseNormalizedStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'), save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords), subtype: 'followup_ignore_keywords_update', body: followup_ignore_keywords => ({ followup_ignore_keywords }) });
 
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
@@ -189,8 +189,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
       processedRepos.push({ id: repo.id || randomUUID(), name: repo.name, enabled: repo.enabled, alias: repo.alias?.trim() || undefined, baseBranch: repo.baseBranch?.trim() || undefined });
     }
-    const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
-      await lock.assertLockHeld();
+    const result = await withConfigLock(redisClient, 'config:repos:lock', async () => {
       await configManager.saveMonitoredRepos(processedRepos);
       await publishConfigUpdate('repos_update');
       return { status: 200, body: { success: true, repos_to_monitor: processedRepos } };
@@ -311,8 +310,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       return;
     }
 
-    const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async lock => {
-      await lock.assertLockHeld();
+    const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async () => {
       await configManager.savePrimaryProcessingLabels(labels);
       await publishConfigUpdate('primary_processing_labels_update');
       return { status: 200, body: { success: true, primary_processing_labels: labels } };

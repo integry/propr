@@ -52,16 +52,17 @@ async function persistSettingsAtomically({
   let committed = false;
   try {
     await lock?.assertLockHeld();
-    const mergedSettings = Object.keys(otherSettings).length === 0 && specializedNames.length === 0
-      ? {}
-      : buildMergedSettings(
+    const generalSettingsPatch = Object.keys(otherSettings).length > 0 ? otherSettings : null;
+    const mergedSettings = generalSettingsPatch
+      ? buildMergedSettings(
         stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
-        otherSettings
-      ) ?? {};
+        generalSettingsPatch
+      )
+      : null;
     trx = await db.transaction();
     const transaction = trx;
 
-    if (mergedSettings) {
+    if (mergedSettings !== null) {
       try {
         await upsertConfigValue(transaction, 'settings', mergedSettings);
       } catch (saveError) {
@@ -74,7 +75,6 @@ async function persistSettingsAtomically({
 
     for (const name of specializedNames) {
       try {
-        await lock?.assertLockHeld();
         await upsertConfigValue(transaction, name, normalizedSpecializedSettings[name]);
       } catch (saveError) {
         console.error(`Settings save failed for "${name}":`, saveError);
@@ -152,6 +152,9 @@ export async function saveSettingsWithRollback({
 }: SaveSettingsRequest): Promise<SaveResponse> {
   if (!isPlainSettingsObject(settings)) {
     return { status: 400, body: { error: 'settings object is required' } };
+  }
+  if (Object.keys(settings).length === 0) {
+    return { status: 200, body: { success: true, settings: {} } };
   }
 
   const {

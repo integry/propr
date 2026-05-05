@@ -32,7 +32,6 @@ export interface ConfigLockContext {
   assertLockHeld: () => Promise<void>;
   hasLockBeenLost: () => boolean;
   markCommitted: () => void;
-  wasCommitted: () => boolean;
 }
 export class ConfigRouteError extends Error {
   status: number;
@@ -222,8 +221,7 @@ export async function withConfigLock(
       if (!renewed) { markLockLost('ownership_lost'); throwLockLossError(); }
     },
     hasLockBeenLost: () => lostLock.detected,
-    markCommitted: () => { committed = true; },
-    wasCommitted: () => committed
+    markCommitted: () => { committed = true; }
   };
   let result: { status: number; body: Record<string, unknown> } | null = null;
   let lockAcquired = false;
