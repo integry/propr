@@ -11,7 +11,7 @@ import {
 } from '@propr/core';
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
-import { withConfigLock, validateAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, type ConfigLockContext } from './configHelpers.js';
+import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, type ConfigLockContext } from './configHelpers.js';
 
 interface AgentsRoutesDeps {
   redisClient: RedisClientType;
@@ -91,13 +91,14 @@ function resolveDefaultAgentAlias(processedAgents: AgentConfig[], currentDefault
 }
 
 async function prepareAgentsUpdate(agents: AgentConfig[]): Promise<{ error?: string; processedAgents?: AgentConfig[] }> {
-  const validationError = validateAgentsConfig(agents);
+  const normalizedAgents = normalizeAgentsConfig(agents);
+  const validationError = validateAgentsConfig(normalizedAgents);
   if (validationError) {
     return { error: validationError };
   }
 
   const processedAgents: AgentConfig[] = [];
-  for (const agent of agents) {
+  for (const agent of normalizedAgents) {
     const processedAgent = { ...agent };
 
     if (agent.cliVersionType) {
@@ -108,7 +109,8 @@ async function prepareAgentsUpdate(agents: AgentConfig[]): Promise<{ error?: str
         processedAgent.cliVersionResolved = resolvedVersion;
         processedAgent.dockerImage = generateImageTag(agentType, resolvedVersion, computeContentHash(agentType));
       } catch (versionError) {
-        console.warn(`Failed to resolve version for agent ${agent.alias}:`, versionError);
+        const message = versionError instanceof Error ? versionError.message : 'Unknown version resolution error';
+        return { error: `Failed to resolve version for agent '${agent.alias}': ${message}` };
       }
     } else {
       const agentType = agent.type as AgentType;
@@ -121,20 +123,6 @@ async function prepareAgentsUpdate(agents: AgentConfig[]): Promise<{ error?: str
 
   return { processedAgents };
 }
-
-function buildMergedSettings(previousSettings: Record<string, unknown>, settingsPatch: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!settingsPatch) {
-    return null;
-  }
-  const mergedSettings = { ...previousSettings, ...settingsPatch };
-  for (const [key, value] of Object.entries(mergedSettings)) {
-    if (value === undefined) {
-      delete mergedSettings[key];
-    }
-  }
-  return mergedSettings;
-}
-
 async function persistAgentConfigurationAtomically({
   configStore,
   agents,
@@ -201,6 +189,7 @@ export async function applyAgentsUpdate({
     return { status: 500, body: { error: 'Failed to prepare agent configuration update' } };
   }
 
+  await lock?.assertLockHeld();
   const previousAgents = await configStore.loadAgents();
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;

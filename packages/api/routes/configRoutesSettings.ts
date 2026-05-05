@@ -1,6 +1,6 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
-import { extractSettingSaves, ConfigRouteError, upsertConfigValue, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
+import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
 import type { Knex } from 'knex';
 
 interface SettingsStore {
@@ -47,16 +47,6 @@ interface PersistSettingsRequest {
   lock?: ConfigLockContext;
 }
 
-function buildMergedSettings(previousSettings: Record<string, unknown>, updates: Record<string, unknown>): Record<string, unknown> {
-  const mergedSettings = { ...previousSettings, ...updates };
-  for (const [key, value] of Object.entries(mergedSettings)) {
-    if (value === undefined) {
-      delete mergedSettings[key];
-    }
-  }
-  return mergedSettings;
-}
-
 function stripSpecializedSettings(settings: Record<string, unknown>): Record<string, unknown> {
   const sanitized = { ...settings };
   for (const key of SPECIALIZED_SETTING_NAMES) {
@@ -80,7 +70,7 @@ async function persistSettingsAtomically({
       ? buildMergedSettings(
         stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
         otherSettings
-      )
+      ) ?? {}
       : null;
     trx = await db.transaction();
     const transaction = trx;

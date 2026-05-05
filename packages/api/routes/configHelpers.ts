@@ -7,7 +7,7 @@ import {
   updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges
 } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
-export { validateAgentsConfig } from './configAgentValidation.js';
+export { validateAgentsConfig, normalizeAgentsConfig } from './configAgentValidation.js';
 export { extractSettingSaves, type LabeledSaveDescriptor, type SettingSaveName } from './configSettings.js';
 
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
@@ -175,6 +175,22 @@ export async function upsertConfigValue(trx: Knex.Transaction, key: string, valu
       value: jsonValue,
       updated_at: db.fn.now()
     });
+}
+
+export function buildMergedSettings(
+  previousSettings: Record<string, unknown>,
+  settingsPatch: Record<string, unknown> | null
+): Record<string, unknown> | null {
+  if (!settingsPatch) {
+    return null;
+  }
+  const mergedSettings = { ...previousSettings, ...settingsPatch };
+  for (const [key, value] of Object.entries(mergedSettings)) {
+    if (value === undefined) {
+      delete mergedSettings[key];
+    }
+  }
+  return mergedSettings;
 }
 
 export async function withConfigLock(
