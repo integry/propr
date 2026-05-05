@@ -46,7 +46,12 @@ async function renewLock(redisClient: RedisClientType, lockKey: string, lockValu
     const result = await scriptClient.eval(EXTEND_LOCK_SCRIPT, { keys: [lockKey], arguments: [lockValue, String(timeoutSeconds)] });
     return result === 1;
   }
-  return false;
+  const currentLockValue = await redisClient.get(lockKey);
+  if (currentLockValue !== lockValue) {
+    return false;
+  }
+  await redisClient.expire(lockKey, timeoutSeconds);
+  return true;
 }
 
 async function releaseLock(redisClient: RedisClientType, lockKey: string, lockValue: string): Promise<void> {

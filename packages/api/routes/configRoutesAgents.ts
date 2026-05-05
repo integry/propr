@@ -45,6 +45,7 @@ interface RollbackAgentConfigStateParams {
   previousAgents: AgentConfig[];
   currentDefault: string | undefined;
   defaultChanged: boolean;
+  errorContext?: string;
 }
 
 async function rollbackAgentConfigState({
@@ -52,7 +53,8 @@ async function rollbackAgentConfigState({
   registry,
   previousAgents,
   currentDefault,
-  defaultChanged
+  defaultChanged,
+  errorContext
 }: RollbackAgentConfigStateParams): Promise<boolean> {
   try {
     await configStore.saveAgents(previousAgents);
@@ -63,7 +65,7 @@ async function rollbackAgentConfigState({
     registry.setDefaultAgentAlias(currentDefault ?? null);
     return true;
   } catch (rollbackError) {
-    console.error('Failed to roll back agent configuration after agents update failure:', rollbackError);
+    console.error(errorContext ?? 'Failed to roll back agent configuration after agents update failure:', rollbackError);
     return false;
   }
 }
@@ -125,14 +127,24 @@ export async function applyAgentsUpdate({
       await configStore.saveSettings({ default_agent_alias: newDefault } as Record<string, unknown>);
     }
   } catch (syncError) {
-    await rollbackAgentConfigState({
+    const rollbackSucceeded = await rollbackAgentConfigState({
       configStore,
       registry,
       previousAgents,
       currentDefault,
-      defaultChanged: newDefault !== currentDefault
+      defaultChanged: newDefault !== currentDefault,
+      errorContext: 'Failed to roll back persisted agent configuration after save failure:'
     });
     console.error('Failed to sync default agent alias after agents update:', syncError);
+    if (!rollbackSucceeded) {
+      return {
+        status: 500,
+        body: {
+          error: 'Failed to persist agent configuration, and automatic rollback did not complete. Persisted config may be partially updated.',
+          out_of_sync: true
+        }
+      };
+    }
     throw syncError;
   }
 
@@ -145,7 +157,8 @@ export async function applyAgentsUpdate({
       registry,
       previousAgents,
       currentDefault,
-      defaultChanged: newDefault !== currentDefault
+      defaultChanged: newDefault !== currentDefault,
+      errorContext: 'Failed to roll back agent configuration after registry refresh failure:'
     });
     console.error('Failed to refresh agent registry after agents update:', refreshError);
     if (!rollbackSucceeded) {

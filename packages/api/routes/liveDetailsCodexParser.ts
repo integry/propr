@@ -40,7 +40,7 @@ export interface PendingSubagent {
 interface CodexEventContext {
   events: Array<Record<string, unknown>>;
   setTodos: (nextTodos: Array<{ status: string; content: string }>) => void;
-  pendingCommandStarts: Map<string, number>;
+  pendingCommandStarts: Map<string, string[]>;
   timestamp?: string;
 }
 interface ParseLineResult { newTodos?: TodoItem[]; tokenUsage?: TokenUsage; }
@@ -90,6 +90,42 @@ function pushCodexToolUseEvent(events: Array<Record<string, unknown>>, toolName:
 function pushCodexToolResultEvent(events: Array<Record<string, unknown>>, result: unknown, isError: boolean, timestamp?: string): void {
   events.push({ type: 'tool_result', result, isError, timestamp });
 }
+
+function buildCommandExecutionKey(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number]): string | null {
+  if (event.item?.type !== 'command_execution' || !event.item.command) {
+    return null;
+  }
+  return event.item.id ? `id:${event.item.id}` : `command:${event.item.command}`;
+}
+
+function enqueuePendingCommandStart(pendingCommandStarts: Map<string, string[]>, key: string, command: string): void {
+  const pending = pendingCommandStarts.get(key) ?? [];
+  pending.push(command);
+  pendingCommandStarts.set(key, pending);
+}
+
+function consumePendingCommandStart(
+  pendingCommandStarts: Map<string, string[]>,
+  key: string,
+  command: string
+): boolean {
+  const pending = pendingCommandStarts.get(key);
+  if (!pending || pending.length === 0) {
+    return false;
+  }
+  const index = pending.findIndex(value => value === command);
+  if (index === -1) {
+    return false;
+  }
+  pending.splice(index, 1);
+  if (pending.length === 0) {
+    pendingCommandStarts.delete(key);
+  } else {
+    pendingCommandStarts.set(key, pending);
+  }
+  return true;
+}
+
 function parseCompletedCodexItem(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], context: CodexEventContext): boolean {
   const { events, setTodos, pendingCommandStarts, timestamp } = context;
   if ((event.item?.type === 'reasoning' || event.item?.type === 'agent_message') && event.item.text) {
@@ -98,11 +134,12 @@ function parseCompletedCodexItem(event: ReturnType<typeof parseCodexStreamOutput
   }
 
   if (event.item?.type === 'command_execution') {
+    const commandKey = buildCommandExecutionKey(event);
     if (event.item.command) {
-      const startedCount = pendingCommandStarts.get(event.item.command) ?? 0;
-      if (startedCount > 0) {
-        pendingCommandStarts.set(event.item.command, startedCount - 1);
-      } else {
+      const matchedStartedCommand = commandKey
+        ? consumePendingCommandStart(pendingCommandStarts, commandKey, event.item.command)
+        : false;
+      if (!matchedStartedCommand) {
         pushCodexToolUseEvent(events, 'command_execution', { command: event.item.command }, timestamp);
       }
     }
@@ -163,10 +200,13 @@ function appendErrorConversationEvent(event: ReturnType<typeof parseCodexStreamO
   return true;
 }
 
-function appendStartedCommandEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, pendingCommandStarts: Map<string, number>, timestamp?: string): boolean {
+function appendStartedCommandEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, pendingCommandStarts: Map<string, string[]>, timestamp?: string): boolean {
   if (event.type !== 'item.started' || event.item?.type !== 'command_execution' || !event.item.command) return false;
   pushCodexToolUseEvent(events, 'command_execution', { command: event.item.command }, timestamp);
-  pendingCommandStarts.set(event.item.command, (pendingCommandStarts.get(event.item.command) ?? 0) + 1);
+  const commandKey = buildCommandExecutionKey(event);
+  if (commandKey) {
+    enqueuePendingCommandStart(pendingCommandStarts, commandKey, event.item.command);
+  }
   return true;
 }
 
@@ -352,7 +392,7 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
 
   const events: Array<Record<string, unknown>> = [];
   let todos: TodoItem[] = [];
-  const pendingCommandStarts = new Map<string, number>();
+  const pendingCommandStarts = new Map<string, string[]>();
 
   for (const event of parsed.conversationLog) {
     const timestamp = (event as { timestamp?: string }).timestamp;

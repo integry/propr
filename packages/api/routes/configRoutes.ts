@@ -116,12 +116,13 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       res.status(400).json({ error: bodyValidation.error });
       return;
     }
+    const rawValue = pickValue(bodyValidation.value);
+    const validated = validate(rawValue);
+    if (!validated.ok) {
+      res.status(400).json({ error: validated.error });
+      return;
+    }
     const result = await withConfigLock(redisClient, lockKey, async lock => {
-      const rawValue = pickValue(bodyValidation.value);
-      const validated = validate(rawValue);
-      if (!validated.ok) {
-        return { status: 400, body: { error: validated.error } };
-      }
       await lock.assertLockHeld();
       await save(validated.value);
       await publishConfigUpdate(subtype);
@@ -174,42 +175,48 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   }
 
   async function postRepos(req: Request, res: Response): Promise<void> {
+    const bodyValidation = validateJsonObjectBody(req.body);
+    if (!bodyValidation.ok) {
+      res.status(400).json({ error: bodyValidation.error });
+      return;
+    }
+
+    const { repos_to_monitor } = bodyValidation.value;
+    if (!Array.isArray(repos_to_monitor)) {
+      res.status(400).json({ error: 'repos_to_monitor must be an array' });
+      return;
+    }
+
+    // Validate and process repos before taking the lock to avoid blocking valid updates on malformed requests.
+    const processedRepos: RepoToMonitor[] = [];
+    for (const repo of repos_to_monitor) {
+      const isValid = typeof repo?.name === 'string' &&
+        repo.name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/) &&
+        typeof repo.enabled === 'boolean';
+      if (!isValid) {
+        res.status(400).json({ error: `Invalid repository format: ${JSON.stringify(repo)}` });
+        return;
+      }
+
+      if (repo.alias !== undefined && typeof repo.alias !== 'string') {
+        res.status(400).json({ error: `Invalid alias format for ${repo.name}: must be a string` });
+        return;
+      }
+      if (repo.baseBranch !== undefined && typeof repo.baseBranch !== 'string') {
+        res.status(400).json({ error: `Invalid baseBranch format for ${repo.name}: must be a string` });
+        return;
+      }
+
+      processedRepos.push({
+        id: repo.id || randomUUID(),
+        name: repo.name,
+        enabled: repo.enabled,
+        alias: repo.alias?.trim() || undefined,
+        baseBranch: repo.baseBranch?.trim() || undefined
+      });
+    }
+
     const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
-      const { repos_to_monitor } = req.body;
-
-      if (!Array.isArray(repos_to_monitor)) {
-        return { status: 400, body: { error: 'repos_to_monitor must be an array' } };
-      }
-
-      // Validate and process repos
-      const processedRepos: RepoToMonitor[] = [];
-      for (const repo of repos_to_monitor) {
-        // Validate required fields
-        const isValid = typeof repo.name === 'string' &&
-          repo.name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/) &&
-          typeof repo.enabled === 'boolean';
-        if (!isValid) {
-          return { status: 400, body: { error: `Invalid repository format: ${JSON.stringify(repo)}` } };
-        }
-
-        // Validate optional fields if present
-        if (repo.alias !== undefined && typeof repo.alias !== 'string') {
-          return { status: 400, body: { error: `Invalid alias format for ${repo.name}: must be a string` } };
-        }
-        if (repo.baseBranch !== undefined && typeof repo.baseBranch !== 'string') {
-          return { status: 400, body: { error: `Invalid baseBranch format for ${repo.name}: must be a string` } };
-        }
-
-        // Process the repo with ID generation and field sanitization
-        processedRepos.push({
-          id: repo.id || randomUUID(),
-          name: repo.name,
-          enabled: repo.enabled,
-          alias: repo.alias?.trim() || undefined,
-          baseBranch: repo.baseBranch?.trim() || undefined
-        });
-      }
-
       await lock.assertLockHeld();
       await configManager.saveMonitoredRepos(processedRepos);
       await publishConfigUpdate('repos_update');
@@ -337,15 +344,24 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   }
 
   async function postPrimaryProcessingLabels(req: Request, res: Response): Promise<void> {
+    const bodyValidation = validateJsonObjectBody(req.body);
+    if (!bodyValidation.ok) {
+      res.status(400).json({ error: bodyValidation.error });
+      return;
+    }
+
+    const { primary_processing_labels } = bodyValidation.value;
+    if (!Array.isArray(primary_processing_labels) || primary_processing_labels.length === 0) {
+      res.status(400).json({ error: 'primary_processing_labels must be a non-empty array' });
+      return;
+    }
+    const labels = primary_processing_labels.map(l => String(l).trim()).filter(l => l.length > 0);
+    if (labels.length === 0) {
+      res.status(400).json({ error: 'At least one valid label is required' });
+      return;
+    }
+
     const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async lock => {
-      const { primary_processing_labels } = req.body;
-      if (!Array.isArray(primary_processing_labels) || primary_processing_labels.length === 0) {
-        return { status: 400, body: { error: 'primary_processing_labels must be a non-empty array' } };
-      }
-      const labels = primary_processing_labels.map(l => String(l).trim()).filter(l => l.length > 0);
-      if (labels.length === 0) {
-        return { status: 400, body: { error: 'At least one valid label is required' } };
-      }
       await lock.assertLockHeld();
       await configManager.savePrimaryProcessingLabels(labels);
       await publishConfigUpdate('primary_processing_labels_update');
