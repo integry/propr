@@ -23,7 +23,7 @@ import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 export { UsageLimitError };
 
 const DEFAULT_CODEX_MAX_TURNS = 1000;
-const DEFAULT_CODEX_TIMEOUT_MS = 300000;
+const DEFAULT_CODEX_TIMEOUT_MS = 3600000;
 
 // Container path for Codex config
 const CONTAINER_CONFIG_PATH = '/home/node/.codex';
@@ -98,12 +98,14 @@ export class CodexAgent implements Agent {
                 modelUsed,
                 sessionId: parsedOutput.sessionId,
                 conversationId: parsedOutput.conversationId,
+                conversationLog: parsedOutput.conversationLog,
                 modifiedFiles: [],
                 commitMessage: null,
                 summary: parsedOutput.result ?? undefined,
                 prompt,
                 error: parsedOutput.error,
-                tokenUsage: parsedOutput.tokenUsage
+                tokenUsage: parsedOutput.tokenUsage,
+                usageMetrics: usageMetrics ?? undefined
             };
 
             await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt, issueRef, model: modelUsed, isRetry, retryReason });
@@ -363,9 +365,11 @@ export class CodexAgent implements Agent {
 
         // Add model if specified
         if (modelName) {
+            // Strip agent prefix if present (e.g., "codex:gpt-5.4" -> "gpt-5.4")
+            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
             const codexIndex = dockerArgs.indexOf('codex');
-            dockerArgs.splice(codexIndex + 2, 0, '--model', modelName);
-            logger.info({ issueNumber, requestedModel: modelName, agentAlias: this.config.alias }, 'Using specific model for Codex agent execution');
+            dockerArgs.splice(codexIndex + 2, 0, '--model', cleanModelName);
+            logger.info({ issueNumber, requestedModel: cleanModelName, agentAlias: this.config.alias }, 'Using specific model for Codex agent execution');
         } else {
             logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Codex agent will use default');
         }

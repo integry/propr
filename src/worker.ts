@@ -6,8 +6,9 @@ import type { IssueJobData, CommentJobData, TaskImportJobData, SystemTaskJobData
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
-import { AgentRegistry } from '@propr/core';
+import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
+import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
 import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
 import { processTaskImportJob } from './jobs/processTaskImportJob.js';
@@ -212,6 +213,14 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         const err = error as Error;
         logger.error({ error: err.message }, 'Failed to initialize agent registry. Worker may not function properly.');
     }
+
+    // Wire up check_run dependencies for ultrafix readiness gating
+    setCheckRunDeps({
+        areAllChecksPassing,
+        getCurrentPRHead,
+        getCheckRunsStatus,
+    });
+    logger.info('Check run dependencies initialized for ultrafix');
 
     // --- Real-time Config Subscription Setup ---
     // Create a dedicated Redis client for subscription (subscriber clients cannot run other commands)

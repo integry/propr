@@ -253,6 +253,7 @@ function mapUsageMetrics(usageMetrics: UsageTrackingMetrics | null | undefined) 
         preCall: usageMetrics.preCall,
         postCall: usageMetrics.postCall,
         delta: usageMetrics.delta,
+        records: usageMetrics.records,
         timestamp: usageMetrics.timestamp,
         agent: usageMetrics.agent
     };

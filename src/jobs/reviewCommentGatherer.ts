@@ -21,6 +21,15 @@ export interface AIReviewComment {
     created_at: string;
 }
 
+export interface PendingReviewState {
+    /** Unprocessed AI review comments (boilerplate already stripped). */
+    unprocessedComments: AIReviewComment[];
+    /** The most recent valid review score (1–10), or null if none found. */
+    latestScore: number | null;
+    /** Whether any unprocessed review comments exist. */
+    hasPendingReview: boolean;
+}
+
 interface PRComment {
     id: number;
     body: string | null;
@@ -40,6 +49,12 @@ export interface GatherOptions {
 
 /** Default max age: 7 days */
 const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+
+/**
+ * RegExp matching a "Score: N/10" line in the review body.
+ * Accepts optional whitespace and the integer 1–10.
+ */
+const SCORE_RE = /Score:\s*(\d{1,2})\s*\/\s*10/;
 
 /**
  * RegExp matching the error variant of the AI review marker.
@@ -123,6 +138,53 @@ export async function gatherUnprocessedReviewComments(
     );
 
     return unprocessed;
+}
+
+/**
+ * Extract a numeric review score from a review comment body.
+ * Looks for the "Score: N/10" pattern emitted by the review prompt.
+ * Returns the integer score (1–10) or null if no valid score is found.
+ */
+export function extractReviewScore(body: string): number | null {
+    const cleaned = stripReviewBoilerplate(body);
+    const match = cleaned.match(SCORE_RE);
+    if (!match) return null;
+    const score = parseInt(match[1], 10);
+    if (score < 1 || score > 10) return null;
+    return score;
+}
+
+/**
+ * Return the pending review state for orchestration (e.g. /ultrafix).
+ *
+ * This is a convenience wrapper around `gatherUnprocessedReviewComments` that
+ * also extracts the latest usable review score from the unprocessed comments.
+ * The most recent comment (by `created_at`) with a valid score wins.
+ */
+export async function getPendingReviewState(
+    allComments: PRComment[],
+    options: GatherOptions,
+): Promise<PendingReviewState> {
+    const unprocessedComments = await gatherUnprocessedReviewComments(allComments, options);
+
+    // Walk comments newest-first to find the most recent valid score.
+    let latestScore: number | null = null;
+    const sorted = [...unprocessedComments].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+    for (const comment of sorted) {
+        const score = extractReviewScore(comment.body);
+        if (score !== null) {
+            latestScore = score;
+            break;
+        }
+    }
+
+    return {
+        unprocessedComments,
+        latestScore,
+        hasPendingReview: unprocessedComments.length > 0,
+    };
 }
 
 /**

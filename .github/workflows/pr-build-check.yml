@@ -4,10 +4,14 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+concurrency:
+  group: pr-build-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     name: Validate Changes
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, propr]
     permissions:
       contents: read
       pull-requests: write
@@ -16,18 +20,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: |
-            package-lock.json
-            propr-ui/package-lock.json
-            docs/package-lock.json
-            packages/shared/package-lock.json
-            packages/api/package-lock.json
-            packages/core/package-lock.json
+      - name: Check Node.js
+        run: |
+          node --version
+          npm --version
 
       - name: Install Dependencies
         id: install
@@ -70,6 +66,42 @@ jobs:
           touch build_log.txt
           EXIT_CODE=0
           echo "Starting validation process..." > build_log.txt
+          SHARED_BUILT=0
+          SHARED_FAILED=0
+          CORE_PKG_BUILT=0
+          CORE_PKG_FAILED=0
+
+          build_shared_once() {
+            if [ $SHARED_BUILT -eq 1 ]; then
+              return $SHARED_FAILED
+            fi
+
+            echo "Building @propr/shared (dependency)..."
+            SHARED_OUTPUT=$(npm run build -w @propr/shared 2>&1) || {
+              SHARED_FAILED=1
+              SHARED_BUILT=1
+              return 1
+            }
+
+            SHARED_BUILT=1
+            return 0
+          }
+
+          build_core_package_once() {
+            if [ $CORE_PKG_BUILT -eq 1 ]; then
+              return $CORE_PKG_FAILED
+            fi
+
+            echo "Building @propr/core (dependency)..."
+            CORE_BUILD_OUTPUT=$(npm run build -w @propr/core 2>&1) || {
+              CORE_PKG_FAILED=1
+              CORE_PKG_BUILT=1
+              return 1
+            }
+
+            CORE_PKG_BUILT=1
+            return 0
+          }
 
           # --- CORE ---
           if [ "${{ steps.filter.outputs.core }}" == 'true' ]; then
@@ -104,14 +136,12 @@ jobs:
             UI_FAILED=0
 
             # Dependencies already installed in earlier step
-            # Build @propr/shared first (UI depends on it)
-            echo "Building @propr/shared (dependency)..."
-            BUILD_OUTPUT=$(npm run build -w @propr/shared 2>&1) || {
+            if ! build_shared_once; then
               echo "❌ Shared Package Build FAILED (UI dependency)" >> build_log.txt
-              echo "$BUILD_OUTPUT" >> build_log.txt
+              echo "$SHARED_OUTPUT" >> build_log.txt
               UI_FAILED=1
               EXIT_CODE=1
-            }
+            fi
 
             if [ $UI_FAILED -eq 0 ]; then
               # Lint UI
@@ -181,24 +211,21 @@ jobs:
             CORE_PKG_FAILED=0
 
             # Dependencies already installed in earlier step
-            # Build @propr/shared first (core depends on it)
-            echo "Building @propr/shared (dependency)..."
-            BUILD_OUTPUT=$(npm run build -w @propr/shared 2>&1) || {
+            if ! build_shared_once; then
               echo "❌ Shared Package Build FAILED (core dependency)" >> build_log.txt
-              echo "$BUILD_OUTPUT" >> build_log.txt
+              echo "$SHARED_OUTPUT" >> build_log.txt
               CORE_PKG_FAILED=1
               EXIT_CODE=1
-            }
+            fi
 
             if [ $CORE_PKG_FAILED -eq 0 ]; then
               # 1. Build Verification
-              echo "Building @propr/core..."
-              BUILD_OUTPUT=$(npm run build -w @propr/core 2>&1) || {
+              if ! build_core_package_once; then
                 echo "❌ Core Package Build FAILED" >> build_log.txt
-                echo "$BUILD_OUTPUT" >> build_log.txt
+                echo "$CORE_BUILD_OUTPUT" >> build_log.txt
                 CORE_PKG_FAILED=1
                 EXIT_CODE=1
-              }
+              fi
               if [ $CORE_PKG_FAILED -eq 0 ]; then
                 echo "✅ Core Package Build passed" >> build_log.txt
               fi
@@ -225,24 +252,21 @@ jobs:
             API_FAILED=0
 
             # Dependencies already installed in earlier step
-            # Build @propr/shared first (core and api depend on it)
-            echo "Building @propr/shared (dependency)..."
-            BUILD_OUTPUT=$(npm run build -w @propr/shared 2>&1) || {
+            if ! build_shared_once; then
               echo "❌ Shared Package Build FAILED (api dependency)" >> build_log.txt
-              echo "$BUILD_OUTPUT" >> build_log.txt
+              echo "$SHARED_OUTPUT" >> build_log.txt
               API_FAILED=1
               EXIT_CODE=1
-            }
+            fi
 
             if [ $API_FAILED -eq 0 ]; then
               # 1. Build @propr/core first (api depends on it)
-              echo "Building @propr/core (dependency)..."
-              BUILD_OUTPUT=$(npm run build -w @propr/core 2>&1) || {
+              if ! build_core_package_once; then
                 echo "❌ Core Package Build FAILED (api dependency)" >> build_log.txt
-                echo "$BUILD_OUTPUT" >> build_log.txt
+                echo "$CORE_BUILD_OUTPUT" >> build_log.txt
                 API_FAILED=1
                 EXIT_CODE=1
-              }
+              fi
             fi
 
             if [ $API_FAILED -eq 0 ]; then
@@ -289,42 +313,46 @@ jobs:
 
       - name: Post Failure Comment
         if: steps.build.outcome == 'failure'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const prNumber = context.issue.number;
-            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
-            
-            let log = '';
-            try { log = fs.readFileSync('build_log.txt', 'utf8'); } 
-            catch (e) { log = 'Log file missing.'; }
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          LOG_FILE=build_log.txt
+          if [ ! -f "$LOG_FILE" ]; then
+            printf '%s\n' 'Log file missing.' > "$LOG_FILE"
+          fi
 
-            if (log.length > 60000) {
-              log = log.substring(0, 60000) + "\n\n...(truncated)";
-            }
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
 
-            const body = [
-              '### ❌ Checks Failed',
-              'Linting or Build errors were detected.',
-              '',
-              '<details>',
-              '<summary>View Logs</summary>',
-              '',
-              '~~~text',
+          log = Path("build_log.txt").read_text()
+          if len(log) > 60000:
+              log = log[:60000] + "\n\n...(truncated)"
+
+          run_url = os.environ["RUN_URL"]
+          body = "\n".join([
+              "### Checks Failed",
+              "Linting or build errors were detected.",
+              "",
+              "<details>",
+              "<summary>View Logs</summary>",
+              "",
+              "~~~text",
               log,
-              '~~~',
-              '</details>',
-              '',
-              '**[View Workflow](' + runUrl + ')**'
-            ].join('\n');
+              "~~~",
+              "</details>",
+              "",
+              f"**[View Workflow]({run_url})**",
+          ])
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: body
-            });
+          Path("failure_comment.md").write_text(body)
+          PY
+          gh api \
+            --method POST \
+            repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
+            -f body="$(cat failure_comment.md)"
 
       - name: Fail Job
         if: steps.build.outcome == 'failure'

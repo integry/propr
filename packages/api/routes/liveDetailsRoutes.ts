@@ -5,85 +5,99 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
+import {
+  appendClaudeAssistantMessageEvents,
+  appendClaudeUserMessageEvents,
+  deriveCurrentTask,
+  isConversationResultEmpty,
+  mapTodoItems,
+  parseClaudeConversationFile,
+  parseClaudeOutputToConversationResult,
+  parseCodexOutputToConversationResult,
+  type ClaudeMessageContent,
+  type ClaudeMessageContext,
+  type ConversationResult,
+  type PendingSubagent,
+  type TodoItem
+} from './liveDetailsCodexParser.js';
 
-interface LiveDetailsRoutesDeps {
-  redisClient: RedisClientType;
-  db: Knex;
-}
-
+interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
+interface HistoryEntryWithSessionMetadata { state?: string; metadata?: { sessionId?: string }; }
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
-
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
     try {
       const { taskId: jobId } = req.params;
-
-      // Validate taskId parameter
       const taskIdValidation = validateTaskId(jobId);
       if (!taskIdValidation.valid) {
         res.status(400).json({ error: taskIdValidation.error });
         return;
       }
-
       const taskId = normalizeTaskId(jobId);
-
       console.log(`[live-details] jobId: ${jobId}, taskId: ${taskId}`);
-
       const sessionId = await findSessionId(redisClient, db, taskId);
       if (!sessionId) {
+        const activeRedisResult = await parseActiveExecutionOutput(redisClient, taskId);
+        if (activeRedisResult) {
+          res.json(activeRedisResult);
+          return;
+        }
         console.log('[live-details] No sessionId found in either SQLite or Redis');
         res.json({ events: [], todos: [], currentTask: null });
         return;
       }
-
       console.log(`[live-details] Using sessionId: ${sessionId}`);
-
-      const conversationPath = path.join(os.homedir(), '.claude', 'projects', '-home-node-workspace', `${sessionId}.jsonl`);
-      console.log(`[live-details] Checking Claude conversation path: ${conversationPath}`);
-
-      const pathExists = await fs.pathExists(conversationPath);
-      if (!pathExists) {
-        console.log('[live-details] Claude conversation file not found');
-        res.json({ events: [], todos: [], currentTask: null });
+      const conversationPath = await findClaudeConversationPath(sessionId);
+      console.log(`[live-details] Checking Claude conversation path: ${conversationPath ?? 'not found'}`);
+      if (!conversationPath) {
+        console.log('[live-details] Claude conversation file not found, trying active Redis output');
+        const activeRedisResult = await parseActiveExecutionOutput(redisClient, taskId);
+        if (activeRedisResult) {
+          res.json(activeRedisResult);
+          return;
+        }
+        console.log('[live-details] Claude conversation file not found, trying stored execution output fallback');
+        const fallbackResult = await parseStoredExecutionOutput(redisClient, sessionId);
+        if (fallbackResult) {
+          res.json(fallbackResult);
+          return;
+        }
+        console.log('[live-details] Stored execution output fallback unavailable, trying database fallback');
+        const dbFallbackResult = await parseExecutionDetailsFromDb(db, taskId, sessionId);
+        if (!dbFallbackResult) {
+          const rawStoredOutput = await loadStoredExecutionOutput(redisClient, sessionId);
+          if (rawStoredOutput?.rawFallback) {
+            res.json(rawStoredOutput.rawFallback);
+            return;
+          }
+          res.json({ events: [], todos: [], currentTask: null });
+          return;
+        }
+        res.json(dbFallbackResult);
         return;
       }
-
-      const result = await parseConversationFile(conversationPath);
+      const result = await parseClaudeConversationFile(conversationPath);
       console.log(`[live-details] Returning: ${result.events.length} events, ${result.todos.length} todos, currentTask: ${result.currentTask ? 'yes' : 'no'}`);
-
       res.json(result);
     } catch (error) {
       console.error(`Error in /api/task/:taskId/live-details:`, error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
-
   return { getLiveDetails };
 }
-
 function normalizeTaskId(jobId: string): string {
-  if (jobId.startsWith('issue-')) {
-    const parts = jobId.replace(/^issue-/, '').split('-');
-    parts.pop();
-    return parts.join('-');
-  }
-  return jobId;
+  if (!jobId.startsWith('issue-')) return jobId;
+  const parts = jobId.replace(/^issue-/, '').split('-');
+  parts.pop();
+  return parts.join('-');
 }
-
-async function findSessionId(
-  redisClient: RedisClientType,
-  db: Knex,
-  taskId: string
-): Promise<string | null> {
-  // Check Redis FIRST - it has the live/current execution state
-  // This is important for reprocessing: Redis has the new session, DB might have the old one
+async function findSessionId(redisClient: RedisClientType, db: Knex, taskId: string): Promise<string | null> {
   const redisSessionId = await findSessionIdFromRedis(redisClient, taskId);
   if (redisSessionId) return redisSessionId;
-
-  // Fall back to DB for completed/historical executions
   return findSessionIdFromDb(db, taskId);
 }
-
 async function findSessionIdFromDb(db: Knex, taskId: string): Promise<string | null> {
   try {
     console.log(`[live-details] Fetching sessionId from SQLite for taskId: ${taskId}`);
@@ -91,7 +105,6 @@ async function findSessionIdFromDb(db: Knex, taskId: string): Promise<string | n
       .where({ task_id: taskId })
       .orderBy('start_time', 'desc')
       .first();
-
     if (llmExecution && llmExecution.session_id) {
       console.log(`[live-details] Found sessionId in SQLite: ${llmExecution.session_id}`);
       return llmExecution.session_id as string;
@@ -104,269 +117,267 @@ async function findSessionIdFromDb(db: Knex, taskId: string): Promise<string | n
     return null;
   }
 }
-
 async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: string): Promise<string | null> {
   console.log('[live-details] Trying Redis fallback');
   const stateKey = `worker:state:${taskId}`;
   const stateData = await redisClient.get(stateKey);
-
   console.log(`[live-details] stateKey: ${stateKey}, hasData: ${!!stateData}`);
-
   if (!stateData) {
     console.log('[live-details] No state data found in Redis');
     return null;
   }
-
-  const state = JSON.parse(stateData) as { history: Array<{ state: string; metadata?: { sessionId?: string } }> };
-  const entry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.sessionId);
-
-  console.log(`[live-details] Found claudeExecutionEntry: ${!!entry}, sessionId: ${entry?.metadata?.sessionId}`);
-
-  if (!entry) {
-    console.log('[live-details] No claude_execution entry with sessionId in Redis');
+  let state: unknown;
+  try {
+    state = JSON.parse(stateData);
+  } catch (error) {
+    console.error('[live-details] Failed to parse Redis state data:', error);
     return null;
   }
-
+  const history = Array.isArray((state as { history?: unknown }).history)
+    ? (state as { history: HistoryEntryWithSessionMetadata[] }).history
+    : null;
+  if (!history) { console.log('[live-details] Redis state data has no usable history array'); return null; }
+  const entry = findLatestHistoryEntryWithSessionId(history);
+  console.log(`[live-details] Found Redis history entry with sessionId: ${!!entry}, state: ${entry?.state}, sessionId: ${entry?.metadata?.sessionId}`);
+  if (!entry) { console.log('[live-details] No Redis history entry with sessionId found'); return null; }
   return entry.metadata!.sessionId!;
 }
-
-interface TokenUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
+export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSessionMetadata[]): HistoryEntryWithSessionMetadata | null {
+  for (const entry of [...history].reverse()) {
+    if (LIVE_EXECUTION_STATES.has(entry.state ?? '') && typeof entry.metadata?.sessionId === 'string' && entry.metadata.sessionId.trim().length > 0) return entry;
+  }
+  return null;
 }
-
-interface ConversationResult {
-  events: Array<Record<string, unknown>>;
-  todos: Array<{ status: string; content: string }>;
-  currentTask: string | null;
-  tokenUsage: TokenUsage | null;
+interface StoredLogData { files?: Record<string, string>; }
+interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
+interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
+interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; session_id?: string; conversation_id?: string; item?: unknown; }
+export type StoredOutputFormat = 'claude' | 'codex' | 'unknown';
+export interface ParsedStoredOutput {
+  parsed: ConversationResult | null;
+  rawFallback: ConversationResult | null;
+  format: StoredOutputFormat;
 }
-
-interface PendingSubagent {
-  toolUseId: string;
-  subagentType: string;
-  description: string;
-  startTimestamp: string;
+function getClaudeProjectDirName(workspacePath: string): string {
+  const normalizedPath = path.resolve(workspacePath).replace(/\\/g, '/');
+  const collapsed = normalizedPath.replace(/\/+/g, '-');
+  return collapsed.startsWith('-') ? collapsed : `-${collapsed}`;
 }
-
-// Extract text from Claude content blocks (e.g., Agent/Task tool results)
-interface ContentBlock {
-  type: string;
-  text?: string;
-  content?: string;
+function getClaudeConversationPathCandidates(sessionId: string): string[] {
+  const configuredProjectsDir = process.env.CLAUDE_PROJECTS_DIR;
+  const projectDirNames = new Set([getClaudeProjectDirName(process.cwd()), '-home-node-workspace']);
+  const baseDirs = configuredProjectsDir ? [configuredProjectsDir] : [path.join(os.homedir(), '.claude', 'projects')];
+  return baseDirs.flatMap(baseDir =>
+    [...projectDirNames].map(projectDirName => path.join(baseDir, projectDirName, `${sessionId}.jsonl`))
+  );
 }
-
-function extractTextFromContentBlocks(content: unknown): string | null {
-  if (!Array.isArray(content)) return null;
-  if (content.length === 0) return null;
-
-  // Check if it looks like a content blocks array
-  const first = content[0] as ContentBlock;
-  if (typeof first !== 'object' || first === null || !('type' in first)) {
+async function findClaudeConversationPath(sessionId: string): Promise<string | null> {
+  for (const candidatePath of getClaudeConversationPathCandidates(sessionId)) {
+    if (await fs.pathExists(candidatePath)) return candidatePath;
+  }
+  return null;
+}
+async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionId: string): Promise<ConversationResult | null> {
+  const parsedOutput = await loadStoredExecutionOutput(redisClient, sessionId);
+  return parsedOutput?.parsed ?? null;
+}
+async function loadStoredExecutionOutput(redisClient: RedisClientType, sessionId: string): Promise<ParsedStoredOutput | null> {
+  const logJson = await redisClient.get(`execution:logs:session:${sessionId}`);
+  if (!logJson) {
+    console.log('[live-details] No stored execution logs found in Redis for session fallback');
     return null;
   }
-
-  const textParts = content
-    .map((block: ContentBlock) => {
-      if (block.type === 'text' && block.text) {
-        return block.text;
-      }
-      if (block.content) {
-        return block.content;
-      }
-      return '';
-    })
-    .filter(Boolean);
-
-  return textParts.length > 0 ? textParts.join('\n\n') : null;
-}
-
-async function parseConversationFile(conversationPath: string): Promise<ConversationResult> {
-  const conversationContent = await fs.readFile(conversationPath, 'utf8');
-  const lines = conversationContent.trim().split('\n').filter(line => line.trim());
-
-  const events: Array<Record<string, unknown>> = [];
-  let todos: Array<{ status: string; content: string }> = [];
-  // Accumulate token usage across all messages (not just the last one)
-  const tokenUsage: TokenUsage = {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0
-  };
-  // Track pending subagent calls to generate summaries when they complete
-  const pendingSubagents: Map<string, PendingSubagent> = new Map();
-
-  for (const line of lines) {
-    const parsed = parseLine(line, events, pendingSubagents);
-    if (parsed.newTodos) {
-      todos = parsed.newTodos;
-    }
-    if (parsed.tokenUsage) {
-      // Accumulate token usage from each message
-      tokenUsage.input_tokens += parsed.tokenUsage.input_tokens;
-      tokenUsage.output_tokens += parsed.tokenUsage.output_tokens;
-      tokenUsage.cache_creation_input_tokens += parsed.tokenUsage.cache_creation_input_tokens;
-      tokenUsage.cache_read_input_tokens += parsed.tokenUsage.cache_read_input_tokens;
-    }
-  }
-
-  const inProgressTask = todos.find(t => t.status === 'in_progress');
-  const currentTask = inProgressTask ? inProgressTask.content : null;
-
-  // Return null if no tokens were counted
-  const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
-                    tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
-
-  return { events, todos, currentTask, tokenUsage: hasTokens ? tokenUsage : null };
-}
-
-interface ParseLineResult {
-  newTodos?: Array<{ status: string; content: string }>;
-  tokenUsage?: TokenUsage;
-}
-
-interface MessageContent {
-  type: string;
-  text?: string;
-  name?: string;
-  input?: { todos?: Array<{ status: string; content: string }> };
-  id?: string;
-  tool_use_id?: string;
-  content?: unknown;
-  is_error?: boolean;
-}
-
-interface Message {
-  type?: string;
-  timestamp?: string;
-  message?: { content?: MessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
-  usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
-}
-
-function parseLine(
-  line: string,
-  events: Array<Record<string, unknown>>,
-  pendingSubagents: Map<string, PendingSubagent>
-): ParseLineResult {
+  let logData: StoredLogData;
   try {
-    const message = JSON.parse(line) as Message;
-    const timestamp = message.timestamp || new Date().toISOString();
-
-    if (message.type === 'assistant' && message.message?.content) {
-      return parseAssistantContent(message.message.content, events, timestamp, pendingSubagents);
-    }
-    if (message.type === 'user' && message.message?.content) {
-      parseUserContent(message.message.content, events, timestamp, pendingSubagents);
-    }
-    // Extract token usage from result message or message.usage
-    const usage = message.usage || message.message?.usage;
-    if (usage) {
-      return {
-        tokenUsage: {
-          input_tokens: usage.input_tokens ?? 0,
-          output_tokens: usage.output_tokens ?? 0,
-          cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
-          cache_read_input_tokens: usage.cache_read_input_tokens ?? 0
-        }
-      };
-    }
-  } catch (parseError) {
-    console.error(`[live-details] Error parsing line:`, parseError);
+    logData = JSON.parse(logJson) as StoredLogData;
+  } catch (error) {
+    console.error('[live-details] Failed to parse stored execution log metadata:', error);
+    return null;
   }
-  return {};
-}
-
-function parseAssistantContent(
-  contentArray: MessageContent[],
-  events: Array<Record<string, unknown>>,
-  timestamp: string,
-  pendingSubagents: Map<string, PendingSubagent>
-): ParseLineResult {
-  let newTodos: Array<{ status: string; content: string }> | undefined;
-
-  for (const content of contentArray) {
-    if (content.type === 'text') {
-      events.push({ type: 'thought', content: content.text, timestamp });
-    } else if (content.type === 'tool_use') {
-      events.push({ type: 'tool_use', toolName: content.name, input: content.input, id: content.id, timestamp });
-      if (content.name === 'TodoWrite' && content.input?.todos) {
-        newTodos = content.input.todos;
-      }
-      // Track Task tool calls (subagent spawns)
-      if (content.name === 'Task' && content.id) {
-        const input = content.input as { subagent_type?: string; description?: string } | undefined;
-        pendingSubagents.set(content.id, {
-          toolUseId: content.id,
-          subagentType: input?.subagent_type || 'unknown',
-          description: input?.description || '',
-          startTimestamp: timestamp
-        });
-      }
-    }
+  const outputPath = logData.files?.output;
+  if (!outputPath || !(await fs.pathExists(outputPath))) {
+    console.log('[live-details] Stored execution output file missing for session fallback');
+    return null;
   }
-
-  return { newTodos };
+  const output = await fs.readFile(outputPath, 'utf8');
+  return parseStoredOutputContent(output);
 }
-
-function parseUserContent(
-  contentArray: MessageContent[],
-  events: Array<Record<string, unknown>>,
-  timestamp: string,
-  pendingSubagents: Map<string, PendingSubagent>
-): void {
-  for (const content of contentArray) {
-    if (content.type === 'tool_result') {
-      events.push({
-        type: 'tool_result',
-        toolUseId: content.tool_use_id,
-        result: content.content,
-        isError: content.is_error || false,
-        timestamp
-      });
-
-      // Check if this is a subagent completing
-      if (content.tool_use_id && pendingSubagents.has(content.tool_use_id)) {
-        const subagent = pendingSubagents.get(content.tool_use_id)!;
-        const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
-        const durationSecs = Math.round(durationMs / 1000);
-
-        // Extract the actual text content from the subagent's result
-        const subagentOutputText = extractTextFromContentBlocks(content.content);
-
-        // Add a summary thought event for the subagent with its output
-        const subagentIcon = getSubagentIcon(subagent.subagentType);
-        const summaryHeader = `${subagentIcon} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`;
-
-        // Include the subagent's output text if available
-        const thoughtContent = subagentOutputText
-          ? `${summaryHeader}\n\n${subagentOutputText}`
-          : summaryHeader;
-
-        events.push({
-          type: 'thought',
-          content: thoughtContent,
-          timestamp,
-          isSubagentSummary: true
-        });
-
-        pendingSubagents.delete(content.tool_use_id);
-      }
+async function parseActiveExecutionOutput(redisClient: RedisClientType, taskId: string): Promise<ConversationResult | null> {
+  const output = await redisClient.get(`agent:output:${taskId}`);
+  if (!output?.trim()) return null;
+  const parsedOutput = parseStoredOutputContent(output);
+  return parsedOutput.parsed ?? parsedOutput.rawFallback;
+}
+export function parseStoredOutputContent(output: string): ParsedStoredOutput {
+  if (!output.trim()) return { parsed: null, rawFallback: null, format: 'unknown' };
+  const format = detectStoredOutputFormat(output);
+  if (format === 'claude') {
+    const parsed = parseClaudeOutputToConversationResult(output);
+    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
+  }
+  if (format === 'codex') {
+    const parsed = parseCodexOutputToConversationResult(output);
+    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
+  }
+  const codexParsed = parseCodexOutputToConversationResult(output);
+  if (!isConversationResultEmpty(codexParsed)) return { parsed: codexParsed, rawFallback: buildRawOutputConversationResult(output), format: 'codex' };
+  const claudeParsed = parseClaudeOutputToConversationResult(output);
+  if (!isConversationResultEmpty(claudeParsed)) return { parsed: claudeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'claude' };
+  return { parsed: null, rawFallback: buildRawOutputConversationResult(output), format };
+}
+export function detectStoredOutputFormat(output: string): StoredOutputFormat {
+  const firstLine = output.split('\n').map(line => line.trim()).find(line => line.length > 0);
+  if (!firstLine) return 'unknown';
+  try {
+    const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
+    if (parsed.type === 'message'
+      || parsed.type === 'tool_use'
+      || parsed.type === 'error'
+      || parsed.type === 'result'
+      || parsed.type === 'turn.started'
+      || parsed.type === 'turn.completed'
+      || parsed.type === 'item.started'
+      || parsed.type === 'item.updated'
+      || parsed.type === 'item.completed'
+      || parsed.item !== undefined) {
+      return 'codex';
     }
+
+    if (parsed.type === 'assistant' || parsed.type === 'user' || !!parsed.session_id || !!parsed.conversation_id) {
+      return 'claude';
+    }
+    return 'unknown';
+  } catch {
+    return 'unknown';
   }
 }
-
-function getSubagentIcon(subagentType: string): string {
-  switch (subagentType.toLowerCase()) {
-    case 'explore':
-      return '🔍';
-    case 'plan':
-      return '📋';
-    case 'bash':
-      return '⚡';
-    default:
-      return '🤖';
+function buildRawOutputConversationResult(output: string): ConversationResult | null {
+  const trimmed = output.trim();
+  return trimmed ? { events: [{ type: 'thought', content: trimmed }], todos: [], currentTask: null, tokenUsage: null } : null;
+}
+async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: string): Promise<ConversationResult | null> {
+  const execution = await db('llm_executions')
+    .where({ task_id: taskId, session_id: sessionId })
+    .orderBy('start_time', 'desc')
+    .first('execution_id', 'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens');
+  if (!execution?.execution_id) return null;
+  const details = await db('llm_execution_details')
+    .where({ execution_id: execution.execution_id })
+    .orderBy('sequence_number', 'asc')
+    .select('event_type', 'event_timestamp', 'content', 'is_error', 'tool_name', 'tool_input', 'metadata');
+  if (!details.length) return null;
+  const result = parseExecutionDetailsRows(details as ExecutionDetailRow[]);
+  const hasTokens = (execution.input_tokens ?? 0) || (execution.output_tokens ?? 0) || (execution.cache_creation_input_tokens ?? 0) || (execution.cache_read_input_tokens ?? 0);
+  return {
+    ...result,
+    tokenUsage: hasTokens ? {
+      input_tokens: execution.input_tokens ?? 0,
+      output_tokens: execution.output_tokens ?? 0,
+      cache_creation_input_tokens: execution.cache_creation_input_tokens ?? 0,
+      cache_read_input_tokens: execution.cache_read_input_tokens ?? 0
+    } : null
+  };
+}
+function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<ConversationResult, 'tokenUsage'> {
+  const events: Array<Record<string, unknown>> = [];
+  let todos: TodoItem[] = [];
+  const pendingSubagents = new Map<string, PendingSubagent>();
+  for (const row of details) {
+    const timestamp = row.event_timestamp;
+    const metadataHandled = appendEventFromMetadata(row, { timestamp, events, pendingSubagents, setTodos: nextTodos => { todos = nextTodos; } });
+    if (metadataHandled) continue;
+    if (appendStoredMessageEvent(row, { timestamp, events, pendingSubagents, setTodos: nextTodos => { todos = nextTodos; } })) continue;
+    if (appendToolUseEvent(row, timestamp, events)) continue;
+    if (appendErrorEvent(row, timestamp, events)) continue;
+    appendFallbackContentEvent(row, timestamp, events);
   }
+  const currentTask = deriveCurrentTask(todos);
+  return { events, todos, currentTask };
+}
+function appendEventFromMetadata(row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
+  if (!row.metadata) return false;
+  try {
+    const rawEvent = JSON.parse(row.metadata) as RawExecutionEvent;
+    if (appendMetadataMessageEvent(rawEvent, context)) return true;
+    if (rawEvent.type === 'tool_use') {
+      context.events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp: context.timestamp });
+      return true;
+    }
+    if (rawEvent.type === 'error') {
+      context.events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || row.content || 'Execution error', isError: true, timestamp: context.timestamp });
+      return true;
+    }
+    if (appendCommandExecutionEvents(rawEvent, context.timestamp, context.events)) return true;
+    if ((rawEvent.item?.type === 'reasoning' || rawEvent.item?.type === 'agent_message') && rawEvent.item.text) {
+      context.events.push({ type: 'thought', content: rawEvent.item.text, timestamp: context.timestamp });
+      return true;
+    }
+    if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
+      context.setTodos(mapTodoItems(rawEvent.item.items));
+      return true;
+    }
+  } catch (error) {
+    console.error('[live-details] Failed to parse execution detail metadata:', error);
+  }
+  return false;
+}
+function appendMetadataMessageEvent(rawEvent: RawExecutionEvent, context: ClaudeMessageContext): boolean {
+  if (rawEvent.type !== 'message' || !rawEvent.content) return false;
+  if (rawEvent.role === 'assistant') {
+    if (typeof rawEvent.content === 'string') {
+      context.events.push({ type: 'thought', content: rawEvent.content, timestamp: context.timestamp });
+      return true;
+    }
+    const assistantContent = extractMessageContentBlocks(rawEvent.content);
+    return assistantContent ? appendClaudeAssistantMessageEvents(assistantContent, context) : false;
+  }
+  if (rawEvent.role === 'user') {
+    const userContent = extractMessageContentBlocks(rawEvent.content);
+    return userContent ? appendClaudeUserMessageEvents(userContent, context) : false;
+  }
+  return false;
+}
+function extractMessageContentBlocks(content: unknown): ClaudeMessageContent[] | null {
+  if (Array.isArray(content)) return content as ClaudeMessageContent[];
+  if (content && typeof content === 'object' && Array.isArray((content as { content?: unknown }).content)) {
+    return (content as { content: ClaudeMessageContent[] }).content;
+  }
+  return null;
+}
+function appendStoredMessageEvent(row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
+  if ((row.event_type !== 'user' && row.event_type !== 'assistant') || !row.content) return false;
+  try {
+    const contentBlocks = (JSON.parse(row.content) as { content?: ClaudeMessageContent[] }).content;
+    if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) return false;
+    if (row.event_type === 'assistant') return appendClaudeAssistantMessageEvents(contentBlocks, context);
+    return appendClaudeUserMessageEvents(contentBlocks, context);
+  } catch {
+    return false;
+  }
+}
+function appendCommandExecutionEvents(rawEvent: RawExecutionEvent, timestamp: string, events: Array<Record<string, unknown>>): boolean {
+  if (rawEvent.item?.type !== 'command_execution') return false;
+  if (rawEvent.item.command) events.push({ type: 'tool_use', toolName: 'command_execution', input: { command: rawEvent.item.command }, timestamp });
+  if (rawEvent.item.aggregated_output) events.push({
+    type: 'tool_result', result: rawEvent.item.aggregated_output, isError: rawEvent.item.exit_code != null && rawEvent.item.exit_code !== 0, timestamp
+  });
+  return true;
+}
+function parseToolInput(toolInput: string | null): { file_path?: string; command?: string } | undefined {
+  if (!toolInput) return undefined;
+  try { return JSON.parse(toolInput) as { file_path?: string; command?: string }; } catch { return undefined; }
+}
+function appendToolUseEvent(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>): boolean {
+  if (row.event_type !== 'tool_use' || !row.tool_name) return false;
+  events.push({ type: 'tool_use', toolName: row.tool_name, input: parseToolInput(row.tool_input), timestamp });
+  return true;
+}
+function appendErrorEvent(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>): boolean {
+  if (row.event_type !== 'error') return false;
+  events.push({ type: 'tool_result', result: row.content || 'Execution error', isError: true, timestamp });
+  return true;
+}
+function appendFallbackContentEvent(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>): void {
+  if (!row.content) return;
+  events.push({ type: row.tool_name ? 'tool_result' : 'thought', content: row.tool_name ? undefined : row.content, result: row.tool_name ? row.content : undefined, isError: Boolean(row.is_error), timestamp });
 }

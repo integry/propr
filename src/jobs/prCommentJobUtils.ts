@@ -1,8 +1,53 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree, formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel, resolveModelAlias, getPendingPrCommentsKey } from '@propr/core';
-import type { WorktreeInfo, ClaudeCodeResponse, ClaudeResult, CommentJobData, UnprocessedComment, WorkerStateManager } from '@propr/core';
 import type { Redis } from 'ioredis';
+import {
+    generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
+    formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
+    resolveModelAlias, getPendingPrCommentsKey,
+    type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
+    type CommentJobData, type UnprocessedComment, type WorkerStateManager,
+} from '@propr/core';
+
+function parseGitHubHtmlError(html: string): string {
+    // Try to extract the title
+    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].replace(/&middot;/g, '-').replace(/&#\d+;/g, '').trim() : null;
+
+    // Common GitHub error patterns
+    if (html.includes('Unicorn')) {
+        return `GitHub API server error (5xx): ${title || 'Unicorn page'}`;
+    }
+    if (html.includes('rate limit') || html.includes('Rate limit')) {
+        return 'GitHub API rate limit exceeded (HTML response)';
+    }
+    if (html.includes('Not Found') || html.includes('404')) {
+        return `GitHub API resource not found: ${title || '404'}`;
+    }
+    if (html.includes('Bad credentials') || html.includes('401')) {
+        return 'GitHub API authentication failed (401)';
+    }
+    if (html.includes('Forbidden') || html.includes('403')) {
+        return `GitHub API forbidden: ${title || '403'}`;
+    }
+    if (title) {
+        return `GitHub API error: ${title}`;
+    }
+    return 'GitHub API returned an HTML error page instead of JSON';
+}
+
+function sanitizeErrorMessage(message: string | undefined): string {
+    if (!message) return 'Unknown error';
+    // Detect GitHub HTML error pages
+    if (message.includes('<!DOCTYPE html>') || message.includes('<html>')) {
+        return parseGitHubHtmlError(message);
+    }
+    // Truncate very long messages
+    if (message.length > 500) {
+        return message.slice(0, 500) + '... [truncated]';
+    }
+    return message;
+}
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -126,7 +171,6 @@ export function buildCommitMessage(options: CommitMessageOptions): string {
     const { changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText } = options;
 
     const commentReferences = unprocessedComments.map(c => `Comment by: @${c.author} (ID: ${c.id})`).join('\n');
-
     return `feat(ai): ${changesSummary ? changesSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
 
 ${changesSummary ? changesSummary : `Implemented changes requested by ${authorsText}`}
@@ -212,25 +256,29 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     const delay = (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
     const readableResetTime = formatResetTime(error.resetTimestamp);
 
+    // Use deterministic jobId to prevent duplicate jobs if requeue is triggered multiple times
+    const llmSlug = (job.data.llm || 'default').replace(/[^a-zA-Z0-9-]/g, '-');
+    const branchSlug = (job.data.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
+    const requeueJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${llmSlug}-${branchSlug}-ratelimit-retry`;
+
     if (octokit) {
         try {
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${job.id} will run again after delay.*`
+                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to PR.');
         }
     }
 
-    await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
+    await issueQueue.add(job.name, job.data, { jobId: requeueJobId, delay: Math.max(0, delay) });
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
     const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
     await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } });
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
-
     if (octokit && startingWorkComment) {
         await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
     }
@@ -239,9 +287,8 @@ async function handleUserCancellation(options: JobErrorOptions, errorMessage: st
 async function handleGenericError(error: Error, options: JobErrorOptions): Promise<void> {
     const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId } = options;
     handleError(error, 'Failed to process PR comment job', { correlationId });
-
-    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: error.message } });
-
+    const sanitizedMessage = sanitizeErrorMessage(error.message);
+    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } });
     if (claudeResult) {
         try {
             await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
@@ -249,12 +296,11 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
             correlatedLogger.error({ error: (metricsError as Error).message, correlationId }, 'Failed to record LLM metrics for failed PR comment job');
         }
     }
-
     if (octokit && startingWorkComment) {
         try {
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
-                body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${error.message}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.`,
+                body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.`,
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');
@@ -333,65 +379,7 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
 }
 
 export { buildMetricsSection } from './prCommentMetrics.js';
-
-export function parsePendingComment(commentJson: string, correlatedLogger: Logger): UnprocessedComment | null {
-    try { return JSON.parse(commentJson) as UnprocessedComment; }
-    catch (parseError) { correlatedLogger.warn({ error: (parseError as Error).message }, 'Failed to parse pending comment'); return null; }
-}
-
-export function processPendingComments(commentsToProcess: UnprocessedComment[], pendingComments: string[], correlatedLogger: Logger): void {
-    for (const commentJson of pendingComments) {
-        const pendingComment = parsePendingComment(commentJson, correlatedLogger);
-        if (pendingComment && !commentsToProcess.some(c => c.id === pendingComment.id)) commentsToProcess.push(pendingComment);
-    }
-}
-
-export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
-    const latestCommandComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.commandMode && comment.commandMode !== 'default');
-    const latestOverrideComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.llmOverride !== undefined);
-
-    if (!latestCommandComment && !latestOverrideComment) return;
-
-    if (latestCommandComment) {
-        jobData.commandMeta = latestCommandComment.commandMeta;
-        jobData.commandMode = latestCommandComment.commandMode;
-        jobData.requestedModels = latestCommandComment.requestedModels;
-        jobData.commandInstructions = latestCommandComment.commandInstructions;
-    }
-
-    if (latestOverrideComment?.llmOverride !== undefined) {
-        jobData.llm = latestOverrideComment.llmOverride;
-    }
-
-    correlatedLogger.info({
-        commandMode: jobData.commandMode,
-        requestedModels: jobData.requestedModels,
-        llmOverride: latestOverrideComment?.llmOverride,
-        commandCommentId: latestCommandComment?.id,
-        overrideCommentId: latestOverrideComment?.id,
-    }, 'Applied command context from pending batched comment');
-}
-
-export async function pickUpPendingComments(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<UnprocessedComment[]> {
-    const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = options;
-    const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
-    try {
-        const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
-        if (pendingComments.length > 0) {
-            await redisClient.del(pendingCommentsKey);
-            processPendingComments(commentsToProcess, pendingComments, correlatedLogger);
-            correlatedLogger.info({ pullRequestNumber, pendingCount: pendingComments.length, totalCount: commentsToProcess.length }, 'Picked up pending comments from Redis');
-        }
-    } catch (redisError) {
-        correlatedLogger.warn({ error: (redisError as Error).message }, 'Failed to fetch pending comments from Redis');
-    }
-    return commentsToProcess;
-}
-
 export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
-export { PRFile, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents, agentResultToClaudeResponse } from './prFileUtils.js';
+export type { PRFile } from './prFileUtils.js';
+export { fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents, agentResultToClaudeResponse } from './prFileUtils.js';
