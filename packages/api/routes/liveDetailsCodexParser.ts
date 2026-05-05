@@ -7,12 +7,7 @@ export interface TokenUsage {
   cache_creation_input_tokens: number;
   cache_read_input_tokens: number;
 }
-export interface ConversationResult {
-  events: Array<Record<string, unknown>>;
-  todos: TodoItem[];
-  currentTask: string | null;
-  tokenUsage: TokenUsage | null;
-}
+export interface ConversationResult { events: Array<Record<string, unknown>>; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsage | null; }
 
 export function isConversationResultEmpty(result: ConversationResult | null): boolean {
   if (!result) return true;
@@ -22,27 +17,10 @@ export function isConversationResultEmpty(result: ConversationResult | null): bo
     && result.tokenUsage === null;
 }
 
-export interface TodoItem {
-  status: string;
-  content: string;
-}
-interface CodexTodoItem {
-  text?: string;
-  completed?: boolean;
-  status?: string;
-}
-export interface PendingSubagent {
-  toolUseId: string;
-  subagentType: string;
-  description: string;
-  startTimestamp: string;
-}
-interface CodexEventContext {
-  events: Array<Record<string, unknown>>;
-  setTodos: (nextTodos: Array<{ status: string; content: string }>) => void;
-  pendingCommandStarts: Map<string, number>;
-  timestamp?: string;
-}
+export interface TodoItem { status: string; content: string; }
+interface CodexTodoItem { text?: string; completed?: boolean; status?: string; }
+export interface PendingSubagent { toolUseId: string; subagentType: string; description: string; startTimestamp: string; }
+interface CodexEventContext { events: Array<Record<string, unknown>>; setTodos: (nextTodos: Array<{ status: string; content: string }>) => void; pendingCommandStarts: Map<string, string[]>; timestamp?: string; }
 interface ParseLineResult { newTodos?: TodoItem[]; tokenUsage?: TokenUsage; }
 export interface ClaudeMessageContent {
   type: string; text?: string; name?: string;
@@ -54,13 +32,12 @@ interface Message {
   message?: { content?: ClaudeMessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
 }
+type MessageUsage = NonNullable<Message['usage']>;
 interface ContentBlock { type: string; text?: string; content?: unknown; }
-export interface ClaudeMessageContext {
-  timestamp: string;
-  events: Array<Record<string, unknown>>;
-  pendingSubagents: Map<string, PendingSubagent>;
-  setTodos: (todos: TodoItem[]) => void;
-}
+export interface ClaudeMessageContext { timestamp: string; events: Array<Record<string, unknown>>; pendingSubagents: Map<string, PendingSubagent>; setTodos: (todos: TodoItem[]) => void; }
+interface ClaudeParseContext { events: Array<Record<string, unknown>>; timestamp: string; pendingSubagents: Map<string, PendingSubagent>; }
+const MAX_MALFORMED_CLAUDE_LINE_WARNINGS = 5;
+interface ClaudeWarningState { malformedLineWarnings: number; }
 
 export function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
   if (item.status === 'completed' || item.completed) {
@@ -90,6 +67,42 @@ function pushCodexToolUseEvent(events: Array<Record<string, unknown>>, toolName:
 function pushCodexToolResultEvent(events: Array<Record<string, unknown>>, result: unknown, isError: boolean, timestamp?: string): void {
   events.push({ type: 'tool_result', result, isError, timestamp });
 }
+
+function buildCommandExecutionKey(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number]): string | null {
+  if (event.item?.type !== 'command_execution' || !event.item.command) {
+    return null;
+  }
+  return event.item.id ? `id:${event.item.id}` : `command:${event.item.command}`;
+}
+
+function enqueuePendingCommandStart(pendingCommandStarts: Map<string, string[]>, key: string, command: string): void {
+  const pending = pendingCommandStarts.get(key) ?? [];
+  pending.push(command);
+  pendingCommandStarts.set(key, pending);
+}
+
+function consumePendingCommandStart(
+  pendingCommandStarts: Map<string, string[]>,
+  key: string,
+  command: string
+): boolean {
+  const pending = pendingCommandStarts.get(key);
+  if (!pending || pending.length === 0) {
+    return false;
+  }
+  const index = pending.findIndex(value => value === command);
+  if (index === -1) {
+    return false;
+  }
+  pending.splice(index, 1);
+  if (pending.length === 0) {
+    pendingCommandStarts.delete(key);
+  } else {
+    pendingCommandStarts.set(key, pending);
+  }
+  return true;
+}
+
 function parseCompletedCodexItem(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], context: CodexEventContext): boolean {
   const { events, setTodos, pendingCommandStarts, timestamp } = context;
   if ((event.item?.type === 'reasoning' || event.item?.type === 'agent_message') && event.item.text) {
@@ -98,22 +111,21 @@ function parseCompletedCodexItem(event: ReturnType<typeof parseCodexStreamOutput
   }
 
   if (event.item?.type === 'command_execution') {
+    const commandKey = buildCommandExecutionKey(event);
     if (event.item.command) {
-      const startedCount = pendingCommandStarts.get(event.item.command) ?? 0;
-      if (startedCount > 0) {
-        pendingCommandStarts.set(event.item.command, startedCount - 1);
-      } else {
+      const matchedStartedCommand = commandKey
+        ? consumePendingCommandStart(pendingCommandStarts, commandKey, event.item.command)
+        : false;
+      if (!matchedStartedCommand) {
         pushCodexToolUseEvent(events, 'command_execution', { command: event.item.command }, timestamp);
       }
     }
-    if (event.item.aggregated_output) {
-      pushCodexToolResultEvent(
-        events,
-        event.item.aggregated_output,
-        event.item.exit_code != null && event.item.exit_code !== 0,
-        timestamp
-      );
-    }
+    pushCodexToolResultEvent(
+      events,
+      event.item.aggregated_output ?? '',
+      event.item.exit_code != null && event.item.exit_code !== 0,
+      timestamp
+    );
     return true;
   }
 
@@ -144,32 +156,30 @@ function buildCodexTokenUsage(parsed: ReturnType<typeof parseCodexStreamOutput>)
     cache_read_input_tokens: tokenUsage.cache_read_input_tokens ?? 0
   };
 }
-
 function appendAssistantMessageEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
   if (event.type !== 'message' || event.role !== 'assistant' || !event.content) return false;
   events.push({ type: 'thought', content: event.content, timestamp });
   return true;
 }
-
 function appendToolUseConversationEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
   if (event.type !== 'tool_use' || !event.tool) return false;
   pushCodexToolUseEvent(events, event.tool, event.params as { file_path?: string; command?: string } | undefined, timestamp);
   return true;
 }
-
 function appendErrorConversationEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
   if (event.type !== 'error') return false;
   pushCodexToolResultEvent(events, event.message || event.result || 'Execution error', true, timestamp);
   return true;
 }
-
-function appendStartedCommandEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, pendingCommandStarts: Map<string, number>, timestamp?: string): boolean {
+function appendStartedCommandEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, pendingCommandStarts: Map<string, string[]>, timestamp?: string): boolean {
   if (event.type !== 'item.started' || event.item?.type !== 'command_execution' || !event.item.command) return false;
   pushCodexToolUseEvent(events, 'command_execution', { command: event.item.command }, timestamp);
-  pendingCommandStarts.set(event.item.command, (pendingCommandStarts.get(event.item.command) ?? 0) + 1);
+  const commandKey = buildCommandExecutionKey(event);
+  if (commandKey) {
+    enqueuePendingCommandStart(pendingCommandStarts, commandKey, event.item.command);
+  }
   return true;
 }
-
 function updateTodosFromEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], context: CodexEventContext): boolean {
   const { setTodos } = context;
   if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item.items) {
@@ -258,51 +268,56 @@ export function appendClaudeUserMessageEvents(contentArray: ClaudeMessageContent
   return handled;
 }
 
-function parseAssistantContent(contentArray: ClaudeMessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
+function buildTokenUsage(usage: MessageUsage | undefined): TokenUsage | undefined {
+  if (!usage) return undefined;
+  return {
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+    cache_read_input_tokens: usage.cache_read_input_tokens ?? 0
+  };
+}
+
+function parseAssistantContent(contentArray: ClaudeMessageContent[], context: ClaudeParseContext, usage?: MessageUsage): ParseLineResult {
   let newTodos: TodoItem[] | undefined;
   appendClaudeAssistantMessageEvents(contentArray, {
-    timestamp,
-    events,
-    pendingSubagents,
+    ...context,
     setTodos: todos => {
       newTodos = todos;
     }
   });
-  return { newTodos };
+  return { newTodos, tokenUsage: buildTokenUsage(usage) };
 }
 
-function parseUserContent(contentArray: ClaudeMessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): void {
-  appendClaudeUserMessageEvents(contentArray, {
-    timestamp,
-    events,
-    pendingSubagents,
-    setTodos: () => {}
-  });
+function parseUserContent(contentArray: ClaudeMessageContent[], context: ClaudeParseContext): void {
+  appendClaudeUserMessageEvents(contentArray, { ...context, setTodos: () => {} });
 }
 
-function parseLine(line: string, events: Array<Record<string, unknown>>, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
+function parseLine(
+  line: string,
+  events: Array<Record<string, unknown>>,
+  pendingSubagents: Map<string, PendingSubagent>,
+  warningState: ClaudeWarningState
+): ParseLineResult {
   try {
     const message = JSON.parse(line) as Message;
     const timestamp = message.timestamp || new Date().toISOString();
+    const context = { events, timestamp, pendingSubagents };
+    const usage = message.usage || message.message?.usage;
     if (message.type === 'assistant' && message.message?.content) {
-      return parseAssistantContent(message.message.content, events, timestamp, pendingSubagents);
+      return parseAssistantContent(message.message.content, context, usage);
     }
     if (message.type === 'user' && message.message?.content) {
-      parseUserContent(message.message.content, events, timestamp, pendingSubagents);
+      parseUserContent(message.message.content, context);
     }
-    const usage = message.usage || message.message?.usage;
     if (usage) {
-      return {
-        tokenUsage: {
-          input_tokens: usage.input_tokens ?? 0,
-          output_tokens: usage.output_tokens ?? 0,
-          cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
-          cache_read_input_tokens: usage.cache_read_input_tokens ?? 0
-        }
-      };
+      return { tokenUsage: buildTokenUsage(usage) };
     }
   } catch (parseError) {
-    console.error('[live-details] Error parsing line:', parseError);
+    if (warningState.malformedLineWarnings < MAX_MALFORMED_CLAUDE_LINE_WARNINGS) {
+      warningState.malformedLineWarnings += 1;
+      console.warn('[live-details] Skipping malformed Claude transcript line', parseError);
+    }
   }
   return {};
 }
@@ -323,12 +338,11 @@ export function parseClaudeOutputToConversationResult(conversationContent: strin
     cache_read_input_tokens: 0
   };
   const pendingSubagents: Map<string, PendingSubagent> = new Map();
+  const warningState: ClaudeWarningState = { malformedLineWarnings: 0 };
 
   for (const line of lines) {
-    const parsed = parseLine(line, events, pendingSubagents);
-    if (parsed.newTodos) {
-      todos = parsed.newTodos;
-    }
+    const parsed = parseLine(line, events, pendingSubagents, warningState);
+    if (parsed.newTodos) todos = parsed.newTodos;
     if (parsed.tokenUsage) {
       tokenUsage.input_tokens += parsed.tokenUsage.input_tokens;
       tokenUsage.output_tokens += parsed.tokenUsage.output_tokens;
@@ -347,12 +361,15 @@ export function parseClaudeOutputToConversationResult(conversationContent: strin
 export function parseCodexOutputToConversationResult(output: string): ConversationResult | null {
   const parsed = parseCodexStreamOutput(output);
   if (!parsed.conversationLog || parsed.conversationLog.length === 0) {
-    return null;
+    const tokenUsage = buildCodexTokenUsage(parsed);
+    return tokenUsage
+      ? { events: [], todos: [], currentTask: null, tokenUsage }
+      : null;
   }
 
   const events: Array<Record<string, unknown>> = [];
   let todos: TodoItem[] = [];
-  const pendingCommandStarts = new Map<string, number>();
+  const pendingCommandStarts = new Map<string, string[]>();
 
   for (const event of parsed.conversationLog) {
     const timestamp = (event as { timestamp?: string }).timestamp;
