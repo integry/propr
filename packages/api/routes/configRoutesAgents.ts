@@ -22,8 +22,6 @@ interface AgentsRoutesDeps {
 interface AgentConfigStore {
   loadAgents: typeof configManager.loadAgents;
   loadSettings: typeof configManager.loadSettings;
-  saveAgents: typeof configManager.saveAgents;
-  saveSettings: typeof configManager.saveSettings;
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
 }
 
@@ -41,6 +39,10 @@ interface ApplyAgentsUpdateParams {
   configStore?: AgentConfigStore;
   registry?: AgentRegistrySync;
   lock?: ConfigLockContext;
+}
+
+interface PersistAgentConfigurationResult {
+  settingsWereUpdated: boolean;
 }
 
 interface RollbackAgentConfigStateParams {
@@ -63,12 +65,15 @@ async function rollbackAgentConfigState({
   errorContext
 }: RollbackAgentConfigStateParams): Promise<boolean> {
   try {
-    await persistAgentConfigurationAtomically({
+    const { settingsWereUpdated } = await persistAgentConfigurationAtomically({
       configStore,
       agents: previousAgents,
       settingsPatch: defaultChanged ? { default_agent_alias: currentDefault } : null,
       lock
     });
+    if (settingsWereUpdated) {
+      configStore.handleSettingsSaveSideEffects();
+    }
     await lock?.assertLockHeld();
     await registry.refresh();
     await lock?.assertLockHeld();
@@ -144,8 +149,9 @@ async function persistAgentConfigurationAtomically({
   agents: AgentConfig[];
   settingsPatch: Record<string, unknown> | null;
   lock?: ConfigLockContext;
-}): Promise<void> {
+}): Promise<PersistAgentConfigurationResult> {
   let trx: Knex.Transaction | null = null;
+  let committed = false;
   try {
     await lock?.assertLockHeld();
     const mergedSettings = buildMergedSettings(
@@ -162,12 +168,11 @@ async function persistAgentConfigurationAtomically({
     }
     await lock?.assertLockHeld();
     await transaction.commit();
+    committed = true;
     lock?.markCommitted();
-    if (settingsWereUpdated) {
-      configStore.handleSettingsSaveSideEffects();
-    }
+    return { settingsWereUpdated };
   } catch (error) {
-    if (trx) {
+    if (trx && !committed) {
       try {
         await trx.rollback();
       } catch {
@@ -208,12 +213,42 @@ export async function applyAgentsUpdate({
   const defaultChanged = newDefault !== currentDefault;
 
   try {
-    await persistAgentConfigurationAtomically({
+    const { settingsWereUpdated } = await persistAgentConfigurationAtomically({
       configStore,
       agents: processedAgents,
       settingsPatch: defaultChanged ? { default_agent_alias: newDefault } : null,
       lock
     });
+    try {
+      if (settingsWereUpdated) {
+        configStore.handleSettingsSaveSideEffects();
+      }
+      await lock?.assertLockHeld();
+      await registry.refresh();
+      await lock?.assertLockHeld();
+      registry.setDefaultAgentAlias(newDefault ?? null);
+    } catch (refreshError) {
+      const rollbackSucceeded = await rollbackAgentConfigState({
+        configStore,
+        registry,
+        previousAgents,
+        currentDefault,
+        defaultChanged,
+        lock,
+        errorContext: 'Failed to roll back agent configuration after live apply failure:'
+      });
+      console.error('Failed to apply agent configuration after commit:', refreshError);
+      if (!rollbackSucceeded) {
+        return {
+          status: 500,
+          body: {
+            error: 'Failed to apply committed agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
+            out_of_sync: true
+          }
+        };
+      }
+      return { status: 500, body: { error: 'Failed to apply agent configuration to the live registry' } };
+    }
   } catch (syncError) {
     if (lock?.hasLockBeenLost()) {
       throw syncError;
@@ -225,34 +260,6 @@ export async function applyAgentsUpdate({
         error: 'Failed to persist agent configuration. No changes were committed. Please retry or check system logs.'
       }
     };
-  }
-
-  try {
-    await lock?.assertLockHeld();
-    await registry.refresh();
-    await lock?.assertLockHeld();
-    registry.setDefaultAgentAlias(newDefault ?? null);
-  } catch (refreshError) {
-    const rollbackSucceeded = await rollbackAgentConfigState({
-      configStore,
-      registry,
-      previousAgents,
-      currentDefault,
-      defaultChanged,
-      lock,
-      errorContext: 'Failed to roll back agent configuration after registry refresh failure:'
-    });
-    console.error('Failed to refresh agent registry after agents update:', refreshError);
-    if (!rollbackSucceeded) {
-      return {
-        status: 500,
-        body: {
-          error: 'Failed to apply agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
-          out_of_sync: true
-        }
-      };
-    }
-    return { status: 500, body: { error: 'Failed to apply agent configuration to the live registry' } };
   }
 
   await publishConfigUpdate('agents_update');

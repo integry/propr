@@ -4,22 +4,8 @@ import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSe
 import type { Knex } from 'knex';
 
 interface SettingsStore {
-  saveSettings: typeof configManager.saveSettings;
-  saveConfig: typeof configManager.saveConfig;
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
   loadSettings: typeof configManager.loadSettings;
-  loadAutoFollowupScoreThreshold: typeof configManager.loadAutoFollowupScoreThreshold;
-  saveAutoFollowupScoreThreshold: typeof configManager.saveAutoFollowupScoreThreshold;
-  loadAutoResolveMergeConflicts: typeof configManager.loadAutoResolveMergeConflicts;
-  saveAutoResolveMergeConflicts: typeof configManager.saveAutoResolveMergeConflicts;
-  loadPrReviewModel: typeof configManager.loadPrReviewModel;
-  savePrReviewModel: typeof configManager.savePrReviewModel;
-  loadUltrafixRatingGoal: typeof configManager.loadUltrafixRatingGoal;
-  saveUltrafixRatingGoal: typeof configManager.saveUltrafixRatingGoal;
-  loadUltrafixMaxCycles: typeof configManager.loadUltrafixMaxCycles;
-  saveUltrafixMaxCycles: typeof configManager.saveUltrafixMaxCycles;
-  loadUltrafixPauseSeconds: typeof configManager.loadUltrafixPauseSeconds;
-  saveUltrafixPauseSeconds: typeof configManager.saveUltrafixPauseSeconds;
 }
 
 interface SaveSettingsRequest {
@@ -63,17 +49,15 @@ async function persistSettingsAtomically({
   lock
 }: PersistSettingsRequest): Promise<void> {
   let trx: Knex.Transaction | null = null;
+  let committed = false;
   try {
     await lock?.assertLockHeld();
-    const shouldPersistGeneralSettings = true;
-    const mergedSettings = shouldPersistGeneralSettings
-      ? Object.keys(otherSettings).length === 0 && specializedNames.length === 0
-        ? {}
-        : buildMergedSettings(
-          stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
-          otherSettings
-        ) ?? {}
-      : null;
+    const mergedSettings = Object.keys(otherSettings).length === 0 && specializedNames.length === 0
+      ? {}
+      : buildMergedSettings(
+        stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
+        otherSettings
+      ) ?? {};
     trx = await db.transaction();
     const transaction = trx;
 
@@ -102,10 +86,10 @@ async function persistSettingsAtomically({
 
     await lock?.assertLockHeld();
     await transaction.commit();
+    committed = true;
     lock?.markCommitted();
-    configStore.handleSettingsSaveSideEffects();
   } catch (error) {
-    if (trx) {
+    if (trx && !committed) {
       try {
         await trx.rollback();
       } catch {
@@ -113,6 +97,16 @@ async function persistSettingsAtomically({
       }
     }
     throw error;
+  }
+
+  try {
+    configStore.handleSettingsSaveSideEffects();
+  } catch (error) {
+    console.error('Settings save side effects failed after commit:', error);
+    throw new ConfigRouteError(500, {
+      error: 'Settings were saved, but post-commit side effects failed. Persisted settings may require a follow-up check.',
+      committed: true
+    });
   }
 }
 

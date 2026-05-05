@@ -321,6 +321,7 @@ describe('config route follow-up helpers', () => {
         const configStore = {
             loadAgents: async () => currentAgents as never[],
             loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
             saveAgents: mock.fn(async (agents: never[]) => {
                 currentAgents = agents as Array<Record<string, unknown>>;
                 if ((agents as Array<Record<string, unknown>>)[0]?.alias === 'old-default') {
@@ -354,7 +355,7 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(result.status, 500);
         assert.deepStrictEqual(result.body, {
-            error: 'Failed to apply agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
+            error: 'Failed to apply committed agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
             out_of_sync: true,
         });
     });
@@ -368,6 +369,7 @@ describe('config route follow-up helpers', () => {
         const configStore = {
             loadAgents: async () => currentAgents as never[],
             loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
             saveAgents: async (agents: never[]) => {
                 currentAgents = agents as Array<Record<string, unknown>>;
                 return true;
@@ -429,6 +431,7 @@ describe('config route follow-up helpers', () => {
         const configStore = {
             loadAgents: async () => currentAgents as never[],
             loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
             saveAgents: async (agents: never[]) => {
                 currentAgents = agents as Array<Record<string, unknown>>;
                 return true;
@@ -646,6 +649,99 @@ describe('config route follow-up helpers', () => {
         });
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
         assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
+    });
+
+    test('postAgents rejects malformed cliVersion fields before version resolution or lock acquisition', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+        };
+        const resolveVersionMock = mock.method(configManager, 'resolveVersion', async () => '1.2.3');
+        const routes = createAgentsRoutes({
+            redisClient: redisClient as never,
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postAgents({
+            body: {
+                agents: [
+                    {
+                        id: 'new-agent',
+                        alias: 'new-default',
+                        type: 'claude',
+                        enabled: true,
+                        dockerImage: 'new:image',
+                        configPath: '/tmp/claude',
+                        supportedModels: [],
+                        cliVersionType: 'broken',
+                        cliVersion: 'latest',
+                    },
+                ],
+            },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 400);
+        assert.deepStrictEqual(res.body, {
+            error: "Agent 'new-agent' has invalid cliVersionType 'broken'. Must be one of: default, tag, specific, custom",
+        });
+        assert.strictEqual(redisClient.set.mock.calls.length, 0);
+        assert.strictEqual(resolveVersionMock.mock.calls.length, 0);
+    });
+
+    test('getSettings preserves legacy string-backed integer settings', async () => {
+        const routes = createConfigRoutes({ redisClient: {} as never });
+        const autoFollowupMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => '7' as never);
+        const autoResolveMock = mock.method(configManager, 'loadAutoResolveMergeConflicts', async () => false);
+        const prReviewModelMock = mock.method(configManager, 'loadPrReviewModel', async () => '');
+        const ultrafixGoalMock = mock.method(configManager, 'loadUltrafixRatingGoal', async () => '8' as never);
+        const ultrafixCyclesMock = mock.method(configManager, 'loadUltrafixMaxCycles', async () => '9' as never);
+        const ultrafixPauseMock = mock.method(configManager, 'loadUltrafixPauseSeconds', async () => '12' as never);
+        const settingsMock = mock.method(configManager, 'loadSettings', async () => ({}));
+        const res = {
+            body: undefined as Record<string, unknown> | undefined,
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+            status(_code: number) {
+                return this;
+            },
+        };
+
+        await routes.getSettings({} as never, res as never);
+
+        assert.deepStrictEqual(res.body, {
+            worker_concurrency: 5,
+            github_user_whitelist: [],
+            analysis_model_fast: 'claude-3-5-haiku-20241022',
+            planner_context_model: '',
+            planner_generation_model: '',
+            auto_followup_score_threshold: 7,
+            auto_resolve_merge_conflicts: false,
+            pr_review_model: '',
+            ultrafix_rating_goal: 8,
+            ultrafix_max_cycles: 9,
+            ultrafix_pause_seconds: 12,
+        });
+        assert.strictEqual(settingsMock.mock.calls.length, 1);
+        assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
+        assert.strictEqual(autoResolveMock.mock.calls.length, 1);
+        assert.strictEqual(prReviewModelMock.mock.calls.length, 1);
+        assert.strictEqual(ultrafixGoalMock.mock.calls.length, 1);
+        assert.strictEqual(ultrafixCyclesMock.mock.calls.length, 1);
+        assert.strictEqual(ultrafixPauseMock.mock.calls.length, 1);
     });
 
     test('normalizeAgentsConfig trims supportedModels entries', () => {
@@ -988,6 +1084,7 @@ describe('config route follow-up helpers', () => {
         const configStore = {
             loadAgents: async () => currentAgents as never[],
             loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
             saveAgents: async (agents: never[]) => {
                 currentAgents = agents as Array<Record<string, unknown>>;
                 return true;

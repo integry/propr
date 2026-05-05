@@ -158,6 +158,64 @@ test('saveSettingsWithRollback scrubs specialized keys from the general settings
   }
 });
 
+test('saveSettingsWithRollback reports committed state when post-commit side effects fail', async () => {
+  const originalTransaction = db.transaction.bind(db);
+  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  let committed = false;
+  let rolledBack = false;
+
+  const trx = Object.assign(
+    ((table: string) => ({
+      insert: (_row: { key: string; value: string }) => ({
+        onConflict: (_column: string) => ({
+          merge: async () => {
+            assert.equal(table, 'system_configs');
+          }
+        })
+      })
+    })) as unknown as typeof db,
+    {
+      commit: async () => {
+        committed = true;
+      },
+      rollback: async () => {
+        rolledBack = true;
+      }
+    }
+  );
+
+  testDb.transaction = async () => trx as never;
+
+  try {
+    let published = 0;
+    const result = await saveSettingsWithRollback({
+      settings: {
+        worker_concurrency: 9
+      },
+      publishConfigUpdate: async () => {
+        published += 1;
+      },
+      configStore: {
+        loadSettings: async () => ({ existing: true }),
+        handleSettingsSaveSideEffects: () => {
+          throw new Error('cache invalidation failed');
+        }
+      }
+    });
+
+    assert.equal(result.status, 500);
+    assert.deepEqual(result.body, {
+      error: 'Settings were saved, but post-commit side effects failed. Persisted settings may require a follow-up check.',
+      committed: true
+    });
+    assert.equal(committed, true);
+    assert.equal(rolledBack, false);
+    assert.equal(published, 0);
+  } finally {
+    testDb.transaction = originalTransaction;
+  }
+});
+
 test('saveSettingsWithRollback clears general settings when given an empty settings object', async () => {
   const originalTransaction = db.transaction.bind(db);
   const testDb = db as typeof db & { transaction: typeof db.transaction };

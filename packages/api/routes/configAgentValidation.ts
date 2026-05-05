@@ -1,7 +1,8 @@
-import type { AgentConfig } from '@propr/core';
+import type { AgentConfig, CliVersionType } from '@propr/core';
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_AGENT_TYPES = ['claude', 'codex', 'gemini'];
+const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
 
 export function normalizeAgentAlias(alias: string): string {
   return alias.trim();
@@ -15,6 +16,7 @@ export function normalizeAgentsConfig(agents: AgentConfig[]): AgentConfig[] {
   return agents.map(agent => ({
     ...agent,
     alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias,
+    cliVersion: typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion,
     supportedModels: Array.isArray(agent.supportedModels)
       ? agent.supportedModels.map(model => typeof model === 'string' ? normalizeSupportedModel(model) : model)
       : agent.supportedModels
@@ -45,6 +47,21 @@ function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): stri
   if (!Array.isArray(agent.supportedModels)) return `Agent '${agent.id}' missing required 'supportedModels' field`;
   if (!agent.supportedModels.every(model => typeof model === 'string' && model.trim().length > 0)) {
     return `Agent '${agent.id}' has invalid 'supportedModels'. Each supported model must be a non-empty string`;
+  }
+  if (agent.cliVersionType !== undefined && !VALID_CLI_VERSION_TYPES.includes(agent.cliVersionType)) {
+    return `Agent '${agent.id}' has invalid cliVersionType '${String(agent.cliVersionType)}'. Must be one of: ${VALID_CLI_VERSION_TYPES.join(', ')}`;
+  }
+  if (agent.cliVersion !== undefined && typeof agent.cliVersion !== 'string') {
+    return `Agent '${agent.id}' has invalid cliVersion. Must be a string`;
+  }
+  if (agent.cliVersionType === undefined && agent.cliVersion) {
+    return `Agent '${agent.id}' cannot set cliVersion without cliVersionType`;
+  }
+  if (agent.cliVersionType === 'default' && agent.cliVersion) {
+    return `Agent '${agent.id}' must not set cliVersion when cliVersionType is 'default'`;
+  }
+  if (agent.cliVersionType && agent.cliVersionType !== 'default' && !agent.cliVersion) {
+    return `Agent '${agent.id}' missing required cliVersion for cliVersionType '${agent.cliVersionType}'`;
   }
   if (seenAliases.has(normalizedAlias)) return `Duplicate agent alias '${normalizedAlias}' found`;
   return null;

@@ -29,11 +29,14 @@ const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
 
 function asIntegerOrDefault(value: unknown, defaultValue: number, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number {
-  return typeof value === 'number'
-    && Number.isSafeInteger(value)
-    && value >= minimum
-    && value <= maximum
-    ? value
+  const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim())
+    ? Number(value.trim())
+    : value;
+  return typeof candidate === 'number'
+    && Number.isSafeInteger(candidate)
+    && candidate >= minimum
+    && candidate <= maximum
+    ? candidate
     : defaultValue;
 }
 
