@@ -38,13 +38,21 @@ interface ApplyAgentsUpdateParams {
   registry?: AgentRegistrySync;
 }
 
-async function rollbackAgentConfigState(
-  configStore: AgentConfigStore,
-  registry: AgentRegistrySync,
-  previousAgents: AgentConfig[],
-  currentDefault: string | undefined,
-  defaultChanged: boolean
-): Promise<boolean> {
+interface RollbackAgentConfigStateParams {
+  configStore: AgentConfigStore;
+  registry: AgentRegistrySync;
+  previousAgents: AgentConfig[];
+  currentDefault: string | undefined;
+  defaultChanged: boolean;
+}
+
+async function rollbackAgentConfigState({
+  configStore,
+  registry,
+  previousAgents,
+  currentDefault,
+  defaultChanged
+}: RollbackAgentConfigStateParams): Promise<boolean> {
   try {
     await configStore.saveAgents(previousAgents);
     if (defaultChanged) {
@@ -126,13 +134,13 @@ export async function applyAgentsUpdate({
     await registry.refresh();
     registry.setDefaultAgentAlias(newDefault ?? null);
   } catch (refreshError) {
-    const rollbackSucceeded = await rollbackAgentConfigState(
+    const rollbackSucceeded = await rollbackAgentConfigState({
       configStore,
       registry,
       previousAgents,
       currentDefault,
-      newDefault !== currentDefault
-    );
+      defaultChanged: newDefault !== currentDefault
+    });
     console.error('Failed to refresh agent registry after agents update:', refreshError);
     if (!rollbackSucceeded) {
       return {
