@@ -126,11 +126,12 @@ export async function withConfigLock(
   } finally {
     renewalStopped = true;
     if (renewalTimer) clearTimeout(renewalTimer);
-    if (!lockAcquired) return;
-    try {
-      await releaseLock(redisClient, lockKey, lockValue);
-    } catch (unlockError) {
-      console.error(`Error releasing config lock ${lockKey}:`, unlockError);
+    if (lockAcquired) {
+      try {
+        await releaseLock(redisClient, lockKey, lockValue);
+      } catch (unlockError) {
+        console.error(`Error releasing config lock ${lockKey}:`, unlockError);
+      }
     }
   }
 }
