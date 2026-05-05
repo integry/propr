@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Download, Loader2 } from 'lucide-react';
-import { PlannerDraft, createDraft, GenerationTrace } from '../../api/proprApi';
+import { PlannerDraft, createDraft, GenerationTrace, getDraft } from '../../api/proprApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
@@ -329,8 +329,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   // Preview trace polling state for context preview progress
   const [previewTrace, setPreviewTrace] = useState<GenerationTrace | undefined>(undefined);
 
-  // Reuse the latest in-memory draft trace while preview is loading instead of
-  // polling the draft endpoint; the loading UI can fall back to a static trace.
+  // Reuse the latest in-memory draft trace while preview is loading. Keep a
+  // preview-scoped poll active as a fallback because draft-mode sockets do not
+  // reliably stream preview progress updates.
   useEffect(() => {
     if (!draftId || !contextRefresh.preview.isLoading) {
       if (!contextRefresh.preview.isLoading) setPreviewTrace(undefined);
@@ -350,6 +351,39 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       ]
     });
   }, [draftId, draft?.generation_trace, contextRefresh.preview.isLoading]);
+
+  useEffect(() => {
+    if (!draftId || !contextRefresh.preview.isLoading) return;
+
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const pollPreviewTrace = async () => {
+      try {
+        const latestDraft = await getDraft(draftId);
+        if (cancelled) return;
+
+        if (latestDraft.generation_trace?.steps?.length) {
+          setPreviewTrace(latestDraft.generation_trace);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('[SetupWizard] Preview trace poll failed:', error);
+        }
+      } finally {
+        if (!cancelled) {
+          timeoutId = setTimeout(pollPreviewTrace, 1500);
+        }
+      }
+    };
+
+    timeoutId = setTimeout(pollPreviewTrace, 1000);
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [draftId, contextRefresh.preview.isLoading]);
 
   const generationHandlers = useGenerationHandlers({
     draft, config, branchError,

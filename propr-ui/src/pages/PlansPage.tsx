@@ -153,17 +153,13 @@ const PlansPage: React.FC = () => {
     }
 
     const isOnCurrentPage = drafts.some(d => d.draft_id === payload.draftId);
-    const couldAffectCurrentView = !isOnCurrentPage && !!payload.draftStatus;
+    const matchesStatusFilter = statusFilter === 'all' || payload.draftStatus === statusFilter;
+    const couldAffectCurrentView = !isOnCurrentPage && !!payload.draftStatus && matchesStatusFilter;
 
     if (isOnCurrentPage || couldAffectCurrentView) {
-      await Promise.all([
-        loadDrafts(currentPage, repoFilter, statusFilter, false),
-        loadAllRepositories(),
-      ]);
-    } else {
-      await loadAllRepositories();
+      await loadDrafts(currentPage, repoFilter, statusFilter, false);
     }
-  }, [currentPage, repoFilter, statusFilter, drafts, loadDrafts, loadAllRepositories]);
+  }, [currentPage, repoFilter, statusFilter, drafts, loadDrafts]);
 
   // Subscribe to WebSocket events for draft updates
   useEffect(() => {

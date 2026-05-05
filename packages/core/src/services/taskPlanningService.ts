@@ -8,7 +8,7 @@ import { loadFileSummaries } from './relevance/contextBuilder.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
 import {
-  updateTrace, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
+  updateTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
 } from './planningHelpers.js';
 import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
@@ -150,7 +150,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     step: 'complete',
     status: 'completed',
     draftStatus: 'review',
-    generationTrace: finalTrace
+    generationTrace: buildDraftUpdateTraceSnapshot(finalTrace)
   });
   if (!published) {
     correlatedLogger.warn('Failed to publish completion event — client will resync via safety-net poll');

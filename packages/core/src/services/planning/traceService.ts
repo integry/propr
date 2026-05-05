@@ -24,7 +24,7 @@ export function parseGenerationTrace(raw: unknown): ParsedGenerationTrace {
   };
 }
 
-function buildDraftUpdateTraceSnapshot(trace: ParsedGenerationTrace): DraftUpdateGenerationTrace {
+export function buildDraftUpdateTraceSnapshot(trace: ParsedGenerationTrace): DraftUpdateGenerationTrace {
   return {
     steps: trace.steps.map((step) => {
       if (!step.data || !Array.isArray(step.data.includedFiles)) {

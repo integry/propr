@@ -60,7 +60,66 @@ describe('useGenerationPolling', () => {
     vi.useRealTimers();
   });
 
-  it('keeps connected-state resync polling infrequent', () => {
+  it('does not poll while connected socket updates keep arriving', async () => {
+    const onComplete = vi.fn();
+    const { result } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
+
+    act(() => {
+      result.current.startPolling();
+    });
+
+    await act(async () => {
+      await Promise.all(
+        [...draftUpdateListeners].map(listener => listener({
+          eventType: 'draft:update',
+          draftId: 'draft-1',
+          step: 'context',
+          status: 'in_progress',
+          timestamp: '2026-05-05T00:00:03Z',
+          draftStatus: 'generating',
+          generationTrace: {
+            steps: [
+              { name: 'relevance', status: 'completed' },
+              { name: 'context', status: 'in_progress' },
+              { name: 'llm', status: 'pending' },
+            ],
+          },
+        }))
+      );
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(9_000);
+    });
+
+    await act(async () => {
+      await Promise.all(
+        [...draftUpdateListeners].map(listener => listener({
+          eventType: 'draft:update',
+          draftId: 'draft-1',
+          step: 'context',
+          status: 'completed',
+          timestamp: '2026-05-05T00:00:12Z',
+          draftStatus: 'generating',
+          generationTrace: {
+            steps: [
+              { name: 'relevance', status: 'completed' },
+              { name: 'context', status: 'completed' },
+              { name: 'llm', status: 'in_progress' },
+            ],
+          },
+        }))
+      );
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(9_000);
+    });
+
+    expect(mockGetDraft).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a connected resync only after socket inactivity', () => {
     const onComplete = vi.fn();
     const { result } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
 

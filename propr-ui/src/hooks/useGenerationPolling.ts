@@ -5,7 +5,7 @@ import { DraftUpdatePayload } from '@propr/shared';
 
 const DISCONNECTED_INITIAL_POLL_MS = 1000;
 const DISCONNECTED_POLL_INTERVAL_MS = 3000;
-const CONNECTED_RESYNC_POLL_INTERVAL_MS = 10000;
+const CONNECTED_RESYNC_TIMEOUT_MS = 10000;
 
 interface UseGenerationPollingOptions {
   draftId: string;
@@ -29,12 +29,33 @@ export function useGenerationPolling({
   const [generationTrace, setGenerationTrace] = useState<GenerationTrace | undefined>(undefined);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const isGeneratingRef = useRef<boolean>(false);
+  const connectedResyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
   const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
 
+  const clearConnectedResyncTimeout = useCallback(() => {
+    if (connectedResyncTimeoutRef.current) {
+      clearTimeout(connectedResyncTimeoutRef.current);
+      connectedResyncTimeoutRef.current = null;
+    }
+  }, []);
+
+  const scheduleConnectedResync = useCallback(() => {
+    if (!draftId || !isGeneratingRef.current || !isConnected) return;
+
+    clearConnectedResyncTimeout();
+    connectedResyncTimeoutRef.current = setTimeout(() => {
+      pollDraftRef.current();
+    }, CONNECTED_RESYNC_TIMEOUT_MS);
+  }, [clearConnectedResyncTimeout, draftId, isConnected]);
+
+  const pollDraftRef = useRef<() => Promise<void>>(async () => {});
+
   const handleDraftUpdate = useCallback((payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId || !isGeneratingRef.current) return;
+
+    scheduleConnectedResync();
 
     // Use the trace snapshot from the payload when available
     if (payload.generationTrace) {
@@ -43,6 +64,7 @@ export function useGenerationPolling({
         setGenerationError(payload.generationTrace.error);
         setIsGenerating(false);
         isGeneratingRef.current = false;
+        clearConnectedResyncTimeout();
         return;
       }
     }
@@ -51,6 +73,7 @@ export function useGenerationPolling({
     if (payload.draftStatus === 'review') {
       setIsGenerating(false);
       isGeneratingRef.current = false;
+      clearConnectedResyncTimeout();
       onCompleteRef.current();
       return;
     }
@@ -59,9 +82,10 @@ export function useGenerationPolling({
       setGenerationError(payload.generationTrace?.error || 'Plan generation failed');
       setIsGenerating(false);
       isGeneratingRef.current = false;
+      clearConnectedResyncTimeout();
       return;
     }
-  }, [draftId]);
+  }, [clearConnectedResyncTimeout, draftId, scheduleConnectedResync]);
 
   // Subscribe to WebSocket events when generating
   useEffect(() => {
@@ -90,6 +114,7 @@ export function useGenerationPolling({
           setGenerationError(trace.error);
           setIsGenerating(false);
           isGeneratingRef.current = false;
+          clearConnectedResyncTimeout();
           return;
         }
       }
@@ -97,7 +122,9 @@ export function useGenerationPolling({
       if (updatedDraft.status === 'review') {
         setIsGenerating(false);
         isGeneratingRef.current = false;
+        clearConnectedResyncTimeout();
         onCompleteRef.current();
+        return;
       }
 
       if (updatedDraft.status === 'failed') {
@@ -105,11 +132,21 @@ export function useGenerationPolling({
         setGenerationError(trace?.error || 'Plan generation failed');
         setIsGenerating(false);
         isGeneratingRef.current = false;
+        clearConnectedResyncTimeout();
+        return;
       }
     } catch (e) {
       console.error('[useGenerationPolling] Poll error:', e);
+    } finally {
+      if (isGeneratingRef.current && isConnected) {
+        scheduleConnectedResync();
+      }
     }
-  }, [draftId]);
+  }, [clearConnectedResyncTimeout, draftId, isConnected, scheduleConnectedResync]);
+
+  useEffect(() => {
+    pollDraftRef.current = pollDraft;
+  }, [pollDraft]);
 
   // HTTP fallback polling — active when WebSocket is NOT connected
   useEffect(() => {
@@ -124,16 +161,19 @@ export function useGenerationPolling({
     };
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
-  // Low-frequency connected-state resync to recover from missed socket events.
+  // Connected-state fallback: only resync if socket updates go quiet for too long.
   useEffect(() => {
-    if (!draftId || !isGenerating || !isConnected) return;
+    if (!draftId || !isGenerating || !isConnected) {
+      clearConnectedResyncTimeout();
+      return;
+    }
 
-    const intervalId = setInterval(pollDraft, CONNECTED_RESYNC_POLL_INTERVAL_MS);
+    scheduleConnectedResync();
 
     return () => {
-      clearInterval(intervalId);
+      clearConnectedResyncTimeout();
     };
-  }, [draftId, isGenerating, isConnected, pollDraft]);
+  }, [clearConnectedResyncTimeout, draftId, isGenerating, isConnected, scheduleConnectedResync]);
 
   // Resync on socket reconnection to catch any events missed during the gap
   const wasConnectedRef = useRef(isConnected);
@@ -149,7 +189,8 @@ export function useGenerationPolling({
   const stopPolling = useCallback(() => {
     setIsGenerating(false);
     isGeneratingRef.current = false;
-  }, []);
+    clearConnectedResyncTimeout();
+  }, [clearConnectedResyncTimeout]);
 
   const startPolling = useCallback(() => {
     setIsGenerating(true);
