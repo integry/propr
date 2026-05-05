@@ -51,3 +51,7 @@ export function validateStopIndexingInput(body: Record<string, unknown>): string
 
   return null;
 }
+
+export function shouldPublishOptimisticIndexing(result: { success: boolean; error?: string }): boolean {
+  return result.success && !result.error?.includes('already queued');
+}

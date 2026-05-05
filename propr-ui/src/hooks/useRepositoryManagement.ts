@@ -22,7 +22,8 @@ const TERMINAL_INDEXING_STATUSES = new Set<RepositoryIndexingStatus['indexing_st
 function shouldIgnoreStaleProgressUpdate(
   payload: IndexingUpdatePayload,
   currentStatus: RepositoryIndexingStatus | undefined,
-  hasPendingOptimisticUpdate: boolean
+  hasPendingOptimisticUpdate: boolean,
+  hasSeenTerminalSocketUpdate: boolean
 ): boolean {
   if (payload.phase !== 'files' && payload.phase !== 'directories') {
     return false;
@@ -31,7 +32,7 @@ function shouldIgnoreStaleProgressUpdate(
     return false;
   }
 
-  return currentStatus ? TERMINAL_INDEXING_STATUSES.has(currentStatus.indexing_status) : false;
+  return currentStatus ? hasSeenTerminalSocketUpdate && TERMINAL_INDEXING_STATUSES.has(currentStatus.indexing_status) : false;
 }
 
 export type Repo = MonitoredRepo;
@@ -71,6 +72,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const [_userRepoPrefs, setUserRepoPrefs] = useState<UserRepoPreferences>({});
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
+  const terminalSocketUpdatesRef = useRef<Set<string>>(new Set());
 
   const loadRepos = useCallback(async () => {
     try {
@@ -123,18 +125,18 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     const key = getRepoStatusKey(payload.repository, payload.branch);
     setIndexingStatuses(prev => {
       const hasPendingOptimisticUpdate = pendingOptimisticUpdatesRef.current.has(key);
-      if (shouldIgnoreStaleProgressUpdate(payload, prev[key], hasPendingOptimisticUpdate)) {
+      const hasSeenTerminalSocketUpdate = terminalSocketUpdatesRef.current.has(key);
+      if (shouldIgnoreStaleProgressUpdate(payload, prev[key], hasPendingOptimisticUpdate, hasSeenTerminalSocketUpdate)) {
         return prev;
       }
 
-      if (
-        payload.phase === 'indexing' ||
-        payload.phase === 'files' ||
-        payload.phase === 'directories' ||
-        payload.phase === 'completed' ||
-        payload.phase === 'failed' ||
-        payload.phase === 'idle'
-      ) {
+      if (payload.phase === 'completed' || payload.phase === 'failed' || payload.phase === 'idle') {
+        terminalSocketUpdatesRef.current.add(key);
+      } else {
+        terminalSocketUpdatesRef.current.delete(key);
+      }
+
+      if (payload.phase === 'indexing' || payload.phase === 'files' || payload.phase === 'directories' || payload.phase === 'completed' || payload.phase === 'failed' || payload.phase === 'idle') {
         pendingOptimisticUpdatesRef.current.delete(key);
       }
 

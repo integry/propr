@@ -23,7 +23,10 @@ const getValidPhase = (
   if (payloadPhase === 'files' || payloadPhase === 'directories' || payloadPhase === 'completed') {
     return payloadPhase;
   }
-  return prevPhase ?? 'files';
+  if (payloadPhase === 'indexing') {
+    return 'files';
+  }
+  return prevPhase === 'completed' ? 'files' : (prevPhase ?? 'files');
 };
 
 const shouldRetainProgress = (phase: IndexingPhase): boolean => {
@@ -65,6 +68,7 @@ export const buildUpdatedStatus = (
   prevStatus: RepositoryIndexingStatus | undefined
 ): RepositoryIndexingStatus => {
   const validPhase = getValidPhase(payload.phase, prevStatus?.progress?.phase);
+  const shouldReusePrevProgress = prevStatus?.indexing_status === 'indexing' && payload.phase !== 'indexing';
   return {
     ...prevStatus,
     full_name: payload.repository,
@@ -76,7 +80,7 @@ export const buildUpdatedStatus = (
     progress: shouldRetainProgress(payload.phase)
       ? payload.phase === 'completed'
         ? buildCompletedProgressObject(payload)
-        : buildProgressObject(payload, prevStatus?.progress, validPhase)
+        : buildProgressObject(payload, shouldReusePrevProgress ? prevStatus?.progress : undefined, validPhase)
       : undefined
   };
 };

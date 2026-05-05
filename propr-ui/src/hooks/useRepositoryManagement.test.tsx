@@ -295,4 +295,90 @@ describe('useRepositoryManagement', () => {
     });
     expect(result.current.indexingStatuses['integry/propr:release/2026'].progress).toBeUndefined();
   });
+
+  it('resets completed progress when a new indexing event starts', async () => {
+    socketState.isConnected = true;
+
+    mockGetRepositoriesIndexingStatus.mockResolvedValue({
+      repositories: [{
+        full_name: 'integry/propr',
+        branch: 'release/2026',
+        indexing_status: 'completed',
+        last_indexed_at: null,
+        last_indexed_hash: null,
+        last_indexed_commit_message: null,
+        progress: {
+          totalFiles: 100,
+          processedFiles: 100,
+          percentComplete: 100,
+          inputTokens: 0,
+          outputTokens: 0,
+          phase: 'completed',
+          totalDirectories: 20,
+          processedDirectories: 20
+        }
+      }]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      socketState.indexingHandler?.({
+        eventType: 'indexing_update',
+        repository: 'integry/propr',
+        branch: 'release/2026',
+        phase: 'indexing',
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      indexing_status: 'indexing',
+      progress: {
+        phase: 'files',
+        totalFiles: 0,
+        processedFiles: 0,
+        totalDirectories: 0,
+        processedDirectories: 0,
+        percentComplete: 0
+      }
+    });
+  });
+
+  it('accepts progress updates after reconnect when the start event was missed', async () => {
+    socketState.isConnected = true;
+
+    const { result } = renderHook(() => useRepositoryManagement());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      indexing_status: 'idle'
+    });
+
+    await act(async () => {
+      socketState.indexingHandler?.({
+        eventType: 'indexing_update',
+        repository: 'integry/propr',
+        branch: 'release/2026',
+        phase: 'files',
+        progress: 20,
+        totalFiles: 100,
+        processedFiles: 20,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      indexing_status: 'indexing',
+      progress: {
+        phase: 'files',
+        totalFiles: 100,
+        processedFiles: 20,
+        percentComplete: 20
+      }
+    });
+  });
 });
