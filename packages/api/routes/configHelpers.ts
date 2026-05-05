@@ -14,8 +14,7 @@ interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: numbe
 interface RedisScriptClient { eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>; }
 interface RedisTransaction { expire: (key: string, seconds: number) => RedisTransaction; del: (key: string) => RedisTransaction; exec: () => Promise<unknown[] | null>; }
 interface RedisWatchClient { watch?: (...keys: string[]) => Promise<void>; unwatch?: () => Promise<void>; multi?: () => RedisTransaction; }
-interface LostConfigLockDetails { detected: boolean; reason: 'ownership_lost' | 'renewal_error' | null; }
-export interface ConfigLockContext { assertLockHeld: () => Promise<void>; hasLockBeenLost: () => boolean; }
+interface LostConfigLockDetails { detected: boolean; reason: 'ownership_lost' | 'renewal_error' | null; } export interface ConfigLockContext { assertLockHeld: () => Promise<void>; hasLockBeenLost: () => boolean; }
 export class ConfigRouteError extends Error {
   status: number;
   body: Record<string, unknown>;
@@ -315,8 +314,7 @@ function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): stri
   return null;
 }
 export interface QueueIndexingResult { success: boolean; error?: string; jobId?: string; correlationId?: string; }
-const DELAYED_REINDEX_KEY = 'config:summarization:delayed-reindex';
-const REINDEX_DELAY_MS = 10 * 60 * 1000;
+const DELAYED_REINDEX_KEY = 'config:summarization:delayed-reindex', REINDEX_DELAY_MS = 10 * 60 * 1000;
 export async function scheduleDelayedReindex(redisClient: RedisClientType): Promise<boolean> {
   try {
     const scheduledTime = Date.now() + REINDEX_DELAY_MS;
