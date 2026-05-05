@@ -14,6 +14,14 @@ export interface QueueIndexingResult {
   correlationId?: string;
 }
 
+interface QueueResummarizationForRepoOptions {
+  repoFullName: string;
+  token: string;
+  baseBranch?: string;
+  queue?: Awaited<ReturnType<typeof getIndexingQueue>>;
+  queuedRepoBranches?: Set<string>;
+}
+
 export async function queueResummarizationForAllRepos(): Promise<number> {
   const monitoredRepos = getEnabledResummarizationTargets(await configManager.loadMonitoredReposRaw());
   const queue = await getIndexingQueue();
@@ -28,13 +36,13 @@ export async function queueResummarizationForAllRepos(): Promise<number> {
   let repositoriesQueued = 0;
 
   for (const repoConfig of monitoredRepos) {
-    const queued = await queueResummarizationForRepo(
-      repoConfig.name,
+    const queued = await queueResummarizationForRepo({
+      repoFullName: repoConfig.name,
       token,
-      repoConfig.baseBranch,
+      baseBranch: repoConfig.baseBranch,
       queue,
       queuedRepoBranches
-    );
+    });
     if (queued) {
       repositoriesQueued++;
     }
@@ -42,13 +50,13 @@ export async function queueResummarizationForAllRepos(): Promise<number> {
   return repositoriesQueued;
 }
 
-async function queueResummarizationForRepo(
-  repoFullName: string,
-  token: string,
-  baseBranch?: string,
-  queueArg?: Awaited<ReturnType<typeof getIndexingQueue>>,
-  queuedRepoBranches?: Set<string>
-): Promise<boolean> {
+async function queueResummarizationForRepo({
+  repoFullName,
+  token,
+  baseBranch,
+  queue: queueArg,
+  queuedRepoBranches
+}: QueueResummarizationForRepoOptions): Promise<boolean> {
   const queue = queueArg ?? await getIndexingQueue();
   const [owner, name] = repoFullName.split('/');
   const effectiveBranch = baseBranch || 'HEAD';
