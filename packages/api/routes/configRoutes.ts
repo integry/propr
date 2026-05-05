@@ -116,12 +116,13 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       res.status(400).json({ error: bodyValidation.error });
       return;
     }
-    const result = await withConfigLock(redisClient, lockKey, async () => {
+    const result = await withConfigLock(redisClient, lockKey, async lock => {
       const rawValue = pickValue(bodyValidation.value);
       const validated = validate(rawValue);
       if (!validated.ok) {
         return { status: 400, body: { error: validated.error } };
       }
+      await lock.assertLockHeld();
       await save(validated.value);
       await publishConfigUpdate(subtype);
       return { status: 200, body: { success: true, ...body(validated.value) } };
@@ -173,7 +174,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   }
 
   async function postRepos(req: Request, res: Response): Promise<void> {
-    const result = await withConfigLock(redisClient, 'config:repos:lock', async () => {
+    const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
       const { repos_to_monitor } = req.body;
 
       if (!Array.isArray(repos_to_monitor)) {
@@ -209,6 +210,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         });
       }
 
+      await lock.assertLockHeld();
       await configManager.saveMonitoredRepos(processedRepos);
       await publishConfigUpdate('repos_update');
       await logActivityHelper(`Updated monitored repositories list (${processedRepos.length} repos)`, 'config-update', 'config_updated', req.user?.username);
@@ -277,10 +279,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       return;
     }
 
-    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async () => {
+    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
       return saveSettingsWithRollback({
         settings: settingsValidation.value,
-        publishConfigUpdate
+        publishConfigUpdate,
+        lock
       });
     });
 
@@ -334,7 +337,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   }
 
   async function postPrimaryProcessingLabels(req: Request, res: Response): Promise<void> {
-    const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async () => {
+    const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async lock => {
       const { primary_processing_labels } = req.body;
       if (!Array.isArray(primary_processing_labels) || primary_processing_labels.length === 0) {
         return { status: 400, body: { error: 'primary_processing_labels must be a non-empty array' } };
@@ -343,6 +346,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       if (labels.length === 0) {
         return { status: 400, body: { error: 'At least one valid label is required' } };
       }
+      await lock.assertLockHeld();
       await configManager.savePrimaryProcessingLabels(labels);
       await publishConfigUpdate('primary_processing_labels_update');
       return { status: 200, body: { success: true, primary_processing_labels: labels } };

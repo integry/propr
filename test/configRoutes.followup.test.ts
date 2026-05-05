@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
-import { applyAgentsUpdate } from '../packages/api/routes/configRoutesAgents.ts';
+import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/configRoutesAgents.ts';
 import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { appendClaudeUserMessageEvents } from '../packages/api/routes/liveDetailsCodexParser.ts';
@@ -234,6 +234,77 @@ describe('config route follow-up helpers', () => {
         });
     });
 
+    test('withConfigLock stops protected work after lock loss is detected', async () => {
+        const redisState = new Map<string, string>();
+        const redisClient = {
+            set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+                if (opts.NX && redisState.has(key)) return null;
+                redisState.set(key, value);
+                return 'OK';
+            }),
+            del: mock.fn(async (key: string) => {
+                redisState.delete(key);
+                return 1;
+            }),
+            eval: mock.fn(async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+                const [key] = options.keys;
+                const [lockValue, timeoutSeconds] = options.arguments;
+                if (timeoutSeconds === undefined) {
+                    if (redisState.get(key) === lockValue) {
+                        redisState.delete(key);
+                        return 1;
+                    }
+                    return 0;
+                }
+                return redisState.get(key) === lockValue ? 1 : 0;
+            }),
+        };
+
+        const writes: string[] = [];
+        const result = await withConfigLock(
+            redisClient as never,
+            'config:test:lock',
+            async lock => {
+                await lock.assertLockHeld();
+                writes.push('before-loss');
+                redisState.set('config:test:lock', 'someone-else');
+                await assert.rejects(() => lock.assertLockHeld(), /ownership lost/);
+                return { status: 200, body: { success: true } };
+            },
+        );
+
+        assert.deepStrictEqual(writes, ['before-loss']);
+        assert.strictEqual(result.status, 409);
+        assert.deepStrictEqual(result.body, {
+            error: 'Configuration update lock renewal failed before the operation completed. Verify the current configuration before retrying.',
+            lock_lost: true,
+        });
+        assert.strictEqual(redisState.get('config:test:lock'), 'someone-else');
+    });
+
+    test('withConfigLock fails closed when atomic renew scripting is unavailable', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+            get: mock.fn(async () => 'lock-owner'),
+            del: mock.fn(async () => 1),
+        };
+
+        const result = await withConfigLock(
+            redisClient as never,
+            'config:test:lock',
+            async lock => {
+                await assert.rejects(() => lock.assertLockHeld(), /ownership lost/);
+                return { status: 200, body: { success: true } };
+            },
+        );
+
+        assert.strictEqual(result.status, 409);
+        assert.deepStrictEqual(result.body, {
+            error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
+            lock_lost: true,
+        });
+    });
+
     test('applyAgentsUpdate reports out-of-sync state when registry refresh and rollback both fail', async () => {
         const registry = {
             refresh: mock.fn(async () => {
@@ -409,6 +480,35 @@ describe('config route follow-up helpers', () => {
         });
     });
 
+    test('postAgents rejects invalid payloads before acquiring the shared settings lock', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+        };
+        const routes = createAgentsRoutes({
+            redisClient: redisClient as never,
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postAgents({ body: { agents: 'bad-payload' } } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 400);
+        assert.deepStrictEqual(res.body, { error: 'agents must be an array' });
+        assert.strictEqual(redisClient.set.mock.calls.length, 0);
+    });
+
     test('findLatestHistoryEntryWithSessionId returns the latest live execution session entry', () => {
         const entry = findLatestHistoryEntryWithSessionId([
             { state: 'claude_execution', metadata: { sessionId: 'older-session' } },
@@ -443,10 +543,23 @@ describe('config route follow-up helpers', () => {
                 redisState.set(key, value);
                 return 'OK';
             }),
-            get: mock.fn(async (key: string) => redisState.get(key) ?? null),
-            expire: mock.fn(async (_key: string, _seconds: number) => 1),
             del: mock.fn(async (key: string) => {
                 redisState.delete(key);
+                return 1;
+            }),
+            eval: mock.fn(async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+                const [key] = options.keys;
+                const [lockValue, timeoutSeconds] = options.arguments;
+                if (timeoutSeconds === undefined) {
+                    if (redisState.get(key) === lockValue) {
+                        redisState.delete(key);
+                        return 1;
+                    }
+                    return 0;
+                }
+                if (redisState.get(key) !== lockValue) {
+                    return 0;
+                }
                 return 1;
             }),
         };
@@ -462,7 +575,7 @@ describe('config route follow-up helpers', () => {
         );
 
         assert.strictEqual(result.status, 200);
-        assert.ok(redisClient.expire.mock.calls.length >= 2);
+        assert.ok(redisClient.eval.mock.calls.length >= 2);
         assert.strictEqual(redisState.has('config:test:lock'), false);
     });
 
@@ -475,7 +588,6 @@ describe('config route follow-up helpers', () => {
                 return 'OK';
             }),
             get: mock.fn(async (key: string) => redisState.get(key) ?? null),
-            expire: mock.fn(async (_key: string, _seconds: number) => 1),
             del: mock.fn(async (key: string) => {
                 redisState.delete(key);
                 return 1;
@@ -503,11 +615,21 @@ describe('config route follow-up helpers', () => {
                 redisState.set(key, value);
                 return 'OK';
             }),
-            get: mock.fn(async (key: string) => redisState.get(key) ?? null),
-            expire: mock.fn(async (_key: string, _seconds: number) => 1),
             del: mock.fn(async (key: string) => {
                 redisState.delete(key);
                 return 1;
+            }),
+            eval: mock.fn(async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+                const [key] = options.keys;
+                const [lockValue, timeoutSeconds] = options.arguments;
+                if (timeoutSeconds === undefined) {
+                    if (redisState.get(key) === lockValue) {
+                        redisState.delete(key);
+                        return 1;
+                    }
+                    return 0;
+                }
+                return redisState.get(key) === lockValue ? 1 : 0;
             }),
         };
 
@@ -653,10 +775,13 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(handled, true);
         assert.strictEqual(events.length, 2);
         assert.deepStrictEqual(events[1], {
-            type: 'thought',
-            content: '🔍 **explore** subagent completed in 10s: Inspect repository state',
+            type: 'subagent_completed',
+            toolUseId: 'subagent-1',
+            subagentType: 'explore',
+            description: 'Inspect repository state',
+            durationSeconds: 10,
+            content: null,
             timestamp: '2026-05-05T00:00:10.000Z',
-            isSubagentSummary: true,
         });
     });
 });

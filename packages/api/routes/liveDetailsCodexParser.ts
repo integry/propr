@@ -195,26 +195,17 @@ function extractTextFromContentBlocks(content: unknown): string | null {
   return textParts.length > 0 ? textParts.join('\n\n') : null;
 }
 
-function getSubagentIcon(subagentType: string): string {
-  switch (subagentType.toLowerCase()) {
-    case 'explore':
-      return '🔍';
-    case 'plan':
-      return '📋';
-    case 'bash':
-      return '⚡';
-    default:
-      return '🤖';
-  }
-}
-
-function buildSubagentSummary(subagent: PendingSubagent, content: ClaudeMessageContent, timestamp: string): string {
+function buildSubagentCompletionEvent(subagent: PendingSubagent, content: ClaudeMessageContent, timestamp: string): Record<string, unknown> {
   const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
-  const durationSecs = Math.round(durationMs / 1000);
-  const subagentOutputText = extractTextFromContentBlocks(content.content);
-  const subagentIcon = getSubagentIcon(subagent.subagentType);
-  const summaryHeader = `${subagentIcon} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`;
-  return subagentOutputText ? `${summaryHeader}\n\n${subagentOutputText}` : summaryHeader;
+  return {
+    type: 'subagent_completed',
+    toolUseId: subagent.toolUseId,
+    subagentType: subagent.subagentType,
+    description: subagent.description,
+    durationSeconds: Math.round(durationMs / 1000),
+    content: extractTextFromContentBlocks(content.content),
+    timestamp
+  };
 }
 
 export function appendClaudeAssistantMessageEvents(contentArray: ClaudeMessageContent[], context: ClaudeMessageContext): boolean {
@@ -259,12 +250,7 @@ export function appendClaudeUserMessageEvents(contentArray: ClaudeMessageContent
     });
     if (content.tool_use_id && context.pendingSubagents.has(content.tool_use_id)) {
       const subagent = context.pendingSubagents.get(content.tool_use_id)!;
-      context.events.push({
-        type: 'thought',
-        content: buildSubagentSummary(subagent, content, context.timestamp),
-        timestamp: context.timestamp,
-        isSubagentSummary: true
-      });
+      context.events.push(buildSubagentCompletionEvent(subagent, content, context.timestamp));
       context.pendingSubagents.delete(content.tool_use_id);
     }
     handled = true;

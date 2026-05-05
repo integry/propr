@@ -9,7 +9,7 @@ import {
     AGENT_DEFAULT_VERSIONS
 } from '@propr/core';
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
-import { withConfigLock, validateAgentsConfig, SETTINGS_CONFIG_LOCK_KEY } from './configHelpers.js';
+import { withConfigLock, validateAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, type ConfigLockContext } from './configHelpers.js';
 
 interface AgentsRoutesDeps {
   redisClient: RedisClientType;
@@ -36,6 +36,7 @@ interface ApplyAgentsUpdateParams {
   logActivityHelper: AgentsRoutesDeps['logActivityHelper'];
   configStore?: AgentConfigStore;
   registry?: AgentRegistrySync;
+  lock?: ConfigLockContext;
 }
 
 interface RollbackAgentConfigStateParams {
@@ -73,7 +74,8 @@ export async function applyAgentsUpdate({
   publishConfigUpdate,
   logActivityHelper,
   configStore = configManager,
-  registry = AgentRegistry.getInstance()
+  registry = AgentRegistry.getInstance(),
+  lock
 }: ApplyAgentsUpdateParams): Promise<{ status: number; body: Record<string, unknown> }> {
   const validationError = validateAgentsConfig(agents);
   if (validationError) {
@@ -116,8 +118,10 @@ export async function applyAgentsUpdate({
   }
 
   try {
+    await lock?.assertLockHeld();
     await configStore.saveAgents(processedAgents);
     if (newDefault !== currentDefault) {
+      await lock?.assertLockHeld();
       await configStore.saveSettings({ default_agent_alias: newDefault } as Record<string, unknown>);
     }
   } catch (syncError) {
@@ -186,13 +190,19 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
       return;
     }
+    const validationError = validateAgentsConfig(req.body.agents);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
+      return;
+    }
 
-    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async () => {
+    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
       return applyAgentsUpdate({
         agents: req.body.agents,
         username: req.user?.username,
         publishConfigUpdate,
-        logActivityHelper
+        logActivityHelper,
+        lock
       });
     });
 

@@ -18,6 +18,10 @@ interface LostConfigLockDetails {
   detected: boolean;
   reason: 'ownership_lost' | 'renewal_error' | null;
 }
+export interface ConfigLockContext {
+  assertLockHeld: () => Promise<void>;
+  hasLockBeenLost: () => boolean;
+}
 const EXTEND_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("expire", KEYS[1], tonumber(ARGV[2]))
 end
@@ -26,17 +30,23 @@ const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])
 end
 return 0`;
+function buildLockLossResponse(reason: LostConfigLockDetails['reason']): { status: number; body: Record<string, unknown> } {
+  const error = reason === 'ownership_lost'
+    ? 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.'
+    : 'Configuration update lock renewal failed before the operation completed. Verify the current configuration before retrying.';
+  return { status: 409, body: { error, lock_lost: true } };
+}
+function supportsAtomicLockScripting(redisClient: RedisClientType): boolean {
+  return typeof (redisClient as RedisClientType & RedisScriptClient).eval === 'function';
+}
 
 async function renewLock(redisClient: RedisClientType, lockKey: string, lockValue: string, timeoutSeconds: number): Promise<boolean> {
   const scriptClient = redisClient as RedisClientType & RedisScriptClient;
-  if (typeof scriptClient.eval === 'function') {
+  if (supportsAtomicLockScripting(redisClient)) {
     const result = await scriptClient.eval(EXTEND_LOCK_SCRIPT, { keys: [lockKey], arguments: [lockValue, String(timeoutSeconds)] });
     return result === 1;
   }
-  const currentLockValue = await redisClient.get(lockKey);
-  if (currentLockValue !== lockValue) return false;
-  await redisClient.expire(lockKey, timeoutSeconds);
-  return true;
+  return false;
 }
 
 async function releaseLock(redisClient: RedisClientType, lockKey: string, lockValue: string): Promise<void> {
@@ -52,7 +62,7 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
 export async function withConfigLock(
   redisClient: RedisClientType,
   lockKey: string,
-  operation: () => Promise<{ status: number; body: Record<string, unknown> }>,
+  operation: (context: ConfigLockContext) => Promise<{ status: number; body: Record<string, unknown> }>,
   options: ConfigLockOptions = {}
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const lockValue = `${Date.now()}-${Math.random()}`;
@@ -61,52 +71,85 @@ export async function withConfigLock(
   let renewalTimer: NodeJS.Timeout | null = null;
   let renewalStopped = false;
   const lostLock: LostConfigLockDetails = { detected: false, reason: null };
+  const markLockLost = (reason: LostConfigLockDetails['reason'], error?: unknown): void => {
+    if (renewalStopped || lostLock.detected) {
+      return;
+    }
+    lostLock.detected = true;
+    lostLock.reason = reason;
+    if (renewalTimer) {
+      clearTimeout(renewalTimer);
+      renewalTimer = null;
+    }
+    if (reason === 'ownership_lost') {
+      console.error(`Lost ownership of config lock ${lockKey} before the protected operation completed`);
+      return;
+    }
+    console.error(`Failed to renew config lock ${lockKey}:`, error);
+  };
+  const throwLockLossError = (): never => {
+    if (lostLock.reason === 'renewal_error') {
+      throw new Error(`Config lock ${lockKey} renewal failed before protected operation completed`);
+    }
+    throw new Error(`Config lock ${lockKey} ownership lost before protected operation completed`);
+  };
+  const scheduleRenewal = (): void => {
+    if (renewalStopped || renewalIntervalMs <= 0) {
+      return;
+    }
+    renewalTimer = setTimeout(() => {
+      void renewLock(redisClient, lockKey, lockValue, lockTimeout)
+        .then(renewed => {
+          if (!renewed) {
+            markLockLost(supportsAtomicLockScripting(redisClient) ? 'ownership_lost' : 'renewal_error');
+            return;
+          }
+          scheduleRenewal();
+        })
+        .catch(error => {
+          markLockLost('renewal_error', error);
+        });
+    }, renewalIntervalMs);
+  };
+  const context: ConfigLockContext = {
+    assertLockHeld: async () => {
+      if (lostLock.detected) {
+        throwLockLossError();
+      }
+      const renewed = await renewLock(redisClient, lockKey, lockValue, lockTimeout);
+      if (!renewed) {
+        markLockLost(supportsAtomicLockScripting(redisClient) ? 'ownership_lost' : 'renewal_error');
+        throwLockLossError();
+      }
+    },
+    hasLockBeenLost: () => lostLock.detected
+  };
 
   try {
     const acquired = await redisClient.set(lockKey, lockValue, { NX: true, EX: lockTimeout });
     if (!acquired) return { status: 409, body: { error: 'Configuration is being updated. Please try again.' } };
     try {
-      if (renewalIntervalMs > 0) {
-        renewalTimer = setInterval(() => {
-          void renewLock(redisClient, lockKey, lockValue, lockTimeout)
-            .then(renewed => {
-              if (!renewed && !renewalStopped) {
-                lostLock.detected = true;
-                lostLock.reason = 'ownership_lost';
-                console.error(`Lost ownership of config lock ${lockKey} before the protected operation completed`);
-              }
-            })
-            .catch(error => {
-              if (!renewalStopped) {
-                lostLock.detected = true;
-                lostLock.reason = 'renewal_error';
-                console.error(`Failed to renew config lock ${lockKey}:`, error);
-              }
-            });
-        }, renewalIntervalMs);
-      }
+      scheduleRenewal();
 
-      const result = await operation();
-      if (lostLock.detected) {
-        const error = lostLock.reason === 'ownership_lost'
-          ? 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.'
-          : 'Configuration update lock renewal failed before the operation completed. Verify the current configuration before retrying.';
-        return { status: 409, body: { error, lock_lost: true } };
-      }
+      const result = await operation(context);
+      if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
       return result;
     } finally {
       renewalStopped = true;
       if (renewalTimer) {
-        clearInterval(renewalTimer);
+        clearTimeout(renewalTimer);
       }
       await releaseLock(redisClient, lockKey, lockValue);
     }
   } catch (error) {
+    if (lostLock.detected) {
+      return buildLockLossResponse(lostLock.reason);
+    }
     console.error(`Error in config operation with lock ${lockKey}:`, error);
     try {
       renewalStopped = true;
       if (renewalTimer) {
-        clearInterval(renewalTimer);
+        clearTimeout(renewalTimer);
       }
       await releaseLock(redisClient, lockKey, lockValue);
     } catch (unlockError) {
@@ -191,50 +234,50 @@ async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; va
   return { value: val };
 }
 
-export interface LabeledSave { name: string; execute: () => Promise<unknown> }
-export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSave[]; normalized: Record<string, unknown> }> {
-  const thunks: LabeledSave[] = [];
+export interface LabeledSaveDescriptor { name: string }
+export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSaveDescriptor[]; normalized: Record<string, unknown> }> {
+  const saves: LabeledSaveDescriptor[] = [];
   const normalized: Record<string, unknown> = {};
 
   if (fields.auto_followup_score_threshold !== undefined) {
     const v = validateStrictInt(fields.auto_followup_score_threshold, 0, 9);
     if (v === null) return { error: 'auto_followup_score_threshold must be an integer between 0 and 9', saves: [], normalized };
     normalized.auto_followup_score_threshold = v;
-    thunks.push({ name: 'auto_followup_score_threshold', execute: () => configManager.saveAutoFollowupScoreThreshold(v) });
+    saves.push({ name: 'auto_followup_score_threshold' });
   }
   if (fields.auto_resolve_merge_conflicts !== undefined) {
     if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [], normalized };
     const val = fields.auto_resolve_merge_conflicts;
     normalized.auto_resolve_merge_conflicts = val;
-    thunks.push({ name: 'auto_resolve_merge_conflicts', execute: () => configManager.saveAutoResolveMergeConflicts(val) });
+    saves.push({ name: 'auto_resolve_merge_conflicts' });
   }
   if (fields.pr_review_model !== undefined) {
     const result = await validatePrReviewModel(fields.pr_review_model);
     if (result.error) return { error: result.error, saves: [], normalized };
     const val = result.value!;
     normalized.pr_review_model = val;
-    thunks.push({ name: 'pr_review_model', execute: () => configManager.savePrReviewModel(val) });
+    saves.push({ name: 'pr_review_model' });
   }
   if (fields.ultrafix_rating_goal !== undefined) {
     const v = validateStrictInt(fields.ultrafix_rating_goal, 1, 10);
     if (v === null) return { error: 'ultrafix_rating_goal must be an integer between 1 and 10', saves: [], normalized };
     normalized.ultrafix_rating_goal = v;
-    thunks.push({ name: 'ultrafix_rating_goal', execute: () => configManager.saveUltrafixRatingGoal(v) });
+    saves.push({ name: 'ultrafix_rating_goal' });
   }
   if (fields.ultrafix_max_cycles !== undefined) {
     const v = validateStrictInt(fields.ultrafix_max_cycles, 1, Infinity);
     if (v === null) return { error: 'ultrafix_max_cycles must be a positive integer', saves: [], normalized };
     normalized.ultrafix_max_cycles = v;
-    thunks.push({ name: 'ultrafix_max_cycles', execute: () => configManager.saveUltrafixMaxCycles(v) });
+    saves.push({ name: 'ultrafix_max_cycles' });
   }
   if (fields.ultrafix_pause_seconds !== undefined) {
     const v = validateStrictInt(fields.ultrafix_pause_seconds, 0, Infinity);
     if (v === null) return { error: 'ultrafix_pause_seconds must be a non-negative integer', saves: [], normalized };
     normalized.ultrafix_pause_seconds = v;
-    thunks.push({ name: 'ultrafix_pause_seconds', execute: () => configManager.saveUltrafixPauseSeconds(v) });
+    saves.push({ name: 'ultrafix_pause_seconds' });
   }
 
-  return { saves: thunks, normalized };
+  return { saves, normalized };
 }
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;

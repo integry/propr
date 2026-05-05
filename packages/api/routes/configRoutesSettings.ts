@@ -1,5 +1,5 @@
 import * as configManager from '@propr/core';
-import { extractSettingSaves } from './configHelpers.js';
+import { extractSettingSaves, type ConfigLockContext } from './configHelpers.js';
 
 interface SettingsStore {
   saveSettings: typeof configManager.saveSettings;
@@ -23,6 +23,7 @@ interface SaveSettingsRequest {
   settings: Record<string, unknown>;
   publishConfigUpdate: (subtype: string) => Promise<void>;
   configStore?: SettingsStore;
+  lock?: ConfigLockContext;
 }
 
 type SaveResponse = { status: number; body: Record<string, unknown> };
@@ -139,12 +140,14 @@ async function rollbackCommittedSettings(
 
 async function saveGeneralSettings(
   configStore: SettingsStore,
-  otherSettings: Record<string, unknown>
+  otherSettings: Record<string, unknown>,
+  lock?: ConfigLockContext
 ): Promise<SaveResponse | null> {
   if (Object.keys(otherSettings).length === 0) {
     return null;
   }
   try {
+    await lock?.assertLockHeld();
     await configStore.saveSettings(otherSettings);
     return null;
   } catch (saveError) {
@@ -167,7 +170,8 @@ function isPlainSettingsObject(value: unknown): value is Record<string, unknown>
 export async function saveSettingsWithRollback({
   settings,
   publishConfigUpdate,
-  configStore = configManager
+  configStore = configManager,
+  lock
 }: SaveSettingsRequest): Promise<SaveResponse> {
   if (!isPlainSettingsObject(settings)) {
     return { status: 400, body: { error: 'settings object is required' } };
@@ -203,7 +207,7 @@ export async function saveSettingsWithRollback({
     extracted.normalized
   );
   const rollbackActions = await createGeneralRollbackActions(configStore, hasGeneralSettings);
-  const generalSettingsSaveError = await saveGeneralSettings(configStore, otherSettings);
+  const generalSettingsSaveError = await saveGeneralSettings(configStore, otherSettings, lock);
   if (generalSettingsSaveError) {
     return generalSettingsSaveError;
   }
@@ -211,6 +215,7 @@ export async function saveSettingsWithRollback({
   const committedNames: Array<'general' | SpecializedSettingName> = hasGeneralSettings ? ['general'] : [];
   for (const save of specializedSaves) {
     try {
+      await lock?.assertLockHeld();
       const previousValue = await loadSpecializedValue(configStore, save.name);
       rollbackActions.set(save.name, () => saveSpecializedValue(configStore, save.name, previousValue));
       await save.execute();
