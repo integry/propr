@@ -143,14 +143,12 @@ function parseCompletedCodexItem(event: ReturnType<typeof parseCodexStreamOutput
         pushCodexToolUseEvent(events, 'command_execution', { command: event.item.command }, timestamp);
       }
     }
-    if (event.item.aggregated_output) {
-      pushCodexToolResultEvent(
-        events,
-        event.item.aggregated_output,
-        event.item.exit_code != null && event.item.exit_code !== 0,
-        timestamp
-      );
-    }
+    pushCodexToolResultEvent(
+      events,
+      event.item.aggregated_output ?? '',
+      event.item.exit_code != null && event.item.exit_code !== 0,
+      timestamp
+    );
     return true;
   }
 

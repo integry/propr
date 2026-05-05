@@ -14,6 +14,16 @@ const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
 interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: number; }
 interface RedisScriptClient { eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>; }
+interface RedisTransaction {
+  expire: (key: string, seconds: number) => RedisTransaction;
+  del: (key: string) => RedisTransaction;
+  exec: () => Promise<unknown[] | null>;
+}
+interface RedisWatchClient {
+  watch?: (...keys: string[]) => Promise<void>;
+  unwatch?: () => Promise<void>;
+  multi?: () => RedisTransaction;
+}
 interface LostConfigLockDetails { detected: boolean; reason: 'ownership_lost' | 'renewal_error' | null; }
 export interface ConfigLockContext { assertLockHeld: () => Promise<void>; hasLockBeenLost: () => boolean; }
 const EXTEND_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -32,16 +42,57 @@ function buildLockLossResponse(reason: LostConfigLockDetails['reason']): { statu
 }
 function supportsAtomicLockScripting(redisClient: RedisClientType): boolean { return typeof (redisClient as RedisClientType & RedisScriptClient).eval === 'function'; }
 
+async function runWatchedLockOperation(
+  redisClient: RedisClientType,
+  lockKey: string,
+  lockValue: string,
+  apply: (transaction: RedisTransaction) => RedisTransaction
+): Promise<boolean | null> {
+  const watchClient = redisClient as RedisClientType & RedisWatchClient;
+  if (typeof watchClient.watch !== 'function' || typeof watchClient.multi !== 'function') {
+    return null;
+  }
+
+  let watchActive = false;
+  try {
+    await watchClient.watch(lockKey);
+    watchActive = true;
+    const currentLockValue = await redisClient.get(lockKey);
+    if (currentLockValue !== lockValue) {
+      if (typeof watchClient.unwatch === 'function') {
+        await watchClient.unwatch();
+      }
+      return false;
+    }
+    const result = await apply(watchClient.multi()).exec();
+    watchActive = false;
+    return result !== null;
+  } catch (error) {
+    if (watchActive && typeof watchClient.unwatch === 'function') {
+      try {
+        await watchClient.unwatch();
+      } catch (unwatchError) {
+        console.error(`Failed to clear Redis watch for config lock ${lockKey}:`, unwatchError);
+      }
+    }
+    throw error;
+  }
+}
+
 async function renewLock(redisClient: RedisClientType, lockKey: string, lockValue: string, timeoutSeconds: number): Promise<boolean> {
   const scriptClient = redisClient as RedisClientType & RedisScriptClient;
   if (supportsAtomicLockScripting(redisClient)) {
     const result = await scriptClient.eval(EXTEND_LOCK_SCRIPT, { keys: [lockKey], arguments: [lockValue, String(timeoutSeconds)] });
     return result === 1;
   }
-  const currentLockValue = await redisClient.get(lockKey);
-  if (currentLockValue !== lockValue) return false;
-  await redisClient.expire(lockKey, timeoutSeconds);
-  return true;
+  const watchedResult = await runWatchedLockOperation(
+    redisClient,
+    lockKey,
+    lockValue,
+    transaction => transaction.expire(lockKey, timeoutSeconds)
+  );
+  if (watchedResult !== null) return watchedResult;
+  throw new Error(`Atomic config lock renewal is unavailable for ${lockKey}`);
 }
 
 async function releaseLock(redisClient: RedisClientType, lockKey: string, lockValue: string): Promise<void> {
@@ -50,8 +101,14 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
     await scriptClient.eval(RELEASE_LOCK_SCRIPT, { keys: [lockKey], arguments: [lockValue] });
     return;
   }
-  const currentLockValue = await redisClient.get(lockKey);
-  if (currentLockValue === lockValue) await redisClient.del(lockKey);
+  const watchedResult = await runWatchedLockOperation(
+    redisClient,
+    lockKey,
+    lockValue,
+    transaction => transaction.del(lockKey)
+  );
+  if (watchedResult !== null) return;
+  console.warn(`Atomic config lock release is unavailable for ${lockKey}; allowing the TTL to expire naturally`);
 }
 
 export async function withConfigLock(
@@ -90,7 +147,7 @@ export async function withConfigLock(
       void renewLock(redisClient, lockKey, lockValue, lockTimeout)
         .then(renewed => {
           if (!renewed) {
-            markLockLost(supportsAtomicLockScripting(redisClient) ? 'ownership_lost' : 'renewal_error');
+            markLockLost('ownership_lost');
             return;
           }
           scheduleRenewal();
@@ -105,7 +162,7 @@ export async function withConfigLock(
       if (lostLock.detected) throwLockLossError();
       const renewed = await renewLock(redisClient, lockKey, lockValue, lockTimeout);
       if (!renewed) {
-        markLockLost(supportsAtomicLockScripting(redisClient) ? 'ownership_lost' : 'renewal_error');
+        markLockLost('ownership_lost');
         throwLockLossError();
       }
     },

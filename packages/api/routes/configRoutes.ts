@@ -204,10 +204,15 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       await lock.assertLockHeld();
       await configManager.saveMonitoredRepos(processedRepos);
       await publishConfigUpdate('repos_update');
-      await logActivityHelper(`Updated monitored repositories list (${processedRepos.length} repos)`, 'config-update', 'config_updated', req.user?.username);
-
       return { status: 200, body: { success: true, repos_to_monitor: processedRepos } };
     });
+    if (result.status === 200) {
+      try {
+        await logActivityHelper(`Updated monitored repositories list (${processedRepos.length} repos)`, 'config-update', 'config_updated', req.user?.username);
+      } catch (error) {
+        console.error('Failed to log monitored repositories update activity:', error);
+      }
+    }
 
     res.status(result.status).json(result.body);
   }

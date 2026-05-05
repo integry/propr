@@ -278,7 +278,7 @@ describe('config route follow-up helpers', () => {
         assert.deepStrictEqual(writes, ['before-loss']);
         assert.strictEqual(result.status, 409);
         assert.deepStrictEqual(result.body, {
-            error: 'Configuration update lock renewal failed before the operation completed. Verify the current configuration before retrying.',
+            error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
             lock_lost: true,
         });
         assert.strictEqual(redisState.get('config:test:lock'), 'someone-else');
@@ -295,14 +295,14 @@ describe('config route follow-up helpers', () => {
             redisClient as never,
             'config:test:lock',
             async lock => {
-                await assert.rejects(() => lock.assertLockHeld(), /ownership lost/);
+                await assert.rejects(() => lock.assertLockHeld(), /renewal failed/);
                 return { status: 200, body: { success: true } };
             },
         );
 
         assert.strictEqual(result.status, 409);
         assert.deepStrictEqual(result.body, {
-            error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
+            error: 'Configuration update lock renewal failed before the operation completed. Verify the current configuration before retrying.',
             lock_lost: true,
         });
     });
@@ -511,7 +511,7 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
     });
 
-    test('postAgents resolves agent versions only after acquiring the shared settings lock', async () => {
+    test('postAgents resolves agent versions before acquiring the shared settings lock', async () => {
         let lockAcquired = false;
         const redisClient = {
             set: mock.fn(async () => {
@@ -521,7 +521,7 @@ describe('config route follow-up helpers', () => {
             eval: mock.fn(async () => 1),
         };
         const resolveVersionMock = mock.method(configManager, 'resolveVersion', async () => {
-            assert.strictEqual(lockAcquired, true);
+            assert.strictEqual(lockAcquired, false);
             return '1.2.3';
         });
 
@@ -655,8 +655,9 @@ describe('config route follow-up helpers', () => {
         assert.deepStrictEqual(result.body, { success: true });
     });
 
-    test('withConfigLock does not delete a lock that has been replaced by another owner', async () => {
+    test('withConfigLock does not delete a lock that has been replaced by another owner in the transaction fallback', async () => {
         const redisState = new Map<string, string>();
+        let watchedKey: string | null = null;
         const redisClient = {
             set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
                 if (opts.NX && redisState.has(key)) return null;
@@ -664,10 +665,25 @@ describe('config route follow-up helpers', () => {
                 return 'OK';
             }),
             get: mock.fn(async (key: string) => redisState.get(key) ?? null),
-            del: mock.fn(async (key: string) => {
-                redisState.delete(key);
-                return 1;
+            watch: mock.fn(async (key: string) => {
+                watchedKey = key;
             }),
+            unwatch: mock.fn(async () => {
+                watchedKey = null;
+            }),
+            multi: mock.fn(() => ({
+                del(key: string) {
+                    return {
+                        exec: async () => {
+                            if (watchedKey !== key || redisState.get(key) !== 'someone-else') {
+                                return null;
+                            }
+                            redisState.delete(key);
+                            return [1];
+                        },
+                    };
+                },
+            })),
         };
 
         await withConfigLock(
@@ -681,6 +697,64 @@ describe('config route follow-up helpers', () => {
         );
 
         assert.strictEqual(redisState.get('config:test:lock'), 'someone-else');
+    });
+
+    test('postRepos logs activity after releasing the repo config lock', async () => {
+        const redisState = new Map<string, string>();
+        let lockHeldDuringActivityLog: boolean | null = null;
+        const saveReposMock = mock.method(configManager, 'saveMonitoredRepos', async () => true);
+        const routes = createConfigRoutes({
+            redisClient: {
+                set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+                    if (opts.NX && redisState.has(key)) return null;
+                    redisState.set(key, value);
+                    return 'OK';
+                }),
+                publish: mock.fn(async () => 1),
+                eval: mock.fn(async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+                    const [key] = options.keys;
+                    const [lockValue, timeoutSeconds] = options.arguments;
+                    if (timeoutSeconds === undefined) {
+                        if (redisState.get(key) === lockValue) {
+                            redisState.delete(key);
+                            return 1;
+                        }
+                        return 0;
+                    }
+                    return redisState.get(key) === lockValue ? 1 : 0;
+                }),
+                lPush: mock.fn(async () => {
+                    lockHeldDuringActivityLog = redisState.has('config:repos:lock');
+                    return 1;
+                }),
+                lTrim: mock.fn(async () => 'OK'),
+            } as never,
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postRepos({
+            body: {
+                repos_to_monitor: [
+                    { name: 'integry/propr', enabled: true },
+                ],
+            },
+            user: { username: 'alice' },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 200);
+        assert.strictEqual(lockHeldDuringActivityLog, false);
+        assert.strictEqual(saveReposMock.mock.calls.length, 1);
     });
 
     test('withConfigLock reports lock loss when ownership changes during renewal', async () => {
@@ -810,6 +884,18 @@ describe('config route follow-up helpers', () => {
                 cache_read_input_tokens: 0,
             },
         });
+    });
+
+    test('parseCodexOutputToConversationResult keeps command completion events even when no output is produced', () => {
+        const result = parseCodexOutputToConversationResult([
+            '{"type":"item.started","item":{"type":"command_execution","command":"npm test"},"timestamp":"2026-05-05T00:00:00.000Z"}',
+            '{"type":"item.completed","item":{"type":"command_execution","command":"npm test","exit_code":0},"timestamp":"2026-05-05T00:00:05.000Z"}',
+        ].join('\n'));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'tool_use', toolName: 'command_execution', input: { command: 'npm test' }, timestamp: '2026-05-05T00:00:00.000Z' },
+            { type: 'tool_result', result: '', isError: false, timestamp: '2026-05-05T00:00:05.000Z' },
+        ]);
     });
 
     test('parseStoredOutputContent treats Codex error-first output as Codex, not Claude', () => {
