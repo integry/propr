@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { RedisClientType } from 'redis';
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
