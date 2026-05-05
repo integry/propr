@@ -4,19 +4,11 @@ import * as configManager from '@propr/core';
 import type { Knex } from 'knex';
 import {
   getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit,
-  updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, validatePrReviewModelValue
+  updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges
 } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
-
-interface AgentConfig {
-  id: string;
-  type: string;
-  alias: string;
-  enabled: boolean;
-  dockerImage: string;
-  configPath: string;
-  supportedModels: string[];
-}
+export { validateAgentsConfig } from './configAgentValidation.js';
+export { extractSettingSaves, type LabeledSaveDescriptor, type SettingSaveName } from './configSettings.js';
 
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
@@ -292,91 +284,6 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
     }
   );
   return true;
-}
-interface SettingFields { auto_followup_score_threshold?: unknown; auto_resolve_merge_conflicts?: unknown; pr_review_model?: unknown; ultrafix_rating_goal?: unknown; ultrafix_max_cycles?: unknown; ultrafix_pause_seconds?: unknown; }
-export type SettingSaveName = 'auto_followup_score_threshold' | 'auto_resolve_merge_conflicts' | 'pr_review_model' | 'ultrafix_rating_goal' | 'ultrafix_max_cycles' | 'ultrafix_pause_seconds';
-function validateStrictInt(raw: unknown, min: number, max: number): number | null {
-  const str = String(raw);
-  if (!/^-?\d+$/.test(str)) return null;
-  const value = Number(str);
-  if (!Number.isSafeInteger(value)) return null;
-  return (value < min || value > max) ? null : value;
-}
-async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; value?: string }> {
-  if (typeof raw !== 'string') return { error: 'pr_review_model must be a string' };
-  const val = raw.trim();
-  if (val === '' && raw.length > 0) {
-    return { error: 'pr_review_model must not be whitespace-only; use an empty string to clear' };
-  }
-  const result = await validatePrReviewModelValue(val);
-  if (!result.valid) return { error: result.error };
-  return { value: val };
-}
-export interface LabeledSaveDescriptor { name: SettingSaveName }
-export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSaveDescriptor[]; normalized: Record<string, unknown> }> {
-  const saves: LabeledSaveDescriptor[] = [];
-  const normalized: Record<string, unknown> = {};
-  if (fields.auto_followup_score_threshold !== undefined) {
-    const v = validateStrictInt(fields.auto_followup_score_threshold, 0, 9);
-    if (v === null) return { error: 'auto_followup_score_threshold must be an integer between 0 and 9', saves: [], normalized };
-    normalized.auto_followup_score_threshold = v;
-    saves.push({ name: 'auto_followup_score_threshold' });
-  }
-  if (fields.auto_resolve_merge_conflicts !== undefined) {
-    if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [], normalized };
-    const val = fields.auto_resolve_merge_conflicts;
-    normalized.auto_resolve_merge_conflicts = val;
-    saves.push({ name: 'auto_resolve_merge_conflicts' });
-  }
-  if (fields.pr_review_model !== undefined) {
-    const result = await validatePrReviewModel(fields.pr_review_model);
-    if (result.error) return { error: result.error, saves: [], normalized };
-    const val = result.value!;
-    normalized.pr_review_model = val;
-    saves.push({ name: 'pr_review_model' });
-  }
-  if (fields.ultrafix_rating_goal !== undefined) {
-    const v = validateStrictInt(fields.ultrafix_rating_goal, 1, 10);
-    if (v === null) return { error: 'ultrafix_rating_goal must be an integer between 1 and 10', saves: [], normalized };
-    normalized.ultrafix_rating_goal = v;
-    saves.push({ name: 'ultrafix_rating_goal' });
-  }
-  if (fields.ultrafix_max_cycles !== undefined) {
-    const v = validateStrictInt(fields.ultrafix_max_cycles, 1, Infinity);
-    if (v === null) return { error: 'ultrafix_max_cycles must be a positive integer', saves: [], normalized };
-    normalized.ultrafix_max_cycles = v;
-    saves.push({ name: 'ultrafix_max_cycles' });
-  }
-  if (fields.ultrafix_pause_seconds !== undefined) {
-    const v = validateStrictInt(fields.ultrafix_pause_seconds, 0, Infinity);
-    if (v === null) return { error: 'ultrafix_pause_seconds must be a non-negative integer', saves: [], normalized };
-    normalized.ultrafix_pause_seconds = v;
-    saves.push({ name: 'ultrafix_pause_seconds' });
-  }
-  return { saves, normalized };
-}
-const ALIAS_REGEX = /^[a-z0-9-]+$/;
-const VALID_AGENT_TYPES = ['claude', 'codex', 'gemini'];
-export function validateAgentsConfig(agents: AgentConfig[]): string | null {
-  if (!Array.isArray(agents)) return 'agents must be an array';
-  const seenAliases = new Set<string>();
-  for (const agent of agents) {
-    const error = validateSingleAgent(agent, seenAliases); if (error) return error;
-    seenAliases.add(agent.alias);
-  }
-  return null;
-}
-function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): string | null {
-  if (!agent.id || typeof agent.id !== 'string') return `Agent missing required 'id' field`;
-  if (!agent.type || !VALID_AGENT_TYPES.includes(agent.type)) return `Agent '${agent.id}' has invalid type. Must be one of: ${VALID_AGENT_TYPES.join(', ')}`;
-  if (!agent.alias || typeof agent.alias !== 'string') return `Agent '${agent.id}' missing required 'alias' field`;
-  if (!ALIAS_REGEX.test(agent.alias)) return `Agent '${agent.id}' has invalid alias '${agent.alias}'. Must match pattern ^[a-z0-9-]+$`;
-  if (typeof agent.enabled !== 'boolean') return `Agent '${agent.id}' missing required 'enabled' field`;
-  if (!agent.dockerImage || typeof agent.dockerImage !== 'string') return `Agent '${agent.id}' missing required 'dockerImage' field`;
-  if (!agent.configPath || typeof agent.configPath !== 'string') return `Agent '${agent.id}' missing required 'configPath' field`;
-  if (!Array.isArray(agent.supportedModels)) return `Agent '${agent.id}' missing required 'supportedModels' field`;
-  if (seenAliases.has(agent.alias)) return `Duplicate agent alias '${agent.alias}' found`;
-  return null;
 }
 export interface QueueIndexingResult { success: boolean; error?: string; jobId?: string; correlationId?: string; }
 const DELAYED_REINDEX_KEY = 'config:summarization:delayed-reindex', REINDEX_DELAY_MS = 10 * 60 * 1000;
