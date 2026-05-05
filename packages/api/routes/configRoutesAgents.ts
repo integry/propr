@@ -18,18 +18,15 @@ interface AgentsRoutesDeps {
   publishConfigUpdate: (subtype: string) => Promise<void>;
   logActivityHelper: (description: string, idSuffix: string, type: string, username?: string) => Promise<void>;
 }
-
 interface AgentConfigStore {
   loadAgents: typeof configManager.loadAgents;
   loadSettings: typeof configManager.loadSettings;
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
 }
-
 interface AgentRegistrySync {
   refresh: () => Promise<void>;
   setDefaultAgentAlias: (alias: string | null) => void;
 }
-
 interface ApplyAgentsUpdateParams {
   agents: AgentConfig[];
   processedAgents?: AgentConfig[];
@@ -40,7 +37,6 @@ interface ApplyAgentsUpdateParams {
   registry?: AgentRegistrySync;
   lock?: ConfigLockContext;
 }
-
 interface PublishAgentUpdatesParams {
   processedAgents: AgentConfig[];
   defaultChanged: boolean;
@@ -48,11 +44,9 @@ interface PublishAgentUpdatesParams {
   logActivityHelper: AgentsRoutesDeps['logActivityHelper'];
   username?: string;
 }
-
 interface PersistAgentConfigurationResult {
   settingsWereUpdated: boolean;
 }
-
 interface RollbackAgentConfigStateParams {
   configStore: AgentConfigStore;
   registry: AgentRegistrySync;
@@ -62,7 +56,6 @@ interface RollbackAgentConfigStateParams {
   lock?: ConfigLockContext;
   errorContext?: string;
 }
-
 async function rollbackAgentConfigState({
   configStore,
   registry,
@@ -94,22 +87,18 @@ async function rollbackAgentConfigState({
     return false;
   }
 }
-
 function resolveDefaultAgentAlias(processedAgents: AgentConfig[], currentDefault: string | undefined): string | undefined {
   const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
   if (enabledAgents.length === 0) return undefined;
   if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) return enabledAgents[0].alias;
   return currentDefault;
 }
-
 function requiresExplicitVersionSpec(versionType: CliVersionType): boolean {
   return versionType === 'tag' || versionType === 'specific' || versionType === 'custom';
 }
-
 function hasVersionSpec(versionSpec: string | undefined): boolean {
   return typeof versionSpec === 'string' && versionSpec.trim().length > 0;
 }
-
 function classifyVersionResolutionError(error: unknown): { message: string; status: number } {
   const message = error instanceof Error ? error.message : 'Unknown version resolution error';
   if (error instanceof TypeError || message.includes('fetch')) {
@@ -123,7 +112,6 @@ function classifyVersionResolutionError(error: unknown): { message: string; stat
   }
   return { message, status: 500 };
 }
-
 async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
   if (!Array.isArray(agents)) {
     return { error: 'agents must be an array', status: 400 };
@@ -170,7 +158,6 @@ async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; p
 
   return { processedAgents };
 }
-
 async function loadProcessedAgents(
   agents: AgentConfig[],
   providedProcessedAgents?: AgentConfig[]
@@ -186,7 +173,6 @@ async function loadProcessedAgents(
   }
   return { processedAgents: prepared.processedAgents };
 }
-
 async function persistAgentConfigurationAtomically({
   configStore,
   agents,
@@ -229,7 +215,6 @@ async function persistAgentConfigurationAtomically({
     throw error;
   }
 }
-
 async function applyCommittedAgentsUpdate({
   configStore,
   registry,
@@ -280,7 +265,6 @@ async function applyCommittedAgentsUpdate({
     return { status: 500, body: { error: 'Failed to apply agent configuration to the live registry' } };
   }
 }
-
 async function publishAgentUpdates({
   processedAgents,
   defaultChanged,
@@ -298,7 +282,6 @@ async function publishAgentUpdates({
     console.error('Failed to log agents configuration update activity:', error);
   }
 }
-
 export async function applyAgentsUpdate({
   agents,
   processedAgents: providedProcessedAgents,
@@ -359,13 +342,7 @@ export async function applyAgentsUpdate({
 
   let publishResult: { status: number; body: Record<string, unknown> } | null = null;
   try {
-    await publishAgentUpdates({
-      processedAgents,
-      defaultChanged,
-      publishConfigUpdate,
-      logActivityHelper,
-      username
-    });
+    await publishAgentUpdates({ processedAgents, defaultChanged, publishConfigUpdate, logActivityHelper, username });
   } catch (error) {
     if (lock?.hasLockBeenLost()) {
       throw error;
@@ -388,7 +365,6 @@ export async function applyAgentsUpdate({
 
 export function createAgentsRoutes(deps: AgentsRoutesDeps) {
   const { redisClient, publishConfigUpdate, logActivityHelper } = deps;
-
   async function getAgents(_req: Request, res: Response): Promise<void> {
     try {
       res.json({ agents: await configManager.loadAgents() });
@@ -397,7 +373,6 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       res.status(500).json({ error: 'Failed to load agents configuration' });
     }
   }
-
   async function postAgents(req: Request, res: Response): Promise<void> {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
@@ -415,21 +390,10 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
 
     // Agent updates share the settings lock because they may also rewrite default_agent_alias.
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
-      return applyAgentsUpdate({
-        agents: req.body.agents,
-        processedAgents: prepared.processedAgents,
-        username: req.user?.username,
-        publishConfigUpdate,
-        logActivityHelper,
-        lock
-      });
+      return applyAgentsUpdate({ agents: req.body.agents, processedAgents: prepared.processedAgents, username: req.user?.username, publishConfigUpdate, logActivityHelper, lock });
     });
 
     res.status(result.status).json(result.body);
   }
-
-  return {
-    getAgents,
-    postAgents
-  };
+  return { getAgents, postAgents };
 }
