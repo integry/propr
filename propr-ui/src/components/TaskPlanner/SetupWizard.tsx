@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Download, Loader2 } from 'lucide-react';
-import { PlannerDraft, createDraft, GenerationTrace, getDraft } from '../../api/proprApi';
+import { PlannerDraft, createDraft, GenerationTrace } from '../../api/proprApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
@@ -329,19 +329,27 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   // Preview trace polling state for context preview progress
   const [previewTrace, setPreviewTrace] = useState<GenerationTrace | undefined>(undefined);
 
-  // Poll for preview trace when context preview is loading
+  // Reuse the latest in-memory draft trace while preview is loading instead of
+  // polling the draft endpoint; the loading UI can fall back to a static trace.
   useEffect(() => {
-    if (!draftId || !contextRefresh.preview.isLoading) { if (!contextRefresh.preview.isLoading) setPreviewTrace(undefined); return; }
-    // Initialize with pending steps immediately to avoid UI flicker
-    setPreviewTrace({ steps: [{ name: 'relevance', status: 'in_progress' }, { name: 'context', status: 'pending' }] });
-    const pollTrace = async () => {
-      try { const draftData = await getDraft(draftId); if (draftData.generation_trace?.steps?.length) setPreviewTrace(draftData.generation_trace); }
-      catch (err) { console.debug('Preview trace polling error:', err); }
-    };
-    const initialPollTimeout = setTimeout(pollTrace, 500);
-    const intervalId = setInterval(pollTrace, 1000);
-    return () => { clearTimeout(initialPollTimeout); clearInterval(intervalId); };
-  }, [draftId, contextRefresh.preview.isLoading]);
+    if (!draftId || !contextRefresh.preview.isLoading) {
+      if (!contextRefresh.preview.isLoading) setPreviewTrace(undefined);
+      return;
+    }
+
+    if (draft?.generation_trace?.steps?.length) {
+      setPreviewTrace(draft.generation_trace);
+      return;
+    }
+
+    // Initialize with pending steps immediately to avoid UI flicker.
+    setPreviewTrace({
+      steps: [
+        { name: 'relevance', status: 'in_progress' },
+        { name: 'context', status: 'pending' }
+      ]
+    });
+  }, [draftId, draft?.generation_trace, contextRefresh.preview.isLoading]);
 
   const generationHandlers = useGenerationHandlers({
     draft, config, branchError,
