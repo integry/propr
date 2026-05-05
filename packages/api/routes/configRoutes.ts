@@ -47,6 +47,13 @@ function validateStringArrayResult(value: unknown, fieldName: string): Validatio
   return typeof validated === 'string' ? failure(validated) : success(validated);
 }
 
+function validateJsonObjectBody(value: unknown): ValidationResult<Record<string, unknown>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return failure('Request body must be a JSON object');
+  }
+  return success(value as Record<string, unknown>);
+}
+
 function createJsonGetHandler<T>(
   load: () => Promise<T>,
   body: (value: T) => Record<string, unknown>,
@@ -104,8 +111,13 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       body
     }: JsonPostHandlerConfig<T>
   ) => async (req: Request, res: Response): Promise<void> => {
+    const bodyValidation = validateJsonObjectBody(req.body);
+    if (!bodyValidation.ok) {
+      res.status(400).json({ error: bodyValidation.error });
+      return;
+    }
     const result = await withConfigLock(redisClient, lockKey, async () => {
-      const rawValue = pickValue(req.body as Record<string, unknown>);
+      const rawValue = pickValue(bodyValidation.value);
       const validated = validate(rawValue);
       if (!validated.ok) {
         return { status: 400, body: { error: validated.error } };

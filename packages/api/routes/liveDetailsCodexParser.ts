@@ -10,9 +10,14 @@ export interface TokenUsage {
 
 export interface ConversationResult {
   events: Array<Record<string, unknown>>;
-  todos: Array<{ status: string; content: string }>;
+  todos: TodoItem[];
   currentTask: string | null;
   tokenUsage: TokenUsage | null;
+}
+
+export interface TodoItem {
+  status: string;
+  content: string;
 }
 
 interface CodexTodoItem {
@@ -21,7 +26,7 @@ interface CodexTodoItem {
   status?: string;
 }
 
-interface PendingSubagent {
+export interface PendingSubagent {
   toolUseId: string;
   subagentType: string;
   description: string;
@@ -33,18 +38,25 @@ interface CodexEventContext {
   pendingCommandStarts: Map<string, number>;
   timestamp?: string;
 }
-interface ParseLineResult { newTodos?: Array<{ status: string; content: string }>; tokenUsage?: TokenUsage; }
-interface MessageContent {
+interface ParseLineResult { newTodos?: TodoItem[]; tokenUsage?: TokenUsage; }
+export interface ClaudeMessageContent {
   type: string; text?: string; name?: string;
-  input?: { todos?: Array<{ status: string; content: string }>; subagent_type?: string; description?: string };
+  input?: { todos?: TodoItem[]; subagent_type?: string; description?: string };
   id?: string; tool_use_id?: string; content?: unknown; is_error?: boolean;
 }
 interface Message {
   type?: string; timestamp?: string;
-  message?: { content?: MessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
+  message?: { content?: ClaudeMessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
 }
 interface ContentBlock { type: string; text?: string; content?: string; }
+
+export interface ClaudeMessageContext {
+  timestamp: string;
+  events: Array<Record<string, unknown>>;
+  pendingSubagents: Map<string, PendingSubagent>;
+  setTodos: (todos: TodoItem[]) => void;
+}
 
 function mapCodexTodoStatus(item: CodexTodoItem): 'completed' | 'in_progress' | 'pending' {
   if (item.status === 'completed' || item.completed) {
@@ -61,6 +73,12 @@ function mapCodexTodos(items: CodexTodoItem[]): Array<{ status: string; content:
     status: mapCodexTodoStatus(item),
     content: item.text || ''
   }));
+}
+
+export function deriveCurrentTask(todos: TodoItem[]): string | null {
+  return todos.find(t => t.status === 'in_progress')?.content
+    || todos.find(t => t.status === 'pending')?.content
+    || null;
 }
 
 function pushCodexToolUseEvent(
@@ -204,36 +222,6 @@ function extractTextFromContentBlocks(content: unknown): string | null {
   return textParts.length > 0 ? textParts.join('\n\n') : null;
 }
 
-function parseAssistantContent(
-  contentArray: MessageContent[],
-  events: Array<Record<string, unknown>>,
-  timestamp: string,
-  pendingSubagents: Map<string, PendingSubagent>
-): ParseLineResult {
-  let newTodos: Array<{ status: string; content: string }> | undefined;
-
-  for (const content of contentArray) {
-    if (content.type === 'text') {
-      events.push({ type: 'thought', content: content.text, timestamp });
-    } else if (content.type === 'tool_use') {
-      events.push({ type: 'tool_use', toolName: content.name, input: content.input, id: content.id, timestamp });
-      if (content.name === 'TodoWrite' && content.input?.todos) {
-        newTodos = content.input.todos;
-      }
-      if (content.name === 'Task' && content.id) {
-        pendingSubagents.set(content.id, {
-          toolUseId: content.id,
-          subagentType: content.input?.subagent_type || 'unknown',
-          description: content.input?.description || '',
-          startTimestamp: timestamp
-        });
-      }
-    }
-  }
-
-  return { newTodos };
-}
-
 function getSubagentIcon(subagentType: string): string {
   switch (subagentType.toLowerCase()) {
     case 'explore':
@@ -247,7 +235,7 @@ function getSubagentIcon(subagentType: string): string {
   }
 }
 
-function buildSubagentSummary(subagent: PendingSubagent, content: MessageContent, timestamp: string): string {
+function buildSubagentSummary(subagent: PendingSubagent, content: ClaudeMessageContent, timestamp: string): string {
   const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
   const durationSecs = Math.round(durationMs / 1000);
   const subagentOutputText = extractTextFromContentBlocks(content.content);
@@ -256,31 +244,91 @@ function buildSubagentSummary(subagent: PendingSubagent, content: MessageContent
   return subagentOutputText ? `${summaryHeader}\n\n${subagentOutputText}` : summaryHeader;
 }
 
-function parseUserContent(
-  contentArray: MessageContent[],
-  events: Array<Record<string, unknown>>,
-  timestamp: string,
-  pendingSubagents: Map<string, PendingSubagent>
-): void {
+export function appendClaudeAssistantMessageEvents(contentArray: ClaudeMessageContent[], context: ClaudeMessageContext): boolean {
+  let handled = false;
+  for (const content of contentArray) {
+    const textContent = typeof content.text === 'string'
+      ? content.text
+      : (typeof content.content === 'string' ? content.content : '');
+    if (content.type === 'text' && textContent) {
+      context.events.push({ type: 'thought', content: textContent, timestamp: context.timestamp });
+      handled = true;
+      continue;
+    }
+    if (content.type !== 'tool_use') continue;
+    context.events.push({ type: 'tool_use', toolName: content.name, input: content.input, id: content.id, timestamp: context.timestamp });
+    if (content.name === 'TodoWrite' && content.input?.todos) {
+      context.setTodos(content.input.todos);
+    }
+    if (content.name === 'Task' && content.id) {
+      context.pendingSubagents.set(content.id, {
+        toolUseId: content.id,
+        subagentType: content.input?.subagent_type || 'unknown',
+        description: content.input?.description || '',
+        startTimestamp: context.timestamp
+      });
+    }
+    handled = true;
+  }
+  return handled;
+}
+
+export function appendClaudeUserMessageEvents(contentArray: ClaudeMessageContent[], context: ClaudeMessageContext): boolean {
+  let handled = false;
   for (const content of contentArray) {
     if (content.type !== 'tool_result') continue;
-    events.push({
+    context.events.push({
       type: 'tool_result',
       toolUseId: content.tool_use_id,
       result: content.content,
       isError: content.is_error || false,
-      timestamp
+      timestamp: context.timestamp
     });
-    if (!content.tool_use_id || !pendingSubagents.has(content.tool_use_id)) continue;
-    const subagent = pendingSubagents.get(content.tool_use_id)!;
-    events.push({
-      type: 'thought',
-      content: buildSubagentSummary(subagent, content, timestamp),
-      timestamp,
-      isSubagentSummary: true
-    });
-    pendingSubagents.delete(content.tool_use_id);
+    if (content.tool_use_id && context.pendingSubagents.has(content.tool_use_id)) {
+      const subagent = context.pendingSubagents.get(content.tool_use_id)!;
+      context.events.push({
+        type: 'thought',
+        content: buildSubagentSummary(subagent, content, context.timestamp),
+        timestamp: context.timestamp,
+        isSubagentSummary: true
+      });
+      context.pendingSubagents.delete(content.tool_use_id);
+    }
+    handled = true;
   }
+  return handled;
+}
+
+function parseAssistantContent(
+  contentArray: ClaudeMessageContent[],
+  events: Array<Record<string, unknown>>,
+  timestamp: string,
+  pendingSubagents: Map<string, PendingSubagent>
+): ParseLineResult {
+  let newTodos: TodoItem[] | undefined;
+  appendClaudeAssistantMessageEvents(contentArray, {
+    timestamp,
+    events,
+    pendingSubagents,
+    setTodos: todos => {
+      newTodos = todos;
+    }
+  });
+  return { newTodos };
+}
+
+function parseUserContent(
+  contentArray: ClaudeMessageContent[],
+  events: Array<Record<string, unknown>>,
+  timestamp: string,
+  pendingSubagents: Map<string, PendingSubagent>
+): void {
+  appendClaudeUserMessageEvents(contentArray, {
+    timestamp,
+    events,
+    pendingSubagents,
+    setTodos: () => {}
+  });
 }
 
 function parseLine(
@@ -322,7 +370,7 @@ export async function parseClaudeConversationFile(conversationPath: string): Pro
 export function parseClaudeOutputToConversationResult(conversationContent: string): ConversationResult {
   const lines = conversationContent.trim().split('\n').filter(line => line.trim());
   const events: Array<Record<string, unknown>> = [];
-  let todos: Array<{ status: string; content: string }> = [];
+  let todos: TodoItem[] = [];
   const tokenUsage: TokenUsage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -344,8 +392,7 @@ export function parseClaudeOutputToConversationResult(conversationContent: strin
     }
   }
 
-  const inProgressTask = todos.find(t => t.status === 'in_progress');
-  const currentTask = inProgressTask ? inProgressTask.content : null;
+  const currentTask = deriveCurrentTask(todos);
   const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
     tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
 
@@ -359,7 +406,7 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
   }
 
   const events: Array<Record<string, unknown>> = [];
-  let todos: Array<{ status: string; content: string }> = [];
+  let todos: TodoItem[] = [];
   const pendingCommandStarts = new Map<string, number>();
 
   for (const event of parsed.conversationLog) {
@@ -384,8 +431,6 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
     }
   }
 
-  const currentTask = todos.find(t => t.status === 'in_progress')?.content
-    || todos.find(t => t.status === 'pending')?.content
-    || null;
+  const currentTask = deriveCurrentTask(todos);
   return { events, todos, currentTask, tokenUsage: buildCodexTokenUsage(parsed) };
 }
