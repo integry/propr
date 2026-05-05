@@ -31,6 +31,9 @@ function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): stri
   if (!agent.dockerImage || typeof agent.dockerImage !== 'string') return `Agent '${agent.id}' missing required 'dockerImage' field`;
   if (!agent.configPath || typeof agent.configPath !== 'string') return `Agent '${agent.id}' missing required 'configPath' field`;
   if (!Array.isArray(agent.supportedModels)) return `Agent '${agent.id}' missing required 'supportedModels' field`;
+  if (!agent.supportedModels.every(model => typeof model === 'string' && model.trim().length > 0)) {
+    return `Agent '${agent.id}' has invalid 'supportedModels'. Each supported model must be a non-empty string`;
+  }
   if (seenAliases.has(agent.alias)) return `Duplicate agent alias '${agent.alias}' found`;
   return null;
 }

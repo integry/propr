@@ -155,13 +155,15 @@ async function persistAgentConfigurationAtomically({
     );
     const settingsWereUpdated = mergedSettings !== null;
     trx = await db.transaction();
-    await upsertConfigValue(trx, 'agents', agents);
+    const transaction = trx;
+    await upsertConfigValue(transaction, 'agents', agents);
     if (settingsWereUpdated) {
       await lock?.assertLockHeld();
-      await upsertConfigValue(trx, 'settings', mergedSettings);
+      await upsertConfigValue(transaction, 'settings', mergedSettings);
     }
     await lock?.assertLockHeld();
-    await trx.commit();
+    await transaction.commit();
+    lock?.markCommitted();
     if (settingsWereUpdated) {
       configStore.handleSettingsSaveSideEffects();
     }

@@ -44,6 +44,20 @@ function validateStringArray(value: unknown, fieldName: string): string[] | stri
   return value;
 }
 
+function normalizeStringEntries(values: string[]): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
 function success<T>(value: T): ValidationResult<T> {
   return { ok: true, value };
 }
@@ -52,7 +66,7 @@ function failure<T>(error: string): ValidationResult<T> {
 }
 function validateStringArrayResult(value: unknown, fieldName: string): ValidationResult<string[]> {
   const validated = validateStringArray(value, fieldName);
-  return typeof validated === 'string' ? failure(validated) : success(validated);
+  return typeof validated === 'string' ? failure(validated) : success(normalizeStringEntries(validated));
 }
 function validateJsonObjectBody(value: unknown): ValidationResult<Record<string, unknown>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -217,11 +231,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         planner_generation_model: process.env.PLANNER_GENERATION_MODEL || ''
       };
       res.json({
-        worker_concurrency: settings.worker_concurrency || envDefaults.worker_concurrency,
-        github_user_whitelist: settings.github_user_whitelist || envDefaults.github_user_whitelist,
-        analysis_model_fast: settings.analysis_model_fast || envDefaults.analysis_model_fast,
-        planner_context_model: settings.planner_context_model || envDefaults.planner_context_model,
-        planner_generation_model: settings.planner_generation_model || envDefaults.planner_generation_model,
+        worker_concurrency: settings.worker_concurrency ?? envDefaults.worker_concurrency,
+        github_user_whitelist: settings.github_user_whitelist ?? envDefaults.github_user_whitelist,
+        analysis_model_fast: settings.analysis_model_fast ?? envDefaults.analysis_model_fast,
+        planner_context_model: settings.planner_context_model ?? envDefaults.planner_context_model,
+        planner_generation_model: settings.planner_generation_model ?? envDefaults.planner_generation_model,
         auto_followup_score_threshold: asIntegerOrDefault(autoFollowupThreshold, DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, 0, 9),
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
         pr_review_model: prReviewModel,
@@ -288,7 +302,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       res.status(400).json({ error: 'primary_processing_labels must be a non-empty array' });
       return;
     }
-    const labels = primary_processing_labels.map(l => String(l).trim()).filter(l => l.length > 0);
+    const labels = normalizeStringEntries(primary_processing_labels.map(l => String(l)));
     if (labels.length === 0) {
       res.status(400).json({ error: 'At least one valid label is required' });
       return;

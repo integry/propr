@@ -31,10 +31,18 @@ interface SaveSettingsRequest {
 
 type SaveResponse = { status: number; body: Record<string, unknown> };
 type SpecializedSettingName = SettingSaveName;
+const SPECIALIZED_SETTING_NAMES: SpecializedSettingName[] = [
+  'auto_followup_score_threshold',
+  'auto_resolve_merge_conflicts',
+  'pr_review_model',
+  'ultrafix_rating_goal',
+  'ultrafix_max_cycles',
+  'ultrafix_pause_seconds'
+];
 interface PersistSettingsRequest {
   configStore: SettingsStore;
   otherSettings: Record<string, unknown>;
-  normalizedSpecializedSettings: Record<string, unknown>;
+  normalizedSpecializedSettings: Partial<Record<SpecializedSettingName, unknown>>;
   specializedNames: SpecializedSettingName[];
   lock?: ConfigLockContext;
 }
@@ -49,6 +57,14 @@ function buildMergedSettings(previousSettings: Record<string, unknown>, updates:
   return mergedSettings;
 }
 
+function stripSpecializedSettings(settings: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = { ...settings };
+  for (const key of SPECIALIZED_SETTING_NAMES) {
+    delete sanitized[key];
+  }
+  return sanitized;
+}
+
 async function persistSettingsAtomically({
   configStore,
   otherSettings,
@@ -59,14 +75,19 @@ async function persistSettingsAtomically({
   let trx: Knex.Transaction | null = null;
   try {
     await lock?.assertLockHeld();
-    const mergedSettings = Object.keys(otherSettings).length > 0
-      ? buildMergedSettings(await configStore.loadSettings() as Record<string, unknown>, otherSettings)
+    const shouldPersistGeneralSettings = Object.keys(otherSettings).length > 0 || specializedNames.length > 0;
+    const mergedSettings = shouldPersistGeneralSettings
+      ? buildMergedSettings(
+        stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
+        otherSettings
+      )
       : null;
     trx = await db.transaction();
+    const transaction = trx;
 
     if (mergedSettings) {
       try {
-        await upsertConfigValue(trx, 'settings', mergedSettings);
+        await upsertConfigValue(transaction, 'settings', mergedSettings);
       } catch (saveError) {
         console.error('Settings save failed for general settings:', saveError);
         throw new ConfigRouteError(500, {
@@ -78,7 +99,7 @@ async function persistSettingsAtomically({
     for (const name of specializedNames) {
       try {
         await lock?.assertLockHeld();
-        await upsertConfigValue(trx, name, normalizedSpecializedSettings[name]);
+        await upsertConfigValue(transaction, name, normalizedSpecializedSettings[name]);
       } catch (saveError) {
         console.error(`Settings save failed for "${name}":`, saveError);
         throw new ConfigRouteError(500, {
@@ -88,7 +109,8 @@ async function persistSettingsAtomically({
     }
 
     await lock?.assertLockHeld();
-    await trx.commit();
+    await transaction.commit();
+    lock?.markCommitted();
     configStore.handleSettingsSaveSideEffects();
   } catch (error) {
     if (trx) {

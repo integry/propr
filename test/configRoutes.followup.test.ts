@@ -835,7 +835,8 @@ describe('config route follow-up helpers', () => {
         const result = await withConfigLock(
             redisClient as never,
             'config:test:lock',
-            async () => {
+            async lock => {
+                lock.markCommitted();
                 await new Promise(resolve => setTimeout(resolve, 5));
                 redisState.set('config:test:lock', 'someone-else');
                 await new Promise(resolve => setTimeout(resolve, 20));
@@ -844,10 +845,12 @@ describe('config route follow-up helpers', () => {
             { timeoutSeconds: 1, renewalIntervalMs: 10 },
         );
 
-        assert.strictEqual(result.status, 409);
+        assert.strictEqual(result.status, 200);
         assert.deepStrictEqual(result.body, {
-            error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
-            lock_lost: true,
+            success: true,
+            warning: 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.',
+            committed: true,
+            lock_lost_after_commit: true,
         });
     });
 
@@ -1074,5 +1077,132 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(activity.user, 'alice');
         assert.match(activity.description, /Updated PR label/);
         savePrLabelMock.mock.restore();
+    });
+
+    test('applyAgentsUpdate rejects blank supported model entries', async () => {
+        const result = await applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    dockerImage: 'new:image',
+                    configPath: '/tmp/claude',
+                    supportedModels: ['claude-sonnet-4-6', '   '],
+                },
+            ],
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+        });
+
+        assert.strictEqual(result.status, 400);
+        assert.deepStrictEqual(result.body, {
+            error: "Agent 'new-agent' has invalid 'supportedModels'. Each supported model must be a non-empty string",
+        });
+    });
+
+    test('postFollowupKeywords trims and deduplicates keywords', async () => {
+        const saveKeywordsMock = mock.method(configManager, 'saveFollowupKeywords', async (_value: string[]) => true);
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+            eval: mock.fn(async () => 1),
+            publish: mock.fn(async () => 1),
+            lPush: mock.fn(async () => 1),
+            lTrim: mock.fn(async () => 1),
+        };
+        const routes = createConfigRoutes({ redisClient: redisClient as never });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postFollowupKeywords({
+            body: { followup_keywords: ['  bug  ', 'bug', 'feature', '   '] },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 200);
+        assert.deepStrictEqual(res.body, {
+            success: true,
+            followup_keywords: ['bug', 'feature'],
+        });
+        assert.deepStrictEqual(saveKeywordsMock.mock.calls[0].arguments[0], ['bug', 'feature']);
+        saveKeywordsMock.mock.restore();
+    });
+
+    test('getSettings preserves intentionally empty persisted planner models', async () => {
+        const loadSettingsMock = mock.method(configManager, 'loadSettings', async () => ({
+            worker_concurrency: 7,
+            github_user_whitelist: ['alice'],
+            analysis_model_fast: 'fast-model',
+            planner_context_model: '',
+            planner_generation_model: '',
+        }));
+        const loadAutoFollowupScoreThresholdMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => 4);
+        const loadAutoResolveMergeConflictsMock = mock.method(configManager, 'loadAutoResolveMergeConflicts', async () => false);
+        const loadPrReviewModelMock = mock.method(configManager, 'loadPrReviewModel', async () => 'review-model');
+        const loadUltrafixRatingGoalMock = mock.method(configManager, 'loadUltrafixRatingGoal', async () => 7);
+        const loadUltrafixMaxCyclesMock = mock.method(configManager, 'loadUltrafixMaxCycles', async () => 5);
+        const loadUltrafixPauseSecondsMock = mock.method(configManager, 'loadUltrafixPauseSeconds', async () => 60);
+        const previousPlannerContextModel = process.env.PLANNER_CONTEXT_MODEL;
+        const previousPlannerGenerationModel = process.env.PLANNER_GENERATION_MODEL;
+        process.env.PLANNER_CONTEXT_MODEL = 'env-context';
+        process.env.PLANNER_GENERATION_MODEL = 'env-generation';
+
+        try {
+            const routes = createConfigRoutes({ redisClient: {} as never });
+            const res = {
+                payload: undefined as Record<string, unknown> | undefined,
+                json(body: Record<string, unknown>) {
+                    this.payload = body;
+                    return this;
+                },
+                status(_code: number) {
+                    return this;
+                },
+            };
+
+            await routes.getSettings({} as never, res as never);
+
+            assert.deepStrictEqual(res.payload, {
+                worker_concurrency: 7,
+                github_user_whitelist: ['alice'],
+                analysis_model_fast: 'fast-model',
+                planner_context_model: '',
+                planner_generation_model: '',
+                auto_followup_score_threshold: 4,
+                auto_resolve_merge_conflicts: false,
+                pr_review_model: 'review-model',
+                ultrafix_rating_goal: 7,
+                ultrafix_max_cycles: 5,
+                ultrafix_pause_seconds: 60,
+            });
+        } finally {
+            if (previousPlannerContextModel === undefined) {
+                delete process.env.PLANNER_CONTEXT_MODEL;
+            } else {
+                process.env.PLANNER_CONTEXT_MODEL = previousPlannerContextModel;
+            }
+            if (previousPlannerGenerationModel === undefined) {
+                delete process.env.PLANNER_GENERATION_MODEL;
+            } else {
+                process.env.PLANNER_GENERATION_MODEL = previousPlannerGenerationModel;
+            }
+            loadSettingsMock.mock.restore();
+            loadAutoFollowupScoreThresholdMock.mock.restore();
+            loadAutoResolveMergeConflictsMock.mock.restore();
+            loadPrReviewModelMock.mock.restore();
+            loadUltrafixRatingGoalMock.mock.restore();
+            loadUltrafixMaxCyclesMock.mock.restore();
+            loadUltrafixPauseSecondsMock.mock.restore();
+        }
     });
 });

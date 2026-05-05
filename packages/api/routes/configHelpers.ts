@@ -43,6 +43,8 @@ interface LostConfigLockDetails {
 export interface ConfigLockContext {
   assertLockHeld: () => Promise<void>;
   hasLockBeenLost: () => boolean;
+  markCommitted: () => void;
+  wasCommitted: () => boolean;
 }
 
 export class ConfigRouteError extends Error {
@@ -69,6 +71,24 @@ function buildLockLossResponse(reason: LostConfigLockDetails['reason']): { statu
     ? 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.'
     : 'Configuration update lock renewal failed before the operation completed. Verify the current configuration before retrying.';
   return { status: 409, body: { error, lock_lost: true } };
+}
+
+function buildCommittedLockLossResponse(
+  result: { status: number; body: Record<string, unknown> } | null,
+  reason: LostConfigLockDetails['reason']
+): { status: number; body: Record<string, unknown> } {
+  const warning = reason === 'ownership_lost'
+    ? 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.'
+    : 'Configuration changes were committed, but lock renewal failed afterward. Verify the current configuration before retrying.';
+  return {
+    status: result?.status ?? 409,
+    body: {
+      ...(result?.body ?? {}),
+      warning,
+      committed: true,
+      lock_lost_after_commit: true
+    }
+  };
 }
 
 function supportsAtomicLockScripting(redisClient: RedisClientType): boolean {
@@ -169,6 +189,7 @@ export async function withConfigLock(
   let renewalTimer: NodeJS.Timeout | null = null;
   let renewalStopped = false;
   const lostLock: LostConfigLockDetails = { detected: false, reason: null };
+  let committed = false;
   const markLockLost = (reason: LostConfigLockDetails['reason'], error?: unknown): void => {
     if (renewalStopped || lostLock.detected) return;
     lostLock.detected = true;
@@ -206,8 +227,13 @@ export async function withConfigLock(
         throwLockLossError();
       }
     },
-    hasLockBeenLost: () => lostLock.detected
+    hasLockBeenLost: () => lostLock.detected,
+    markCommitted: () => {
+      committed = true;
+    },
+    wasCommitted: () => committed
   };
+  let result: { status: number; body: Record<string, unknown> } | null = null;
   let lockAcquired = false;
   try {
     const acquired = await redisClient.set(lockKey, lockValue, { NX: true, EX: lockTimeout });
@@ -216,13 +242,19 @@ export async function withConfigLock(
     }
     lockAcquired = true;
     scheduleRenewal();
-    const result = await operation(context);
+    result = await operation(context);
     if (lostLock.detected) {
+      if (committed) {
+        return buildCommittedLockLossResponse(result, lostLock.reason);
+      }
       return buildLockLossResponse(lostLock.reason);
     }
     return result;
   } catch (error) {
     if (lostLock.detected) {
+      if (committed) {
+        return buildCommittedLockLossResponse(result, lostLock.reason);
+      }
       return buildLockLossResponse(lostLock.reason);
     }
     if (error instanceof ConfigRouteError) {
