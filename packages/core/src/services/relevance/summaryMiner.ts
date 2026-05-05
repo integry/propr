@@ -11,7 +11,7 @@ import {
   processBatches,
   aggregateDirectories
 } from './summaryMinerHelpers.js';
-import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
+import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
 import { updateRepositoryStatus } from './summaryMinerQueries.js';
 
 // Re-export metrics functions and types for external access
@@ -297,6 +297,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // Phase C: Directory Aggregation (if files were processed or deleted)
     if (batchResult.filesProcessed > 0 || filesToDelete.length > 0) {
+      await ensureIndexingProgress(fullName, branch);
       await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, branch });
     }
 

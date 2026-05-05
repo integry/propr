@@ -175,6 +175,26 @@ describe('useRepositoryManagement', () => {
         eventType: 'indexing_update',
         repository: 'integry/propr',
         branch: 'release/2026',
+        phase: 'completed',
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      full_name: 'integry/propr',
+      branch: 'release/2026',
+      indexing_status: 'completed',
+      progress: {
+        phase: 'completed',
+        percentComplete: 100
+      }
+    });
+
+    await act(async () => {
+      socketState.indexingHandler?.({
+        eventType: 'indexing_update',
+        repository: 'integry/propr',
+        branch: 'release/2026',
         phase: 'idle',
         timestamp: new Date().toISOString()
       });

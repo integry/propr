@@ -119,6 +119,16 @@ export async function initIndexingProgress(repository: string, totalFiles: numbe
 }
 
 /**
+ * Ensure a progress record exists before entering directory-only work.
+ * If a record already exists from file processing, keep it intact.
+ */
+export async function ensureIndexingProgress(repository: string, branch = 'HEAD'): Promise<void> {
+  const existing = await getIndexingProgress(repository, branch);
+  if (existing) return;
+  await initIndexingProgress(repository, 0, branch);
+}
+
+/**
  * Update progress after processing a batch.
  * Returns the updated progress so callers can pass it to publishProgress
  * without an extra Redis read.
@@ -254,9 +264,15 @@ export async function publishProgress(repository: string, branch: string, progre
  * Publish an indexing status change (e.g., indexing, completed, failed, idle) to WebSocket clients.
  */
 export async function publishIndexingStatus(repository: string, branch: string, phase: IndexingPhase): Promise<void> {
-  await getEventPublisher().publishIndexingUpdate({
+  const payload = {
     repository,
     branch,
     phase,
-  });
+  };
+
+  if (phase === 'completed') {
+    payload.progress = 100;
+  }
+
+  await getEventPublisher().publishIndexingUpdate(payload);
 }

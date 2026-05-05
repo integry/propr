@@ -7,6 +7,8 @@ export interface MonitoredRepoConfig {
 export interface QueueIndexingDecision {
   success: boolean;
   error?: string;
+  jobId?: string;
+  correlationId?: string;
 }
 
 const REPOSITORY_NAME_REGEX = /^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/;
@@ -29,7 +31,7 @@ function validateRepositoryName(repository: unknown): string | null {
 }
 
 export function validateIndexingInput(body: Record<string, unknown>): string | null {
-  const { repository, baseBranch } = body;
+  const { repository, baseBranch, fullReindex } = body;
   const repositoryError = validateRepositoryName(repository);
   if (repositoryError) {
     return repositoryError;
@@ -37,8 +39,15 @@ export function validateIndexingInput(body: Record<string, unknown>): string | n
   if (baseBranch !== undefined && typeof baseBranch !== 'string') {
     return 'baseBranch must be a string';
   }
+  if (fullReindex !== undefined && typeof fullReindex !== 'boolean') {
+    return 'fullReindex must be a boolean';
+  }
 
   return null;
+}
+
+export function shouldPublishOptimisticIndexing(result: QueueIndexingDecision): boolean {
+  return result.success;
 }
 
 export function validateStopIndexingInput(body: Record<string, unknown>): string | null {

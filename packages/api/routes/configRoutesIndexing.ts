@@ -3,7 +3,7 @@ import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
 import { queueResummarizationForAllRepos, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex, stopIndexingJob } from './configHelpers.js';
-import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
+import { shouldPublishOptimisticIndexing, validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 
 interface IndexingRoutesDeps {
   redisClient: RedisClientType;
@@ -33,7 +33,8 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
-      const result = await queueIndexingJob(repository, !!fullReindex, baseBranch);
+      const shouldRunFullReindex = fullReindex === true;
+      const result = await queueIndexingJob(repository, shouldRunFullReindex, baseBranch);
       if (!result.success) {
         const isAlreadyQueued = result.error?.includes('already queued');
         const statusCode = isAlreadyQueued ? 409 : 400;
@@ -42,18 +43,20 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       }
 
       // Best-effort optimistic status for newly accepted jobs only.
-      try {
-        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
-      } catch (pubErr) {
-        console.warn('Failed to publish optimistic indexing status:', pubErr);
+      if (shouldPublishOptimisticIndexing(result)) {
+        try {
+          await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+        } catch (pubErr) {
+          console.warn('Failed to publish optimistic indexing status:', pubErr);
+        }
       }
 
       await logActivityHelper(
-        `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
+        `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
         'indexing-trigger', 'indexing_triggered', req.user?.username
       );
 
-      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: !!fullReindex, baseBranch });
+      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch });
     } catch (error) {
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });

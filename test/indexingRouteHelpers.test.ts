@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import {
   getEnabledResummarizationTargets,
   shouldPublishOptimisticIndexing,
+  validateIndexingInput,
   validateStopIndexingInput
 } from '../packages/api/routes/indexingRouteHelpers.ts';
 
@@ -28,6 +29,17 @@ describe('indexingRouteHelpers', () => {
         error: 'Indexing job already queued for this repository and branch'
       }),
       false
+    );
+  });
+
+  test('rejects non-boolean fullReindex values', () => {
+    assert.strictEqual(
+      validateIndexingInput({ repository: 'integry/propr', fullReindex: 'yes' }),
+      'fullReindex must be a boolean'
+    );
+    assert.strictEqual(
+      validateIndexingInput({ repository: 'integry/propr', fullReindex: true }),
+      null
     );
   });
 
