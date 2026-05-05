@@ -2,7 +2,6 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert';
 import {
   getEnabledResummarizationTargets,
-  shouldPublishOptimisticIndexing,
   validateIndexingInput,
   validateStopIndexingInput
 } from '../packages/api/routes/indexingRouteHelpers.ts';
@@ -21,17 +20,6 @@ describe('indexingRouteHelpers', () => {
     ]);
   });
 
-  test('only publishes optimistic indexing for newly accepted jobs', () => {
-    assert.strictEqual(shouldPublishOptimisticIndexing({ success: true }), true);
-    assert.strictEqual(
-      shouldPublishOptimisticIndexing({
-        success: false,
-        error: 'Indexing job already queued for this repository and branch'
-      }),
-      false
-    );
-  });
-
   test('rejects non-boolean fullReindex values', () => {
     assert.strictEqual(
       validateIndexingInput({ repository: 'integry/propr', fullReindex: 'yes' }),
@@ -43,8 +31,18 @@ describe('indexingRouteHelpers', () => {
     );
   });
 
+  test('rejects non-object indexing request bodies', () => {
+    assert.strictEqual(validateIndexingInput(null), 'request body must be a JSON object');
+    assert.strictEqual(validateIndexingInput('integry/propr'), 'request body must be a JSON object');
+  });
+
   test('rejects non-string stop-indexing branches', () => {
     assert.strictEqual(validateStopIndexingInput({ repository: 'integry/propr', branch: 42 }), 'branch must be a string');
     assert.strictEqual(validateStopIndexingInput({ repository: 'integry/propr', branch: 'release/2026' }), null);
+  });
+
+  test('rejects non-object stop-indexing request bodies', () => {
+    assert.strictEqual(validateStopIndexingInput(null), 'request body must be a JSON object');
+    assert.strictEqual(validateStopIndexingInput(['integry/propr']), 'request body must be a JSON object');
   });
 });

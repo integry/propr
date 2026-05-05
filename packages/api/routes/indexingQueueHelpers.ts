@@ -1,5 +1,4 @@
 import { RedisClientType } from 'redis';
-import * as configManager from '@propr/core';
 import {
   getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit,
   updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges
@@ -12,6 +11,13 @@ export interface QueueIndexingResult {
   error?: string;
   jobId?: string;
   correlationId?: string;
+}
+
+export interface StopIndexingResult {
+  success: boolean;
+  message?: string;
+  cancelledActiveBranches: string[];
+  removedQueuedBranches: string[];
 }
 
 interface QueueResummarizationForRepoOptions {
@@ -200,16 +206,12 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
     { repository, repoPath, correlationId, priority: 'high', fullReindex, baseBranch },
     { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
   );
+  await updateRepositoryStatus(repository, 'indexing', effectiveBranch);
 
   return { success: true, jobId: job.id, correlationId };
 }
 
-export async function stopIndexingJob(repository: string, branch?: string): Promise<{
-  success: boolean;
-  message?: string;
-  cancelledActiveBranches: string[];
-  removedQueuedBranches: string[];
-}> {
+export async function stopIndexingJob(repository: string, branch?: string): Promise<StopIndexingResult> {
   try {
     const queue = await getIndexingQueue();
     const jobs = await queue.getJobs(['active', 'waiting', 'delayed']);
@@ -232,28 +234,12 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
           await requestIndexingCancellation(repository, jobBranch);
           await updateRepositoryStatus(repository, 'idle', jobBranch);
           cancelledActiveBranches.push(jobBranch);
-        } else {
-          await job.remove();
-          await updateRepositoryStatus(repository, 'idle', jobBranch);
-          removedQueuedBranches.push(jobBranch);
+          continue;
         }
-      }
-    } else if (branch) {
-      await updateRepositoryStatus(repository, 'idle', branch);
-      removedQueuedBranches.push(branch);
-    } else {
-      const statuses = await configManager.getRepositoriesIndexingStatus();
-      const repoStatuses = statuses.filter(
-        (s: { full_name: string }) => s.full_name === repository
-      );
-      for (const s of repoStatuses) {
-        const statusBranch = s.branch || 'HEAD';
-        await updateRepositoryStatus(repository, 'idle', statusBranch);
-        removedQueuedBranches.push(statusBranch);
-      }
-      if (repoStatuses.length === 0) {
-        await updateRepositoryStatus(repository, 'idle', 'HEAD');
-        removedQueuedBranches.push('HEAD');
+
+        await job.remove();
+        await updateRepositoryStatus(repository, 'idle', jobBranch);
+        removedQueuedBranches.push(jobBranch);
       }
     }
 

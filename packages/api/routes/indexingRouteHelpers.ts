@@ -23,7 +23,15 @@ function validateRepositoryName(repository: unknown): string | null {
   return null;
 }
 
-export function validateIndexingInput(body: Record<string, unknown>): string | null {
+function validateRequestBody(body: unknown): body is Record<string, unknown> {
+  return typeof body === 'object' && body !== null && !Array.isArray(body);
+}
+
+export function validateIndexingInput(body: unknown): string | null {
+  if (!validateRequestBody(body)) {
+    return 'request body must be a JSON object';
+  }
+
   const { repository, baseBranch, fullReindex } = body;
   const repositoryError = validateRepositoryName(repository);
   if (repositoryError) {
@@ -39,7 +47,11 @@ export function validateIndexingInput(body: Record<string, unknown>): string | n
   return null;
 }
 
-export function validateStopIndexingInput(body: Record<string, unknown>): string | null {
+export function validateStopIndexingInput(body: unknown): string | null {
+  if (!validateRequestBody(body)) {
+    return 'request body must be a JSON object';
+  }
+
   const { repository, branch } = body;
   const repositoryError = validateRepositoryName(repository);
   if (repositoryError) {
@@ -50,8 +62,4 @@ export function validateStopIndexingInput(body: Record<string, unknown>): string
   }
 
   return null;
-}
-
-export function shouldPublishOptimisticIndexing(result: { success: boolean; error?: string }): boolean {
-  return result.success && !result.error?.includes('already queued');
 }

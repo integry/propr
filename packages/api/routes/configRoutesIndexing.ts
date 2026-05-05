@@ -26,13 +26,17 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
   async function triggerIndexing(req: Request, res: Response): Promise<void> {
     try {
-      const { repository, fullReindex, baseBranch } = req.body;
       const validationError = validateIndexingInput(req.body);
       if (validationError) {
         res.status(400).json({ error: validationError });
         return;
       }
 
+      const { repository, fullReindex, baseBranch } = req.body as {
+        repository: string;
+        fullReindex?: boolean;
+        baseBranch?: string;
+      };
       const shouldRunFullReindex = fullReindex === true;
       const result = await queueIndexingJob(repository, shouldRunFullReindex, baseBranch);
       if (!result.success) {
@@ -105,7 +109,10 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
-      const { repository, branch } = req.body;
+      const { repository, branch } = req.body as {
+        repository: string;
+        branch?: string;
+      };
       const result = await stopIndexingJob(repository, branch);
 
       if (!result.success) {
