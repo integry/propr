@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import * as configManager from '../packages/core/src/index.ts';
 import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/configRoutesAgents.ts';
 import { normalizeAgentsConfig } from '../packages/api/routes/configHelpers.ts';
-import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
+import { queueResummarizationForAllRepos, withConfigLock } from '../packages/api/routes/configHelpers.ts';
 import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { appendClaudeUserMessageEvents, parseClaudeOutputToConversationResult, parseCodexOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
@@ -1846,6 +1846,98 @@ describe('config route follow-up helpers', () => {
         });
         assert.strictEqual(redisState.get('config:keywords:lock'), 'someone-else');
         saveKeywordsMock.mock.restore();
+    });
+
+    test('postFollowupKeywords reports lock loss instead of a committed save when publish fails before completion', async () => {
+        const redisState = new Map<string, string>();
+        const saveKeywordsMock = mock.method(configManager, 'saveFollowupKeywords', async (_value: string[]) => true);
+        const routes = createConfigRoutes({
+            redisClient: {
+                set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+                    if (opts.NX && redisState.has(key)) return null;
+                    redisState.set(key, value);
+                    return 'OK';
+                }),
+                eval: mock.fn(async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+                    const [key] = options.keys;
+                    const [lockValue, timeoutSeconds] = options.arguments;
+                    if (timeoutSeconds === undefined) {
+                        if (redisState.get(key) === lockValue) {
+                            redisState.delete(key);
+                            return 1;
+                        }
+                        return 0;
+                    }
+                    return redisState.get(key) === lockValue ? 1 : 0;
+                }),
+                publish: mock.fn(async () => {
+                    redisState.set('config:keywords:lock', 'someone-else');
+                    throw new Error('publish failed');
+                }),
+                lPush: mock.fn(async () => 1),
+                lTrim: mock.fn(async () => 1),
+            } as never,
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postFollowupKeywords({
+            body: { followup_keywords: ['bug'] },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 409);
+        assert.deepStrictEqual(res.body, {
+            error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
+            lock_lost: true,
+        });
+        saveKeywordsMock.mock.restore();
+    });
+
+    test('queueResummarizationForAllRepos uses enabled raw repo names when scheduling jobs', async () => {
+        const loadReposMock = mock.method(configManager, 'loadMonitoredReposRaw', async () => ([
+            { id: '1', name: 'acme/alpha', enabled: true },
+            { id: '2', name: 'acme/beta', enabled: false },
+            { id: '3', name: 'acme/gamma', enabled: true },
+        ]));
+        const octokitMock = mock.method(configManager, 'getAuthenticatedOctokit', async () => ({
+            auth: async () => ({ token: 'test-token' }),
+        } as never));
+        const ensureRepoClonedMock = mock.method(configManager, 'ensureRepoCloned', async ({ owner, repoName }: { owner: string; repoName: string }) => `/tmp/${owner}-${repoName}`);
+        const fetchLatestChangesMock = mock.method(configManager, 'fetchLatestChanges', async () => ({ success: true }));
+        const getRepoUrlMock = mock.method(configManager, 'getRepoUrl', ({ repoOwner, repoName }: { repoOwner: string; repoName: string }) => `https://example.com/${repoOwner}/${repoName}.git`);
+        const queueAdds: Array<{ repository: string }> = [];
+        const getIndexingQueueMock = mock.method(configManager, 'getIndexingQueue', async () => ({
+            getJobs: async () => [],
+            add: async (_name: string, data: { repository: string }) => {
+                queueAdds.push({ repository: data.repository });
+            },
+        } as never));
+
+        try {
+            const queued = await queueResummarizationForAllRepos();
+            assert.strictEqual(queued, 2);
+            assert.deepStrictEqual(queueAdds, [
+                { repository: 'acme/alpha' },
+                { repository: 'acme/gamma' },
+            ]);
+        } finally {
+            loadReposMock.mock.restore();
+            octokitMock.mock.restore();
+            ensureRepoClonedMock.mock.restore();
+            fetchLatestChangesMock.mock.restore();
+            getRepoUrlMock.mock.restore();
+            getIndexingQueueMock.mock.restore();
+        }
     });
 
     test('postRepos reports committed state when publish fails after save', async () => {

@@ -1,11 +1,12 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
-import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
+import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
 import type { Knex } from 'knex';
 
 interface SettingsStore {
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
   loadSettings: typeof configManager.loadSettings;
+  loadSettingsRecord?: () => Promise<Record<string, unknown>>;
 }
 
 interface SaveSettingsRequest {
@@ -40,7 +41,7 @@ async function persistSettingsAtomically({
     const generalSettingsPatch = Object.keys(otherSettings).length > 0 ? otherSettings : {};
     const mergedSettings = shouldRewriteGeneralSettings
       ? buildMergedSettings(
-        stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
+        stripSpecializedSettings(await loadPersistedSettingsRecord(configStore)),
         generalSettingsPatch
       )
       : null;

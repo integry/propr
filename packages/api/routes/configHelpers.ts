@@ -163,6 +163,22 @@ export function stripSpecializedSettings(settings: Record<string, unknown>): Rec
   }
   return sanitized;
 }
+export async function loadPersistedSettingsRecord(configStore: {
+  loadSettings: typeof configManager.loadSettings;
+  loadSettingsRecord?: () => Promise<Record<string, unknown>>;
+}): Promise<Record<string, unknown>> {
+  if (typeof configStore.loadSettingsRecord === 'function') {
+    return configStore.loadSettingsRecord();
+  }
+  if (configStore === configManager) {
+    return configManager.getConfig<Record<string, unknown>>('settings', {});
+  }
+  const settings = await configStore.loadSettings();
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    return {};
+  }
+  return { ...(settings as Record<string, unknown>) };
+}
 export async function withConfigLock(redisClient: RedisClientType, lockKey: string, operation: (context: ConfigLockContext) => Promise<{ status: number; body: Record<string, unknown> }>, options: ConfigLockOptions = {}): Promise<{ status: number; body: Record<string, unknown> }> {
   const lockValue = `${Date.now()}-${Math.random()}`;
   const lockTimeout = options.timeoutSeconds ?? DEFAULT_LOCK_TIMEOUT_SECONDS;
@@ -250,11 +266,11 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
   }
 }
 export async function queueResummarizationForAllRepos(): Promise<number> {
-  const monitoredRepos = await configManager.loadMonitoredRepos();
+  const monitoredRepos = await configManager.loadMonitoredReposRaw();
   const octokit = await getAuthenticatedOctokit();
   const { token } = await octokit.auth({ type: "installation" }) as { token: string };
   let repositoriesQueued = 0;
-  for (const repoFullName of monitoredRepos) {
+  for (const repoFullName of monitoredRepos.filter(repo => repo.enabled).map(repo => repo.name)) {
     if (await queueResummarizationForRepo(repoFullName, token)) repositoriesQueued++;
   }
   return repositoriesQueued;

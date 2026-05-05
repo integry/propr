@@ -159,6 +159,71 @@ test('saveSettingsWithRollback scrubs specialized keys from the general settings
   }
 });
 
+test('saveSettingsWithRollback preserves unknown stored settings keys when the public loader is filtered', async () => {
+  const originalTransaction = db.transaction.bind(db);
+  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const writes = new Map<string, unknown>();
+
+  const trx = Object.assign(
+    ((table: string) => ({
+      insert: (row: { key: string; value: string }) => ({
+        onConflict: (_column: string) => ({
+          merge: async () => {
+            assert.equal(table, 'system_configs');
+            writes.set(row.key, JSON.parse(row.value));
+          }
+        })
+      })
+    })) as unknown as typeof db,
+    {
+      commit: async () => {},
+      rollback: async () => {}
+    }
+  );
+
+  testDb.transaction = async () => trx as never;
+
+  try {
+    const result = await saveSettingsWithRollback({
+      settings: {
+        planner_context_model: 'gpt-5'
+      },
+      publishConfigUpdate: async () => {},
+      configStore: {
+        loadSettings: async () => ({
+          planner_context_model: 'old-value'
+        }),
+        loadSettingsRecord: async () => ({
+          planner_context_model: 'old-value',
+          keep_unknown: { nested: true },
+          ultrafix_rating_goal: 6
+        }),
+        handleSettingsSaveSideEffects: () => {},
+        loadAutoFollowupScoreThreshold: async () => 4,
+        saveAutoFollowupScoreThreshold: async () => true,
+        loadAutoResolveMergeConflicts: async () => false,
+        saveAutoResolveMergeConflicts: async () => true,
+        loadPrReviewModel: async () => '',
+        savePrReviewModel: async () => true,
+        loadUltrafixRatingGoal: async () => 6,
+        saveUltrafixRatingGoal: async () => true,
+        loadUltrafixMaxCycles: async () => 5,
+        saveUltrafixMaxCycles: async () => true,
+        loadUltrafixPauseSeconds: async () => 60,
+        saveUltrafixPauseSeconds: async () => true
+      }
+    });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(writes.get('settings'), {
+      planner_context_model: 'gpt-5',
+      keep_unknown: { nested: true }
+    });
+  } finally {
+    testDb.transaction = originalTransaction;
+  }
+});
+
 test('saveSettingsWithRollback reports committed state when post-commit side effects fail', async () => {
   const originalTransaction = db.transaction.bind(db);
   const testDb = db as typeof db & { transaction: typeof db.transaction };
@@ -585,6 +650,72 @@ test('applyAgentsUpdate scrubs specialized settings when rewriting default_agent
     assert.deepEqual(writes.get('settings'), {
       default_agent_alias: 'new-default',
       keep: 'unchanged'
+    });
+  } finally {
+    testDb.transaction = originalTransaction;
+  }
+});
+
+test('applyAgentsUpdate preserves unknown stored settings keys when updating default_agent_alias', async () => {
+  const originalTransaction = db.transaction.bind(db);
+  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const writes = new Map<string, unknown>();
+
+  const trx = Object.assign(
+    ((table: string) => ({
+      insert: (row: { key: string; value: string }) => ({
+        onConflict: (_column: string) => ({
+          merge: async () => {
+            assert.equal(table, 'system_configs');
+            writes.set(row.key, JSON.parse(row.value));
+          }
+        })
+      })
+    })) as unknown as typeof db,
+    {
+      commit: async () => {},
+      rollback: async () => {}
+    }
+  );
+
+  testDb.transaction = async () => trx as never;
+
+  try {
+    const result = await applyAgentsUpdate({
+      agents: [
+        {
+          id: 'new-agent',
+          alias: 'new-default',
+          type: 'claude',
+          enabled: true,
+          configPath: '/tmp/claude',
+          supportedModels: []
+        }
+      ],
+      publishConfigUpdate: async () => {},
+      logActivityHelper: async () => {},
+      configStore: {
+        loadAgents: async () => [],
+        loadSettings: async () => ({
+          default_agent_alias: 'old-default'
+        }),
+        loadSettingsRecord: async () => ({
+          default_agent_alias: 'old-default',
+          keep_unknown: ['still-here'],
+          pr_review_model: 'stale-model'
+        }),
+        handleSettingsSaveSideEffects: async () => {}
+      },
+      registry: {
+        refresh: async () => {},
+        setDefaultAgentAlias: (_alias: string | null) => {}
+      }
+    });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(writes.get('settings'), {
+      default_agent_alias: 'new-default',
+      keep_unknown: ['still-here']
     });
   } finally {
     testDb.transaction = originalTransaction;

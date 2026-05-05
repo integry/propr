@@ -109,12 +109,12 @@ async function saveThenPublishConfigUpdate({
   successBody: Record<string, unknown>;
 }): Promise<{ status: number; body: Record<string, unknown> }> {
   await save();
-  lock?.markCommitted();
   try {
     await publish();
   } catch {
     return { status: 500, body: { error: committedErrorMessage, committed: true } };
   }
+  lock?.markCommitted();
   return { status: 200, body: successBody };
 }
 

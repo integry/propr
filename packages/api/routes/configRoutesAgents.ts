@@ -11,7 +11,7 @@ import {
 } from '@propr/core';
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
-import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, type ConfigLockContext } from './configHelpers.js';
+import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 
 interface AgentsRoutesDeps {
   redisClient: RedisClientType;
@@ -21,6 +21,7 @@ interface AgentsRoutesDeps {
 interface AgentConfigStore {
   loadAgents: typeof configManager.loadAgents;
   loadSettings: typeof configManager.loadSettings;
+  loadSettingsRecord?: () => Promise<Record<string, unknown>>;
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
 }
 interface AgentRegistrySync {
@@ -189,7 +190,7 @@ async function persistAgentConfigurationAtomically({
   try {
     await lock?.assertLockHeld();
     const mergedSettings = buildMergedSettings(
-      stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
+      stripSpecializedSettings(await loadPersistedSettingsRecord(configStore)),
       settingsPatch
     );
     const settingsWereUpdated = mergedSettings !== null;
