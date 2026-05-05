@@ -107,12 +107,16 @@ function createSpecializedSaves(
 
 async function createGeneralRollbackActions(
   configStore: SettingsStore,
-  hasGeneralSettings: boolean
+  hasGeneralSettings: boolean,
+  lock?: ConfigLockContext
 ): Promise<RollbackActionMap> {
   const rollbackActions: RollbackActionMap = new Map();
   if (hasGeneralSettings) {
     const previousSettings = await configStore.loadSettings();
-    rollbackActions.set('general', () => configStore.saveConfig('settings', previousSettings));
+    rollbackActions.set('general', async () => {
+      await lock?.assertLockHeld();
+      return configStore.saveConfig('settings', previousSettings);
+    });
   }
   return rollbackActions;
 }
@@ -120,7 +124,8 @@ async function createGeneralRollbackActions(
 async function rollbackCommittedSettings(
   committedNames: Array<'general' | SpecializedSettingName>,
   rollbackActions: RollbackActionMap,
-  failedName: SpecializedSettingName
+  failedName: SpecializedSettingName,
+  lock?: ConfigLockContext
 ): Promise<boolean> {
   let rollbackFailed = false;
   for (const name of committedNames.slice().reverse()) {
@@ -129,8 +134,12 @@ async function rollbackCommittedSettings(
       continue;
     }
     try {
+      await lock?.assertLockHeld();
       await rollback();
     } catch (rollbackError) {
+      if (lock?.hasLockBeenLost()) {
+        throw rollbackError;
+      }
       rollbackFailed = true;
       console.error(`Failed to roll back settings after "${failedName}" save failure (target: "${name}")`, rollbackError);
     }
@@ -151,6 +160,9 @@ async function saveGeneralSettings(
     await configStore.saveSettings(otherSettings);
     return null;
   } catch (saveError) {
+    if (lock?.hasLockBeenLost()) {
+      throw saveError;
+    }
     console.error('Settings save failed for general settings:', saveError);
     return {
       status: 500,
@@ -206,7 +218,7 @@ export async function saveSettingsWithRollback({
     extracted.saves.map(({ name }) => name as SpecializedSettingName),
     extracted.normalized
   );
-  const rollbackActions = await createGeneralRollbackActions(configStore, hasGeneralSettings);
+  const rollbackActions = await createGeneralRollbackActions(configStore, hasGeneralSettings, lock);
   const generalSettingsSaveError = await saveGeneralSettings(configStore, otherSettings, lock);
   if (generalSettingsSaveError) {
     return generalSettingsSaveError;
@@ -217,13 +229,19 @@ export async function saveSettingsWithRollback({
     try {
       await lock?.assertLockHeld();
       const previousValue = await loadSpecializedValue(configStore, save.name);
-      rollbackActions.set(save.name, () => saveSpecializedValue(configStore, save.name, previousValue));
+      rollbackActions.set(save.name, async () => {
+        await lock?.assertLockHeld();
+        return saveSpecializedValue(configStore, save.name, previousValue);
+      });
       await save.execute();
       committedNames.push(save.name);
     } catch (saveError) {
       const failedName = save.name;
       console.error(`Settings save failed for "${failedName}" (already committed: [${committedNames.join(', ')}]):`, saveError);
-      const rollbackFailed = await rollbackCommittedSettings(committedNames, rollbackActions, failedName);
+      if (lock?.hasLockBeenLost()) {
+        throw saveError;
+      }
+      const rollbackFailed = await rollbackCommittedSettings(committedNames, rollbackActions, failedName, lock);
 
       if (!rollbackFailed) {
         return {

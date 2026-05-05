@@ -31,6 +31,7 @@ interface AgentRegistrySync {
 
 interface ApplyAgentsUpdateParams {
   agents: AgentConfig[];
+  processedAgents?: AgentConfig[];
   username?: string;
   publishConfigUpdate: AgentsRoutesDeps['publishConfigUpdate'];
   logActivityHelper: AgentsRoutesDeps['logActivityHelper'];
@@ -45,6 +46,7 @@ interface RollbackAgentConfigStateParams {
   previousAgents: AgentConfig[];
   currentDefault: string | undefined;
   defaultChanged: boolean;
+  lock?: ConfigLockContext;
   errorContext?: string;
 }
 
@@ -54,17 +56,25 @@ async function rollbackAgentConfigState({
   previousAgents,
   currentDefault,
   defaultChanged,
+  lock,
   errorContext
 }: RollbackAgentConfigStateParams): Promise<boolean> {
   try {
+    await lock?.assertLockHeld();
     await configStore.saveAgents(previousAgents);
     if (defaultChanged) {
+      await lock?.assertLockHeld();
       await configStore.saveSettings({ default_agent_alias: currentDefault } as Record<string, unknown>);
     }
+    await lock?.assertLockHeld();
     await registry.refresh();
+    await lock?.assertLockHeld();
     registry.setDefaultAgentAlias(currentDefault ?? null);
     return true;
   } catch (rollbackError) {
+    if (lock?.hasLockBeenLost()) {
+      throw rollbackError;
+    }
     console.error(errorContext ?? 'Failed to roll back agent configuration after agents update failure:', rollbackError);
     return false;
   }
@@ -77,18 +87,10 @@ function resolveDefaultAgentAlias(processedAgents: AgentConfig[], currentDefault
   return currentDefault;
 }
 
-export async function applyAgentsUpdate({
-  agents,
-  username,
-  publishConfigUpdate,
-  logActivityHelper,
-  configStore = configManager,
-  registry = AgentRegistry.getInstance(),
-  lock
-}: ApplyAgentsUpdateParams): Promise<{ status: number; body: Record<string, unknown> }> {
+async function prepareAgentsUpdate(agents: AgentConfig[]): Promise<{ error?: string; processedAgents?: AgentConfig[] }> {
   const validationError = validateAgentsConfig(agents);
   if (validationError) {
-    return { status: 400, body: { error: validationError } };
+    return { error: validationError };
   }
 
   const processedAgents: AgentConfig[] = [];
@@ -114,6 +116,31 @@ export async function applyAgentsUpdate({
     processedAgents.push(processedAgent);
   }
 
+  return { processedAgents };
+}
+
+export async function applyAgentsUpdate({
+  agents,
+  processedAgents: providedProcessedAgents,
+  username,
+  publishConfigUpdate,
+  logActivityHelper,
+  configStore = configManager,
+  registry = AgentRegistry.getInstance(),
+  lock
+}: ApplyAgentsUpdateParams): Promise<{ status: number; body: Record<string, unknown> }> {
+  let processedAgents = providedProcessedAgents;
+  if (!processedAgents) {
+    const prepared = await prepareAgentsUpdate(agents);
+    if (prepared.error) {
+      return { status: 400, body: { error: prepared.error } };
+    }
+    processedAgents = prepared.processedAgents;
+  }
+  if (!processedAgents) {
+    return { status: 500, body: { error: 'Failed to prepare agent configuration update' } };
+  }
+
   const previousAgents = await configStore.loadAgents();
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
@@ -133,6 +160,7 @@ export async function applyAgentsUpdate({
       previousAgents,
       currentDefault,
       defaultChanged: newDefault !== currentDefault,
+      lock,
       errorContext: 'Failed to roll back persisted agent configuration after save failure:'
     });
     console.error('Failed to sync default agent alias after agents update:', syncError);
@@ -149,7 +177,9 @@ export async function applyAgentsUpdate({
   }
 
   try {
+    await lock?.assertLockHeld();
     await registry.refresh();
+    await lock?.assertLockHeld();
     registry.setDefaultAgentAlias(newDefault ?? null);
   } catch (refreshError) {
     const rollbackSucceeded = await rollbackAgentConfigState({
@@ -158,6 +188,7 @@ export async function applyAgentsUpdate({
       previousAgents,
       currentDefault,
       defaultChanged: newDefault !== currentDefault,
+      lock,
       errorContext: 'Failed to roll back agent configuration after registry refresh failure:'
     });
     console.error('Failed to refresh agent registry after agents update:', refreshError);
@@ -203,15 +234,20 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
       return;
     }
-    const validationError = validateAgentsConfig(req.body.agents);
-    if (validationError) {
-      res.status(400).json({ error: validationError });
+    const prepared = await prepareAgentsUpdate(req.body.agents);
+    if (prepared.error) {
+      res.status(400).json({ error: prepared.error });
+      return;
+    }
+    if (!prepared.processedAgents) {
+      res.status(500).json({ error: 'Failed to prepare agent configuration update' });
       return;
     }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
       return applyAgentsUpdate({
         agents: req.body.agents,
+        processedAgents: prepared.processedAgents,
         username: req.user?.username,
         publishConfigUpdate,
         logActivityHelper,
