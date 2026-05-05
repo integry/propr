@@ -641,6 +641,95 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
     });
 
+    test('postAgents rejects null agent entries with a 400 before acquiring the shared settings lock', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+        };
+        const routes = createAgentsRoutes({
+            redisClient: redisClient as never,
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postAgents({ body: { agents: [null] } } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 400);
+        assert.deepStrictEqual(res.body, { error: 'Each agent must be an object' });
+        assert.strictEqual(redisClient.set.mock.calls.length, 0);
+    });
+
+    test('postAgents rejects agents with missing or non-string aliases with a 400 before acquiring the shared settings lock', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+        };
+        const routes = createAgentsRoutes({
+            redisClient: redisClient as never,
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postAgents({
+            body: {
+                agents: [
+                    {
+                        id: 'broken-agent',
+                        type: 'claude',
+                        enabled: true,
+                        configPath: '/tmp/claude',
+                        supportedModels: [],
+                    },
+                ],
+            },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 400);
+        assert.deepStrictEqual(res.body, { error: "Agent 'broken-agent' missing required 'alias' field" });
+        assert.strictEqual(redisClient.set.mock.calls.length, 0);
+
+        await routes.postAgents({
+            body: {
+                agents: [
+                    {
+                        id: 'broken-agent',
+                        alias: 123,
+                        type: 'claude',
+                        enabled: true,
+                        configPath: '/tmp/claude',
+                        supportedModels: [],
+                    },
+                ],
+            },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 400);
+        assert.deepStrictEqual(res.body, { error: "Agent 'broken-agent' missing required 'alias' field" });
+        assert.strictEqual(redisClient.set.mock.calls.length, 0);
+    });
+
     test('postAgents resolves agent versions before acquiring the shared settings lock', async () => {
         let lockAcquired = false;
         const redisClient = {
@@ -878,6 +967,44 @@ describe('config route follow-up helpers', () => {
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+        });
+        assert.strictEqual(settingsMock.mock.calls.length, 1);
+        assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
+        assert.strictEqual(autoResolveMock.mock.calls.length, 1);
+        assert.strictEqual(prReviewModelMock.mock.calls.length, 1);
+        assert.strictEqual(ultrafixGoalMock.mock.calls.length, 1);
+        assert.strictEqual(ultrafixCyclesMock.mock.calls.length, 1);
+        assert.strictEqual(ultrafixPauseMock.mock.calls.length, 1);
+    });
+
+    test('getSettings returns a 500 when persisted integer-backed settings are invalid', async () => {
+        const routes = createConfigRoutes({ redisClient: {} as never });
+        const autoFollowupMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => 'invalid' as never);
+        const autoResolveMock = mock.method(configManager, 'loadAutoResolveMergeConflicts', async () => false);
+        const prReviewModelMock = mock.method(configManager, 'loadPrReviewModel', async () => '');
+        const ultrafixGoalMock = mock.method(configManager, 'loadUltrafixRatingGoal', async () => 8);
+        const ultrafixCyclesMock = mock.method(configManager, 'loadUltrafixMaxCycles', async () => 9);
+        const ultrafixPauseMock = mock.method(configManager, 'loadUltrafixPauseSeconds', async () => 12);
+        const settingsMock = mock.method(configManager, 'loadSettings', async () => ({}));
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+        };
+
+        await routes.getSettings({} as never, res as never);
+
+        assert.strictEqual(res.statusCode, 500);
+        assert.deepStrictEqual(res.body, {
+            error: 'Stored auto_followup_score_threshold is invalid: "invalid"',
+            invalid_settings: true,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1130,6 +1257,31 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(res.statusCode, 200);
         assert.strictEqual(lockHeldDuringActivityLog, false);
         assert.strictEqual(saveReposMock.mock.calls.length, 1);
+    });
+
+    test('postSettings short-circuits empty updates before acquiring the shared settings lock', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+        };
+        const routes = createConfigRoutes({ redisClient: redisClient as never });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postSettings({ body: { settings: {} } } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 200);
+        assert.deepStrictEqual(res.body, { success: true, settings: {}, noop: true });
+        assert.strictEqual(redisClient.set.mock.calls.length, 0);
     });
 
     test('withConfigLock reports lock loss when ownership changes during renewal', async () => {

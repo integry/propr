@@ -12,15 +12,24 @@ function normalizeSupportedModel(model: string): string {
   return model.trim();
 }
 
+function isAgentRecord(agent: unknown): agent is Record<string, unknown> {
+  return typeof agent === 'object' && agent !== null;
+}
+
 export function normalizeAgentsConfig(agents: AgentConfig[]): AgentConfig[] {
-  return agents.map(agent => ({
-    ...agent,
-    alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias,
-    cliVersion: typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion,
-    supportedModels: Array.isArray(agent.supportedModels)
-      ? agent.supportedModels.map(model => typeof model === 'string' ? normalizeSupportedModel(model) : model)
-      : agent.supportedModels
-  }));
+  return agents.map(agent => {
+    if (!isAgentRecord(agent)) {
+      return agent;
+    }
+    return {
+      ...agent,
+      alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias,
+      cliVersion: typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion,
+      supportedModels: Array.isArray(agent.supportedModels)
+        ? agent.supportedModels.map(model => typeof model === 'string' ? normalizeSupportedModel(model) : model)
+        : agent.supportedModels
+    };
+  });
 }
 
 export function validateAgentsConfig(agents: AgentConfig[]): string | null {
@@ -70,6 +79,13 @@ function validateAgentCliVersion(agent: AgentConfig): string | null {
 }
 
 function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): string | null {
+  if (!isAgentRecord(agent)) {
+    return 'Each agent must be an object';
+  }
+  if (typeof agent.alias !== 'string') {
+    const id = typeof agent.id === 'string' && agent.id ? agent.id : 'unknown';
+    return `Agent '${id}' missing required 'alias' field`;
+  }
   const normalizedAlias = normalizeAgentAlias(agent.alias);
   const baseFieldError = validateAgentBaseFields(agent, normalizedAlias);
   if (baseFieldError) return baseFieldError;

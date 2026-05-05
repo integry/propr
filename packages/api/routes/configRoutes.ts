@@ -3,11 +3,12 @@ import { RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
 import * as configManager from '@propr/core';
 import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
-import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, type ConfigLockContext } from './configHelpers.js';
+import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
 import { saveSettingsWithRollback } from './configRoutesSettings.js';
+import type { ConfigLockContext } from './configHelpers.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -29,7 +30,10 @@ const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
 
-function asIntegerOrDefault(value: unknown, defaultValue: number, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number {
+function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
   const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim())
     ? Number(value.trim())
     : value;
@@ -38,7 +42,18 @@ function asIntegerOrDefault(value: unknown, defaultValue: number, minimum: numbe
     && candidate >= minimum
     && candidate <= maximum
     ? candidate
-    : defaultValue;
+    : null;
+}
+
+function getIntegerSettingOrThrow(name: string, value: unknown, defaultValue: number, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number {
+  const parsed = parseStoredIntegerSetting(value, minimum, maximum);
+  if (parsed !== null) {
+    return parsed;
+  }
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  throw new Error(`Stored ${name} is invalid: ${JSON.stringify(value)}`);
 }
 
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
@@ -284,15 +299,19 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         analysis_model_fast: settings.analysis_model_fast ?? envDefaults.analysis_model_fast,
         planner_context_model: settings.planner_context_model ?? envDefaults.planner_context_model,
         planner_generation_model: settings.planner_generation_model ?? envDefaults.planner_generation_model,
-        auto_followup_score_threshold: asIntegerOrDefault(autoFollowupThreshold, DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, 0, 9),
+        auto_followup_score_threshold: getIntegerSettingOrThrow('auto_followup_score_threshold', autoFollowupThreshold, DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, 0, 9),
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
         pr_review_model: prReviewModel,
-        ultrafix_rating_goal: asIntegerOrDefault(ultrafixRatingGoal, DEFAULT_ULTRAFIX_RATING_GOAL, 1, 10),
-        ultrafix_max_cycles: asIntegerOrDefault(ultrafixMaxCycles, DEFAULT_ULTRAFIX_MAX_CYCLES, 1),
-        ultrafix_pause_seconds: asIntegerOrDefault(ultrafixPauseSeconds, DEFAULT_ULTRAFIX_PAUSE_SECONDS, 0)
+        ultrafix_rating_goal: getIntegerSettingOrThrow('ultrafix_rating_goal', ultrafixRatingGoal, DEFAULT_ULTRAFIX_RATING_GOAL, 1, 10),
+        ultrafix_max_cycles: getIntegerSettingOrThrow('ultrafix_max_cycles', ultrafixMaxCycles, DEFAULT_ULTRAFIX_MAX_CYCLES, 1),
+        ultrafix_pause_seconds: getIntegerSettingOrThrow('ultrafix_pause_seconds', ultrafixPauseSeconds, DEFAULT_ULTRAFIX_PAUSE_SECONDS, 0)
       });
     } catch (error) {
       console.error('Error in /api/config/settings GET:', error);
+      if (error instanceof Error && error.message.startsWith('Stored ')) {
+        res.status(500).json({ error: error.message, invalid_settings: true });
+        return;
+      }
       res.status(500).json({ error: 'Failed to load settings' });
     }
   }
@@ -306,6 +325,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     const settingsValidation = validateJsonObjectBody(bodyValidation.value.settings);
     if (!settingsValidation.ok) {
       res.status(400).json({ error: 'settings object is required' });
+      return;
+    }
+    if (Object.keys(settingsValidation.value).length === 0) {
+      res.json({ success: true, settings: {}, noop: true });
       return;
     }
 
