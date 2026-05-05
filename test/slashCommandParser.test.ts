@@ -117,6 +117,34 @@ describe('parseSlashCommand', () => {
         assert.strictEqual(result.instructions, 'Focus on performance');
     });
 
+    test('parses bare /ultrafix', () => {
+        const result = parseSlashCommand('/ultrafix');
+        assert.deepStrictEqual(result, { command: 'ultrafix', args: [], instructions: '' });
+    });
+
+    test('parses /ultrafix with positional goal', () => {
+        const result = parseSlashCommand('/ultrafix 8');
+        assert.ok(result);
+        assert.strictEqual(result.command, 'ultrafix');
+        assert.deepStrictEqual(result.args, ['8']);
+    });
+
+    test('parses /ultrafix with named args', () => {
+        const result = parseSlashCommand('/ultrafix goal=8 max=10 pause=60 model=claude-sonnet-4-6');
+        assert.ok(result);
+        assert.strictEqual(result.command, 'ultrafix');
+        assert.deepStrictEqual(result.args, ['goal=8', 'max=10', 'pause=60', 'model=claude-sonnet-4-6']);
+    });
+
+    test('parses /ultrafix with multiline instructions', () => {
+        const body = '/ultrafix goal=3\nFocus on fixing the auth module\nand the database layer';
+        const result = parseSlashCommand(body);
+        assert.ok(result);
+        assert.strictEqual(result.command, 'ultrafix');
+        assert.deepStrictEqual(result.args, ['goal=3']);
+        assert.strictEqual(result.instructions, 'Focus on fixing the auth module\nand the database layer');
+    });
+
     test('does not match unknown commands', () => {
         assert.strictEqual(parseSlashCommand('/deploy'), null);
         assert.strictEqual(parseSlashCommand('/unknown'), null);
@@ -303,6 +331,224 @@ describe('buildCommandMeta', () => {
         const parsed = parseSlashCommand('/review llm-opus llm-sonnet plain-model')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual((meta as { models: string[] }).models, ['opus', 'sonnet', 'plain-model']);
+    });
+
+    test('builds ultrafix meta with defaults (all undefined when not provided)', () => {
+        const parsed = parseSlashCommand('/ultrafix')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'ultrafix',
+            instructions: '',
+        });
+    });
+
+    test('builds ultrafix meta with positional goal', () => {
+        const parsed = parseSlashCommand('/ultrafix 8')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal: number }).goal, 8);
+    });
+
+    test('builds ultrafix meta with named args', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=8 max=10 pause=60 model=claude-sonnet-4-6')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'ultrafix',
+            goal: 8,
+            maxCycles: 10,
+            pauseSeconds: 60,
+            reviewModel: 'claude-sonnet-4-6',
+            instructions: '',
+        });
+    });
+
+    test('builds ultrafix meta with multiline instructions', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=3\nFocus on the auth module')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal: number }).goal, 3);
+        assert.strictEqual((meta as { instructions: string }).instructions, 'Focus on the auth module');
+    });
+
+    test('ultrafix rejects invalid numeric values with warnings (fields remain undefined)', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=abc max=-1 pause=xyz')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        // goal=abc is NaN → remains undefined; max=-1 is <=0 → remains undefined; pause=xyz is NaN → remains undefined
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, undefined);
+        assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, undefined);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('goal'));
+        assert.ok(meta.warning!.includes('max'));
+        assert.ok(meta.warning!.includes('pause'));
+    });
+
+    test('ultrafix warns on unknown keys', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=3 foo=bar baz=1')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal: number }).goal, 3);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('foo'));
+        assert.ok(meta.warning!.includes('baz'));
+    });
+
+    test('ultrafix strips llm- prefix from model', () => {
+        const parsed = parseSlashCommand('/ultrafix model=llm-claude-sonnet-4-6')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { reviewModel: string }).reviewModel, 'claude-sonnet-4-6');
+    });
+
+    test('ultrafix goal at lower boundary (1) is accepted', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=1')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal: number }).goal, 1);
+    });
+
+    test('ultrafix goal at upper boundary (10) is accepted', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=10')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal: number }).goal, 10);
+    });
+
+    test('ultrafix goal=0 is rejected with warning (must be positive)', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=0')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.ok('warning' in meta && meta.warning);
+    });
+
+    test('ultrafix goal above 10 is rejected by parser with warning', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=11')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('goal'));
+    });
+
+    test('ultrafix max at lower boundary (1) is accepted', () => {
+        const parsed = parseSlashCommand('/ultrafix max=1')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { maxCycles: number }).maxCycles, 1);
+    });
+
+    test('ultrafix max=0 is rejected with warning (must be positive)', () => {
+        const parsed = parseSlashCommand('/ultrafix max=0')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, undefined);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('max'));
+    });
+
+    test('ultrafix large max is accepted by parser (no upper limit)', () => {
+        const parsed = parseSlashCommand('/ultrafix max=9999')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { maxCycles: number }).maxCycles, 9999);
+    });
+
+    test('ultrafix pause=0 is accepted (no pause)', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=0')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { pauseSeconds: number }).pauseSeconds, 0);
+    });
+
+    test('ultrafix negative pause is rejected with warning', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=-1')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, undefined);
+        assert.ok('warning' in meta && meta.warning);
+    });
+
+    test('ultrafix keeps positional goal when mixed with named args', () => {
+        const parsed = parseSlashCommand('/ultrafix 8 max=3')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        // Positional goal is preserved alongside named args
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, 3);
+    });
+
+    test('ultrafix named goal= overrides positional goal', () => {
+        const parsed = parseSlashCommand('/ultrafix 8 goal=5 max=3')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        // Named goal= explicitly overrides the positional goal
+        assert.strictEqual((meta as { goal?: number }).goal, 5);
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, 3);
+    });
+
+    test('ultrafix positional goal with model named arg', () => {
+        const parsed = parseSlashCommand('/ultrafix 8 model=claude-sonnet-4-6')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
+        assert.strictEqual((meta as { reviewModel?: string }).reviewModel, 'claude-sonnet-4-6');
+    });
+
+    test('ultrafix warns on extra positional arguments', () => {
+        const parsed = parseSlashCommand('/ultrafix 8 9')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes("Extra argument '9'"));
+    });
+
+    test('ultrafix warns on non-numeric positional argument', () => {
+        const parsed = parseSlashCommand('/ultrafix foo')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.ok('warning' in meta && meta.warning);
+        assert.ok(meta.warning!.includes('foo'));
+    });
+
+    test('ultrafix rejects decimal goal (must be integer)', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=7.5')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { goal?: number }).goal, undefined);
+        assert.ok('warning' in meta && meta.warning);
+    });
+
+    test('ultrafix rejects decimal pause (must be integer)', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=30.5')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, undefined);
+        assert.ok('warning' in meta && meta.warning);
+    });
+
+    test('ultrafix large pause is accepted by parser (no upper limit)', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=86400')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual((meta as { pauseSeconds: number }).pauseSeconds, 86400);
+    });
+
+    test('ultrafix positional goal after named args (mixed order)', () => {
+        const parsed = parseSlashCommand('/ultrafix max=10 8')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
+        assert.strictEqual((meta as { maxCycles?: number }).maxCycles, 10);
+        // No warning — this is a supported mixed form
+        assert.strictEqual((meta as { warning?: string }).warning, undefined);
+    });
+
+    test('ultrafix positional goal between named args', () => {
+        const parsed = parseSlashCommand('/ultrafix pause=60 8 model=claude-sonnet-4-6')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        assert.strictEqual((meta as { goal?: number }).goal, 8);
+        assert.strictEqual((meta as { pauseSeconds?: number }).pauseSeconds, 60);
+        assert.strictEqual((meta as { reviewModel?: string }).reviewModel, 'claude-sonnet-4-6');
+    });
+
+    test('ultrafix named goal takes precedence over later positional', () => {
+        const parsed = parseSlashCommand('/ultrafix goal=5 8')!;
+        const meta = buildCommandMeta(parsed);
+        assert.strictEqual(meta.mode, 'ultrafix');
+        // Named goal=5 was set first, positional 8 does not override
+        assert.strictEqual((meta as { goal?: number }).goal, 5);
     });
 });
 

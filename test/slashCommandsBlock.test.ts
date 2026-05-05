@@ -10,13 +10,14 @@ describe('buildSlashCommandsBlock', () => {
         assert.ok(result.includes('<summary>'));
     });
 
-    test('documents all five slash commands', () => {
+    test('documents all six slash commands', () => {
         const result = buildSlashCommandsBlock();
         assert.ok(result.includes('/merge'), 'Should document /merge');
         assert.ok(result.includes('/review'), 'Should document /review');
         assert.ok(result.includes('/fix'), 'Should document /fix');
         assert.ok(result.includes('/switch'), 'Should document /switch');
         assert.ok(result.includes('/use'), 'Should document /use');
+        assert.ok(result.includes('/ultrafix'), 'Should document /ultrafix');
     });
 
     test('includes table headers', () => {
@@ -28,7 +29,7 @@ describe('buildSlashCommandsBlock', () => {
         const result = buildSlashCommandsBlock();
         const lines = result.split('\n');
         const dataRows = lines.filter(line => line.startsWith('| `/'));
-        assert.strictEqual(dataRows.length, 5, 'Should have 5 command rows');
+        assert.strictEqual(dataRows.length, 6, 'Should have 6 command rows');
         for (const row of dataRows) {
             // Each row should have 4 pipes (3 columns)
             const pipes = (row.match(/\|/g) || []).length;

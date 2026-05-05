@@ -108,11 +108,13 @@ export function buildDockerArgs(
 
     // Add model parameter if specified
     if (modelName) {
+        // Strip agent prefix if present (e.g., "claude:claude-opus-4-6" -> "claude-opus-4-6")
+        const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
         const maxTurnsIndex = dockerArgs.indexOf('--max-turns');
-        dockerArgs.splice(maxTurnsIndex, 0, '--model', modelName);
+        dockerArgs.splice(maxTurnsIndex, 0, '--model', cleanModelName);
         logger.info({
             issueNumber,
-            requestedModel: modelName,
+            requestedModel: cleanModelName,
             agentAlias: config.alias
         }, 'Using specific model for Claude agent execution');
     } else {

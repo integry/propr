@@ -69,6 +69,12 @@ export async function validateAndFilterComments(
 ): Promise<UnprocessedComment[]> {
     const validatedComments: UnprocessedComment[] = [];
     for (const comment of commentsToProcess) {
+        // Skip validation for ultrafix synthetic comments (they don't exist on GitHub)
+        if (comment.author === 'propr-ultrafix') {
+            validatedComments.push(comment);
+            continue;
+        }
+
         const currentComment = allCommentsForValidation.find(c => c.id === comment.id);
 
         if (!currentComment) {
@@ -102,6 +108,11 @@ export function filterUnprocessedComments(
     const { pullRequestNumber, correlatedLogger } = options;
     return commentsToProcess
         .filter(comment => {
+            // Skip "already processed" check for ultrafix synthetic comments
+            if (comment.author === 'propr-ultrafix') {
+                return true;
+            }
+
             const alreadyProcessed = prCommentsForValidation.some(prComment => {
                 const isBotComment = prComment.user.login === botUsername;
                 if (!isBotComment) return false;

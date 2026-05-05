@@ -1,6 +1,7 @@
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadMonitoredRepos, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configManager.js';
+import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 
 interface Settings {
     github_user_whitelist?: string[];
@@ -76,6 +77,7 @@ export async function loadReposFromConfig(): Promise<void> {
 }
 
 export async function loadSettingsFromConfig(): Promise<void> {
+    invalidateSettingsCache();
     try {
         if (process.env.CONFIG_REPO) {
             const settings: Settings = await loadSettings();

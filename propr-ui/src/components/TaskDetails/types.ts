@@ -26,8 +26,15 @@ export interface HistoryItemMetadata {
   description?: string;
   commitResult?: { commitHash?: string; commitMessage?: string };
   tokenUsage?: TokenUsage;
-  commandMode?: 'default' | 'review' | 'fix';
+  commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
   consumedReviewCommentIds?: number[];
+  ultrafixCycle?: boolean;
+  ultrafixGoal?: number;
+  ultrafixCycleCount?: number;
+  ultrafixMaxCycles?: number;
+  ultrafixScore?: number;
+  ultrafixNextAction?: string;
+  ultrafixStopReason?: string;
 }
 
 export interface HistoryItem {
@@ -50,7 +57,8 @@ export interface TaskInfo {
   modelName?: string;
   model?: string;
   llmProvider?: string;
-  commandMode?: 'default' | 'review' | 'fix';
+  commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
+  ultrafixCycle?: boolean;
 }
 
 export interface PromptData {

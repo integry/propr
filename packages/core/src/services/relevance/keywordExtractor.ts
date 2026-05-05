@@ -2,6 +2,25 @@ import { parseLlmJson } from '../../utils/jsonUtils.js';
 import { Agent } from '../../agents/types.js';
 import logger from '../../utils/logger.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { loadSettings } from '../../config/configManager.js';
+
+// --- Settings cache (avoids a DB round-trip on every LLM extraction call) ---
+
+const SETTINGS_CACHE_TTL_MS = 30_000;
+let _settingsCache: { value: Record<string, unknown>; expiresAt: number } | null = null;
+
+async function getCachedSettings(): Promise<Record<string, unknown>> {
+  if (_settingsCache && Date.now() < _settingsCache.expiresAt) {
+    return _settingsCache.value;
+  }
+  const settings = await loadSettings().catch(() => ({} as Record<string, unknown>));
+  _settingsCache = { value: settings as Record<string, unknown>, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS };
+  return _settingsCache.value;
+}
+
+export function invalidateSettingsCache(): void {
+  _settingsCache = null;
+}
 
 // --- Basic Keyword Extraction (regex-based) ---
 
@@ -104,13 +123,16 @@ export async function extractKeywordsWithLLM(
   const startTime = Date.now();
   let success = false;
   let errorMessage: string | undefined;
+  const cachedSettings = await getCachedSettings();
 
   try {
     const llmPrompt = KEYWORD_EXTRACTION_PROMPT.replace('{USER_REQUEST}', prompt);
 
-    correlatedLogger.debug({ promptLength: prompt.length }, 'Extracting keywords with LLM');
+    const contextModel = (cachedSettings.planner_context_model as string | undefined) || undefined;
 
-    const analysisResult = await agent.analyze(llmPrompt);
+    correlatedLogger.debug({ promptLength: prompt.length, model: contextModel }, 'Extracting keywords with LLM');
+
+    const analysisResult = await agent.analyze(llmPrompt, contextModel ? { model: contextModel } : {});
     const response = analysisResult.response;
 
     const parsed = parseLlmJson<{ primary: string[]; alternatives: string[] }>(response);
@@ -150,7 +172,7 @@ export async function extractKeywordsWithLLM(
     return { primary: [], alternatives: [], all: [] };
   } finally {
     const durationMs = Date.now() - startTime;
-    const modelUsed = agent.config.defaultModel || 'unknown';
+    const modelUsed = cachedSettings.planner_context_model as string || agent.config.defaultModel || 'unknown';
 
     // Persist to llm_logs table
     const logEntry = createLlmLogFromAnalysis({

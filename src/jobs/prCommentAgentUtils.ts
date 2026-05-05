@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
-import { AgentRegistry, resolveLlmLabel, generateTaskSummary } from '@propr/core';
-import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError } from '@propr/core';
+import { AgentRegistry, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
+import { getDefaultModel, loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
@@ -28,7 +28,24 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
     const { combinedCommentBody, worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger } = options;
     try {
         const summaryRequest = `Summarize this change request in one sentence, focusing on the main action: ${combinedCommentBody}`;
-        const title = await generateTaskSummary({ summaryRequest, worktreePath: worktreeInfo.worktreePath, githubToken: githubToken.token, issueRef: { number: pullRequestNumber, repoOwner, repoName }, correlationId, modelAlias: 'haiku' });
+        const summarizationSettings = await loadSummarizationSettings();
+        const configuredModel = summarizationSettings.agent_alias?.trim();
+        const model = configuredModel || 'haiku';
+        const title = await runLightweightLLMAnalysis({
+            prompt: `${summaryRequest}\n\nYour output must be ONLY the summary string itself, with no other text.`,
+            model,
+            correlationId,
+            worktreePath: worktreeInfo.worktreePath,
+            githubToken: githubToken.token,
+            issueRef: { number: pullRequestNumber, repoOwner, repoName },
+            taskId,
+            prNumber: pullRequestNumber,
+            executionType: 'title-generation',
+            metadata: {
+                taskKind: 'pr-followup-title-generation',
+                configuredVia: configuredModel ? 'summarization.agent_alias' : 'fallback'
+            }
+        });
         correlatedLogger.info({ taskId, summaryTitle: title }, 'Generated AI summary for follow-up task');
         return title;
     } catch (summaryError) {

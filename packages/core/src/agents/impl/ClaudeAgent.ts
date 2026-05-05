@@ -224,6 +224,11 @@ export class ClaudeAgent implements Agent {
                 verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
             }
 
+            // Attach usage metrics to response for downstream comment rendering
+            if (usageMetrics) {
+                response.usageMetrics = usageMetrics;
+            }
+
             return response;
         } catch (error) {
             if (error instanceof UsageLimitError) {
