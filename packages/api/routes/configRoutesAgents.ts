@@ -38,6 +38,27 @@ interface ApplyAgentsUpdateParams {
   registry?: AgentRegistrySync;
 }
 
+async function rollbackAgentConfigState(
+  configStore: AgentConfigStore,
+  registry: AgentRegistrySync,
+  previousAgents: AgentConfig[],
+  currentDefault: string | undefined,
+  defaultChanged: boolean
+): Promise<boolean> {
+  try {
+    await configStore.saveAgents(previousAgents);
+    if (defaultChanged) {
+      await configStore.saveSettings({ default_agent_alias: currentDefault } as Record<string, unknown>);
+    }
+    await registry.refresh();
+    registry.setDefaultAgentAlias(currentDefault ?? null);
+    return true;
+  } catch (rollbackError) {
+    console.error('Failed to roll back agent configuration after registry refresh failure:', rollbackError);
+    return false;
+  }
+}
+
 export async function applyAgentsUpdate({
   agents,
   username,
@@ -105,17 +126,23 @@ export async function applyAgentsUpdate({
     await registry.refresh();
     registry.setDefaultAgentAlias(newDefault ?? null);
   } catch (refreshError) {
-    try {
-      await configStore.saveAgents(previousAgents);
-      if (newDefault !== currentDefault) {
-        await configStore.saveSettings({ default_agent_alias: currentDefault } as Record<string, unknown>);
-      }
-      await registry.refresh();
-      registry.setDefaultAgentAlias(currentDefault ?? null);
-    } catch (rollbackError) {
-      console.error('Failed to roll back agent configuration after registry refresh failure:', rollbackError);
-    }
+    const rollbackSucceeded = await rollbackAgentConfigState(
+      configStore,
+      registry,
+      previousAgents,
+      currentDefault,
+      newDefault !== currentDefault
+    );
     console.error('Failed to refresh agent registry after agents update:', refreshError);
+    if (!rollbackSucceeded) {
+      return {
+        status: 500,
+        body: {
+          error: 'Failed to apply agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
+          out_of_sync: true
+        }
+      };
+    }
     return { status: 500, body: { error: 'Failed to apply agent configuration to the live registry' } };
   }
 

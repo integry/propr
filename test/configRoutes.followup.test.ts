@@ -2,6 +2,7 @@ import { test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
 import { applyAgentsUpdate } from '../packages/api/routes/configRoutesAgents.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutes.ts';
+import { findLatestHistoryEntryWithSessionId } from '../packages/api/routes/liveDetailsRoutes.ts';
 
 describe('config route follow-up helpers', () => {
     let currentSettings: Record<string, unknown>;
@@ -224,6 +225,79 @@ describe('config route follow-up helpers', () => {
                 ultrafix_rating_goal: 8,
                 ultrafix_pause_seconds: 0,
             },
+        });
+    });
+
+    test('applyAgentsUpdate reports out-of-sync state when registry refresh and rollback both fail', async () => {
+        const registry = {
+            refresh: mock.fn(async () => {
+                throw new Error('refresh failed');
+            }),
+            setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
+        };
+        const configStore = {
+            loadAgents: async () => currentAgents as never[],
+            loadSettings: async () => currentSettings,
+            saveAgents: mock.fn(async (agents: never[]) => {
+                currentAgents = agents as Array<Record<string, unknown>>;
+                if ((agents as Array<Record<string, unknown>>)[0]?.alias === 'old-default') {
+                    throw new Error('rollback save failed');
+                }
+                return true;
+            }),
+            saveSettings: async (settings: Record<string, unknown>) => {
+                currentSettings = { ...currentSettings, ...settings };
+                return true;
+            },
+        };
+
+        const result = await applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    dockerImage: 'new:image',
+                    configPath: '/tmp/claude',
+                    supportedModels: [],
+                },
+            ],
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+            configStore,
+            registry,
+        });
+
+        assert.strictEqual(result.status, 500);
+        assert.deepStrictEqual(result.body, {
+            error: 'Failed to apply agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
+            out_of_sync: true,
+        });
+    });
+
+    test('saveSettingsWithRollback rejects array payloads', async () => {
+        const result = await saveSettingsWithRollback({
+            settings: [] as unknown as Record<string, unknown>,
+            publishConfigUpdate: async () => {},
+        });
+
+        assert.strictEqual(result.status, 400);
+        assert.deepStrictEqual(result.body, {
+            error: 'settings object is required',
+        });
+    });
+
+    test('findLatestHistoryEntryWithSessionId returns the latest non-Claude session entry', () => {
+        const entry = findLatestHistoryEntryWithSessionId([
+            { state: 'claude_execution', metadata: { sessionId: 'older-session' } },
+            { state: 'processing', metadata: {} },
+            { state: 'codex_execution', metadata: { sessionId: 'codex-session' } },
+        ]);
+
+        assert.deepStrictEqual(entry, {
+            state: 'codex_execution',
+            metadata: { sessionId: 'codex-session' },
         });
     });
 });

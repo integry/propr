@@ -20,6 +20,10 @@ import {
 } from './liveDetailsCodexParser.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
+interface HistoryEntryWithSessionMetadata {
+  state?: string;
+  metadata?: { sessionId?: string };
+}
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
@@ -115,19 +119,27 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
     return null;
   }
   const history = Array.isArray((state as { history?: unknown }).history)
-    ? (state as { history: Array<{ state: string; metadata?: { sessionId?: string } }> }).history
+    ? (state as { history: HistoryEntryWithSessionMetadata[] }).history
     : null;
   if (!history) {
     console.log('[live-details] Redis state data has no usable history array');
     return null;
   }
-  const entry = [...history].reverse().find(h => h.state === 'claude_execution' && h.metadata?.sessionId);
+  const entry = findLatestHistoryEntryWithSessionId(history);
   console.log(`[live-details] Found Redis history entry with sessionId: ${!!entry}, state: ${entry?.state}, sessionId: ${entry?.metadata?.sessionId}`);
   if (!entry) {
     console.log('[live-details] No Redis history entry with sessionId found');
     return null;
   }
   return entry.metadata!.sessionId!;
+}
+export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSessionMetadata[]): HistoryEntryWithSessionMetadata | null {
+  for (const entry of [...history].reverse()) {
+    if (typeof entry.metadata?.sessionId === 'string' && entry.metadata.sessionId.trim().length > 0) {
+      return entry;
+    }
+  }
+  return null;
 }
 interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }

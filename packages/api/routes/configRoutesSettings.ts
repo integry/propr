@@ -156,12 +156,20 @@ async function saveGeneralSettings(
   }
 }
 
+function isPlainSettingsObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 export async function saveSettingsWithRollback({
   settings,
   publishConfigUpdate,
   configStore = configManager
 }: SaveSettingsRequest): Promise<SaveResponse> {
-  if (!settings || typeof settings !== 'object') {
+  if (!isPlainSettingsObject(settings)) {
     return { status: 400, body: { error: 'settings object is required' } };
   }
 
