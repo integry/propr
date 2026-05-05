@@ -22,10 +22,7 @@ import {
 } from './liveDetailsCodexParser.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
-interface HistoryEntryWithSessionMetadata {
-  state?: string;
-  metadata?: { sessionId?: string };
-}
+interface HistoryEntryWithSessionMetadata { state?: string; metadata?: { sessionId?: string }; }
 const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
@@ -139,24 +136,15 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
   const history = Array.isArray((state as { history?: unknown }).history)
     ? (state as { history: HistoryEntryWithSessionMetadata[] }).history
     : null;
-  if (!history) {
-    console.log('[live-details] Redis state data has no usable history array');
-    return null;
-  }
+  if (!history) { console.log('[live-details] Redis state data has no usable history array'); return null; }
   const entry = findLatestHistoryEntryWithSessionId(history);
   console.log(`[live-details] Found Redis history entry with sessionId: ${!!entry}, state: ${entry?.state}, sessionId: ${entry?.metadata?.sessionId}`);
-  if (!entry) {
-    console.log('[live-details] No Redis history entry with sessionId found');
-    return null;
-  }
+  if (!entry) { console.log('[live-details] No Redis history entry with sessionId found'); return null; }
   return entry.metadata!.sessionId!;
 }
 export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSessionMetadata[]): HistoryEntryWithSessionMetadata | null {
   for (const entry of [...history].reverse()) {
-    if (!LIVE_EXECUTION_STATES.has(entry.state ?? '')) continue;
-    if (typeof entry.metadata?.sessionId === 'string' && entry.metadata.sessionId.trim().length > 0) {
-      return entry;
-    }
+    if (LIVE_EXECUTION_STATES.has(entry.state ?? '') && typeof entry.metadata?.sessionId === 'string' && entry.metadata.sessionId.trim().length > 0) return entry;
   }
   return null;
 }
@@ -177,22 +165,15 @@ function getClaudeProjectDirName(workspacePath: string): string {
 }
 function getClaudeConversationPathCandidates(sessionId: string): string[] {
   const configuredProjectsDir = process.env.CLAUDE_PROJECTS_DIR;
-  const projectDirNames = new Set([
-    getClaudeProjectDirName(process.cwd()),
-    '-home-node-workspace'
-  ]);
-  const baseDirs = configuredProjectsDir
-    ? [configuredProjectsDir]
-    : [path.join(os.homedir(), '.claude', 'projects')];
+  const projectDirNames = new Set([getClaudeProjectDirName(process.cwd()), '-home-node-workspace']);
+  const baseDirs = configuredProjectsDir ? [configuredProjectsDir] : [path.join(os.homedir(), '.claude', 'projects')];
   return baseDirs.flatMap(baseDir =>
     [...projectDirNames].map(projectDirName => path.join(baseDir, projectDirName, `${sessionId}.jsonl`))
   );
 }
 async function findClaudeConversationPath(sessionId: string): Promise<string | null> {
   for (const candidatePath of getClaudeConversationPathCandidates(sessionId)) {
-    if (await fs.pathExists(candidatePath)) {
-      return candidatePath;
-    }
+    if (await fs.pathExists(candidatePath)) return candidatePath;
   }
   return null;
 }
@@ -223,57 +204,29 @@ async function loadStoredExecutionOutput(redisClient: RedisClientType, sessionId
 }
 async function parseActiveExecutionOutput(redisClient: RedisClientType, taskId: string): Promise<ConversationResult | null> {
   const output = await redisClient.get(`agent:output:${taskId}`);
-  if (!output?.trim()) {
-    return null;
-  }
+  if (!output?.trim()) return null;
   const parsedOutput = parseStoredOutputContent(output);
   return parsedOutput.parsed ?? parsedOutput.rawFallback;
 }
 export function parseStoredOutputContent(output: string): ParsedStoredOutput {
-  if (!output.trim()) {
-    return { parsed: null, rawFallback: null, format: 'unknown' };
-  }
-
+  if (!output.trim()) return { parsed: null, rawFallback: null, format: 'unknown' };
   const format = detectStoredOutputFormat(output);
   if (format === 'claude') {
     const parsed = parseClaudeOutputToConversationResult(output);
-    return {
-      parsed: isConversationResultEmpty(parsed) ? null : parsed,
-      rawFallback: buildRawOutputConversationResult(output),
-      format
-    };
+    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
   }
-
   if (format === 'codex') {
     const parsed = parseCodexOutputToConversationResult(output);
-    return {
-      parsed: isConversationResultEmpty(parsed) ? null : parsed,
-      rawFallback: buildRawOutputConversationResult(output),
-      format
-    };
+    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
   }
-
   const codexParsed = parseCodexOutputToConversationResult(output);
-  if (!isConversationResultEmpty(codexParsed)) {
-    return { parsed: codexParsed, rawFallback: buildRawOutputConversationResult(output), format: 'codex' };
-  }
-
+  if (!isConversationResultEmpty(codexParsed)) return { parsed: codexParsed, rawFallback: buildRawOutputConversationResult(output), format: 'codex' };
   const claudeParsed = parseClaudeOutputToConversationResult(output);
-  if (!isConversationResultEmpty(claudeParsed)) {
-    return { parsed: claudeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'claude' };
-  }
-
-  return {
-    parsed: null,
-    rawFallback: buildRawOutputConversationResult(output),
-    format
-  };
+  if (!isConversationResultEmpty(claudeParsed)) return { parsed: claudeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'claude' };
+  return { parsed: null, rawFallback: buildRawOutputConversationResult(output), format };
 }
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
-  const firstLine = output
-    .split('\n')
-    .map(line => line.trim())
-    .find(line => line.length > 0);
+  const firstLine = output.split('\n').map(line => line.trim()).find(line => line.length > 0);
   if (!firstLine) return 'unknown';
   try {
     const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
@@ -290,13 +243,9 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
       return 'codex';
     }
 
-    if (parsed.type === 'assistant'
-      || parsed.type === 'user'
-      || !!parsed.session_id
-      || !!parsed.conversation_id) {
+    if (parsed.type === 'assistant' || parsed.type === 'user' || !!parsed.session_id || !!parsed.conversation_id) {
       return 'claude';
     }
-
     return 'unknown';
   } catch {
     return 'unknown';
@@ -304,13 +253,7 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
 }
 function buildRawOutputConversationResult(output: string): ConversationResult | null {
   const trimmed = output.trim();
-  if (!trimmed) return null;
-  return {
-    events: [{ type: 'thought', content: trimmed }],
-    todos: [],
-    currentTask: null,
-    tokenUsage: null
-  };
+  return trimmed ? { events: [{ type: 'thought', content: trimmed }], todos: [], currentTask: null, tokenUsage: null } : null;
 }
 async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: string): Promise<ConversationResult | null> {
   const execution = await db('llm_executions')
@@ -324,8 +267,7 @@ async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: 
     .select('event_type', 'event_timestamp', 'content', 'is_error', 'tool_name', 'tool_input', 'metadata');
   if (!details.length) return null;
   const result = parseExecutionDetailsRows(details as ExecutionDetailRow[]);
-  const hasTokens = (execution.input_tokens ?? 0) || (execution.output_tokens ?? 0) ||
-    (execution.cache_creation_input_tokens ?? 0) || (execution.cache_read_input_tokens ?? 0);
+  const hasTokens = (execution.input_tokens ?? 0) || (execution.output_tokens ?? 0) || (execution.cache_creation_input_tokens ?? 0) || (execution.cache_read_input_tokens ?? 0);
   return {
     ...result,
     tokenUsage: hasTokens ? {
@@ -342,19 +284,9 @@ function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<Conversa
   const pendingSubagents = new Map<string, PendingSubagent>();
   for (const row of details) {
     const timestamp = row.event_timestamp;
-    const metadataHandled = appendEventFromMetadata(row, {
-      timestamp,
-      events,
-      pendingSubagents,
-      setTodos: nextTodos => { todos = nextTodos; }
-    });
+    const metadataHandled = appendEventFromMetadata(row, { timestamp, events, pendingSubagents, setTodos: nextTodos => { todos = nextTodos; } });
     if (metadataHandled) continue;
-    if (appendStoredMessageEvent(row, {
-      timestamp,
-      events,
-      pendingSubagents,
-      setTodos: nextTodos => { todos = nextTodos; }
-    })) continue;
+    if (appendStoredMessageEvent(row, { timestamp, events, pendingSubagents, setTodos: nextTodos => { todos = nextTodos; } })) continue;
     if (appendToolUseEvent(row, timestamp, events)) continue;
     if (appendErrorEvent(row, timestamp, events)) continue;
     appendFallbackContentEvent(row, timestamp, events);
@@ -366,20 +298,13 @@ function appendEventFromMetadata(row: ExecutionDetailRow, context: ClaudeMessage
   if (!row.metadata) return false;
   try {
     const rawEvent = JSON.parse(row.metadata) as RawExecutionEvent;
-    if (appendMetadataMessageEvent(rawEvent, context)) {
-      return true;
-    }
+    if (appendMetadataMessageEvent(rawEvent, context)) return true;
     if (rawEvent.type === 'tool_use') {
       context.events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp: context.timestamp });
       return true;
     }
     if (rawEvent.type === 'error') {
-      context.events.push({
-        type: 'tool_result',
-        result: rawEvent.message || rawEvent.result || row.content || 'Execution error',
-        isError: true,
-        timestamp: context.timestamp
-      });
+      context.events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || row.content || 'Execution error', isError: true, timestamp: context.timestamp });
       return true;
     }
     if (appendCommandExecutionEvents(rawEvent, context.timestamp, context.events)) return true;
@@ -413,9 +338,7 @@ function appendMetadataMessageEvent(rawEvent: RawExecutionEvent, context: Claude
   return false;
 }
 function extractMessageContentBlocks(content: unknown): ClaudeMessageContent[] | null {
-  if (Array.isArray(content)) {
-    return content as ClaudeMessageContent[];
-  }
+  if (Array.isArray(content)) return content as ClaudeMessageContent[];
   if (content && typeof content === 'object' && Array.isArray((content as { content?: unknown }).content)) {
     return (content as { content: ClaudeMessageContent[] }).content;
   }
@@ -442,11 +365,7 @@ function appendCommandExecutionEvents(rawEvent: RawExecutionEvent, timestamp: st
 }
 function parseToolInput(toolInput: string | null): { file_path?: string; command?: string } | undefined {
   if (!toolInput) return undefined;
-  try {
-    return JSON.parse(toolInput) as { file_path?: string; command?: string };
-  } catch {
-    return undefined;
-  }
+  try { return JSON.parse(toolInput) as { file_path?: string; command?: string }; } catch { return undefined; }
 }
 function appendToolUseEvent(row: ExecutionDetailRow, timestamp: string, events: Array<Record<string, unknown>>): boolean {
   if (row.event_type !== 'tool_use' || !row.tool_name) return false;

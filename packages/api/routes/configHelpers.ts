@@ -1,94 +1,50 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
-import { getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, validatePrReviewModelValue } from '@propr/core';
+import {
+  getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit,
+  updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, validatePrReviewModelValue
+} from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
 
-interface AgentConfig {
-  id: string;
-  type: string;
-  alias: string;
-  enabled: boolean;
-  dockerImage: string;
-  configPath: string;
-  supportedModels: string[];
-}
+interface AgentConfig { id: string; type: string; alias: string; enabled: boolean; dockerImage: string; configPath: string; supportedModels: string[]; }
 
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
 
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
-
-interface ConfigLockOptions {
-  timeoutSeconds?: number;
-  renewalIntervalMs?: number;
-}
-
-interface RedisScriptClient {
-  eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>;
-}
-
-const EXTEND_LOCK_SCRIPT = `
-if redis.call("get", KEYS[1]) == ARGV[1] then
+interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: number; }
+interface RedisScriptClient { eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>; }
+const EXTEND_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("expire", KEYS[1], tonumber(ARGV[2]))
 end
-return 0
-`;
-
-const RELEASE_LOCK_SCRIPT = `
-if redis.call("get", KEYS[1]) == ARGV[1] then
+return 0`;
+const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])
 end
-return 0
-`;
+return 0`;
 
-async function renewLock(
-  redisClient: RedisClientType,
-  lockKey: string,
-  lockValue: string,
-  timeoutSeconds: number
-): Promise<boolean> {
+async function renewLock(redisClient: RedisClientType, lockKey: string, lockValue: string, timeoutSeconds: number): Promise<boolean> {
   const scriptClient = redisClient as RedisClientType & RedisScriptClient;
   if (typeof scriptClient.eval === 'function') {
-    const result = await scriptClient.eval(EXTEND_LOCK_SCRIPT, {
-      keys: [lockKey],
-      arguments: [lockValue, String(timeoutSeconds)]
-    });
+    const result = await scriptClient.eval(EXTEND_LOCK_SCRIPT, { keys: [lockKey], arguments: [lockValue, String(timeoutSeconds)] });
     return result === 1;
   }
-
   const currentLockValue = await redisClient.get(lockKey);
-  if (currentLockValue !== lockValue) {
-    return false;
-  }
-
+  if (currentLockValue !== lockValue) return false;
   await redisClient.expire(lockKey, timeoutSeconds);
   return true;
 }
 
-async function releaseLock(
-  redisClient: RedisClientType,
-  lockKey: string,
-  lockValue: string
-): Promise<void> {
+async function releaseLock(redisClient: RedisClientType, lockKey: string, lockValue: string): Promise<void> {
   const scriptClient = redisClient as RedisClientType & RedisScriptClient;
   if (typeof scriptClient.eval === 'function') {
-    await scriptClient.eval(RELEASE_LOCK_SCRIPT, {
-      keys: [lockKey],
-      arguments: [lockValue]
-    });
+    await scriptClient.eval(RELEASE_LOCK_SCRIPT, { keys: [lockKey], arguments: [lockValue] });
     return;
   }
-
   const currentLockValue = await redisClient.get(lockKey);
-  if (currentLockValue === lockValue) {
-    await redisClient.del(lockKey);
-  }
+  if (currentLockValue === lockValue) await redisClient.del(lockKey);
 }
 
-/**
- * Execute an operation with a Redis-based distributed lock.
- * This ensures only one config update can happen at a time for a given lock key.
- */
 export async function withConfigLock(
   redisClient: RedisClientType,
   lockKey: string,
@@ -102,15 +58,8 @@ export async function withConfigLock(
   let renewalStopped = false;
 
   try {
-    const acquired = await redisClient.set(lockKey, lockValue, {
-      NX: true,
-      EX: lockTimeout
-    });
-
-    if (!acquired) {
-      return { status: 409, body: { error: 'Configuration is being updated. Please try again.' } };
-    }
-
+    const acquired = await redisClient.set(lockKey, lockValue, { NX: true, EX: lockTimeout });
+    if (!acquired) return { status: 409, body: { error: 'Configuration is being updated. Please try again.' } };
     try {
       if (renewalIntervalMs > 0) {
         renewalTimer = setInterval(() => {
@@ -145,10 +94,6 @@ export async function withConfigLock(
   }
 }
 
-/**
- * Queue resummarization jobs for all monitored repositories.
- * Returns the number of repositories that were queued.
- */
 export async function queueResummarizationForAllRepos(): Promise<number> {
   const monitoredRepos = await configManager.loadMonitoredRepos();
   const octokit = await getAuthenticatedOctokit();
@@ -158,30 +103,16 @@ export async function queueResummarizationForAllRepos(): Promise<number> {
 
   for (const repoFullName of monitoredRepos) {
     const queued = await queueResummarizationForRepo(repoFullName, token);
-    if (queued) {
-      repositoriesQueued++;
-    }
+    if (queued) repositoriesQueued++;
   }
-
   return repositoriesQueued;
 }
 
-/**
- * Queue a resummarization job for a single repository.
- * Returns true if successfully queued, false if already queued or failed.
- */
 async function queueResummarizationForRepo(repoFullName: string, token: string): Promise<boolean> {
   const queue = await getIndexingQueue();
   const [owner, name] = repoFullName.split('/');
-
-  // Check if job already queued
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
-  const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repoFullName);
-  if (alreadyQueued) {
-    return false;
-  }
-
-  // Ensure repo is cloned
+  if (existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repoFullName)) return false;
   const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
   let repoPath: string;
   try {
@@ -191,19 +122,10 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
     return false;
   }
 
-  // Fetch latest changes before queuing to ensure we have the most up-to-date code
-  const fetchResult = await fetchLatestChanges({
-    owner,
-    repoName: name,
-    authToken: token
-  });
-
+  const fetchResult = await fetchLatestChanges({ owner, repoName: name, authToken: token });
   if (!fetchResult.success) {
-    // Log warning but continue - we'll index with existing local state
     console.warn(`Failed to fetch latest changes for ${repoFullName}: ${fetchResult.error}`);
   }
-
-  // Queue the indexing job with fullReindex to apply new prompt
   const correlationId = generateCorrelationId();
   await queue.add(
     'indexRepository',
@@ -224,12 +146,8 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
 }
 
 interface SettingFields {
-  auto_followup_score_threshold?: unknown;
-  auto_resolve_merge_conflicts?: unknown;
-  pr_review_model?: unknown;
-  ultrafix_rating_goal?: unknown;
-  ultrafix_max_cycles?: unknown;
-  ultrafix_pause_seconds?: unknown;
+  auto_followup_score_threshold?: unknown; auto_resolve_merge_conflicts?: unknown; pr_review_model?: unknown;
+  ultrafix_rating_goal?: unknown; ultrafix_max_cycles?: unknown; ultrafix_pause_seconds?: unknown;
 }
 
 function validateStrictInt(raw: unknown, min: number, max: number): number | null {
@@ -252,7 +170,6 @@ async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; va
 }
 
 export interface LabeledSave { name: string; execute: () => Promise<unknown> }
-
 export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSave[]; normalized: Record<string, unknown> }> {
   const thunks: LabeledSave[] = [];
   const normalized: Record<string, unknown> = {};
@@ -301,23 +218,14 @@ export async function extractSettingSaves(fields: SettingFields): Promise<{ erro
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_AGENT_TYPES = ['claude', 'codex', 'gemini'];
 
-/**
- * Validate an array of agent configurations.
- * Returns null if valid, or an error message string if invalid.
- */
 export function validateAgentsConfig(agents: AgentConfig[]): string | null {
-  if (!Array.isArray(agents)) {
-    return 'agents must be an array';
-  }
-
+  if (!Array.isArray(agents)) return 'agents must be an array';
   const seenAliases = new Set<string>();
-
   for (const agent of agents) {
     const error = validateSingleAgent(agent, seenAliases);
     if (error) return error;
     seenAliases.add(agent.alias);
   }
-
   return null;
 }
 
@@ -352,30 +260,13 @@ function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): stri
   return null;
 }
 
-export interface QueueIndexingResult {
-  success: boolean;
-  error?: string;
-  jobId?: string;
-  correlationId?: string;
-}
-
-// Redis key for storing the scheduled reindex timestamp
+export interface QueueIndexingResult { success: boolean; error?: string; jobId?: string; correlationId?: string; }
 const DELAYED_REINDEX_KEY = 'config:summarization:delayed-reindex';
-// Delay before automatic reindex after prompt change (10 minutes in milliseconds)
 const REINDEX_DELAY_MS = 10 * 60 * 1000;
-
-/**
- * Schedule a delayed reindex for all repositories.
- * If a reindex is already scheduled, it will be replaced with a new one.
- * Returns true if scheduled successfully.
- */
 export async function scheduleDelayedReindex(redisClient: RedisClientType): Promise<boolean> {
   try {
     const scheduledTime = Date.now() + REINDEX_DELAY_MS;
-    // Store the scheduled time in Redis with TTL slightly longer than delay
-    await redisClient.set(DELAYED_REINDEX_KEY, scheduledTime.toString(), {
-      EX: Math.ceil(REINDEX_DELAY_MS / 1000) + 60 // TTL = delay + 1 minute buffer
-    });
+    await redisClient.set(DELAYED_REINDEX_KEY, scheduledTime.toString(), { EX: Math.ceil(REINDEX_DELAY_MS / 1000) + 60 });
     console.log(`Scheduled delayed reindex for ${new Date(scheduledTime).toISOString()}`);
     return true;
   } catch (error) {
@@ -384,9 +275,6 @@ export async function scheduleDelayedReindex(redisClient: RedisClientType): Prom
   }
 }
 
-/**
- * Cancel any scheduled delayed reindex.
- */
 export async function cancelDelayedReindex(redisClient: RedisClientType): Promise<void> {
   try {
     await redisClient.del(DELAYED_REINDEX_KEY);
@@ -396,20 +284,12 @@ export async function cancelDelayedReindex(redisClient: RedisClientType): Promis
   }
 }
 
-/**
- * Check if there's a scheduled delayed reindex and execute it if the time has passed.
- * This should be called periodically by a background job.
- */
 export async function checkAndExecuteDelayedReindex(redisClient: RedisClientType): Promise<boolean> {
   try {
     const scheduledTimeStr = await redisClient.get(DELAYED_REINDEX_KEY);
-    if (!scheduledTimeStr) {
-      return false;
-    }
-
+    if (!scheduledTimeStr) return false;
     const scheduledTime = parseInt(scheduledTimeStr, 10);
     if (Date.now() >= scheduledTime) {
-      // Time to execute the reindex
       await redisClient.del(DELAYED_REINDEX_KEY);
       const count = await queueResummarizationForAllRepos();
       console.log(`Executed delayed reindex for ${count} repositories`);
@@ -423,12 +303,7 @@ export async function checkAndExecuteDelayedReindex(redisClient: RedisClientType
   }
 }
 
-/**
- * Queue an indexing job for a single repository.
- * Validates settings, checks for existing jobs, and clones if needed.
- */
 export async function queueIndexingJob(repository: string, fullReindex: boolean, baseBranch?: string): Promise<QueueIndexingResult> {
-  // Check if summarization is enabled
   const settings = await configManager.loadSummarizationSettings();
   if (!settings.enabled) {
     return { success: false, error: 'Summarization is not enabled. Enable it in settings first.' };
@@ -437,15 +312,11 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
     return { success: false, error: 'No agent configured for summarization. Configure one in settings first.' };
   }
 
-  // Check if job already queued
   const queue = await getIndexingQueue();
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
-  const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repository);
-  if (alreadyQueued) {
+  if (existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repository)) {
     return { success: false, error: 'Indexing job already queued for this repository' };
   }
-
-  // Clone and queue
   const [owner, name] = repository.split('/');
   const octokit = await getAuthenticatedOctokit();
   const { token } = await octokit.auth({ type: "installation" }) as { token: string };
@@ -458,19 +329,8 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
     return { success: false, error: `Failed to clone repository: ${(cloneError as Error).message}` };
   }
 
-  // Fetch latest changes before queuing to ensure we have the most up-to-date code
-  const fetchResult = await fetchLatestChanges({
-    owner,
-    repoName: name,
-    authToken: token,
-    branch: baseBranch
-  });
-
-  if (!fetchResult.success) {
-    // Log warning but continue - we'll index with existing local state
-    console.warn(`Failed to fetch latest changes for ${repository}: ${fetchResult.error}`);
-  }
-
+  const fetchResult = await fetchLatestChanges({ owner, repoName: name, authToken: token, branch: baseBranch });
+  if (!fetchResult.success) console.warn(`Failed to fetch latest changes for ${repository}: ${fetchResult.error}`);
   const correlationId = generateCorrelationId();
   const job = await queue.add(
     'indexRepository',
@@ -481,41 +341,21 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   return { success: true, jobId: job.id, correlationId };
 }
 
-/**
- * Stop an indexing job for a repository and reset its status to idle.
- * For active jobs, sets a cancellation flag in Redis that the worker checks.
- * For waiting/delayed jobs, removes them from the queue directly.
- */
 export async function stopIndexingJob(repository: string, branch?: string): Promise<{ success: boolean; message?: string }> {
   try {
     const queue = await getIndexingQueue();
     const jobs = await queue.getJobs(['active', 'waiting', 'delayed']);
-    // Find job matching both repository and branch (if specified)
     const job = jobs.find((j: { data: IndexingJobData }) => {
       if (j.data.repository !== repository) return false;
-      // If branch is specified, match it; otherwise match any job for this repo
-      if (branch) {
-        return j.data.baseBranch === branch;
-      }
+      if (branch) return j.data.baseBranch === branch;
       return true;
     });
-
     if (job) {
       const state = await job.getState();
-      if (state === 'active') {
-        // Active jobs are locked by the worker. Set a cancellation flag in Redis
-        // that the worker will check and stop processing gracefully.
-        await requestIndexingCancellation(repository);
-      } else {
-        // Waiting/delayed jobs can be removed directly
-        await job.remove();
-      }
+      if (state === 'active') await requestIndexingCancellation(repository);
+      else await job.remove();
     }
-
-    // Always force the status back to idle in the DB, even if no job was found
-    // (to handle stuck states). Use branch if provided, otherwise default to 'HEAD'.
     await updateRepositoryStatus(repository, 'idle', branch || 'HEAD');
-
     return { success: true };
   } catch (error) {
     console.error('Error stopping indexing job:', error);

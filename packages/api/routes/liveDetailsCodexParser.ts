@@ -7,7 +7,6 @@ export interface TokenUsage {
   cache_creation_input_tokens: number;
   cache_read_input_tokens: number;
 }
-
 export interface ConversationResult {
   events: Array<Record<string, unknown>>;
   todos: TodoItem[];
@@ -27,13 +26,11 @@ export interface TodoItem {
   status: string;
   content: string;
 }
-
 interface CodexTodoItem {
   text?: string;
   completed?: boolean;
   status?: string;
 }
-
 export interface PendingSubagent {
   toolUseId: string;
   subagentType: string;
@@ -58,7 +55,6 @@ interface Message {
   usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
 }
 interface ContentBlock { type: string; text?: string; content?: string; }
-
 export interface ClaudeMessageContext {
   timestamp: string;
   events: Array<Record<string, unknown>>;
@@ -88,29 +84,13 @@ export function deriveCurrentTask(todos: TodoItem[]): string | null {
     || todos.find(t => t.status === 'pending')?.content
     || null;
 }
-
-function pushCodexToolUseEvent(
-  events: Array<Record<string, unknown>>,
-  toolName: string,
-  input: { file_path?: string; command?: string } | undefined,
-  timestamp?: string
-): void {
+function pushCodexToolUseEvent(events: Array<Record<string, unknown>>, toolName: string, input: { file_path?: string; command?: string } | undefined, timestamp?: string): void {
   events.push({ type: 'tool_use', toolName, input, timestamp });
 }
-
-function pushCodexToolResultEvent(
-  events: Array<Record<string, unknown>>,
-  result: unknown,
-  isError: boolean,
-  timestamp?: string
-): void {
+function pushCodexToolResultEvent(events: Array<Record<string, unknown>>, result: unknown, isError: boolean, timestamp?: string): void {
   events.push({ type: 'tool_result', result, isError, timestamp });
 }
-
-function parseCompletedCodexItem(
-  event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
-  context: CodexEventContext
-): boolean {
+function parseCompletedCodexItem(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], context: CodexEventContext): boolean {
   const { events, setTodos, pendingCommandStarts, timestamp } = context;
   if ((event.item?.type === 'reasoning' || event.item?.type === 'agent_message') && event.item.text) {
     events.push({ type: 'thought', content: event.item.text, timestamp });
@@ -165,52 +145,32 @@ function buildCodexTokenUsage(parsed: ReturnType<typeof parseCodexStreamOutput>)
   };
 }
 
-function appendAssistantMessageEvent(
-  event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
-  events: Array<Record<string, unknown>>,
-  timestamp?: string
-): boolean {
+function appendAssistantMessageEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
   if (event.type !== 'message' || event.role !== 'assistant' || !event.content) return false;
   events.push({ type: 'thought', content: event.content, timestamp });
   return true;
 }
 
-function appendToolUseConversationEvent(
-  event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
-  events: Array<Record<string, unknown>>,
-  timestamp?: string
-): boolean {
+function appendToolUseConversationEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
   if (event.type !== 'tool_use' || !event.tool) return false;
   pushCodexToolUseEvent(events, event.tool, event.params as { file_path?: string; command?: string } | undefined, timestamp);
   return true;
 }
 
-function appendErrorConversationEvent(
-  event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
-  events: Array<Record<string, unknown>>,
-  timestamp?: string
-): boolean {
+function appendErrorConversationEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
   if (event.type !== 'error') return false;
   pushCodexToolResultEvent(events, event.message || event.result || 'Execution error', true, timestamp);
   return true;
 }
 
-function appendStartedCommandEvent(
-  event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
-  events: Array<Record<string, unknown>>,
-  pendingCommandStarts: Map<string, number>,
-  timestamp?: string
-): boolean {
+function appendStartedCommandEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, pendingCommandStarts: Map<string, number>, timestamp?: string): boolean {
   if (event.type !== 'item.started' || event.item?.type !== 'command_execution' || !event.item.command) return false;
   pushCodexToolUseEvent(events, 'command_execution', { command: event.item.command }, timestamp);
   pendingCommandStarts.set(event.item.command, (pendingCommandStarts.get(event.item.command) ?? 0) + 1);
   return true;
 }
 
-function updateTodosFromEvent(
-  event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number],
-  context: CodexEventContext
-): boolean {
+function updateTodosFromEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], context: CodexEventContext): boolean {
   const { setTodos } = context;
   if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item.items) {
     setTodos(mapTodoItems(event.item.items as CodexTodoItem[]));
@@ -307,12 +267,7 @@ export function appendClaudeUserMessageEvents(contentArray: ClaudeMessageContent
   return handled;
 }
 
-function parseAssistantContent(
-  contentArray: ClaudeMessageContent[],
-  events: Array<Record<string, unknown>>,
-  timestamp: string,
-  pendingSubagents: Map<string, PendingSubagent>
-): ParseLineResult {
+function parseAssistantContent(contentArray: ClaudeMessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
   let newTodos: TodoItem[] | undefined;
   appendClaudeAssistantMessageEvents(contentArray, {
     timestamp,
@@ -325,12 +280,7 @@ function parseAssistantContent(
   return { newTodos };
 }
 
-function parseUserContent(
-  contentArray: ClaudeMessageContent[],
-  events: Array<Record<string, unknown>>,
-  timestamp: string,
-  pendingSubagents: Map<string, PendingSubagent>
-): void {
+function parseUserContent(contentArray: ClaudeMessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): void {
   appendClaudeUserMessageEvents(contentArray, {
     timestamp,
     events,
@@ -339,11 +289,7 @@ function parseUserContent(
   });
 }
 
-function parseLine(
-  line: string,
-  events: Array<Record<string, unknown>>,
-  pendingSubagents: Map<string, PendingSubagent>
-): ParseLineResult {
+function parseLine(line: string, events: Array<Record<string, unknown>>, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
   try {
     const message = JSON.parse(line) as Message;
     const timestamp = message.timestamp || new Date().toISOString();
