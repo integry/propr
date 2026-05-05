@@ -154,7 +154,7 @@ export async function saveSettingsWithRollback({
     return { status: 400, body: { error: 'settings object is required' } };
   }
   if (Object.keys(settings).length === 0) {
-    return { status: 200, body: { success: true, settings: {} } };
+    return { status: 200, body: { success: true, settings: {}, noop: true } };
   }
 
   const {

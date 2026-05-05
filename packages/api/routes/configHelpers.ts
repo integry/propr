@@ -66,7 +66,7 @@ function buildCommittedLockLossResponse(
     ? 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.'
     : 'Configuration changes were committed, but lock renewal failed afterward. Verify the current configuration before retrying.';
   return {
-    status: result?.status ?? 409,
+    status: result && result.status >= 400 ? result.status : 409,
     body: {
       ...(result?.body ?? {}),
       warning,

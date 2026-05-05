@@ -266,7 +266,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock =>
       saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, lock })
     );
-    if (result.status === 200) {
+    if (result.status === 200 && result.body.noop !== true) {
       try {
         const updatedKeys = Object.keys(settingsValidation.value);
         await logActivityHelper(`Updated system settings (${updatedKeys.length} keys)`, 'settings-update', 'settings_updated', req.user?.username);
