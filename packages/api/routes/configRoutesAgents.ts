@@ -244,6 +244,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       return;
     }
 
+    // Agent updates share the settings lock because they may also rewrite default_agent_alias.
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
       return applyAgentsUpdate({
         agents: req.body.agents,

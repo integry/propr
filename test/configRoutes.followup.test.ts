@@ -5,7 +5,7 @@ import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/co
 import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
 import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
-import { appendClaudeUserMessageEvents, parseCodexOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
+import { appendClaudeUserMessageEvents, parseClaudeOutputToConversationResult, parseCodexOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
 import {
     detectStoredOutputFormat,
     findLatestHistoryEntryWithSessionId,
@@ -801,6 +801,79 @@ describe('config route follow-up helpers', () => {
             lock_lost: true,
         });
         assert.strictEqual(redisState.get('config:test:lock'), 'someone-else');
+    });
+
+    test('withConfigLock fails closed when lock loss is detected after the protected operation returns', async () => {
+        const redisState = new Map<string, string>();
+        const redisClient = {
+            set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+                if (opts.NX && redisState.has(key)) return null;
+                redisState.set(key, value);
+                return 'OK';
+            }),
+            del: mock.fn(async (key: string) => {
+                redisState.delete(key);
+                return 1;
+            }),
+            eval: mock.fn(async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+                const [key] = options.keys;
+                const [lockValue, timeoutSeconds] = options.arguments;
+                if (timeoutSeconds === undefined) {
+                    if (redisState.get(key) === lockValue) {
+                        redisState.delete(key);
+                        return 1;
+                    }
+                    return 0;
+                }
+                return redisState.get(key) === lockValue ? 1 : 0;
+            }),
+        };
+
+        const result = await withConfigLock(
+            redisClient as never,
+            'config:test:lock',
+            async () => {
+                await new Promise(resolve => setTimeout(resolve, 5));
+                redisState.set('config:test:lock', 'someone-else');
+                await new Promise(resolve => setTimeout(resolve, 20));
+                return { status: 200, body: { success: true } };
+            },
+            { timeoutSeconds: 1, renewalIntervalMs: 10 },
+        );
+
+        assert.strictEqual(result.status, 409);
+        assert.deepStrictEqual(result.body, {
+            error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
+            lock_lost: true,
+        });
+    });
+
+    test('parseClaudeOutputToConversationResult preserves usage on assistant lines with content', () => {
+        const result = parseClaudeOutputToConversationResult(JSON.stringify({
+            type: 'assistant',
+            timestamp: '2026-05-05T07:00:00.000Z',
+            message: {
+                content: [
+                    { type: 'text', text: 'Thinking' },
+                ],
+                usage: {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                    cache_creation_input_tokens: 3,
+                    cache_read_input_tokens: 2,
+                },
+            },
+        }));
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'thought', content: 'Thinking', timestamp: '2026-05-05T07:00:00.000Z' },
+        ]);
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 11,
+            output_tokens: 7,
+            cache_creation_input_tokens: 3,
+            cache_read_input_tokens: 2,
+        });
     });
 
     test('applyAgentsUpdate does not fail after commit when activity logging throws', async () => {

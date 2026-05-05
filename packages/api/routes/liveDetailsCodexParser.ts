@@ -54,6 +54,7 @@ interface Message {
   message?: { content?: ClaudeMessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
 }
+type MessageUsage = NonNullable<Message['usage']>;
 interface ContentBlock { type: string; text?: string; content?: unknown; }
 export interface ClaudeMessageContext {
   timestamp: string;
@@ -61,6 +62,8 @@ export interface ClaudeMessageContext {
   pendingSubagents: Map<string, PendingSubagent>;
   setTodos: (todos: TodoItem[]) => void;
 }
+let malformedClaudeLineWarnings = 0;
+const MAX_MALFORMED_CLAUDE_LINE_WARNINGS = 5;
 
 export function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
   if (item.status === 'completed' || item.completed) {
@@ -296,7 +299,25 @@ export function appendClaudeUserMessageEvents(contentArray: ClaudeMessageContent
   return handled;
 }
 
-function parseAssistantContent(contentArray: ClaudeMessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): ParseLineResult {
+function buildTokenUsage(
+  usage: MessageUsage | undefined
+): TokenUsage | undefined {
+  if (!usage) return undefined;
+  return {
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+    cache_read_input_tokens: usage.cache_read_input_tokens ?? 0
+  };
+}
+
+function parseAssistantContent(
+  contentArray: ClaudeMessageContent[],
+  events: Array<Record<string, unknown>>,
+  timestamp: string,
+  pendingSubagents: Map<string, PendingSubagent>,
+  usage?: MessageUsage
+): ParseLineResult {
   let newTodos: TodoItem[] | undefined;
   appendClaudeAssistantMessageEvents(contentArray, {
     timestamp,
@@ -306,7 +327,7 @@ function parseAssistantContent(contentArray: ClaudeMessageContent[], events: Arr
       newTodos = todos;
     }
   });
-  return { newTodos };
+  return { newTodos, tokenUsage: buildTokenUsage(usage) };
 }
 
 function parseUserContent(contentArray: ClaudeMessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): void {
@@ -322,25 +343,21 @@ function parseLine(line: string, events: Array<Record<string, unknown>>, pending
   try {
     const message = JSON.parse(line) as Message;
     const timestamp = message.timestamp || new Date().toISOString();
+    const usage = message.usage || message.message?.usage;
     if (message.type === 'assistant' && message.message?.content) {
-      return parseAssistantContent(message.message.content, events, timestamp, pendingSubagents);
+      return parseAssistantContent(message.message.content, events, timestamp, pendingSubagents, usage);
     }
     if (message.type === 'user' && message.message?.content) {
       parseUserContent(message.message.content, events, timestamp, pendingSubagents);
     }
-    const usage = message.usage || message.message?.usage;
     if (usage) {
-      return {
-        tokenUsage: {
-          input_tokens: usage.input_tokens ?? 0,
-          output_tokens: usage.output_tokens ?? 0,
-          cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
-          cache_read_input_tokens: usage.cache_read_input_tokens ?? 0
-        }
-      };
+      return { tokenUsage: buildTokenUsage(usage) };
     }
   } catch (parseError) {
-    console.error('[live-details] Error parsing line:', parseError);
+    if (malformedClaudeLineWarnings < MAX_MALFORMED_CLAUDE_LINE_WARNINGS) {
+      malformedClaudeLineWarnings += 1;
+      console.warn('[live-details] Skipping malformed Claude transcript line', parseError);
+    }
   }
   return {};
 }

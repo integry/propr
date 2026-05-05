@@ -139,7 +139,9 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
     if (!acquired) return { status: 409, body: { error: 'Configuration is being updated. Please try again.' } };
     lockAcquired = true;
     scheduleRenewal();
-    return await operation(context);
+    const result = await operation(context);
+    if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
+    return result;
   } catch (error) {
     if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
     console.error(`Error in config operation with lock ${lockKey}:`, error);
