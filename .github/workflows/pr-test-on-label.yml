@@ -8,7 +8,7 @@ jobs:
   test:
     name: Run Full Test Suite
     if: github.event.label.name == 'run-tests'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, propr]
     permissions:
       contents: read
       pull-requests: write
