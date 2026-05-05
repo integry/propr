@@ -96,6 +96,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       await redisClient.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({ type: 'config_update', subtype, timestamp: Date.now() }));
     } catch (error) {
       console.error(`Failed to publish config update event for ${subtype}:`, error);
+      throw error;
     }
   };
 
@@ -301,10 +302,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
     const { primary_processing_labels } = bodyValidation.value;
     if (!Array.isArray(primary_processing_labels) || primary_processing_labels.length === 0) {
-      res.status(400).json({ error: 'primary_processing_labels must be a non-empty array' });
+      res.status(400).json({ error: 'primary_processing_labels must be a non-empty array of strings' });
       return;
     }
-    const labels = normalizeStringEntries(primary_processing_labels.map(l => String(l)));
+    if (!primary_processing_labels.every(label => typeof label === 'string')) {
+      res.status(400).json({ error: 'primary_processing_labels must be a non-empty array of strings' });
+      return;
+    }
+    const labels = normalizeStringEntries(primary_processing_labels);
     if (labels.length === 0) {
       res.status(400).json({ error: 'At least one valid label is required' });
       return;

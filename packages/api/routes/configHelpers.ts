@@ -123,7 +123,7 @@ async function renewLock(redisClient: RedisClientType, lockKey: string, lockValu
   if (watchedResult !== null) {
     return watchedResult;
   }
-  throw new Error(`Atomic config lock renewal is unavailable for ${lockKey}`);
+  throw new Error(`Atomic config lock renewal is unavailable for ${lockKey}; Redis client must support eval or watch/multi`);
 }
 async function releaseLock(redisClient: RedisClientType, lockKey: string, lockValue: string): Promise<void> {
   const scriptClient = redisClient as RedisClientType & RedisScriptClient;
@@ -140,7 +140,7 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
   if (watchedResult !== null) {
     return;
   }
-  console.warn(`Atomic config lock release is unavailable for ${lockKey}; allowing the TTL to expire naturally`);
+  console.warn(`Atomic config lock release is unavailable for ${lockKey}; Redis client should support eval or watch/multi, otherwise the TTL will expire naturally`);
 }
 export async function upsertConfigValue(trx: Knex.Transaction, key: string, value: unknown): Promise<void> {
   const jsonValue = JSON.stringify(value);

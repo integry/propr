@@ -153,6 +153,11 @@ async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; p
       const agentType = agent.type as AgentType;
       processedAgent.cliVersionType = 'default';
       processedAgent.cliVersionResolved = AGENT_DEFAULT_VERSIONS[agentType];
+      processedAgent.dockerImage = generateImageTag(
+        agentType,
+        processedAgent.cliVersionResolved,
+        computeContentHash(agentType)
+      );
     }
 
     processedAgents.push(processedAgent);
