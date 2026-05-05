@@ -62,6 +62,11 @@ export interface ClaudeMessageContext {
   pendingSubagents: Map<string, PendingSubagent>;
   setTodos: (todos: TodoItem[]) => void;
 }
+interface ClaudeParseContext {
+  events: Array<Record<string, unknown>>;
+  timestamp: string;
+  pendingSubagents: Map<string, PendingSubagent>;
+}
 let malformedClaudeLineWarnings = 0;
 const MAX_MALFORMED_CLAUDE_LINE_WARNINGS = 5;
 
@@ -313,16 +318,12 @@ function buildTokenUsage(
 
 function parseAssistantContent(
   contentArray: ClaudeMessageContent[],
-  events: Array<Record<string, unknown>>,
-  timestamp: string,
-  pendingSubagents: Map<string, PendingSubagent>,
+  context: ClaudeParseContext,
   usage?: MessageUsage
 ): ParseLineResult {
   let newTodos: TodoItem[] | undefined;
   appendClaudeAssistantMessageEvents(contentArray, {
-    timestamp,
-    events,
-    pendingSubagents,
+    ...context,
     setTodos: todos => {
       newTodos = todos;
     }
@@ -330,11 +331,9 @@ function parseAssistantContent(
   return { newTodos, tokenUsage: buildTokenUsage(usage) };
 }
 
-function parseUserContent(contentArray: ClaudeMessageContent[], events: Array<Record<string, unknown>>, timestamp: string, pendingSubagents: Map<string, PendingSubagent>): void {
+function parseUserContent(contentArray: ClaudeMessageContent[], context: ClaudeParseContext): void {
   appendClaudeUserMessageEvents(contentArray, {
-    timestamp,
-    events,
-    pendingSubagents,
+    ...context,
     setTodos: () => {}
   });
 }
@@ -343,12 +342,13 @@ function parseLine(line: string, events: Array<Record<string, unknown>>, pending
   try {
     const message = JSON.parse(line) as Message;
     const timestamp = message.timestamp || new Date().toISOString();
+    const context = { events, timestamp, pendingSubagents };
     const usage = message.usage || message.message?.usage;
     if (message.type === 'assistant' && message.message?.content) {
-      return parseAssistantContent(message.message.content, events, timestamp, pendingSubagents, usage);
+      return parseAssistantContent(message.message.content, context, usage);
     }
     if (message.type === 'user' && message.message?.content) {
-      parseUserContent(message.message.content, events, timestamp, pendingSubagents);
+      parseUserContent(message.message.content, context);
     }
     if (usage) {
       return { tokenUsage: buildTokenUsage(usage) };
