@@ -387,7 +387,10 @@ export function parseClaudeOutputToConversationResult(conversationContent: strin
 export function parseCodexOutputToConversationResult(output: string): ConversationResult | null {
   const parsed = parseCodexStreamOutput(output);
   if (!parsed.conversationLog || parsed.conversationLog.length === 0) {
-    return null;
+    const tokenUsage = buildCodexTokenUsage(parsed);
+    return tokenUsage
+      ? { events: [], todos: [], currentTask: null, tokenUsage }
+      : null;
   }
 
   const events: Array<Record<string, unknown>> = [];

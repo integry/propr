@@ -1,5 +1,5 @@
 import * as configManager from '@propr/core';
-import { extractSettingSaves, type ConfigLockContext } from './configHelpers.js';
+import { extractSettingSaves, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
 
 interface SettingsStore {
   saveSettings: typeof configManager.saveSettings;
@@ -27,13 +27,7 @@ interface SaveSettingsRequest {
 }
 
 type SaveResponse = { status: number; body: Record<string, unknown> };
-type SpecializedSettingName =
-  | 'auto_followup_score_threshold'
-  | 'auto_resolve_merge_conflicts'
-  | 'pr_review_model'
-  | 'ultrafix_rating_goal'
-  | 'ultrafix_max_cycles'
-  | 'ultrafix_pause_seconds';
+type SpecializedSettingName = SettingSaveName;
 
 type SpecializedValueMap = {
   auto_followup_score_threshold: number;
@@ -215,7 +209,7 @@ export async function saveSettingsWithRollback({
   const hasGeneralSettings = Object.keys(otherSettings).length > 0;
   const specializedSaves = createSpecializedSaves(
     configStore,
-    extracted.saves.map(({ name }) => name as SpecializedSettingName),
+    extracted.saves.map(({ name }) => name),
     extracted.normalized
   );
   const rollbackActions = await createGeneralRollbackActions(configStore, hasGeneralSettings, lock);

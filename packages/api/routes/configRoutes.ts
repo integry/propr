@@ -20,6 +20,11 @@ interface JsonPostHandlerConfig<T> {
   save: (value: T) => Promise<unknown>;
   subtype: string;
   body: (value: T) => Record<string, unknown>;
+  activity?: {
+    description: (value: T) => string;
+    idSuffix: string;
+    type: string;
+  };
 }
 
 type ValidationResult<T> =
@@ -108,7 +113,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       validate,
       save,
       subtype,
-      body
+      body,
+      activity
     }: JsonPostHandlerConfig<T>
   ) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
@@ -128,6 +134,13 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       await publishConfigUpdate(subtype);
       return { status: 200, body: { success: true, ...body(validated.value) } };
     });
+    if (result.status === 200 && activity) {
+      try {
+        await logActivityHelper(activity.description(validated.value), activity.idSuffix, activity.type, req.user?.username);
+      } catch (error) {
+        console.error(`Failed to log config activity for ${subtype}:`, error);
+      }
+    }
     res.status(result.status).json(result.body);
   };
 
@@ -293,6 +306,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         lock
       });
     });
+    if (result.status === 200) {
+      try {
+        const updatedKeys = Object.keys(settingsValidation.value);
+        await logActivityHelper(`Updated system settings (${updatedKeys.length} keys)`, 'settings-update', 'settings_updated', req.user?.username);
+      } catch (error) {
+        console.error('Failed to log settings update activity:', error);
+      }
+    }
 
     res.status(result.status).json(result.body);
   }
@@ -312,7 +333,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         : failure('pr_label must be a non-empty string'),
       save: pr_label => configManager.savePrLabel(pr_label),
       subtype: 'pr_label_update',
-      body: pr_label => ({ pr_label })
+      body: pr_label => ({ pr_label }),
+      activity: {
+        description: pr_label => `Updated PR label to "${pr_label}"`,
+        idSuffix: 'pr-label-update',
+        type: 'config_updated'
+      }
     }
   );
   const getAiPrimaryTag = createJsonGetHandler(
@@ -330,7 +356,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         : failure('ai_primary_tag must be a non-empty string'),
       save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag),
       subtype: 'ai_primary_tag_update',
-      body: ai_primary_tag => ({ ai_primary_tag })
+      body: ai_primary_tag => ({ ai_primary_tag }),
+      activity: {
+        description: ai_primary_tag => `Updated AI primary tag to "${ai_primary_tag}"`,
+        idSuffix: 'ai-primary-tag-update',
+        type: 'config_updated'
+      }
     }
   );
 
@@ -367,6 +398,13 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       await publishConfigUpdate('primary_processing_labels_update');
       return { status: 200, body: { success: true, primary_processing_labels: labels } };
     });
+    if (result.status === 200) {
+      try {
+        await logActivityHelper(`Updated primary processing labels (${labels.length} labels)`, 'primary-processing-labels-update', 'config_updated', req.user?.username);
+      } catch (error) {
+        console.error('Failed to log primary processing labels update activity:', error);
+      }
+    }
     res.status(result.status).json(result.body);
   }
 

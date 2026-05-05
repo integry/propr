@@ -234,17 +234,20 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
       return;
     }
-    const prepared = await prepareAgentsUpdate(req.body.agents);
-    if (prepared.error) {
-      res.status(400).json({ error: prepared.error });
-      return;
-    }
-    if (!prepared.processedAgents) {
-      res.status(500).json({ error: 'Failed to prepare agent configuration update' });
+    const validationError = validateAgentsConfig(req.body.agents);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
       return;
     }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
+      const prepared = await prepareAgentsUpdate(req.body.agents);
+      if (prepared.error) {
+        return { status: 400, body: { error: prepared.error } };
+      }
+      if (!prepared.processedAgents) {
+        return { status: 500, body: { error: 'Failed to prepare agent configuration update' } };
+      }
       return applyAgentsUpdate({
         agents: req.body.agents,
         processedAgents: prepared.processedAgents,

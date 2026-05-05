@@ -111,31 +111,27 @@ export async function withConfigLock(
     },
     hasLockBeenLost: () => lostLock.detected
   };
+  let lockAcquired = false;
 
   try {
     const acquired = await redisClient.set(lockKey, lockValue, { NX: true, EX: lockTimeout });
     if (!acquired) return { status: 409, body: { error: 'Configuration is being updated. Please try again.' } };
-    try {
-      scheduleRenewal();
-      const result = await operation(context);
-      if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
-      return result;
-    } finally {
-      renewalStopped = true;
-      if (renewalTimer) clearTimeout(renewalTimer);
-      await releaseLock(redisClient, lockKey, lockValue);
-    }
+    lockAcquired = true;
+    scheduleRenewal();
+    return await operation(context);
   } catch (error) {
     if (lostLock.detected) return buildLockLossResponse(lostLock.reason);
     console.error(`Error in config operation with lock ${lockKey}:`, error);
+    return { status: 500, body: { error: 'Failed to update configuration' } };
+  } finally {
+    renewalStopped = true;
+    if (renewalTimer) clearTimeout(renewalTimer);
+    if (!lockAcquired) return;
     try {
-      renewalStopped = true;
-      if (renewalTimer) clearTimeout(renewalTimer);
       await releaseLock(redisClient, lockKey, lockValue);
     } catch (unlockError) {
-      console.error('Error releasing lock:', unlockError);
+      console.error(`Error releasing config lock ${lockKey}:`, unlockError);
     }
-    return { status: 500, body: { error: 'Failed to update configuration' } };
   }
 }
 
@@ -190,6 +186,14 @@ interface SettingFields {
   ultrafix_rating_goal?: unknown; ultrafix_max_cycles?: unknown; ultrafix_pause_seconds?: unknown;
 }
 
+export type SettingSaveName =
+  | 'auto_followup_score_threshold'
+  | 'auto_resolve_merge_conflicts'
+  | 'pr_review_model'
+  | 'ultrafix_rating_goal'
+  | 'ultrafix_max_cycles'
+  | 'ultrafix_pause_seconds';
+
 function validateStrictInt(raw: unknown, min: number, max: number): number | null {
   const str = String(raw);
   if (!/^-?\d+$/.test(str)) return null;
@@ -209,7 +213,7 @@ async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; va
   return { value: val };
 }
 
-export interface LabeledSaveDescriptor { name: string }
+export interface LabeledSaveDescriptor { name: SettingSaveName }
 export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSaveDescriptor[]; normalized: Record<string, unknown> }> {
   const saves: LabeledSaveDescriptor[] = [];
   const normalized: Record<string, unknown> = {};

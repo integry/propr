@@ -1,9 +1,11 @@
 import { test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
+import * as configManager from '../packages/core/src/index.ts';
 import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/configRoutesAgents.ts';
 import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
+import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
-import { appendClaudeUserMessageEvents } from '../packages/api/routes/liveDetailsCodexParser.ts';
+import { appendClaudeUserMessageEvents, parseCodexOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
 import {
     detectStoredOutputFormat,
     findLatestHistoryEntryWithSessionId,
@@ -509,6 +511,59 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
     });
 
+    test('postAgents resolves agent versions only after acquiring the shared settings lock', async () => {
+        let lockAcquired = false;
+        const redisClient = {
+            set: mock.fn(async () => {
+                lockAcquired = true;
+                return 'OK';
+            }),
+            eval: mock.fn(async () => 1),
+        };
+        const resolveVersionMock = mock.method(configManager, 'resolveVersion', async () => {
+            assert.strictEqual(lockAcquired, true);
+            return '1.2.3';
+        });
+
+        const routes = createAgentsRoutes({
+            redisClient: redisClient as never,
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postAgents({
+            body: {
+                agents: [
+                    {
+                        id: 'new-agent',
+                        alias: 'new-default',
+                        type: 'claude',
+                        enabled: true,
+                        dockerImage: 'new:image',
+                        configPath: '/tmp/claude',
+                        supportedModels: [],
+                        cliVersionType: 'default',
+                    },
+                ],
+            },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 200);
+        assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
+    });
+
     test('findLatestHistoryEntryWithSessionId returns the latest live execution session entry', () => {
         const entry = findLatestHistoryEntryWithSessionId([
             { state: 'claude_execution', metadata: { sessionId: 'older-session' } },
@@ -577,6 +632,27 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(result.status, 200);
         assert.ok(redisClient.eval.mock.calls.length >= 2);
         assert.strictEqual(redisState.has('config:test:lock'), false);
+    });
+
+    test('withConfigLock preserves a successful result when lock release fails', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+            eval: mock.fn(async (_script: string, options: { arguments: string[] }) => {
+                if (options.arguments.length === 1) {
+                    throw new Error('unlock failed');
+                }
+                return 1;
+            }),
+        };
+
+        const result = await withConfigLock(
+            redisClient as never,
+            'config:test:lock',
+            async () => ({ status: 200, body: { success: true } }),
+        );
+
+        assert.strictEqual(result.status, 200);
+        assert.deepStrictEqual(result.body, { success: true });
     });
 
     test('withConfigLock does not delete a lock that has been replaced by another owner', async () => {
@@ -720,6 +796,22 @@ describe('config route follow-up helpers', () => {
         ]);
     });
 
+    test('parseCodexOutputToConversationResult preserves token usage without conversation events', () => {
+        const result = parseCodexOutputToConversationResult('{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":3,"output_tokens":4}}\n');
+
+        assert.deepStrictEqual(result, {
+            events: [],
+            todos: [],
+            currentTask: null,
+            tokenUsage: {
+                input_tokens: 15,
+                output_tokens: 4,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+        });
+    });
+
     test('parseStoredOutputContent treats Codex error-first output as Codex, not Claude', () => {
         const parsed = parseStoredOutputContent('{"type":"error","message":"boom"}\n');
 
@@ -783,5 +875,42 @@ describe('config route follow-up helpers', () => {
             content: null,
             timestamp: '2026-05-05T00:00:10.000Z',
         });
+    });
+
+    test('config routes log activity for generic admin config updates', async () => {
+        const savePrLabelMock = mock.method(configManager, 'savePrLabel', async (_value: string) => true);
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+            eval: mock.fn(async () => 1),
+            publish: mock.fn(async () => 1),
+            lPush: mock.fn(async () => 1),
+            lTrim: mock.fn(async () => 1),
+        };
+        const routes = createConfigRoutes({ redisClient: redisClient as never });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postPrLabel({
+            body: { pr_label: 'needs-review' },
+            user: { username: 'alice' },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 200);
+        assert.strictEqual(redisClient.lPush.mock.calls.length, 1);
+        const activity = JSON.parse(String(redisClient.lPush.mock.calls[0].arguments[1]));
+        assert.strictEqual(activity.type, 'config_updated');
+        assert.strictEqual(activity.user, 'alice');
+        assert.match(activity.description, /Updated PR label/);
+        savePrLabelMock.mock.restore();
     });
 });
