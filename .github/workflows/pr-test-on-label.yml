@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [labeled]
 
+concurrency:
+  group: pr-test-on-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Run Full Test Suite

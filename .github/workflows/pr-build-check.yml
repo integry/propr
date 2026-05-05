@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+concurrency:
+  group: pr-build-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     name: Validate Changes
