@@ -271,10 +271,15 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       res.status(400).json({ error: bodyValidation.error });
       return;
     }
+    const settingsValidation = validateJsonObjectBody(bodyValidation.value.settings);
+    if (!settingsValidation.ok) {
+      res.status(400).json({ error: 'settings object is required' });
+      return;
+    }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async () => {
       return saveSettingsWithRollback({
-        settings: bodyValidation.value.settings,
+        settings: settingsValidation.value,
         publishConfigUpdate
       });
     });
