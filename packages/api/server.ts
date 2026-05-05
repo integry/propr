@@ -32,7 +32,7 @@ import {
   createUserRepoPreferencesRoutes,
   attachmentUpload
 } from './routes/index.js';
-import { checkAndExecuteDelayedReindex } from './routes/configHelpers.js';
+import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
 import {
   generateCorrelationId,
   processWebhookEvent,

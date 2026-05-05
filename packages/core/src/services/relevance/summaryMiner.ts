@@ -269,6 +269,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       correlatedLogger.info('No files need processing, all summaries up to date');
       // Clear any stale cancellation flag that may have arrived during setup
       await clearIndexingCancellation(fullName, branch);
+      await clearIndexingProgress(fullName, branch);
       await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
       try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
       return;

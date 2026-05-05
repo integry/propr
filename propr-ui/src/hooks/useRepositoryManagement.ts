@@ -54,7 +54,6 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const [showHiddenRepos, setShowHiddenRepos] = useState<boolean>(false);
   const [_userRepoPrefs, setUserRepoPrefs] = useState<UserRepoPreferences>({});
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const indexingRefreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
 
   const loadRepos = useCallback(async () => {
@@ -148,15 +147,6 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     }
   }, []);
 
-  const scheduleIndexingStatusRefresh = useCallback(() => {
-    if (indexingRefreshTimeoutRef.current) {
-      clearTimeout(indexingRefreshTimeoutRef.current);
-    }
-    indexingRefreshTimeoutRef.current = setTimeout(() => {
-      void loadIndexingStatuses();
-    }, 1000);
-  }, [loadIndexingStatuses]);
-
   useEffect(() => { loadRepos(); loadAvailableRepos(); loadIndexingStatuses(); }, [loadRepos, loadAvailableRepos, loadIndexingStatuses]);
 
   useEffect(() => {
@@ -169,14 +159,6 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     const unsubscribe = onIndexingUpdate(handleIndexingUpdate);
     return () => { unsubscribe(); };
   }, [onIndexingUpdate, handleIndexingUpdate]);
-
-  useEffect(() => {
-    return () => {
-      if (indexingRefreshTimeoutRef.current) {
-        clearTimeout(indexingRefreshTimeoutRef.current);
-      }
-    };
-  }, []);
 
   const performAutoSave = useCallback(async (reposToSave: Repo[]) => {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -206,7 +188,6 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       const displayName = baseBranch ? `${repoName} (${baseBranch})` : repoName;
       if (!confirm(`Are you sure you want to stop indexing for ${displayName}?`)) return;
       await stopRepositoryIndexing(repoName, baseBranch);
-      scheduleIndexingStatusRefresh();
     } catch (err) {
       alert('Failed to stop indexing: ' + (err as Error).message);
     }
@@ -227,7 +208,6 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     }));
     try {
       await triggerRepositoryIndexing(repoName, baseBranch);
-      scheduleIndexingStatusRefresh();
     } catch (err) {
       pendingOptimisticUpdatesRef.current.delete(statusKey);
       loadIndexingStatuses();

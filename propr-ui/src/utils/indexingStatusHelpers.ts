@@ -47,11 +47,16 @@ const buildProgressObject = (
 });
 
 const buildCompletedProgressObject = (
-  payload: IndexingUpdatePayload,
-  prevProgress: RepositoryIndexingStatus['progress'] | undefined
+  payload: IndexingUpdatePayload
 ): RepositoryIndexingStatus['progress'] => ({
-  ...buildProgressObject(payload, prevProgress, 'completed'),
-  percentComplete: 100
+  totalFiles: payload.totalFiles ?? 0,
+  processedFiles: payload.processedFiles ?? 0,
+  percentComplete: 100,
+  inputTokens: 0,
+  outputTokens: 0,
+  phase: 'completed',
+  totalDirectories: payload.totalDirectories ?? 0,
+  processedDirectories: payload.processedDirectories ?? 0
 });
 
 // Helper function to build updated repository status from WebSocket payload
@@ -70,7 +75,7 @@ export const buildUpdatedStatus = (
     last_indexed_commit_message: prevStatus?.last_indexed_commit_message ?? null,
     progress: shouldRetainProgress(payload.phase)
       ? payload.phase === 'completed'
-        ? buildCompletedProgressObject(payload, prevStatus?.progress)
+        ? buildCompletedProgressObject(payload)
         : buildProgressObject(payload, prevStatus?.progress, validPhase)
       : undefined
   };

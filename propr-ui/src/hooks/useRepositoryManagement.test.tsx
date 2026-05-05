@@ -100,7 +100,7 @@ describe('useRepositoryManagement', () => {
     vi.unstubAllGlobals();
   });
 
-  it('refreshes indexing status after a successful reindex trigger', async () => {
+  it('keeps optimistic indexing state after a successful reindex trigger until a socket update arrives', async () => {
     const { result } = renderHook(() => useRepositoryManagement());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -110,14 +110,14 @@ describe('useRepositoryManagement', () => {
       await result.current.handleReindexRepo('integry/propr', 'release/2026');
     });
 
-    await act(async () => {
-      vi.advanceTimersByTime(1000);
+    expect(mockGetRepositoriesIndexingStatus).toHaveBeenCalledTimes(1);
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      indexing_status: 'indexing',
+      branch: 'release/2026'
     });
-
-    await waitFor(() => expect(mockGetRepositoriesIndexingStatus).toHaveBeenCalledTimes(2));
   });
 
-  it('refreshes indexing status after a successful stop request', async () => {
+  it('does not trigger a timer-based refresh after a successful stop request', async () => {
     const { result } = renderHook(() => useRepositoryManagement());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -128,10 +128,10 @@ describe('useRepositoryManagement', () => {
     });
 
     await act(async () => {
-      vi.advanceTimersByTime(1000);
+      vi.advanceTimersByTime(5000);
     });
 
-    await waitFor(() => expect(mockGetRepositoriesIndexingStatus).toHaveBeenCalledTimes(2));
+    expect(mockGetRepositoriesIndexingStatus).toHaveBeenCalledTimes(1);
   });
 
   it('applies branch-aware websocket updates and clears stale progress for terminal states', async () => {
@@ -186,6 +186,10 @@ describe('useRepositoryManagement', () => {
       indexing_status: 'completed',
       progress: {
         phase: 'completed',
+        totalFiles: 0,
+        processedFiles: 0,
+        totalDirectories: 0,
+        processedDirectories: 0,
         percentComplete: 100
       }
     });
@@ -203,6 +207,46 @@ describe('useRepositoryManagement', () => {
     expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
       full_name: 'integry/propr',
       branch: 'release/2026',
+      indexing_status: 'idle'
+    });
+    expect(result.current.indexingStatuses['integry/propr:release/2026'].progress).toBeUndefined();
+  });
+
+  it('applies an immediate idle websocket stop event for active jobs', async () => {
+    socketState.isConnected = true;
+
+    const { result } = renderHook(() => useRepositoryManagement());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      socketState.indexingHandler?.({
+        eventType: 'indexing_update',
+        repository: 'integry/propr',
+        branch: 'release/2026',
+        phase: 'files',
+        progress: 10,
+        totalFiles: 100,
+        processedFiles: 10,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
+      indexing_status: 'indexing'
+    });
+
+    await act(async () => {
+      socketState.indexingHandler?.({
+        eventType: 'indexing_update',
+        repository: 'integry/propr',
+        branch: 'release/2026',
+        phase: 'idle',
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    expect(result.current.indexingStatuses['integry/propr:release/2026']).toMatchObject({
       indexing_status: 'idle'
     });
     expect(result.current.indexingStatuses['integry/propr:release/2026'].progress).toBeUndefined();

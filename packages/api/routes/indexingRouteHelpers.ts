@@ -4,13 +4,6 @@ export interface MonitoredRepoConfig {
   baseBranch?: string;
 }
 
-export interface QueueIndexingDecision {
-  success: boolean;
-  error?: string;
-  jobId?: string;
-  correlationId?: string;
-}
-
 const REPOSITORY_NAME_REGEX = /^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/;
 
 export function getEnabledResummarizationTargets(monitoredRepos: MonitoredRepoConfig[]): Array<{ name: string; baseBranch?: string }> {
@@ -44,10 +37,6 @@ export function validateIndexingInput(body: Record<string, unknown>): string | n
   }
 
   return null;
-}
-
-export function shouldPublishOptimisticIndexing(result: QueueIndexingDecision): boolean {
-  return result.success;
 }
 
 export function validateStopIndexingInput(body: Record<string, unknown>): string | null {

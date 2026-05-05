@@ -2,8 +2,8 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
-import { queueResummarizationForAllRepos, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex, stopIndexingJob } from './configHelpers.js';
-import { shouldPublishOptimisticIndexing, validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
+import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
+import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 
 interface IndexingRoutesDeps {
   redisClient: RedisClientType;
@@ -43,7 +43,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       }
 
       // Best-effort optimistic status for newly accepted jobs only.
-      if (shouldPublishOptimisticIndexing(result)) {
+      if (result.success) {
         try {
           await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
         } catch (pubErr) {
@@ -115,11 +115,14 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
-      // For queued (waiting/delayed) jobs that were removed directly, there is no worker
-      // to emit the terminal idle event — publish it here so the UI updates.
-      // For active jobs, the worker's handleIndexingError will emit idle after it
-      // finishes its current batch and sees the cancellation flag.
-      for (const queuedBranch of result.removedQueuedBranches) {
+      // Emit idle immediately for both removed queued jobs and cancellation requests.
+      // Active workers may still emit a later terminal event after they observe the
+      // cancellation flag, but the UI should reflect the stop request right away.
+      const branchesToPublish = new Set([
+        ...result.cancelledActiveBranches,
+        ...result.removedQueuedBranches
+      ]);
+      for (const queuedBranch of branchesToPublish) {
         try {
           await publishIndexingStatus(repository, queuedBranch, 'idle');
         } catch {
