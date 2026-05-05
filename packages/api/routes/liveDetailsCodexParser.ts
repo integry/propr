@@ -58,7 +58,7 @@ export interface ClaudeMessageContext {
   setTodos: (todos: TodoItem[]) => void;
 }
 
-function mapCodexTodoStatus(item: CodexTodoItem): 'completed' | 'in_progress' | 'pending' {
+export function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
   if (item.status === 'completed' || item.completed) {
     return 'completed';
   }
@@ -68,9 +68,9 @@ function mapCodexTodoStatus(item: CodexTodoItem): 'completed' | 'in_progress' | 
   return 'pending';
 }
 
-function mapCodexTodos(items: CodexTodoItem[]): Array<{ status: string; content: string }> {
+export function mapTodoItems(items: Array<{ text?: string; completed?: boolean; status?: string }>): TodoItem[] {
   return items.map(item => ({
-    status: mapCodexTodoStatus(item),
+    status: mapTodoStatus(item),
     content: item.text || ''
   }));
 }
@@ -130,7 +130,7 @@ function parseCompletedCodexItem(
   }
 
   if (event.item?.type === 'todo_list' && event.item.items) {
-    setTodos(mapCodexTodos(event.item.items as CodexTodoItem[]));
+    setTodos(mapTodoItems(event.item.items as CodexTodoItem[]));
     return true;
   }
 
@@ -205,7 +205,7 @@ function updateTodosFromEvent(
 ): boolean {
   const { setTodos } = context;
   if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item.items) {
-    setTodos(mapCodexTodos(event.item.items as CodexTodoItem[]));
+    setTodos(mapTodoItems(event.item.items as CodexTodoItem[]));
     return true;
   }
   if (event.type !== 'item.completed') return false;

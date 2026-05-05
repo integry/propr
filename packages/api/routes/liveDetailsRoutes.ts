@@ -9,6 +9,7 @@ import {
   appendClaudeAssistantMessageEvents,
   appendClaudeUserMessageEvents,
   deriveCurrentTask,
+  mapTodoItems,
   parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult,
@@ -24,6 +25,7 @@ interface HistoryEntryWithSessionMetadata {
   state?: string;
   metadata?: { sessionId?: string };
 }
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
@@ -38,15 +40,19 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
       console.log(`[live-details] jobId: ${jobId}, taskId: ${taskId}`);
       const sessionId = await findSessionId(redisClient, db, taskId);
       if (!sessionId) {
+        const activeRedisResult = await parseActiveExecutionOutput(redisClient, taskId);
+        if (activeRedisResult) {
+          res.json(activeRedisResult);
+          return;
+        }
         console.log('[live-details] No sessionId found in either SQLite or Redis');
         res.json({ events: [], todos: [], currentTask: null });
         return;
       }
       console.log(`[live-details] Using sessionId: ${sessionId}`);
-      const conversationPath = path.join(os.homedir(), '.claude', 'projects', '-home-node-workspace', `${sessionId}.jsonl`);
-      console.log(`[live-details] Checking Claude conversation path: ${conversationPath}`);
-      const pathExists = await fs.pathExists(conversationPath);
-      if (!pathExists) {
+      const conversationPath = await findClaudeConversationPath(sessionId);
+      console.log(`[live-details] Checking Claude conversation path: ${conversationPath ?? 'not found'}`);
+      if (!conversationPath) {
         console.log('[live-details] Claude conversation file not found, trying active Redis output');
         const activeRedisResult = await parseActiveExecutionOutput(redisClient, taskId);
         if (activeRedisResult) {
@@ -141,6 +147,7 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
 }
 export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSessionMetadata[]): HistoryEntryWithSessionMetadata | null {
   for (const entry of [...history].reverse()) {
+    if (!LIVE_EXECUTION_STATES.has(entry.state ?? '')) continue;
     if (typeof entry.metadata?.sessionId === 'string' && entry.metadata.sessionId.trim().length > 0) {
       return entry;
     }
@@ -151,13 +158,31 @@ interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
 interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
 interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; session_id?: string; conversation_id?: string; item?: unknown; }
-function mapTodoStatus(item: { completed?: boolean; status?: string }): 'completed' | 'in_progress' | 'pending' {
-  if (item.status === 'completed' || item.completed) return 'completed';
-  if (item.status === 'in_progress' || item.status === 'active' || item.status === 'running') return 'in_progress';
-  return 'pending';
+function getClaudeProjectDirName(workspacePath: string): string {
+  const normalizedPath = path.resolve(workspacePath).replace(/\\/g, '/');
+  const collapsed = normalizedPath.replace(/\/+/g, '-');
+  return collapsed.startsWith('-') ? collapsed : `-${collapsed}`;
 }
-function mapTodoItems(items: Array<{ text?: string; completed?: boolean; status?: string }>): TodoItem[] {
-  return items.map(item => ({ status: mapTodoStatus(item), content: item.text || '' }));
+function getClaudeConversationPathCandidates(sessionId: string): string[] {
+  const configuredProjectsDir = process.env.CLAUDE_PROJECTS_DIR;
+  const projectDirNames = new Set([
+    getClaudeProjectDirName(process.cwd()),
+    '-home-node-workspace'
+  ]);
+  const baseDirs = configuredProjectsDir
+    ? [configuredProjectsDir]
+    : [path.join(os.homedir(), '.claude', 'projects')];
+  return baseDirs.flatMap(baseDir =>
+    [...projectDirNames].map(projectDirName => path.join(baseDir, projectDirName, `${sessionId}.jsonl`))
+  );
+}
+async function findClaudeConversationPath(sessionId: string): Promise<string | null> {
+  for (const candidatePath of getClaudeConversationPathCandidates(sessionId)) {
+    if (await fs.pathExists(candidatePath)) {
+      return candidatePath;
+    }
+  }
+  return null;
 }
 async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionId: string): Promise<ConversationResult | null> {
   const logJson = await redisClient.get(`execution:logs:session:${sessionId}`);

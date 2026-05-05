@@ -344,7 +344,7 @@ describe('config route follow-up helpers', () => {
         });
     });
 
-    test('findLatestHistoryEntryWithSessionId returns the latest non-Claude session entry', () => {
+    test('findLatestHistoryEntryWithSessionId returns the latest live execution session entry', () => {
         const entry = findLatestHistoryEntryWithSessionId([
             { state: 'claude_execution', metadata: { sessionId: 'older-session' } },
             { state: 'processing', metadata: {} },
@@ -354,6 +354,19 @@ describe('config route follow-up helpers', () => {
         assert.deepStrictEqual(entry, {
             state: 'codex_execution',
             metadata: { sessionId: 'codex-session' },
+        });
+    });
+
+    test('findLatestHistoryEntryWithSessionId ignores non-execution states with session metadata', () => {
+        const entry = findLatestHistoryEntryWithSessionId([
+            { state: 'claude_execution', metadata: { sessionId: 'live-session' } },
+            { state: 'post_processing', metadata: { sessionId: 'stale-session' } },
+            { state: 'completed', metadata: { sessionId: 'completed-session' } },
+        ]);
+
+        assert.deepStrictEqual(entry, {
+            state: 'claude_execution',
+            metadata: { sessionId: 'live-session' },
         });
     });
 });
