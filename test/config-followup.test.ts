@@ -205,12 +205,214 @@ test('saveSettingsWithRollback reports committed state when post-commit side eff
 
     assert.equal(result.status, 500);
     assert.deepEqual(result.body, {
-      error: 'Settings were saved, but post-commit side effects failed. Persisted settings may require a follow-up check.',
+      error: 'Settings were saved and distributed, but post-commit side effects failed on this API instance. Persisted settings may require a follow-up check.',
       committed: true
     });
     assert.equal(committed, true);
     assert.equal(rolledBack, false);
+    assert.equal(published, 1);
+  } finally {
+    testDb.transaction = originalTransaction;
+  }
+});
+
+test('saveSettingsWithRollback reports committed state when publishing the settings update fails after commit', async () => {
+  const originalTransaction = db.transaction.bind(db);
+  const testDb = db as typeof db & { transaction: typeof db.transaction };
+
+  const trx = Object.assign(
+    ((table: string) => ({
+      insert: (_row: { key: string; value: string }) => ({
+        onConflict: (_column: string) => ({
+          merge: async () => {
+            assert.equal(table, 'system_configs');
+          }
+        })
+      })
+    })) as unknown as typeof db,
+    {
+      commit: async () => {},
+      rollback: async () => {}
+    }
+  );
+
+  testDb.transaction = async () => trx as never;
+
+  try {
+    const result = await saveSettingsWithRollback({
+      settings: {
+        worker_concurrency: 9
+      },
+      publishConfigUpdate: async () => {
+        throw new Error('publish failed');
+      },
+      configStore: {
+        loadSettings: async () => ({ existing: true }),
+        handleSettingsSaveSideEffects: () => {}
+      }
+    });
+
+    assert.equal(result.status, 500);
+    assert.deepEqual(result.body, {
+      error: 'Settings were saved, but publishing the settings update notification failed. Other processes may still be using stale configuration.',
+      committed: true
+    });
+  } finally {
+    testDb.transaction = originalTransaction;
+  }
+});
+
+test('saveSettingsWithRollback surfaces lock loss before commit through withConfigLock', async () => {
+  const originalTransaction = db.transaction.bind(db);
+  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const redisState = new Map<string, string>();
+  let committed = false;
+  let published = 0;
+
+  const trx = Object.assign(
+    ((table: string) => ({
+      insert: (row: { key: string; value: string }) => ({
+        onConflict: (_column: string) => ({
+          merge: async () => {
+            assert.equal(table, 'system_configs');
+            if (row.key === 'settings') {
+              redisState.set('config:test:lock', 'someone-else');
+            }
+          }
+        })
+      })
+    })) as unknown as typeof db,
+    {
+      commit: async () => {
+        committed = true;
+      },
+      rollback: async () => {}
+    }
+  );
+
+  testDb.transaction = async () => trx as never;
+
+  try {
+    const result = await withConfigLock(
+      {
+        set: async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+          if (opts.NX && redisState.has(key)) return null;
+          redisState.set(key, value);
+          return 'OK';
+        },
+        eval: async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+          const [key] = options.keys;
+          const [lockValue, timeoutSeconds] = options.arguments;
+          if (timeoutSeconds === undefined) {
+            if (redisState.get(key) === lockValue) {
+              redisState.delete(key);
+              return 1;
+            }
+            return 0;
+          }
+          return redisState.get(key) === lockValue ? 1 : 0;
+        }
+      } as never,
+      'config:test:lock',
+      async lock => saveSettingsWithRollback({
+        settings: { worker_concurrency: 9 },
+        publishConfigUpdate: async () => {
+          published += 1;
+        },
+        configStore: {
+          loadSettings: async () => ({ existing: true }),
+          handleSettingsSaveSideEffects: () => {}
+        },
+        lock
+      }),
+      { renewalIntervalMs: 0 }
+    );
+
+    assert.equal(result.status, 409);
+    assert.deepEqual(result.body, {
+      error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
+      lock_lost: true
+    });
+    assert.equal(committed, false);
     assert.equal(published, 0);
+    assert.equal(redisState.get('config:test:lock'), 'someone-else');
+  } finally {
+    testDb.transaction = originalTransaction;
+  }
+});
+
+test('saveSettingsWithRollback preserves committed lock-loss warnings when the lock is lost during publish', async () => {
+  const originalTransaction = db.transaction.bind(db);
+  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const redisState = new Map<string, string>();
+
+  const trx = Object.assign(
+    ((table: string) => ({
+      insert: (_row: { key: string; value: string }) => ({
+        onConflict: (_column: string) => ({
+          merge: async () => {
+            assert.equal(table, 'system_configs');
+          }
+        })
+      })
+    })) as unknown as typeof db,
+    {
+      commit: async () => {},
+      rollback: async () => {}
+    }
+  );
+
+  testDb.transaction = async () => trx as never;
+
+  try {
+    let published = 0;
+    const result = await withConfigLock(
+      {
+        set: async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+          if (opts.NX && redisState.has(key)) return null;
+          redisState.set(key, value);
+          return 'OK';
+        },
+        eval: async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+          const [key] = options.keys;
+          const [lockValue, timeoutSeconds] = options.arguments;
+          if (timeoutSeconds === undefined) {
+            if (redisState.get(key) === lockValue) {
+              redisState.delete(key);
+              return 1;
+            }
+            return 0;
+          }
+          return redisState.get(key) === lockValue ? 1 : 0;
+        }
+      } as never,
+      'config:test:lock',
+      async lock => saveSettingsWithRollback({
+        settings: { worker_concurrency: 9 },
+        publishConfigUpdate: async () => {
+          redisState.set('config:test:lock', 'someone-else');
+          await new Promise(resolve => setTimeout(resolve, 20));
+          published += 1;
+        },
+        configStore: {
+          loadSettings: async () => ({ existing: true }),
+          handleSettingsSaveSideEffects: () => {}
+        },
+        lock
+      }),
+      { timeoutSeconds: 1, renewalIntervalMs: 10 }
+    );
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, {
+      success: true,
+      settings: { worker_concurrency: 9 },
+      warning: 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.',
+      committed: true,
+      lock_lost_after_commit: true
+    });
+    assert.equal(published, 1);
+    assert.equal(redisState.get('config:test:lock'), 'someone-else');
   } finally {
     testDb.transaction = originalTransaction;
   }

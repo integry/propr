@@ -98,13 +98,39 @@ async function persistSettingsAtomically({
     }
     throw error;
   }
+}
+
+async function applyCommittedSettingsUpdate({
+  configStore,
+  publishConfigUpdate
+}: {
+  configStore: SettingsStore;
+  publishConfigUpdate: (subtype: string) => Promise<void>;
+}): Promise<void> {
+  let sideEffectsError: unknown = null;
 
   try {
     configStore.handleSettingsSaveSideEffects();
   } catch (error) {
+    sideEffectsError = error;
     console.error('Settings save side effects failed after commit:', error);
+  }
+
+  try {
+    await publishConfigUpdate('settings_update');
+  } catch (error) {
+    console.error('Settings update publish failed after commit:', error);
     throw new ConfigRouteError(500, {
-      error: 'Settings were saved, but post-commit side effects failed. Persisted settings may require a follow-up check.',
+      error: sideEffectsError
+        ? 'Settings were saved, but post-commit side effects failed and the settings update notification could not be published. Persisted settings may require a follow-up check.'
+        : 'Settings were saved, but publishing the settings update notification failed. Other processes may still be using stale configuration.',
+      committed: true
+    });
+  }
+
+  if (sideEffectsError) {
+    throw new ConfigRouteError(500, {
+      error: 'Settings were saved and distributed, but post-commit side effects failed on this API instance. Persisted settings may require a follow-up check.',
       committed: true
     });
   }
@@ -173,6 +199,21 @@ export async function saveSettingsWithRollback({
     };
   }
 
-  await publishConfigUpdate('settings_update');
+  try {
+    await applyCommittedSettingsUpdate({ configStore, publishConfigUpdate });
+  } catch (error) {
+    if (error instanceof ConfigRouteError) {
+      return { status: error.status, body: error.body };
+    }
+    if (lock?.hasLockBeenLost()) {
+      throw error;
+    }
+    console.error('Settings save failed after commit:', error);
+    return {
+      status: 500,
+      body: { error: 'Settings were saved, but post-commit processing failed. Persisted settings may require a follow-up check.', committed: true }
+    };
+  }
+
   return { status: 200, body: { success: true, settings: { ...otherSettings, ...extracted.normalized } } };
 }
