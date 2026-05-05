@@ -110,7 +110,7 @@ async function applyCommittedSettingsUpdate({
   let sideEffectsError: unknown = null;
 
   try {
-    configStore.handleSettingsSaveSideEffects();
+    await configStore.handleSettingsSaveSideEffects();
   } catch (error) {
     sideEffectsError = error;
     console.error('Settings save side effects failed after commit:', error);

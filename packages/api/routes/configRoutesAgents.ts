@@ -80,7 +80,7 @@ async function rollbackAgentConfigState({
       lock
     });
     if (settingsWereUpdated) {
-      configStore.handleSettingsSaveSideEffects();
+      await configStore.handleSettingsSaveSideEffects();
     }
     await lock?.assertLockHeld();
     await registry.refresh();
@@ -246,7 +246,7 @@ async function applyCommittedAgentsUpdate({
 }): Promise<{ status: number; body: Record<string, unknown> } | void> {
   try {
     if (settingsWereUpdated) {
-      configStore.handleSettingsSaveSideEffects();
+      await configStore.handleSettingsSaveSideEffects();
     }
     await lock?.assertLockHeld();
     await registry.refresh();

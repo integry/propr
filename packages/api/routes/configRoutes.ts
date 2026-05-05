@@ -19,6 +19,7 @@ interface JsonPostHandlerConfig<T> {
   save: (value: T) => Promise<unknown>;
   subtype: string;
   body: (value: T) => Record<string, unknown>;
+  committedErrorMessage: string;
   activity?: { description: (value: T) => string; idSuffix: string; type: string };
 }
 type ValidationResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -88,6 +89,31 @@ function createJsonGetHandler<T>(load: () => Promise<T>, body: (value: T) => Rec
     }
   };
 }
+async function saveThenPublishConfigUpdate({
+  save,
+  publish,
+  committedErrorMessage,
+  successBody
+}: {
+  save: () => Promise<void>;
+  publish: () => Promise<void>;
+  committedErrorMessage: string;
+  successBody: Record<string, unknown>;
+}): Promise<{ status: number; body: Record<string, unknown> }> {
+  await save();
+  try {
+    await publish();
+  } catch (error) {
+    return {
+      status: 500,
+      body: {
+        error: committedErrorMessage,
+        committed: true
+      }
+    };
+  }
+  return { status: 200, body: successBody };
+}
 
 export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const { redisClient } = deps;
@@ -116,7 +142,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const indexingRoutes = createIndexingRoutes({ redisClient, publishConfigUpdate, logActivityHelper });
   const agentTankRoutes = createAgentTankRoutes();
   const agentsRoutes = createAgentsRoutes({ redisClient, publishConfigUpdate, logActivityHelper });
-  const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
+  const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, committedErrorMessage, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
     if (!bodyValidation.ok) {
       res.status(400).json({ error: bodyValidation.error });
@@ -129,9 +155,16 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       return;
     }
     const result = await withConfigLock(redisClient, lockKey, async () => {
-      await save(validated.value);
-      await publishConfigUpdate(subtype);
-      return { status: 200, body: { success: true, ...body(validated.value) } };
+      return saveThenPublishConfigUpdate({
+        save: async () => {
+          await save(validated.value);
+        },
+        publish: async () => {
+          await publishConfigUpdate(subtype);
+        },
+        committedErrorMessage,
+        successBody: { success: true, ...body(validated.value) }
+      });
     });
     if (result.status === 200 && activity) {
       try {
@@ -143,9 +176,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     res.status(result.status).json(result.body);
   };
   const getFollowupKeywords = createJsonGetHandler(() => configManager.loadFollowupKeywords(), followup_keywords => ({ followup_keywords }), 'Failed to load followup keywords', '/api/config/followup-keywords GET');
-  const postFollowupKeywords = createJsonPostHandler({ lockKey: 'config:keywords:lock', pickValue: body => body.followup_keywords, validate: followup_keywords => parseNormalizedStringArrayResult(followup_keywords, 'followup_keywords'), save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords), subtype: 'followup_keywords_update', body: followup_keywords => ({ followup_keywords }) });
+  const postFollowupKeywords = createJsonPostHandler({ lockKey: 'config:keywords:lock', pickValue: body => body.followup_keywords, validate: followup_keywords => parseNormalizedStringArrayResult(followup_keywords, 'followup_keywords'), save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords), subtype: 'followup_keywords_update', body: followup_keywords => ({ followup_keywords }), committedErrorMessage: 'Follow-up keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.' });
   const getFollowupIgnoreKeywords = createJsonGetHandler(() => configManager.loadFollowupIgnoreKeywords(), followup_ignore_keywords => ({ followup_ignore_keywords }), 'Failed to load followup ignore keywords', '/api/config/followup-ignore-keywords GET');
-  const postFollowupIgnoreKeywords = createJsonPostHandler({ lockKey: 'config:ignore-keywords:lock', pickValue: body => body.followup_ignore_keywords, validate: followup_ignore_keywords => parseNormalizedStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'), save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords), subtype: 'followup_ignore_keywords_update', body: followup_ignore_keywords => ({ followup_ignore_keywords }) });
+  const postFollowupIgnoreKeywords = createJsonPostHandler({ lockKey: 'config:ignore-keywords:lock', pickValue: body => body.followup_ignore_keywords, validate: followup_ignore_keywords => parseNormalizedStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'), save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords), subtype: 'followup_ignore_keywords_update', body: followup_ignore_keywords => ({ followup_ignore_keywords }), committedErrorMessage: 'Follow-up ignore keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.' });
 
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
@@ -191,9 +224,16 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       processedRepos.push({ id: repo.id || randomUUID(), name: repo.name, enabled: repo.enabled, alias: repo.alias?.trim() || undefined, baseBranch: repo.baseBranch?.trim() || undefined });
     }
     const result = await withConfigLock(redisClient, 'config:repos:lock', async () => {
-      await configManager.saveMonitoredRepos(processedRepos);
-      await publishConfigUpdate('repos_update');
-      return { status: 200, body: { success: true, repos_to_monitor: processedRepos } };
+      return saveThenPublishConfigUpdate({
+        save: async () => {
+          await configManager.saveMonitoredRepos(processedRepos);
+        },
+        publish: async () => {
+          await publishConfigUpdate('repos_update');
+        },
+        committedErrorMessage: 'Repository configuration was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
+        successBody: { success: true, repos_to_monitor: processedRepos }
+      });
     });
     if (result.status === 200) {
       try {
@@ -280,9 +320,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   }
 
   const getPrLabel = createJsonGetHandler(() => configManager.loadPrLabel(), pr_label => ({ pr_label }), 'Failed to load PR label', '/api/config/pr-label GET');
-  const postPrLabel = createJsonPostHandler<string>({ lockKey: 'config:pr-label:lock', pickValue: body => body.pr_label, validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== '' ? success(pr_label.trim()) : failure('pr_label must be a non-empty string'), save: pr_label => configManager.savePrLabel(pr_label), subtype: 'pr_label_update', body: pr_label => ({ pr_label }), activity: { description: pr_label => `Updated PR label to "${pr_label}"`, idSuffix: 'pr-label-update', type: 'config_updated' } });
+  const postPrLabel = createJsonPostHandler<string>({ lockKey: 'config:pr-label:lock', pickValue: body => body.pr_label, validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== '' ? success(pr_label.trim()) : failure('pr_label must be a non-empty string'), save: pr_label => configManager.savePrLabel(pr_label), subtype: 'pr_label_update', body: pr_label => ({ pr_label }), committedErrorMessage: 'PR label was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.', activity: { description: pr_label => `Updated PR label to "${pr_label}"`, idSuffix: 'pr-label-update', type: 'config_updated' } });
   const getAiPrimaryTag = createJsonGetHandler(() => configManager.loadAiPrimaryTag(), ai_primary_tag => ({ ai_primary_tag }), 'Failed to load AI primary tag', '/api/config/ai-primary-tag GET');
-  const postAiPrimaryTag = createJsonPostHandler<string>({ lockKey: 'config:ai-primary-tag:lock', pickValue: body => body.ai_primary_tag, validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== '' ? success(ai_primary_tag.trim()) : failure('ai_primary_tag must be a non-empty string'), save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag), subtype: 'ai_primary_tag_update', body: ai_primary_tag => ({ ai_primary_tag }), activity: { description: ai_primary_tag => `Updated AI primary tag to "${ai_primary_tag}"`, idSuffix: 'ai-primary-tag-update', type: 'config_updated' } });
+  const postAiPrimaryTag = createJsonPostHandler<string>({ lockKey: 'config:ai-primary-tag:lock', pickValue: body => body.ai_primary_tag, validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== '' ? success(ai_primary_tag.trim()) : failure('ai_primary_tag must be a non-empty string'), save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag), subtype: 'ai_primary_tag_update', body: ai_primary_tag => ({ ai_primary_tag }), committedErrorMessage: 'AI primary tag was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.', activity: { description: ai_primary_tag => `Updated AI primary tag to "${ai_primary_tag}"`, idSuffix: 'ai-primary-tag-update', type: 'config_updated' } });
 
   async function getPrimaryProcessingLabels(_req: Request, res: Response): Promise<void> {
     try {
@@ -316,9 +356,16 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
 
     const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async () => {
-      await configManager.savePrimaryProcessingLabels(labels);
-      await publishConfigUpdate('primary_processing_labels_update');
-      return { status: 200, body: { success: true, primary_processing_labels: labels } };
+      return saveThenPublishConfigUpdate({
+        save: async () => {
+          await configManager.savePrimaryProcessingLabels(labels);
+        },
+        publish: async () => {
+          await publishConfigUpdate('primary_processing_labels_update');
+        },
+        committedErrorMessage: 'Primary processing labels were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
+        successBody: { success: true, primary_processing_labels: labels }
+      });
     });
     if (result.status === 200) {
       try {

@@ -216,6 +216,56 @@ test('saveSettingsWithRollback reports committed state when post-commit side eff
   }
 });
 
+test('saveSettingsWithRollback awaits async post-commit side effect failures', async () => {
+  const originalTransaction = db.transaction.bind(db);
+  const testDb = db as typeof db & { transaction: typeof db.transaction };
+
+  const trx = Object.assign(
+    ((table: string) => ({
+      insert: (_row: { key: string; value: string }) => ({
+        onConflict: (_column: string) => ({
+          merge: async () => {
+            assert.equal(table, 'system_configs');
+          }
+        })
+      })
+    })) as unknown as typeof db,
+    {
+      commit: async () => {},
+      rollback: async () => {}
+    }
+  );
+
+  testDb.transaction = async () => trx as never;
+
+  try {
+    let published = 0;
+    const result = await saveSettingsWithRollback({
+      settings: {
+        worker_concurrency: 9
+      },
+      publishConfigUpdate: async () => {
+        published += 1;
+      },
+      configStore: {
+        loadSettings: async () => ({ existing: true }),
+        handleSettingsSaveSideEffects: async () => {
+          throw new Error('async cache invalidation failed');
+        }
+      }
+    });
+
+    assert.equal(result.status, 500);
+    assert.deepEqual(result.body, {
+      error: 'Settings were saved and distributed, but post-commit side effects failed on this API instance. Persisted settings may require a follow-up check.',
+      committed: true
+    });
+    assert.equal(published, 1);
+  } finally {
+    testDb.transaction = originalTransaction;
+  }
+});
+
 test('saveSettingsWithRollback reports committed state when publishing the settings update fails after commit', async () => {
   const originalTransaction = db.transaction.bind(db);
   const testDb = db as typeof db & { transaction: typeof db.transaction };

@@ -477,6 +477,100 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(registry.setDefaultAgentAlias.mock.calls[0].arguments[0], 'old-default');
     });
 
+    test('applyAgentsUpdate awaits async side effect failures before reporting rollback status', async () => {
+        let sideEffectCalls = 0;
+        const registry = {
+            refresh: mock.fn(async () => {}),
+            setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
+        };
+        const configStore = {
+            loadAgents: async () => currentAgents as never[],
+            loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: async () => {
+                sideEffectCalls += 1;
+                if (sideEffectCalls === 1) {
+                    throw new Error('async side effect failed');
+                }
+            },
+        };
+
+        const result = await applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    dockerImage: 'new:image',
+                    configPath: '/tmp/claude',
+                    supportedModels: [],
+                },
+            ],
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+            configStore,
+            registry,
+        });
+
+        assert.strictEqual(result.status, 500);
+        assert.deepStrictEqual(result.body, {
+            error: 'Failed to apply agent configuration to the live registry',
+        });
+        assert.strictEqual(sideEffectCalls, 2);
+        assert.deepStrictEqual(currentAgents, [
+            {
+                id: 'old-agent',
+                alias: 'old-default',
+                type: 'claude',
+                enabled: true,
+                dockerImage: 'old:image',
+                configPath: '/tmp/claude',
+                supportedModels: [],
+            },
+        ]);
+        assert.strictEqual(currentSettings.default_agent_alias, 'old-default');
+    });
+
+    test('applyAgentsUpdate treats async rollback side effect failures as rollback failures', async () => {
+        const registry = {
+            refresh: mock.fn(async () => {
+                throw new Error('refresh failed');
+            }),
+            setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
+        };
+        const configStore = {
+            loadAgents: async () => currentAgents as never[],
+            loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: async () => {
+                throw new Error('async rollback side effect failed');
+            },
+        };
+
+        const result = await applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    dockerImage: 'new:image',
+                    configPath: '/tmp/claude',
+                    supportedModels: [],
+                },
+            ],
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+            configStore,
+            registry,
+        });
+
+        assert.strictEqual(result.status, 500);
+        assert.deepStrictEqual(result.body, {
+            error: 'Failed to apply committed agent configuration to the live registry, and automatic rollback did not complete. Persisted config may be out of sync with the live registry.',
+            out_of_sync: true,
+        });
+    });
+
     test('saveSettingsWithRollback rejects array payloads', async () => {
         const result = await saveSettingsWithRollback({
             settings: [] as unknown as Record<string, unknown>,
@@ -1331,6 +1425,126 @@ describe('config route follow-up helpers', () => {
         });
         assert.deepStrictEqual(saveKeywordsMock.mock.calls[0].arguments[0], ['bug', 'feature']);
         saveKeywordsMock.mock.restore();
+    });
+
+    test('postFollowupKeywords reports committed state when publish fails after save', async () => {
+        const saveKeywordsMock = mock.method(configManager, 'saveFollowupKeywords', async (_value: string[]) => true);
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+            eval: mock.fn(async () => 1),
+            publish: mock.fn(async () => {
+                throw new Error('publish failed');
+            }),
+            lPush: mock.fn(async () => 1),
+            lTrim: mock.fn(async () => 1),
+        };
+        const routes = createConfigRoutes({ redisClient: redisClient as never });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postFollowupKeywords({
+            body: { followup_keywords: ['bug'] },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 500);
+        assert.deepStrictEqual(res.body, {
+            error: 'Follow-up keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
+            committed: true,
+        });
+        assert.strictEqual(saveKeywordsMock.mock.calls.length, 1);
+        saveKeywordsMock.mock.restore();
+    });
+
+    test('postRepos reports committed state when publish fails after save', async () => {
+        const saveReposMock = mock.method(configManager, 'saveMonitoredRepos', async () => true);
+        const routes = createConfigRoutes({
+            redisClient: {
+                set: mock.fn(async () => 'OK'),
+                publish: mock.fn(async () => {
+                    throw new Error('publish failed');
+                }),
+                eval: mock.fn(async () => 1),
+                lPush: mock.fn(async () => 1),
+                lTrim: mock.fn(async () => 'OK'),
+            } as never,
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postRepos({
+            body: {
+                repos_to_monitor: [
+                    { name: 'integry/propr', enabled: true },
+                ],
+            },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 500);
+        assert.deepStrictEqual(res.body, {
+            error: 'Repository configuration was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
+            committed: true,
+        });
+        assert.strictEqual(saveReposMock.mock.calls.length, 1);
+        saveReposMock.mock.restore();
+    });
+
+    test('postPrimaryProcessingLabels reports committed state when publish fails after save', async () => {
+        const saveLabelsMock = mock.method(configManager, 'savePrimaryProcessingLabels', async () => true);
+        const routes = createConfigRoutes({
+            redisClient: {
+                set: mock.fn(async () => 'OK'),
+                publish: mock.fn(async () => {
+                    throw new Error('publish failed');
+                }),
+                eval: mock.fn(async () => 1),
+                lPush: mock.fn(async () => 1),
+                lTrim: mock.fn(async () => 'OK'),
+            } as never,
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postPrimaryProcessingLabels({
+            body: { primary_processing_labels: ['primary'] },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 500);
+        assert.deepStrictEqual(res.body, {
+            error: 'Primary processing labels were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
+            committed: true,
+        });
+        assert.strictEqual(saveLabelsMock.mock.calls.length, 1);
+        saveLabelsMock.mock.restore();
     });
 
     test('getSettings preserves intentionally empty persisted planner models', async () => {
