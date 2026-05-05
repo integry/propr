@@ -29,37 +29,28 @@ const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
-
-function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
-  if (value === undefined || value === null) {
-    return null;
-  }
-  const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim())
-    ? Number(value.trim())
-    : value;
-  return typeof candidate === 'number'
-    && Number.isSafeInteger(candidate)
-    && candidate >= minimum
-    && candidate <= maximum
-    ? candidate
-    : null;
+interface IntegerSettingConfig {
+  name: string;
+  value: unknown;
+  defaultValue: number;
+  minimum: number;
+  maximum?: number;
 }
 
-function getIntegerSettingOrThrow(name: string, value: unknown, defaultValue: number, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number {
+function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
+  if (value === undefined || value === null) return null;
+  const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value.trim()) : value;
+  return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= minimum && candidate <= maximum ? candidate : null;
+}
+function getIntegerSettingOrThrow({ name, value, defaultValue, minimum, maximum = Number.MAX_SAFE_INTEGER }: IntegerSettingConfig): number {
   const parsed = parseStoredIntegerSetting(value, minimum, maximum);
-  if (parsed !== null) {
-    return parsed;
-  }
-  if (value === undefined || value === null) {
-    return defaultValue;
-  }
+  if (parsed !== null) return parsed;
+  if (value === undefined || value === null) return defaultValue;
   throw new Error(`Stored ${name} is invalid: ${JSON.stringify(value)}`);
 }
 
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
-  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) {
-    return `${fieldName} must be an array of strings`;
-  }
+  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) return `${fieldName} must be an array of strings`;
   return value;
 }
 
@@ -69,9 +60,7 @@ function normalizeStringEntries(values: string[]): string[] {
   const seen = new Set<string>();
   for (const value of values) {
     const trimmed = value.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
+    if (!trimmed || seen.has(trimmed)) continue;
     seen.add(trimmed);
     normalized.push(trimmed);
   }
@@ -89,9 +78,7 @@ function parseNormalizedStringArrayResult(value: unknown, fieldName: string): Va
   return typeof validated === 'string' ? failure(validated) : success(normalizeStringEntries(validated));
 }
 function validateJsonObjectBody(value: unknown): ValidationResult<Record<string, unknown>> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return failure('Request body must be a JSON object');
-  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return failure('Request body must be a JSON object');
   return success(value as Record<string, unknown>);
 }
 function createJsonGetHandler<T>(load: () => Promise<T>, body: (value: T) => Record<string, unknown>, errorMessage: string, logContext: string) {
@@ -122,13 +109,7 @@ async function saveThenPublishConfigUpdate({
   try {
     await publish();
   } catch {
-    return {
-      status: 500,
-      body: {
-        error: committedErrorMessage,
-        committed: true
-      }
-    };
+    return { status: 500, body: { error: committedErrorMessage, committed: true } };
   }
   return { status: 200, body: successBody };
 }
@@ -188,9 +169,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     if (result.status === 200 && activity) {
       try {
         await logActivityHelper(activity.description(validated.value), activity.idSuffix, activity.type, req.user?.username);
-      } catch (error) {
-        console.error(`Failed to log config activity for ${subtype}:`, error);
-      }
+      } catch (error) { console.error(`Failed to log config activity for ${subtype}:`, error); }
     }
     res.status(result.status).json(result.body);
   };
@@ -258,25 +237,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     if (result.status === 200) {
       try {
         await logActivityHelper(`Updated monitored repositories list (${processedRepos.length} repos)`, 'config-update', 'config_updated', req.user?.username);
-      } catch (error) {
-        console.error('Failed to log monitored repositories update activity:', error);
-      }
+      } catch (error) { console.error('Failed to log monitored repositories update activity:', error); }
     }
-
     res.status(result.status).json(result.body);
   }
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const [
-        loadedSettings,
-        autoFollowupThreshold,
-        autoResolveMergeConflicts,
-        prReviewModel,
-        ultrafixRatingGoal,
-        ultrafixMaxCycles,
-        ultrafixPauseSeconds
-      ] = await Promise.all([
+      const [loadedSettings, autoFollowupThreshold, autoResolveMergeConflicts, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds] = await Promise.all([
         configManager.loadSettings(),
         configManager.loadAutoFollowupScoreThreshold(),
         configManager.loadAutoResolveMergeConflicts(),
@@ -286,32 +254,23 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         configManager.loadUltrafixPauseSeconds()
       ]);
       const settings = loadedSettings as Record<string, unknown>;
-      const envDefaults = {
-        worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
-        github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()),
-        analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || 'claude-3-5-haiku-20241022',
-        planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '',
-        planner_generation_model: process.env.PLANNER_GENERATION_MODEL || ''
-      };
+      const envDefaults = { worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10), github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()), analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || 'claude-3-5-haiku-20241022', planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '', planner_generation_model: process.env.PLANNER_GENERATION_MODEL || '' };
       res.json({
         worker_concurrency: settings.worker_concurrency ?? envDefaults.worker_concurrency,
         github_user_whitelist: settings.github_user_whitelist ?? envDefaults.github_user_whitelist,
         analysis_model_fast: settings.analysis_model_fast ?? envDefaults.analysis_model_fast,
         planner_context_model: settings.planner_context_model ?? envDefaults.planner_context_model,
         planner_generation_model: settings.planner_generation_model ?? envDefaults.planner_generation_model,
-        auto_followup_score_threshold: getIntegerSettingOrThrow('auto_followup_score_threshold', autoFollowupThreshold, DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, 0, 9),
+        auto_followup_score_threshold: getIntegerSettingOrThrow({ name: 'auto_followup_score_threshold', value: autoFollowupThreshold, defaultValue: DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, minimum: 0, maximum: 9 }),
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
         pr_review_model: prReviewModel,
-        ultrafix_rating_goal: getIntegerSettingOrThrow('ultrafix_rating_goal', ultrafixRatingGoal, DEFAULT_ULTRAFIX_RATING_GOAL, 1, 10),
-        ultrafix_max_cycles: getIntegerSettingOrThrow('ultrafix_max_cycles', ultrafixMaxCycles, DEFAULT_ULTRAFIX_MAX_CYCLES, 1),
-        ultrafix_pause_seconds: getIntegerSettingOrThrow('ultrafix_pause_seconds', ultrafixPauseSeconds, DEFAULT_ULTRAFIX_PAUSE_SECONDS, 0)
+        ultrafix_rating_goal: getIntegerSettingOrThrow({ name: 'ultrafix_rating_goal', value: ultrafixRatingGoal, defaultValue: DEFAULT_ULTRAFIX_RATING_GOAL, minimum: 1, maximum: 10 }),
+        ultrafix_max_cycles: getIntegerSettingOrThrow({ name: 'ultrafix_max_cycles', value: ultrafixMaxCycles, defaultValue: DEFAULT_ULTRAFIX_MAX_CYCLES, minimum: 1 }),
+        ultrafix_pause_seconds: getIntegerSettingOrThrow({ name: 'ultrafix_pause_seconds', value: ultrafixPauseSeconds, defaultValue: DEFAULT_ULTRAFIX_PAUSE_SECONDS, minimum: 0 })
       });
     } catch (error) {
       console.error('Error in /api/config/settings GET:', error);
-      if (error instanceof Error && error.message.startsWith('Stored ')) {
-        res.status(500).json({ error: error.message, invalid_settings: true });
-        return;
-      }
+      if (error instanceof Error && error.message.startsWith('Stored ')) return void res.status(500).json({ error: error.message, invalid_settings: true });
       res.status(500).json({ error: 'Failed to load settings' });
     }
   }
@@ -339,11 +298,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       try {
         const updatedKeys = Object.keys(settingsValidation.value);
         await logActivityHelper(`Updated system settings (${updatedKeys.length} keys)`, 'settings-update', 'settings_updated', req.user?.username);
-      } catch (error) {
-        console.error('Failed to log settings update activity:', error);
-      }
+      } catch (error) { console.error('Failed to log settings update activity:', error); }
     }
-
     res.status(result.status).json(result.body);
   }
 
@@ -399,9 +355,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     if (result.status === 200) {
       try {
         await logActivityHelper(`Updated primary processing labels (${labels.length} labels)`, 'primary-processing-labels-update', 'config_updated', req.user?.username);
-      } catch (error) {
-        console.error('Failed to log primary processing labels update activity:', error);
-      }
+      } catch (error) { console.error('Failed to log primary processing labels update activity:', error); }
     }
     res.status(result.status).json(result.body);
   }
