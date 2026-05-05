@@ -18,30 +18,22 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
     try {
       const { taskId: jobId } = req.params;
-
-      // Validate taskId parameter
       const taskIdValidation = validateTaskId(jobId);
       if (!taskIdValidation.valid) {
         res.status(400).json({ error: taskIdValidation.error });
         return;
       }
-
       const taskId = normalizeTaskId(jobId);
-
       console.log(`[live-details] jobId: ${jobId}, taskId: ${taskId}`);
-
       const sessionId = await findSessionId(redisClient, db, taskId);
       if (!sessionId) {
         console.log('[live-details] No sessionId found in either SQLite or Redis');
         res.json({ events: [], todos: [], currentTask: null });
         return;
       }
-
       console.log(`[live-details] Using sessionId: ${sessionId}`);
-
       const conversationPath = path.join(os.homedir(), '.claude', 'projects', '-home-node-workspace', `${sessionId}.jsonl`);
       console.log(`[live-details] Checking Claude conversation path: ${conversationPath}`);
-
       const pathExists = await fs.pathExists(conversationPath);
       if (!pathExists) {
         console.log('[live-details] Claude conversation file not found, trying stored execution output fallback');
@@ -50,7 +42,6 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
           res.json(fallbackResult);
           return;
         }
-
         console.log('[live-details] Stored execution output fallback unavailable, trying database fallback');
         const dbFallbackResult = await parseExecutionDetailsFromDb(db, taskId, sessionId);
         if (!dbFallbackResult) {
@@ -60,10 +51,8 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
         res.json(dbFallbackResult);
         return;
       }
-
       const result = await parseClaudeConversationFile(conversationPath);
       console.log(`[live-details] Returning: ${result.events.length} events, ${result.todos.length} todos, currentTask: ${result.currentTask ? 'yes' : 'no'}`);
-
       res.json(result);
     } catch (error) {
       console.error(`Error in /api/task/:taskId/live-details:`, error);
@@ -73,10 +62,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   return { getLiveDetails };
 }
 function normalizeTaskId(jobId: string): string {
-  if (!jobId.startsWith('issue-')) {
-    return jobId;
-  }
-
+  if (!jobId.startsWith('issue-')) return jobId;
   const parts = jobId.replace(/^issue-/, '').split('-');
   parts.pop();
   return parts.join('-');
@@ -93,7 +79,6 @@ async function findSessionIdFromDb(db: Knex, taskId: string): Promise<string | n
       .where({ task_id: taskId })
       .orderBy('start_time', 'desc')
       .first();
-
     if (llmExecution && llmExecution.session_id) {
       console.log(`[live-details] Found sessionId in SQLite: ${llmExecution.session_id}`);
       return llmExecution.session_id as string;
@@ -110,13 +95,11 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
   console.log('[live-details] Trying Redis fallback');
   const stateKey = `worker:state:${taskId}`;
   const stateData = await redisClient.get(stateKey);
-
   console.log(`[live-details] stateKey: ${stateKey}, hasData: ${!!stateData}`);
   if (!stateData) {
     console.log('[live-details] No state data found in Redis');
     return null;
   }
-
   let state: unknown;
   try {
     state = JSON.parse(stateData);
@@ -124,7 +107,6 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
     console.error('[live-details] Failed to parse Redis state data:', error);
     return null;
   }
-
   const history = Array.isArray((state as { history?: unknown }).history)
     ? (state as { history: Array<{ state: string; metadata?: { sessionId?: string } }> }).history
     : null;
@@ -132,16 +114,12 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
     console.log('[live-details] Redis state data has no usable history array');
     return null;
   }
-
   const entry = [...history].reverse().find(h => h.metadata?.sessionId);
-
   console.log(`[live-details] Found Redis history entry with sessionId: ${!!entry}, state: ${entry?.state}, sessionId: ${entry?.metadata?.sessionId}`);
-
   if (!entry) {
     console.log('[live-details] No Redis history entry with sessionId found');
     return null;
   }
-
   return entry.metadata!.sessionId!;
 }
 interface StoredLogData { files?: Record<string, string>; }
@@ -211,29 +189,18 @@ async function parseStoredExecutionOutput(redisClient: RedisClientType, sessionI
   const output = await fs.readFile(outputPath, 'utf8');
   return parseStoredOutputContent(output);
 }
-
 function parseStoredOutputContent(output: string): ConversationResult | null {
-  if (!output.trim()) {
-    return null;
-  }
-
-  if (looksLikeClaudeOutput(output)) {
-    return parseClaudeOutputToConversationResult(output);
-  }
-
-  return parseCodexOutputToConversationResult(output);
+  if (!output.trim()) return null;
+  return looksLikeClaudeOutput(output)
+    ? parseClaudeOutputToConversationResult(output)
+    : parseCodexOutputToConversationResult(output);
 }
-
 function looksLikeClaudeOutput(output: string): boolean {
   const firstLine = output
     .split('\n')
     .map(line => line.trim())
     .find(line => line.length > 0);
-
-  if (!firstLine) {
-    return false;
-  }
-
+  if (!firstLine) return false;
   try {
     const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
     return parsed.type === 'assistant'
@@ -251,7 +218,6 @@ async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: 
     .where({ task_id: taskId, session_id: sessionId })
     .orderBy('start_time', 'desc')
     .first('execution_id', 'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens');
-
   if (!execution?.execution_id) return null;
   const details = await db('llm_execution_details')
     .where({ execution_id: execution.execution_id })
@@ -327,8 +293,7 @@ function appendEventFromMetadata(row: ExecutionDetailRow, timestamp: string, eve
 function appendStoredMessageEvent(row: ExecutionDetailRow, context: StoredMessageContext): boolean {
   if ((row.event_type !== 'user' && row.event_type !== 'assistant') || !row.content) return false;
   try {
-    const parsedContent = JSON.parse(row.content) as { content?: StoredMessageToolContent[] };
-    const contentBlocks = parsedContent.content;
+    const contentBlocks = (JSON.parse(row.content) as { content?: StoredMessageToolContent[] }).content;
     if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) return false;
     if (row.event_type === 'assistant') return appendAssistantStoredMessageEvents(contentBlocks, context);
     return appendUserStoredMessageEvents(contentBlocks, context);
@@ -343,9 +308,7 @@ function appendAssistantStoredMessageEvents(contentBlocks: StoredMessageToolCont
       handled = true;
       continue;
     }
-    if (appendAssistantToolUseContent(content, context)) {
-      handled = true;
-    }
+    if (appendAssistantToolUseContent(content, context)) handled = true;
   }
   return handled;
 }
@@ -359,13 +322,7 @@ function appendAssistantTextContent(content: StoredMessageToolContent, context: 
 }
 function appendAssistantToolUseContent(content: StoredMessageToolContent, context: StoredMessageContext): boolean {
   if (content.type !== 'tool_use') return false;
-  context.events.push({
-    type: 'tool_use',
-    toolName: content.name,
-    input: content.input,
-    id: content.id,
-    timestamp: context.timestamp
-  });
+  context.events.push({ type: 'tool_use', toolName: content.name, input: content.input, id: content.id, timestamp: context.timestamp });
   if (content.name === 'TodoWrite' && content.input?.todos) context.setTodos(content.input.todos);
   if (content.name === 'Task' && content.id) {
     context.pendingSubagents.set(content.id, {
@@ -380,28 +337,16 @@ function appendAssistantToolUseContent(content: StoredMessageToolContent, contex
 function appendUserStoredMessageEvents(contentBlocks: StoredMessageToolContent[], context: StoredMessageContext): boolean {
   let handled = false;
   for (const content of contentBlocks) {
-    if (!appendUserToolResultContent(content, context)) continue;
-    handled = true;
+    handled = appendUserToolResultContent(content, context) || handled;
   }
   return handled;
 }
 function appendUserToolResultContent(content: StoredMessageToolContent, context: StoredMessageContext): boolean {
   if (content.type !== 'tool_result') return false;
-  context.events.push({
-    type: 'tool_result',
-    toolUseId: content.tool_use_id,
-    result: content.content,
-    isError: content.is_error || false,
-    timestamp: context.timestamp
-  });
+  context.events.push({ type: 'tool_result', toolUseId: content.tool_use_id, result: content.content, isError: content.is_error || false, timestamp: context.timestamp });
   if (!content.tool_use_id || !context.pendingSubagents.has(content.tool_use_id)) return true;
   const subagent = context.pendingSubagents.get(content.tool_use_id)!;
-  context.events.push({
-    type: 'thought',
-    content: buildSubagentSummary(subagent, content, context.timestamp),
-    timestamp: context.timestamp,
-    isSubagentSummary: true
-  });
+  context.events.push({ type: 'thought', content: buildSubagentSummary(subagent, content, context.timestamp), timestamp: context.timestamp, isSubagentSummary: true });
   context.pendingSubagents.delete(content.tool_use_id);
   return true;
 }
