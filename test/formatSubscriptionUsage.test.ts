@@ -139,6 +139,16 @@ describe('formatSubscriptionUsage', () => {
         assert.strictEqual(result, 'Weekly +3%');
     });
 
+    test('aggregates duplicate labels from records', () => {
+        const result = formatSubscriptionUsage({
+            records: [
+                { agent: 'claude', metricKey: 'weeklyAll', metricValue: 2 },
+                { agent: 'claude', metricKey: 'Weekly', metricValue: 3 },
+            ],
+        });
+        assert.strictEqual(result, 'Weekly +5%');
+    });
+
     // --- percentLeft legacy delta ---
 
     test('correctly converts percentLeft-only delta to percent used', () => {
@@ -169,6 +179,42 @@ describe('formatSubscriptionUsage', () => {
             agent: 'claude',
         });
         assert.strictEqual(result, 'Session +100%');
+    });
+
+    test('clamps out-of-range percent values from delta', () => {
+        const result = formatSubscriptionUsage({
+            delta: {
+                session: { percent: 140 },
+                weeklyAll: { percentLeft: 120 },
+            },
+            agent: 'claude',
+        });
+        assert.strictEqual(result, 'Session +100%');
+    });
+
+    test('aggregates duplicate labels from delta arrays', () => {
+        const result = formatSubscriptionUsage({
+            delta: {
+                weeklyAll: [
+                    { percent: 2 },
+                    { percentUsed: 3 },
+                ],
+            },
+            agent: 'claude',
+        });
+        assert.strictEqual(result, 'Weekly +5%');
+    });
+
+    test('uses parent metric key for delta arrays instead of model name', () => {
+        const result = formatSubscriptionUsage({
+            delta: {
+                weeklyAll: [
+                    { model: 'claude-3-7-sonnet', percent: 4 },
+                ],
+            },
+            agent: 'claude',
+        });
+        assert.strictEqual(result, 'Weekly +4%');
     });
 
     // --- Snake_case field support ---

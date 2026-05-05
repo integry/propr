@@ -48,10 +48,15 @@ function humanizeKey(key: string): string {
         .replace(/^./, c => c.toUpperCase());
 }
 
+function clampPercent(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.min(100, Math.max(0, value));
+}
+
 function extractPercentFromObject(obj: Record<string, unknown>): number | null {
-    if (typeof obj.percentLeft === 'number') return 100 - obj.percentLeft;
-    if (typeof obj.percent === 'number') return obj.percent;
-    if (typeof obj.percentUsed === 'number') return obj.percentUsed;
+    if (typeof obj.percentLeft === 'number') return clampPercent(100 - obj.percentLeft);
+    if (typeof obj.percent === 'number') return clampPercent(obj.percent);
+    if (typeof obj.percentUsed === 'number') return clampPercent(obj.percentUsed);
     return null;
 }
 
@@ -64,13 +69,30 @@ function extractRecordsFromArray(
     for (const item of items) {
         if (!item || typeof item !== 'object') continue;
         const entry = item as Record<string, unknown>;
-        const rawName = typeof entry.model === 'string' ? entry.model : key;
         const pv = extractPercentFromObject(entry);
         if (pv !== null && pv > 0) {
+            const rawName = typeof entry.metricKey === 'string' ? entry.metricKey : key;
             records.push({ agent, metricKey: humanizeKey(rawName), metricValue: pv });
         }
     }
     return records;
+}
+
+function aggregateRecords(records: SubscriptionUsageRecord[]): SubscriptionUsageRecord[] {
+    const aggregated = new Map<string, number>();
+
+    for (const record of records) {
+        const metricKey = humanizeKey(record.metricKey);
+        const metricValue = clampPercent(record.metricValue);
+        if (metricValue <= 0) continue;
+        aggregated.set(metricKey, clampPercent((aggregated.get(metricKey) ?? 0) + metricValue));
+    }
+
+    return Array.from(aggregated.entries(), ([metricKey, metricValue]) => ({
+        agent: 'aggregated',
+        metricKey,
+        metricValue,
+    }));
 }
 
 /**
@@ -184,8 +206,7 @@ export function formatSubscriptionUsage(
 
     if (!records || records.length === 0) return '';
 
-    // Filter out zero or negative values
-    const meaningful = records.filter(r => r.metricValue > 0);
+    const meaningful = aggregateRecords(records);
     if (meaningful.length === 0) return '';
 
     // Build compact representation: "Session +16%, Weekly +4%"
