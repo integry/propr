@@ -31,6 +31,13 @@ interface SaveSettingsRequest {
 
 type SaveResponse = { status: number; body: Record<string, unknown> };
 type SpecializedSettingName = SettingSaveName;
+interface PersistSettingsRequest {
+  configStore: SettingsStore;
+  otherSettings: Record<string, unknown>;
+  normalizedSpecializedSettings: Record<string, unknown>;
+  specializedNames: SpecializedSettingName[];
+  lock?: ConfigLockContext;
+}
 
 function buildMergedSettings(previousSettings: Record<string, unknown>, updates: Record<string, unknown>): Record<string, unknown> {
   const mergedSettings = { ...previousSettings, ...updates };
@@ -42,13 +49,13 @@ function buildMergedSettings(previousSettings: Record<string, unknown>, updates:
   return mergedSettings;
 }
 
-async function persistSettingsAtomically(
-  configStore: SettingsStore,
-  otherSettings: Record<string, unknown>,
-  normalizedSpecializedSettings: Record<string, unknown>,
-  specializedNames: SpecializedSettingName[],
-  lock?: ConfigLockContext
-): Promise<void> {
+async function persistSettingsAtomically({
+  configStore,
+  otherSettings,
+  normalizedSpecializedSettings,
+  specializedNames,
+  lock
+}: PersistSettingsRequest): Promise<void> {
   let trx: Knex.Transaction | null = null;
   try {
     await lock?.assertLockHeld();
@@ -137,13 +144,13 @@ export async function saveSettingsWithRollback({
   }
 
   try {
-    await persistSettingsAtomically(
+    await persistSettingsAtomically({
       configStore,
       otherSettings,
-      extracted.normalized,
-      extracted.saves.map(({ name }) => name),
+      normalizedSpecializedSettings: extracted.normalized,
+      specializedNames: extracted.saves.map(({ name }) => name),
       lock
-    );
+    });
   } catch (error) {
     if (error instanceof ConfigRouteError) {
       return { status: error.status, body: error.body };

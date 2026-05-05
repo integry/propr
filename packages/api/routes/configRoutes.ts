@@ -13,7 +13,6 @@ import { saveSettingsWithRollback } from './configRoutesSettings.js';
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
 }
-
 interface JsonPostHandlerConfig<T> {
   lockKey: string;
   pickValue: (body: Record<string, unknown>) => unknown;
@@ -23,23 +22,13 @@ interface JsonPostHandlerConfig<T> {
   body: (value: T) => Record<string, unknown>;
   activity?: { description: (value: T) => string; idSuffix: string; type: string };
 }
-
 type ValidationResult<T> = { ok: true; value: T } | { ok: false; error: string };
-
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
 const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
-const SETTINGS_SNAPSHOT_KEYS = [
-  'settings',
-  'auto_followup_score_threshold',
-  'auto_resolve_merge_conflicts',
-  'pr_review_model',
-  'ultrafix_rating_goal',
-  'ultrafix_max_cycles',
-  'ultrafix_pause_seconds'
-] as const;
+const SETTINGS_SNAPSHOT_KEYS = ['settings', 'auto_followup_score_threshold', 'auto_resolve_merge_conflicts', 'pr_review_model', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'] as const;
 
 function parseStoredConfigValue(value: unknown): unknown {
   if (typeof value !== 'string') {
@@ -74,15 +63,9 @@ async function loadSettingsSnapshot(): Promise<{
     .select('key', 'value')
     .whereIn('key', [...SETTINGS_SNAPSHOT_KEYS]);
   const values = new Map<string, unknown>();
-  for (const row of rows as Array<{ key: string; value: unknown }>) {
-    values.set(row.key, parseStoredConfigValue(row.value));
-  }
-
+  for (const row of rows as Array<{ key: string; value: unknown }>) values.set(row.key, parseStoredConfigValue(row.value));
   const settingsValue = values.get('settings');
-  const settings = settingsValue && typeof settingsValue === 'object' && !Array.isArray(settingsValue)
-    ? settingsValue as Record<string, unknown>
-    : {};
-
+  const settings = settingsValue && typeof settingsValue === 'object' && !Array.isArray(settingsValue) ? settingsValue as Record<string, unknown> : {};
   return {
     settings,
     autoFollowupThreshold: asIntegerOrDefault(values.get('auto_followup_score_threshold'), DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, 0, 9),
@@ -108,23 +91,19 @@ function validateStringArray(value: unknown, fieldName: string): string[] | stri
 function success<T>(value: T): ValidationResult<T> {
   return { ok: true, value };
 }
-
 function failure<T>(error: string): ValidationResult<T> {
   return { ok: false, error };
 }
-
 function validateStringArrayResult(value: unknown, fieldName: string): ValidationResult<string[]> {
   const validated = validateStringArray(value, fieldName);
   return typeof validated === 'string' ? failure(validated) : success(validated);
 }
-
 function validateJsonObjectBody(value: unknown): ValidationResult<Record<string, unknown>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return failure('Request body must be a JSON object');
   }
   return success(value as Record<string, unknown>);
 }
-
 function createJsonGetHandler<T>(load: () => Promise<T>, body: (value: T) => Record<string, unknown>, errorMessage: string, logContext: string) {
   return async (_req: Request, res: Response): Promise<void> => {
     try {
@@ -138,7 +117,6 @@ function createJsonGetHandler<T>(load: () => Promise<T>, body: (value: T) => Rec
 
 export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const { redisClient } = deps;
-
   const publishConfigUpdate = async (subtype: string): Promise<void> => {
     try {
       await redisClient.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({ type: 'config_update', subtype, timestamp: Date.now() }));
@@ -190,35 +168,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
     res.status(result.status).json(result.body);
   };
-
-  const getFollowupKeywords = createJsonGetHandler(
-    () => configManager.loadFollowupKeywords(),
-    followup_keywords => ({ followup_keywords }),
-    'Failed to load followup keywords',
-    '/api/config/followup-keywords GET'
-  );
-  const postFollowupKeywords = createJsonPostHandler({
-    lockKey: 'config:keywords:lock',
-    pickValue: body => body.followup_keywords,
-    validate: followup_keywords => validateStringArrayResult(followup_keywords, 'followup_keywords'),
-    save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords),
-    subtype: 'followup_keywords_update',
-    body: followup_keywords => ({ followup_keywords })
-  });
-  const getFollowupIgnoreKeywords = createJsonGetHandler(
-    () => configManager.loadFollowupIgnoreKeywords(),
-    followup_ignore_keywords => ({ followup_ignore_keywords }),
-    'Failed to load followup ignore keywords',
-    '/api/config/followup-ignore-keywords GET'
-  );
-  const postFollowupIgnoreKeywords = createJsonPostHandler({
-    lockKey: 'config:ignore-keywords:lock',
-    pickValue: body => body.followup_ignore_keywords,
-    validate: followup_ignore_keywords => validateStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'),
-    save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords),
-    subtype: 'followup_ignore_keywords_update',
-    body: followup_ignore_keywords => ({ followup_ignore_keywords })
-  });
+  const getFollowupKeywords = createJsonGetHandler(() => configManager.loadFollowupKeywords(), followup_keywords => ({ followup_keywords }), 'Failed to load followup keywords', '/api/config/followup-keywords GET');
+  const postFollowupKeywords = createJsonPostHandler({ lockKey: 'config:keywords:lock', pickValue: body => body.followup_keywords, validate: followup_keywords => validateStringArrayResult(followup_keywords, 'followup_keywords'), save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords), subtype: 'followup_keywords_update', body: followup_keywords => ({ followup_keywords }) });
+  const getFollowupIgnoreKeywords = createJsonGetHandler(() => configManager.loadFollowupIgnoreKeywords(), followup_ignore_keywords => ({ followup_ignore_keywords }), 'Failed to load followup ignore keywords', '/api/config/followup-ignore-keywords GET');
+  const postFollowupIgnoreKeywords = createJsonPostHandler({ lockKey: 'config:ignore-keywords:lock', pickValue: body => body.followup_ignore_keywords, validate: followup_ignore_keywords => validateStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'), save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords), subtype: 'followup_ignore_keywords_update', body: followup_ignore_keywords => ({ followup_ignore_keywords }) });
 
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
@@ -242,7 +195,6 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       res.status(400).json({ error: 'repos_to_monitor must be an array' });
       return;
     }
-
     // Validate and process repos before taking the lock to avoid blocking valid updates on malformed requests.
     const processedRepos: RepoToMonitor[] = [];
     for (const repo of repos_to_monitor) {
@@ -262,16 +214,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         res.status(400).json({ error: `Invalid baseBranch format for ${repo.name}: must be a string` });
         return;
       }
-
-      processedRepos.push({
-        id: repo.id || randomUUID(),
-        name: repo.name,
-        enabled: repo.enabled,
-        alias: repo.alias?.trim() || undefined,
-        baseBranch: repo.baseBranch?.trim() || undefined
-      });
+      processedRepos.push({ id: repo.id || randomUUID(), name: repo.name, enabled: repo.enabled, alias: repo.alias?.trim() || undefined, baseBranch: repo.baseBranch?.trim() || undefined });
     }
-
     const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
       await lock.assertLockHeld();
       await configManager.saveMonitoredRepos(processedRepos);
@@ -291,15 +235,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const {
-        settings,
-        autoFollowupThreshold,
-        autoResolveMergeConflicts,
-        prReviewModel,
-        ultrafixRatingGoal,
-        ultrafixMaxCycles,
-        ultrafixPauseSeconds
-      } = await loadSettingsSnapshot();
+      const { settings, autoFollowupThreshold, autoResolveMergeConflicts, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds } = await loadSettingsSnapshot();
       const envDefaults = {
         worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
         github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()),
@@ -353,40 +289,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     res.status(result.status).json(result.body);
   }
 
-  const getPrLabel = createJsonGetHandler(
-    () => configManager.loadPrLabel(),
-    pr_label => ({ pr_label }),
-    'Failed to load PR label',
-    '/api/config/pr-label GET'
-  );
-  const postPrLabel = createJsonPostHandler<string>({
-    lockKey: 'config:pr-label:lock',
-    pickValue: body => body.pr_label,
-    validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== ''
-      ? success(pr_label.trim())
-      : failure('pr_label must be a non-empty string'),
-    save: pr_label => configManager.savePrLabel(pr_label),
-    subtype: 'pr_label_update',
-    body: pr_label => ({ pr_label }),
-    activity: { description: pr_label => `Updated PR label to "${pr_label}"`, idSuffix: 'pr-label-update', type: 'config_updated' }
-  });
-  const getAiPrimaryTag = createJsonGetHandler(
-    () => configManager.loadAiPrimaryTag(),
-    ai_primary_tag => ({ ai_primary_tag }),
-    'Failed to load AI primary tag',
-    '/api/config/ai-primary-tag GET'
-  );
-  const postAiPrimaryTag = createJsonPostHandler<string>({
-    lockKey: 'config:ai-primary-tag:lock',
-    pickValue: body => body.ai_primary_tag,
-    validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== ''
-      ? success(ai_primary_tag.trim())
-      : failure('ai_primary_tag must be a non-empty string'),
-    save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag),
-    subtype: 'ai_primary_tag_update',
-    body: ai_primary_tag => ({ ai_primary_tag }),
-    activity: { description: ai_primary_tag => `Updated AI primary tag to "${ai_primary_tag}"`, idSuffix: 'ai-primary-tag-update', type: 'config_updated' }
-  });
+  const getPrLabel = createJsonGetHandler(() => configManager.loadPrLabel(), pr_label => ({ pr_label }), 'Failed to load PR label', '/api/config/pr-label GET');
+  const postPrLabel = createJsonPostHandler<string>({ lockKey: 'config:pr-label:lock', pickValue: body => body.pr_label, validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== '' ? success(pr_label.trim()) : failure('pr_label must be a non-empty string'), save: pr_label => configManager.savePrLabel(pr_label), subtype: 'pr_label_update', body: pr_label => ({ pr_label }), activity: { description: pr_label => `Updated PR label to "${pr_label}"`, idSuffix: 'pr-label-update', type: 'config_updated' } });
+  const getAiPrimaryTag = createJsonGetHandler(() => configManager.loadAiPrimaryTag(), ai_primary_tag => ({ ai_primary_tag }), 'Failed to load AI primary tag', '/api/config/ai-primary-tag GET');
+  const postAiPrimaryTag = createJsonPostHandler<string>({ lockKey: 'config:ai-primary-tag:lock', pickValue: body => body.ai_primary_tag, validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== '' ? success(ai_primary_tag.trim()) : failure('ai_primary_tag must be a non-empty string'), save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag), subtype: 'ai_primary_tag_update', body: ai_primary_tag => ({ ai_primary_tag }), activity: { description: ai_primary_tag => `Updated AI primary tag to "${ai_primary_tag}"`, idSuffix: 'ai-primary-tag-update', type: 'config_updated' } });
 
   async function getPrimaryProcessingLabels(_req: Request, res: Response): Promise<void> {
     try {
@@ -442,33 +348,13 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   }
 
   return {
-    getFollowupKeywords,
-    postFollowupKeywords,
-    getFollowupIgnoreKeywords,
-    postFollowupIgnoreKeywords,
-    getRepos,
-    postRepos,
-    getSettings,
-    postSettings,
-    getPrLabel,
-    postPrLabel,
-    getAiPrimaryTag,
-    postAiPrimaryTag,
-    getPrimaryProcessingLabels,
-    postPrimaryProcessingLabels,
-    getAgents: agentsRoutes.getAgents,
-    postAgents: agentsRoutes.postAgents,
-    getSummarizationSettings,
-    postSummarizationSettings: indexingRoutes.postSummarizationSettings,
-    getRepositoriesIndexingStatus: indexingRoutes.getRepositoriesIndexingStatus,
-    triggerIndexing: indexingRoutes.triggerIndexing,
-    triggerReindexAll: indexingRoutes.triggerReindexAll,
-    stopIndexing: indexingRoutes.stopIndexing,
-    getAgentTankSettings: agentTankRoutes.getAgentTankSettings,
-    postAgentTankSettings: agentTankRoutes.postAgentTankSettings,
-    getAgentTankStatus: agentTankRoutes.getAgentTankStatus,
-    getAgentTankUsage: agentTankRoutes.getAgentTankUsage,
-    postAgentTankRefresh: agentTankRoutes.postAgentTankRefresh,
-    getAgentTankDetect: agentTankRoutes.getAgentTankDetect
+    getFollowupKeywords, postFollowupKeywords, getFollowupIgnoreKeywords, postFollowupIgnoreKeywords, getRepos, postRepos, getSettings, postSettings,
+    getPrLabel, postPrLabel, getAiPrimaryTag, postAiPrimaryTag, getPrimaryProcessingLabels, postPrimaryProcessingLabels,
+    getAgents: agentsRoutes.getAgents, postAgents: agentsRoutes.postAgents, getSummarizationSettings,
+    postSummarizationSettings: indexingRoutes.postSummarizationSettings, getRepositoriesIndexingStatus: indexingRoutes.getRepositoriesIndexingStatus,
+    triggerIndexing: indexingRoutes.triggerIndexing, triggerReindexAll: indexingRoutes.triggerReindexAll, stopIndexing: indexingRoutes.stopIndexing,
+    getAgentTankSettings: agentTankRoutes.getAgentTankSettings, postAgentTankSettings: agentTankRoutes.postAgentTankSettings,
+    getAgentTankStatus: agentTankRoutes.getAgentTankStatus, getAgentTankUsage: agentTankRoutes.getAgentTankUsage,
+    postAgentTankRefresh: agentTankRoutes.postAgentTankRefresh, getAgentTankDetect: agentTankRoutes.getAgentTankDetect
   };
 }

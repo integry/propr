@@ -9,8 +9,7 @@ import {
 import type { IndexingJobData } from '@propr/core';
 interface AgentConfig { id: string; type: string; alias: string; enabled: boolean; dockerImage: string; configPath: string; supportedModels: string[]; }
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
-const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
-const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
+const DEFAULT_LOCK_TIMEOUT_SECONDS = 30, DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
 interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: number; }
 interface RedisScriptClient { eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>; }
 interface RedisTransaction { expire: (key: string, seconds: number) => RedisTransaction; del: (key: string) => RedisTransaction; exec: () => Promise<unknown[] | null>; }
@@ -20,7 +19,6 @@ export interface ConfigLockContext { assertLockHeld: () => Promise<void>; hasLoc
 export class ConfigRouteError extends Error {
   status: number;
   body: Record<string, unknown>;
-
   constructor(status: number, body: Record<string, unknown>, message?: string) {
     super(message ?? (typeof body.error === 'string' ? body.error : 'Configuration update failed'));
     this.name = 'ConfigRouteError';
@@ -69,7 +67,6 @@ async function runWatchedLockOperation(redisClient: RedisClientType, lockKey: st
     throw error;
   }
 }
-
 async function renewLock(redisClient: RedisClientType, lockKey: string, lockValue: string, timeoutSeconds: number): Promise<boolean> {
   const scriptClient = redisClient as RedisClientType & RedisScriptClient;
   if (supportsAtomicLockScripting(redisClient)) {
@@ -99,7 +96,6 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
   );
   if (watchedResult !== null) return;
   console.warn(`Atomic config lock release is unavailable for ${lockKey}; allowing the TTL to expire naturally`);
-}
 export async function upsertConfigValue(trx: Knex.Transaction, key: string, value: unknown): Promise<void> {
   const jsonValue = JSON.stringify(value);
   await trx('system_configs')
@@ -188,7 +184,6 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
       }
     }
   }
-}
 export async function queueResummarizationForAllRepos(): Promise<number> {
   const monitoredRepos = await configManager.loadMonitoredRepos();
   const octokit = await getAuthenticatedOctokit();
@@ -213,7 +208,6 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
     console.error(`Failed to clone repository ${repoFullName} for resummarization`);
     return false;
   }
-
   const fetchResult = await fetchLatestChanges({ owner, repoName: name, authToken: token });
   if (!fetchResult.success) console.warn(`Failed to fetch latest changes for ${repoFullName}: ${fetchResult.error}`);
   const correlationId = generateCorrelationId();
