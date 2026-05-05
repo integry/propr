@@ -41,6 +41,14 @@ interface ApplyAgentsUpdateParams {
   lock?: ConfigLockContext;
 }
 
+interface PublishAgentUpdatesParams {
+  processedAgents: AgentConfig[];
+  defaultChanged: boolean;
+  publishConfigUpdate: AgentsRoutesDeps['publishConfigUpdate'];
+  logActivityHelper: AgentsRoutesDeps['logActivityHelper'];
+  username?: string;
+}
+
 interface PersistAgentConfigurationResult {
   settingsWereUpdated: boolean;
 }
@@ -252,13 +260,13 @@ async function applyCommittedAgentsUpdate({
   }
 }
 
-async function publishAgentUpdates(
-  processedAgents: AgentConfig[],
-  defaultChanged: boolean,
-  publishConfigUpdate: AgentsRoutesDeps['publishConfigUpdate'],
-  logActivityHelper: AgentsRoutesDeps['logActivityHelper'],
-  username?: string
-): Promise<void> {
+async function publishAgentUpdates({
+  processedAgents,
+  defaultChanged,
+  publishConfigUpdate,
+  logActivityHelper,
+  username
+}: PublishAgentUpdatesParams): Promise<void> {
   await publishConfigUpdate('agents_update');
   if (defaultChanged) {
     await publishConfigUpdate('settings_update');
@@ -329,7 +337,13 @@ export async function applyAgentsUpdate({
     };
   }
 
-  await publishAgentUpdates(processedAgents, defaultChanged, publishConfigUpdate, logActivityHelper, username);
+  await publishAgentUpdates({
+    processedAgents,
+    defaultChanged,
+    publishConfigUpdate,
+    logActivityHelper,
+    username
+  });
 
   return { status: 200, body: { success: true, agents: processedAgents } };
 }
