@@ -11,7 +11,7 @@ import {
 } from '@propr/core';
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
-import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, type ConfigLockContext } from './configHelpers.js';
+import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, type ConfigLockContext } from './configHelpers.js';
 
 interface AgentsRoutesDeps {
   redisClient: RedisClientType;
@@ -118,7 +118,10 @@ function classifyVersionResolutionError(error: unknown): { message: string; stat
   if (message.startsWith('NPM registry returned ')) {
     return { message, status: 502 };
   }
-  return { message, status: 400 };
+  if (message.startsWith('Version spec required') || message.includes('not found for package')) {
+    return { message, status: 400 };
+  }
+  return { message, status: 500 };
 }
 
 async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
@@ -198,7 +201,7 @@ async function persistAgentConfigurationAtomically({
   try {
     await lock?.assertLockHeld();
     const mergedSettings = buildMergedSettings(
-      await configStore.loadSettings() as Record<string, unknown>,
+      stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
       settingsPatch
     );
     const settingsWereUpdated = mergedSettings !== null;

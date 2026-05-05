@@ -41,7 +41,7 @@ function validateAgentBaseFields(agent: AgentConfig, normalizedAlias: string): s
   if (!normalizedAlias) return `Agent '${agent.id}' missing required 'alias' field`;
   if (!ALIAS_REGEX.test(normalizedAlias)) return `Agent '${agent.id}' has invalid alias '${agent.alias}'. Must match pattern ^[a-z0-9-]+$`;
   if (typeof agent.enabled !== 'boolean') return `Agent '${agent.id}' missing required 'enabled' field`;
-  if (!agent.dockerImage || typeof agent.dockerImage !== 'string') return `Agent '${agent.id}' missing required 'dockerImage' field`;
+  if (agent.dockerImage !== undefined && typeof agent.dockerImage !== 'string') return `Agent '${agent.id}' has invalid 'dockerImage'. Must be a string`;
   if (!agent.configPath || typeof agent.configPath !== 'string') return `Agent '${agent.id}' missing required 'configPath' field`;
   if (!Array.isArray(agent.supportedModels)) return `Agent '${agent.id}' missing required 'supportedModels' field`;
   if (!agent.supportedModels.every(model => typeof model === 'string' && model.trim().length > 0)) {

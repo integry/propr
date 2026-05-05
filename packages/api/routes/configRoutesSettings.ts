@@ -1,6 +1,6 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
-import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
+import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
 import type { Knex } from 'knex';
 
 interface SettingsStore {
@@ -17,28 +17,12 @@ interface SaveSettingsRequest {
 
 type SaveResponse = { status: number; body: Record<string, unknown> };
 type SpecializedSettingName = SettingSaveName;
-const SPECIALIZED_SETTING_NAMES: SpecializedSettingName[] = [
-  'auto_followup_score_threshold',
-  'auto_resolve_merge_conflicts',
-  'pr_review_model',
-  'ultrafix_rating_goal',
-  'ultrafix_max_cycles',
-  'ultrafix_pause_seconds'
-];
 interface PersistSettingsRequest {
   configStore: SettingsStore;
   otherSettings: Record<string, unknown>;
   normalizedSpecializedSettings: Partial<Record<SpecializedSettingName, unknown>>;
   specializedNames: SpecializedSettingName[];
   lock?: ConfigLockContext;
-}
-
-function stripSpecializedSettings(settings: Record<string, unknown>): Record<string, unknown> {
-  const sanitized = { ...settings };
-  for (const key of SPECIALIZED_SETTING_NAMES) {
-    delete sanitized[key];
-  }
-  return sanitized;
 }
 
 async function persistSettingsAtomically({
@@ -52,8 +36,9 @@ async function persistSettingsAtomically({
   let committed = false;
   try {
     await lock?.assertLockHeld();
-    const generalSettingsPatch = Object.keys(otherSettings).length > 0 ? otherSettings : null;
-    const mergedSettings = generalSettingsPatch
+    const shouldRewriteGeneralSettings = Object.keys(otherSettings).length > 0 || specializedNames.length > 0;
+    const generalSettingsPatch = Object.keys(otherSettings).length > 0 ? otherSettings : {};
+    const mergedSettings = shouldRewriteGeneralSettings
       ? buildMergedSettings(
         stripSpecializedSettings(await configStore.loadSettings() as Record<string, unknown>),
         generalSettingsPatch

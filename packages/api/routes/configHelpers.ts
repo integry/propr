@@ -11,6 +11,14 @@ export { validateAgentsConfig, normalizeAgentsConfig } from './configAgentValida
 export { extractSettingSaves, type LabeledSaveDescriptor, type SettingSaveName } from './configSettings.js';
 
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
+export const SPECIALIZED_SETTING_NAMES = [
+  'auto_followup_score_threshold',
+  'auto_resolve_merge_conflicts',
+  'pr_review_model',
+  'ultrafix_rating_goal',
+  'ultrafix_max_cycles',
+  'ultrafix_pause_seconds'
+] as const;
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
 interface ConfigLockOptions { timeoutSeconds?: number; renewalIntervalMs?: number; }
@@ -171,6 +179,14 @@ export function buildMergedSettings(
     }
   }
   return mergedSettings;
+}
+
+export function stripSpecializedSettings(settings: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = { ...settings };
+  for (const key of SPECIALIZED_SETTING_NAMES) {
+    delete sanitized[key];
+  }
+  return sanitized;
 }
 
 export async function withConfigLock(

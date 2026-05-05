@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { db } from '@propr/core';
 import { withConfigLock, ConfigRouteError } from '../packages/api/routes/configHelpers.ts';
+import { applyAgentsUpdate } from '../packages/api/routes/configRoutesAgents.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { parseClaudeOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
 
@@ -521,6 +522,70 @@ test('saveSettingsWithRollback clears general settings when given an empty setti
 
     assert.equal(result.status, 200);
     assert.deepEqual(writes.get('settings'), {});
+  } finally {
+    testDb.transaction = originalTransaction;
+  }
+});
+
+test('applyAgentsUpdate scrubs specialized settings when rewriting default_agent_alias', async () => {
+  const originalTransaction = db.transaction.bind(db);
+  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const writes = new Map<string, unknown>();
+
+  const trx = Object.assign(
+    ((table: string) => ({
+      insert: (row: { key: string; value: string }) => ({
+        onConflict: (_column: string) => ({
+          merge: async () => {
+            assert.equal(table, 'system_configs');
+            writes.set(row.key, JSON.parse(row.value));
+          }
+        })
+      })
+    })) as unknown as typeof db,
+    {
+      commit: async () => {},
+      rollback: async () => {}
+    }
+  );
+
+  testDb.transaction = async () => trx as never;
+
+  try {
+    const result = await applyAgentsUpdate({
+      agents: [
+        {
+          id: 'new-agent',
+          alias: 'new-default',
+          type: 'claude',
+          enabled: true,
+          configPath: '/tmp/claude',
+          supportedModels: []
+        }
+      ],
+      publishConfigUpdate: async () => {},
+      logActivityHelper: async () => {},
+      configStore: {
+        loadAgents: async () => [],
+        loadSettings: async () => ({
+          default_agent_alias: 'old-default',
+          keep: 'unchanged',
+          pr_review_model: 'stale-model',
+          ultrafix_max_cycles: 99
+        }),
+        handleSettingsSaveSideEffects: async () => {}
+      },
+      registry: {
+        refresh: async () => {},
+        setDefaultAgentAlias: (_alias: string | null) => {}
+      }
+    });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(writes.get('settings'), {
+      default_agent_alias: 'new-default',
+      keep: 'unchanged'
+    });
   } finally {
     testDb.transaction = originalTransaction;
   }

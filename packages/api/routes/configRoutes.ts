@@ -3,7 +3,7 @@ import { RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
 import * as configManager from '@propr/core';
 import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
-import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY } from './configHelpers.js';
+import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, type ConfigLockContext } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
@@ -92,15 +92,18 @@ function createJsonGetHandler<T>(load: () => Promise<T>, body: (value: T) => Rec
 async function saveThenPublishConfigUpdate({
   save,
   publish,
+  lock,
   committedErrorMessage,
   successBody
 }: {
   save: () => Promise<void>;
   publish: () => Promise<void>;
+  lock?: ConfigLockContext;
   committedErrorMessage: string;
   successBody: Record<string, unknown>;
 }): Promise<{ status: number; body: Record<string, unknown> }> {
   await save();
+  lock?.markCommitted();
   try {
     await publish();
   } catch {
@@ -154,7 +157,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       res.status(400).json({ error: validated.error });
       return;
     }
-    const result = await withConfigLock(redisClient, lockKey, async () => {
+    const result = await withConfigLock(redisClient, lockKey, async lock => {
       return saveThenPublishConfigUpdate({
         save: async () => {
           await save(validated.value);
@@ -162,6 +165,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         publish: async () => {
           await publishConfigUpdate(subtype);
         },
+        lock,
         committedErrorMessage,
         successBody: { success: true, ...body(validated.value) }
       });
@@ -223,7 +227,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
       processedRepos.push({ id: repo.id || randomUUID(), name: repo.name, enabled: repo.enabled, alias: repo.alias?.trim() || undefined, baseBranch: repo.baseBranch?.trim() || undefined });
     }
-    const result = await withConfigLock(redisClient, 'config:repos:lock', async () => {
+    const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
       return saveThenPublishConfigUpdate({
         save: async () => {
           await configManager.saveMonitoredRepos(processedRepos);
@@ -231,6 +235,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         publish: async () => {
           await publishConfigUpdate('repos_update');
         },
+        lock,
         committedErrorMessage: 'Repository configuration was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
         successBody: { success: true, repos_to_monitor: processedRepos }
       });
@@ -355,7 +360,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       return;
     }
 
-    const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async () => {
+    const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async lock => {
       return saveThenPublishConfigUpdate({
         save: async () => {
           await configManager.savePrimaryProcessingLabels(labels);
@@ -363,6 +368,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         publish: async () => {
           await publishConfigUpdate('primary_processing_labels_update');
         },
+        lock,
         committedErrorMessage: 'Primary processing labels were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
         successBody: { success: true, primary_processing_labels: labels }
       });

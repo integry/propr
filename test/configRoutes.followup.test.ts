@@ -745,6 +745,56 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
     });
 
+    test('postAgents reports internal agent image derivation failures as server errors', async () => {
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+        };
+        const computeContentHashMock = mock.method(configManager, 'computeContentHash', () => {
+            throw new Error('hash generation failed');
+        });
+
+        const routes = createAgentsRoutes({
+            redisClient: redisClient as never,
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postAgents({
+            body: {
+                agents: [
+                    {
+                        id: 'new-agent',
+                        alias: 'new-default',
+                        type: 'claude',
+                        enabled: true,
+                        configPath: '/tmp/claude',
+                        supportedModels: [],
+                        cliVersionType: 'default',
+                    },
+                ],
+            },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 500);
+        assert.deepStrictEqual(res.body, {
+            error: "Failed to resolve version for agent 'new-default': hash generation failed",
+        });
+        assert.strictEqual(redisClient.set.mock.calls.length, 0);
+        computeContentHashMock.mock.restore();
+    });
+
     test('postAgents rejects malformed cliVersion fields before version resolution or lock acquisition', async () => {
         const redisClient = {
             set: mock.fn(async () => 'OK'),
@@ -853,6 +903,40 @@ describe('config route follow-up helpers', () => {
 
         assert.deepStrictEqual(normalized[0]?.supportedModels, ['claude-sonnet-4-6', 'claude-opus-4-6']);
         assert.strictEqual(normalized[0]?.alias, 'agent-1');
+    });
+
+    test('applyAgentsUpdate accepts agents without dockerImage and derives it server-side', async () => {
+        const contentHashMock = mock.method(configManager, 'computeContentHash', () => 'abc123');
+        const registry = {
+            refresh: mock.fn(async () => {}),
+            setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
+        };
+
+        const result = await applyAgentsUpdate({
+            agents: [
+                {
+                    id: 'new-agent',
+                    alias: 'new-default',
+                    type: 'claude',
+                    enabled: true,
+                    configPath: '/tmp/claude',
+                    supportedModels: [],
+                },
+            ],
+            publishConfigUpdate: async () => {},
+            logActivityHelper: async () => {},
+            configStore: {
+                loadAgents: async () => currentAgents as never[],
+                loadSettings: async () => currentSettings,
+                handleSettingsSaveSideEffects: () => {},
+            },
+            registry,
+        });
+
+        assert.strictEqual(result.status, 200);
+        assert.strictEqual(typeof (result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage, 'string');
+        assert.match(String((result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage), /^propr-claude:.*-abc123$/);
+        contentHashMock.mock.restore();
     });
 
     test('findLatestHistoryEntryWithSessionId returns the latest live execution session entry', () => {
@@ -1502,6 +1586,66 @@ describe('config route follow-up helpers', () => {
             committed: true,
         });
         assert.strictEqual(saveKeywordsMock.mock.calls.length, 1);
+        saveKeywordsMock.mock.restore();
+    });
+
+    test('postFollowupKeywords preserves committed lock-loss warnings when the lock is lost after save', async () => {
+        const redisState = new Map<string, string>();
+        const saveKeywordsMock = mock.method(configManager, 'saveFollowupKeywords', async (_value: string[]) => true);
+        const routes = createConfigRoutes({
+            redisClient: {
+                set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
+                    if (opts.NX && redisState.has(key)) return null;
+                    redisState.set(key, value);
+                    return 'OK';
+                }),
+                eval: mock.fn(async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+                    const [key] = options.keys;
+                    const [lockValue, timeoutSeconds] = options.arguments;
+                    if (timeoutSeconds === undefined) {
+                        if (redisState.get(key) === lockValue) {
+                            redisState.delete(key);
+                            return 1;
+                        }
+                        return 0;
+                    }
+                    return redisState.get(key) === lockValue ? 1 : 0;
+                }),
+                publish: mock.fn(async () => {
+                    redisState.set('config:keywords:lock', 'someone-else');
+                    await new Promise(resolve => setTimeout(resolve, 20));
+                    return 1;
+                }),
+                lPush: mock.fn(async () => 1),
+                lTrim: mock.fn(async () => 1),
+            } as never,
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postFollowupKeywords({
+            body: { followup_keywords: ['bug'] },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 200);
+        assert.deepStrictEqual(res.body, {
+            success: true,
+            followup_keywords: ['bug'],
+            warning: 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.',
+            committed: true,
+            lock_lost_after_commit: true,
+        });
+        assert.strictEqual(redisState.get('config:keywords:lock'), 'someone-else');
         saveKeywordsMock.mock.restore();
     });
 
