@@ -5,6 +5,7 @@ import { DraftUpdatePayload } from '@propr/shared';
 
 const DISCONNECTED_INITIAL_POLL_MS = 1000;
 const DISCONNECTED_POLL_INTERVAL_MS = 3000;
+const CONNECTED_INACTIVITY_RESYNC_MS = 15000;
 
 interface UseGenerationPollingOptions {
   draftId: string;
@@ -27,6 +28,7 @@ export function useGenerationPolling({
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationTrace, setGenerationTrace] = useState<GenerationTrace | undefined>(undefined);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [connectedActivityTick, setConnectedActivityTick] = useState(0);
   const isGeneratingRef = useRef<boolean>(false);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
@@ -34,6 +36,8 @@ export function useGenerationPolling({
 
   const handleDraftUpdate = useCallback((payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId || !isGeneratingRef.current) return;
+
+    setConnectedActivityTick((tick) => tick + 1);
 
     // Use the trace snapshot from the payload when available
     if (payload.generationTrace) {
@@ -81,6 +85,7 @@ export function useGenerationPolling({
 
     try {
       const updatedDraft = await getDraft(draftId);
+      setConnectedActivityTick((tick) => tick + 1);
 
       if (updatedDraft.generation_trace) {
         setGenerationTrace(updatedDraft.generation_trace);
@@ -125,6 +130,19 @@ export function useGenerationPolling({
     };
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
+  // When the socket stays connected but quiet for too long, resync once over HTTP.
+  useEffect(() => {
+    if (!draftId || !isGenerating || !isConnected) return;
+
+    const timeoutId = setTimeout(() => {
+      void pollDraft();
+    }, CONNECTED_INACTIVITY_RESYNC_MS);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [draftId, isGenerating, isConnected, pollDraft, connectedActivityTick]);
+
   // Resync on socket reconnection to catch any events missed during the gap
   const wasConnectedRef = useRef(isConnected);
   useEffect(() => {
@@ -144,6 +162,7 @@ export function useGenerationPolling({
   const startPolling = useCallback(() => {
     setIsGenerating(true);
     isGeneratingRef.current = true;
+    setConnectedActivityTick((tick) => tick + 1);
     setGenerationTrace({
       steps: [
         { name: 'relevance', status: 'in_progress' },

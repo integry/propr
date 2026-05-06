@@ -119,7 +119,7 @@ describe('useGenerationPolling', () => {
     expect(mockGetDraft).not.toHaveBeenCalled();
   });
 
-  it('does not resync over HTTP while the socket stays connected but quiet', () => {
+  it('resyncs over HTTP after connected socket inactivity', async () => {
     const onComplete = vi.fn();
     const { result } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
 
@@ -128,10 +128,17 @@ describe('useGenerationPolling', () => {
     });
 
     act(() => {
-      vi.advanceTimersByTime(30_000);
+      vi.advanceTimersByTime(14_000);
     });
 
     expect(mockGetDraft).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+
+    expect(mockGetDraft).toHaveBeenCalledTimes(1);
   });
 
   it('stops generating immediately on terminal socket events', async () => {
@@ -290,5 +297,43 @@ describe('useGenerationPolling', () => {
     expect(mockGetDraft).toHaveBeenCalledTimes(2);
     expect(result.current.isGenerating).toBe(false);
     expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a previous generation error when a new run starts', async () => {
+    const onComplete = vi.fn();
+    const { result } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
+
+    act(() => {
+      result.current.startPolling();
+    });
+
+    await act(async () => {
+      await Promise.all(
+        [...draftUpdateListeners].map(listener => listener({
+          eventType: 'draft:update',
+          draftId: 'draft-1',
+          step: 'complete',
+          status: 'failed',
+          timestamp: '2026-05-05T00:00:10Z',
+          draftStatus: 'failed',
+          generationTrace: {
+            steps: [
+              { name: 'relevance', status: 'completed' },
+              { name: 'context', status: 'failed' },
+              { name: 'llm', status: 'pending' },
+            ],
+            error: 'Plan generation failed',
+          },
+        }))
+      );
+    });
+
+    expect(result.current.generationError).toBe('Plan generation failed');
+
+    act(() => {
+      result.current.startPolling();
+    });
+
+    expect(result.current.generationError).toBeNull();
   });
 });

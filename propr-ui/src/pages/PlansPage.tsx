@@ -156,7 +156,7 @@ const PlansPage: React.FC = () => {
     const isOnCurrentPage = Boolean(currentPageDraft);
     const matchesStatusFilter = statusFilter === 'all' || payload.draftStatus === statusFilter;
     const matchesRepositoryFilter = repoFilter === 'all' || currentPageDraft?.repository === repoFilter;
-    const couldAffectCurrentView = repoFilter === 'all' && !isOnCurrentPage && !!payload.draftStatus && matchesStatusFilter;
+    const couldAffectCurrentView = !isOnCurrentPage && !!payload.draftStatus && matchesStatusFilter;
 
     if ((isOnCurrentPage && matchesRepositoryFilter) || couldAffectCurrentView) {
       await Promise.all([

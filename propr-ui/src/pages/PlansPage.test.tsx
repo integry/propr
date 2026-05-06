@@ -162,23 +162,47 @@ describe('PlansPage', () => {
     await waitFor(() => expect(mockGetDrafts).toHaveBeenCalledTimes(2));
   });
 
-  it('does not reload the filtered list for off-page events from another repository', async () => {
+  it('reloads the filtered list for off-page status updates that could enter the current view', async () => {
     socketState.isConnected = true;
-    mockGetDraftRepositories.mockResolvedValue({ repositories: [{ repo: 'integry/propr', count: 1 }], total: 1 });
-    mockGetDrafts.mockResolvedValue({
-      drafts: [{
-        draft_id: 'draft-1',
-        repository: 'integry/propr',
-        initial_prompt: 'Test draft',
-        status: 'draft',
-        updated_at: '2026-04-27T00:00:00Z',
-        created_at: '2026-04-27T00:00:00Z',
-      }],
-      total: 1,
-      page: 1,
-      limit: 20,
-      hasMore: false,
-    });
+    mockGetDraftRepositories
+      .mockResolvedValueOnce({ repositories: [{ repo: 'integry/propr', count: 1 }], total: 1 })
+      .mockResolvedValueOnce({ repositories: [{ repo: 'integry/propr', count: 2 }], total: 2 });
+    mockGetDrafts
+      .mockResolvedValueOnce({
+        drafts: [{
+          draft_id: 'draft-1',
+          repository: 'integry/propr',
+          initial_prompt: 'Test draft',
+          status: 'draft',
+          updated_at: '2026-04-27T00:00:00Z',
+          created_at: '2026-04-27T00:00:00Z',
+        }],
+        total: 1,
+        page: 1,
+        limit: 20,
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({
+        drafts: [{
+          draft_id: 'draft-1',
+          repository: 'integry/propr',
+          initial_prompt: 'Test draft',
+          status: 'draft',
+          updated_at: '2026-04-27T00:00:00Z',
+          created_at: '2026-04-27T00:00:00Z',
+        }, {
+          draft_id: 'draft-2',
+          repository: 'integry/propr',
+          initial_prompt: 'Other draft',
+          status: 'review',
+          updated_at: '2026-05-05T00:00:10Z',
+          created_at: '2026-05-05T00:00:00Z',
+        }],
+        total: 2,
+        page: 1,
+        limit: 20,
+        hasMore: false,
+      });
 
     render(
       <MemoryRouter initialEntries={['/plans?repository=integry/propr&status=review']}>
@@ -204,7 +228,7 @@ describe('PlansPage', () => {
       );
     });
 
-    expect(mockGetDrafts).toHaveBeenCalledTimes(1);
-    expect(mockGetDraftRepositories).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockGetDrafts).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockGetDraftRepositories).toHaveBeenCalledTimes(2));
   });
 });

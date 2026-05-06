@@ -3,33 +3,13 @@
  */
 
 import { Knex } from 'knex';
-import { generatePlan, getEventPublisher, parseGenerationTrace } from '@propr/core';
+import { generatePlan, getEventPublisher, parseGenerationTrace, buildDraftUpdateTraceSnapshot } from '@propr/core';
 import type { DraftUpdateGenerationTrace } from '@propr/shared';
 import type { GenerateRequestBody, BackgroundGenerationOptions } from './types.js';
 import { VALID_GRANULARITIES } from './validation.js';
 
 function buildFailureTraceSnapshot(trace: DraftUpdateGenerationTrace): DraftUpdateGenerationTrace {
-  return {
-    ...trace,
-    steps: trace.steps.map((step) => {
-      const { data, ...rest } = step;
-      const sanitizedData = data
-        ? Object.fromEntries(
-            Object.entries(data).filter(([, value]) => (
-              value === null ||
-              typeof value === 'string' ||
-              typeof value === 'number' ||
-              typeof value === 'boolean'
-            ))
-          )
-        : undefined;
-
-      return {
-        ...rest,
-        ...(sanitizedData && Object.keys(sanitizedData).length > 0 ? { data: sanitizedData } : {})
-      };
-    })
-  };
+  return buildDraftUpdateTraceSnapshot(trace);
 }
 
 export async function updateDraftContextConfig(

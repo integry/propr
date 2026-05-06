@@ -13,7 +13,7 @@ export * from './planningErrors.js';
 export { checkoutBranch, checkoutBaseBranch } from './branchOperations.js';
 
 // Trace service
-export { updateTrace, parseGenerationTrace, buildDraftUpdateTraceSnapshot } from './traceService.js';
+export { updateTrace, parseGenerationTrace, buildDraftUpdateTraceSnapshot, sanitizeDraftUpdateStepData } from './traceService.js';
 
 // Context builders
 export { buildFullContext, buildSmartSelection, getModelDisplayInfo } from './contextBuilders.js';

@@ -9,7 +9,7 @@ import { getEventPublisher } from '../../utils/eventPublisher.js';
 
 type ParsedGenerationTrace = GenerationTrace & Pick<DraftUpdateGenerationTrace, 'error' | 'failedAt'>;
 
-function sanitizeDraftUpdateStepData(data: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+export function sanitizeDraftUpdateStepData(data: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (!data) {
     return undefined;
   }

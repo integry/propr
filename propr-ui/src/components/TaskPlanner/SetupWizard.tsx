@@ -329,9 +329,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   // Preview trace polling state for context preview progress
   const [previewTrace, setPreviewTrace] = useState<GenerationTrace | undefined>(undefined);
 
-  // Reuse the latest in-memory draft trace while preview is loading. Keep a
-  // preview-scoped poll active as a fallback because draft-mode sockets do not
-  // reliably stream preview progress updates.
+  // Reuse the latest in-memory draft trace while preview is loading. If no
+  // draft trace is available yet, seed a placeholder so the preview progress
+  // UI renders immediately instead of flickering empty.
   useEffect(() => {
     if (!draftId || !contextRefresh.preview.isLoading) {
       if (!contextRefresh.preview.isLoading) setPreviewTrace(undefined);
