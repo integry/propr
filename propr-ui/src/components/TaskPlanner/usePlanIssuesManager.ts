@@ -339,9 +339,9 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   const handleRunUltrafixChange = useCallback(async (issueNumber: number, runUltrafix: boolean) => {
     try {
-      await updatePlanIssue(draftId, issueNumber, { run_ultrafix: runUltrafix });
+      const updatedIssue = await updatePlanIssue(draftId, issueNumber, { run_ultrafix: runUltrafix });
       setIssues(prev => prev.map(issue =>
-        issue.issue_number === issueNumber ? { ...issue, run_ultrafix: runUltrafix } : issue
+        issue.issue_number === issueNumber ? updatedIssue : issue
       ));
     } catch (err) {
       console.error('Failed to update ultrafix setting:', err);

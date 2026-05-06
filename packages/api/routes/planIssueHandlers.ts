@@ -196,6 +196,12 @@ function normalizeRunUltrafix(value: boolean | number | null | undefined): boole
   return undefined;
 }
 
+function validateRunUltrafixValue(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (value === true || value === false || value === 1 || value === 0) return null;
+  return 'run_ultrafix must be a boolean, 1, 0, or null';
+}
+
 function buildIssueUpdate(body: UpdateIssueRequestBody) {
   return {
     agent_alias: body.agent_alias !== undefined ? body.agent_alias : undefined,
@@ -326,6 +332,8 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       const body = req.body as UpdateIssueRequestBody;
       const statusError = validateIssueStatus(body.status);
       if (statusError) { res.status(400).json({ error: statusError }); return; }
+      const runUltrafixError = validateRunUltrafixValue(body.run_ultrafix);
+      if (runUltrafixError) { res.status(400).json({ error: runUltrafixError }); return; }
       const ultrafixGoalError = validateUltrafixValue(body.ultrafix_goal, 'ultrafix_goal', { minimum: ULTRAFIX_GOAL_MIN, maximum: ULTRAFIX_GOAL_MAX });
       if (ultrafixGoalError) { res.status(400).json({ error: ultrafixGoalError }); return; }
       const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafix_max_cycles, 'ultrafix_max_cycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
@@ -385,14 +393,14 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const issues = await getPlanIssuesByDraft(draftId);
       const pendingIssues = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
-      await Promise.all(
+      const resolvedPendingIssues = await Promise.all(
         pendingIssues.map((issue) => {
           const ultrafixSettings = resolveIssueUltrafixSettings(issue, contextConfig);
           return updatePlanIssue(draftId, issue.issue_number, {
             run_ultrafix: ultrafixSettings.runUltrafix,
             ultrafix_goal: ultrafixSettings.ultrafixGoal,
             ultrafix_max_cycles: ultrafixSettings.ultrafixMaxCycles
-          });
+          }).then((updatedIssue) => updatedIssue ?? issue);
         })
       );
 
@@ -410,12 +418,12 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       // Get existing epic label or create new one
       const epicLabelName = await resolveEpicLabel(useEpic, {
         draftId, owner, repo, draft: draft as Record<string, unknown>,
-        firstIssueNumber: pendingIssues[0].issue_number,
+        firstIssueNumber: resolvedPendingIssues[0].issue_number,
         contextConfig, correlationId, labelLogger
       });
 
       const { results, queuedCount } = await processBatchIssues({
-        octokit, owner, repo, draftId, pendingIssues, implementLabel, epicLabelName, autoMerge: autoMerge as boolean
+        octokit, owner, repo, draftId, pendingIssues: resolvedPendingIssues, implementLabel, epicLabelName, autoMerge: autoMerge as boolean
       });
 
       const successCount = results.filter(r => r.success).length;

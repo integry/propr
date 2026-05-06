@@ -80,6 +80,7 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
 }) => {
   const [goalInput, setGoalInput] = useState(ultrafixGoal?.toString() ?? '');
   const [maxCyclesInput, setMaxCyclesInput] = useState(ultrafixMaxCycles?.toString() ?? '');
+  const ultrafixEnabled = runUltrafix || false;
 
   useEffect(() => {
     setGoalInput(ultrafixGoal?.toString() ?? '');
@@ -161,21 +162,23 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
             min={1}
             max={10}
             value={goalInput}
+            disabled={!ultrafixEnabled}
             onChange={(e) => setGoalInput(e.target.value)}
             onBlur={commitGoal}
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             placeholder="UF goal"
-            className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm"
+            className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
           />
           <input
             type="number"
             min={1}
             value={maxCyclesInput}
+            disabled={!ultrafixEnabled}
             onChange={(e) => setMaxCyclesInput(e.target.value)}
             onBlur={commitMaxCycles}
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             placeholder="UF max"
-            className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm"
+            className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
           />
         </div>
       </div>

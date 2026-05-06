@@ -370,7 +370,14 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
   function parseExistingExecutionConfig(contextConfig: unknown): Record<string, unknown> {
     if (!contextConfig) { return {}; }
-    return typeof contextConfig === 'string' ? JSON.parse(contextConfig) : contextConfig as Record<string, unknown>;
+    if (typeof contextConfig !== 'string') {
+      return contextConfig as Record<string, unknown>;
+    }
+    try {
+      return JSON.parse(contextConfig) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
   }
 
   function buildUpdatedExecutionConfig(
@@ -379,14 +386,16 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   ): Record<string, unknown> {
     const ultrafixGoal = parseOptionalInteger(body.ultrafixGoal, 'ultrafixGoal', { minimum: 1, maximum: 10 });
     const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: 1 });
+    const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
+    const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
 
     return {
       ...existingConfig,
       useEpic: body.useEpic ?? existingConfig.useEpic,
       autoMerge: body.autoMerge ?? existingConfig.autoMerge,
       runUltrafix: body.runUltrafix ?? existingConfig.runUltrafix,
-      ultrafixGoal: ultrafixGoal ?? existingConfig.ultrafixGoal,
-      ultrafixMaxCycles: ultrafixMaxCycles ?? existingConfig.ultrafixMaxCycles,
+      ultrafixGoal: hasUltrafixGoal ? ultrafixGoal : existingConfig.ultrafixGoal,
+      ultrafixMaxCycles: hasUltrafixMaxCycles ? ultrafixMaxCycles : existingConfig.ultrafixMaxCycles,
     };
   }
 

@@ -186,6 +186,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
 }) => {
   const [goalInput, setGoalInput] = useState(issue.ultrafix_goal?.toString() ?? '');
   const [maxCyclesInput, setMaxCyclesInput] = useState(issue.ultrafix_max_cycles?.toString() ?? '');
+  const ultrafixEnabled = issue.run_ultrafix ?? false;
 
   useEffect(() => {
     setGoalInput(issue.ultrafix_goal?.toString() ?? '');
@@ -248,21 +249,23 @@ export const RowActions: React.FC<RowActionsProps> = ({
             min={1}
             max={10}
             value={goalInput}
+            disabled={!ultrafixEnabled}
             onChange={(e) => setGoalInput(e.target.value)}
             onBlur={commitGoal}
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             placeholder="Goal"
-            className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs"
+            className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
           />
           <input
             type="number"
             min={1}
             value={maxCyclesInput}
+            disabled={!ultrafixEnabled}
             onChange={(e) => setMaxCyclesInput(e.target.value)}
             onBlur={commitMaxCycles}
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             placeholder="Max"
-            className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs"
+            className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
           />
         </div>
       )}
