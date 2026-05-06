@@ -63,7 +63,7 @@ const SetupWizardContent: React.FC<{
   isChangingRepo: boolean;
   isCreating: boolean;
   setIsChangingRepo: React.Dispatch<React.SetStateAction<boolean>>;
-  handleRepoChangeInEditMode: (repo: string) => Promise<void>;
+  handleRepoChangeInEditMode: (repo: string, selection?: { baseBranch?: string }) => Promise<void>;
   handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
   handleExportContext: () => void;
   handleGenerate: () => Promise<void>;
@@ -81,10 +81,9 @@ const SetupWizardContent: React.FC<{
 
   // Pre-computed values to reduce ternaries in JSX
   const repository = draft?.repository ?? repoLoader.selectedRepo;
-  const branches = isNewMode ? newModeBranches.branches : repoInfo.branches;
   const isRepoLoading = isNewMode ? newModeBranches.isLoading : repoInfo.isLoading;
   const repoError = isNewMode ? newModeBranches.error : repoInfo.error;
-  const onRepoChange = isNewMode ? repoLoader.setSelectedRepo : handleRepoChangeInEditMode;
+  const onRepoChange = isNewMode ? repoLoader.setSelectedRepository : handleRepoChangeInEditMode;
 
   const promptTrimmed = config.prompt.trim();
   const isGenerateDisabled = computeIsGenerateDisabled({
@@ -119,14 +118,13 @@ const SetupWizardContent: React.FC<{
           repository={repository}
           repos={repoLoader.repos}
           selectedRepo={repoLoader.selectedRepo}
+          selectedBaseBranch={repoLoader.selectedBaseBranch}
           onRepoChange={onRepoChange}
           reposLoading={repoLoader.reposLoading}
           baseBranch={config.baseBranch}
-          branches={branches}
           isRepoLoading={isRepoLoading}
           branchError={branchError}
           repoError={repoError}
-          onBranchChange={(branch) => setConfig(prev => ({ ...prev, baseBranch: branch }))}
           isChangingRepo={isChangingRepo}
           onChangeRepoClick={() => setIsChangingRepo(true)}
           prompt={config.prompt}
@@ -236,6 +234,7 @@ const SetupWizardContent: React.FC<{
 interface LocationState {
   initialPrompt?: string;
   initialRepository?: string;
+  initialBaseBranch?: string;
   /** Optional array of to-do IDs to link to the draft when creating from To-Dos */
   todoIds?: string[];
 }
@@ -253,7 +252,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const draftContextConfig = (draft as any)?.context_config;
   const [config, setConfig] = useState<PlannerConfig>(() => ({
     prompt: draft?.initial_prompt ?? locationState?.initialPrompt ?? '',
-    baseBranch: '',
+    baseBranch: draftContextConfig?.baseBranch ?? locationState?.initialBaseBranch ?? '',
     granularity: savedSettings.lastGranularity,
     contextLevel: savedSettings.lastContextLevel,
     compress: false,
@@ -303,14 +302,15 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   // Always load repositories so the dropdown shows all available repos in both new and edit modes
   // Use initialRepository from route state if available, otherwise fallback to saved settings
   const initialRepository = locationState?.initialRepository ?? savedSettings.lastRepository;
-  const repoLoader = useRepositoryLoader(true, initialRepository ?? undefined);
-  const newModeBranches = useBranchesLoader(isNewMode ? repoLoader.selectedRepo : '', setConfig);
+  const initialBaseBranch = locationState?.initialBaseBranch ?? savedSettings.lastBaseBranch;
+  const repoLoader = useRepositoryLoader(true, initialRepository ?? undefined, initialBaseBranch ?? undefined);
+  const newModeBranches = useBranchesLoader(isNewMode ? repoLoader.selectedRepo : '', repoLoader.selectedBaseBranch, setConfig);
   const repoInfo = useRepoInfoLoader(isNewMode, draft, setConfig);
   const agents = useAgentsLoader();
   const availableRepos = useIndexedRepositoriesLoader(draft?.repository, repoLoader.selectedRepo);
 
   // Persistence and file handling
-  usePlannerSettingsPersistence(config, draft?.repository, repoLoader.selectedRepo);
+  usePlannerSettingsPersistence(config, draft?.repository, repoLoader.selectedRepo, repoLoader.selectedBaseBranch);
   usePromptPersistence(draft?.draft_id, config.prompt, draft?.initial_prompt);
   const fileHandling = useFileHandling(isNewMode, draft, setConfig, setError);
 
@@ -367,17 +367,35 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   });
 
   // Auto-create draft when user starts typing in new mode
-  const { isAutoCreating, autoCreateError } = useAutoDraftCreation({ isNewMode, selectedRepo: repoLoader.selectedRepo, prompt: config.prompt, localFiles: fileHandling.localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds });
+  const { isAutoCreating, autoCreateError } = useAutoDraftCreation({
+    isNewMode,
+    selectedRepo: repoLoader.selectedRepo,
+    resolvedBaseBranch: config.baseBranch,
+    prompt: config.prompt,
+    localFiles: fileHandling.localFiles,
+    onDraftCreated,
+    onDraftCreatedInPlace,
+    navigate,
+    todoIds
+  });
 
   useEffect(() => { if (autoCreateError) addToast({ type: 'error', message: autoCreateError }); }, [autoCreateError, addToast]);
   const autoResize = useAutoResize(textareaRef);
 
-  const handleRepoChangeInEditMode = useCallback(async (newRepo: string) => {
-    if (!newRepo || newRepo === draft?.repository) { setIsChangingRepo(false); return; }
+  const handleRepoChangeInEditMode = useCallback(async (newRepo: string, selection?: { baseBranch?: string }) => {
+    if (!newRepo) { setIsChangingRepo(false); return; }
+    if (newRepo === draft?.repository && (selection?.baseBranch || '') === config.baseBranch) { setIsChangingRepo(false); return; }
     setIsCreating(true); setError(null);
-    try { const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled'); onDraftCreated?.(newDraft.draft_id); navigate(`/studio/${newDraft.draft_id}`, { replace: true }); }
+    try {
+      const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled');
+      onDraftCreated?.(newDraft.draft_id);
+      navigate(`/studio/${newDraft.draft_id}`, {
+        replace: true,
+        state: { initialRepository: newRepo, initialBaseBranch: selection?.baseBranch || '' }
+      });
+    }
     catch (err) { setError((err as Error).message || 'Failed to change repository'); setIsCreating(false); setIsChangingRepo(false); }
-  }, [draft?.repository, config.prompt, onDraftCreated, navigate]);
+  }, [draft?.repository, config.baseBranch, config.prompt, onDraftCreated, navigate]);
   const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) { for (const file of Array.from(e.target.files)) await fileHandling.handleUpload(file); }
     if (fileInputRef.current) fileInputRef.current.value = '';

@@ -16,6 +16,7 @@ vi.mock('../../hooks/usePlannerSettings', () => ({
   getPlannerSettings: () => ({
     lastGranularity: 'medium',
     lastContextLevel: 50,
+    lastBaseBranch: null,
   }),
   savePlannerSettings: vi.fn(),
 }));
@@ -76,18 +77,17 @@ vi.mock('./setupWizardHooks', () => ({
   useRepositoryLoader: () => ({
     repos: [{ name: 'integry/propr', enabled: true }],
     selectedRepo: 'integry/propr',
-    setSelectedRepo: vi.fn(),
+    selectedBaseBranch: 'develop',
+    setSelectedRepository: vi.fn(),
     reposLoading: false,
     loadError: null,
   }),
   useBranchesLoader: () => ({
     isLoading: false,
-    branches: ['main'],
     error: null,
   }),
   useRepoInfoLoader: () => ({
     isLoading: false,
-    branches: ['main'],
     error: null,
   }),
   useAgentsLoader: () => [],

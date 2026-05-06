@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
-import { ChevronDown } from 'lucide-react';
-import { RepositorySelector, RepoOption } from '../RepositorySelector';
+import { GitBranch } from 'lucide-react';
+import { RepositorySelector, RepoOption, RepoSelection } from '../RepositorySelector';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 
@@ -18,60 +18,51 @@ export const FormatRepoName: React.FC<{ repository: string }> = ({ repository })
   return <span className="text-gray-700">{repository}</span>;
 };
 
+const BranchBadge: React.FC<{ baseBranch: string }> = ({ baseBranch }) => (
+  <span
+    className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700 max-w-full"
+    title={baseBranch || 'Branch unavailable'}
+  >
+    <GitBranch className="h-3 w-3 flex-shrink-0" />
+    <span className="truncate font-mono">{baseBranch || 'Unavailable'}</span>
+  </span>
+);
+
 // Header for new mode (repository selector) - IDE-style breadcrumb layout
 export const NewModeHeader: React.FC<{
   reposLoading: boolean;
   selectedRepo: string;
+  selectedBaseBranch?: string;
   repos: Repo[];
-  onRepoChange?: (repo: string) => void;
-  branches: string[];
+  onRepoChange?: (repo: string, selection?: RepoSelection) => void;
   baseBranch: string;
   isLoadingBranches: boolean;
-  onBranchChange: (branch: string) => void;
-}> = ({ reposLoading, selectedRepo, repos, onRepoChange, branches, baseBranch, isLoadingBranches, onBranchChange }) => {
+}> = ({ reposLoading, selectedRepo, selectedBaseBranch, repos, onRepoChange, baseBranch, isLoadingBranches }) => {
   if (reposLoading) {
     return <span className="text-gray-400 text-sm">Loading repositories...</span>;
   }
 
   return (
     <>
-      {/* Repository selector - breadcrumb style */}
       <div className="relative inline-flex items-center max-w-[55%] sm:max-w-[50%]">
         <RepositorySelector
           repos={repos as RepoOption[]}
           selectedRepo={selectedRepo}
-          onRepoChange={(repo) => onRepoChange?.(repo)}
+          selectedBaseBranch={selectedBaseBranch}
+          onRepoChange={(repo, selection) => onRepoChange?.(repo, selection)}
           disabled={repos.length === 0}
           variant="breadcrumb"
           placeholder="Select repository"
         />
       </div>
-      {/* Show branch selector when repo is selected */}
       {selectedRepo && (
         <>
           <span className="text-gray-400 flex-shrink-0">/</span>
-          <div className="relative inline-flex items-center max-w-[40%] sm:max-w-[50%]">
+          <div className="inline-flex items-center max-w-[40%] sm:max-w-[50%]">
             {isLoadingBranches ? (
               <span className="text-gray-400 text-sm">Loading...</span>
             ) : (
-              <>
-                <select
-                  value={baseBranch}
-                  onChange={(e) => onBranchChange(e.target.value)}
-                  className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full"
-                  disabled={branches.length === 0}
-                  title="Select branch"
-                >
-                  {branches.length === 0 ? (
-                    <option value="">No branches</option>
-                  ) : (
-                    branches.map(branch => (
-                      <option key={branch} value={branch}>{branch}</option>
-                    ))
-                  )}
-                </select>
-                <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </>
+              <BranchBadge baseBranch={baseBranch} />
             )}
           </div>
         </>
@@ -80,37 +71,34 @@ export const NewModeHeader: React.FC<{
   );
 };
 
-// Header for edit mode (branch selector) - IDE-style breadcrumb layout
+// Header for edit mode - IDE-style breadcrumb layout
 export const EditModeHeader: React.FC<{
   repository: string;
   isRepoLoading: boolean;
   baseBranch: string;
-  branches: string[];
+  selectedBaseBranch?: string;
   branchError: string | null;
   repoError: string | null;
-  onBranchChange: (branch: string) => void;
   isChangingRepo?: boolean;
   onChangeRepoClick?: () => void;
   repos: Repo[];
-  onRepoChange: (repo: string) => void;
+  onRepoChange: (repo: string, selection?: RepoSelection) => void;
   reposLoading: boolean;
-}> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange, repos, onRepoChange, reposLoading }) => {
-  // Ensure the current repository is always in the options list.
-  // Memoize to maintain stable array identity across renders and prevent
-  // unnecessary re-renders of RepositorySelector's internal useMemo.
+}> = ({ repository, isRepoLoading, baseBranch, selectedBaseBranch, branchError, repoError, repos, onRepoChange, reposLoading }) => {
   const finalRepoOptions = useMemo(() => {
     const options = repos.length > 0 ? repos : (repository ? [{ name: repository, enabled: true }] : []);
-    const hasCurrentRepo = options.some(r => r.name === repository);
-    return hasCurrentRepo || !repository ? options : [{ name: repository, enabled: true }, ...options];
-  }, [repos, repository]);
+    const hasCurrentRepo = options.some(r => r.name === repository && (r.baseBranch || '') === (selectedBaseBranch || ''))
+      || options.some(r => r.name === repository && !selectedBaseBranch);
+    return hasCurrentRepo || !repository ? options : [{ name: repository, enabled: true, baseBranch: selectedBaseBranch || undefined }, ...options];
+  }, [repos, repository, selectedBaseBranch]);
 
   return (
     <>
-      {/* Repository - always clickable dropdown styled as breadcrumb */}
       <div className="relative inline-flex items-center max-w-[55%] sm:max-w-[50%]">
         <RepositorySelector
           repos={finalRepoOptions as RepoOption[]}
           selectedRepo={repository}
+          selectedBaseBranch={selectedBaseBranch}
           onRepoChange={onRepoChange}
           disabled={reposLoading}
           isLoading={reposLoading}
@@ -119,29 +107,11 @@ export const EditModeHeader: React.FC<{
         />
       </div>
       <span className="text-gray-400 flex-shrink-0">/</span>
-      {/* Branch selector - breadcrumb style */}
-      <div className="relative inline-flex items-center max-w-[40%] sm:max-w-[50%]">
+      <div className="inline-flex items-center max-w-[40%] sm:max-w-[50%]">
         {isRepoLoading ? (
           <span className="text-gray-400 text-sm">Loading...</span>
         ) : (
-          <>
-            <select
-              value={baseBranch}
-              onChange={(e) => onBranchChange(e.target.value)}
-              className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full"
-              disabled={branches.length === 0}
-              title="Click to change branch"
-            >
-              {branches.length === 0 ? (
-                <option value="">No branches</option>
-              ) : (
-                branches.map(branch => (
-                  <option key={branch} value={branch}>{branch}</option>
-                ))
-              )}
-            </select>
-            <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
-          </>
+          <BranchBadge baseBranch={baseBranch} />
         )}
       </div>
       {(branchError || repoError) && (

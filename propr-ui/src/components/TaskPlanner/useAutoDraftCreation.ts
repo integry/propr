@@ -8,13 +8,24 @@ import {
 } from '../../api/proprApi';
 
 // Helper to construct a DraftWithPlan from a PlannerDraft for router state
-export function constructDraftWithPlan(draft: PlannerDraft): DraftWithPlan {
+export function constructDraftWithPlan(draft: PlannerDraft, baseBranch?: string): DraftWithPlan {
   return {
     ...draft,
     plan_json: [],
     chat_history: [],
-    context_config: undefined,
+    context_config: baseBranch ? { baseBranch } : undefined,
     refinement_result: undefined
+  };
+}
+
+export function attachResolvedBaseBranch<T extends PlannerDraft>(draft: T, baseBranch?: string): T & { context_config?: { baseBranch?: string } } {
+  if (!baseBranch) {
+    return draft;
+  }
+
+  return {
+    ...draft,
+    context_config: { baseBranch }
   };
 }
 
@@ -25,6 +36,7 @@ const AUTO_DRAFT_DEBOUNCE_DELAY = 1000;
 interface AutoDraftCreationParams {
   isNewMode: boolean;
   selectedRepo: string;
+  resolvedBaseBranch: string;
   prompt: string;
   localFiles: File[];
   onDraftCreated?: (draftId: string) => void;
@@ -38,6 +50,7 @@ interface AutoDraftCreationParams {
 export function useAutoDraftCreation({
   isNewMode,
   selectedRepo,
+  resolvedBaseBranch,
   prompt,
   localFiles,
   onDraftCreated,
@@ -81,17 +94,21 @@ export function useAutoDraftCreation({
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
       // Use in-place update if callback provided (preserves focus, no navigation)
       // Otherwise fall back to navigation with router state
+      const draftWithResolvedBranch = attachResolvedBaseBranch(newDraft, resolvedBaseBranch);
       if (onDraftCreatedInPlace) {
-        onDraftCreatedInPlace(newDraft);
+        onDraftCreatedInPlace(draftWithResolvedBranch);
       } else {
-        const draftWithPlan = constructDraftWithPlan(newDraft);
-        navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan } });
+        const draftWithPlan = constructDraftWithPlan(newDraft, resolvedBaseBranch);
+        navigate(`/studio/${newDraft.draft_id}`, {
+          replace: true,
+          state: { initialDraft: draftWithPlan, initialBaseBranch: resolvedBaseBranch }
+        });
       }
     } catch (err) {
       setAutoCreateError((err as Error).message || 'Failed to auto-save draft');
       setIsAutoCreating(false);
     }
-  }, [localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds]);
+  }, [localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, resolvedBaseBranch, todoIds]);
 
   // Debounced create draft
   const debouncedCreateDraft = useMemo(

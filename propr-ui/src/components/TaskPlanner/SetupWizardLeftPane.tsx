@@ -5,6 +5,7 @@ import { AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
 import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
 import { ManualFileSelector } from './ManualFileSelector';
+import { RepoSelection } from '../RepositorySelector';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 
@@ -87,14 +88,13 @@ interface SetupWizardLeftPaneProps {
   repository: string;
   repos?: Repo[];
   selectedRepo?: string;
-  onRepoChange?: (repo: string) => void;
+  selectedBaseBranch?: string;
+  onRepoChange?: (repo: string, selection?: RepoSelection) => void;
   reposLoading?: boolean;
   baseBranch: string;
-  branches: string[];
   isRepoLoading: boolean;
   branchError: string | null;
   repoError: string | null;
-  onBranchChange: (branch: string) => void;
   isChangingRepo?: boolean;
   onChangeRepoClick?: () => void;
   prompt: string;
@@ -126,14 +126,13 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   repository,
   repos = [],
   selectedRepo = '',
+  selectedBaseBranch = '',
   onRepoChange,
   reposLoading = false,
   baseBranch,
-  branches,
   isRepoLoading,
   branchError,
   repoError,
-  onBranchChange,
   isChangingRepo = false,
   onChangeRepoClick,
   prompt,
@@ -166,22 +165,20 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           <NewModeHeader
             reposLoading={reposLoading}
             selectedRepo={selectedRepo}
+            selectedBaseBranch={selectedBaseBranch}
             repos={repos}
             onRepoChange={onRepoChange}
-            branches={branches}
             baseBranch={baseBranch}
             isLoadingBranches={isRepoLoading}
-            onBranchChange={onBranchChange}
           />
         ) : (
           <EditModeHeader
             repository={repository}
             isRepoLoading={isRepoLoading}
             baseBranch={baseBranch}
-            branches={branches}
+            selectedBaseBranch={selectedBaseBranch}
             branchError={branchError}
             repoError={repoError}
-            onBranchChange={onBranchChange}
             isChangingRepo={isChangingRepo}
             onChangeRepoClick={onChangeRepoClick || (() => {})}
             repos={repos}
@@ -190,6 +187,9 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           />
         )}
       </div>
+      <p className="mt-2 text-xs text-slate-500">
+        Planner Studio uses the repository entry&apos;s configured branch. To plan against a different branch, add the repository again in Repositories with that branch.
+      </p>
     </div>
 
     {/* Main content area */}
