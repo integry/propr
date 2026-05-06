@@ -978,6 +978,58 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(ultrafixPauseMock.mock.calls.length, 1);
     });
 
+    test('getSettings returns a persisted default agent alias', async () => {
+        const routes = createConfigRoutes({ redisClient: {} as never });
+        const autoFollowupMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => 4);
+        const autoResolveMock = mock.method(configManager, 'loadAutoResolveMergeConflicts', async () => true);
+        const prReviewModelMock = mock.method(configManager, 'loadPrReviewModel', async () => 'review-model');
+        const ultrafixGoalMock = mock.method(configManager, 'loadUltrafixRatingGoal', async () => 8);
+        const ultrafixCyclesMock = mock.method(configManager, 'loadUltrafixMaxCycles', async () => 9);
+        const ultrafixPauseMock = mock.method(configManager, 'loadUltrafixPauseSeconds', async () => 12);
+        const settingsMock = mock.method(configManager, 'loadSettings', async () => ({
+            default_agent_alias: 'claude',
+            worker_concurrency: 6,
+            github_user_whitelist: ['alice'],
+            analysis_model_fast: 'fast-model',
+            planner_context_model: 'context-model',
+            planner_generation_model: 'generation-model',
+        }));
+        const res = {
+            body: undefined as Record<string, unknown> | undefined,
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+            status(_code: number) {
+                return this;
+            },
+        };
+
+        await routes.getSettings({} as never, res as never);
+
+        assert.deepStrictEqual(res.body, {
+            default_agent_alias: 'claude',
+            worker_concurrency: 6,
+            github_user_whitelist: ['alice'],
+            analysis_model_fast: 'fast-model',
+            planner_context_model: 'context-model',
+            planner_generation_model: 'generation-model',
+            auto_followup_score_threshold: 4,
+            auto_resolve_merge_conflicts: true,
+            pr_review_model: 'review-model',
+            ultrafix_rating_goal: 8,
+            ultrafix_max_cycles: 9,
+            ultrafix_pause_seconds: 12,
+        });
+        assert.strictEqual(settingsMock.mock.calls.length, 1);
+        assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
+        assert.strictEqual(autoResolveMock.mock.calls.length, 1);
+        assert.strictEqual(prReviewModelMock.mock.calls.length, 1);
+        assert.strictEqual(ultrafixGoalMock.mock.calls.length, 1);
+        assert.strictEqual(ultrafixCyclesMock.mock.calls.length, 1);
+        assert.strictEqual(ultrafixPauseMock.mock.calls.length, 1);
+    });
+
     test('getSettings falls back to defaults when persisted integer-backed settings are invalid', async () => {
         const routes = createConfigRoutes({ redisClient: {} as never });
         const autoFollowupMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => 'invalid' as never);
