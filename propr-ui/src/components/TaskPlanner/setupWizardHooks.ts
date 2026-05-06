@@ -248,9 +248,7 @@ interface GenerationHandlersParams {
   setGenerationError: (error: string | null) => void;
 }
 
-export function useGenerationHandlers({
-  draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError
-}: GenerationHandlersParams) {
+export function useGenerationHandlers({ draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError }: GenerationHandlersParams) {
   const handleGenerateForExistingDraft = useCallback(async () => {
     if (!draft) return;
     if (branchError) {
@@ -290,9 +288,7 @@ interface DraftCreationParams {
   todoIds?: string[];
 }
 
-export function useDraftCreation({
-  selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds
-}: DraftCreationParams) {
+export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds }: DraftCreationParams) {
   const handleCreateDraftAndGenerate = useCallback(async () => {
     if (!selectedRepo || !config.prompt.trim()) {
       setError('Please select a repository and enter a prompt');
@@ -367,10 +363,7 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
   const isMountedRef = useRef(true);
   useEffect(() => {
     isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    };
+    return () => { isMountedRef.current = false; if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   }, []);
   useEffect(() => {
     if (!draftId) return;
@@ -383,9 +376,7 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
         const name = truncateToSentences(trimmedPrompt);
         await updateDraft(draftId, { initial_prompt: trimmedPrompt, name });
         lastSavedPromptRef.current = trimmedPrompt;
-      } catch (err) {
-        console.error('Failed to persist prompt:', err);
-      }
+      } catch (err) { console.error('Failed to persist prompt:', err); }
     }, PROMPT_SAVE_DEBOUNCE);
 
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
