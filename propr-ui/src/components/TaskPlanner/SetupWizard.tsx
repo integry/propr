@@ -222,6 +222,50 @@ async function createDraftForRepoChange({ newRepo, resolvedBaseBranch, config, d
   return true;
 }
 
+function useSetupWizardConfig(draft: PlannerDraft | undefined, locationState: LocationState | undefined) {
+  const savedSettings = useMemo(() => getPlannerSettings(), []);
+  const draftContextConfig = (draft as DraftWithContextConfig | undefined)?.context_config;
+  const initialConfiguredBaseBranch = draftContextConfig?.baseBranch ?? locationState?.initialBaseBranch ?? '';
+  const [config, setConfig] = useState<PlannerConfig>(() => ({
+    prompt: draft?.initial_prompt ?? locationState?.initialPrompt ?? '',
+    baseBranch: initialConfiguredBaseBranch,
+    granularity: savedSettings.lastGranularity,
+    contextLevel: savedSettings.lastContextLevel,
+    compress: false,
+    files: draft?.attachments ?? [],
+    contextRepositories: draftContextConfig?.contextRepositories ?? [],
+    generationModel: draftContextConfig?.generationModel ?? null,
+    manualFiles: draftContextConfig?.manualFiles ?? [],
+    excludedFiles: draftContextConfig?.excludedFiles ?? []
+  }));
+
+  return { config, setConfig, savedSettings, draftContextConfig, initialConfiguredBaseBranch };
+}
+
+interface SetupWizardLoadersParams {
+  isNewMode: boolean;
+  draft: PlannerDraft | undefined;
+  locationState: LocationState | undefined;
+  savedSettings: ReturnType<typeof getPlannerSettings>;
+  config: PlannerConfig;
+  setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>;
+}
+
+function useSetupWizardLoaders({ isNewMode, draft, locationState, savedSettings, config, setConfig }: SetupWizardLoadersParams) {
+  const initialRepository = locationState?.initialRepository ?? savedSettings.lastRepository;
+  const initialBaseBranch = locationState?.initialBaseBranch ?? savedSettings.lastBaseBranch;
+  const repoLoader = useRepositoryLoader(true, initialRepository ?? undefined, initialBaseBranch ?? undefined);
+  const newModeBranches = useBranchesLoader(isNewMode ? repoLoader.selectedRepo : '', repoLoader.selectedBaseBranch, setConfig);
+  const repoInfo = useRepoInfoLoader(isNewMode, draft, setConfig);
+  const agents = useAgentsLoader();
+  const availableRepos = useIndexedRepositoriesLoader(draft?.repository, repoLoader.selectedRepo);
+
+  usePlannerSettingsPersistence(config, draft?.repository, repoLoader.selectedRepo, repoLoader.selectedBaseBranch);
+  usePromptPersistence(draft?.draft_id, config.prompt, draft?.initial_prompt);
+
+  return { repoLoader, newModeBranches, repoInfo, agents, availableRepos };
+}
+
 function useRepoChangeInEditMode({ draft, config, locationTodoIds, navigate, onDraftCreated, setError, setIsCreating }: RepoChangeHandlerParams) {
   const requestIdRef = useRef(0);
 
@@ -251,39 +295,23 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const navigate = useNavigate();
   const location = useLocation();
   const locationState = location.state as LocationState | undefined;
-  const savedSettings = useMemo(() => getPlannerSettings(), []);
   const { addToast } = useToast();
   const isNewMode = !draft;
-  const draftContextConfig = (draft as DraftWithContextConfig | undefined)?.context_config;
-  const initialConfiguredBaseBranch = draftContextConfig?.baseBranch ?? locationState?.initialBaseBranch ?? '';
-  const [config, setConfig] = useState<PlannerConfig>(() => ({
-    prompt: draft?.initial_prompt ?? locationState?.initialPrompt ?? '',
-    baseBranch: initialConfiguredBaseBranch,
-    granularity: savedSettings.lastGranularity,
-    contextLevel: savedSettings.lastContextLevel,
-    compress: false,
-    files: draft?.attachments ?? [],
-    contextRepositories: draftContextConfig?.contextRepositories ?? [],
-    generationModel: draftContextConfig?.generationModel ?? null,
-    manualFiles: draftContextConfig?.manualFiles ?? [],
-    excludedFiles: draftContextConfig?.excludedFiles ?? []
-  }));
-
+  const { config, setConfig, savedSettings, initialConfiguredBaseBranch } = useSetupWizardConfig(draft, locationState);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [branchError, setBranchError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   useDraftContextConfigSync(draft, setConfig);
-  const initialRepository = locationState?.initialRepository ?? savedSettings.lastRepository;
-  const initialBaseBranch = locationState?.initialBaseBranch ?? savedSettings.lastBaseBranch;
-  const repoLoader = useRepositoryLoader(true, initialRepository ?? undefined, initialBaseBranch ?? undefined);
-  const newModeBranches = useBranchesLoader(isNewMode ? repoLoader.selectedRepo : '', repoLoader.selectedBaseBranch, setConfig);
-  const repoInfo = useRepoInfoLoader(isNewMode, draft, setConfig);
-  const agents = useAgentsLoader();
-  const availableRepos = useIndexedRepositoriesLoader(draft?.repository, repoLoader.selectedRepo);
-  usePlannerSettingsPersistence(config, draft?.repository, repoLoader.selectedRepo, repoLoader.selectedBaseBranch);
-  usePromptPersistence(draft?.draft_id, config.prompt, draft?.initial_prompt);
+  const { repoLoader, newModeBranches, repoInfo, agents, availableRepos } = useSetupWizardLoaders({
+    isNewMode,
+    draft,
+    locationState,
+    savedSettings,
+    config,
+    setConfig
+  });
   const fileHandling = useFileHandling(isNewMode, draft, setConfig, setError);
   const handleGenerateComplete = useCallback(() => {
     addToast({ type: 'success', message: 'Plan generated successfully' });
