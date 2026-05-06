@@ -4,61 +4,17 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
-import {
-  validatePagination,
-  validateRepository,
-  validateRepositoryFilter,
-  validateEnum,
-  validateUUID,
-  ALLOWED_EXTENSIONS,
-} from './validation.js';
-import {
-  checkDbAndAuth,
-  sendCheckError,
-  verifyDraftOwnership,
-  createDownloadContextHandler,
-  createGetRepositoryInfoHandler,
-  createGetAttachmentContentHandler,
-  createPreviewContextHandler,
-  createDeleteAttachmentHandler,
-  createUploadAttachmentHandler,
-  createGetContextStatsHandler,
-  createGetIssuesHandler,
-  createImplementIssueHandler,
-  createUpdateIssueHandler,
-  createImplementAllIssuesHandler,
-  validatePreviewInput,
-  withAuthCheck,
-  createValidateContextRepositoryHandler
-} from './plannerHelpers.js';
-import {
-  parseSearchWords,
-  scoreDrafts,
-  sortDraftsByScore,
-  removeSearchScore
-} from './plannerSearchHelpers.js';
-import {
-  buildIssueSummaryMap,
-  parseDraftJsonFields,
-  attachIssueSummaries
-} from './plannerDraftHelpers.js';
-import {
-  createGenerateHandler,
-  createRefineHandler,
-  createFinalizeHandler,
-  createAbortGenerationHandler,
-  createAbortRefinementHandler,
-  createReviseDraftHandler
-} from './plannerActionHandlers.js';
+import { validatePagination, validateRepository, validateRepositoryFilter, validateEnum, validateUUID, ALLOWED_EXTENSIONS } from './validation.js';
+import { checkDbAndAuth, sendCheckError, verifyDraftOwnership, createDownloadContextHandler, createGetRepositoryInfoHandler, createGetAttachmentContentHandler, createPreviewContextHandler, createDeleteAttachmentHandler, createUploadAttachmentHandler, createGetContextStatsHandler, createGetIssuesHandler, createImplementIssueHandler, createUpdateIssueHandler, createImplementAllIssuesHandler, validatePreviewInput, withAuthCheck, createValidateContextRepositoryHandler } from './plannerHelpers.js';
+import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
+import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
+import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createAbortGenerationHandler, createAbortRefinementHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
 import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
 
-const ALLOWED_MIME_TYPES = [
-  'text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/pdf',
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
-];
+const ALLOWED_MIME_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 
 const upload = multer({
   dest: uploadDir,
@@ -79,12 +35,14 @@ const upload = multer({
 
 export const attachmentUpload = upload.single('file');
 
-interface PlannerRoutesDeps {
-  db: Knex;
-}
+interface PlannerRoutesDeps { db: Knex; }
 
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
+  const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
+  const parseExistingExecutionConfig = (contextConfig: unknown): Record<string, unknown> => { if (!contextConfig) return {}; if (typeof contextConfig !== 'string') return contextConfig as Record<string, unknown>; try { return JSON.parse(contextConfig) as Record<string, unknown>; } catch { return {}; } };
+  const sendExecutionSettingsResponse = (res: Response, updatedConfig: Record<string, unknown>): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
+  const isExecutionSettingsValidationError = (message: string): boolean => message.includes('must be a boolean') || message.includes('must be an integer') || message.includes('must be at least') || message.includes('must be at most');
 
   function parseOptionalInteger(
     value: unknown,
@@ -93,24 +51,16 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   ): number | null | undefined {
     if (value === undefined) return undefined;
     if (value === null || value === '') return null;
-    if (!Number.isInteger(value)) {
-      throw new Error(`${fieldName} must be an integer`);
-    }
+    if (!Number.isInteger(value)) throw new Error(`${fieldName} must be an integer`);
     const parsedValue = value as number;
-    if (options?.minimum !== undefined && parsedValue < options.minimum) {
-      throw new Error(`${fieldName} must be at least ${options.minimum}`);
-    }
-    if (options?.maximum !== undefined && parsedValue > options.maximum) {
-      throw new Error(`${fieldName} must be at most ${options.maximum}`);
-    }
+    if (options?.minimum !== undefined && parsedValue < options.minimum) throw new Error(`${fieldName} must be at least ${options.minimum}`);
+    if (options?.maximum !== undefined && parsedValue > options.maximum) throw new Error(`${fieldName} must be at most ${options.maximum}`);
     return parsedValue;
   }
 
   function parseOptionalBoolean(value: unknown, fieldName: string): boolean | undefined {
     if (value === undefined) return undefined;
-    if (typeof value !== 'boolean') {
-      throw new Error(`${fieldName} must be a boolean`);
-    }
+    if (typeof value !== 'boolean') throw new Error(`${fieldName} must be a boolean`);
     return value;
   }
 
@@ -152,19 +102,12 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const excludeStatuses = req.query.excludeStatuses as string | undefined;
       let query = db!('task_drafts').where({ user_id: req.user!.id });
 
-      if (repository && repository !== 'all') {
-        query = query.andWhere('repository', repository);
-      }
-
-      if (status && status !== 'all' && (validStatuses as readonly string[]).includes(status)) {
-        query = query.andWhere('status', status);
-      }
+      if (repository && repository !== 'all') query = query.andWhere('repository', repository);
+      if (status && status !== 'all' && (validStatuses as readonly string[]).includes(status)) query = query.andWhere('status', status);
 
       if (excludeStatuses) {
         const statusesToExclude = excludeStatuses.split(',').filter(s => (validStatuses as readonly string[]).includes(s.trim()));
-        if (statusesToExclude.length > 0) {
-          query = query.whereNotIn('status', statusesToExclude);
-        }
+        if (statusesToExclude.length > 0) query = query.whereNotIn('status', statusesToExclude);
       }
 
       const searchWords = parseSearchWords(search);
@@ -182,19 +125,12 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt', 'paused', 'paused_at')
         .orderBy('updated_at', 'desc');
 
-      if (searchWords.length > 0) {
-        const exactPhrase = search!.trim().toLowerCase();
-        const scoredDrafts = scoreDrafts(drafts, searchWords, exactPhrase);
-        sortDraftsByScore(scoredDrafts);
-        drafts = removeSearchScore(scoredDrafts);
-      }
+      if (searchWords.length > 0) { const exactPhrase = search!.trim().toLowerCase(); const scoredDrafts = scoreDrafts(drafts, searchWords, exactPhrase); sortDraftsByScore(scoredDrafts); drafts = removeSearchScore(scoredDrafts); }
 
       const paginatedDrafts = drafts.slice(offset, offset + limit);
       const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
-        const issues = await db!('plan_issues')
-          .whereIn('draft_id', draftIds)
-          .select('draft_id', 'status');
+        const issues = await db!('plan_issues').whereIn('draft_id', draftIds).select('draft_id', 'status');
         const issueSummaries = buildIssueSummaryMap(issues);
         attachIssueSummaries(paginatedDrafts as Array<Record<string, unknown> & { draft_id: string }>, issueSummaries);
       }
@@ -231,9 +167,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       await db!('task_drafts')
         .insert({ draft_id: draftId, user_id: req.user!.id, repository, initial_prompt: prompt, name });
 
-      if (Array.isArray(todoIds) && todoIds.length > 0) {
-        await linkTodosToDraft(todoIds, draftId, req.user!.id);
-      }
+      if (Array.isArray(todoIds) && todoIds.length > 0) await linkTodosToDraft(todoIds, draftId, req.user!.id);
 
       const draft = await db!('task_drafts').where({ draft_id: draftId }).first();
       res.status(201).json(draft);
@@ -287,13 +221,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       await db!('task_drafts').where({ draft_id: req.params.id }).update(updateData);
       const updated = await db!('task_drafts').where({ draft_id: req.params.id }).first();
-      if (updated) {
-        const responseData: Record<string, unknown> & { task_title?: string } = { ...updated };
-        responseData.task_title = updated.name;
-        res.json(responseData);
-      } else {
-        res.json(updated);
-      }
+      if (updated) { const responseData: Record<string, unknown> & { task_title?: string } = { ...updated }; responseData.task_title = updated.name; res.json(responseData); } else { res.json(updated); }
     } catch (error) {
       console.error('Update draft error:', error);
       res.status(500).json({ error: 'Failed to update draft' });
@@ -315,8 +243,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       res.status(500).json({ error: 'Failed to delete draft' });
     }
   }
-
-  const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
 
   const uploadAttachment = withAuthCheck(db, createUploadAttachmentHandler({ verifyOwnership: ownershipVerifier }));
   const getContextStats = withAuthCheck(db, createGetContextStatsHandler({ verifyOwnership: ownershipVerifier }));
@@ -376,18 +302,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const pauseDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'pause');
   const resumeDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'resume');
 
-  function parseExistingExecutionConfig(contextConfig: unknown): Record<string, unknown> {
-    if (!contextConfig) { return {}; }
-    if (typeof contextConfig !== 'string') {
-      return contextConfig as Record<string, unknown>;
-    }
-    try {
-      return JSON.parse(contextConfig) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
-  }
-
   function buildUpdatedExecutionConfig(
     existingConfig: Record<string, unknown>,
     body: Record<string, unknown>,
@@ -410,21 +324,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     };
   }
 
-  function sendExecutionSettingsResponse(res: Response, updatedConfig: Record<string, unknown>): void {
-    res.json({
-      success: true,
-      useEpic: updatedConfig.useEpic ?? false,
-      autoMerge: updatedConfig.autoMerge ?? false,
-      runUltrafix: updatedConfig.runUltrafix ?? false,
-      ultrafixGoal: updatedConfig.ultrafixGoal ?? null,
-      ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null
-    });
-  }
-
-  function isExecutionSettingsValidationError(message: string): boolean {
-    return message.includes('must be a boolean') || message.includes('must be an integer') || message.includes('must be at least') || message.includes('must be at most');
-  }
-
   async function updateExecutionSettings(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
@@ -437,10 +336,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const existingConfig = parseExistingExecutionConfig(ownership.draft!.context_config);
       const updatedConfig = buildUpdatedExecutionConfig(existingConfig, req.body as Record<string, unknown>);
 
-      await db!('task_drafts').where({ draft_id: req.params.id }).update({
-        context_config: JSON.stringify(updatedConfig),
-        updated_at: db!.fn.now()
-      });
+      await db!('task_drafts').where({ draft_id: req.params.id }).update({ context_config: JSON.stringify(updatedConfig), updated_at: db!.fn.now() });
       sendExecutionSettingsResponse(res, updatedConfig);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update execution settings';

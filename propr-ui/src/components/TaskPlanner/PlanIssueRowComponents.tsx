@@ -1,16 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import {
-  ExternalLink,
-  GitPullRequest,
-  MessageSquare,
-  Play,
-  Loader2,
-  Eye,
-  ChevronDown,
-  StickyNote
-} from 'lucide-react';
+import { ExternalLink, GitPullRequest, MessageSquare, Play, Loader2, Eye, ChevronDown, StickyNote } from 'lucide-react';
 import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
 import { AgentConfig, getAttachmentUrl } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
@@ -19,40 +10,19 @@ import AgentModelSelector from './AgentModelSelector';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 import { getModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
 
-interface UltrafixSettingsControlsProps {
-  enabled: boolean;
-  goal: number | null | undefined;
-  maxCycles: number | null | undefined;
-  onGoalChange: (value: number | null) => void;
-  onMaxCyclesChange: (value: number | null) => void;
-  goalPlaceholder: string;
-  maxPlaceholder: string;
-  inputClassName: string;
-  goalInputWidthClassName: string;
-  maxInputWidthClassName: string;
-  containerClassName?: string;
-  errorClassName?: string;
-}
+interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; }
 
 function parseUltrafixIntegerInput(
   rawValue: string,
   options: { minimum: number; maximum?: number; label: string }
 ): { value: number | null; error: string | null } {
   const trimmedValue = rawValue.trim();
-  if (trimmedValue === '') {
-    return { value: null, error: null };
-  }
+  if (trimmedValue === '') return { value: null, error: null };
 
   const nextValue = Number(trimmedValue);
-  if (!Number.isInteger(nextValue)) {
-    return { value: null, error: `${options.label} must be a whole number` };
-  }
-  if (nextValue < options.minimum) {
-    return { value: null, error: `${options.label} must be at least ${options.minimum}` };
-  }
-  if (options.maximum !== undefined && nextValue > options.maximum) {
-    return { value: null, error: `${options.label} must be at most ${options.maximum}` };
-  }
+  if (!Number.isInteger(nextValue)) return { value: null, error: `${options.label} must be a whole number` };
+  if (nextValue < options.minimum) return { value: null, error: `${options.label} must be at least ${options.minimum}` };
+  if (options.maximum !== undefined && nextValue > options.maximum) return { value: null, error: `${options.label} must be at most ${options.maximum}` };
 
   return { value: nextValue, error: null };
 }
@@ -73,52 +43,20 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
 }) => {
   const [goalInput, setGoalInput] = useState(goal?.toString() ?? '');
   const [maxCyclesInput, setMaxCyclesInput] = useState(maxCycles?.toString() ?? '');
-  const [goalError, setGoalError] = useState<string | null>(null);
-  const [maxCyclesError, setMaxCyclesError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setGoalInput(goal?.toString() ?? '');
-    setGoalError(null);
-  }, [goal]);
-
-  useEffect(() => {
-    setMaxCyclesInput(maxCycles?.toString() ?? '');
-    setMaxCyclesError(null);
-  }, [maxCycles]);
-
-  useEffect(() => {
-    if (!enabled) {
-      setGoalError(null);
-      setMaxCyclesError(null);
-    }
-  }, [enabled]);
+  const [goalError, setGoalError] = useState<string | null>(null), [maxCyclesError, setMaxCyclesError] = useState<string | null>(null);
+  useEffect(() => { setGoalInput(goal?.toString() ?? ''); setGoalError(null); }, [goal]);
+  useEffect(() => { setMaxCyclesInput(maxCycles?.toString() ?? ''); setMaxCyclesError(null); }, [maxCycles]);
+  useEffect(() => { if (!enabled) { setGoalError(null); setMaxCyclesError(null); } }, [enabled]);
 
   const commitGoal = () => {
     const result = parseUltrafixIntegerInput(goalInput, { minimum: 1, maximum: 10, label: 'Ultrafix goal' });
-    if (result.error) {
-      setGoalError(result.error);
-      setGoalInput(goal?.toString() ?? '');
-      return;
-    }
-
-    setGoalError(null);
-    if (result.value !== goal) {
-      onGoalChange(result.value);
-    }
+    if (result.error) { setGoalError(result.error); setGoalInput(goal?.toString() ?? ''); return; }
+    setGoalError(null); if (result.value !== goal) onGoalChange(result.value);
   };
-
   const commitMaxCycles = () => {
     const result = parseUltrafixIntegerInput(maxCyclesInput, { minimum: 1, label: 'Ultrafix max cycles' });
-    if (result.error) {
-      setMaxCyclesError(result.error);
-      setMaxCyclesInput(maxCycles?.toString() ?? '');
-      return;
-    }
-
-    setMaxCyclesError(null);
-    if (result.value !== maxCycles) {
-      onMaxCyclesChange(result.value);
-    }
+    if (result.error) { setMaxCyclesError(result.error); setMaxCyclesInput(maxCycles?.toString() ?? ''); return; }
+    setMaxCyclesError(null); if (result.value !== maxCycles) onMaxCyclesChange(result.value);
   };
 
   return (
@@ -154,9 +92,7 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
           className={`${maxInputWidthClassName} ${inputClassName}`}
         />
       </div>
-      {(goalError || maxCyclesError) && (
-        <p className={errorClassName}>{goalError ?? maxCyclesError}</p>
-      )}
+      {(goalError || maxCyclesError) && <p className={errorClassName}>{goalError ?? maxCyclesError}</p>}
     </div>
   );
 };
@@ -174,12 +110,7 @@ export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) =
         ${config.color} ${config.bgColor} ${config.borderColor}
       `}
     >
-      {config.isActive && (
-        <span className="relative flex h-2 w-2">
-          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${config.bgColor} opacity-75`}></span>
-          <span className={`relative inline-flex rounded-full h-2 w-2 ${config.bgColor.replace('100', '500')}`}></span>
-        </span>
-      )}
+      {config.isActive && <span className="relative flex h-2 w-2"><span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${config.bgColor} opacity-75`}></span><span className={`relative inline-flex rounded-full h-2 w-2 ${config.bgColor.replace('100', '500')}`}></span></span>}
       {config.label}
     </span>
   );
@@ -219,29 +150,12 @@ export const AgentModelInfo: React.FC<AgentModelInfoProps> = ({ agentAlias, mode
   <span className="flex items-center gap-1.5 text-gray-500">
     <ProviderLogo provider={agentAlias} className="w-3 h-3" />
     <span>{agentAlias}</span>
-    {modelName && (
-      <>
-        <span className="text-gray-300">/</span>
-        <span>{getModelName(modelName)}</span>
-      </>
-    )}
+    {modelName && <><span className="text-gray-300">/</span><span>{getModelName(modelName)}</span></>}
   </span>
 );
 
 export interface PrLinkProps { prUrl: string; prNumber: number; }
-export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (
-  <a
-    href={prUrl}
-    target="_blank"
-    rel="noopener noreferrer"
-    className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-purple-50 border border-purple-200 rounded-sm text-purple-700 hover:bg-purple-100 hover:border-purple-300 transition-colors"
-    onClick={(e) => e.stopPropagation()}
-  >
-    <GitPullRequest size={12} />
-    <span>PR #{prNumber}</span>
-    <ExternalLink size={10} className="opacity-50" />
-  </a>
-);
+export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (<a href={prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-purple-50 border border-purple-200 rounded-sm text-purple-700 hover:bg-purple-100 hover:border-purple-300 transition-colors" onClick={(e) => e.stopPropagation()}><GitPullRequest size={12} /><span>PR #{prNumber}</span><ExternalLink size={10} className="opacity-50" /></a>);
 
 export interface FollowupCountProps { count: number; }
 export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
@@ -252,16 +166,7 @@ export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
 );
 
 export interface ViewProgressLinkProps { taskId: string; }
-export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (
-  <Link
-    to={`/tasks/${taskId}`}
-    className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded-sm text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors"
-    onClick={(e) => e.stopPropagation()}
-  >
-    <Eye size={12} />
-    View Progress
-  </Link>
-);
+export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (<Link to={`/tasks/${taskId}`} className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded-sm text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors" onClick={(e) => e.stopPropagation()}><Eye size={12} />View Progress</Link>);
 
 export interface RowActionsProps {
   isPending: boolean;
@@ -307,6 +212,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
   handleToggleExpand
 }) => {
   const ultrafixEnabled = issue.run_ultrafix ?? false;
+  const issueNumber = issue.issue_number;
 
   return (
     <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
@@ -315,8 +221,8 @@ export const RowActions: React.FC<RowActionsProps> = ({
           agents={agents}
           selectedAgent={issue.agent_alias}
           selectedModel={issue.model_name}
-          onAgentChange={(agent) => onAgentChange(issue.issue_number, agent)}
-          onModelChange={(model) => onModelChange(issue.issue_number, model)}
+          onAgentChange={(agent) => onAgentChange(issueNumber, agent)}
+          onModelChange={(model) => onModelChange(issueNumber, model)}
           disabled={implementing}
           compact
           isMulti={isMultiMode}
@@ -332,7 +238,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
             <input
               type="checkbox"
               checked={issue.run_ultrafix ?? false}
-              onChange={(e) => onRunUltrafixChange(issue.issue_number, e.target.checked)}
+              onChange={(e) => onRunUltrafixChange(issueNumber, e.target.checked)}
               className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
             />
             UF
@@ -341,8 +247,8 @@ export const RowActions: React.FC<RowActionsProps> = ({
             enabled={ultrafixEnabled}
             goal={issue.ultrafix_goal}
             maxCycles={issue.ultrafix_max_cycles}
-            onGoalChange={(value) => onUltrafixGoalChange(issue.issue_number, value)}
-            onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange(issue.issue_number, value)}
+            onGoalChange={(value) => onUltrafixGoalChange(issueNumber, value)}
+            onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange(issueNumber, value)}
             goalPlaceholder="Goal"
             maxPlaceholder="Max"
             inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
@@ -361,20 +267,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
           onClick={handleImplementClick}
         />
       )}
-      {hasExpandableContent && (
-        <button
-          onClick={handleToggleExpand}
-          className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
-          title={isExpanded ? 'Collapse details' : 'Expand details'}
-        >
-          <motion.div
-            animate={{ rotate: isExpanded ? 180 : 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <ChevronDown size={16} />
-          </motion.div>
-        </button>
-      )}
+      {hasExpandableContent && <button onClick={handleToggleExpand} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors" title={isExpanded ? 'Collapse details' : 'Expand details'}><motion.div animate={{ rotate: isExpanded ? 180 : 0 }} transition={{ duration: 0.2 }}><ChevronDown size={16} /></motion.div></button>}
     </div>
   );
 };
@@ -387,6 +280,18 @@ export interface ExpandedContentProps {
 export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId }) => {
   const attachments = task.attachments || [];
   const hasAttachments = attachments.length > 0;
+  const renderAttachmentIcon = () => (
+    <div className="w-4 h-4 text-gray-500 flex-shrink-0">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+        <polyline points="10 9 9 9 8 9"/>
+      </svg>
+    </div>
+  );
+
   return (
     <div className="px-4 pb-4 pt-0 border-t border-gray-100">
       {task.body && (
@@ -424,31 +329,11 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
               <span className="text-xs font-medium text-gray-500 block mb-2">Attachments</span>
               <div className="flex flex-wrap gap-2">
                 {attachments.map((attachment) => {
-                  const isImage = attachment.type === 'image' || attachment.mimeType?.startsWith('image/') ||
-                    /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(attachment.originalName);
+                  const isImage = attachment.type === 'image' || attachment.mimeType?.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(attachment.originalName);
 
                   return (
                     <div key={attachment.id} className="inline-flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm">
-                      {isImage ? (
-                        <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300">
-                          <img
-                            src={getAttachmentUrl(draftId, attachment.id)}
-                            alt={attachment.originalName}
-                            className="w-full h-full object-cover"
-                            crossOrigin="use-credentials"
-                          />
-                        </div>
-                      ) : (
-                        <div className="w-4 h-4 text-gray-500 flex-shrink-0">
-                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                            <polyline points="14 2 14 8 20 8"/>
-                            <line x1="16" y1="13" x2="8" y2="13"/>
-                            <line x1="16" y1="17" x2="8" y2="17"/>
-                            <polyline points="10 9 9 9 8 9"/>
-                          </svg>
-                        </div>
-                      )}
+                      {isImage ? <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300"><img src={getAttachmentUrl(draftId, attachment.id)} alt={attachment.originalName} className="w-full h-full object-cover" crossOrigin="use-credentials" /></div> : renderAttachmentIcon()}
                       <span className="text-gray-700 max-w-[150px] truncate" title={attachment.originalName}>
                         {attachment.originalName}
                       </span>
@@ -480,17 +365,11 @@ export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, 
       {showMultiAgentInfo && (
         <div className="hidden sm:flex items-center gap-1 flex-wrap">
           {selectedModels.map((m, idx) => (
-            <span key={`${m.agent_alias}-${m.model_name}`} className="flex items-center gap-1 text-gray-500">
-              {idx > 0 && <span className="text-gray-300 mx-1">|</span>}
-              <ProviderLogo provider={m.agent_alias} className="w-3 h-3" />
-              <span>{getModelName(m.model_name)}</span>
-            </span>
+            <span key={`${m.agent_alias}-${m.model_name}`} className="flex items-center gap-1 text-gray-500">{idx > 0 && <span className="text-gray-300 mx-1">|</span>}<ProviderLogo provider={m.agent_alias} className="w-3 h-3" /><span>{getModelName(m.model_name)}</span></span>
           ))}
         </div>
       )}
-      {showAgentInfo && (
-        <span className="hidden sm:block"><AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} /></span>
-      )}
+      {showAgentInfo && <span className="hidden sm:block"><AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} /></span>}
     </div>
   );
 };
