@@ -318,11 +318,93 @@ describe('SetupWizard', () => {
       );
     });
 
+    expect(mockCreateDraft).toHaveBeenCalledWith(
+      'integry/other',
+      'Test prompt',
+      { todoIds: ['todo-1', 'todo-2'] }
+    );
     expect(mockNavigate).toHaveBeenCalledWith(
       '/studio/draft-2',
       expect.objectContaining({
         replace: true,
         state: expect.objectContaining({ todoIds: ['todo-1', 'todo-2'] })
+      })
+    );
+  });
+
+  it('ignores stale repo switches in edit mode when a newer selection finishes first', async () => {
+    let resolveFirstLookup: ((value: { defaultBranch: string; branches: string[] }) => void) | undefined;
+    let resolveSecondLookup: ((value: { defaultBranch: string; branches: string[] }) => void) | undefined;
+
+    mockGetRepoBranches
+      .mockImplementationOnce(() => new Promise(resolve => {
+        resolveFirstLookup = resolve;
+      }))
+      .mockImplementationOnce(() => new Promise(resolve => {
+        resolveSecondLookup = resolve;
+      }));
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-2',
+      repository: 'integry/newer',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+
+    render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            context_config: { baseBranch: 'main' },
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    const onRepoChange = lastLeftPaneProps?.onRepoChange as ((repo: string, selection?: { baseBranch?: string }) => Promise<void>);
+
+    const firstChange = onRepoChange(
+      'integry/older',
+      { repo: 'integry/older', option: { name: 'integry/older', enabled: true } }
+    );
+    const secondChange = onRepoChange(
+      'integry/newer',
+      { repo: 'integry/newer', option: { name: 'integry/newer', enabled: true } }
+    );
+
+    await act(async () => {
+      resolveSecondLookup?.({ defaultBranch: 'develop', branches: ['develop'] });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await secondChange;
+    });
+    await act(async () => {
+      resolveFirstLookup?.({ defaultBranch: 'release', branches: ['release'] });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await firstChange;
+    });
+
+    expect(mockCreateDraft).toHaveBeenCalledTimes(1);
+    expect(mockCreateDraft).toHaveBeenCalledWith('integry/newer', 'Test prompt', { todoIds: undefined });
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/studio/draft-2',
+      expect.objectContaining({
+        state: expect.objectContaining({
+          initialRepository: 'integry/newer',
+          initialBaseBranch: 'develop'
+        })
       })
     );
   });

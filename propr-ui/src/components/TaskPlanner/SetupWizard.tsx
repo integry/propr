@@ -200,8 +200,12 @@ function useRepoChangeInEditMode({
   setError,
   setIsCreating
 }: RepoChangeHandlerParams) {
+  const requestIdRef = useRef(0);
+
   return useCallback(async (newRepo: string, selection?: RepoSelection) => {
     if (!newRepo) return;
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
     setIsCreating(true);
     setError(null);
     try {
@@ -210,20 +214,26 @@ function useRepoChangeInEditMode({
         const [owner, repo] = newRepo.split('/');
         if (!owner || !repo) throw new Error('Invalid repository format');
         const repoInfo = await getRepoBranches(owner, repo);
+        if (requestId !== requestIdRef.current) return;
         resolvedBaseBranch = repoInfo.defaultBranch;
       }
       if (newRepo === draft?.repository && resolvedBaseBranch === config.baseBranch) {
-        setIsCreating(false);
+        if (requestId === requestIdRef.current) {
+          setIsCreating(false);
+        }
         return;
       }
-      const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled');
+      const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled', { todoIds: locationTodoIds });
+      if (requestId !== requestIdRef.current) return;
       let baseBranchPersistenceWarning: string | null = null;
       try {
         await persistResolvedBaseBranch(newDraft.draft_id, resolvedBaseBranch);
       } catch (err) {
+        if (requestId !== requestIdRef.current) return;
         console.error('Failed to persist resolved base branch:', err);
         baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(resolvedBaseBranch);
       }
+      if (requestId !== requestIdRef.current) return;
       onDraftCreated?.(newDraft.draft_id);
       navigate(`/studio/${newDraft.draft_id}`, {
         replace: true,
@@ -235,6 +245,7 @@ function useRepoChangeInEditMode({
         }
       });
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
       setError((err as Error).message || 'Failed to change repository');
       setIsCreating(false);
     }

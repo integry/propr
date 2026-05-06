@@ -67,7 +67,7 @@ describe('useAutoDraftCreation', () => {
     const navigate = vi.fn();
     mockUpdateDraft.mockRejectedValue(new Error('Transient update failure'));
 
-    renderHook(() => useAutoDraftCreation({
+    const { result } = renderHook(() => useAutoDraftCreation({
       isNewMode: true,
       selectedRepo: 'integry/propr',
       resolvedBaseBranch: 'develop',
@@ -88,6 +88,7 @@ describe('useAutoDraftCreation', () => {
         })
       })
     );
+    expect(result.current.autoCreateWarning).toBe(null);
   });
 
   it('clears the auto-creating state before navigation after successful auto-creation', async () => {
@@ -174,6 +175,28 @@ describe('useAutoDraftCreation', () => {
     }));
 
     expect(result.current.isAutoCreating).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the persistence warning only for in-place auto-created drafts', async () => {
+    const navigate = vi.fn();
+    const onDraftCreatedInPlace = vi.fn();
+    mockUpdateDraft.mockRejectedValue(new Error('Transient update failure'));
+
+    const { result } = renderHook(() => useAutoDraftCreation({
+      isNewMode: true,
+      selectedRepo: 'integry/propr',
+      resolvedBaseBranch: 'develop',
+      prompt: 'Test prompt',
+      localFiles: [],
+      onDraftCreatedInPlace,
+      navigate,
+    }));
+
+    await flushAutoCreate();
+
+    expect(onDraftCreatedInPlace).toHaveBeenCalled();
+    expect(result.current.autoCreateWarning).toContain('failed to save base branch "develop"');
     expect(navigate).not.toHaveBeenCalled();
   });
 });

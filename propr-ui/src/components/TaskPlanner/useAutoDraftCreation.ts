@@ -109,7 +109,9 @@ export function useAutoDraftCreation({
       } catch (err) {
         console.error('Failed to persist resolved base branch:', err);
         baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(resolvedBaseBranch);
-        setAutoCreateWarning(baseBranchPersistenceWarning);
+        if (onDraftCreatedInPlace) {
+          setAutoCreateWarning(baseBranchPersistenceWarning);
+        }
       }
 
       draftCreatedRef.current = true;
