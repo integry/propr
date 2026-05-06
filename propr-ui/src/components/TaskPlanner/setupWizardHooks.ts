@@ -11,11 +11,9 @@ export { useAutoDraftCreation, constructDraftWithPlan, getBaseBranchPersistenceW
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[];
   contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
-
 interface RepoInfoState { isLoading: boolean; error: string | null; }
 const clearResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) => setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
 const setResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, baseBranch: string) => setConfig(prev => prev.baseBranch === baseBranch ? prev : { ...prev, baseBranch });
-
 async function loadRepositories(savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined): Promise<{ repos: Repo[]; selectedRepo: string; selectedBaseBranch: string }> {
   const [repoData, userPrefs, indexingData] = await Promise.all([
     getRepoConfig() as Promise<{ repos_to_monitor?: unknown[] }>,
@@ -50,10 +48,8 @@ async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRe
     .filter((r: RepositoryIndexingStatus) => (r.indexing_status === 'completed' || r.indexing_status === 'indexing') && r.full_name !== repoToExclude)
     .map((r: RepositoryIndexingStatus) => ({ full_name: r.full_name, branch: r.branch, indexing_status: r.indexing_status }));
 }
-
 async function processFileForUpload(file: File): Promise<File> { return file.type.startsWith('image/') ? resizeImage(file) : file; }
 function buildGenerationPayload(config: PlannerConfig) { return { baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, contextRepositories: config.contextRepositories, generationModel: config.generationModel || undefined, excludedFiles: config.excludedFiles.length > 0 ? config.excludedFiles : undefined }; }
-
 export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('');
@@ -64,7 +60,6 @@ export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: st
     setSelectedRepo(repo);
     setSelectedBaseBranch(typeof selection === 'string' ? selection : selection?.baseBranch || '');
   }, []);
-
   useEffect(() => {
     if (!shouldLoad) return;
     setReposLoading(true);
@@ -79,7 +74,6 @@ export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: st
   }, [shouldLoad, savedLastRepository, savedLastBaseBranch]);
   return { repos, selectedRepo, selectedBaseBranch, setSelectedRepository, reposLoading, loadError };
 }
-
 export function useBranchesLoader(selectedRepo: string, selectedBaseBranch: string, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
   const [branchesState, setBranchesState] = useState<RepoInfoState>({ isLoading: false, error: null });
   const requestIdRef = useRef(0);
@@ -116,7 +110,6 @@ export function useBranchesLoader(selectedRepo: string, selectedBaseBranch: stri
   }, [selectedRepo, selectedBaseBranch, setConfig]);
   return branchesState;
 }
-
 export function useRepoInfoLoader(isNewMode: boolean, draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
   const [repoInfo, setRepoInfo] = useState<RepoInfoState>({ isLoading: !isNewMode, error: null });
   const requestIdRef = useRef(0);
@@ -136,7 +129,6 @@ export function useRepoInfoLoader(isNewMode: boolean, draft: PlannerDraft | unde
       clearResolvedBaseBranch(setConfig);
       return;
     }
-
     setRepoInfo({ isLoading: true, error: null });
     getRepoBranches(owner, repo).then(info => {
       if (requestId !== requestIdRef.current) return;
@@ -150,13 +142,11 @@ export function useRepoInfoLoader(isNewMode: boolean, draft: PlannerDraft | unde
   }, [isNewMode, draft, setConfig]);
   return repoInfo;
 }
-
 export function useAgentsLoader() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   useEffect(() => { getAgents().then(data => setAgents(data.agents || [])).catch(err => console.error('Failed to load agents:', err)); }, []);
   return agents;
 }
-
 export function useIndexedRepositoriesLoader(draftRepository: string | undefined, selectedRepo: string) {
   const [availableRepos, setAvailableRepos] = useState<IndexedRepository[]>([]);
   useEffect(() => {
@@ -165,7 +155,6 @@ export function useIndexedRepositoriesLoader(draftRepository: string | undefined
   }, [draftRepository, selectedRepo]);
   return availableRepos;
 }
-
 export function usePlannerSettingsPersistence(config: PlannerConfig, draftRepository: string | undefined, draftBaseBranch: string | undefined, selectedRepo: string, selectedBaseBranch: string) {
   useEffect(() => { savePlannerSettings({ lastGranularity: config.granularity, lastContextLevel: config.contextLevel }); }, [config.granularity, config.contextLevel]);
   useEffect(() => {
@@ -174,7 +163,6 @@ export function usePlannerSettingsPersistence(config: PlannerConfig, draftReposi
     if (repo) savePlannerSettings({ lastRepository: repo, lastBaseBranch: baseBranch || null });
   }, [draftBaseBranch, draftRepository, selectedRepo, selectedBaseBranch]);
 }
-
 export function useFileHandling(isNewMode: boolean, draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, setError: React.Dispatch<React.SetStateAction<string | null>>) {
   const [localFiles, setLocalFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState<boolean>(false);
@@ -214,13 +202,10 @@ export function useFileHandling(isNewMode: boolean, draft: PlannerDraft | undefi
       console.error('Paste error:', err);
     }
   }, [handleUpload, setError]);
-
   return { localFiles, isUploading, handleUpload, handleRemoveFile, handleRemoveLocalFile, handlePaste };
 }
-
 interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<void> };
   startPolling: () => void; stopPolling: () => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
-
 export function useGenerationHandlers({ draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError }: GenerationHandlersParams) {
   const handleGenerateForExistingDraft = useCallback(async () => {
     if (!draft) return;
@@ -239,7 +224,6 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
       setError((err as Error).message || 'Failed to start plan generation');
     }
   }, [draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError]);
-
   const handleAbortGeneration = useCallback(async () => {
     if (!draft) return;
     try {
@@ -249,13 +233,10 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
       setError((err as Error).message || 'Failed to abort generation');
     }
   }, [draft, stopPolling, setError]);
-
   return { handleGenerateForExistingDraft, handleAbortGeneration };
 }
-
 interface DraftCreationParams { selectedRepo: string; config: PlannerConfig; localFiles: File[]; onDraftCreated?: (draftId: string) => void;
   navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; todoIds?: string[]; }
-
 export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds }: DraftCreationParams) {
   const handleCreateDraftAndGenerate = useCallback(async () => {
     if (!selectedRepo || !config.prompt.trim()) {
@@ -299,58 +280,56 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
       setIsCreating(false);
     }
   }, [selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds]);
-
   return handleCreateDraftAndGenerate;
 }
-
 interface GenerateDisabledParams { isNewMode: boolean; isCreating: boolean; selectedRepo: string; promptTrimmed: string; reposLoading: boolean;
   isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean; repoError: string | null; baseBranch: string; }
-
 export function computeIsGenerateDisabled(p: GenerateDisabledParams): boolean {
   if (p.isNewMode) {
     return p.isCreating || !p.selectedRepo || !p.promptTrimmed || p.reposLoading || p.repoInfoLoading || !!p.repoError || !p.baseBranch;
   }
   return p.isCreating || p.isGenerating || !!p.branchError || p.repoInfoLoading || !!p.repoError || !p.promptTrimmed || !p.baseBranch;
 }
-
 export function computeCanExport(isNewMode: boolean, promptTrimmed: string, baseBranch: string): boolean {
   return !isNewMode && !!(promptTrimmed && baseBranch);
 }
-
 export function useAutoResize(textareaRef: React.RefObject<HTMLTextAreaElement | null>) {
   return useCallback(() => {
     const el = textareaRef.current;
     if (el) { el.style.height = 'auto'; el.style.height = `${Math.max(el.scrollHeight, 160)}px`; }
   }, [textareaRef]);
 }
-
 type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
-
-export function useDraftContextConfigSync(draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
-  useEffect(() => {
-    if (!draft) return;
-    const draftConfig = (draft as DraftWithContextConfig).context_config;
-    setConfig(prev => (
-      prev.prompt === draft.initial_prompt &&
-      prev.baseBranch === (draftConfig?.baseBranch ?? '') &&
-      JSON.stringify(prev.files) === JSON.stringify(draft.attachments ?? []) &&
-      JSON.stringify(prev.contextRepositories) === JSON.stringify(draftConfig?.contextRepositories ?? []) &&
-      prev.generationModel === (draftConfig?.generationModel ?? null) &&
-      JSON.stringify(prev.manualFiles) === JSON.stringify(draftConfig?.manualFiles ?? []) &&
-      JSON.stringify(prev.excludedFiles) === JSON.stringify(draftConfig?.excludedFiles ?? [])
-    ) ? prev : {
-      ...prev,
-      prompt: draft.initial_prompt,
-      baseBranch: draftConfig?.baseBranch ?? '',
-      files: draft.attachments ?? [],
-      contextRepositories: draftConfig?.contextRepositories ?? [],
-      generationModel: draftConfig?.generationModel ?? null,
-      manualFiles: draftConfig?.manualFiles ?? [],
-      excludedFiles: draftConfig?.excludedFiles ?? []
-    });
-  }, [draft?.draft_id, setConfig]);
+type DraftConfigSnapshot = Pick<PlannerConfig, 'prompt' | 'baseBranch' | 'files' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>;
+function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigSnapshot | null {
+  if (!draft) return null;
+  const draftConfig = (draft as DraftWithContextConfig).context_config;
+  return {
+    prompt: draft.initial_prompt,
+    baseBranch: draftConfig?.baseBranch ?? '',
+    files: draft.attachments ?? [],
+    contextRepositories: draftConfig?.contextRepositories ?? [],
+    generationModel: draftConfig?.generationModel ?? null,
+    manualFiles: draftConfig?.manualFiles ?? [],
+    excludedFiles: draftConfig?.excludedFiles ?? []
+  };
 }
-
+function matchesDraftConfig(prev: PlannerConfig, next: DraftConfigSnapshot): boolean {
+  return prev.prompt === next.prompt &&
+    prev.baseBranch === next.baseBranch &&
+    JSON.stringify(prev.files) === JSON.stringify(next.files) &&
+    JSON.stringify(prev.contextRepositories) === JSON.stringify(next.contextRepositories) &&
+    prev.generationModel === next.generationModel &&
+    JSON.stringify(prev.manualFiles) === JSON.stringify(next.manualFiles) &&
+    JSON.stringify(prev.excludedFiles) === JSON.stringify(next.excludedFiles);
+}
+export function useDraftContextConfigSync(draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
+  const draftSnapshot = getDraftConfigSnapshot(draft);
+  useEffect(() => {
+    if (!draftSnapshot) return;
+    setConfig(prev => matchesDraftConfig(prev, draftSnapshot) ? prev : { ...prev, ...draftSnapshot });
+  }, [draftSnapshot, setConfig]);
+}
 export function usePreviewTrace(draft: PlannerDraft | undefined, draftId: string, isPreviewLoading: boolean) {
   const [previewTrace, setPreviewTrace] = useState<GenerationTrace | undefined>();
   useEffect(() => {
@@ -360,7 +339,6 @@ export function usePreviewTrace(draft: PlannerDraft | undefined, draftId: string
   }, [draftId, draft?.generation_trace, isPreviewLoading]);
   return previewTrace;
 }
-
 export function useSetupWizardEffects({ autoResize, prompt, generationError, repoLoadError, autoCreateError, autoCreateWarning, baseBranchPersistenceWarning, addToast, setError }: { autoResize: () => void; prompt: string; generationError: string | null; repoLoadError: string | null; autoCreateError?: string | null; autoCreateWarning?: string | null; baseBranchPersistenceWarning?: string | null; addToast: ({ type, message }: { type: 'error' | 'warning'; message: string }) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; }) {
   useEffect(() => { autoResize(); }, [prompt, autoResize]);
   useEffect(() => { if (generationError) addToast({ type: 'error', message: `Plan generation failed: ${generationError}` }); }, [generationError, addToast]);
@@ -369,7 +347,6 @@ export function useSetupWizardEffects({ autoResize, prompt, generationError, rep
   useEffect(() => { if (autoCreateWarning) addToast({ type: 'warning', message: autoCreateWarning }); }, [autoCreateWarning, addToast]);
   useEffect(() => { if (baseBranchPersistenceWarning) addToast({ type: 'warning', message: baseBranchPersistenceWarning }); }, [baseBranchPersistenceWarning, addToast]);
 }
-
 function truncateToSentences(text: string): string {
   const trimmed = text.trim();
   const sentencePattern = /[^.!?]+[.!?]+/g;
@@ -382,9 +359,7 @@ function truncateToSentences(text: string): string {
   const lastSpace = truncated.lastIndexOf(' ');
   return lastSpace > 0 ? truncated.slice(0, lastSpace) + '...' : truncated + '...';
 }
-
 const PROMPT_SAVE_DEBOUNCE = 1000;
-
 export function usePromptPersistence(draftId: string | undefined, prompt: string, initialPrompt: string | undefined) {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedPromptRef = useRef<string>((initialPrompt || '').trim());

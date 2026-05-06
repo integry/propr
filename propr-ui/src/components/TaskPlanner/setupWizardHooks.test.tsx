@@ -41,13 +41,11 @@ vi.mock('../../hooks/usePlannerSettings', () => ({
 vi.mock('./imageUtils', () => ({
   resizeImage: vi.fn(),
 }));
-
 const mockGetRepoBranches = vi.mocked(getRepoBranches);
 const mockCreateDraft = vi.mocked(createDraft);
 const mockGeneratePlan = vi.mocked(generatePlan);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockSavePlannerSettings = vi.mocked(savePlannerSettings);
-
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -57,7 +55,6 @@ function createDeferred<T>() {
   });
   return { promise, resolve, reject };
 }
-
 const baseConfig: PlannerConfig = {
   prompt: '',
   baseBranch: '',
@@ -70,27 +67,31 @@ const baseConfig: PlannerConfig = {
   manualFiles: [],
   excludedFiles: [],
 };
-
+const makeDraft = (overrides: Record<string, unknown> = {}) => ({
+  draft_id: 'draft-1',
+  repository: 'integry/propr',
+  initial_prompt: 'Test prompt',
+  status: 'draft',
+  attachments: [],
+  created_at: '2026-05-06T00:00:00Z',
+  ...overrides,
+});
 describe('setupWizardHooks branch resolution', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
-
   it('uses the selected repository entry baseBranch without fetching branch lists', async () => {
     const { result } = renderHook(() => {
       const [config, setConfig] = useState<PlannerConfig>(baseConfig);
       const state = useBranchesLoader('integry/propr', 'develop', setConfig);
       return { config, state };
     });
-
     await waitFor(() => {
       expect(result.current.config.baseBranch).toBe('develop');
     });
-
     expect(result.current.state.isLoading).toBe(false);
     expect(mockGetRepoBranches).not.toHaveBeenCalled();
   });
-
   it('falls back to the repository default branch when no configured baseBranch exists', async () => {
     mockGetRepoBranches.mockResolvedValue({ defaultBranch: 'main', branches: ['main', 'develop'] });
 
@@ -99,14 +100,11 @@ describe('setupWizardHooks branch resolution', () => {
       const state = useBranchesLoader('integry/propr', '', setConfig);
       return { config, state };
     });
-
     await waitFor(() => {
       expect(result.current.config.baseBranch).toBe('main');
     });
-
     expect(mockGetRepoBranches).toHaveBeenCalledWith('integry', 'propr');
   });
-
   it('clears the resolved base branch when branch lookup fails in new mode', async () => {
     mockGetRepoBranches.mockRejectedValue(new Error('GitHub unavailable'));
 
@@ -122,7 +120,6 @@ describe('setupWizardHooks branch resolution', () => {
 
     expect(result.current.config.baseBranch).toBe('');
   });
-
   it('ignores stale branch lookup results after the selected repo changes', async () => {
     const firstRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
     const secondRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
@@ -146,17 +143,8 @@ describe('setupWizardHooks branch resolution', () => {
     firstRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
     await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
   });
-
   it('preserves a draft context_config baseBranch instead of snapping back to the GitHub default branch', async () => {
-    const draft = {
-      draft_id: 'draft-1',
-      repository: 'integry/propr',
-      initial_prompt: 'Test prompt',
-      status: 'draft',
-      attachments: [],
-      created_at: '2026-05-06T00:00:00Z',
-      context_config: { baseBranch: 'develop' },
-    };
+    const draft = makeDraft({ context_config: { baseBranch: 'develop' } });
 
     const { result } = renderHook(() => {
       const [config, setConfig] = useState<PlannerConfig>(baseConfig);
@@ -171,7 +159,6 @@ describe('setupWizardHooks branch resolution', () => {
     expect(result.current.state.isLoading).toBe(false);
     expect(mockGetRepoBranches).not.toHaveBeenCalled();
   });
-
   it('ignores stale repo info lookups after the draft changes', async () => {
     const firstRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
     const secondRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
@@ -185,30 +172,9 @@ describe('setupWizardHooks branch resolution', () => {
         const state = useRepoInfoLoader(false, draft, setConfig);
         return { config, state };
       },
-      {
-        initialProps: {
-          draft: {
-            draft_id: 'draft-1',
-            repository: 'integry/propr',
-            initial_prompt: 'Test prompt',
-            status: 'draft',
-            attachments: [],
-            created_at: '2026-05-06T00:00:00Z',
-          },
-        },
-      }
+      { initialProps: { draft: makeDraft() } }
     );
-
-    rerender({
-      draft: {
-        draft_id: 'draft-2',
-        repository: 'integry/other',
-        initial_prompt: 'Test prompt',
-        status: 'draft',
-        attachments: [],
-        created_at: '2026-05-06T00:00:00Z',
-      },
-    });
+    rerender({ draft: makeDraft({ draft_id: 'draft-2', repository: 'integry/other' }) });
 
     secondRequest.resolve({ defaultBranch: 'release', branches: ['release'] });
     await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
@@ -216,16 +182,8 @@ describe('setupWizardHooks branch resolution', () => {
     firstRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
     await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
   });
-
   it('persists the resolved baseBranch when creating a draft before generation starts', async () => {
-    mockCreateDraft.mockResolvedValue({
-      draft_id: 'draft-1',
-      repository: 'integry/propr',
-      initial_prompt: 'Test prompt',
-      status: 'draft',
-      attachments: [],
-      created_at: '2026-05-06T00:00:00Z',
-    });
+    mockCreateDraft.mockResolvedValue(makeDraft());
 
     const navigate = vi.fn();
     const setError = vi.fn();
@@ -248,16 +206,8 @@ describe('setupWizardHooks branch resolution', () => {
     );
     expect(mockGeneratePlan).toHaveBeenCalled();
   });
-
   it('continues generation when persisting the resolved baseBranch fails after draft creation', async () => {
-    mockCreateDraft.mockResolvedValue({
-      draft_id: 'draft-1',
-      repository: 'integry/propr',
-      initial_prompt: 'Test prompt',
-      status: 'draft',
-      attachments: [],
-      created_at: '2026-05-06T00:00:00Z',
-    });
+    mockCreateDraft.mockResolvedValue(makeDraft());
     mockUpdateDraft.mockRejectedValue(new Error('Transient update failure'));
 
     const navigate = vi.fn();
@@ -291,7 +241,6 @@ describe('setupWizardHooks branch resolution', () => {
     );
     expect(setError).not.toHaveBeenCalledWith('Transient update failure');
   });
-
   it('persists only the explicitly selected repo-entry branch for repository restoration', () => {
     renderHook(() => usePlannerSettingsPersistence(
       { ...baseConfig, baseBranch: 'main' },
@@ -310,7 +259,6 @@ describe('setupWizardHooks branch resolution', () => {
       lastBaseBranch: 'main',
     });
   });
-
   it('persists the draft repository branch together with the draft repository in edit mode', () => {
     renderHook(() => usePlannerSettingsPersistence(
       { ...baseConfig, baseBranch: 'release' },
@@ -329,15 +277,11 @@ describe('setupWizardHooks branch resolution', () => {
       lastBaseBranch: 'release',
     });
   });
-
   it('clears stale draft context state when a replacement draft omits optional context config values', async () => {
-    const replacementDraft = {
+    const replacementDraft = makeDraft({
       draft_id: 'draft-2',
-      repository: 'integry/propr',
       initial_prompt: 'Replacement prompt',
-      status: 'draft',
       attachments: [{ id: 'attachment-2', filename: 'new.txt' } as never],
-      created_at: '2026-05-06T00:00:00Z',
       context_config: {
         baseBranch: 'release',
         contextRepositories: [],
@@ -345,7 +289,7 @@ describe('setupWizardHooks branch resolution', () => {
         manualFiles: [],
         excludedFiles: [],
       },
-    };
+    });
 
     const { result } = renderHook(() => {
       const [config, setConfig] = useState<PlannerConfig>({
@@ -361,7 +305,6 @@ describe('setupWizardHooks branch resolution', () => {
       useDraftContextConfigSync(replacementDraft as never, setConfig);
       return config;
     });
-
     await waitFor(() => {
       expect(result.current.prompt).toBe('Replacement prompt');
       expect(result.current.baseBranch).toBe('release');
@@ -372,7 +315,6 @@ describe('setupWizardHooks branch resolution', () => {
       expect(result.current.excludedFiles).toEqual([]);
     });
   });
-
   it('does not persist a stale prompt when the mounted wizard switches to a different draft', async () => {
     vi.useFakeTimers();
     try {
@@ -411,7 +353,6 @@ describe('setupWizardHooks branch resolution', () => {
     }
   });
 });
-
 describe('computeIsGenerateDisabled', () => {
   it('blocks new-mode generation until the branch is resolved', () => {
     expect(computeIsGenerateDisabled({
@@ -427,7 +368,6 @@ describe('computeIsGenerateDisabled', () => {
       baseBranch: '',
     })).toBe(true);
   });
-
   it('blocks generation when repository branch lookup fails', () => {
     expect(computeIsGenerateDisabled({
       isNewMode: false,
@@ -442,7 +382,6 @@ describe('computeIsGenerateDisabled', () => {
       baseBranch: '',
     })).toBe(true);
   });
-
   it('blocks edit-mode generation while a replacement draft is being created', () => {
     expect(computeIsGenerateDisabled({
       isNewMode: false,
