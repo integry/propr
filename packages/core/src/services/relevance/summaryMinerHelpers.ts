@@ -13,7 +13,7 @@ import {
 } from './summaryMinerMetrics.js';
 import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './summaryMinerMetrics.js';
 import { aggregateDirectories } from './summaryMinerDirectories.js';
-import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress } from './indexingCancellation.js';
+import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress, publishProgress } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 
 // Re-export metrics types and functions for backwards compatibility
@@ -116,7 +116,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
   for (const file of files) {
     // Check for cancellation before processing each file
-    if (await isIndexingCancelled(fullName)) {
+    if (await isIndexingCancelled(fullName, branch)) {
       log.info({ repository: fullName }, 'Indexing cancelled by user');
       throw new IndexingCancelledError(fullName);
     }
@@ -157,13 +157,14 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         filesFailed += batchFileCount;
       }
 
-      // Update progress tracking
-      await updateIndexingProgress(fullName, {
+      // Update progress tracking and publish in one step (avoids extra Redis read)
+      const updatedProgress = await updateIndexingProgress(fullName, {
         filesProcessed: batchFileCount,
         batchCompleted: true,
         inputTokens: batchInputTokens,
         outputTokens: batchOutputTokens,
-      });
+      }, branch);
+      await publishBatchProgressIfActive(fullName, branch, updatedProgress);
 
       currentBatch = [];
       currentTokens = 0;
@@ -181,7 +182,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   // Process remaining batch
   if (currentBatch.length > 0) {
     // Check for cancellation before final batch
-    if (await isIndexingCancelled(fullName)) {
+    if (await isIndexingCancelled(fullName, branch)) {
       log.info({ repository: fullName }, 'Indexing cancelled by user');
       throw new IndexingCancelledError(fullName);
     }
@@ -201,13 +202,14 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       filesFailed += batchFileCount;
     }
 
-    // Update progress tracking
-    await updateIndexingProgress(fullName, {
+    // Update progress tracking and publish in one step (avoids extra Redis read)
+    const updatedProgress = await updateIndexingProgress(fullName, {
       filesProcessed: batchFileCount,
       batchCompleted: true,
       inputTokens: batchInputTokens,
       outputTokens: batchOutputTokens,
-    });
+    }, branch);
+    await publishBatchProgressIfActive(fullName, branch, updatedProgress);
   }
 
   log.info({ totalBatches: batchNumber, successfulBatches, failedBatches, filesProcessed, filesFailed }, 'Batch processing complete');
@@ -219,6 +221,18 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     filesProcessed,
     filesFailed
   };
+}
+
+async function publishBatchProgressIfActive(
+  repository: string,
+  branch: string,
+  progress: Awaited<ReturnType<typeof updateIndexingProgress>>
+): Promise<void> {
+  if (!progress || await isIndexingCancelled(repository, branch)) {
+    return;
+  }
+
+  try { await publishProgress(repository, branch, progress); } catch { /* best-effort */ }
 }
 
 interface ProcessSingleBatchOptions {

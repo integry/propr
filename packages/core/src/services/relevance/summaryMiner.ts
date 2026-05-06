@@ -11,7 +11,7 @@ import {
   processBatches,
   aggregateDirectories
 } from './summaryMinerHelpers.js';
-import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, clearIndexingProgress } from './indexingCancellation.js';
+import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
 import { updateRepositoryStatus } from './summaryMinerQueries.js';
 
 // Re-export metrics functions and types for external access
@@ -267,7 +267,11 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     if (filesToProcess.length === 0 && filesToDelete.length === 0) {
       correlatedLogger.info('No files need processing, all summaries up to date');
+      // Clear any stale cancellation flag that may have arrived during setup
+      await clearIndexingCancellation(fullName, branch);
+      await clearIndexingProgress(fullName, branch);
       await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+      try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
       return;
     }
 
@@ -277,7 +281,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
 
       // Initialize progress tracking
-      await initIndexingProgress(fullName, filesToProcess.length);
+      await initIndexingProgress(fullName, filesToProcess.length, branch);
 
       // Phase B: Batch Summarization
       batchResult = await processBatches({
@@ -294,6 +298,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // Phase C: Directory Aggregation (if files were processed or deleted)
     if (batchResult.filesProcessed > 0 || filesToDelete.length > 0) {
+      await ensureIndexingProgress(fullName, branch);
       await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, branch });
     }
 
@@ -301,18 +306,20 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     if (batchResult.failedBatches > 0) {
       // Some batches failed - mark as failed so it will be retried
       await updateRepositoryStatus(fullName, 'failed', branch);
+      try { await publishIndexingStatus(fullName, branch, 'failed'); } catch { /* best-effort */ }
       correlatedLogger.warn(
         { repoPath, fullName, branch, ...batchResult },
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {
       await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+      try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
       correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
     }
 
     // Clear cancellation flag and progress on successful completion
-    await clearIndexingCancellation(fullName);
-    await clearIndexingProgress(fullName);
+    await clearIndexingCancellation(fullName, branch);
+    await clearIndexingProgress(fullName, branch);
 
   } catch (error) {
     await handleIndexingError(error, repoPath, options, correlatedLogger);
@@ -329,13 +336,17 @@ async function handleIndexingError(
   const errorBranch = options.branch || 'HEAD';
 
   // Always clear the cancellation flag and progress
-  await clearIndexingCancellation(repoName);
-  await clearIndexingProgress(repoName);
+  await clearIndexingCancellation(repoName, errorBranch);
+  await clearIndexingProgress(repoName, errorBranch);
 
   // Handle user-initiated cancellation
   if (error instanceof IndexingCancelledError) {
     correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
-    // Status already set to 'idle' by stopIndexingJob, just return without throwing
+    // Reset DB status to idle so REST queries reflect the stopped state
+    await updateRepositoryStatus(repoName, 'idle', errorBranch);
+    // Publish idle now that the worker has fully stopped — this is the authoritative
+    // terminal event so clients won't see stale progress updates afterward.
+    try { await publishIndexingStatus(repoName, errorBranch, 'idle'); } catch { /* best-effort */ }
     return;
   }
 
@@ -348,6 +359,7 @@ async function handleIndexingError(
   // Set status to failed
   try {
     await updateRepositoryStatus(repoName, 'failed', errorBranch);
+    try { await publishIndexingStatus(repoName, errorBranch, 'failed'); } catch { /* best-effort */ }
   } catch (statusError) {
     correlatedLogger.error(
       { error: (statusError as Error).message },

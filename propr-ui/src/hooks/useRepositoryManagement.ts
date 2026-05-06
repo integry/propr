@@ -17,6 +17,23 @@ import { IndexingUpdatePayload } from '@propr/shared';
 import { buildUpdatedStatus } from '../utils/indexingStatusHelpers';
 
 const generateId = (): string => crypto.randomUUID();
+const TERMINAL_INDEXING_STATUSES = new Set<RepositoryIndexingStatus['indexing_status']>(['idle', 'completed', 'failed']);
+
+function shouldIgnoreStaleProgressUpdate(
+  payload: IndexingUpdatePayload,
+  currentStatus: RepositoryIndexingStatus | undefined,
+  hasPendingOptimisticUpdate: boolean,
+  hasSeenTerminalSocketUpdate: boolean
+): boolean {
+  if (payload.phase !== 'files' && payload.phase !== 'directories') {
+    return false;
+  }
+  if (hasPendingOptimisticUpdate) {
+    return false;
+  }
+
+  return currentStatus ? hasSeenTerminalSocketUpdate && TERMINAL_INDEXING_STATUSES.has(currentStatus.indexing_status) : false;
+}
 
 export type Repo = MonitoredRepo;
 
@@ -55,6 +72,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const [_userRepoPrefs, setUserRepoPrefs] = useState<UserRepoPreferences>({});
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
+  const terminalSocketUpdatesRef = useRef<Set<string>>(new Set());
 
   const loadRepos = useCallback(async () => {
     try {
@@ -104,23 +122,38 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   }, []);
 
   const handleIndexingUpdate = useCallback((payload: IndexingUpdatePayload) => {
-    const key = getRepoStatusKey(payload.repository, undefined);
-    if (payload.phase === 'indexing' || payload.phase === 'files' || payload.phase === 'directories') {
-      pendingOptimisticUpdatesRef.current.delete(key);
-    }
-    setIndexingStatuses(prev => ({ ...prev, [key]: buildUpdatedStatus(payload, prev[key]) }));
+    const key = getRepoStatusKey(payload.repository, payload.branch);
+    setIndexingStatuses(prev => {
+      const hasPendingOptimisticUpdate = pendingOptimisticUpdatesRef.current.has(key);
+      const hasSeenTerminalSocketUpdate = terminalSocketUpdatesRef.current.has(key);
+      if (shouldIgnoreStaleProgressUpdate(payload, prev[key], hasPendingOptimisticUpdate, hasSeenTerminalSocketUpdate)) {
+        return prev;
+      }
+
+      if (payload.phase === 'completed' || payload.phase === 'failed' || payload.phase === 'idle') {
+        terminalSocketUpdatesRef.current.add(key);
+      } else {
+        terminalSocketUpdatesRef.current.delete(key);
+      }
+
+      if (payload.phase === 'indexing' || payload.phase === 'files' || payload.phase === 'directories' || payload.phase === 'completed' || payload.phase === 'failed' || payload.phase === 'idle') {
+        pendingOptimisticUpdatesRef.current.delete(key);
+      }
+
+      return { ...prev, [key]: buildUpdatedStatus(payload, prev[key]) };
+    });
   }, []);
 
-  const loadAvailableRepos = async () => {
+  const loadAvailableRepos = useCallback(async () => {
     try {
       const data = await getAvailableGithubRepos();
       setAvailableRepos((data as { repos?: string[] }).repos || []);
     } catch (err) {
       console.error('Failed to load available GitHub repos:', err);
     }
-  };
+  }, []);
 
-  const loadIndexingStatuses = async () => {
+  const loadIndexingStatuses = useCallback(async () => {
     try {
       const data = await getRepositoriesIndexingStatus();
       const statusMap: Record<string, RepositoryIndexingStatus> = {};
@@ -145,9 +178,9 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     } catch (err) {
       console.error('Failed to load indexing statuses:', err);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadRepos(); loadAvailableRepos(); loadIndexingStatuses(); }, [loadRepos]);
+  useEffect(() => { loadRepos(); loadAvailableRepos(); loadIndexingStatuses(); }, [loadRepos, loadAvailableRepos, loadIndexingStatuses]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -188,7 +221,6 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       const displayName = baseBranch ? `${repoName} (${baseBranch})` : repoName;
       if (!confirm(`Are you sure you want to stop indexing for ${displayName}?`)) return;
       await stopRepositoryIndexing(repoName, baseBranch);
-      setTimeout(loadIndexingStatuses, 500);
     } catch (err) {
       alert('Failed to stop indexing: ' + (err as Error).message);
     }
@@ -209,7 +241,6 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     }));
     try {
       await triggerRepositoryIndexing(repoName, baseBranch);
-      setTimeout(loadIndexingStatuses, 500);
     } catch (err) {
       pendingOptimisticUpdatesRef.current.delete(statusKey);
       loadIndexingStatuses();

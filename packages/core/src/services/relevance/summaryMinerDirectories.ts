@@ -4,15 +4,17 @@ import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
-import { startDirectoryPhase, updateDirectoryProgress } from './indexingCancellation.js';
+import { startDirectoryPhase, updateDirectoryProgress, publishProgress, isIndexingCancelled } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
+import type { IndexingProgress } from './indexingCancellation.js';
 
 // --- Constants ---
 
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
 const BATCH_TOKEN_RATIO = 0.5; // Use 50% of max tokens for directory batches (smaller than file batches since prompts are shorter)
 const MAX_DIRS_PER_BATCH = 20; // Cap directories per batch to keep responses manageable
+const DIRECTORY_PROGRESS_PERCENT_STEP = 5;
 
 // --- Types ---
 
@@ -63,7 +65,7 @@ export async function aggregateDirectories(
   log.info({ directoryCount: totalDirs, depthLevels: depths.length }, 'Aggregating directory summaries (batched)');
 
   // Start directory phase tracking
-  await startDirectoryPhase(fullName, totalDirs);
+  await startDirectoryPhase(fullName, branch, totalDirs);
 
   // Cache for directory summaries (populated as we process bottom-up)
   const dirSummaryCache = new Map<string, string>();
@@ -88,13 +90,7 @@ export async function aggregateDirectories(
       if (dirInfo) {
         dirsToProcess.push(dirInfo);
       } else {
-        // Directory is up-to-date, load its summary into cache for parent use
-        const existing = await db('directory_summaries').where({ path: dirPath, branch }).first();
-        if (existing) {
-          dirSummaryCache.set(dirPath, existing.summary);
-        }
-        dirsProcessed++;
-        await updateDirectoryProgress(fullName);
+        dirsProcessed += await handleSkippedDirectory(dirPath, branch, dirSummaryCache, fullName);
       }
     }
 
@@ -117,18 +113,71 @@ export async function aggregateDirectories(
 
       // Save results and update cache
       for (const result of results) {
-        const dirInfo = result.summary ? batch.find(d => d.dirPath === result.dirPath) : null;
-        if (dirInfo && result.summary) {
-          await saveDirectorySummary(result.dirPath, result.summary, dirInfo.newHash, branch);
-          dirSummaryCache.set(result.dirPath, result.summary);
-        }
+        await saveBatchResult(result, batch, branch, dirSummaryCache);
         dirsProcessed++;
+        await tryPublishDirectoryProgress(fullName, branch);
       }
-      await updateDirectoryProgress(fullName);
     }
   }
 
   // Clean up stale directory summaries
+  await deleteStaleDirectorySummaries(fullName, branch, directories, log);
+
+  log.info({ directoryCount: totalDirs, batchCount: totalBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
+}
+
+async function handleSkippedDirectory(
+  dirPath: string,
+  branch: string,
+  dirSummaryCache: Map<string, string>,
+  fullName: string
+): Promise<number> {
+  const existing = await db('directory_summaries').where({ path: dirPath, branch }).first();
+  if (existing) {
+    dirSummaryCache.set(dirPath, existing.summary);
+  }
+  await tryPublishDirectoryProgress(fullName, branch);
+  return 1;
+}
+
+async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], branch: string, dirSummaryCache: Map<string, string>): Promise<void> {
+  if (!result.summary) return;
+  const dirInfo = batch.find(d => d.dirPath === result.dirPath);
+  if (!dirInfo) return;
+  await saveDirectorySummary(result.dirPath, result.summary, dirInfo.newHash, branch);
+  dirSummaryCache.set(result.dirPath, result.summary);
+}
+
+async function tryPublishDirectoryProgress(fullName: string, branch: string): Promise<void> {
+  const progress = await updateDirectoryProgress(fullName, branch);
+  if (progress && shouldPublishDirectoryProgress(progress) && !await isIndexingCancelled(fullName, branch)) {
+    try { await publishProgress(fullName, branch, progress); } catch { /* best-effort */ }
+  }
+}
+
+function shouldPublishDirectoryProgress(progress: IndexingProgress): boolean {
+  if (progress.phase !== 'directories' || progress.totalDirectories <= 0) {
+    return false;
+  }
+
+  if (progress.processedDirectories === 1 || progress.processedDirectories >= progress.totalDirectories) {
+    return true;
+  }
+
+  const previousPercentBucket = Math.floor((((progress.processedDirectories - 1) / progress.totalDirectories) * 100) / DIRECTORY_PROGRESS_PERCENT_STEP);
+  const currentPercentBucket = Math.floor(((progress.processedDirectories / progress.totalDirectories) * 100) / DIRECTORY_PROGRESS_PERCENT_STEP);
+  return currentPercentBucket > previousPercentBucket;
+}
+
+/**
+ * Deletes directory summaries that no longer correspond to existing directories
+ */
+async function deleteStaleDirectorySummaries(
+  fullName: string,
+  branch: string,
+  directories: Set<string>,
+  log: Logger
+): Promise<void> {
   const existingDirs = await db('directory_summaries')
     .where('path', 'like', `${fullName}/%`)
     .andWhere({ branch })
@@ -149,8 +198,6 @@ export async function aggregateDirectories(
     }
     log.info({ count: dirsToDelete.length }, 'Deleted stale directory summaries');
   }
-
-  log.info({ directoryCount: totalDirs, batchCount: totalBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
 }
 
 /**

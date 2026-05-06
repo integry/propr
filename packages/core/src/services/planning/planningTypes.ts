@@ -6,6 +6,7 @@
 import type { LogFn } from 'pino';
 import type { ContextLevel } from '../../config/modelLimits.js';
 import type { Attachment } from '../attachmentService.js';
+import type { StepStatus } from '@propr/shared';
 
 /** Reserved overhead for system prompts, XML structure, etc. */
 export const RESERVED_OVERHEAD_TOKENS = 5000;
@@ -88,7 +89,7 @@ export interface ParsedContextConfig {
 
 export interface GenerationTraceStep {
   name: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  status: StepStatus;
   data?: Record<string, unknown>;
 }
 

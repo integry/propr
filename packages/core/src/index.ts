@@ -148,6 +148,7 @@ export type { PauseResumeResult } from './services/taskPlanning/draftPauseResume
 export { estimateLlmDuration, estimateUsagePercent } from './utils/llmEstimation.js';
 export type { EstimationResult, EstimationOptions } from './utils/llmEstimation.js';
 export type { Base64Image, ContextRepository } from './services/planningHelpers.js';
+export { parseGenerationTrace, buildDraftUpdateTraceSnapshot, sanitizeDraftUpdateStepData } from './services/planning/traceService.js';
 export { executeDraft, ensureEpicPR, generateEpicBranchName, isEpicBranch, EPIC_BRANCH_PATTERN } from './services/taskExecutionService.js';
 export type { IssueLink, ExecutionResult, EpicPRResult, EnsureEpicPROptions } from './services/taskExecutionService.js';
 export { AttachmentService } from './services/attachmentService.js';
@@ -175,7 +176,9 @@ export {
   getIndexingProgress,
   clearIndexingProgress,
   startDirectoryPhase,
-  updateDirectoryProgress
+  updateDirectoryProgress,
+  publishProgress,
+  publishIndexingStatus
 } from './services/relevance/indexingCancellation.js';
 export type { IndexingProgress } from './services/relevance/indexingCancellation.js';
 

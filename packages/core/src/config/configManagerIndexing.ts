@@ -8,7 +8,7 @@ export interface RepositoryIndexingProgress {
     percentComplete: number;
     inputTokens: number;
     outputTokens: number;
-    phase: 'files' | 'directories' | 'done';
+    phase: 'files' | 'directories' | 'completed';
     totalDirectories: number;
     processedDirectories: number;
 }
@@ -32,11 +32,11 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
         const repos = await db('repositories')
             .select('full_name', 'branch', 'indexing_status', 'last_indexed_at', 'last_indexed_hash', 'last_indexed_commit_message', 'icon_path');
 
-        const results: RepositoryIndexingStatus[] = [];
-        for (const r of repos) {
+        return Promise.all(repos.map(async (r) => {
+            const branch = r.branch || 'HEAD';
             const status: RepositoryIndexingStatus = {
                 full_name: r.full_name,
-                branch: r.branch || 'HEAD',
+                branch,
                 indexing_status: r.indexing_status || 'idle',
                 last_indexed_at: r.last_indexed_at ? new Date(r.last_indexed_at).toISOString() : null,
                 last_indexed_hash: r.last_indexed_hash || null,
@@ -45,10 +45,12 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
             };
 
             if (status.indexing_status === 'indexing') {
-                const progress = await getIndexingProgress(r.full_name);
+                const progress = await getIndexingProgress(r.full_name, branch);
                 if (progress) {
-                    const percentComplete = progress.totalFiles > 0
-                        ? Math.round((progress.processedFiles / progress.totalFiles) * 100)
+                    const totalItems = progress.phase === 'directories' ? progress.totalDirectories : progress.totalFiles;
+                    const processedItems = progress.phase === 'directories' ? progress.processedDirectories : progress.processedFiles;
+                    const percentComplete = totalItems > 0
+                        ? Math.round((processedItems / totalItems) * 100)
                         : 0;
                     status.progress = {
                         totalFiles: progress.totalFiles,
@@ -63,10 +65,8 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
                 }
             }
 
-            results.push(status);
-        }
-
-        return results;
+            return status;
+        }));
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message }, 'Failed to load repositories indexing status');
@@ -83,7 +83,7 @@ export async function getRepositoryIndexingStatus(fullName: string, branch: stri
             .where({ full_name: fullName, branch })
             .first();
         if (!repo) return null;
-        return {
+        const status: RepositoryIndexingStatus = {
             full_name: repo.full_name,
             branch: repo.branch || 'HEAD',
             indexing_status: repo.indexing_status || 'idle',
@@ -92,6 +92,29 @@ export async function getRepositoryIndexingStatus(fullName: string, branch: stri
             last_indexed_commit_message: repo.last_indexed_commit_message || null,
             icon_path: repo.icon_path || null
         };
+
+        if (status.indexing_status === 'indexing') {
+            const progress = await getIndexingProgress(fullName, status.branch);
+            if (progress) {
+                const totalItems = progress.phase === 'directories' ? progress.totalDirectories : progress.totalFiles;
+                const processedItems = progress.phase === 'directories' ? progress.processedDirectories : progress.processedFiles;
+                const percentComplete = totalItems > 0
+                    ? Math.round((processedItems / totalItems) * 100)
+                    : 0;
+                status.progress = {
+                    totalFiles: progress.totalFiles,
+                    processedFiles: progress.processedFiles,
+                    percentComplete,
+                    inputTokens: progress.inputTokens,
+                    outputTokens: progress.outputTokens,
+                    phase: progress.phase,
+                    totalDirectories: progress.totalDirectories,
+                    processedDirectories: progress.processedDirectories
+                };
+            }
+        }
+
+        return status;
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message, fullName, branch }, 'Failed to load repository indexing status');

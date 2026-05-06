@@ -25,6 +25,7 @@ export {
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type PlanStepUpdatePayload,
+  type IndexingPhase,
   type IndexingUpdatePayload,
   type TaskLiveUpdatePayload,
   type QueueStatsUpdatePayload,
@@ -34,6 +35,9 @@ export {
   type QueueStatsData,
   type CommandMode,
   type EventPayload,
+  type DraftStatus,
+  type StepStatus,
+  type DraftUpdateGenerationTrace,
 } from './events.js';
 
 // Export usage configuration and metrics types

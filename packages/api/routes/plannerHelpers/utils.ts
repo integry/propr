@@ -3,9 +3,14 @@
  */
 
 import { Knex } from 'knex';
-import { generatePlan } from '@propr/core';
+import { generatePlan, getEventPublisher, parseGenerationTrace, buildDraftUpdateTraceSnapshot } from '@propr/core';
+import type { DraftUpdateGenerationTrace } from '@propr/shared';
 import type { GenerateRequestBody, BackgroundGenerationOptions } from './types.js';
 import { VALID_GRANULARITIES } from './validation.js';
+
+function buildFailureTraceSnapshot(trace: DraftUpdateGenerationTrace): DraftUpdateGenerationTrace {
+  return buildDraftUpdateTraceSnapshot(trace);
+}
 
 export async function updateDraftContextConfig(
   db: Knex,
@@ -56,27 +61,38 @@ export function runBackgroundGeneration(options: BackgroundGenerationOptions): v
       try {
         // Get current trace to preserve any completed steps
         const draft = await db('task_drafts').where({ draft_id: draftId }).first();
-        let existingTrace = { steps: [] as { name: string; status: string; completedAt?: string }[] };
-        try {
-          if (draft?.generation_trace) {
-            existingTrace = JSON.parse(draft.generation_trace);
-          }
-        } catch { /* ignore parse errors */ }
+        const existingTrace = parseGenerationTrace(draft?.generation_trace);
 
-        // Mark any pending steps as failed and add error info
-        const updatedSteps = existingTrace.steps.map((step: { name: string; status: string; completedAt?: string }) =>
-          step.status === 'pending' ? { ...step, status: 'failed' } : step
+        // Mark any non-completed steps as failed and add error info
+        const updatedSteps = existingTrace.steps.map((step) =>
+          step.status === 'pending' || step.status === 'in_progress' ? { ...step, status: 'failed' as const } : step
         );
+
+        const failedTrace: DraftUpdateGenerationTrace = {
+          steps: updatedSteps,
+          error: error instanceof Error ? error.message : 'Plan generation failed',
+          failedAt: new Date().toISOString()
+        };
 
         await db('task_drafts').where({ draft_id: draftId }).update({
           status: 'failed',
-          generation_trace: JSON.stringify({
-            steps: updatedSteps,
-            error: error instanceof Error ? error.message : 'Plan generation failed',
-            failedAt: new Date().toISOString()
-          }),
+          generation_trace: JSON.stringify(failedTrace),
           updated_at: db.fn.now()
         });
+
+        // Emit failure event so the UI can transition without polling
+        const eventPublisher = getEventPublisher();
+        const failureSnapshot = buildFailureTraceSnapshot(failedTrace);
+        const published = await eventPublisher.publishDraftUpdate({
+          draftId,
+          step: 'complete',
+          status: 'failed',
+          draftStatus: 'failed',
+          generationTrace: failureSnapshot
+        });
+        if (!published) {
+          console.warn(`[generate] Failed to publish failure event for draft ${draftId} — client will resync via safety-net poll`);
+        }
       } catch (dbError) {
         console.error(`[generate] Failed to update draft status after error:`, dbError);
       }
