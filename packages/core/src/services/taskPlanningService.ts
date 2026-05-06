@@ -8,8 +8,9 @@ import { loadFileSummaries } from './relevance/contextBuilder.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
 import {
-  updateTrace, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
+  updateTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
 } from './planningHelpers.js';
+import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
 
 // Re-export everything from the taskPlanning module
@@ -119,7 +120,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     correlatedLogger.info({ originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount }, 'Granularity enforcement applied - added trace step');
   }
 
-  await updateTrace(draftId, 'llm', 'completed');
+  const finalTrace = await updateTrace(draftId, 'llm', 'completed');
 
   const updatedContextConfig = { ...parsedContextConfig, granularityEnforcement: enforcementMetadata };
 
@@ -141,6 +142,19 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
     name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
   });
+
+  // Emit final completion event so the UI can transition without polling
+  const eventPublisher = getEventPublisher();
+  const published = await eventPublisher.publishDraftUpdate({
+    draftId,
+    step: 'complete',
+    status: 'completed',
+    draftStatus: 'review',
+    generationTrace: buildDraftUpdateTraceSnapshot(finalTrace)
+  });
+  if (!published) {
+    correlatedLogger.warn('Failed to publish completion event — client will resync via safety-net poll');
+  }
 
   return validatedPlan;
 }

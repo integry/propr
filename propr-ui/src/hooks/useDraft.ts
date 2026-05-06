@@ -32,6 +32,33 @@ function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
   return result;
 }
 
+function mergeGenerationTrace(
+  currentTrace: PlannerDraft['generation_trace'],
+  incomingTrace: DraftUpdatePayload['generationTrace']
+): PlannerDraft['generation_trace'] {
+  if (!incomingTrace) {
+    return currentTrace;
+  }
+
+  const currentSteps = new Map((currentTrace?.steps ?? []).map((step) => [step.name, step]));
+  return {
+    ...currentTrace,
+    ...incomingTrace,
+    steps: incomingTrace.steps.map((step) => {
+      const currentStep = currentSteps.get(step.name);
+      const mergedData = step.data
+        ? { ...currentStep?.data, ...step.data }
+        : currentStep?.data;
+
+      return {
+        ...currentStep,
+        ...step,
+        ...(mergedData ? { data: mergedData } : {})
+      };
+    })
+  };
+}
+
 export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDraftResult => {
   const { initialData } = options;
   const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
@@ -98,14 +125,33 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     }
   }, [draftId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const applySocketSnapshot = useCallback((payload: DraftUpdatePayload) => {
+    setDraft(currentDraft => {
+      if (!currentDraft || currentDraft.draft_id !== payload.draftId) {
+        return currentDraft;
+      }
+
+      return parseJsonFields({
+        ...currentDraft,
+        status: payload.draftStatus ?? currentDraft.status,
+        generation_trace: mergeGenerationTrace(currentDraft.generation_trace, payload.generationTrace),
+      } as unknown as Record<string, unknown>) as unknown as PlannerDraft;
+    });
+  }, []);
+
   // Handle draft update from WebSocket
   const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId) return;
 
     console.log('[useDraft] Received draft update via WebSocket:', payload);
-    // Refresh draft data when we receive an update
-    await fetchDraft(false);
-  }, [draftId, fetchDraft]);
+    applySocketSnapshot(payload);
+
+    // Progress updates are self-sufficient in the socket payload; only resync when the
+    // draft leaves generation and the UI needs the full server representation.
+    if (payload.draftStatus && payload.draftStatus !== 'generating') {
+      await fetchDraft(false);
+    }
+  }, [draftId, applySocketSnapshot, fetchDraft]);
 
   // Subscribe to WebSocket events for this draft when generating
   useEffect(() => {

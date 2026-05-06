@@ -3,6 +3,10 @@ import { getDraft, GenerationTrace } from '../api/proprApi';
 import { useSocket } from '../contexts/useSocket';
 import { DraftUpdatePayload } from '@propr/shared';
 
+const DISCONNECTED_INITIAL_POLL_MS = 1000;
+const DISCONNECTED_POLL_INTERVAL_MS = 3000;
+const CONNECTED_INACTIVITY_RESYNC_MS = 15000;
+
 interface UseGenerationPollingOptions {
   draftId: string;
   onComplete: () => void;
@@ -24,50 +28,41 @@ export function useGenerationPolling({
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationTrace, setGenerationTrace] = useState<GenerationTrace | undefined>(undefined);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [connectedActivityTick, setConnectedActivityTick] = useState(0);
   const isGeneratingRef = useRef<boolean>(false);
-  // Use a ref for onComplete to avoid re-creating callbacks when it changes
-  // This prevents unnecessary re-subscriptions to WebSocket events
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
   const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
 
-  // Handle draft update from WebSocket
-  const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
-    // Only process updates for the current draft when we're actively generating
+  const handleDraftUpdate = useCallback((payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId || !isGeneratingRef.current) return;
 
-    try {
-      // Fetch the full draft to get the complete generation trace
-      const updatedDraft = await getDraft(draftId);
+    setConnectedActivityTick((tick) => tick + 1);
 
-      if (updatedDraft.generation_trace) {
-        setGenerationTrace(updatedDraft.generation_trace);
-        // Check for error in generation trace
-        const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
-        if (trace.error) {
-          setGenerationError(trace.error);
-          setIsGenerating(false);
-          isGeneratingRef.current = false;
-          return;
-        }
-      }
-
-      // Check if generation completed (status changed to 'review')
-      if (updatedDraft.status === 'review') {
+    // Use the trace snapshot from the payload when available
+    if (payload.generationTrace) {
+      setGenerationTrace(payload.generationTrace as GenerationTrace);
+      if (payload.generationTrace.error) {
+        setGenerationError(payload.generationTrace.error);
         setIsGenerating(false);
         isGeneratingRef.current = false;
-        onCompleteRef.current();
+        return;
       }
+    }
 
-      // Check if generation failed (status went back to 'draft')
-      if (updatedDraft.status === 'draft' && payload.status === 'failed') {
-        const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
-        setGenerationError(trace?.error || 'Plan generation failed');
-        setIsGenerating(false);
-        isGeneratingRef.current = false;
-      }
-    } catch (e) {
-      console.error('Failed to fetch draft on update:', e);
+    // React to terminal draft statuses carried in the payload
+    if (payload.draftStatus === 'review') {
+      setIsGenerating(false);
+      isGeneratingRef.current = false;
+      onCompleteRef.current();
+      return;
+    }
+
+    if (payload.draftStatus === 'failed') {
+      setGenerationError(payload.generationTrace?.error || 'Plan generation failed');
+      setIsGenerating(false);
+      isGeneratingRef.current = false;
+      return;
     }
   }, [draftId]);
 
@@ -75,10 +70,7 @@ export function useGenerationPolling({
   useEffect(() => {
     if (!draftId || !isConnected || !isGenerating) return;
 
-    // Subscribe to this specific draft's room
     subscribeToDraft(draftId);
-
-    // Listen for draft updates
     const unsubscribe = onDraftUpdate(handleDraftUpdate);
 
     return () => {
@@ -87,16 +79,16 @@ export function useGenerationPolling({
     };
   }, [draftId, isConnected, isGenerating, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, handleDraftUpdate]);
 
-  // Shared poll function to fetch draft and update state
+  // Shared poll function — used as HTTP fallback and reconnect resync
   const pollDraft = useCallback(async () => {
     if (!isGeneratingRef.current || !draftId) return;
 
     try {
       const updatedDraft = await getDraft(draftId);
+      setConnectedActivityTick((tick) => tick + 1);
 
       if (updatedDraft.generation_trace) {
         setGenerationTrace(updatedDraft.generation_trace);
-        // Check for error in generation trace
         const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
         if (trace.error) {
           setGenerationError(trace.error);
@@ -106,38 +98,31 @@ export function useGenerationPolling({
         }
       }
 
-      // Check if generation completed (status changed to 'review')
       if (updatedDraft.status === 'review') {
         setIsGenerating(false);
         isGeneratingRef.current = false;
         onCompleteRef.current();
+        return;
       }
 
-      // Check if generation failed (status went back to 'draft')
-      if (updatedDraft.status === 'draft') {
+      if (updatedDraft.status === 'failed') {
         const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
-        if (trace?.error) {
-          setGenerationError(trace.error);
-          setIsGenerating(false);
-          isGeneratingRef.current = false;
-        }
+        setGenerationError(trace?.error || 'Plan generation failed');
+        setIsGenerating(false);
+        isGeneratingRef.current = false;
+        return;
       }
     } catch (e) {
       console.error('[useGenerationPolling] Poll error:', e);
     }
   }, [draftId]);
 
-  // Primary fallback polling - active when WebSocket is NOT connected
-  // Polls frequently (every 3 seconds) to ensure timely updates
+  // HTTP fallback polling — active when WebSocket is NOT connected
   useEffect(() => {
-    // Skip frequent polling if WebSocket is connected
     if (!draftId || !isGenerating || isConnected) return;
 
-    // Initial poll after a short delay to let backend initialize
-    const initialPollTimeout = setTimeout(pollDraft, 1000);
-
-    // Set up polling interval (every 3 seconds as fallback)
-    const intervalId = setInterval(pollDraft, 3000);
+    const initialPollTimeout = setTimeout(pollDraft, DISCONNECTED_INITIAL_POLL_MS);
+    const intervalId = setInterval(pollDraft, DISCONNECTED_POLL_INTERVAL_MS);
 
     return () => {
       clearTimeout(initialPollTimeout);
@@ -145,19 +130,28 @@ export function useGenerationPolling({
     };
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
-  // Safety net polling - active even when WebSocket IS connected
-  // Polls less frequently (every 10 seconds) to catch any missed WebSocket events
-  // This ensures updates are not lost if WebSocket event publishing fails on the backend
+  // When the socket stays connected but quiet for too long, resync once over HTTP.
   useEffect(() => {
-    // Only run safety net when WebSocket is connected - otherwise primary polling handles it
     if (!draftId || !isGenerating || !isConnected) return;
 
-    // Set up infrequent safety polling (every 10 seconds)
-    const intervalId = setInterval(pollDraft, 10000);
+    const timeoutId = setTimeout(() => {
+      void pollDraft();
+    }, CONNECTED_INACTIVITY_RESYNC_MS);
 
     return () => {
-      clearInterval(intervalId);
+      clearTimeout(timeoutId);
     };
+  }, [draftId, isGenerating, isConnected, pollDraft, connectedActivityTick]);
+
+  // Resync on socket reconnection to catch any events missed during the gap
+  const wasConnectedRef = useRef(isConnected);
+  useEffect(() => {
+    if (!draftId || !isGenerating) return;
+
+    if (isConnected && !wasConnectedRef.current) {
+      pollDraft();
+    }
+    wasConnectedRef.current = isConnected;
   }, [draftId, isGenerating, isConnected, pollDraft]);
 
   const stopPolling = useCallback(() => {
@@ -168,8 +162,7 @@ export function useGenerationPolling({
   const startPolling = useCallback(() => {
     setIsGenerating(true);
     isGeneratingRef.current = true;
-    // Initialize with pending steps immediately to show progress UI without flicker
-    // This ensures consistent UI from the start while waiting for backend updates
+    setConnectedActivityTick((tick) => tick + 1);
     setGenerationTrace({
       steps: [
         { name: 'relevance', status: 'in_progress' },

@@ -7,6 +7,7 @@ import { Filter, Search, X } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
+import type { DraftUpdatePayload } from '@propr/shared';
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -143,15 +144,27 @@ const PlansPage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [searchQuery, debouncedSearch, setSearchParams]);
 
-  // Handle draft update from WebSocket - refresh drafts list when any draft changes
-  const handleDraftUpdate = useCallback(async () => {
-    console.log('[PlansPage] Received draft update via WebSocket');
-    // Silently refresh drafts list and repository counts to reflect the latest state
-    await Promise.all([
-      loadDrafts(currentPage, repoFilter, statusFilter, false),
-      loadAllRepositories(),
-    ]);
-  }, [currentPage, repoFilter, statusFilter, loadDrafts, loadAllRepositories]);
+  // Handle draft update from WebSocket - skip step-level generation progress events
+  const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
+    // Skip step-level churn during generation, but allow the initial transition into generating
+    if (payload.draftStatus === 'generating') {
+      const existingDraft = drafts.find(d => d.draft_id === payload.draftId);
+      if (!existingDraft || existingDraft.status === 'generating') return;
+    }
+
+    const currentPageDraft = drafts.find(d => d.draft_id === payload.draftId);
+    const isOnCurrentPage = Boolean(currentPageDraft);
+    const matchesStatusFilter = statusFilter === 'all' || payload.draftStatus === statusFilter;
+    const matchesRepositoryFilter = repoFilter === 'all' || currentPageDraft?.repository === repoFilter;
+    const couldAffectCurrentView = !isOnCurrentPage && !!payload.draftStatus && matchesStatusFilter;
+
+    if ((isOnCurrentPage && matchesRepositoryFilter) || couldAffectCurrentView) {
+      await Promise.all([
+        loadDrafts(currentPage, repoFilter, statusFilter, false),
+        payload.draftStatus ? loadAllRepositories() : Promise.resolve(),
+      ]);
+    }
+  }, [currentPage, repoFilter, statusFilter, drafts, loadAllRepositories, loadDrafts]);
 
   // Subscribe to WebSocket events for draft updates
   useEffect(() => {

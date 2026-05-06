@@ -56,8 +56,7 @@ export class SocketService {
         origin: corsOrigins as string | string[] | ((origin: string | undefined, callback: CorsOriginCallback) => void),
         credentials: true
       },
-      // Use WebSocket transport primarily, with polling fallback
-      transports: ['websocket', 'polling']
+      transports: ['websocket']
     });
 
     // Create a dedicated Redis client for subscriptions
