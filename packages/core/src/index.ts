@@ -175,7 +175,9 @@ export {
   getIndexingProgress,
   clearIndexingProgress,
   startDirectoryPhase,
-  updateDirectoryProgress
+  updateDirectoryProgress,
+  publishProgress,
+  publishIndexingStatus
 } from './services/relevance/indexingCancellation.js';
 export type { IndexingProgress } from './services/relevance/indexingCancellation.js';
 

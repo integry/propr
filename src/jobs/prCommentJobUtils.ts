@@ -101,12 +101,9 @@ export async function fetchAllComments(octokit: Awaited<ReturnType<typeof getAut
 }
 
 export interface CommitMessageOptions {
-    changesSummary: string;
-    unprocessedComments: UnprocessedComment[];
-    pullRequestNumber: number;
-    claudeResult: ClaudeCodeResponse;
-    llm: string | null | undefined;
-    authorsText: string;
+    changesSummary: string; unprocessedComments: UnprocessedComment[];
+    pullRequestNumber: number; claudeResult: ClaudeCodeResponse;
+    llm: string | null | undefined; authorsText: string;
 }
 
 export function buildCommitMessage(options: CommitMessageOptions): string {
@@ -123,14 +120,9 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME || 'unconfigured'}`;
 }
 
 export interface PromptOptions {
-    pullRequestNumber: number;
-    combinedCommentBody: string;
-    commentHistory: string;
-    originalTaskSpec: string;
-    worktreeInfo: WorktreeInfo;
-    repoOwner: string;
-    repoName: string;
-    commentCount: number;
+    pullRequestNumber: number; combinedCommentBody: string; commentHistory: string;
+    originalTaskSpec: string; worktreeInfo: WorktreeInfo;
+    repoOwner: string; repoName: string; commentCount: number;
     /** Formatted section of AI review comments gathered for /fix */
     reviewCommentsSection?: string;
 }
@@ -158,18 +150,12 @@ ${commentHistory}${originalTaskSpec}
 }
 
 export interface JobErrorOptions {
-    pullRequestNumber: number;
-    repoOwner: string;
-    repoName: string;
-    authorsText: string;
+    pullRequestNumber: number; repoOwner: string; repoName: string; authorsText: string;
     unprocessedComments: UnprocessedComment[];
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     startingWorkComment: { data: { id: number } } | null;
-    claudeResult: ClaudeCodeResponse | null;
-    correlationId: string;
-    correlatedLogger: Logger;
-    stateManager: WorkerStateManager;
-    taskId: string;
+    claudeResult: ClaudeCodeResponse | null; correlationId: string;
+    correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
 }
 
 export class UsageLimitError extends Error {
@@ -289,18 +275,11 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
 }
 
 export interface CleanupOptions {
-    stateManager: WorkerStateManager;
-    lockKey: string;
-    correlationId: string;
-    localRepoPath: string | undefined;
-    worktreeInfo: WorktreeInfo | undefined;
-    repoOwner: string;
-    repoName: string;
-    pullRequestNumber: number;
-    jobBranchName: string | undefined;
-    jobLlm: string | null | undefined;
-    correlatedLogger: Logger;
-    redisClient: Redis;
+    stateManager: WorkerStateManager; lockKey: string; correlationId: string;
+    localRepoPath: string | undefined; worktreeInfo: WorktreeInfo | undefined;
+    repoOwner: string; repoName: string; pullRequestNumber: number;
+    jobBranchName: string | undefined; jobLlm: string | null | undefined;
+    correlatedLogger: Logger; redisClient: Redis;
 }
 
 export async function cleanupJob(options: CleanupOptions): Promise<void> {

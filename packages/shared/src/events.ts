@@ -69,14 +69,20 @@ export interface PlanStepUpdatePayload {
   data?: Record<string, unknown>;
 }
 
+/** Valid phase values for indexing status events */
+export type IndexingPhase = 'indexing' | 'files' | 'directories' | 'completed' | 'failed' | 'idle';
+
 /** Event payload for indexing updates */
 export interface IndexingUpdatePayload {
   eventType: typeof INDEXING_UPDATE;
   repository: string;
-  phase: string;
+  branch?: string;
+  phase: IndexingPhase;
   progress?: number;
   totalFiles?: number;
   processedFiles?: number;
+  totalDirectories?: number;
+  processedDirectories?: number;
   timestamp: string;
 }
 

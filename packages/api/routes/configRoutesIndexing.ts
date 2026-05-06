@@ -1,7 +1,9 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
-import { queueResummarizationForAllRepos, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex, stopIndexingJob } from './configHelpers.js';
+import { publishIndexingStatus } from '@propr/core';
+import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
+import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 
 interface IndexingRoutesDeps {
   redisClient: RedisClientType;
@@ -24,36 +26,39 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
   async function triggerIndexing(req: Request, res: Response): Promise<void> {
     try {
-      const { repository, fullReindex, baseBranch } = req.body;
-
-      if (!repository || typeof repository !== 'string') {
-        res.status(400).json({ error: 'repository is required and must be a string (e.g., "owner/repo")' });
+      const validationError = validateIndexingInput(req.body);
+      if (validationError) {
+        res.status(400).json({ error: validationError });
         return;
       }
 
-      if (!repository.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/)) {
-        res.status(400).json({ error: 'Invalid repository format. Expected "owner/repo"' });
-        return;
-      }
-
-      if (baseBranch !== undefined && typeof baseBranch !== 'string') {
-        res.status(400).json({ error: 'baseBranch must be a string' });
-        return;
-      }
-
-      const result = await queueIndexingJob(repository, !!fullReindex, baseBranch);
+      const { repository, fullReindex, baseBranch } = req.body as {
+        repository: string;
+        fullReindex?: boolean;
+        baseBranch?: string;
+      };
+      const shouldRunFullReindex = fullReindex === true;
+      const result = await queueIndexingJob(repository, shouldRunFullReindex, baseBranch);
       if (!result.success) {
-        const statusCode = result.error?.includes('already queued') ? 409 : 400;
+        const isAlreadyQueued = result.error?.includes('already queued');
+        const statusCode = isAlreadyQueued ? 409 : 400;
         res.status(statusCode).json({ error: result.error });
         return;
       }
 
+      // Best-effort optimistic status for newly accepted jobs only.
+      try {
+        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+      } catch (pubErr) {
+        console.warn('Failed to publish optimistic indexing status:', pubErr);
+      }
+
       await logActivityHelper(
-        `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
+        `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
         'indexing-trigger', 'indexing_triggered', req.user?.username
       );
 
-      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: !!fullReindex, baseBranch });
+      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch });
     } catch (error) {
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });
@@ -98,18 +103,36 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
   async function stopIndexing(req: Request, res: Response): Promise<void> {
     try {
-      const { repository, branch } = req.body;
-
-      if (!repository || typeof repository !== 'string') {
-        res.status(400).json({ error: 'Repository is required' });
+      const validationError = validateStopIndexingInput(req.body);
+      if (validationError) {
+        res.status(400).json({ error: validationError });
         return;
       }
 
+      const { repository, branch } = req.body as {
+        repository: string;
+        branch?: string;
+      };
       const result = await stopIndexingJob(repository, branch);
 
       if (!result.success) {
         res.status(500).json({ error: result.message || 'Failed to stop indexing' });
         return;
+      }
+
+      // Emit idle immediately for both removed queued jobs and cancellation requests.
+      // Active workers may still emit a later terminal event after they observe the
+      // cancellation flag, but the UI should reflect the stop request right away.
+      const branchesToPublish = new Set([
+        ...result.cancelledActiveBranches,
+        ...result.removedQueuedBranches
+      ]);
+      for (const queuedBranch of branchesToPublish) {
+        try {
+          await publishIndexingStatus(repository, queuedBranch, 'idle');
+        } catch {
+          // Best-effort — don't fail the stop request if publishing fails
+        }
       }
 
       const branchInfo = branch ? ` (branch: ${branch})` : '';

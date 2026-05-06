@@ -1,6 +1,12 @@
 import logger from '../utils/logger.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 import { getConfig, saveConfig } from './configStore.js';
+export {
+    getRepositoriesIndexingStatus,
+    getRepositoryIndexingStatus,
+    type RepositoryIndexingProgress,
+    type RepositoryIndexingStatus
+} from './configManagerIndexing.js';
 
 // --- Interfaces ---
 
@@ -215,12 +221,6 @@ export {
     loadAgentTankSettings,
     saveAgentTankSettings
 } from './configManagerAgents.js';
-export {
-    type RepositoryIndexingProgress,
-    type RepositoryIndexingStatus,
-    getRepositoriesIndexingStatus,
-    getRepositoryIndexingStatus
-} from './configManagerIndexing.js';
 
 // --- Auto Resolve Merge Conflicts ---
 

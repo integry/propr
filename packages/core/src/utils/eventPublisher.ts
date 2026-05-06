@@ -10,6 +10,7 @@ import {
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
+  type IndexingPhase,
   type TaskLiveUpdatePayload,
   type QueueStatsUpdatePayload,
   type ConversationEvent,
@@ -126,18 +127,24 @@ class EventPublisher {
    */
   async publishIndexingUpdate(params: {
     repository: string;
-    phase: string;
+    branch?: string;
+    phase: IndexingPhase;
     progress?: number;
     totalFiles?: number;
     processedFiles?: number;
+    totalDirectories?: number;
+    processedDirectories?: number;
   }): Promise<void> {
     const payload: IndexingUpdatePayload = {
       eventType: INDEXING_UPDATE,
       repository: params.repository,
+      branch: params.branch,
       phase: params.phase,
       progress: params.progress,
       totalFiles: params.totalFiles,
       processedFiles: params.processedFiles,
+      totalDirectories: params.totalDirectories,
+      processedDirectories: params.processedDirectories,
       timestamp: new Date().toISOString()
     };
     await this.publish(REDIS_CHANNELS.INDEXING, payload);

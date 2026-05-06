@@ -25,6 +25,7 @@ export {
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type PlanStepUpdatePayload,
+  type IndexingPhase,
   type IndexingUpdatePayload,
   type TaskLiveUpdatePayload,
   type QueueStatsUpdatePayload,
