@@ -204,8 +204,6 @@ export async function handleNoCodeChanges(options: {
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
     });
-    const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-    const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,
