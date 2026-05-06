@@ -38,19 +38,13 @@ async function loadRepositories(
   savedLastRepository: string | undefined,
   savedLastBaseBranch: string | undefined
 ): Promise<{ repos: Repo[]; selectedRepo: string; selectedBaseBranch: string }> {
-  // Fetch repo config, user preferences, and indexing statuses in parallel
   const [repoData, userPrefs, indexingData] = await Promise.all([
     getRepoConfig() as Promise<{ repos_to_monitor?: unknown[] }>,
     getUserRepoPreferences().catch(() => ({} as UserRepoPreferences)),
     getRepositoriesIndexingStatus().catch(() => ({ repositories: [] as RepositoryIndexingStatus[] }))
   ]);
-
-  // Build a lookup map for indexing statuses by full_name
   const indexingMap = new Map<string, RepositoryIndexingStatus>();
-  for (const status of indexingData.repositories || []) {
-    indexingMap.set(status.full_name, status);
-  }
-
+  for (const status of indexingData.repositories || []) indexingMap.set(status.full_name, status);
   const validRepos = (repoData.repos_to_monitor || [])
     .filter((r): r is { name: string; enabled?: boolean; baseBranch?: string } => typeof r === 'object' && r !== null && 'name' in r && typeof (r as { name: unknown }).name === 'string')
     .map(r => {
@@ -64,7 +58,6 @@ async function loadRepositories(
         iconPath: indexingStatus?.icon_path || null
       };
     });
-
   const enabledRepos = validRepos.filter(r => r.enabled);
   const selectedRepoEntry = savedLastRepository
     ? enabledRepos.find(r => r.name === savedLastRepository && (r.baseBranch || '') === (savedLastBaseBranch || '')) || enabledRepos.find(r => r.name === savedLastRepository)
@@ -365,9 +358,7 @@ function truncateToSentences(text: string): string {
   const sentencePattern = /[^.!?]+[.!?]+/g;
   const sentences: string[] = [];
   let match: RegExpExecArray | null;
-  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < 2) {
-    sentences.push(match[0].trim());
-  }
+  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < 2) sentences.push(match[0].trim());
   if (sentences.length > 0) return sentences.join(' ');
   if (trimmed.length <= 100) return trimmed;
   const truncated = trimmed.slice(0, 100);
@@ -382,10 +373,7 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedPromptRef = useRef<string>(initialPrompt || '');
   const isMountedRef = useRef(true);
-  useEffect(() => {
-    isMountedRef.current = true;
-    return () => { isMountedRef.current = false; if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
-  }, []);
+  useEffect(() => { isMountedRef.current = true; return () => { isMountedRef.current = false; if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); }; }, []);
   useEffect(() => {
     if (!draftId) return;
     const trimmedPrompt = prompt.trim();
@@ -399,7 +387,6 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
         lastSavedPromptRef.current = trimmedPrompt;
       } catch (err) { console.error('Failed to persist prompt:', err); }
     }, PROMPT_SAVE_DEBOUNCE);
-
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   }, [draftId, prompt]);
 }
