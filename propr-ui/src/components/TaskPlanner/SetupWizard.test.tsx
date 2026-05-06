@@ -131,6 +131,9 @@ vi.mock('./setupWizardHooks', () => ({
     autoCreateError: null,
     autoCreateWarning: null,
   }),
+  useDraftContextConfigSync: vi.fn(),
+  usePreviewTrace: () => undefined,
+  useSetupWizardEffects: vi.fn(),
   getBaseBranchPersistenceWarning: (baseBranch?: string) => baseBranch ? `Draft created, but failed to save base branch "${baseBranch}".` : null,
   persistResolvedBaseBranch: (draftId: string, baseBranch?: string) => updateDraft(draftId, {
     context_config: { baseBranch }

@@ -90,13 +90,21 @@ export const EditModeHeader: React.FC<{
 }> = ({ repository, isRepoLoading, baseBranch, selectedBaseBranch, configuredBaseBranch, branchError, repoError, repos, onRepoChange, reposLoading }) => {
   const finalRepoOptions = useMemo(() => {
     const options = repos.length > 0 ? repos : (repository ? [{ name: repository, enabled: true }] : []);
-    const currentBaseBranch = configuredBaseBranch || selectedBaseBranch || '';
+    const currentBaseBranch = configuredBaseBranch || '';
     const hasCurrentRepo = options.some(r => r.name === repository && (r.baseBranch || '') === currentBaseBranch)
       || options.some(r => r.name === repository && !currentBaseBranch);
     return hasCurrentRepo || !repository || !currentBaseBranch
       ? options
       : [{ name: repository, enabled: true, baseBranch: currentBaseBranch }, ...options];
-  }, [repos, repository, selectedBaseBranch, configuredBaseBranch]);
+  }, [repos, repository, configuredBaseBranch]);
+
+  const selectorBaseBranch = useMemo(() => {
+    if (configuredBaseBranch) return configuredBaseBranch;
+    if (!selectedBaseBranch) return undefined;
+    return finalRepoOptions.some(repo => repo.name === repository && repo.baseBranch === selectedBaseBranch)
+      ? selectedBaseBranch
+      : undefined;
+  }, [configuredBaseBranch, finalRepoOptions, repository, selectedBaseBranch]);
 
   return (
     <>
@@ -104,7 +112,7 @@ export const EditModeHeader: React.FC<{
         <RepositorySelector
           repos={finalRepoOptions as RepoOption[]}
           selectedRepo={repository}
-          selectedBaseBranch={selectedBaseBranch}
+          selectedBaseBranch={selectorBaseBranch}
           onRepoChange={onRepoChange}
           disabled={reposLoading}
           isLoading={reposLoading}

@@ -52,7 +52,6 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const isGenerating = generationPolling.isGenerating;
   const stats = contextRefresh.preview.data?.stats;
   const configuredBaseBranch = (draft as DraftWithContextConfig | undefined)?.context_config?.baseBranch;
-  const selectedConfiguredBaseBranch = configuredBaseBranch ?? initialConfiguredBaseBranch;
   return (
     <div className="h-full flex flex-col bg-white">
       <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-auto">
@@ -61,7 +60,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           repository={repository}
           repos={repoLoader.repos}
           selectedRepo={repoLoader.selectedRepo}
-          selectedBaseBranch={isNewMode ? repoLoader.selectedBaseBranch : selectedConfiguredBaseBranch}
+          selectedBaseBranch={isNewMode ? repoLoader.selectedBaseBranch : initialConfiguredBaseBranch}
           configuredBaseBranch={configuredBaseBranch}
           onRepoChange={onRepoChange}
           reposLoading={repoLoader.reposLoading}
