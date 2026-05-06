@@ -217,7 +217,8 @@ export const RowActions: React.FC<RowActionsProps> = ({
   handleImplementClick,
   handleToggleExpand
 }) => {
-  const ultrafixEnabled = issue.run_ultrafix ?? plannerRunUltrafix ?? false;
+  const ultrafixEnabled = issue.run_ultrafix === true;
+  const inheritedUltrafixEnabled = issue.run_ultrafix === null && (plannerRunUltrafix ?? false);
   const issueNumber = issue.issue_number;
   const ultrafixMode = issue.run_ultrafix === null ? 'inherit' : issue.run_ultrafix ? 'on' : 'off';
   const effectiveGoalPlaceholder = plannerUltrafixGoal ? `Goal (${plannerUltrafixGoal})` : 'Goal';
@@ -260,8 +261,8 @@ export const RowActions: React.FC<RowActionsProps> = ({
           </label>
           <UltrafixSettingsControls
             enabled={ultrafixEnabled}
-            goal={issue.ultrafix_goal}
-            maxCycles={issue.ultrafix_max_cycles}
+            goal={issue.run_ultrafix === true ? issue.ultrafix_goal : null}
+            maxCycles={issue.run_ultrafix === true ? issue.ultrafix_max_cycles : null}
             onGoalChange={(value) => onUltrafixGoalChange(issueNumber, value)}
             onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange(issueNumber, value)}
             goalPlaceholder={effectiveGoalPlaceholder}
@@ -272,6 +273,9 @@ export const RowActions: React.FC<RowActionsProps> = ({
             containerClassName="flex flex-col gap-1"
             errorClassName="text-[10px] text-amber-700"
           />
+          {inheritedUltrafixEnabled && (
+            <span className="text-[10px] text-slate-500">Using planner UF defaults</span>
+          )}
         </div>
       )}
       {isPending && (

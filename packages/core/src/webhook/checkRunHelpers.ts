@@ -1,5 +1,5 @@
 /* eslint-disable max-lines */
-import { Redis } from 'ioredis';
+import { Redis, RedisOptions } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
@@ -375,21 +375,53 @@ export interface PRAutoMergeInfo {
     headBranch: string;
 }
 
-const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
-const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
 let ultrafixStateRedis: Redis | null = null;
 
+function buildUltrafixStateRedisOptions(): { url?: string; options: RedisOptions } {
+    const options: RedisOptions = {
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false
+    };
+
+    if (process.env.REDIS_URL) {
+        return {
+            url: process.env.REDIS_URL,
+            options
+        };
+    }
+
+    const redisOptions: RedisOptions = {
+        ...options,
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    };
+
+    if (process.env.REDIS_USERNAME) {
+        redisOptions.username = process.env.REDIS_USERNAME;
+    }
+    if (process.env.REDIS_PASSWORD) {
+        redisOptions.password = process.env.REDIS_PASSWORD;
+    }
+    if (process.env.REDIS_TLS === 'true' || process.env.REDIS_TLS === '1') {
+        redisOptions.tls = {
+            rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+        };
+    }
+
+    return { options: redisOptions };
+}
+
 function getUltrafixStateRedis(): Redis {
     if (!ultrafixStateRedis) {
-        ultrafixStateRedis = new Redis({
-            host: REDIS_HOST,
-            port: REDIS_PORT,
-            maxRetriesPerRequest: null,
-            enableReadyCheck: false
-        });
+        const { url, options } = buildUltrafixStateRedisOptions();
+        ultrafixStateRedis = url ? new Redis(url, options) : new Redis(options);
     }
     return ultrafixStateRedis;
+}
+
+export function resetUltrafixStateRedisForTests(): void {
+    ultrafixStateRedis = null;
 }
 
 function getUltrafixStateKey(owner: string, repoName: string, prNumber: number): string {

@@ -323,14 +323,16 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: 1 });
     const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
     const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
+    const nextRunUltrafix = runUltrafix ?? existingConfig.runUltrafix;
+    const shouldClearUltrafixOverrides = nextRunUltrafix === false;
 
     return {
       ...existingConfig,
       useEpic: useEpic ?? existingConfig.useEpic,
       autoMerge: autoMerge ?? existingConfig.autoMerge,
-      runUltrafix: runUltrafix ?? existingConfig.runUltrafix,
-      ultrafixGoal: hasUltrafixGoal ? ultrafixGoal : existingConfig.ultrafixGoal,
-      ultrafixMaxCycles: hasUltrafixMaxCycles ? ultrafixMaxCycles : existingConfig.ultrafixMaxCycles,
+      runUltrafix: nextRunUltrafix,
+      ultrafixGoal: shouldClearUltrafixOverrides ? null : (hasUltrafixGoal ? ultrafixGoal : existingConfig.ultrafixGoal),
+      ultrafixMaxCycles: shouldClearUltrafixOverrides ? null : (hasUltrafixMaxCycles ? ultrafixMaxCycles : existingConfig.ultrafixMaxCycles),
     };
   }
 
