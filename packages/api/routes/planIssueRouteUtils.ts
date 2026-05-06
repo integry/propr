@@ -69,8 +69,8 @@ export function resolveImplementationSettings(
   contextConfig: Record<string, unknown> | null
 ): ImplementationSettings {
   return {
-    useEpic: reqBody.useEpic ?? contextConfig?.useEpic ?? false,
-    autoMerge: reqBody.autoMerge ?? contextConfig?.autoMerge ?? false
+    useEpic: reqBody.useEpic ?? (contextConfig?.useEpic === true),
+    autoMerge: reqBody.autoMerge ?? (contextConfig?.autoMerge === true)
   };
 }
 

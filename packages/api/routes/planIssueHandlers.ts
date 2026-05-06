@@ -3,6 +3,7 @@ import {
   getPlanIssuesByDraft,
   getPlanIssuesByDraftPaginated,
   getPlanIssue,
+  updatePlanIssue,
   batchUpdatePlanIssueConfig,
   loadPrimaryProcessingLabels,
   getAuthenticatedOctokit,
