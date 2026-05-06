@@ -7,6 +7,8 @@ import { getModelPricing } from '../../services/pricingService.js';
 import { getOpenRouterId, getModelName } from '../../config/modelAliases.js';
 import { getDetailedUsageStats, calculateCostWithCachePricing } from '../tokenCalculation.js';
 import type { DetailedUsageStats, ClaudeResult as TokenCalcClaudeResult } from '../tokenCalculation.js';
+import { formatSubscriptionUsage } from './formatSubscriptionUsage.js';
+import type { SubscriptionUsageMetrics } from './formatSubscriptionUsage.js';
 
 interface IssueRef {
     number: number;
@@ -38,6 +40,7 @@ interface ClaudeResult {
     finalResult?: FinalResult;
     summary?: string;
     tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+    usageMetrics?: SubscriptionUsageMetrics | null;
 }
 
 interface LogFiles {
@@ -335,6 +338,8 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
         timeZoneName: 'short'
     });
 
+    const subscriptionLine = formatSubscriptionUsage(claudeResult?.usageMetrics);
+
     const lines = [
         `**AI Processing ${header}**\n`,
         `**Execution Details:**`,
@@ -347,6 +352,8 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
         `- Timestamp: ${formattedTimestamp}`,
         ...buildOptionalDetails(claudeResult)
     ];
+
+    if (subscriptionLine) lines.push(`- Subscription usage: ${subscriptionLine}`);
 
     return lines.join('\n') + '\n\n';
 }

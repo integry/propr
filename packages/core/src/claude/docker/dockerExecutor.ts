@@ -1,6 +1,7 @@
 import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
@@ -46,8 +47,7 @@ const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
 
 async function checkAbortSignal(taskId: string): Promise<boolean> {
     try {
-        const Redis = await import('ioredis');
-        const redis = new Redis.default({
+        const redis = new Redis({
             host: process.env.REDIS_HOST || 'redis',
             port: parseInt(process.env.REDIS_PORT || '6379', 10)
         });
@@ -146,8 +146,7 @@ export async function stopDockerContainer(
  */
 async function clearAbortSignal(taskId: string): Promise<void> {
     try {
-        const Redis = await import('ioredis');
-        const redis = new Redis.default({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
+        const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
         await redis.del(`worker:abort:${taskId}`);
         await redis.quit();
         logger.debug({ taskId }, 'Cleared abort signal from Redis');
@@ -206,7 +205,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const timeoutHandle = setTimeout(() => { state.timedOut = true; child.kill('SIGTERM'); setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000); }, timeout);
         const abortCheckInterval = taskId ? setupAbortChecker(taskId, state.aborted, child, state.containerId) : null;
 
-        const redisState = { client: null as InstanceType<typeof import('ioredis').default> | null, interval: null as ReturnType<typeof setInterval> | null, lastLen: 0 };
+        const redisState = { client: null as Redis | null, interval: null as ReturnType<typeof setInterval> | null, lastLen: 0 };
         if (streamToRedis && taskId) initRedisStreaming(taskId, stripAnsi, () => stdout, redisState);
         if (command === 'docker' && args[0] === 'run' && worktreePath) detectContainerId(worktreePath, state, onContainerId);
 
@@ -242,11 +241,10 @@ export function executeDockerCommand(command: string, args: string[], options: D
     });
 }
 
-function initRedisStreaming(taskId: string, stripAnsi: boolean | undefined, getStdout: () => string, state: { client: InstanceType<typeof import('ioredis').default> | null; interval: ReturnType<typeof setInterval> | null; lastLen: number }): void {
+function initRedisStreaming(taskId: string, stripAnsi: boolean | undefined, getStdout: () => string, state: { client: Redis | null; interval: ReturnType<typeof setInterval> | null; lastLen: number }): void {
     (async () => {
         try {
-            const Redis = await import('ioredis');
-            state.client = new Redis.default({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
+            state.client = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
             const redisKey = `agent:output:${taskId}`;
             state.interval = setInterval(async () => {
                 const stdout = getStdout();
@@ -260,7 +258,7 @@ function initRedisStreaming(taskId: string, stripAnsi: boolean | undefined, getS
     })();
 }
 
-async function cleanupRedisStreaming(state: { client: InstanceType<typeof import('ioredis').default> | null; interval: ReturnType<typeof setInterval> | null }, taskId: string | undefined, stripAnsi: boolean | undefined, stdout: string): Promise<void> {
+async function cleanupRedisStreaming(state: { client: Redis | null; interval: ReturnType<typeof setInterval> | null }, taskId: string | undefined, stripAnsi: boolean | undefined, stdout: string): Promise<void> {
     if (state.interval) clearInterval(state.interval);
     if (state.client && taskId) {
         try { await state.client.setex(`agent:output:${taskId}`, 3600, stripAnsi ? stripAnsiCodes(stdout) : stdout); await state.client.quit(); }
@@ -499,4 +497,3 @@ export async function ensureVersionedAgentImage(
         return { success: false, imageTag, error: err.message };
     }
 }
-
