@@ -202,9 +202,6 @@ export async function processTaskAndCreateIssue(options: ProcessTaskOptions): Pr
       draft_id: draftId,
       repository,
       issue_number: createdIssue.number,
-      run_ultrafix: ultrafixDefaults?.runUltrafix ?? null,
-      ultrafix_goal: ultrafixDefaults?.ultrafixGoal ?? null,
-      ultrafix_max_cycles: ultrafixDefaults?.ultrafixMaxCycles ?? null,
     });
     correlatedLogger.info({
       draftId,

@@ -122,7 +122,7 @@ function buildFooterStats(issues: PlanIssue[]): FooterStats {
   return {
     total: issues.length,
     merged: issues.filter(i => i.status === 'merged').length,
-    underReview: issues.filter(i => i.status === 'pr_open' || i.status === 'pr_review').length,
+    underReview: issues.filter(i => i.status === 'under_review' || i.status === 'in_refinement').length,
     pending: issues.filter(i => i.status === 'pending').length,
     processing: issues.filter(i => i.status === 'processing' || i.status === 'refinement_processing').length,
   };

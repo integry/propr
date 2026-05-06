@@ -19,6 +19,7 @@ import {
     claimDeferredContinuation,
     recordAction,
     clearState,
+    completeLoop,
     determineNextAction,
     saveDeferredContinuation,
     clearDeferredContinuation,
@@ -157,8 +158,15 @@ export async function continueUltrafixLoop(
 
     // 6. If loop should stop, clean up
     if (decision.action === null) {
-        await clearState(redisClient, owner, repo, pullRequestNumber);
         const goalReached = latestScore !== null && latestScore >= updatedState.goal;
+        await completeLoop(redisClient, {
+            owner,
+            repo,
+            pr: pullRequestNumber,
+            completionStatus: goalReached ? 'succeeded' : 'failed',
+            completionReason: decision.reason,
+            finalScore: latestScore,
+        });
         if (goalReached) {
             await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
             await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);

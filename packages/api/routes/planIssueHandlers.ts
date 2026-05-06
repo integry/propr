@@ -127,6 +127,7 @@ function resolveIssueUltrafixSettings(
 }
 
 function buildIssueForImplementation<T extends {
+  issue_number: number;
   run_ultrafix?: boolean | number | null;
   ultrafix_goal?: number | null;
   ultrafix_max_cycles?: number | null;
@@ -137,6 +138,23 @@ function buildIssueForImplementation<T extends {
     ultrafix_goal: ultrafixSettings.ultrafixGoal,
     ultrafix_max_cycles: ultrafixSettings.ultrafixMaxCycles
   };
+}
+
+async function resolveAndPersistIssueUltrafixSettings<T extends {
+  issue_number: number;
+  run_ultrafix?: boolean | number | null;
+  ultrafix_goal?: number | null;
+  ultrafix_max_cycles?: number | null;
+}>(draftId: string, planIssue: T, contextConfig: Record<string, unknown> | null): Promise<T> {
+  const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
+  const issueForImplementation = buildIssueForImplementation(planIssue, ultrafixSettings);
+  const persistedIssue = await updatePlanIssue(draftId, planIssue.issue_number, {
+    run_ultrafix: issueForImplementation.run_ultrafix === true,
+    ultrafix_goal: issueForImplementation.ultrafix_goal,
+    ultrafix_max_cycles: issueForImplementation.ultrafix_max_cycles
+  });
+
+  return (persistedIssue as T | null) ?? issueForImplementation;
 }
 
 async function resolveEpicLabel(
@@ -293,8 +311,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
 
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
-      const issueForImplementation = buildIssueForImplementation(planIssue, ultrafixSettings);
+      const issueForImplementation = await resolveAndPersistIssueUltrafixSettings(draftId, planIssue, contextConfig);
 
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
@@ -407,17 +424,14 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const issues = await getPlanIssuesByDraft(draftId);
       const pendingIssues = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
-      const resolvedPendingIssues = await Promise.all(
-        pendingIssues.map(async (issue) => {
-          const ultrafixSettings = resolveIssueUltrafixSettings(issue, contextConfig);
-          return buildIssueForImplementation(issue, ultrafixSettings);
-        })
-      );
-
       if (pendingIssues.length === 0) {
         res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });
         return;
       }
+
+      const resolvedPendingIssues = await Promise.all(
+        pendingIssues.map((issue) => resolveAndPersistIssueUltrafixSettings(draftId, issue, contextConfig))
+      );
 
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';

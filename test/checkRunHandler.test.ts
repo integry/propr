@@ -548,6 +548,23 @@ describe('getPRAutoMergeInfo', () => {
         assert.strictEqual(result.hasActiveUltrafixLoop, true);
     });
 
+    test('returns ultrafix completion status when loop finished', async () => {
+        resetMocks();
+        mockRedisGet.mock.mockImplementation(async () => JSON.stringify({ active: false, completionStatus: 'failed' }));
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                draft: false,
+                base: { ref: 'main' },
+                head: { ref: 'feature-branch' }
+            }
+        }));
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+        assert.strictEqual(result.hasActiveUltrafixLoop, false);
+        assert.strictEqual(result.ultrafixCompletionStatus, 'failed');
+    });
+
     test('returns hasLabel false when label is missing', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async () => ({
@@ -1219,6 +1236,7 @@ describe('shouldAutoMergePR', () => {
         hasLabel?: boolean;
         hasUltrafixLabel?: boolean;
         hasActiveUltrafixLoop?: boolean;
+        ultrafixCompletionStatus?: 'succeeded' | 'failed' | null;
         isDraft?: boolean;
         baseBranch?: string;
         headBranch?: string;
@@ -1231,6 +1249,7 @@ describe('shouldAutoMergePR', () => {
             hasLabel = false,
             hasUltrafixLabel = false,
             hasActiveUltrafixLoop = false,
+            ultrafixCompletionStatus = null,
             isDraft = false,
             baseBranch = 'main',
             headBranch = 'feature-branch'
@@ -1245,6 +1264,7 @@ describe('shouldAutoMergePR', () => {
                 hasLabel,
                 hasUltrafixLabel,
                 hasActiveUltrafixLoop,
+                ultrafixCompletionStatus,
                 isDraft,
                 baseBranch,
                 headBranch
@@ -1277,12 +1297,40 @@ describe('shouldAutoMergePR', () => {
         assert.strictEqual(result, false);
     });
 
-    test('does not block auto-merge on stale ultrafix label without active loop state', async () => {
+    test('blocks auto-merge when ultrafix label remains without a successful terminal state', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
             hasUltrafixLabel: true,
             hasActiveUltrafixLoop: false,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, false);
+    });
+
+    test('blocks auto-merge when ultrafix finished unsuccessfully', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasUltrafixLabel: false,
+            hasActiveUltrafixLoop: false,
+            ultrafixCompletionStatus: 'failed',
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, false);
+    });
+
+    test('allows auto-merge after ultrafix completed successfully', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasUltrafixLabel: false,
+            hasActiveUltrafixLoop: false,
+            ultrafixCompletionStatus: 'succeeded',
             headBranch: 'feature-branch'
         });
 

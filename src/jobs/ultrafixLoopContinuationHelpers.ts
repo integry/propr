@@ -157,7 +157,7 @@ export async function enqueueNextStep(
         ultrafixMeta,
         comments: [{
             id: 0,
-            body: `Ultrafix loop: auto-scheduled /${nextAction}`,
+            body: `/${nextAction}\nTriggered automatically by the ultrafix loop.`,
             author: 'propr-ultrafix',
             type: 'issue' as const,
             commandMode,

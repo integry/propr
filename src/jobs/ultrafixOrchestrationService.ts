@@ -39,6 +39,14 @@ export interface UltrafixLoopState {
     lastActionTimestamp: string | null;
     /** Whether the loop is currently active */
     active: boolean;
+    /** Terminal result once the loop has stopped. */
+    completionStatus: 'succeeded' | 'failed' | null;
+    /** Why the loop stopped. */
+    completionReason: string | null;
+    /** Final review score observed when the loop stopped. */
+    finalScore: number | null;
+    /** ISO timestamp when the loop reached a terminal state. */
+    completedAt: string | null;
 }
 
 export interface NextActionDecision {
@@ -109,6 +117,10 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         lastAction: null,
         lastActionTimestamp: null,
         active: true,
+        completionStatus: null,
+        completionReason: null,
+        finalScore: null,
+        completedAt: null,
     };
 }
 
@@ -236,6 +248,30 @@ export async function stopLoop(redis: Redis, owner: string, repo: string, pr: nu
     if (!state) return null;
 
     state.active = false;
+    await saveState(redis, state);
+    return state;
+}
+
+export async function completeLoop(
+    redis: Redis,
+    params: {
+        owner: string;
+        repo: string;
+        pr: number;
+        completionStatus: 'succeeded' | 'failed';
+        completionReason: string;
+        finalScore: number | null;
+    },
+): Promise<UltrafixLoopState | null> {
+    const state = await loadState(redis, params.owner, params.repo, params.pr);
+    if (!state) return null;
+
+    state.active = false;
+    state.completionStatus = params.completionStatus;
+    state.completionReason = params.completionReason;
+    state.finalScore = params.finalScore;
+    state.completedAt = new Date().toISOString();
+
     await saveState(redis, state);
     return state;
 }

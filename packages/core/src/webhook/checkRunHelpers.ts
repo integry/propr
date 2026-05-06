@@ -369,6 +369,7 @@ export interface PRAutoMergeInfo {
     hasLabel: boolean;
     hasUltrafixLabel?: boolean;
     hasActiveUltrafixLoop?: boolean;
+    ultrafixCompletionStatus?: 'succeeded' | 'failed' | null;
     isDraft: boolean;
     baseBranch: string;
     headBranch: string;
@@ -413,6 +414,33 @@ export async function hasActiveUltrafixLoop(owner: string, repoName: string, prN
     }
 }
 
+export async function getUltrafixLoopState(
+    owner: string,
+    repoName: string,
+    prNumber: number
+): Promise<{ active: boolean; completionStatus: 'succeeded' | 'failed' | null } | null> {
+    try {
+        const rawState = await getUltrafixStateRedis().get(getUltrafixStateKey(owner, repoName, prNumber));
+        if (!rawState) return null;
+
+        const parsedState = JSON.parse(rawState) as { active?: unknown; completionStatus?: unknown };
+        return {
+            active: parsedState.active === true,
+            completionStatus: parsedState.completionStatus === 'succeeded' || parsedState.completionStatus === 'failed'
+                ? parsedState.completionStatus
+                : null
+        };
+    } catch (error) {
+        logger.warn({
+            owner,
+            repoName,
+            prNumber,
+            error: (error as Error).message
+        }, 'Failed to load ultrafix loop state');
+        return null;
+    }
+}
+
 /**
  * Checks if a PR has the auto-merge label, if it's a draft, and gets the base/head branches.
  */
@@ -429,12 +457,20 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const labels = prResponse.data.labels as Array<{ name: string }>;
         const hasLabel = labels.some(label => label.name === 'auto-merge');
         const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
-        const hasActiveLoop = await hasActiveUltrafixLoop(owner, repoName, prNumber);
+        const ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;
 
-        return { hasLabel, hasUltrafixLabel, hasActiveUltrafixLoop: hasActiveLoop, isDraft, baseBranch, headBranch };
+        return {
+            hasLabel,
+            hasUltrafixLabel,
+            hasActiveUltrafixLoop: ultrafixState?.active ?? false,
+            ultrafixCompletionStatus: ultrafixState?.completionStatus ?? null,
+            isDraft,
+            baseBranch,
+            headBranch
+        };
     } catch (error) {
         logger.warn({
             owner,
@@ -442,7 +478,15 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             prNumber,
             error: (error as Error).message
         }, 'Failed to check PR info');
-        return { hasLabel: false, hasUltrafixLabel: false, hasActiveUltrafixLoop: false, isDraft: false, baseBranch: '', headBranch: '' };
+        return {
+            hasLabel: false,
+            hasUltrafixLabel: false,
+            hasActiveUltrafixLoop: false,
+            ultrafixCompletionStatus: null,
+            isDraft: false,
+            baseBranch: '',
+            headBranch: ''
+        };
     }
 }
 
