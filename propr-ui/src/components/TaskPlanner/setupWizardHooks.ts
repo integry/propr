@@ -207,7 +207,10 @@ export function useFileHandling(isNewMode: boolean, draft: PlannerDraft | undefi
     try {
       const processedFile = await processFileForUpload(file);
       if (isNewMode) setLocalFiles(prev => [...prev, processedFile]);
-      else if (draft) setConfig(prev => ({ ...prev, files: [...prev.files, await uploadAttachment(draft.draft_id, processedFile)] }));
+      else if (draft) {
+        const uploadedFile = await uploadAttachment(draft.draft_id, processedFile);
+        setConfig(prev => ({ ...prev, files: [...prev.files, uploadedFile] }));
+      }
     } catch (err) { setError((err as Error).message || 'Failed to upload file'); }
     finally { setIsUploading(false); }
   }, [isNewMode, draft, setConfig, setError]);
