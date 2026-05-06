@@ -196,6 +196,15 @@ function isLatestRepoChange(requestId: number, requestIdRef: React.MutableRefObj
   return requestId === requestIdRef.current;
 }
 
+function shouldSkipRepoDraftCreation(
+  newRepo: string,
+  resolvedBaseBranch: string,
+  draft: PlannerDraft | undefined,
+  config: PlannerConfig
+) {
+  return newRepo === draft?.repository && resolvedBaseBranch === config.baseBranch;
+}
+
 async function resolveRepoBaseBranch(newRepo: string, selection?: RepoSelection) {
   if (selection?.baseBranch) return selection.baseBranch;
   const [owner, repo] = newRepo.split('/');
@@ -212,6 +221,45 @@ async function persistBaseBranchWarning(draftId: string, resolvedBaseBranch: str
     console.error('Failed to persist resolved base branch:', err);
     return getBaseBranchPersistenceWarning(resolvedBaseBranch);
   }
+}
+
+interface RepoChangeExecutionParams {
+  newRepo: string;
+  resolvedBaseBranch: string;
+  config: PlannerConfig;
+  draft: PlannerDraft | undefined;
+  locationTodoIds?: string[];
+  navigate: ReturnType<typeof useNavigate>;
+  onDraftCreated?: (draftId: string) => void;
+}
+
+async function createDraftForRepoChange({
+  newRepo,
+  resolvedBaseBranch,
+  config,
+  draft,
+  locationTodoIds,
+  navigate,
+  onDraftCreated
+}: RepoChangeExecutionParams) {
+  if (shouldSkipRepoDraftCreation(newRepo, resolvedBaseBranch, draft, config)) {
+    return false;
+  }
+
+  const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled', { todoIds: locationTodoIds });
+  const baseBranchPersistenceWarning = await persistBaseBranchWarning(newDraft.draft_id, resolvedBaseBranch);
+  onDraftCreated?.(newDraft.draft_id);
+  navigate(`/studio/${newDraft.draft_id}`, {
+    replace: true,
+    state: {
+      initialRepository: newRepo,
+      initialBaseBranch: resolvedBaseBranch,
+      baseBranchPersistenceWarning,
+      todoIds: locationTodoIds
+    }
+  });
+
+  return true;
 }
 
 function useRepoChangeInEditMode({
@@ -234,24 +282,19 @@ function useRepoChangeInEditMode({
     try {
       const resolvedBaseBranch = await resolveRepoBaseBranch(newRepo, selection);
       if (!isLatestRepoChange(requestId, requestIdRef)) return;
-      if (newRepo === draft?.repository && resolvedBaseBranch === config.baseBranch) {
-        if (isLatestRepoChange(requestId, requestIdRef)) setIsCreating(false);
-        return;
-      }
-      const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled', { todoIds: locationTodoIds });
-      if (!isLatestRepoChange(requestId, requestIdRef)) return;
-      const baseBranchPersistenceWarning = await persistBaseBranchWarning(newDraft.draft_id, resolvedBaseBranch);
-      if (!isLatestRepoChange(requestId, requestIdRef)) return;
-      onDraftCreated?.(newDraft.draft_id);
-      navigate(`/studio/${newDraft.draft_id}`, {
-        replace: true,
-        state: {
-          initialRepository: newRepo,
-          initialBaseBranch: resolvedBaseBranch,
-          baseBranchPersistenceWarning,
-          todoIds: locationTodoIds
-        }
+      const didCreateDraft = await createDraftForRepoChange({
+        newRepo,
+        resolvedBaseBranch,
+        config,
+        draft,
+        locationTodoIds,
+        navigate,
+        onDraftCreated
       });
+      if (!isLatestRepoChange(requestId, requestIdRef)) return;
+      if (!didCreateDraft) {
+        if (isLatestRepoChange(requestId, requestIdRef)) setIsCreating(false);
+      }
     } catch (err) {
       if (!isLatestRepoChange(requestId, requestIdRef)) return;
       setError((err as Error).message || 'Failed to change repository');
