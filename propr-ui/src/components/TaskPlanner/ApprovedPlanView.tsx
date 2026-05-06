@@ -209,6 +209,9 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   // Initialize from draft.context_config for persistence across page refreshes
   const [useEpic, setUseEpic] = useState(draft.context_config?.useEpic ?? false);
   const [autoMerge, setAutoMerge] = useState(draft.context_config?.autoMerge ?? false);
+  const [runUltrafix, setRunUltrafix] = useState(draft.context_config?.runUltrafix ?? false);
+  const [ultrafixGoal, setUltrafixGoal] = useState<number | null>(draft.context_config?.ultrafixGoal ?? null);
+  const [ultrafixMaxCycles, setUltrafixMaxCycles] = useState<number | null>(draft.context_config?.ultrafixMaxCycles ?? null);
 
   const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
   const repository = draft.repository || '';
@@ -325,6 +328,33 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     }
   }, [draft.draft_id]);
 
+  const handleRunUltrafixChange = useCallback(async (value: boolean) => {
+    setRunUltrafix(value);
+    try {
+      await updateExecutionSettings(draft.draft_id, { runUltrafix: value });
+    } catch (err) {
+      console.error('Failed to save runUltrafix setting:', err);
+    }
+  }, [draft.draft_id]);
+
+  const handleUltrafixGoalChange = useCallback(async (value: number | null) => {
+    setUltrafixGoal(value);
+    try {
+      await updateExecutionSettings(draft.draft_id, { ultrafixGoal: value });
+    } catch (err) {
+      console.error('Failed to save ultrafixGoal setting:', err);
+    }
+  }, [draft.draft_id]);
+
+  const handleUltrafixMaxCyclesChange = useCallback(async (value: number | null) => {
+    setUltrafixMaxCycles(value);
+    try {
+      await updateExecutionSettings(draft.draft_id, { ultrafixMaxCycles: value });
+    } catch (err) {
+      console.error('Failed to save ultrafixMaxCycles setting:', err);
+    }
+  }, [draft.draft_id]);
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
@@ -382,6 +412,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
           autoMerge={autoMerge}
           onUseEpicChange={handleUseEpicChange}
           onAutoMergeChange={handleAutoMergeChange}
+          runUltrafix={runUltrafix}
+          ultrafixGoal={ultrafixGoal}
+          ultrafixMaxCycles={ultrafixMaxCycles}
+          onRunUltrafixChange={handleRunUltrafixChange}
+          onUltrafixGoalChange={handleUltrafixGoalChange}
+          onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange}
           draftStatus={draft.status}
           onCreationComplete={handleCreationComplete}
         />

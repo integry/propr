@@ -1196,6 +1196,7 @@ describe('shouldAutoMergePR', () => {
         prNumber?: number;
         headSha?: string;
         hasLabel?: boolean;
+        hasUltrafixLabel?: boolean;
         isDraft?: boolean;
         baseBranch?: string;
         headBranch?: string;
@@ -1206,6 +1207,7 @@ describe('shouldAutoMergePR', () => {
             prNumber = 42,
             headSha = 'abc123sha',
             hasLabel = false,
+            hasUltrafixLabel = false,
             isDraft = false,
             baseBranch = 'main',
             headBranch = 'feature-branch'
@@ -1218,6 +1220,7 @@ describe('shouldAutoMergePR', () => {
             headSha,
             prInfo: {
                 hasLabel,
+                hasUltrafixLabel,
                 isDraft,
                 baseBranch,
                 headBranch
@@ -1236,6 +1239,18 @@ describe('shouldAutoMergePR', () => {
 
         const result = await shouldAutoMergePR(ctx);
         assert.strictEqual(result, true);
+    });
+
+    test('returns false when PR is blocked by ultrafix label', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasUltrafixLabel: true,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, false);
     });
 
     test('returns true with auto-merge label on linked issue', async () => {

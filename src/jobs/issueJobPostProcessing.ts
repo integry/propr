@@ -8,10 +8,12 @@ import { generateCompletionComment } from '@propr/core';
 import { validatePRCreation } from '@propr/core';
 import { linkPRToPlanIssue, findPlanIssueByRepoAndNumber, getPlanIssuesByDraft, updatePlanIssueStatus, PlanIssueStatus } from '@propr/core';
 import { getAuthenticatedOctokit, getPrimaryProcessingLabels } from '@propr/core';
+import { processCommentEvent, type CommentEventConfig } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
 import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
 import { enableAutoMerge } from '../github/autoMergeOperations.js';
+import { redisClient } from './issueJob/config.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -23,6 +25,12 @@ type Octokit = {
 interface GitHubToken {
     token: string;
 }
+
+const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
+const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS || '')
+    .split(',')
+    .map((keyword) => keyword.trim())
+    .filter(Boolean);
 
 export interface PostProcessOptions {
     octokit: Octokit;
@@ -46,6 +54,65 @@ export interface PostProcessOptions {
 export interface PostProcessResult {
     commitResult: CommitResult | null;
     postProcessingResult: PostProcessingResult | null;
+}
+
+function buildSystemUltrafixComment(goal: number | null, maxCycles: number | null): string {
+    const parts = ['/ultrafix'];
+    if (goal != null) parts.push(`goal=${goal}`);
+    if (maxCycles != null) parts.push(`max=${maxCycles}`);
+    return `${parts.join(' ')}\nTriggered automatically by Planner execution settings.`;
+}
+
+function createCommentConfig(): CommentEventConfig {
+    return {
+        redisClient,
+        PR_FOLLOWUP_TRIGGER_KEYWORDS,
+        MODEL_LABEL_PATTERN,
+    };
+}
+
+async function triggerSystemUltrafix(options: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    goal: number | null;
+    maxCycles: number | null;
+    correlatedLogger: Logger;
+}): Promise<void> {
+    const { owner, repo, prNumber, goal, maxCycles, correlatedLogger } = options;
+    const body = buildSystemUltrafixComment(goal, maxCycles);
+    const octokit = await getAuthenticatedOctokit();
+    const response = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner,
+        repo,
+        issue_number: prNumber,
+        body,
+    });
+
+    const botLogin = process.env.GITHUB_BOT_USERNAME || response.data.user?.login || 'propr.dev[bot]';
+    const syntheticPayload = {
+        action: 'created',
+        repository: {
+            name: repo,
+            owner: { login: owner },
+            full_name: `${owner}/${repo}`,
+        },
+        issue: {
+            number: prNumber,
+            pull_request: { url: `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}` },
+        },
+        comment: {
+            id: response.data.id,
+            body,
+            user: {
+                login: botLogin,
+                type: 'Bot',
+            },
+        },
+    } as Parameters<typeof processCommentEvent>[0];
+
+    await processCommentEvent(syntheticPayload, 'issue_comment', `system-ultrafix-${owner}-${repo}-${prNumber}`, createCommentConfig());
+    correlatedLogger.info({ prNumber, goal, maxCycles }, 'Triggered system ultrafix for PR');
 }
 
 export async function performPostProcessing(options: PostProcessOptions): Promise<PostProcessResult> {
@@ -116,7 +183,18 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             // Check for auto-merge label and enable auto-merge on the PR
             const currentLabels = currentIssueData.data.labels.map(label => label.name);
             const hasAutoMergeLabel = currentLabels.some(label => label === 'auto-merge');
-            if (hasAutoMergeLabel) {
+            const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
+            const runUltrafix = planIssue?.run_ultrafix === true || planIssue?.run_ultrafix === 1;
+            if (runUltrafix) {
+                await triggerSystemUltrafix({
+                    owner: issueRef.repoOwner,
+                    repo: issueRef.repoName,
+                    prNumber: postProcessingResult.pr.number,
+                    goal: planIssue?.ultrafix_goal ?? null,
+                    maxCycles: planIssue?.ultrafix_max_cycles ?? null,
+                    correlatedLogger,
+                });
+            } else if (hasAutoMergeLabel) {
                 correlatedLogger.info({ prNumber: postProcessingResult.pr.number }, 'Auto-merge label detected, enabling auto-merge on PR');
                 const autoMergeResult = await enableAutoMerge({
                     owner: issueRef.repoOwner,

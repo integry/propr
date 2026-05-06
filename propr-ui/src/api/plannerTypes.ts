@@ -154,6 +154,12 @@ export interface DraftContextConfig {
   useEpic?: boolean;
   /** Whether to auto-merge individual PRs into the Epic PR */
   autoMerge?: boolean;
+  /** Whether to start ultrafix automatically after PR creation */
+  runUltrafix?: boolean;
+  /** Optional default ultrafix score goal */
+  ultrafixGoal?: number | null;
+  /** Optional default ultrafix max loop count */
+  ultrafixMaxCycles?: number | null;
   /** The epic label name (e.g., "base-478-epic-name-abc") - stored after first creation */
   epicLabel?: string;
 }

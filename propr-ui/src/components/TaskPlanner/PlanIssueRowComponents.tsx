@@ -154,6 +154,9 @@ export interface RowActionsProps {
   issue: PlanIssue;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
+  onRunUltrafixChange: (issueNumber: number, runUltrafix: boolean) => void;
+  onUltrafixGoalChange: (issueNumber: number, value: number | null) => void;
+  onUltrafixMaxCyclesChange: (issueNumber: number, value: number | null) => void;
   handleMultiToggle: (multi: boolean) => void;
   handleMultiModelChange: (models: AgentModelPair[]) => void;
   handleImplementClick: () => void;
@@ -173,6 +176,9 @@ export const RowActions: React.FC<RowActionsProps> = ({
   issue,
   onAgentChange,
   onModelChange,
+  onRunUltrafixChange,
+  onUltrafixGoalChange,
+  onUltrafixMaxCyclesChange,
   handleMultiToggle,
   handleMultiModelChange,
   handleImplementClick,
@@ -194,6 +200,37 @@ export const RowActions: React.FC<RowActionsProps> = ({
         onMultiModelChange={handleMultiModelChange}
         onMultiConfirm={handleImplementClick}
       />
+    )}
+
+    {isPending && (
+      <div className="hidden lg:flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1">
+        <label className="flex items-center gap-1 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            checked={issue.run_ultrafix ?? false}
+            onChange={(e) => onRunUltrafixChange(issue.issue_number, e.target.checked)}
+            className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          UF
+        </label>
+        <input
+          type="number"
+          min={1}
+          max={10}
+          value={issue.ultrafix_goal ?? ''}
+          onChange={(e) => onUltrafixGoalChange(issue.issue_number, e.target.value === '' ? null : Number(e.target.value))}
+          placeholder="Goal"
+          className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs"
+        />
+        <input
+          type="number"
+          min={1}
+          value={issue.ultrafix_max_cycles ?? ''}
+          onChange={(e) => onUltrafixMaxCyclesChange(issue.issue_number, e.target.value === '' ? null : Number(e.target.value))}
+          placeholder="Max"
+          className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs"
+        />
+      </div>
     )}
 
     {isPending && (

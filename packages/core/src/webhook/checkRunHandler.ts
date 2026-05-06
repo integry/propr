@@ -106,6 +106,11 @@ async function handleEpicPRWithoutAutoMerge(ctx: PRMergeContext): Promise<void> 
 export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
     const { owner, repoName, prNumber, prInfo, log } = ctx;
 
+    if (prInfo.hasUltrafixLabel) {
+        log.info({ owner, repoName, prNumber }, 'PR is blocked by ultrafix label, skipping auto-merge');
+        return false;
+    }
+
     if (isEpicBranch(prInfo.headBranch)) {
         if (!prInfo.hasLabel) {
             await handleEpicPRWithoutAutoMerge(ctx);

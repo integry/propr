@@ -36,6 +36,9 @@ export interface PlanIssue {
     model_name: string | null;
     followup_count: number;
     task_id: string | null;
+    run_ultrafix: number | boolean | null;
+    ultrafix_goal: number | null;
+    ultrafix_max_cycles: number | null;
     created_at: string;
     updated_at: string;
 }
@@ -49,6 +52,9 @@ export interface CreatePlanIssueInput {
     issue_number: number;
     agent_alias?: string;
     model_name?: string;
+    run_ultrafix?: boolean | null;
+    ultrafix_goal?: number | null;
+    ultrafix_max_cycles?: number | null;
 }
 
 /**
@@ -61,6 +67,9 @@ export interface UpdatePlanIssueInput {
     model_name?: string | null;
     followup_count?: number;
     task_id?: string | null;
+    run_ultrafix?: boolean | null;
+    ultrafix_goal?: number | null;
+    ultrafix_max_cycles?: number | null;
 }
 
 /**
@@ -94,6 +103,9 @@ export async function createPlanIssue(input: CreatePlanIssueInput): Promise<Plan
             issue_number: input.issue_number,
             agent_alias: input.agent_alias || null,
             model_name: input.model_name || null,
+            run_ultrafix: input.run_ultrafix ?? null,
+            ultrafix_goal: input.ultrafix_goal ?? null,
+            ultrafix_max_cycles: input.ultrafix_max_cycles ?? null,
             status: PlanIssueStatus.PENDING,
             followup_count: 0,
             created_at: db.fn.now(),
@@ -208,6 +220,9 @@ export async function updatePlanIssue(
         if (updates.model_name !== undefined) updateData.model_name = updates.model_name;
         if (updates.followup_count !== undefined) updateData.followup_count = updates.followup_count;
         if (updates.task_id !== undefined) updateData.task_id = updates.task_id;
+        if (updates.run_ultrafix !== undefined) updateData.run_ultrafix = updates.run_ultrafix;
+        if (updates.ultrafix_goal !== undefined) updateData.ultrafix_goal = updates.ultrafix_goal;
+        if (updates.ultrafix_max_cycles !== undefined) updateData.ultrafix_max_cycles = updates.ultrafix_max_cycles;
 
         await db('plan_issues')
             .where({ draft_id: draftId, issue_number: issueNumber })
@@ -415,7 +430,10 @@ export async function updatePlanIssueByPR(
 export async function batchUpdatePlanIssueConfig(
     draftId: string,
     agentAlias?: string,
-    modelName?: string
+    modelName?: string,
+    runUltrafix?: boolean | null,
+    ultrafixGoal?: number | null,
+    ultrafixMaxCycles?: number | null
 ): Promise<void> {
     try {
         const updateData: Record<string, unknown> = {
@@ -424,15 +442,18 @@ export async function batchUpdatePlanIssueConfig(
 
         if (agentAlias !== undefined) updateData.agent_alias = agentAlias;
         if (modelName !== undefined) updateData.model_name = modelName;
+        if (runUltrafix !== undefined) updateData.run_ultrafix = runUltrafix;
+        if (ultrafixGoal !== undefined) updateData.ultrafix_goal = ultrafixGoal;
+        if (ultrafixMaxCycles !== undefined) updateData.ultrafix_max_cycles = ultrafixMaxCycles;
 
         await db('plan_issues')
             .where({ draft_id: draftId })
             .update(updateData);
 
-        logger.info({ draftId, agentAlias, modelName }, 'Batch updated plan issue config');
+        logger.info({ draftId, agentAlias, modelName, runUltrafix, ultrafixGoal, ultrafixMaxCycles }, 'Batch updated plan issue config');
     } catch (error) {
         const err = error as Error;
-        logger.error({ error: err.message, draftId, agentAlias, modelName }, 'Failed to batch update plan issue config');
+        logger.error({ error: err.message, draftId, agentAlias, modelName, runUltrafix, ultrafixGoal, ultrafixMaxCycles }, 'Failed to batch update plan issue config');
         throw error;
     }
 }

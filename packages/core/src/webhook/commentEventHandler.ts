@@ -476,8 +476,12 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment processing'); return; }
 
     const commentAuthor = comment.user.login;
+    const parsedCommand = parseSlashCommand(comment.body);
+    const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]';
+    const isSystemUltrafixComment = parsedCommand?.command === 'ultrafix' && commentAuthor === botUsername;
+
     const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
-    if (filterResult.shouldFilter) return;
+    if (filterResult.shouldFilter && !isSystemUltrafixComment) return;
 
     // Check for ignore keywords
     const ignoreKeywords = await loadFollowupIgnoreKeywords();
@@ -485,7 +489,6 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     if (ignoreResult.shouldIgnore) return;
 
     // Parse slash commands (/review, /fix, /merge, /switch, /use) before generic follow-up logic
-    const parsedCommand = parseSlashCommand(comment.body);
     if (parsedCommand) {
         // Deduplicate redelivered webhooks — same check used for normal follow-up comments
         const slashCommentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;

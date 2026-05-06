@@ -74,6 +74,9 @@ interface ExecutionOptionsToolbarProps {
   handleApplyToAll: () => void;
   autoMerge?: boolean; onAutoMergeChange?: (value: boolean) => void;
   useEpic?: boolean; onUseEpicChange?: (value: boolean) => void;
+  runUltrafix?: boolean; onRunUltrafixChange?: (value: boolean) => void;
+  ultrafixGoal?: number | null; onUltrafixGoalChange?: (value: number | null) => void;
+  ultrafixMaxCycles?: number | null; onUltrafixMaxCyclesChange?: (value: number | null) => void;
   tasks: PlanTask[]; pendingCount: number;
   implementingAll: boolean; handleImplementAll: () => void;
 }
@@ -84,6 +87,7 @@ const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = ({
   applyingGlobal, handleGlobalAgentChange, handleGlobalModelChange,
   handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
   autoMerge, onAutoMergeChange, useEpic, onUseEpicChange,
+  runUltrafix, onRunUltrafixChange, ultrafixGoal, onUltrafixGoalChange, ultrafixMaxCycles, onUltrafixMaxCyclesChange,
   tasks, pendingCount, implementingAll, handleImplementAll,
 }) => (
   <div className="flex flex-col gap-2.5 sm:gap-3 py-2.5 border-b border-slate-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-3">
@@ -130,6 +134,27 @@ const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = ({
             <Info size={14} className="text-slate-400 hover:text-slate-600 transition-colors" />
           </label>
         )}
+        <label className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none" title="Automatically run ultrafix after the PR is opened">
+          <input type="checkbox" checked={runUltrafix || false} onChange={(e) => onRunUltrafixChange?.(e.target.checked)} className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer" />
+          <span>Run ultrafix after PR</span>
+        </label>
+        <input
+          type="number"
+          min={1}
+          max={10}
+          value={ultrafixGoal ?? ''}
+          onChange={(e) => onUltrafixGoalChange?.(e.target.value === '' ? null : Number(e.target.value))}
+          placeholder="UF goal"
+          className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm"
+        />
+        <input
+          type="number"
+          min={1}
+          value={ultrafixMaxCycles ?? ''}
+          onChange={(e) => onUltrafixMaxCyclesChange?.(e.target.value === '' ? null : Number(e.target.value))}
+          placeholder="UF max"
+          className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm"
+        />
       </div>
     </div>
     {pendingCount >= 2 && autoMerge && useEpic && (
@@ -160,8 +185,14 @@ interface PlanIssuesManagerProps {
   refreshKey?: number;
   useEpic?: boolean;
   autoMerge?: boolean;
+  runUltrafix?: boolean;
+  ultrafixGoal?: number | null;
+  ultrafixMaxCycles?: number | null;
   onUseEpicChange?: (value: boolean) => void;
   onAutoMergeChange?: (value: boolean) => void;
+  onRunUltrafixChange?: (value: boolean) => void;
+  onUltrafixGoalChange?: (value: number | null) => void;
+  onUltrafixMaxCyclesChange?: (value: number | null) => void;
   draftStatus?: string;
   onCreationComplete?: (createdCount: number, failedCount: number) => void;
 }
@@ -175,8 +206,14 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   refreshKey,
   useEpic,
   autoMerge,
+  runUltrafix,
+  ultrafixGoal,
+  ultrafixMaxCycles,
   onUseEpicChange,
   onAutoMergeChange,
+  onRunUltrafixChange,
+  onUltrafixGoalChange,
+  onUltrafixMaxCyclesChange,
   draftStatus,
   onCreationComplete
 }) => {
@@ -197,6 +234,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleImplementIssue, handleGlobalAgentChange, handleGlobalModelChange,
     handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
     handleAgentChange, handleModelChange,
+    handleRunUltrafixChange, handleUltrafixGoalChange, handleUltrafixMaxCyclesChange,
     handleIssueMultiToggle, handleIssueMultiModelChange,
     handleRefresh, getUnmergedIssuesBefore,
   } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete });
@@ -318,6 +356,12 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           onAutoMergeChange={onAutoMergeChange}
           useEpic={useEpic}
           onUseEpicChange={onUseEpicChange}
+          runUltrafix={runUltrafix}
+          onRunUltrafixChange={onRunUltrafixChange}
+          ultrafixGoal={ultrafixGoal}
+          onUltrafixGoalChange={onUltrafixGoalChange}
+          ultrafixMaxCycles={ultrafixMaxCycles}
+          onUltrafixMaxCyclesChange={onUltrafixMaxCyclesChange}
           tasks={tasks}
           pendingCount={pendingCount}
           implementingAll={implementingAll}
@@ -334,6 +378,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             onImplement={handleImplementIssue}
             onAgentChange={handleAgentChange}
             onModelChange={handleModelChange}
+            onRunUltrafixChange={handleRunUltrafixChange}
+            onUltrafixGoalChange={handleUltrafixGoalChange}
+            onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange}
             implementing={implementingIssue === issue.issue_number}
             isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
             onImplementWithWarning={handleImplementWithWarning}
@@ -375,6 +422,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     onImplement={handleImplementIssue}
                     onAgentChange={handleAgentChange}
                     onModelChange={handleModelChange}
+                    onRunUltrafixChange={handleRunUltrafixChange}
+                    onUltrafixGoalChange={handleUltrafixGoalChange}
+                    onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange}
                     implementing={false}
                     task={issueTaskMap[issue.issue_number]}
                     draftId={draftId}

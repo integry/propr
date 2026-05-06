@@ -366,6 +366,7 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
 
 export interface PRAutoMergeInfo {
     hasLabel: boolean;
+    hasUltrafixLabel?: boolean;
     isDraft: boolean;
     baseBranch: string;
     headBranch: string;
@@ -386,11 +387,12 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
 
         const labels = prResponse.data.labels as Array<{ name: string }>;
         const hasLabel = labels.some(label => label.name === 'auto-merge');
+        const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;
 
-        return { hasLabel, isDraft, baseBranch, headBranch };
+        return { hasLabel, hasUltrafixLabel, isDraft, baseBranch, headBranch };
     } catch (error) {
         logger.warn({
             owner,
@@ -398,7 +400,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             prNumber,
             error: (error as Error).message
         }, 'Failed to check PR info');
-        return { hasLabel: false, isDraft: false, baseBranch: '', headBranch: '' };
+        return { hasLabel: false, hasUltrafixLabel: false, isDraft: false, baseBranch: '', headBranch: '' };
     }
 }
 

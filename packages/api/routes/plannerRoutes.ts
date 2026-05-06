@@ -86,6 +86,15 @@ interface PlannerRoutesDeps {
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
 
+  function parseOptionalInteger(value: unknown, fieldName: string): number | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null || value === '') return null;
+    if (!Number.isInteger(value)) {
+      throw new Error(`${fieldName} must be an integer`);
+    }
+    return value as number;
+  }
+
   async function listRepositories(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
@@ -359,7 +368,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      const { useEpic, autoMerge } = req.body;
+      const { useEpic, autoMerge, runUltrafix } = req.body;
+      const ultrafixGoal = parseOptionalInteger(req.body.ultrafixGoal, 'ultrafixGoal');
+      const ultrafixMaxCycles = parseOptionalInteger(req.body.ultrafixMaxCycles, 'ultrafixMaxCycles');
       const draft = ownership.draft!;
       const existingConfig: Record<string, unknown> = draft.context_config
         ? (typeof draft.context_config === 'string' ? JSON.parse(draft.context_config as string) : draft.context_config as Record<string, unknown>)
@@ -369,6 +380,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         ...existingConfig,
         useEpic: useEpic !== undefined ? useEpic : existingConfig.useEpic,
         autoMerge: autoMerge !== undefined ? autoMerge : existingConfig.autoMerge,
+        runUltrafix: runUltrafix !== undefined ? runUltrafix : existingConfig.runUltrafix,
+        ultrafixGoal: ultrafixGoal !== undefined ? ultrafixGoal : existingConfig.ultrafixGoal,
+        ultrafixMaxCycles: ultrafixMaxCycles !== undefined ? ultrafixMaxCycles : existingConfig.ultrafixMaxCycles,
       };
 
       await db!('task_drafts').where({ draft_id: req.params.id }).update({
@@ -379,9 +393,17 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       res.json({
         success: true,
         useEpic: updatedConfig.useEpic ?? false,
-        autoMerge: updatedConfig.autoMerge ?? false
+        autoMerge: updatedConfig.autoMerge ?? false,
+        runUltrafix: updatedConfig.runUltrafix ?? false,
+        ultrafixGoal: updatedConfig.ultrafixGoal ?? null,
+        ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update execution settings';
+      if (message.includes('must be an integer')) {
+        res.status(400).json({ error: message });
+        return;
+      }
       console.error('Update execution settings error:', error);
       res.status(500).json({ error: 'Failed to update execution settings' });
     }

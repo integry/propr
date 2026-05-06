@@ -31,6 +31,12 @@ interface ImplementationSettings {
   autoMerge: boolean;
 }
 
+interface ResolvedUltrafixSettings {
+  runUltrafix: boolean;
+  ultrafixGoal: number | null;
+  ultrafixMaxCycles: number | null;
+}
+
 function parseContextConfig(draft: Record<string, unknown>): Record<string, unknown> | null {
   if (!draft.context_config) return null;
   return typeof draft.context_config === 'string'
@@ -46,6 +52,34 @@ function resolveImplementationSettings(
     useEpic: reqBody.useEpic ?? contextConfig?.useEpic ?? false,
     autoMerge: reqBody.autoMerge ?? contextConfig?.autoMerge ?? false
   } as ImplementationSettings;
+}
+
+function resolveIssueUltrafixSettings(
+  planIssue: {
+    run_ultrafix?: boolean | number | null;
+    ultrafix_goal?: number | null;
+    ultrafix_max_cycles?: number | null;
+  },
+  contextConfig: Record<string, unknown> | null
+): ResolvedUltrafixSettings {
+  const issueRunUltrafix = planIssue.run_ultrafix === true || planIssue.run_ultrafix === 1
+    ? true
+    : planIssue.run_ultrafix === false || planIssue.run_ultrafix === 0
+      ? false
+      : null;
+  const runUltrafix = issueRunUltrafix ?? (contextConfig?.runUltrafix === true);
+  const ultrafixGoal = runUltrafix
+    ? (planIssue.ultrafix_goal ?? (Number.isInteger(contextConfig?.ultrafixGoal) ? contextConfig?.ultrafixGoal as number : null))
+    : null;
+  const ultrafixMaxCycles = runUltrafix
+    ? (planIssue.ultrafix_max_cycles ?? (Number.isInteger(contextConfig?.ultrafixMaxCycles) ? contextConfig?.ultrafixMaxCycles as number : null))
+    : null;
+
+  return {
+    runUltrafix,
+    ultrafixGoal,
+    ultrafixMaxCycles
+  };
 }
 
 async function resolveEpicLabel(
@@ -137,6 +171,12 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
 
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
+      const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
+      await updatePlanIssue(draftId, issueNumber, {
+        run_ultrafix: ultrafixSettings.runUltrafix,
+        ultrafix_goal: ultrafixSettings.ultrafixGoal,
+        ultrafix_max_cycles: ultrafixSettings.ultrafixMaxCycles
+      });
 
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
@@ -185,7 +225,7 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      const { agent_alias, model_name, status } = req.body;
+      const { agent_alias, model_name, status, run_ultrafix, ultrafix_goal, ultrafix_max_cycles } = req.body;
 
       const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
       if (status && !validStatuses.includes(status)) {
@@ -227,7 +267,10 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       const updated = await updatePlanIssue(draftId, issueNumber, {
         agent_alias: agent_alias !== undefined ? agent_alias : undefined,
         model_name: model_name !== undefined ? model_name : undefined,
-        status: status !== undefined ? status : undefined
+        status: status !== undefined ? status : undefined,
+        run_ultrafix: run_ultrafix !== undefined ? run_ultrafix : undefined,
+        ultrafix_goal: ultrafix_goal !== undefined ? ultrafix_goal : undefined,
+        ultrafix_max_cycles: ultrafix_max_cycles !== undefined ? ultrafix_max_cycles : undefined
       });
 
       if (!updated) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
@@ -264,6 +307,17 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       const issues = await getPlanIssuesByDraft(draftId);
       const pendingIssues = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
+
+      await Promise.all(
+        pendingIssues.map((issue) => {
+          const ultrafixSettings = resolveIssueUltrafixSettings(issue, contextConfig);
+          return updatePlanIssue(draftId, issue.issue_number, {
+            run_ultrafix: ultrafixSettings.runUltrafix,
+            ultrafix_goal: ultrafixSettings.ultrafixGoal,
+            ultrafix_max_cycles: ultrafixSettings.ultrafixMaxCycles
+          });
+        })
+      );
 
       if (pendingIssues.length === 0) {
         res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });

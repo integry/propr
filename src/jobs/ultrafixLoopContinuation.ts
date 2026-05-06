@@ -16,6 +16,7 @@ import {
     safeRemoveLabel,
     getPendingPrCommentsKey,
     type UltrafixCommandMeta,
+    findPlanIssueByRepoAndPR,
 } from '@propr/core';
 import {
     loadState,
@@ -32,6 +33,7 @@ import {
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
+import { enableAutoMerge } from '../github/autoMergeOperations.js';
 
 export interface UltrafixContinuationParams {
     owner: string;
@@ -130,6 +132,66 @@ async function removeUltrafixLabel(
             { error: (err as Error).message, pullRequestNumber },
             'Failed to remove ultrafix label',
         );
+    }
+}
+
+async function postPrComment(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+    body: string,
+    correlatedLogger: Logger,
+): Promise<void> {
+    try {
+        const octokit = await withRetry(
+            () => getAuthenticatedOctokit(),
+            { ...retryConfigs.githubApi },
+            'get_authenticated_octokit_ultrafix_comment',
+        );
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner,
+            repo,
+            issue_number: pullRequestNumber,
+            body,
+        });
+    } catch (err) {
+        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Failed to post ultrafix status comment');
+    }
+}
+
+async function maybeEnableAutoMerge(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+    correlatedLogger: Logger,
+): Promise<void> {
+    try {
+        const repository = `${owner}/${repo}`;
+        const planIssue = await findPlanIssueByRepoAndPR(repository, pullRequestNumber);
+        if (!planIssue) return;
+
+        const octokit = await withRetry(
+            () => getAuthenticatedOctokit(),
+            { ...retryConfigs.githubApi },
+            'get_authenticated_octokit_ultrafix_issue_labels',
+        );
+        const issueResponse = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            owner,
+            repo,
+            issue_number: planIssue.issue_number,
+        });
+        const labels = (issueResponse.data.labels as Array<{ name?: string } | string>)
+            .map((label) => typeof label === 'string' ? label : (label.name || ''));
+        if (!labels.includes('auto-merge')) {
+            return;
+        }
+
+        const result = await enableAutoMerge({ owner, repoName: repo, prNumber: pullRequestNumber });
+        if (!result.success) {
+            correlatedLogger.warn({ pullRequestNumber, error: result.error }, 'Failed to enable auto-merge after ultrafix success');
+        }
+    } catch (err) {
+        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Failed to evaluate auto-merge re-enable after ultrafix success');
     }
 }
 
@@ -257,9 +319,21 @@ export async function continueUltrafixLoop(
     // 6. If loop should stop, clean up
     if (decision.action === null) {
         await clearState(redisClient, owner, repo, pullRequestNumber);
-        await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+        const goalReached = latestScore !== null && latestScore >= updatedState.goal;
+        if (goalReached) {
+            await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+            await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
+        } else {
+            await postPrComment(
+                owner,
+                repo,
+                pullRequestNumber,
+                `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${updatedState.goal}/10. Last score: ${latestScore ?? 'unknown'}. Max cycles were exhausted, so manual review and merge are now required.`,
+                correlatedLogger,
+            );
+        }
         correlatedLogger.info(
-            { pullRequestNumber, reason: decision.reason, cycleCount: updatedState.cycleCount },
+            { pullRequestNumber, reason: decision.reason, cycleCount: updatedState.cycleCount, goalReached },
             'Ultrafix loop: loop finished',
         );
         return {

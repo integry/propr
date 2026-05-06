@@ -26,6 +26,9 @@ export interface PlanIssue {
   model_name: string | null;
   followup_count: number;
   task_id: string | null;
+  run_ultrafix: boolean | null;
+  ultrafix_goal: number | null;
+  ultrafix_max_cycles: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +62,9 @@ export interface UpdateIssueOptions {
   agent_alias?: string | null;
   model_name?: string | null;
   status?: PlanIssueStatus;
+  run_ultrafix?: boolean | null;
+  ultrafix_goal?: number | null;
+  ultrafix_max_cycles?: number | null;
 }
 
 /**
