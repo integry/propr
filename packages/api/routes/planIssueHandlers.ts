@@ -37,6 +37,15 @@ interface ResolvedUltrafixSettings {
   ultrafixMaxCycles: number | null;
 }
 
+interface UpdateIssueRequestBody {
+  agent_alias?: string;
+  model_name?: string;
+  status?: PlanIssueStatus;
+  run_ultrafix?: boolean | number | null;
+  ultrafix_goal?: number | null;
+  ultrafix_max_cycles?: number | null;
+}
+
 function parseContextConfig(draft: Record<string, unknown>): Record<string, unknown> | null {
   if (!draft.context_config) return null;
   return typeof draft.context_config === 'string'
@@ -107,6 +116,57 @@ async function resolveEpicLabel(
     labelLogger: params.labelLogger,
     db
   });
+}
+
+function validateIssueStatus(status: PlanIssueStatus | undefined): string | null {
+  const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
+  return status && !validStatuses.includes(status)
+    ? `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+    : null;
+}
+
+async function syncModelLabels(params: {
+  draftId: string;
+  issueNumber: number;
+  repository: string;
+  currentModelName: string | null | undefined;
+  modelName: string;
+}): Promise<void> {
+  const [owner, repo] = params.repository.split('/');
+  if (!owner || !repo) return;
+
+  const [oldLabel, newLabel, octokit] = await Promise.all([
+    getLlmLabel(params.currentModelName),
+    getLlmLabel(params.modelName),
+    getAuthenticatedOctokit()
+  ]);
+
+  const labelsToRemove = oldLabel && oldLabel !== newLabel ? [oldLabel] : [];
+  const labelsToAdd = newLabel ? [newLabel] : [];
+  if (labelsToRemove.length === 0 && labelsToAdd.length === 0) return;
+
+  await safeUpdateLabels(
+    {
+      octokit,
+      owner,
+      repo,
+      issueNumber: params.issueNumber,
+      logger: logger.withCorrelation(`update-issue-${params.draftId}-${params.issueNumber}`)
+    },
+    labelsToRemove,
+    labelsToAdd
+  );
+}
+
+function buildIssueUpdate(body: UpdateIssueRequestBody) {
+  return {
+    agent_alias: body.agent_alias !== undefined ? body.agent_alias : undefined,
+    model_name: body.model_name !== undefined ? body.model_name : undefined,
+    status: body.status !== undefined ? body.status : undefined,
+    run_ultrafix: body.run_ultrafix !== undefined ? body.run_ultrafix : undefined,
+    ultrafix_goal: body.ultrafix_goal !== undefined ? body.ultrafix_goal : undefined,
+    ultrafix_max_cycles: body.ultrafix_max_cycles !== undefined ? body.ultrafix_max_cycles : undefined
+  };
 }
 
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
@@ -225,53 +285,24 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      const { agent_alias, model_name, status, run_ultrafix, ultrafix_goal, ultrafix_max_cycles } = req.body;
+      const body = req.body as UpdateIssueRequestBody;
+      const statusError = validateIssueStatus(body.status);
+      if (statusError) { res.status(400).json({ error: statusError }); return; }
 
-      const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
-      if (status && !validStatuses.includes(status)) {
-        res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
-        return;
-      }
-
-      // Get current plan issue to compare model changes
       const currentIssue = await getPlanIssue(draftId, issueNumber);
       if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
 
-      // Update GitHub labels when model_name is provided
-      // Always ensure the correct label is set, even if model_name hasn't changed (sync behavior)
-      if (model_name !== undefined) {
-        const draft = ownership.draft!;
-        const repository = draft.repository as string;
-        const [owner, repo] = repository.split('/');
-
-        if (owner && repo) {
-          const oldLabel = await getLlmLabel(currentIssue.model_name);
-          const newLabel = await getLlmLabel(model_name);
-          const octokit = await getAuthenticatedOctokit();
-          const labelLogger = logger.withCorrelation(`update-issue-${draftId}-${issueNumber}`);
-
-          // Only remove old label if it's different from new label
-          const labelsToRemove = (oldLabel && oldLabel !== newLabel) ? [oldLabel] : [];
-          const labelsToAdd = newLabel ? [newLabel] : [];
-
-          if (labelsToRemove.length > 0 || labelsToAdd.length > 0) {
-            await safeUpdateLabels(
-              { octokit, owner, repo, issueNumber, logger: labelLogger },
-              labelsToRemove,
-              labelsToAdd
-            );
-          }
-        }
+      if (body.model_name !== undefined) {
+        await syncModelLabels({
+          draftId,
+          issueNumber,
+          repository: ownership.draft!.repository as string,
+          currentModelName: currentIssue.model_name,
+          modelName: body.model_name
+        });
       }
 
-      const updated = await updatePlanIssue(draftId, issueNumber, {
-        agent_alias: agent_alias !== undefined ? agent_alias : undefined,
-        model_name: model_name !== undefined ? model_name : undefined,
-        status: status !== undefined ? status : undefined,
-        run_ultrafix: run_ultrafix !== undefined ? run_ultrafix : undefined,
-        ultrafix_goal: ultrafix_goal !== undefined ? ultrafix_goal : undefined,
-        ultrafix_max_cycles: ultrafix_max_cycles !== undefined ? ultrafix_max_cycles : undefined
-      });
+      const updated = await updatePlanIssue(draftId, issueNumber, buildIssueUpdate(body));
 
       if (!updated) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
       res.json(updated);

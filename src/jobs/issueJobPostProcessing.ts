@@ -3,6 +3,7 @@ import { setTimeout } from 'timers/promises';
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@propr/core';
 import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@propr/core';
+import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
 import { validatePRCreation } from '@propr/core';

@@ -14,12 +14,7 @@ interface ApprovedPlanViewProps {
   draft: DraftWithPlan;
   onRefetch?: () => void;
 }
-
-interface OriginalPromptPopoverProps {
-  prompt: string;
-}
-
-const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt }) => {
+const OriginalPromptPopover: React.FC<{ prompt: string }> = ({ prompt }) => {
   const [isOpen, setIsOpen] = useState(false);
   return (
     <div className="relative">
@@ -62,7 +57,6 @@ const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt })
   );
 };
 
-// Footer stats display component
 interface FooterStats {
   total: number;
   merged: number;
@@ -70,13 +64,7 @@ interface FooterStats {
   pending: number;
   processing: number;
 }
-
-interface PlanFooterStatsProps {
-  stats: FooterStats;
-  onRefresh: () => void;
-}
-
-const PlanFooterStats: React.FC<PlanFooterStatsProps> = ({ stats, onRefresh }) => (
+const PlanFooterStats: React.FC<{ stats: FooterStats; onRefresh: () => void }> = ({ stats, onRefresh }) => (
   <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
     <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs sm:text-sm text-gray-600">
       <span className="font-medium">{stats.total} {stats.total === 1 ? 'Issue' : 'Issues'}</span>
@@ -109,7 +97,6 @@ const PlanFooterStats: React.FC<PlanFooterStatsProps> = ({ stats, onRefresh }) =
   </div>
 );
 
-// Header actions component (pause/resume, revise, delete, github link)
 interface PlanHeaderActionsProps {
   draftStatus: string;
   isPaused: boolean;
@@ -120,6 +107,39 @@ interface PlanHeaderActionsProps {
   onPauseResume: () => void;
   onRevise: () => void;
   onDelete: () => void;
+}
+
+function parsePlanTasks(planJson: DraftWithPlan['plan_json']): PlanTask[] {
+  if (typeof planJson === 'string') {
+    try {
+      const parsed = JSON.parse(planJson);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  }
+  return Array.isArray(planJson) ? planJson : [];
+}
+
+function buildFooterStats(issues: PlanIssue[]): FooterStats {
+  return {
+    total: issues.length,
+    merged: issues.filter(i => i.status === 'merged').length,
+    underReview: issues.filter(i => i.status === 'pr_open' || i.status === 'pr_review').length,
+    pending: issues.filter(i => i.status === 'pending').length,
+    processing: issues.filter(i => i.status === 'processing' || i.status === 'refinement_processing').length,
+  };
+}
+
+async function persistExecutionSetting(
+  draftId: string,
+  update: Parameters<typeof updateExecutionSettings>[1],
+  onError: (message: string, err: unknown) => void,
+  message: string,
+): Promise<void> {
+  try {
+    await updateExecutionSettings(draftId, update);
+  } catch (err) {
+    onError(message, err);
+  }
 }
 
 const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({
@@ -134,7 +154,6 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({
   onDelete
 }) => {
   const showPauseResume = draftStatus === 'executed' || draftStatus === 'pr_created';
-
   return (
     <div className="flex items-center gap-2 flex-shrink-0">
       {showPauseResume && (
@@ -245,7 +264,6 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRefetch }) => {
   const navigate = useNavigate();
   const { addToast } = useToast();
-
   const [issues, _setIssues] = useState<PlanIssue[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -254,7 +272,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const [isRevising, setIsRevising] = useState(false);
   const [isPaused, setIsPaused] = useState(draft.paused || false);
   const [isPauseLoading, setIsPauseLoading] = useState(false);
-  // Initialize from draft.context_config for persistence across page refreshes
   const [useEpic, setUseEpic] = useState(draft.context_config?.useEpic ?? false);
   const [autoMerge, setAutoMerge] = useState(draft.context_config?.autoMerge ?? false);
   const [runUltrafix, setRunUltrafix] = useState(draft.context_config?.runUltrafix ?? false);
@@ -265,22 +282,8 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const repository = draft.repository || '';
   const baseBranch = draft.context_config?.baseBranch || 'main';
   const repoUrl = draft.repository ? `https://github.com/${draft.repository}/issues` : null;
-
-  const tasks: PlanTask[] = useMemo(() => {
-    let planJson = draft.plan_json;
-    if (typeof planJson === 'string') {
-      try { planJson = JSON.parse(planJson); } catch { return []; }
-    }
-    return Array.isArray(planJson) ? planJson : [];
-  }, [draft.plan_json]);
-
-  const footerStats = useMemo(() => ({
-    total: issues.length,
-    merged: issues.filter(i => i.status === 'merged').length,
-    underReview: issues.filter(i => i.status === 'pr_open' || i.status === 'pr_review').length,
-    pending: issues.filter(i => i.status === 'pending').length,
-    processing: issues.filter(i => i.status === 'processing' || i.status === 'refinement_processing').length,
-  }), [issues]);
+  const tasks: PlanTask[] = useMemo(() => parsePlanTasks(draft.plan_json), [draft.plan_json]);
+  const footerStats = useMemo(() => buildFooterStats(issues), [issues]);
 
   const handleDeletePlanConfirm = useCallback(async () => {
     setIsDeleting(true);
@@ -332,13 +335,8 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     }
   }, [draft.draft_id, addToast, onRefetch]);
 
-  const handleRefresh = useCallback(() => {
-    setRefreshKey(prev => prev + 1);
-  }, []);
-
-  const handleIssuesChange = useCallback((newIssues: PlanIssue[]) => {
-    _setIssues(newIssues);
-  }, []);
+  const handleRefresh = useCallback(() => setRefreshKey(prev => prev + 1), []);
+  const handleIssuesChange = useCallback((newIssues: PlanIssue[]) => _setIssues(newIssues), []);
 
   const handleCreationComplete = useCallback((createdCount: number, failedCount: number) => {
     if (failedCount > 0) {
@@ -356,100 +354,40 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     }
   }, [addToast]);
 
-  // Handler for useEpic toggle - updates local state and persists to backend
   const handleUseEpicChange = useCallback(async (value: boolean) => {
     setUseEpic(value);
-    try {
-      await updateExecutionSettings(draft.draft_id, { useEpic: value });
-    } catch (err) {
-      console.error('Failed to save useEpic setting:', err);
-    }
+    await persistExecutionSetting(draft.draft_id, { useEpic: value }, console.error, 'Failed to save useEpic setting:');
   }, [draft.draft_id]);
 
-  // Handler for autoMerge toggle - updates local state and persists to backend
   const handleAutoMergeChange = useCallback(async (value: boolean) => {
     setAutoMerge(value);
-    try {
-      await updateExecutionSettings(draft.draft_id, { autoMerge: value });
-    } catch (err) {
-      console.error('Failed to save autoMerge setting:', err);
-    }
+    await persistExecutionSetting(draft.draft_id, { autoMerge: value }, console.error, 'Failed to save autoMerge setting:');
   }, [draft.draft_id]);
 
   const handleRunUltrafixChange = useCallback(async (value: boolean) => {
     setRunUltrafix(value);
-    try {
-      await updateExecutionSettings(draft.draft_id, { runUltrafix: value });
-    } catch (err) {
-      console.error('Failed to save runUltrafix setting:', err);
-    }
+    await persistExecutionSetting(draft.draft_id, { runUltrafix: value }, console.error, 'Failed to save runUltrafix setting:');
   }, [draft.draft_id]);
 
   const handleUltrafixGoalChange = useCallback(async (value: number | null) => {
     setUltrafixGoal(value);
-    try {
-      await updateExecutionSettings(draft.draft_id, { ultrafixGoal: value });
-    } catch (err) {
-      console.error('Failed to save ultrafixGoal setting:', err);
-    }
+    await persistExecutionSetting(draft.draft_id, { ultrafixGoal: value }, console.error, 'Failed to save ultrafixGoal setting:');
   }, [draft.draft_id]);
 
   const handleUltrafixMaxCyclesChange = useCallback(async (value: number | null) => {
     setUltrafixMaxCycles(value);
-    try {
-      await updateExecutionSettings(draft.draft_id, { ultrafixMaxCycles: value });
-    } catch (err) {
-      console.error('Failed to save ultrafixMaxCycles setting:', err);
-    }
+    await persistExecutionSetting(draft.draft_id, { ultrafixMaxCycles: value }, console.error, 'Failed to save ultrafixMaxCycles setting:');
   }, [draft.draft_id]);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
-        <PlanHeaderSummary
-          planName={planName}
-          draftStatus={draft.status}
-          isPaused={isPaused}
-          repository={repository}
-          baseBranch={baseBranch}
-          initialPrompt={draft.initial_prompt}
-        />
-
-        <PlanHeaderActions
-          draftStatus={draft.status}
-          isPaused={isPaused}
-          isPauseLoading={isPauseLoading}
-          isRevising={isRevising}
-          isDeleting={isDeleting}
-          repoUrl={repoUrl}
-          onPauseResume={handlePauseResume}
-          onRevise={() => setShowReviseDialog(true)}
-          onDelete={() => setShowDeleteDialog(true)}
-        />
+        <PlanHeaderSummary planName={planName} draftStatus={draft.status} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={draft.initial_prompt} />
+        <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => setShowReviseDialog(true)} onDelete={() => setShowDeleteDialog(true)} />
       </div>
-
       <div className="flex-1 overflow-auto p-4">
-        <PlanIssuesManager
-          draftId={draft.draft_id}
-          tasks={tasks}
-          onRefresh={onRefetch}
-          onIssuesChange={handleIssuesChange}
-          refreshKey={refreshKey}
-          useEpic={useEpic}
-          autoMerge={autoMerge}
-          onUseEpicChange={handleUseEpicChange}
-          onAutoMergeChange={handleAutoMergeChange}
-          runUltrafix={runUltrafix}
-          ultrafixGoal={ultrafixGoal}
-          ultrafixMaxCycles={ultrafixMaxCycles}
-          onRunUltrafixChange={handleRunUltrafixChange}
-          onUltrafixGoalChange={handleUltrafixGoalChange}
-          onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange}
-          draftStatus={draft.status}
-          onCreationComplete={handleCreationComplete}
-        />
+        <PlanIssuesManager draftId={draft.draft_id} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} />
       </div>
-
       <PlanFooterStats stats={footerStats} onRefresh={handleRefresh} />
 
       <DeletePlanDialog isOpen={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} onConfirm={handleDeletePlanConfirm} isLoading={isDeleting} />

@@ -1,5 +1,4 @@
 import type { Logger } from 'pino';
-import type { Redis } from 'ioredis';
 import {
     findPlanIssueByRepoAndPR,
     generateCorrelationId,
