@@ -43,13 +43,7 @@ export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) =
   );
 };
 
-export interface ImplementButtonProps {
-  implementing: boolean;
-  hasAgent: boolean;
-  isFirstPending: boolean;
-  onClick: () => void;
-}
-
+export interface ImplementButtonProps { implementing: boolean; hasAgent: boolean; isFirstPending: boolean; onClick: () => void; }
 export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, hasAgent, isFirstPending, onClick }) => (
   <button
     onClick={onClick}
@@ -78,11 +72,7 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
   </button>
 );
 
-export interface AgentModelInfoProps {
-  agentAlias: string;
-  modelName: string | null;
-}
-
+export interface AgentModelInfoProps { agentAlias: string; modelName: string | null; }
 export const AgentModelInfo: React.FC<AgentModelInfoProps> = ({ agentAlias, modelName }) => (
   <span className="flex items-center gap-1.5 text-gray-500">
     <ProviderLogo provider={agentAlias} className="w-3 h-3" />
@@ -96,11 +86,7 @@ export const AgentModelInfo: React.FC<AgentModelInfoProps> = ({ agentAlias, mode
   </span>
 );
 
-export interface PrLinkProps {
-  prUrl: string;
-  prNumber: number;
-}
-
+export interface PrLinkProps { prUrl: string; prNumber: number; }
 export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (
   <a
     href={prUrl}
@@ -115,10 +101,7 @@ export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (
   </a>
 );
 
-export interface FollowupCountProps {
-  count: number;
-}
-
+export interface FollowupCountProps { count: number; }
 export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
   <span className="flex items-center gap-1 text-gray-500">
     <MessageSquare size={12} />
@@ -126,10 +109,7 @@ export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
   </span>
 );
 
-export interface ViewProgressLinkProps {
-  taskId: string;
-}
-
+export interface ViewProgressLinkProps { taskId: string; }
 export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (
   <Link
     to={`/tasks/${taskId}`}
@@ -232,7 +212,6 @@ export const RowActions: React.FC<RowActionsProps> = ({
           onMultiConfirm={handleImplementClick}
         />
       )}
-
       {isPending && (
         <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 max-w-full">
           <label className="flex items-center gap-1 text-xs text-slate-600">
@@ -269,7 +248,6 @@ export const RowActions: React.FC<RowActionsProps> = ({
           />
         </div>
       )}
-
       {isPending && (
         <ImplementButton
           implementing={implementing}
@@ -278,10 +256,6 @@ export const RowActions: React.FC<RowActionsProps> = ({
           onClick={handleImplementClick}
         />
       )}
-
-      {/* Status badge already shows status, no need for redundant "In Progress" text */}
-
-      {/* Expand/Collapse Toggle */}
       {hasExpandableContent && (
         <button
           onClick={handleToggleExpand}
@@ -308,10 +282,8 @@ export interface ExpandedContentProps {
 export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId }) => {
   const attachments = task.attachments || [];
   const hasAttachments = attachments.length > 0;
-
   return (
     <div className="px-4 pb-4 pt-0 border-t border-gray-100">
-      {/* Context / Body */}
       {task.body && (
         <div className="mt-3">
           <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
@@ -320,8 +292,6 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
           </div>
         </div>
       )}
-
-      {/* Implementation */}
       {task.implementation && (
         <div className="mt-3 bg-slate-50 rounded-lg p-3">
           <div className="flex items-center gap-2 mb-2">
@@ -333,8 +303,6 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
           </div>
         </div>
       )}
-
-      {/* Notes */}
       {(task.notes || hasAttachments) && (
         <div className="mt-3 bg-white rounded-lg p-3 border border-dashed border-gray-300">
           <div className="flex items-center gap-2 mb-2">
@@ -346,7 +314,6 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
               <MarkdownRenderer text={task.notes} className="prose prose-sm max-w-none" />
             </div>
           )}
-          {/* Attachments */}
           {hasAttachments && draftId && (
             <div className={task.notes ? 'mt-3 pt-3 border-t border-gray-200' : ''}>
               <span className="text-xs font-medium text-gray-500 block mb-2">Attachments</span>
@@ -392,28 +359,13 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
   );
 };
 
-export interface IssueMetadataProps {
-  issue: PlanIssue;
-  isPending: boolean;
-  isProcessing: boolean;
-  /** Selected models for multi-agent implementation */
-  selectedModels?: AgentModelPair[];
-}
-
+export interface IssueMetadataProps { issue: PlanIssue; isPending: boolean; isProcessing: boolean; selectedModels?: AgentModelPair[]; }
 export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, isProcessing, selectedModels }) => {
-  const prUrl = issue.pr_number
-    ? `https://github.com/${issue.repository}/pull/${issue.pr_number}`
-    : null;
+  const prUrl = issue.pr_number ? `https://github.com/${issue.repository}/pull/${issue.pr_number}` : null;
   const showProgressLink = isProcessing && issue.task_id;
-  // Show multi-agent info during processing if we have selected models
   const showMultiAgentInfo = !isPending && selectedModels && selectedModels.length > 0;
-  // Show single agent info only if we're not showing multi-agent and we have an agent
   const showAgentInfo = !isPending && !showMultiAgentInfo && issue.agent_alias;
-
-  // If no metadata to show, return null
-  if (!prUrl && !showProgressLink && issue.followup_count <= 0 && !showMultiAgentInfo && !showAgentInfo) {
-    return null;
-  }
+  if (!prUrl && !showProgressLink && issue.followup_count <= 0 && !showMultiAgentInfo && !showAgentInfo) return null;
 
   return (
     <div className="flex items-center gap-2 sm:gap-3 text-xs">
