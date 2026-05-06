@@ -108,7 +108,6 @@ interface PlanHeaderActionsProps {
   onRevise: () => void;
   onDelete: () => void;
 }
-
 function parsePlanTasks(planJson: DraftWithPlan['plan_json']): PlanTask[] {
   if (typeof planJson === 'string') {
     try {
@@ -129,24 +128,11 @@ function buildFooterStats(issues: PlanIssue[]): FooterStats {
   };
 }
 
-async function persistExecutionSetting(
-  draftId: string,
-  update: Parameters<typeof updateExecutionSettings>[1],
-): Promise<Awaited<ReturnType<typeof updateExecutionSettings>>> {
+async function persistExecutionSetting(draftId: string, update: Parameters<typeof updateExecutionSettings>[1]): Promise<Awaited<ReturnType<typeof updateExecutionSettings>>> {
   return updateExecutionSettings(draftId, update);
 }
 
-const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({
-  draftStatus,
-  isPaused,
-  isPauseLoading,
-  isRevising,
-  isDeleting,
-  repoUrl,
-  onPauseResume,
-  onRevise,
-  onDelete
-}) => {
+const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete }) => {
   const showPauseResume = draftStatus === 'executed' || draftStatus === 'pr_created';
   return (
     <div className="flex items-center gap-2 flex-shrink-0">
@@ -215,15 +201,7 @@ interface PlanHeaderSummaryProps {
   baseBranch: string;
   initialPrompt?: string | null;
 }
-
-const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({
-  planName,
-  draftStatus,
-  isPaused,
-  repository,
-  baseBranch,
-  initialPrompt,
-}) => (
+const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftStatus, isPaused, repository, baseBranch, initialPrompt }) => (
   <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
     <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
       {planName}
@@ -286,11 +264,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       setShowDeleteDialog(false);
       addToast({ type: 'success', message: 'Plan deleted successfully', duration: 3000 });
       navigate('/plans');
-    } catch (err) {
-      addToast({ type: 'error', message: (err as Error).message || 'Failed to delete plan', duration: 5000 });
-    } finally {
-      setIsDeleting(false);
-    }
+    } catch (err) { addToast({ type: 'error', message: (err as Error).message || 'Failed to delete plan', duration: 5000 }); } finally { setIsDeleting(false); }
   }, [draft.draft_id, addToast, navigate]);
 
   const handlePauseResume = useCallback(async () => {
@@ -305,11 +279,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         setIsPaused(true);
         addToast({ type: 'success', message: 'Plan execution paused. Current task will complete, but next task won\'t start.', duration: 4000 });
       }
-    } catch (err) {
-      addToast({ type: 'error', message: (err as Error).message || `Failed to ${isPaused ? 'resume' : 'pause'} plan`, duration: 5000 });
-    } finally {
-      setIsPauseLoading(false);
-    }
+    } catch (err) { addToast({ type: 'error', message: (err as Error).message || `Failed to ${isPaused ? 'resume' : 'pause'} plan`, duration: 5000 }); } finally { setIsPauseLoading(false); }
   }, [draft.draft_id, isPaused, addToast]);
 
   const handleRevisePlanConfirm = useCallback(async () => {
@@ -322,30 +292,16 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         : 'Plan revised successfully.';
       addToast({ type: 'success', message, duration: 3000 });
       onRefetch?.();
-    } catch (err) {
-      addToast({ type: 'error', message: (err as Error).message || 'Failed to revise plan', duration: 5000 });
-    } finally {
-      setIsRevising(false);
-    }
+    } catch (err) { addToast({ type: 'error', message: (err as Error).message || 'Failed to revise plan', duration: 5000 }); } finally { setIsRevising(false); }
   }, [draft.draft_id, addToast, onRefetch]);
 
   const handleRefresh = useCallback(() => setRefreshKey(prev => prev + 1), []);
   const handleIssuesChange = useCallback((newIssues: PlanIssue[]) => _setIssues(newIssues), []);
 
   const handleCreationComplete = useCallback((createdCount: number, failedCount: number) => {
-    if (failedCount > 0) {
-      addToast({
-        type: 'warning',
-        message: `Created ${createdCount} issue${createdCount !== 1 ? 's' : ''}, ${failedCount} failed`,
-        duration: 5000
-      });
-    } else {
-      addToast({
-        type: 'success',
-        message: `Successfully created ${createdCount} GitHub issue${createdCount !== 1 ? 's' : ''}`,
-        duration: 4000
-      });
-    }
+    addToast(failedCount > 0
+      ? { type: 'warning', message: `Created ${createdCount} issue${createdCount !== 1 ? 's' : ''}, ${failedCount} failed`, duration: 5000 }
+      : { type: 'success', message: `Successfully created ${createdCount} GitHub issue${createdCount !== 1 ? 's' : ''}`, duration: 4000 });
   }, [addToast]);
 
   const handleUseEpicChange = useCallback(async (value: boolean) => {
@@ -354,10 +310,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     try {
       const saved = await persistExecutionSetting(draft.draft_id, { useEpic: value });
       setUseEpic(saved.useEpic);
-    } catch (err) {
-      setUseEpic(previousValue);
-      addToast({ type: 'error', message: (err as Error).message || 'Failed to save Epic PR setting', duration: 5000 });
-    }
+    } catch (err) { setUseEpic(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save Epic PR setting', duration: 5000 }); }
   }, [addToast, draft.draft_id, useEpic]);
 
   const handleAutoMergeChange = useCallback(async (value: boolean) => {
@@ -366,10 +319,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     try {
       const saved = await persistExecutionSetting(draft.draft_id, { autoMerge: value });
       setAutoMerge(saved.autoMerge);
-    } catch (err) {
-      setAutoMerge(previousValue);
-      addToast({ type: 'error', message: (err as Error).message || 'Failed to save auto-merge setting', duration: 5000 });
-    }
+    } catch (err) { setAutoMerge(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save auto-merge setting', duration: 5000 }); }
   }, [addToast, autoMerge, draft.draft_id]);
 
   const handleRunUltrafixChange = useCallback(async (value: boolean) => {
@@ -380,10 +330,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       setRunUltrafix(saved.runUltrafix);
       setUltrafixGoal(saved.ultrafixGoal);
       setUltrafixMaxCycles(saved.ultrafixMaxCycles);
-    } catch (err) {
-      setRunUltrafix(previousValue);
-      addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix setting', duration: 5000 });
-    }
+    } catch (err) { setRunUltrafix(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix setting', duration: 5000 }); }
   }, [addToast, draft.draft_id, runUltrafix]);
 
   const handleUltrafixGoalChange = useCallback(async (value: number | null) => {
@@ -392,10 +339,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     try {
       const saved = await persistExecutionSetting(draft.draft_id, { ultrafixGoal: value });
       setUltrafixGoal(saved.ultrafixGoal);
-    } catch (err) {
-      setUltrafixGoal(previousValue);
-      addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix goal', duration: 5000 });
-    }
+    } catch (err) { setUltrafixGoal(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix goal', duration: 5000 }); }
   }, [addToast, draft.draft_id, ultrafixGoal]);
 
   const handleUltrafixMaxCyclesChange = useCallback(async (value: number | null) => {
@@ -404,10 +348,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
     try {
       const saved = await persistExecutionSetting(draft.draft_id, { ultrafixMaxCycles: value });
       setUltrafixMaxCycles(saved.ultrafixMaxCycles);
-    } catch (err) {
-      setUltrafixMaxCycles(previousValue);
-      addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix max cycles', duration: 5000 });
-    }
+    } catch (err) { setUltrafixMaxCycles(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix max cycles', duration: 5000 }); }
   }, [addToast, draft.draft_id, ultrafixMaxCycles]);
 
   return (
@@ -420,7 +361,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         <PlanIssuesManager draftId={draft.draft_id} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} />
       </div>
       <PlanFooterStats stats={footerStats} onRefresh={handleRefresh} />
-
       <DeletePlanDialog isOpen={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} onConfirm={handleDeletePlanConfirm} isLoading={isDeleting} />
       <RevisePlanDialog isOpen={showReviseDialog} onClose={() => setShowReviseDialog(false)} onConfirm={handleRevisePlanConfirm} isLoading={isRevising} />
     </motion.div>

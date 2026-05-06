@@ -368,50 +368,63 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const pauseDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'pause');
   const resumeDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'resume');
 
+  function parseExistingExecutionConfig(contextConfig: unknown): Record<string, unknown> {
+    if (!contextConfig) { return {}; }
+    return typeof contextConfig === 'string' ? JSON.parse(contextConfig) : contextConfig as Record<string, unknown>;
+  }
+
+  function buildUpdatedExecutionConfig(
+    existingConfig: Record<string, unknown>,
+    body: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const ultrafixGoal = parseOptionalInteger(body.ultrafixGoal, 'ultrafixGoal', { minimum: 1, maximum: 10 });
+    const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: 1 });
+
+    return {
+      ...existingConfig,
+      useEpic: body.useEpic ?? existingConfig.useEpic,
+      autoMerge: body.autoMerge ?? existingConfig.autoMerge,
+      runUltrafix: body.runUltrafix ?? existingConfig.runUltrafix,
+      ultrafixGoal: ultrafixGoal ?? existingConfig.ultrafixGoal,
+      ultrafixMaxCycles: ultrafixMaxCycles ?? existingConfig.ultrafixMaxCycles,
+    };
+  }
+
+  function sendExecutionSettingsResponse(res: Response, updatedConfig: Record<string, unknown>): void {
+    res.json({
+      success: true,
+      useEpic: updatedConfig.useEpic ?? false,
+      autoMerge: updatedConfig.autoMerge ?? false,
+      runUltrafix: updatedConfig.runUltrafix ?? false,
+      ultrafixGoal: updatedConfig.ultrafixGoal ?? null,
+      ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null
+    });
+  }
+
+  function isExecutionSettingsValidationError(message: string): boolean {
+    return message.includes('must be an integer') || message.includes('must be at least') || message.includes('must be at most');
+  }
+
   async function updateExecutionSettings(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
     const idValidation = validateUUID(req.params.id, 'Draft ID');
     if (!idValidation.valid) { res.status(400).json({ error: idValidation.error }); return; }
 
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const { useEpic, autoMerge, runUltrafix } = req.body;
-      const ultrafixGoal = parseOptionalInteger(req.body.ultrafixGoal, 'ultrafixGoal', { minimum: 1, maximum: 10 });
-      const ultrafixMaxCycles = parseOptionalInteger(req.body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: 1 });
-      const draft = ownership.draft!;
-      const existingConfig: Record<string, unknown> = draft.context_config
-        ? (typeof draft.context_config === 'string' ? JSON.parse(draft.context_config as string) : draft.context_config as Record<string, unknown>)
-        : {};
-
-      const updatedConfig = {
-        ...existingConfig,
-        useEpic: useEpic !== undefined ? useEpic : existingConfig.useEpic,
-        autoMerge: autoMerge !== undefined ? autoMerge : existingConfig.autoMerge,
-        runUltrafix: runUltrafix !== undefined ? runUltrafix : existingConfig.runUltrafix,
-        ultrafixGoal: ultrafixGoal !== undefined ? ultrafixGoal : existingConfig.ultrafixGoal,
-        ultrafixMaxCycles: ultrafixMaxCycles !== undefined ? ultrafixMaxCycles : existingConfig.ultrafixMaxCycles,
-      };
+      const existingConfig = parseExistingExecutionConfig(ownership.draft!.context_config);
+      const updatedConfig = buildUpdatedExecutionConfig(existingConfig, req.body as Record<string, unknown>);
 
       await db!('task_drafts').where({ draft_id: req.params.id }).update({
         context_config: JSON.stringify(updatedConfig),
         updated_at: db!.fn.now()
       });
-
-      res.json({
-        success: true,
-        useEpic: updatedConfig.useEpic ?? false,
-        autoMerge: updatedConfig.autoMerge ?? false,
-        runUltrafix: updatedConfig.runUltrafix ?? false,
-        ultrafixGoal: updatedConfig.ultrafixGoal ?? null,
-        ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null
-      });
+      sendExecutionSettingsResponse(res, updatedConfig);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update execution settings';
-      if (message.includes('must be an integer') || message.includes('must be at least') || message.includes('must be at most')) {
+      if (isExecutionSettingsValidationError(message)) {
         res.status(400).json({ error: message });
         return;
       }
