@@ -106,6 +106,14 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     return parsedValue;
   }
 
+  function parseOptionalBoolean(value: unknown, fieldName: string): boolean | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'boolean') {
+      throw new Error(`${fieldName} must be a boolean`);
+    }
+    return value;
+  }
+
   async function listRepositories(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
@@ -384,6 +392,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     existingConfig: Record<string, unknown>,
     body: Record<string, unknown>,
   ): Record<string, unknown> {
+    const useEpic = parseOptionalBoolean(body.useEpic, 'useEpic');
+    const autoMerge = parseOptionalBoolean(body.autoMerge, 'autoMerge');
+    const runUltrafix = parseOptionalBoolean(body.runUltrafix, 'runUltrafix');
     const ultrafixGoal = parseOptionalInteger(body.ultrafixGoal, 'ultrafixGoal', { minimum: 1, maximum: 10 });
     const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: 1 });
     const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
@@ -391,9 +402,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
     return {
       ...existingConfig,
-      useEpic: body.useEpic ?? existingConfig.useEpic,
-      autoMerge: body.autoMerge ?? existingConfig.autoMerge,
-      runUltrafix: body.runUltrafix ?? existingConfig.runUltrafix,
+      useEpic: useEpic ?? existingConfig.useEpic,
+      autoMerge: autoMerge ?? existingConfig.autoMerge,
+      runUltrafix: runUltrafix ?? existingConfig.runUltrafix,
       ultrafixGoal: hasUltrafixGoal ? ultrafixGoal : existingConfig.ultrafixGoal,
       ultrafixMaxCycles: hasUltrafixMaxCycles ? ultrafixMaxCycles : existingConfig.ultrafixMaxCycles,
     };
@@ -411,7 +422,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   function isExecutionSettingsValidationError(message: string): boolean {
-    return message.includes('must be an integer') || message.includes('must be at least') || message.includes('must be at most');
+    return message.includes('must be a boolean') || message.includes('must be an integer') || message.includes('must be at least') || message.includes('must be at most');
   }
 
   async function updateExecutionSettings(req: Request, res: Response): Promise<void> {

@@ -70,6 +70,36 @@ function parseContextConfig(contextConfig: string | Record<string, unknown>): Re
   return contextConfig;
 }
 
+function buildExecutionContextConfig(
+  existingConfig: Record<string, unknown>,
+  results: CreatedIssue[],
+  failures: Array<{ taskIndex: number; title: string; error: string }>
+): Record<string, unknown> {
+  const updatedConfig: Record<string, unknown> = {
+    baseBranch: existingConfig.baseBranch,
+    granularity: existingConfig.granularity,
+    contextLevel: existingConfig.contextLevel,
+    compress: existingConfig.compress,
+    manualFiles: existingConfig.manualFiles,
+    autoFiles: existingConfig.autoFiles,
+    contextRepositories: existingConfig.contextRepositories,
+    generationModel: existingConfig.generationModel,
+    useEpic: typeof existingConfig.useEpic === 'boolean' ? existingConfig.useEpic : undefined,
+    autoMerge: typeof existingConfig.autoMerge === 'boolean' ? existingConfig.autoMerge : undefined,
+    runUltrafix: typeof existingConfig.runUltrafix === 'boolean' ? existingConfig.runUltrafix : undefined,
+    ultrafixGoal: Number.isInteger(existingConfig.ultrafixGoal) ? existingConfig.ultrafixGoal : null,
+    ultrafixMaxCycles: Number.isInteger(existingConfig.ultrafixMaxCycles) ? existingConfig.ultrafixMaxCycles : null,
+    executionResults: results,
+    executedAt: new Date().toISOString()
+  };
+
+  if (failures.length > 0) {
+    updatedConfig.executionFailures = failures;
+  }
+
+  return updatedConfig;
+}
+
 // Statuses that allow RE-finalization (will detach existing issues and recreate)
 const RE_FINALIZABLE_STATUSES = ['approved', 'executed', 'pr_created', 'merged', 'failed'];
 
@@ -276,15 +306,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     }
   }
 
-  const updatedConfig: Record<string, unknown> = {
-    ...parseContextConfig(draft.context_config),
-    executionResults: results,
-    executedAt: new Date().toISOString()
-  };
-
-  if (failures.length > 0) {
-    updatedConfig.executionFailures = failures;
-  }
+  const updatedConfig = buildExecutionContextConfig(parseContextConfig(draft.context_config), results, failures);
 
   await db!('task_drafts')
     .where({ draft_id: draftId })

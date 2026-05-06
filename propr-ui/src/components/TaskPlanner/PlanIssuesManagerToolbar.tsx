@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Check, CheckCircle, Info, Layers, Loader2, ArrowDownToLine } from 'lucide-react';
 import { AgentModelPair } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import { AgentConfig } from '../../api/proprApi';
 import AgentModelSelector from './AgentModelSelector';
+import { UltrafixSettingsControls } from './PlanIssueRowComponents';
 
 export const TasksBeingCreated: React.FC<{
   tasks: PlanTask[];
@@ -78,35 +79,7 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
   runUltrafix, onRunUltrafixChange, ultrafixGoal, onUltrafixGoalChange, ultrafixMaxCycles, onUltrafixMaxCyclesChange,
   tasks, pendingCount, implementingAll, handleImplementAll,
 }) => {
-  const [goalInput, setGoalInput] = useState(ultrafixGoal?.toString() ?? '');
-  const [maxCyclesInput, setMaxCyclesInput] = useState(ultrafixMaxCycles?.toString() ?? '');
   const ultrafixEnabled = runUltrafix || false;
-
-  useEffect(() => {
-    setGoalInput(ultrafixGoal?.toString() ?? '');
-  }, [ultrafixGoal]);
-
-  useEffect(() => {
-    setMaxCyclesInput(ultrafixMaxCycles?.toString() ?? '');
-  }, [ultrafixMaxCycles]);
-
-  const commitGoal = () => {
-    const nextValue = goalInput.trim() === '' ? null : Number(goalInput);
-    if (nextValue !== null && (!Number.isInteger(nextValue) || nextValue < 1 || nextValue > 10)) {
-      setGoalInput(ultrafixGoal?.toString() ?? '');
-      return;
-    }
-    if (nextValue !== ultrafixGoal) onUltrafixGoalChange?.(nextValue);
-  };
-
-  const commitMaxCycles = () => {
-    const nextValue = maxCyclesInput.trim() === '' ? null : Number(maxCyclesInput);
-    if (nextValue !== null && (!Number.isInteger(nextValue) || nextValue < 1)) {
-      setMaxCyclesInput(ultrafixMaxCycles?.toString() ?? '');
-      return;
-    }
-    if (nextValue !== ultrafixMaxCycles) onUltrafixMaxCyclesChange?.(nextValue);
-  };
 
   return (
     <div className="flex flex-col gap-2.5 sm:gap-3 py-2.5 border-b border-slate-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-3">
@@ -157,28 +130,19 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
             <input type="checkbox" checked={runUltrafix || false} onChange={(e) => onRunUltrafixChange?.(e.target.checked)} className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer" />
             <span>Run ultrafix after PR</span>
           </label>
-          <input
-            type="number"
-            min={1}
-            max={10}
-            value={goalInput}
-            disabled={!ultrafixEnabled}
-            onChange={(e) => setGoalInput(e.target.value)}
-            onBlur={commitGoal}
-            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-            placeholder="UF goal"
-            className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-          />
-          <input
-            type="number"
-            min={1}
-            value={maxCyclesInput}
-            disabled={!ultrafixEnabled}
-            onChange={(e) => setMaxCyclesInput(e.target.value)}
-            onBlur={commitMaxCycles}
-            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-            placeholder="UF max"
-            className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+          <UltrafixSettingsControls
+            enabled={ultrafixEnabled}
+            goal={ultrafixGoal}
+            maxCycles={ultrafixMaxCycles}
+            onGoalChange={(value) => onUltrafixGoalChange?.(value)}
+            onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange?.(value)}
+            goalPlaceholder="UF goal"
+            maxPlaceholder="UF max"
+            inputClassName="rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+            goalInputWidthClassName="w-24"
+            maxInputWidthClassName="w-24"
+            containerClassName="flex flex-col gap-1"
+            errorClassName="text-[11px] text-amber-700"
           />
         </div>
       </div>

@@ -52,9 +52,14 @@ const ULTRAFIX_MAX_CYCLES_MIN = 1;
 
 function parseContextConfig(draft: Record<string, unknown>): Record<string, unknown> | null {
   if (!draft.context_config) return null;
-  return typeof draft.context_config === 'string'
-    ? JSON.parse(draft.context_config as string)
-    : draft.context_config as Record<string, unknown>;
+  if (typeof draft.context_config !== 'string') {
+    return draft.context_config as Record<string, unknown>;
+  }
+  try {
+    return JSON.parse(draft.context_config) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function sanitizeUltrafixGoal(value: unknown): number | null {
@@ -276,11 +281,12 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
       const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
-      await updatePlanIssue(draftId, issueNumber, {
+      const resolvedPlanIssue = await updatePlanIssue(draftId, issueNumber, {
         run_ultrafix: ultrafixSettings.runUltrafix,
         ultrafix_goal: ultrafixSettings.ultrafixGoal,
         ultrafix_max_cycles: ultrafixSettings.ultrafixMaxCycles
       });
+      const issueForImplementation = resolvedPlanIssue ?? planIssue;
 
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
@@ -307,8 +313,8 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       };
 
       const result = (models && Array.isArray(models) && models.length > 0)
-        ? await handleMultiAgentImplementation({ ...context, draftId, planIssue, models })
-        : await handleSingleAgentImplementation({ ...context, draftId, planIssue });
+        ? await handleMultiAgentImplementation({ ...context, draftId, planIssue: issueForImplementation, models })
+        : await handleSingleAgentImplementation({ ...context, draftId, planIssue: issueForImplementation });
 
       res.json(result);
     } catch (error) {

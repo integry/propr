@@ -19,6 +19,148 @@ import AgentModelSelector from './AgentModelSelector';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 import { getModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
 
+interface UltrafixSettingsControlsProps {
+  enabled: boolean;
+  goal: number | null | undefined;
+  maxCycles: number | null | undefined;
+  onGoalChange: (value: number | null) => void;
+  onMaxCyclesChange: (value: number | null) => void;
+  goalPlaceholder: string;
+  maxPlaceholder: string;
+  inputClassName: string;
+  goalInputWidthClassName: string;
+  maxInputWidthClassName: string;
+  containerClassName?: string;
+  errorClassName?: string;
+}
+
+function parseUltrafixIntegerInput(
+  rawValue: string,
+  options: { minimum: number; maximum?: number; label: string }
+): { value: number | null; error: string | null } {
+  const trimmedValue = rawValue.trim();
+  if (trimmedValue === '') {
+    return { value: null, error: null };
+  }
+
+  const nextValue = Number(trimmedValue);
+  if (!Number.isInteger(nextValue)) {
+    return { value: null, error: `${options.label} must be a whole number` };
+  }
+  if (nextValue < options.minimum) {
+    return { value: null, error: `${options.label} must be at least ${options.minimum}` };
+  }
+  if (options.maximum !== undefined && nextValue > options.maximum) {
+    return { value: null, error: `${options.label} must be at most ${options.maximum}` };
+  }
+
+  return { value: nextValue, error: null };
+}
+
+export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> = ({
+  enabled,
+  goal,
+  maxCycles,
+  onGoalChange,
+  onMaxCyclesChange,
+  goalPlaceholder,
+  maxPlaceholder,
+  inputClassName,
+  goalInputWidthClassName,
+  maxInputWidthClassName,
+  containerClassName = 'flex flex-col gap-1',
+  errorClassName = 'text-[11px] text-amber-700',
+}) => {
+  const [goalInput, setGoalInput] = useState(goal?.toString() ?? '');
+  const [maxCyclesInput, setMaxCyclesInput] = useState(maxCycles?.toString() ?? '');
+  const [goalError, setGoalError] = useState<string | null>(null);
+  const [maxCyclesError, setMaxCyclesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setGoalInput(goal?.toString() ?? '');
+    setGoalError(null);
+  }, [goal]);
+
+  useEffect(() => {
+    setMaxCyclesInput(maxCycles?.toString() ?? '');
+    setMaxCyclesError(null);
+  }, [maxCycles]);
+
+  useEffect(() => {
+    if (!enabled) {
+      setGoalError(null);
+      setMaxCyclesError(null);
+    }
+  }, [enabled]);
+
+  const commitGoal = () => {
+    const result = parseUltrafixIntegerInput(goalInput, { minimum: 1, maximum: 10, label: 'Ultrafix goal' });
+    if (result.error) {
+      setGoalError(result.error);
+      setGoalInput(goal?.toString() ?? '');
+      return;
+    }
+
+    setGoalError(null);
+    if (result.value !== goal) {
+      onGoalChange(result.value);
+    }
+  };
+
+  const commitMaxCycles = () => {
+    const result = parseUltrafixIntegerInput(maxCyclesInput, { minimum: 1, label: 'Ultrafix max cycles' });
+    if (result.error) {
+      setMaxCyclesError(result.error);
+      setMaxCyclesInput(maxCycles?.toString() ?? '');
+      return;
+    }
+
+    setMaxCyclesError(null);
+    if (result.value !== maxCycles) {
+      onMaxCyclesChange(result.value);
+    }
+  };
+
+  return (
+    <div className={containerClassName}>
+      <div className="flex items-center gap-1.5">
+        <input
+          type="number"
+          min={1}
+          max={10}
+          value={goalInput}
+          disabled={!enabled}
+          onChange={(e) => {
+            setGoalInput(e.target.value);
+            if (goalError) setGoalError(null);
+          }}
+          onBlur={commitGoal}
+          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+          placeholder={goalPlaceholder}
+          className={`${goalInputWidthClassName} ${inputClassName}`}
+        />
+        <input
+          type="number"
+          min={1}
+          value={maxCyclesInput}
+          disabled={!enabled}
+          onChange={(e) => {
+            setMaxCyclesInput(e.target.value);
+            if (maxCyclesError) setMaxCyclesError(null);
+          }}
+          onBlur={commitMaxCycles}
+          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+          placeholder={maxPlaceholder}
+          className={`${maxInputWidthClassName} ${inputClassName}`}
+        />
+      </div>
+      {(goalError || maxCyclesError) && (
+        <p className={errorClassName}>{goalError ?? maxCyclesError}</p>
+      )}
+    </div>
+  );
+};
+
 export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
   const config = STATUS_CONFIG[status];
 
@@ -164,35 +306,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
   handleImplementClick,
   handleToggleExpand
 }) => {
-  const [goalInput, setGoalInput] = useState(issue.ultrafix_goal?.toString() ?? '');
-  const [maxCyclesInput, setMaxCyclesInput] = useState(issue.ultrafix_max_cycles?.toString() ?? '');
   const ultrafixEnabled = issue.run_ultrafix ?? false;
-
-  useEffect(() => {
-    setGoalInput(issue.ultrafix_goal?.toString() ?? '');
-  }, [issue.ultrafix_goal]);
-
-  useEffect(() => {
-    setMaxCyclesInput(issue.ultrafix_max_cycles?.toString() ?? '');
-  }, [issue.ultrafix_max_cycles]);
-
-  const commitGoal = () => {
-    const nextValue = goalInput.trim() === '' ? null : Number(goalInput);
-    if (nextValue !== null && (!Number.isInteger(nextValue) || nextValue < 1 || nextValue > 10)) {
-      setGoalInput(issue.ultrafix_goal?.toString() ?? '');
-      return;
-    }
-    if (nextValue !== issue.ultrafix_goal) onUltrafixGoalChange(issue.issue_number, nextValue);
-  };
-
-  const commitMaxCycles = () => {
-    const nextValue = maxCyclesInput.trim() === '' ? null : Number(maxCyclesInput);
-    if (nextValue !== null && (!Number.isInteger(nextValue) || nextValue < 1)) {
-      setMaxCyclesInput(issue.ultrafix_max_cycles?.toString() ?? '');
-      return;
-    }
-    if (nextValue !== issue.ultrafix_max_cycles) onUltrafixMaxCyclesChange(issue.issue_number, nextValue);
-  };
 
   return (
     <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
@@ -223,28 +337,19 @@ export const RowActions: React.FC<RowActionsProps> = ({
             />
             UF
           </label>
-          <input
-            type="number"
-            min={1}
-            max={10}
-            value={goalInput}
-            disabled={!ultrafixEnabled}
-            onChange={(e) => setGoalInput(e.target.value)}
-            onBlur={commitGoal}
-            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-            placeholder="Goal"
-            className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-          />
-          <input
-            type="number"
-            min={1}
-            value={maxCyclesInput}
-            disabled={!ultrafixEnabled}
-            onChange={(e) => setMaxCyclesInput(e.target.value)}
-            onBlur={commitMaxCycles}
-            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-            placeholder="Max"
-            className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+          <UltrafixSettingsControls
+            enabled={ultrafixEnabled}
+            goal={issue.ultrafix_goal}
+            maxCycles={issue.ultrafix_max_cycles}
+            onGoalChange={(value) => onUltrafixGoalChange(issue.issue_number, value)}
+            onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange(issue.issue_number, value)}
+            goalPlaceholder="Goal"
+            maxPlaceholder="Max"
+            inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+            goalInputWidthClassName="w-14"
+            maxInputWidthClassName="w-14"
+            containerClassName="flex flex-col gap-1"
+            errorClassName="text-[10px] text-amber-700"
           />
         </div>
       )}
