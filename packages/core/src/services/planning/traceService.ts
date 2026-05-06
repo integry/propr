@@ -9,6 +9,25 @@ import { getEventPublisher } from '../../utils/eventPublisher.js';
 
 type ParsedGenerationTrace = GenerationTrace & Pick<DraftUpdateGenerationTrace, 'error' | 'failedAt'>;
 
+function sanitizeDraftUpdateStepData(data: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!data) {
+    return undefined;
+  }
+
+  const sanitizedEntries = Object.entries(data).filter(([, value]) => (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ));
+
+  if (sanitizedEntries.length === 0) {
+    return undefined;
+  }
+
+  return Object.fromEntries(sanitizedEntries);
+}
+
 export function parseGenerationTrace(raw: unknown): ParsedGenerationTrace {
   let parsed: ParsedGenerationTrace | undefined;
   if (raw) {
@@ -27,15 +46,11 @@ export function parseGenerationTrace(raw: unknown): ParsedGenerationTrace {
 export function buildDraftUpdateTraceSnapshot(trace: ParsedGenerationTrace): DraftUpdateGenerationTrace {
   return {
     steps: trace.steps.map((step) => {
-      if (!step.data || !Array.isArray(step.data.includedFiles)) {
-        return step;
-      }
-
-      const restData = { ...step.data };
-      delete restData.includedFiles;
+      const { data, ...rest } = step;
+      const sanitizedData = sanitizeDraftUpdateStepData(data);
       return {
-        ...step,
-        ...(Object.keys(restData).length > 0 ? { data: restData } : {})
+        ...rest,
+        ...(sanitizedData ? { data: sanitizedData } : {})
       };
     }),
     ...(typeof trace.error === 'string' ? { error: trace.error } : {}),
@@ -82,7 +97,7 @@ export async function updateTrace(
     draftId,
     step,
     status,
-    data,
+    data: sanitizeDraftUpdateStepData(data),
     draftStatus: 'generating',
     generationTrace: buildDraftUpdateTraceSnapshot(trace)
   });

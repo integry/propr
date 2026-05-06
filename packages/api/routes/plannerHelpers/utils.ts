@@ -12,15 +12,21 @@ function buildFailureTraceSnapshot(trace: DraftUpdateGenerationTrace): DraftUpda
   return {
     ...trace,
     steps: trace.steps.map((step) => {
-      if (!step.data || !Array.isArray(step.data.includedFiles)) {
-        return step;
-      }
+      const { data, ...rest } = step;
+      const sanitizedData = data
+        ? Object.fromEntries(
+            Object.entries(data).filter(([, value]) => (
+              value === null ||
+              typeof value === 'string' ||
+              typeof value === 'number' ||
+              typeof value === 'boolean'
+            ))
+          )
+        : undefined;
 
-      const restData = { ...step.data };
-      delete restData.includedFiles;
       return {
-        ...step,
-        ...(Object.keys(restData).length > 0 ? { data: restData } : {})
+        ...rest,
+        ...(sanitizedData && Object.keys(sanitizedData).length > 0 ? { data: sanitizedData } : {})
       };
     })
   };

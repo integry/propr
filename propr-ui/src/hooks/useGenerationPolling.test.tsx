@@ -119,7 +119,7 @@ describe('useGenerationPolling', () => {
     expect(mockGetDraft).not.toHaveBeenCalled();
   });
 
-  it('falls back to a connected resync only after socket inactivity', () => {
+  it('does not resync over HTTP while the socket stays connected but quiet', () => {
     const onComplete = vi.fn();
     const { result } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
 
@@ -128,16 +128,10 @@ describe('useGenerationPolling', () => {
     });
 
     act(() => {
-      vi.advanceTimersByTime(9_999);
+      vi.advanceTimersByTime(30_000);
     });
 
     expect(mockGetDraft).not.toHaveBeenCalled();
-
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(mockGetDraft).toHaveBeenCalledTimes(1);
   });
 
   it('stops generating immediately on terminal socket events', async () => {
@@ -213,29 +207,15 @@ describe('useGenerationPolling', () => {
     expect(mockGetDraft).not.toHaveBeenCalled();
   });
 
-  it('recovers with a connected safety-net poll when a terminal socket event is missed', async () => {
-    mockGetDraft.mockResolvedValue({
-      draft_id: 'draft-1',
-      repository: 'integry/propr',
-      initial_prompt: 'Test prompt',
-      status: 'review',
-      attachments: [],
-      created_at: '2026-05-05T00:00:00Z',
-      generation_trace: {
-        steps: [
-          { name: 'relevance', status: 'completed' },
-          { name: 'context', status: 'completed' },
-          { name: 'llm', status: 'completed' },
-        ],
-      },
-    });
+  it('falls back to HTTP polling when the socket is disconnected', async () => {
+    socketState.isConnected = false;
 
     const onComplete = vi.fn();
     const { result } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
 
     act(() => {
       result.current.startPolling();
-      vi.advanceTimersByTime(10_000);
+      vi.advanceTimersByTime(1_000);
     });
 
     await act(async () => {
@@ -243,6 +223,71 @@ describe('useGenerationPolling', () => {
     });
 
     expect(mockGetDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('resyncs once on socket reconnection after a disconnected gap', async () => {
+    mockGetDraft
+      .mockResolvedValueOnce({
+        draft_id: 'draft-1',
+        repository: 'integry/propr',
+        initial_prompt: 'Test prompt',
+        status: 'generating',
+        attachments: [],
+        created_at: '2026-05-05T00:00:00Z',
+        generation_trace: {
+          steps: [
+            { name: 'relevance', status: 'completed' },
+            { name: 'context', status: 'in_progress' },
+            { name: 'llm', status: 'pending' },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        draft_id: 'draft-1',
+        repository: 'integry/propr',
+        initial_prompt: 'Test prompt',
+        status: 'review',
+        attachments: [],
+        created_at: '2026-05-05T00:00:00Z',
+        generation_trace: {
+          steps: [
+            { name: 'relevance', status: 'completed' },
+            { name: 'context', status: 'completed' },
+            { name: 'llm', status: 'completed' },
+          ],
+        },
+      });
+
+    const onComplete = vi.fn();
+    const { result, rerender } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
+
+    act(() => {
+      result.current.startPolling();
+    });
+
+    act(() => {
+      socketState.isConnected = false;
+      rerender();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+
+    expect(mockGetDraft).toHaveBeenCalledTimes(1);
+    expect(result.current.isGenerating).toBe(true);
+
+    act(() => {
+      socketState.isConnected = true;
+      rerender();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockGetDraft).toHaveBeenCalledTimes(2);
     expect(result.current.isGenerating).toBe(false);
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
