@@ -14,7 +14,28 @@ import { GenerationProgress } from './GenerationProgress';
 import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
 import { getEstimatedIssueText } from './setupWizardUtils';
 import type { RepoSelection } from '../RepositorySelector';
-import { PlannerConfig, useRepositoryLoader, useBranchesLoader, useRepoInfoLoader, useAgentsLoader, useIndexedRepositoriesLoader, usePlannerSettingsPersistence, useFileHandling, useGenerationHandlers, useDraftCreation, useAutoDraftCreation, persistResolvedBaseBranch, getBaseBranchPersistenceWarning, usePromptPersistence, computeIsGenerateDisabled, computeCanExport, useAutoResize, useDraftContextConfigSync, usePreviewTrace, useSetupWizardEffects } from './setupWizardHooks';
+import {
+  PlannerConfig,
+  useRepositoryLoader,
+  useBranchesLoader,
+  useRepoInfoLoader,
+  useAgentsLoader,
+  useIndexedRepositoriesLoader,
+  usePlannerSettingsPersistence,
+  useFileHandling,
+  useGenerationHandlers,
+  useDraftCreation,
+  useAutoDraftCreation,
+  persistResolvedBaseBranch,
+  getBaseBranchPersistenceWarning,
+  usePromptPersistence,
+  computeIsGenerateDisabled,
+  computeCanExport,
+  useAutoResize,
+  useDraftContextConfigSync,
+  usePreviewTrace,
+  useSetupWizardEffects
+} from './setupWizardHooks';
 
 interface SetupWizardProps {
   draft?: PlannerDraft;
@@ -23,12 +44,34 @@ interface SetupWizardProps {
   onDraftCreatedInPlace?: (draft: PlannerDraft) => void;
 }
 
-type SetupWizardContentProps = { isNewMode: boolean; draft: PlannerDraft | undefined; config: PlannerConfig; setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>;
-  repoLoader: ReturnType<typeof useRepositoryLoader>; newModeBranches: ReturnType<typeof useBranchesLoader>; repoInfo: ReturnType<typeof useRepoInfoLoader>; fileHandling: ReturnType<typeof useFileHandling>;
-  generationPolling: ReturnType<typeof useGenerationPolling>; contextExport: ReturnType<typeof useContextExport>; contextRefresh: ReturnType<typeof useContextRefresh>; generationHandlers: ReturnType<typeof useGenerationHandlers>;
-  autoResize: () => void; textareaRef: React.RefObject<HTMLTextAreaElement | null>; fileInputRef: React.RefObject<HTMLInputElement | null>; error: string | null; branchError: string | null; isCreating: boolean;
-  initialConfiguredBaseBranch: string; handleRepoChangeInEditMode: (repo: string, selection?: RepoSelection) => Promise<void>; handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
-  handleExportContext: () => void; handleGenerate: () => Promise<void>; agents: ReturnType<typeof useAgentsLoader>; availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>; previewTrace?: GenerationTrace; };
+type SetupWizardContentProps = {
+  isNewMode: boolean;
+  draft: PlannerDraft | undefined;
+  config: PlannerConfig;
+  setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>;
+  repoLoader: ReturnType<typeof useRepositoryLoader>;
+  newModeBranches: ReturnType<typeof useBranchesLoader>;
+  repoInfo: ReturnType<typeof useRepoInfoLoader>;
+  fileHandling: ReturnType<typeof useFileHandling>;
+  generationPolling: ReturnType<typeof useGenerationPolling>;
+  contextExport: ReturnType<typeof useContextExport>;
+  contextRefresh: ReturnType<typeof useContextRefresh>;
+  generationHandlers: ReturnType<typeof useGenerationHandlers>;
+  autoResize: () => void;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  error: string | null;
+  branchError: string | null;
+  isCreating: boolean;
+  initialConfiguredBaseBranch: string;
+  handleRepoChangeInEditMode: (repo: string, selection?: RepoSelection) => Promise<void>;
+  handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
+  handleExportContext: () => void;
+  handleGenerate: () => Promise<void>;
+  agents: ReturnType<typeof useAgentsLoader>;
+  availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>;
+  previewTrace?: GenerationTrace;
+};
 
 const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const { isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo, fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers, autoResize, textareaRef, fileInputRef, error, branchError, isCreating, initialConfiguredBaseBranch, handleRepoChangeInEditMode, handleFileInputChange, handleExportContext, handleGenerate, agents, availableRepos, previewTrace } = props;
@@ -165,7 +208,13 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   );
 };
 
-interface LocationState { initialPrompt?: string; initialRepository?: string; initialBaseBranch?: string; baseBranchPersistenceWarning?: string | null; todoIds?: string[]; }
+interface LocationState {
+  initialPrompt?: string;
+  initialRepository?: string;
+  initialBaseBranch?: string;
+  baseBranchPersistenceWarning?: string | null;
+  todoIds?: string[];
+}
 
 type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
 
@@ -259,7 +308,13 @@ function useSetupWizardLoaders({ isNewMode, draft, locationState, savedSettings,
   const agents = useAgentsLoader();
   const availableRepos = useIndexedRepositoriesLoader(draft?.repository, repoLoader.selectedRepo);
 
-  usePlannerSettingsPersistence(config, draft?.repository, repoLoader.selectedRepo, repoLoader.selectedBaseBranch);
+  usePlannerSettingsPersistence(
+    config,
+    draft?.repository,
+    draft?.context_config?.baseBranch,
+    repoLoader.selectedRepo,
+    repoLoader.selectedBaseBranch
+  );
   usePromptPersistence(draft?.draft_id, config.prompt, draft?.initial_prompt);
 
   return { repoLoader, newModeBranches, repoInfo, agents, availableRepos };

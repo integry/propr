@@ -1,7 +1,15 @@
 import React, { useState } from 'react';
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, usePlannerSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
+import {
+  computeIsGenerateDisabled,
+  useBranchesLoader,
+  useRepoInfoLoader,
+  useDraftCreation,
+  usePlannerSettingsPersistence,
+  useDraftContextConfigSync,
+  type PlannerConfig
+} from './setupWizardHooks';
 import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 
@@ -287,6 +295,7 @@ describe('setupWizardHooks branch resolution', () => {
     renderHook(() => usePlannerSettingsPersistence(
       { ...baseConfig, baseBranch: 'main' },
       undefined,
+      undefined,
       'integry/propr',
       ''
     ));
@@ -298,6 +307,61 @@ describe('setupWizardHooks branch resolution', () => {
     expect(mockSavePlannerSettings).not.toHaveBeenCalledWith({
       lastRepository: 'integry/propr',
       lastBaseBranch: 'main',
+    });
+  });
+
+  it('persists the draft repository branch together with the draft repository in edit mode', () => {
+    renderHook(() => usePlannerSettingsPersistence(
+      { ...baseConfig, baseBranch: 'release' },
+      'integry/propr',
+      'develop',
+      'integry/other',
+      'release'
+    ));
+
+    expect(mockSavePlannerSettings).toHaveBeenCalledWith({
+      lastRepository: 'integry/propr',
+      lastBaseBranch: 'develop',
+    });
+    expect(mockSavePlannerSettings).not.toHaveBeenCalledWith({
+      lastRepository: 'integry/propr',
+      lastBaseBranch: 'release',
+    });
+  });
+
+  it('clears stale draft context state when a replacement draft omits optional context config values', async () => {
+    const replacementDraft = {
+      draft_id: 'draft-2',
+      repository: 'integry/propr',
+      initial_prompt: 'Prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+      context_config: {
+        contextRepositories: [],
+        generationModel: null,
+        manualFiles: [],
+        excludedFiles: [],
+      },
+    };
+
+    const { result } = renderHook(() => {
+      const [config, setConfig] = useState<PlannerConfig>({
+        ...baseConfig,
+        contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
+        generationModel: 'gpt-5.4',
+        manualFiles: ['src/a.ts'],
+        excludedFiles: ['src/b.ts']
+      });
+      useDraftContextConfigSync(replacementDraft as never, setConfig);
+      return config;
+    });
+
+    await waitFor(() => {
+      expect(result.current.contextRepositories).toEqual([]);
+      expect(result.current.generationModel).toBeNull();
+      expect(result.current.manualFiles).toEqual([]);
+      expect(result.current.excludedFiles).toEqual([]);
     });
   });
 });

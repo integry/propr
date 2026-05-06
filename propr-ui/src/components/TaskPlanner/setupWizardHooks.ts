@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, AgentConfig, DraftContextConfig, GenerationTrace } from '../../api/proprApi';
+import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, AgentConfig, DraftContextConfig, GenerationTrace, Granularity } from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getUserRepoPreferences, UserRepoPreferences } from '../../api/userRepoPreferencesApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
@@ -8,11 +8,7 @@ import { IndexedRepository } from './ContextRepositoriesSection';
 import { constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
 import type { RepoSelection } from '../RepositorySelector';
 export { useAutoDraftCreation, constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
-
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
-
-import type { Granularity } from '../../api/proprApi';
-
 export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[];
   contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
 
@@ -20,10 +16,7 @@ interface RepoInfoState { isLoading: boolean; error: string | null; }
 const clearResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) => setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
 const setResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, baseBranch: string) => setConfig(prev => prev.baseBranch === baseBranch ? prev : { ...prev, baseBranch });
 
-async function loadRepositories(
-  savedLastRepository: string | undefined,
-  savedLastBaseBranch: string | undefined
-): Promise<{ repos: Repo[]; selectedRepo: string; selectedBaseBranch: string }> {
+async function loadRepositories(savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined): Promise<{ repos: Repo[]; selectedRepo: string; selectedBaseBranch: string }> {
   const [repoData, userPrefs, indexingData] = await Promise.all([
     getRepoConfig() as Promise<{ repos_to_monitor?: unknown[] }>,
     getUserRepoPreferences().catch(() => ({} as UserRepoPreferences)),
@@ -173,12 +166,13 @@ export function useIndexedRepositoriesLoader(draftRepository: string | undefined
   return availableRepos;
 }
 
-export function usePlannerSettingsPersistence(config: PlannerConfig, draftRepository: string | undefined, selectedRepo: string, selectedBaseBranch: string) {
+export function usePlannerSettingsPersistence(config: PlannerConfig, draftRepository: string | undefined, draftBaseBranch: string | undefined, selectedRepo: string, selectedBaseBranch: string) {
   useEffect(() => { savePlannerSettings({ lastGranularity: config.granularity, lastContextLevel: config.contextLevel }); }, [config.granularity, config.contextLevel]);
   useEffect(() => {
     const repo = draftRepository || selectedRepo;
-    if (repo) savePlannerSettings({ lastRepository: repo, lastBaseBranch: selectedBaseBranch || null });
-  }, [draftRepository, selectedRepo, selectedBaseBranch]);
+    const baseBranch = draftRepository ? draftBaseBranch : selectedBaseBranch || null;
+    if (repo) savePlannerSettings({ lastRepository: repo, lastBaseBranch: baseBranch || null });
+  }, [draftBaseBranch, draftRepository, selectedRepo, selectedBaseBranch]);
 }
 
 export function useFileHandling(isNewMode: boolean, draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, setError: React.Dispatch<React.SetStateAction<string | null>>) {
@@ -334,12 +328,18 @@ type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConf
 
 export function useDraftContextConfigSync(draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
   useEffect(() => {
-    const draftConfig = (draft as DraftWithContextConfig | undefined)?.context_config;
-    if (!draftConfig) return;
-    if (draftConfig.contextRepositories?.length) setConfig(prev => JSON.stringify(prev.contextRepositories) === JSON.stringify(draftConfig.contextRepositories) ? prev : { ...prev, contextRepositories: draftConfig.contextRepositories });
-    if (draftConfig.generationModel) setConfig(prev => prev.generationModel === draftConfig.generationModel ? prev : { ...prev, generationModel: draftConfig.generationModel });
-    if (draftConfig.manualFiles?.length) setConfig(prev => JSON.stringify(prev.manualFiles) === JSON.stringify(draftConfig.manualFiles) ? prev : { ...prev, manualFiles: draftConfig.manualFiles });
-    if (draftConfig.excludedFiles?.length) setConfig(prev => JSON.stringify(prev.excludedFiles) === JSON.stringify(draftConfig.excludedFiles) ? prev : { ...prev, excludedFiles: draftConfig.excludedFiles });
+    if (!draft) return;
+    const draftConfig = (draft as DraftWithContextConfig).context_config;
+    const contextRepositories = draftConfig?.contextRepositories ?? [];
+    const generationModel = draftConfig?.generationModel ?? null;
+    const manualFiles = draftConfig?.manualFiles ?? [];
+    const excludedFiles = draftConfig?.excludedFiles ?? [];
+    setConfig(prev => (JSON.stringify(prev.contextRepositories) === JSON.stringify(contextRepositories) &&
+      prev.generationModel === generationModel &&
+      JSON.stringify(prev.manualFiles) === JSON.stringify(manualFiles) &&
+      JSON.stringify(prev.excludedFiles) === JSON.stringify(excludedFiles))
+      ? prev
+      : { ...prev, contextRepositories, generationModel, manualFiles, excludedFiles });
   }, [draft, setConfig]);
 }
 
