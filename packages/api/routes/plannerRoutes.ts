@@ -38,11 +38,20 @@ export const attachmentUpload = upload.single('file');
 interface PlannerRoutesDeps { db: Knex; }
 
 class ExecutionSettingsValidationError extends Error {}
+class ExecutionSettingsContextConfigError extends Error {}
 
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
   const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
-  const parseExistingExecutionConfig = (contextConfig: unknown): Record<string, unknown> => { if (!contextConfig) return {}; if (typeof contextConfig !== 'string') return contextConfig as Record<string, unknown>; try { return JSON.parse(contextConfig) as Record<string, unknown>; } catch { return {}; } };
+  const parseExistingExecutionConfig = (contextConfig: unknown): Record<string, unknown> => {
+    if (!contextConfig) return {};
+    if (typeof contextConfig !== 'string') return contextConfig as Record<string, unknown>;
+    try {
+      return JSON.parse(contextConfig) as Record<string, unknown>;
+    } catch (error) {
+      throw new ExecutionSettingsContextConfigError(`Failed to parse existing execution settings: ${(error as Error).message}`);
+    }
+  };
   const sendExecutionSettingsResponse = (res: Response, updatedConfig: Record<string, unknown>): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
 
   function parseOptionalInteger(
@@ -342,6 +351,10 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     } catch (error) {
       if (error instanceof ExecutionSettingsValidationError) {
         res.status(400).json({ error: error.message });
+        return;
+      }
+      if (error instanceof ExecutionSettingsContextConfigError) {
+        res.status(409).json({ error: error.message });
         return;
       }
       console.error('Update execution settings error:', error);

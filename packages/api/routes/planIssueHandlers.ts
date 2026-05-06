@@ -39,7 +39,7 @@ interface ResolvedUltrafixSettings {
 
 interface UpdateIssueRequestBody {
   agent_alias?: string;
-  model_name?: string;
+  model_name?: string | null;
   status?: PlanIssueStatus;
   run_ultrafix?: boolean | number | null;
   ultrafix_goal?: number | null;
@@ -50,15 +50,17 @@ const ULTRAFIX_GOAL_MIN = 1;
 const ULTRAFIX_GOAL_MAX = 10;
 const ULTRAFIX_MAX_CYCLES_MIN = 1;
 
-function parseContextConfig(draft: Record<string, unknown>): Record<string, unknown> | null {
-  if (!draft.context_config) return null;
-  if (typeof draft.context_config !== 'string') {
-    return draft.context_config as Record<string, unknown>;
+class ContextConfigParseError extends Error {}
+
+function parseContextConfig(contextConfig: unknown): Record<string, unknown> | null {
+  if (!contextConfig) return null;
+  if (typeof contextConfig !== 'string') {
+    return contextConfig as Record<string, unknown>;
   }
   try {
-    return JSON.parse(draft.context_config) as Record<string, unknown>;
-  } catch {
-    return null;
+    return JSON.parse(contextConfig) as Record<string, unknown>;
+  } catch (error) {
+    throw new ContextConfigParseError(`Failed to parse draft context_config: ${(error as Error).message}`);
   }
 }
 
@@ -196,7 +198,7 @@ async function syncModelLabels(params: {
   issueNumber: number;
   repository: string;
   currentModelName: string | null;
-  modelName: string;
+  modelName: string | null;
 }): Promise<void> {
   const [owner, repo] = params.repository.split('/');
   if (!owner || !repo) return;
@@ -307,7 +309,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
 
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
 
-      const contextConfig = parseContextConfig(draft as Record<string, unknown>);
+      const contextConfig = parseContextConfig(draft.context_config);
 
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
@@ -343,6 +345,10 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
 
       res.json(result);
     } catch (error) {
+      if (error instanceof ContextConfigParseError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
       console.error('Implement issue error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
     }
@@ -408,7 +414,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
 
-      const contextConfig = parseContextConfig(draft as Record<string, unknown>);
+      const contextConfig = parseContextConfig(draft.context_config);
 
       const { agent_alias, model_name } = req.body;
       const { useEpic, autoMerge } = resolveImplementationSettings(req.body, contextConfig);
@@ -429,10 +435,6 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         return;
       }
 
-      const resolvedPendingIssues = await Promise.all(
-        pendingIssues.map((issue) => resolveAndPersistIssueUltrafixSettings(draftId, issue, contextConfig))
-      );
-
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
       const octokit = await getAuthenticatedOctokit();
@@ -442,12 +444,18 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       // Get existing epic label or create new one
       const epicLabelName = await resolveEpicLabel(useEpic, {
         draftId, owner, repo, draft: draft as Record<string, unknown>,
-        firstIssueNumber: resolvedPendingIssues[0].issue_number,
+        firstIssueNumber: pendingIssues[0].issue_number,
         contextConfig, correlationId, labelLogger
       });
 
+      const shouldQueueSequentially = autoMerge && !!epicLabelName;
+      const issuesForImmediateImplementation = shouldQueueSequentially ? [pendingIssues[0]] : pendingIssues;
+      await Promise.all(
+        issuesForImmediateImplementation.map((issue) => resolveAndPersistIssueUltrafixSettings(draftId, issue, contextConfig))
+      );
+
       const { results, queuedCount } = await processBatchIssues({
-        octokit, owner, repo, draftId, pendingIssues: resolvedPendingIssues, implementLabel, epicLabelName, autoMerge: autoMerge as boolean
+        octokit, owner, repo, draftId, pendingIssues, implementLabel, epicLabelName, autoMerge: autoMerge as boolean
       });
 
       const successCount = results.filter(r => r.success).length;
@@ -465,6 +473,10 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         autoMergeEnabled: autoMerge as boolean
       });
     } catch (error) {
+      if (error instanceof ContextConfigParseError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
       console.error('Implement all issues error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issues' });
     }

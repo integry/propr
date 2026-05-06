@@ -50,12 +50,12 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
 
   const commitGoal = () => {
     const result = parseUltrafixIntegerInput(goalInput, { minimum: 1, maximum: 10, label: 'Ultrafix goal' });
-    if (result.error) { setGoalError(result.error); setGoalInput(goal?.toString() ?? ''); return; }
+    if (result.error) { setGoalError(result.error); return; }
     setGoalError(null); if (result.value !== goal) onGoalChange(result.value);
   };
   const commitMaxCycles = () => {
     const result = parseUltrafixIntegerInput(maxCyclesInput, { minimum: 1, label: 'Ultrafix max cycles' });
-    if (result.error) { setMaxCyclesError(result.error); setMaxCyclesInput(maxCycles?.toString() ?? ''); return; }
+    if (result.error) { setMaxCyclesError(result.error); return; }
     setMaxCyclesError(null); if (result.value !== maxCycles) onMaxCyclesChange(result.value);
   };
 
