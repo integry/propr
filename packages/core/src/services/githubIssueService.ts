@@ -167,7 +167,7 @@ export async function postIssueComments(options: PostIssueCommentsOptions): Prom
 }
 
 export async function processTaskAndCreateIssue(options: ProcessTaskOptions): Promise<ProcessTaskResult> {
-  const { octokit, owner, repoName, task, taskIndex, draftId, repository, ultrafixDefaults, correlatedLogger, correlationId } = options;
+  const { octokit, owner, repoName, task, taskIndex, draftId, repository, correlatedLogger, correlationId } = options;
 
   correlatedLogger.info({
     draftId,
