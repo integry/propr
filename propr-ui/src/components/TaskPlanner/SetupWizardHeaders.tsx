@@ -49,7 +49,7 @@ export const NewModeHeader: React.FC<{
           repos={repos as RepoOption[]}
           selectedRepo={selectedRepo}
           selectedBaseBranch={selectedBaseBranch}
-          onRepoChange={(repo, selection) => onRepoChange?.(repo, selection)}
+          onRepoChange={onRepoChange || (() => {})}
           disabled={repos.length === 0}
           variant="breadcrumb"
           placeholder="Select repository"

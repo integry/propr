@@ -13,6 +13,7 @@ import { GranularityPills } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
 import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
 import { getEstimatedIssueText } from './setupWizardUtils';
+import type { RepoSelection } from '../RepositorySelector';
 import {
   PlannerConfig,
   useRepositoryLoader,
@@ -25,6 +26,7 @@ import {
   useGenerationHandlers,
   useDraftCreation,
   useAutoDraftCreation,
+  persistResolvedBaseBranch,
   usePromptPersistence,
   computeIsGenerateDisabled,
   computeCanExport,
@@ -63,7 +65,7 @@ const SetupWizardContent: React.FC<{
   isChangingRepo: boolean;
   isCreating: boolean;
   setIsChangingRepo: React.Dispatch<React.SetStateAction<boolean>>;
-  handleRepoChangeInEditMode: (repo: string, selection?: { baseBranch?: string }) => Promise<void>;
+  handleRepoChangeInEditMode: (repo: string, selection?: RepoSelection) => Promise<void>;
   handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
   handleExportContext: () => void;
   handleGenerate: () => Promise<void>;
@@ -118,7 +120,7 @@ const SetupWizardContent: React.FC<{
           repository={repository}
           repos={repoLoader.repos}
           selectedRepo={repoLoader.selectedRepo}
-          selectedBaseBranch={repoLoader.selectedBaseBranch}
+          selectedBaseBranch={isNewMode ? repoLoader.selectedBaseBranch : config.baseBranch}
           onRepoChange={onRepoChange}
           reposLoading={repoLoader.reposLoading}
           baseBranch={config.baseBranch}
@@ -382,12 +384,13 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   useEffect(() => { if (autoCreateError) addToast({ type: 'error', message: autoCreateError }); }, [autoCreateError, addToast]);
   const autoResize = useAutoResize(textareaRef);
 
-  const handleRepoChangeInEditMode = useCallback(async (newRepo: string, selection?: { baseBranch?: string }) => {
+  const handleRepoChangeInEditMode = useCallback(async (newRepo: string, selection?: RepoSelection) => {
     if (!newRepo) { setIsChangingRepo(false); return; }
     if (newRepo === draft?.repository && (selection?.baseBranch || '') === config.baseBranch) { setIsChangingRepo(false); return; }
     setIsCreating(true); setError(null);
     try {
       const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled');
+      await persistResolvedBaseBranch(newDraft.draft_id, selection?.baseBranch);
       onDraftCreated?.(newDraft.draft_id);
       navigate(`/studio/${newDraft.draft_id}`, {
         replace: true,

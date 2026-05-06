@@ -17,8 +17,9 @@ import { getUserRepoPreferences, UserRepoPreferences } from '../../api/userRepoP
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { resizeImage } from './imageUtils';
 import { IndexedRepository } from './ContextRepositoriesSection';
-import { constructDraftWithPlan } from './useAutoDraftCreation';
-export { useAutoDraftCreation, constructDraftWithPlan } from './useAutoDraftCreation';
+import { constructDraftWithPlan, persistResolvedBaseBranch } from './useAutoDraftCreation';
+import type { RepoSelection } from '../RepositorySelector';
+export { useAutoDraftCreation, constructDraftWithPlan, persistResolvedBaseBranch } from './useAutoDraftCreation';
 
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 
@@ -97,9 +98,9 @@ export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: st
   const [selectedBaseBranch, setSelectedBaseBranch] = useState<string>('');
   const [reposLoading, setReposLoading] = useState(shouldLoad);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const setSelectedRepository = useCallback((repo: string, baseBranch?: string) => {
+  const setSelectedRepository = useCallback((repo: string, selection?: string | RepoSelection) => {
     setSelectedRepo(repo);
-    setSelectedBaseBranch(baseBranch || '');
+    setSelectedBaseBranch(typeof selection === 'string' ? selection : selection?.baseBranch || '');
   }, []);
 
   useEffect(() => {
@@ -299,6 +300,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
     try {
       const { createDraft } = await import('../../api/proprApi');
       const newDraft = await createDraft(selectedRepo, config.prompt.trim(), { todoIds });
+      await persistResolvedBaseBranch(newDraft.draft_id, config.baseBranch);
       for (const file of localFiles) {
         try { await uploadAttachment(newDraft.draft_id, file); }
         catch (uploadErr) { console.error('Failed to upload attachment:', uploadErr); }

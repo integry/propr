@@ -3,6 +3,7 @@ import { debounce } from 'lodash';
 import {
   uploadAttachment,
   createDraft as apiCreateDraft,
+  updateDraft,
   PlannerDraft,
   DraftWithPlan
 } from '../../api/proprApi';
@@ -27,6 +28,16 @@ export function attachResolvedBaseBranch<T extends PlannerDraft>(draft: T, baseB
     ...draft,
     context_config: { baseBranch }
   };
+}
+
+export async function persistResolvedBaseBranch(draftId: string, baseBranch?: string): Promise<void> {
+  if (!baseBranch) {
+    return;
+  }
+
+  await updateDraft(draftId, {
+    context_config: { baseBranch }
+  } as Parameters<typeof updateDraft>[1] & { context_config: { baseBranch: string } });
 }
 
 // Debounce delay before auto-creating draft after user starts typing
@@ -80,6 +91,7 @@ export function useAutoDraftCreation({
 
     try {
       const newDraft = await apiCreateDraft(repo, currentPrompt.trim(), { todoIds });
+      await persistResolvedBaseBranch(newDraft.draft_id, resolvedBaseBranch);
       draftCreatedRef.current = true;
 
       // Upload any local files

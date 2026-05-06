@@ -1,0 +1,63 @@
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createDraft, updateDraft, uploadAttachment } from '../../api/proprApi';
+import { useAutoDraftCreation } from './useAutoDraftCreation';
+
+vi.mock('../../api/proprApi', () => ({
+  createDraft: vi.fn(),
+  updateDraft: vi.fn(),
+  uploadAttachment: vi.fn(),
+}));
+
+const mockCreateDraft = vi.mocked(createDraft);
+const mockUpdateDraft = vi.mocked(updateDraft);
+const mockUploadAttachment = vi.mocked(uploadAttachment);
+
+describe('useAutoDraftCreation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-1',
+      repository: 'integry/propr',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+    mockUploadAttachment.mockResolvedValue({
+      id: 'attachment-1',
+      originalName: 'file.txt',
+      tokenEstimate: 1,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('persists the resolved baseBranch when auto-creating a draft', async () => {
+    const navigate = vi.fn();
+
+    renderHook(() => useAutoDraftCreation({
+      isNewMode: true,
+      selectedRepo: 'integry/propr',
+      resolvedBaseBranch: 'develop',
+      prompt: 'Test prompt',
+      localFiles: [],
+      navigate,
+    }));
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(mockUpdateDraft).toHaveBeenCalledWith(
+        'draft-1',
+        expect.objectContaining({ context_config: { baseBranch: 'develop' } })
+      );
+    });
+  });
+});

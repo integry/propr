@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useBranchesLoader, useRepoInfoLoader, type PlannerConfig } from './setupWizardHooks';
-import { getRepoBranches } from '../../api/proprApi';
+import { useBranchesLoader, useRepoInfoLoader, useDraftCreation, type PlannerConfig } from './setupWizardHooks';
+import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
 
 vi.mock('../../api/proprApi', () => ({
   uploadAttachment: vi.fn(),
@@ -12,7 +12,9 @@ vi.mock('../../api/proprApi', () => ({
   getAgents: vi.fn(),
   getRepoConfig: vi.fn(),
   getRepoBranches: vi.fn(),
+  createDraft: vi.fn(),
   updateDraft: vi.fn(),
+  generatePlan: vi.fn(),
 }));
 
 vi.mock('../../api/repoIndexingApi', () => ({
@@ -32,6 +34,9 @@ vi.mock('./imageUtils', () => ({
 }));
 
 const mockGetRepoBranches = vi.mocked(getRepoBranches);
+const mockCreateDraft = vi.mocked(createDraft);
+const mockGeneratePlan = vi.mocked(generatePlan);
+const mockUpdateDraft = vi.mocked(updateDraft);
 
 const baseConfig: PlannerConfig = {
   prompt: '',
@@ -105,5 +110,37 @@ describe('setupWizardHooks branch resolution', () => {
 
     expect(result.current.state.isLoading).toBe(false);
     expect(mockGetRepoBranches).not.toHaveBeenCalled();
+  });
+
+  it('persists the resolved baseBranch when creating a draft before generation starts', async () => {
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-1',
+      repository: 'integry/propr',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+
+    const navigate = vi.fn();
+    const setError = vi.fn();
+    const setIsCreating = vi.fn();
+
+    const { result } = renderHook(() => useDraftCreation({
+      selectedRepo: 'integry/propr',
+      config: { ...baseConfig, prompt: 'Test prompt', baseBranch: 'develop' },
+      localFiles: [],
+      navigate,
+      setError,
+      setIsCreating,
+    }));
+
+    await result.current();
+
+    expect(mockUpdateDraft).toHaveBeenCalledWith(
+      'draft-1',
+      expect.objectContaining({ context_config: { baseBranch: 'develop' } })
+    );
+    expect(mockGeneratePlan).toHaveBeenCalled();
   });
 });
