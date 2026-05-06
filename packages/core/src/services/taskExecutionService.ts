@@ -276,45 +276,8 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     }
   }
 
-  // Only avoid spreading context_config - extract specific fields safely
-  let baseBranch: unknown, granularity: unknown, contextLevel: unknown, compress: unknown,
-      manualFiles: unknown, autoFiles: unknown, contextRepositories: unknown, generationModel: unknown;
-
-  if (typeof draft.context_config === 'string') {
-    try {
-      const parsed = JSON.parse(draft.context_config);
-      baseBranch = parsed.baseBranch;
-      granularity = parsed.granularity;
-      contextLevel = parsed.contextLevel;
-      compress = parsed.compress;
-      manualFiles = parsed.manualFiles;
-      autoFiles = parsed.autoFiles;
-      contextRepositories = parsed.contextRepositories;
-      generationModel = parsed.generationModel;
-    } catch {
-      // Ignore parse errors
-    }
-  } else if (draft.context_config) {
-    const config = draft.context_config as Record<string, unknown>;
-    baseBranch = config.baseBranch;
-    granularity = config.granularity;
-    contextLevel = config.contextLevel;
-    compress = config.compress;
-    manualFiles = config.manualFiles;
-    autoFiles = config.autoFiles;
-    contextRepositories = config.contextRepositories;
-    generationModel = config.generationModel;
-  }
-
   const updatedConfig: Record<string, unknown> = {
-    baseBranch,
-    granularity,
-    contextLevel,
-    compress,
-    manualFiles,
-    autoFiles,
-    contextRepositories,
-    generationModel,
+    ...parseContextConfig(draft.context_config),
     executionResults: results,
     executedAt: new Date().toISOString()
   };

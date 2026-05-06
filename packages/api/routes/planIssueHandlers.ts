@@ -46,11 +46,41 @@ interface UpdateIssueRequestBody {
   ultrafix_max_cycles?: number | null;
 }
 
+const ULTRAFIX_GOAL_MIN = 1;
+const ULTRAFIX_GOAL_MAX = 10;
+const ULTRAFIX_MAX_CYCLES_MIN = 1;
+
 function parseContextConfig(draft: Record<string, unknown>): Record<string, unknown> | null {
   if (!draft.context_config) return null;
   return typeof draft.context_config === 'string'
     ? JSON.parse(draft.context_config as string)
     : draft.context_config as Record<string, unknown>;
+}
+
+function sanitizeUltrafixGoal(value: unknown): number | null {
+  return Number.isInteger(value) && (value as number) >= ULTRAFIX_GOAL_MIN && (value as number) <= ULTRAFIX_GOAL_MAX
+    ? value as number
+    : null;
+}
+
+function sanitizeUltrafixMaxCycles(value: unknown): number | null {
+  return Number.isInteger(value) && (value as number) >= ULTRAFIX_MAX_CYCLES_MIN
+    ? value as number
+    : null;
+}
+
+function validateUltrafixValue(
+  value: unknown,
+  fieldName: string,
+  options: { minimum: number; maximum?: number }
+): string | null {
+  if (value === undefined || value === null) return null;
+  if (!Number.isInteger(value)) return `${fieldName} must be an integer`;
+  if ((value as number) < options.minimum) return `${fieldName} must be at least ${options.minimum}`;
+  if (options.maximum !== undefined && (value as number) > options.maximum) {
+    return `${fieldName} must be at most ${options.maximum}`;
+  }
+  return null;
 }
 
 function resolveImplementationSettings(
@@ -78,10 +108,10 @@ function resolveIssueUltrafixSettings(
       : null;
   const runUltrafix = issueRunUltrafix ?? (contextConfig?.runUltrafix === true);
   const ultrafixGoal = runUltrafix
-    ? (planIssue.ultrafix_goal ?? (Number.isInteger(contextConfig?.ultrafixGoal) ? contextConfig?.ultrafixGoal as number : null))
+    ? (sanitizeUltrafixGoal(planIssue.ultrafix_goal) ?? sanitizeUltrafixGoal(contextConfig?.ultrafixGoal))
     : null;
   const ultrafixMaxCycles = runUltrafix
-    ? (planIssue.ultrafix_max_cycles ?? (Number.isInteger(contextConfig?.ultrafixMaxCycles) ? contextConfig?.ultrafixMaxCycles as number : null))
+    ? (sanitizeUltrafixMaxCycles(planIssue.ultrafix_max_cycles) ?? sanitizeUltrafixMaxCycles(contextConfig?.ultrafixMaxCycles))
     : null;
 
   return {
@@ -172,8 +202,8 @@ function buildIssueUpdate(body: UpdateIssueRequestBody) {
     model_name: body.model_name !== undefined ? body.model_name : undefined,
     status: body.status !== undefined ? body.status : undefined,
     run_ultrafix: normalizeRunUltrafix(body.run_ultrafix),
-    ultrafix_goal: body.ultrafix_goal !== undefined ? body.ultrafix_goal : undefined,
-    ultrafix_max_cycles: body.ultrafix_max_cycles !== undefined ? body.ultrafix_max_cycles : undefined
+    ultrafix_goal: body.ultrafix_goal !== undefined ? sanitizeUltrafixGoal(body.ultrafix_goal) : undefined,
+    ultrafix_max_cycles: body.ultrafix_max_cycles !== undefined ? sanitizeUltrafixMaxCycles(body.ultrafix_max_cycles) : undefined
   };
 }
 
@@ -296,6 +326,10 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       const body = req.body as UpdateIssueRequestBody;
       const statusError = validateIssueStatus(body.status);
       if (statusError) { res.status(400).json({ error: statusError }); return; }
+      const ultrafixGoalError = validateUltrafixValue(body.ultrafix_goal, 'ultrafix_goal', { minimum: ULTRAFIX_GOAL_MIN, maximum: ULTRAFIX_GOAL_MAX });
+      if (ultrafixGoalError) { res.status(400).json({ error: ultrafixGoalError }); return; }
+      const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafix_max_cycles, 'ultrafix_max_cycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
+      if (ultrafixMaxCyclesError) { res.status(400).json({ error: ultrafixMaxCyclesError }); return; }
 
       const currentIssue = await getPlanIssue(draftId, issueNumber);
       if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }

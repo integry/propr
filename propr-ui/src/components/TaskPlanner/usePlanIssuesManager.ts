@@ -351,9 +351,9 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   const handleUltrafixGoalChange = useCallback(async (issueNumber: number, value: number | null) => {
     try {
-      await updatePlanIssue(draftId, issueNumber, { ultrafix_goal: value });
+      const updatedIssue = await updatePlanIssue(draftId, issueNumber, { ultrafix_goal: value });
       setIssues(prev => prev.map(issue =>
-        issue.issue_number === issueNumber ? { ...issue, ultrafix_goal: value } : issue
+        issue.issue_number === issueNumber ? updatedIssue : issue
       ));
     } catch (err) {
       console.error('Failed to update ultrafix goal:', err);
@@ -363,9 +363,9 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   const handleUltrafixMaxCyclesChange = useCallback(async (issueNumber: number, value: number | null) => {
     try {
-      await updatePlanIssue(draftId, issueNumber, { ultrafix_max_cycles: value });
+      const updatedIssue = await updatePlanIssue(draftId, issueNumber, { ultrafix_max_cycles: value });
       setIssues(prev => prev.map(issue =>
-        issue.issue_number === issueNumber ? { ...issue, ultrafix_max_cycles: value } : issue
+        issue.issue_number === issueNumber ? updatedIssue : issue
       ));
     } catch (err) {
       console.error('Failed to update ultrafix max cycles:', err);

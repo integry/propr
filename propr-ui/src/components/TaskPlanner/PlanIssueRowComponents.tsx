@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -183,84 +183,119 @@ export const RowActions: React.FC<RowActionsProps> = ({
   handleMultiModelChange,
   handleImplementClick,
   handleToggleExpand
-}) => (
-  <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-    {isPending && (
-      <AgentModelSelector
-        agents={agents}
-        selectedAgent={issue.agent_alias}
-        selectedModel={issue.model_name}
-        onAgentChange={(agent) => onAgentChange(issue.issue_number, agent)}
-        onModelChange={(model) => onModelChange(issue.issue_number, model)}
-        disabled={implementing}
-        compact
-        isMulti={isMultiMode}
-        onMultiToggle={handleMultiToggle}
-        selectedModels={selectedModels}
-        onMultiModelChange={handleMultiModelChange}
-        onMultiConfirm={handleImplementClick}
-      />
-    )}
+}) => {
+  const [goalInput, setGoalInput] = useState(issue.ultrafix_goal?.toString() ?? '');
+  const [maxCyclesInput, setMaxCyclesInput] = useState(issue.ultrafix_max_cycles?.toString() ?? '');
 
-    {isPending && (
-      <div className="hidden lg:flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1">
-        <label className="flex items-center gap-1 text-xs text-slate-600">
+  useEffect(() => {
+    setGoalInput(issue.ultrafix_goal?.toString() ?? '');
+  }, [issue.ultrafix_goal]);
+
+  useEffect(() => {
+    setMaxCyclesInput(issue.ultrafix_max_cycles?.toString() ?? '');
+  }, [issue.ultrafix_max_cycles]);
+
+  const commitGoal = () => {
+    const nextValue = goalInput.trim() === '' ? null : Number(goalInput);
+    if (nextValue !== null && (!Number.isInteger(nextValue) || nextValue < 1 || nextValue > 10)) {
+      setGoalInput(issue.ultrafix_goal?.toString() ?? '');
+      return;
+    }
+    if (nextValue !== issue.ultrafix_goal) onUltrafixGoalChange(issue.issue_number, nextValue);
+  };
+
+  const commitMaxCycles = () => {
+    const nextValue = maxCyclesInput.trim() === '' ? null : Number(maxCyclesInput);
+    if (nextValue !== null && (!Number.isInteger(nextValue) || nextValue < 1)) {
+      setMaxCyclesInput(issue.ultrafix_max_cycles?.toString() ?? '');
+      return;
+    }
+    if (nextValue !== issue.ultrafix_max_cycles) onUltrafixMaxCyclesChange(issue.issue_number, nextValue);
+  };
+
+  return (
+    <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+      {isPending && (
+        <AgentModelSelector
+          agents={agents}
+          selectedAgent={issue.agent_alias}
+          selectedModel={issue.model_name}
+          onAgentChange={(agent) => onAgentChange(issue.issue_number, agent)}
+          onModelChange={(model) => onModelChange(issue.issue_number, model)}
+          disabled={implementing}
+          compact
+          isMulti={isMultiMode}
+          onMultiToggle={handleMultiToggle}
+          selectedModels={selectedModels}
+          onMultiModelChange={handleMultiModelChange}
+          onMultiConfirm={handleImplementClick}
+        />
+      )}
+
+      {isPending && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 max-w-full">
+          <label className="flex items-center gap-1 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={issue.run_ultrafix ?? false}
+              onChange={(e) => onRunUltrafixChange(issue.issue_number, e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            UF
+          </label>
           <input
-            type="checkbox"
-            checked={issue.run_ultrafix ?? false}
-            onChange={(e) => onRunUltrafixChange(issue.issue_number, e.target.checked)}
-            className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            type="number"
+            min={1}
+            max={10}
+            value={goalInput}
+            onChange={(e) => setGoalInput(e.target.value)}
+            onBlur={commitGoal}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            placeholder="Goal"
+            className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs"
           />
-          UF
-        </label>
-        <input
-          type="number"
-          min={1}
-          max={10}
-          value={issue.ultrafix_goal ?? ''}
-          onChange={(e) => onUltrafixGoalChange(issue.issue_number, e.target.value === '' ? null : Number(e.target.value))}
-          placeholder="Goal"
-          className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs"
+          <input
+            type="number"
+            min={1}
+            value={maxCyclesInput}
+            onChange={(e) => setMaxCyclesInput(e.target.value)}
+            onBlur={commitMaxCycles}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            placeholder="Max"
+            className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs"
+          />
+        </div>
+      )}
+
+      {isPending && (
+        <ImplementButton
+          implementing={implementing}
+          hasAgent={hasAgent}
+          isFirstPending={isFirstPending}
+          onClick={handleImplementClick}
         />
-        <input
-          type="number"
-          min={1}
-          value={issue.ultrafix_max_cycles ?? ''}
-          onChange={(e) => onUltrafixMaxCyclesChange(issue.issue_number, e.target.value === '' ? null : Number(e.target.value))}
-          placeholder="Max"
-          className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs"
-        />
-      </div>
-    )}
+      )}
 
-    {isPending && (
-      <ImplementButton
-        implementing={implementing}
-        hasAgent={hasAgent}
-        isFirstPending={isFirstPending}
-        onClick={handleImplementClick}
-      />
-    )}
+      {/* Status badge already shows status, no need for redundant "In Progress" text */}
 
-{/* Status badge already shows status, no need for redundant "In Progress" text */}
-
-    {/* Expand/Collapse Toggle */}
-    {hasExpandableContent && (
-      <button
-        onClick={handleToggleExpand}
-        className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
-        title={isExpanded ? 'Collapse details' : 'Expand details'}
-      >
-        <motion.div
-          animate={{ rotate: isExpanded ? 180 : 0 }}
-          transition={{ duration: 0.2 }}
+      {/* Expand/Collapse Toggle */}
+      {hasExpandableContent && (
+        <button
+          onClick={handleToggleExpand}
+          className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+          title={isExpanded ? 'Collapse details' : 'Expand details'}
         >
-          <ChevronDown size={16} />
-        </motion.div>
-      </button>
-    )}
-  </div>
-);
+          <motion.div
+            animate={{ rotate: isExpanded ? 180 : 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <ChevronDown size={16} />
+          </motion.div>
+        </button>
+      )}
+    </div>
+  );
+};
 
 export interface ExpandedContentProps {
   task: PlanTask;

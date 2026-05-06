@@ -86,13 +86,24 @@ interface PlannerRoutesDeps {
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
 
-  function parseOptionalInteger(value: unknown, fieldName: string): number | null | undefined {
+  function parseOptionalInteger(
+    value: unknown,
+    fieldName: string,
+    options?: { minimum?: number; maximum?: number }
+  ): number | null | undefined {
     if (value === undefined) return undefined;
     if (value === null || value === '') return null;
     if (!Number.isInteger(value)) {
       throw new Error(`${fieldName} must be an integer`);
     }
-    return value as number;
+    const parsedValue = value as number;
+    if (options?.minimum !== undefined && parsedValue < options.minimum) {
+      throw new Error(`${fieldName} must be at least ${options.minimum}`);
+    }
+    if (options?.maximum !== undefined && parsedValue > options.maximum) {
+      throw new Error(`${fieldName} must be at most ${options.maximum}`);
+    }
+    return parsedValue;
   }
 
   async function listRepositories(req: Request, res: Response): Promise<void> {
@@ -369,8 +380,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const { useEpic, autoMerge, runUltrafix } = req.body;
-      const ultrafixGoal = parseOptionalInteger(req.body.ultrafixGoal, 'ultrafixGoal');
-      const ultrafixMaxCycles = parseOptionalInteger(req.body.ultrafixMaxCycles, 'ultrafixMaxCycles');
+      const ultrafixGoal = parseOptionalInteger(req.body.ultrafixGoal, 'ultrafixGoal', { minimum: 1, maximum: 10 });
+      const ultrafixMaxCycles = parseOptionalInteger(req.body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: 1 });
       const draft = ownership.draft!;
       const existingConfig: Record<string, unknown> = draft.context_config
         ? (typeof draft.context_config === 'string' ? JSON.parse(draft.context_config as string) : draft.context_config as Record<string, unknown>)
@@ -400,7 +411,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update execution settings';
-      if (message.includes('must be an integer')) {
+      if (message.includes('must be an integer') || message.includes('must be at least') || message.includes('must be at most')) {
         res.status(400).json({ error: message });
         return;
       }

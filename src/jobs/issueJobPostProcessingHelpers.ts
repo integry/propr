@@ -22,6 +22,22 @@ type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
 };
 
+const ULTRAFIX_GOAL_MIN = 1;
+const ULTRAFIX_GOAL_MAX = 10;
+const ULTRAFIX_MAX_CYCLES_MIN = 1;
+
+function sanitizeUltrafixGoal(value: number | null | undefined): number | null {
+    return Number.isInteger(value) && (value as number) >= ULTRAFIX_GOAL_MIN && (value as number) <= ULTRAFIX_GOAL_MAX
+        ? (value as number)
+        : null;
+}
+
+function sanitizeUltrafixMaxCycles(value: number | null | undefined): number | null {
+    return Number.isInteger(value) && (value as number) >= ULTRAFIX_MAX_CYCLES_MIN
+        ? (value as number)
+        : null;
+}
+
 function buildSystemUltrafixComment(goal: number | null, maxCycles: number | null): string {
     const parts = ['/ultrafix'];
     if (goal != null) parts.push(`goal=${goal}`);
@@ -49,7 +65,9 @@ export async function triggerSystemUltrafix(options: {
     correlatedLogger: Logger;
 }): Promise<void> {
     const { owner, repo, prNumber, goal, maxCycles, correlatedLogger } = options;
-    const body = buildSystemUltrafixComment(goal, maxCycles);
+    const sanitizedGoal = sanitizeUltrafixGoal(goal);
+    const sanitizedMaxCycles = sanitizeUltrafixMaxCycles(maxCycles);
+    const body = buildSystemUltrafixComment(sanitizedGoal, sanitizedMaxCycles);
     const octokit = await getAuthenticatedOctokit();
     const response = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner,
@@ -86,7 +104,7 @@ export async function triggerSystemUltrafix(options: {
         `system-ultrafix-${owner}-${repo}-${prNumber}`,
         createCommentConfig(),
     );
-    correlatedLogger.info({ prNumber, goal, maxCycles }, 'Triggered system ultrafix for PR');
+    correlatedLogger.info({ prNumber, goal: sanitizedGoal, maxCycles: sanitizedMaxCycles }, 'Triggered system ultrafix for PR');
 }
 
 async function triggerNextPlanIssueIfNeeded(
@@ -213,14 +231,23 @@ export async function handleCreatedPlanIssuePR(options: {
     const runUltrafix = planIssue?.run_ultrafix === true || planIssue?.run_ultrafix === 1;
 
     if (runUltrafix) {
-        await triggerSystemUltrafix({
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            prNumber,
-            goal: planIssue?.ultrafix_goal ?? null,
-            maxCycles: planIssue?.ultrafix_max_cycles ?? null,
-            correlatedLogger,
-        });
+        try {
+            await triggerSystemUltrafix({
+                owner: issueRef.repoOwner,
+                repo: issueRef.repoName,
+                prNumber,
+                goal: planIssue?.ultrafix_goal ?? null,
+                maxCycles: planIssue?.ultrafix_max_cycles ?? null,
+                correlatedLogger,
+            });
+        } catch (error) {
+            correlatedLogger.warn({
+                repository,
+                issueNumber: issueRef.number,
+                prNumber,
+                error: (error as Error).message,
+            }, 'Failed to trigger system ultrafix for PR');
+        }
         return;
     }
 
