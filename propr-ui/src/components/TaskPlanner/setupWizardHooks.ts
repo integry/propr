@@ -143,7 +143,7 @@ export function useBranchesLoader(selectedRepo: string, selectedBaseBranch: stri
     }).catch(err => {
       console.error('Failed to load branches:', err);
       setBranchesState({ isLoading: false, error: (err as Error).message });
-      setConfig(prev => prev.baseBranch === 'main' ? prev : { ...prev, baseBranch: 'main' });
+      setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
     });
   }, [selectedRepo, selectedBaseBranch, setConfig]);
   return branchesState;
@@ -170,7 +170,7 @@ export function useRepoInfoLoader(isNewMode: boolean, draft: PlannerDraft | unde
       setConfig(prev => prev.baseBranch === info.defaultBranch ? prev : { ...prev, baseBranch: info.defaultBranch });
     }).catch(err => {
       setRepoInfo({ isLoading: false, error: (err as Error).message });
-      setConfig(prev => prev.baseBranch === 'main' ? prev : { ...prev, baseBranch: 'main' });
+      setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
     });
   }, [isNewMode, draft, setConfig]);
   return repoInfo;
@@ -295,6 +295,10 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
       setError('Please select a repository and enter a prompt');
       return;
     }
+    if (!config.baseBranch) {
+      setError('Please wait for the repository branch to finish loading');
+      return;
+    }
     setIsCreating(true);
     setError(null);
     try {
@@ -321,12 +325,14 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
 
 interface GenerateDisabledParams {
   isNewMode: boolean; isCreating: boolean; selectedRepo: string; promptTrimmed: string; reposLoading: boolean;
-  isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean;
+  isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean; repoError: string | null; baseBranch: string;
 }
 
 export function computeIsGenerateDisabled(p: GenerateDisabledParams): boolean {
-  if (p.isNewMode) return p.isCreating || !p.selectedRepo || !p.promptTrimmed || p.reposLoading;
-  return p.isGenerating || !!p.branchError || p.repoInfoLoading || !p.promptTrimmed;
+  if (p.isNewMode) {
+    return p.isCreating || !p.selectedRepo || !p.promptTrimmed || p.reposLoading || p.repoInfoLoading || !!p.repoError || !p.baseBranch;
+  }
+  return p.isGenerating || !!p.branchError || p.repoInfoLoading || !!p.repoError || !p.promptTrimmed || !p.baseBranch;
 }
 
 export function computeCanExport(isNewMode: boolean, promptTrimmed: string, baseBranch: string): boolean {

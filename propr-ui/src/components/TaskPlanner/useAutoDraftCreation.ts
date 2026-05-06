@@ -72,15 +72,16 @@ export function useAutoDraftCreation({
   const [isAutoCreating, setIsAutoCreating] = useState(false);
   const [autoCreateError, setAutoCreateError] = useState<string | null>(null);
   const draftCreatedRef = useRef(false);
-  const lastRepoRef = useRef(selectedRepo);
+  const lastSelectionKeyRef = useRef(`${selectedRepo}:${resolvedBaseBranch}`);
 
-  // Reset when repo changes
+  // Reset when the selected repository entry changes, including duplicate owner/repo entries on another branch.
   useEffect(() => {
-    if (selectedRepo !== lastRepoRef.current) {
+    const selectionKey = `${selectedRepo}:${resolvedBaseBranch}`;
+    if (selectionKey !== lastSelectionKeyRef.current) {
       draftCreatedRef.current = false;
-      lastRepoRef.current = selectedRepo;
+      lastSelectionKeyRef.current = selectionKey;
     }
-  }, [selectedRepo]);
+  }, [selectedRepo, resolvedBaseBranch]);
 
   // Create draft function
   const createDraftNow = useCallback(async (repo: string, currentPrompt: string) => {
@@ -140,6 +141,7 @@ export function useAutoDraftCreation({
   // Trigger auto-create when conditions are met
   useEffect(() => {
     if (!isNewMode || draftCreatedRef.current || !selectedRepo) return;
+    if (!resolvedBaseBranch) return;
 
     const trimmedPrompt = prompt.trim();
     if (trimmedPrompt.length > 0) {
@@ -149,7 +151,7 @@ export function useAutoDraftCreation({
     return () => {
       debouncedCreateDraft.cancel();
     };
-  }, [isNewMode, selectedRepo, prompt, debouncedCreateDraft]);
+  }, [isNewMode, selectedRepo, resolvedBaseBranch, prompt, debouncedCreateDraft]);
 
   return { isAutoCreating, autoCreateError };
 }

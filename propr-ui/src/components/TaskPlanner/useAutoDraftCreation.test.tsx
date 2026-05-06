@@ -60,4 +60,59 @@ describe('useAutoDraftCreation', () => {
       );
     });
   });
+
+  it('waits for a resolved base branch before auto-creating a draft', async () => {
+    const navigate = vi.fn();
+
+    renderHook(() => useAutoDraftCreation({
+      isNewMode: true,
+      selectedRepo: 'integry/propr',
+      resolvedBaseBranch: '',
+      prompt: 'Test prompt',
+      localFiles: [],
+      navigate,
+    }));
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+    });
+
+    expect(mockCreateDraft).not.toHaveBeenCalled();
+  });
+
+  it('resets auto-draft state when switching duplicate repo entries on another branch', async () => {
+    const navigate = vi.fn();
+    const { rerender } = renderHook(
+      (props: { resolvedBaseBranch: string }) => useAutoDraftCreation({
+        isNewMode: true,
+        selectedRepo: 'integry/propr',
+        resolvedBaseBranch: props.resolvedBaseBranch,
+        prompt: 'Test prompt',
+        localFiles: [],
+        navigate,
+      }),
+      { initialProps: { resolvedBaseBranch: 'main' } }
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(mockCreateDraft).toHaveBeenCalledTimes(1);
+    });
+
+    rerender({ resolvedBaseBranch: 'develop' });
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(mockCreateDraft).toHaveBeenCalledTimes(2);
+    });
+  });
 });

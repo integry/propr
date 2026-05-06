@@ -1,13 +1,12 @@
 import React, { useState } from 'react';
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useBranchesLoader, useRepoInfoLoader, useDraftCreation, type PlannerConfig } from './setupWizardHooks';
+import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, type PlannerConfig } from './setupWizardHooks';
 import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
 
 vi.mock('../../api/proprApi', () => ({
   uploadAttachment: vi.fn(),
   removeAttachment: vi.fn(),
-  generatePlan: vi.fn(),
   abortGeneration: vi.fn(),
   getAgents: vi.fn(),
   getRepoConfig: vi.fn(),
@@ -87,6 +86,22 @@ describe('setupWizardHooks branch resolution', () => {
     expect(mockGetRepoBranches).toHaveBeenCalledWith('integry', 'propr');
   });
 
+  it('clears the resolved base branch when branch lookup fails in new mode', async () => {
+    mockGetRepoBranches.mockRejectedValue(new Error('GitHub unavailable'));
+
+    const { result } = renderHook(() => {
+      const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig, baseBranch: 'develop' });
+      const state = useBranchesLoader('integry/propr', '', setConfig);
+      return { config, state };
+    });
+
+    await waitFor(() => {
+      expect(result.current.state.error).toBe('GitHub unavailable');
+    });
+
+    expect(result.current.config.baseBranch).toBe('');
+  });
+
   it('preserves a draft context_config baseBranch instead of snapping back to the GitHub default branch', async () => {
     const draft = {
       draft_id: 'draft-1',
@@ -142,5 +157,37 @@ describe('setupWizardHooks branch resolution', () => {
       expect.objectContaining({ context_config: { baseBranch: 'develop' } })
     );
     expect(mockGeneratePlan).toHaveBeenCalled();
+  });
+});
+
+describe('computeIsGenerateDisabled', () => {
+  it('blocks new-mode generation until the branch is resolved', () => {
+    expect(computeIsGenerateDisabled({
+      isNewMode: true,
+      isCreating: false,
+      selectedRepo: 'integry/propr',
+      promptTrimmed: 'Test prompt',
+      reposLoading: false,
+      isGenerating: false,
+      branchError: null,
+      repoInfoLoading: true,
+      repoError: null,
+      baseBranch: '',
+    })).toBe(true);
+  });
+
+  it('blocks generation when repository branch lookup fails', () => {
+    expect(computeIsGenerateDisabled({
+      isNewMode: false,
+      isCreating: false,
+      selectedRepo: 'integry/propr',
+      promptTrimmed: 'Test prompt',
+      reposLoading: false,
+      isGenerating: false,
+      branchError: null,
+      repoInfoLoading: false,
+      repoError: 'GitHub unavailable',
+      baseBranch: '',
+    })).toBe(true);
   });
 });

@@ -91,7 +91,7 @@ const SetupWizardContent: React.FC<{
   const isGenerateDisabled = computeIsGenerateDisabled({
     isNewMode, isCreating, selectedRepo: repoLoader.selectedRepo, promptTrimmed,
     reposLoading: repoLoader.reposLoading, isGenerating: generationPolling.isGenerating,
-    branchError, repoInfoLoading: repoInfo.isLoading
+    branchError, repoInfoLoading: isRepoLoading, repoError, baseBranch: config.baseBranch
   });
   const canExport = computeCanExport(isNewMode, promptTrimmed, config.baseBranch);
 
