@@ -46,6 +46,9 @@ export function setupAuth(app: Express): void {
     const redisClient = createClient({
         url: `redis://${sessionRedisHost}:${sessionRedisPort}`
     });
+    redisClient.on('error', (err) => {
+        console.error('Session Redis Client Error', err);
+    });
     redisClient.connect().catch(console.error);
 
     // Use Redis store for sessions to share across subdomains
@@ -179,6 +182,9 @@ async function getTokenCacheClient(): Promise<RedisClientType> {
         const redisHost = process.env.REDIS_HOST || '127.0.0.1';
         const redisPort = process.env.REDIS_PORT || '6379';
         tokenCacheClient = createClient({ url: `redis://${redisHost}:${redisPort}` }) as RedisClientType;
+        tokenCacheClient.on('error', (err) => {
+            console.error('Token Cache Redis Client Error', err);
+        });
         await tokenCacheClient.connect();
     }
     return tokenCacheClient;
