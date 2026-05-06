@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDraft, updateDraft, uploadAttachment } from '../../api/proprApi';
 import { useAutoDraftCreation } from './useAutoDraftCreation';
@@ -13,9 +13,15 @@ const mockCreateDraft = vi.mocked(createDraft);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockUploadAttachment = vi.mocked(uploadAttachment);
 
+async function flushAutoCreate() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+}
+
 describe('useAutoDraftCreation', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     vi.useFakeTimers();
     mockCreateDraft.mockResolvedValue({
       draft_id: 'draft-1',
@@ -30,6 +36,7 @@ describe('useAutoDraftCreation', () => {
       originalName: 'file.txt',
       tokenEstimate: 1,
     });
+    mockUpdateDraft.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -48,17 +55,12 @@ describe('useAutoDraftCreation', () => {
       navigate,
     }));
 
-    await act(async () => {
-      vi.advanceTimersByTime(1000);
-      await Promise.resolve();
-    });
+    await flushAutoCreate();
 
-    await waitFor(() => {
-      expect(mockUpdateDraft).toHaveBeenCalledWith(
-        'draft-1',
-        expect.objectContaining({ context_config: { baseBranch: 'develop' } })
-      );
-    });
+    expect(mockUpdateDraft).toHaveBeenCalledWith(
+      'draft-1',
+      expect.objectContaining({ context_config: { baseBranch: 'develop' } })
+    );
   });
 
   it('keeps navigating when persisting the resolved baseBranch fails after auto-creating a draft', async () => {
@@ -74,23 +76,18 @@ describe('useAutoDraftCreation', () => {
       navigate,
     }));
 
-    await act(async () => {
-      vi.advanceTimersByTime(1000);
-      await Promise.resolve();
-    });
+    await flushAutoCreate();
 
-    await waitFor(() => {
-      expect(navigate).toHaveBeenCalledWith(
-        '/studio/draft-1',
-        expect.objectContaining({
-          replace: true,
-          state: expect.objectContaining({
-            initialBaseBranch: 'develop',
-            baseBranchPersistenceWarning: expect.stringContaining('failed to save base branch "develop"')
-          })
+    expect(navigate).toHaveBeenCalledWith(
+      '/studio/draft-1',
+      expect.objectContaining({
+        replace: true,
+        state: expect.objectContaining({
+          initialBaseBranch: 'develop',
+          baseBranchPersistenceWarning: expect.stringContaining('failed to save base branch "develop"')
         })
-      );
-    });
+      })
+    );
   });
 
   it('waits for a resolved base branch before auto-creating a draft', async () => {
@@ -105,10 +102,7 @@ describe('useAutoDraftCreation', () => {
       navigate,
     }));
 
-    await act(async () => {
-      vi.advanceTimersByTime(1000);
-      await Promise.resolve();
-    });
+    await flushAutoCreate();
 
     expect(mockCreateDraft).not.toHaveBeenCalled();
   });
@@ -127,24 +121,41 @@ describe('useAutoDraftCreation', () => {
       { initialProps: { resolvedBaseBranch: 'main' } }
     );
 
-    await act(async () => {
-      vi.advanceTimersByTime(1000);
-      await Promise.resolve();
-    });
+    await flushAutoCreate();
 
-    await waitFor(() => {
-      expect(mockCreateDraft).toHaveBeenCalledTimes(1);
-    });
+    expect(mockCreateDraft).toHaveBeenCalledTimes(1);
 
     rerender({ resolvedBaseBranch: 'develop' });
 
-    await act(async () => {
-      vi.advanceTimersByTime(1000);
-      await Promise.resolve();
-    });
+    await flushAutoCreate();
 
-    await waitFor(() => {
-      expect(mockCreateDraft).toHaveBeenCalledTimes(2);
-    });
+    expect(mockCreateDraft).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the auto-creating state after successful in-place draft creation', async () => {
+    const navigate = vi.fn();
+    const onDraftCreatedInPlace = vi.fn();
+
+    const { result } = renderHook(() => useAutoDraftCreation({
+      isNewMode: true,
+      selectedRepo: 'integry/propr',
+      resolvedBaseBranch: 'develop',
+      prompt: 'Test prompt',
+      localFiles: [],
+      onDraftCreatedInPlace,
+      navigate,
+    }));
+
+    expect(result.current.isAutoCreating).toBe(false);
+
+    await flushAutoCreate();
+
+    expect(onDraftCreatedInPlace).toHaveBeenCalledWith(expect.objectContaining({
+      draft_id: 'draft-1',
+      context_config: { baseBranch: 'develop' }
+    }));
+
+    expect(result.current.isAutoCreating).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
   });
 });

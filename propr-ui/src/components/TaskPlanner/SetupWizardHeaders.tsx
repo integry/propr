@@ -79,8 +79,6 @@ export const EditModeHeader: React.FC<{
   selectedBaseBranch?: string;
   branchError: string | null;
   repoError: string | null;
-  isChangingRepo?: boolean;
-  onChangeRepoClick?: () => void;
   repos: Repo[];
   onRepoChange: (repo: string, selection?: RepoSelection) => void;
   reposLoading: boolean;

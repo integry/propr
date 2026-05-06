@@ -129,6 +129,7 @@ export function useAutoDraftCreation({
       const draftWithResolvedBranch = attachResolvedBaseBranch(newDraft, resolvedBaseBranch);
       if (onDraftCreatedInPlace) {
         onDraftCreatedInPlace(draftWithResolvedBranch);
+        setIsAutoCreating(false);
       } else {
         const draftWithPlan = constructDraftWithPlan(newDraft, resolvedBaseBranch);
         navigate(`/studio/${newDraft.draft_id}`, {

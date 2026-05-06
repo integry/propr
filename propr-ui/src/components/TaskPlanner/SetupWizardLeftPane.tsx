@@ -95,8 +95,6 @@ interface SetupWizardLeftPaneProps {
   isRepoLoading: boolean;
   branchError: string | null;
   repoError: string | null;
-  isChangingRepo?: boolean;
-  onChangeRepoClick?: () => void;
   prompt: string;
   onPromptChange: (prompt: string) => void;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -133,8 +131,6 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   isRepoLoading,
   branchError,
   repoError,
-  isChangingRepo = false,
-  onChangeRepoClick,
   prompt,
   onPromptChange,
   textareaRef,
@@ -179,8 +175,6 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             selectedBaseBranch={selectedBaseBranch}
             branchError={branchError}
             repoError={repoError}
-            isChangingRepo={isChangingRepo}
-            onChangeRepoClick={onChangeRepoClick || (() => {})}
             repos={repos}
             onRepoChange={onRepoChange || (() => {})}
             reposLoading={reposLoading}

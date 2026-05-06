@@ -29,7 +29,7 @@ type SetupWizardContentProps = {
   fileHandling: ReturnType<typeof useFileHandling>; generationPolling: ReturnType<typeof useGenerationPolling>; contextExport: ReturnType<typeof useContextExport>;
   contextRefresh: ReturnType<typeof useContextRefresh>; generationHandlers: ReturnType<typeof useGenerationHandlers>; autoResize: () => void;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>; fileInputRef: React.RefObject<HTMLInputElement | null>; error: string | null; branchError: string | null;
-  isChangingRepo: boolean; isCreating: boolean; setIsChangingRepo: React.Dispatch<React.SetStateAction<boolean>>;
+  isCreating: boolean;
   handleRepoChangeInEditMode: (repo: string, selection?: RepoSelection) => Promise<void>; handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
   handleExportContext: () => void; handleGenerate: () => Promise<void>; agents: ReturnType<typeof useAgentsLoader>; availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>; previewTrace?: GenerationTrace;
 };
@@ -38,8 +38,8 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const {
     isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo,
     fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers,
-    autoResize, textareaRef, fileInputRef, error, branchError, isChangingRepo, isCreating,
-    setIsChangingRepo, handleRepoChangeInEditMode, handleFileInputChange, handleExportContext,
+    autoResize, textareaRef, fileInputRef, error, branchError, isCreating,
+    handleRepoChangeInEditMode, handleFileInputChange, handleExportContext,
     handleGenerate, agents, availableRepos, previewTrace
   } = props;
   const repository = draft?.repository ?? repoLoader.selectedRepo;
@@ -76,8 +76,6 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           isRepoLoading={isRepoLoading}
           branchError={branchError}
           repoError={repoError}
-          isChangingRepo={isChangingRepo}
-          onChangeRepoClick={() => setIsChangingRepo(true)}
           prompt={config.prompt}
           onPromptChange={(prompt) => setConfig(prev => ({ ...prev, prompt }))}
           textareaRef={textareaRef}
@@ -202,7 +200,6 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     excludedFiles: draftContextConfig?.excludedFiles ?? []
   }));
 
-  const [isChangingRepo, setIsChangingRepo] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [branchError, setBranchError] = useState<string | null>(null);
@@ -286,7 +283,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   useEffect(() => { if (locationState?.baseBranchPersistenceWarning) addToast({ type: 'warning', message: locationState.baseBranchPersistenceWarning }); }, [locationState?.baseBranchPersistenceWarning, addToast]);
   const autoResize = useAutoResize(textareaRef);
   const handleRepoChangeInEditMode = useCallback(async (newRepo: string, selection?: RepoSelection) => {
-    if (!newRepo) { setIsChangingRepo(false); return; }
+    if (!newRepo) { return; }
     setIsCreating(true); setError(null);
     try {
       let resolvedBaseBranch = selection?.baseBranch || '';
@@ -300,7 +297,6 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       }
       if (newRepo === draft?.repository && resolvedBaseBranch === config.baseBranch) {
         setIsCreating(false);
-        setIsChangingRepo(false);
         return;
       }
 
@@ -322,7 +318,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         }
       });
     }
-    catch (err) { setError((err as Error).message || 'Failed to change repository'); setIsCreating(false); setIsChangingRepo(false); }
+    catch (err) { setError((err as Error).message || 'Failed to change repository'); setIsCreating(false); }
   }, [draft?.repository, config.baseBranch, config.prompt, onDraftCreated, navigate]);
   const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) { for (const file of Array.from(e.target.files)) await fileHandling.handleUpload(file); }
@@ -343,9 +339,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       repoLoader={repoLoader} newModeBranches={newModeBranches} repoInfo={repoInfo}
       fileHandling={fileHandling} generationPolling={generationPolling} contextExport={contextExport}
       contextRefresh={contextRefresh} generationHandlers={generationHandlers}
-      handleCreateDraftAndGenerate={handleCreateDraftAndGenerate} autoResize={autoResize}
+      autoResize={autoResize}
       textareaRef={textareaRef} fileInputRef={fileInputRef} error={error} branchError={branchError}
-      isChangingRepo={isChangingRepo} isCreating={isCreating || isAutoCreating} setIsChangingRepo={setIsChangingRepo}
+      isCreating={isCreating || isAutoCreating}
       handleRepoChangeInEditMode={handleRepoChangeInEditMode} handleFileInputChange={handleFileInputChange}
       handleExportContext={handleExportContext} handleGenerate={handleGenerate} agents={agents}
       availableRepos={availableRepos} previewTrace={previewTrace}
