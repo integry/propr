@@ -337,7 +337,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   const clearError = useCallback(() => setError(null), []);
 
-  const handleRunUltrafixChange = useCallback(async (issueNumber: number, runUltrafix: boolean) => {
+  const handleRunUltrafixChange = useCallback(async (issueNumber: number, runUltrafix: boolean | null) => {
     try {
       const updatedIssue = await updatePlanIssue(draftId, issueNumber, { run_ultrafix: runUltrafix });
       setIssues(prev => prev.map(issue =>

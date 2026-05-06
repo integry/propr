@@ -19,9 +19,12 @@ interface PlanIssueRowProps {
   onImplement: (issueNumber: number, models?: AgentModelPair[]) => void;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
-  onRunUltrafixChange: (issueNumber: number, runUltrafix: boolean) => void;
+  onRunUltrafixChange: (issueNumber: number, runUltrafix: boolean | null) => void;
   onUltrafixGoalChange: (issueNumber: number, value: number | null) => void;
   onUltrafixMaxCyclesChange: (issueNumber: number, value: number | null) => void;
+  plannerRunUltrafix?: boolean;
+  plannerUltrafixGoal?: number | null;
+  plannerUltrafixMaxCycles?: number | null;
   implementing?: boolean;
   isFirstPending?: boolean;
   onImplementWithWarning?: (issueNumber: number, models?: AgentModelPair[]) => void;
@@ -49,6 +52,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   onRunUltrafixChange,
   onUltrafixGoalChange,
   onUltrafixMaxCyclesChange,
+  plannerRunUltrafix,
+  plannerUltrafixGoal,
+  plannerUltrafixMaxCycles,
   implementing = false,
   isFirstPending = true,
   onImplementWithWarning,
@@ -160,6 +166,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               onRunUltrafixChange={onRunUltrafixChange}
               onUltrafixGoalChange={onUltrafixGoalChange}
               onUltrafixMaxCyclesChange={onUltrafixMaxCyclesChange}
+              plannerRunUltrafix={plannerRunUltrafix}
+              plannerUltrafixGoal={plannerUltrafixGoal}
+              plannerUltrafixMaxCycles={plannerUltrafixMaxCycles}
               handleMultiToggle={handleMultiToggle}
               handleMultiModelChange={handleMultiModelChange}
               handleImplementClick={handleImplementClick}

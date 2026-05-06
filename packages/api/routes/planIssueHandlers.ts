@@ -126,6 +126,19 @@ function resolveIssueUltrafixSettings(
   };
 }
 
+function buildIssueForImplementation<T extends {
+  run_ultrafix?: boolean | number | null;
+  ultrafix_goal?: number | null;
+  ultrafix_max_cycles?: number | null;
+}>(planIssue: T, ultrafixSettings: ResolvedUltrafixSettings): T {
+  return {
+    ...planIssue,
+    run_ultrafix: ultrafixSettings.runUltrafix,
+    ultrafix_goal: ultrafixSettings.ultrafixGoal,
+    ultrafix_max_cycles: ultrafixSettings.ultrafixMaxCycles
+  };
+}
+
 async function resolveEpicLabel(
   useEpic: boolean,
   params: {
@@ -281,12 +294,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
       const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
-      const resolvedPlanIssue = await updatePlanIssue(draftId, issueNumber, {
-        run_ultrafix: ultrafixSettings.runUltrafix,
-        ultrafix_goal: ultrafixSettings.ultrafixGoal,
-        ultrafix_max_cycles: ultrafixSettings.ultrafixMaxCycles
-      });
-      const issueForImplementation = resolvedPlanIssue ?? planIssue;
+      const issueForImplementation = buildIssueForImplementation(planIssue, ultrafixSettings);
 
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
@@ -400,13 +408,9 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const pendingIssues = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
       const resolvedPendingIssues = await Promise.all(
-        pendingIssues.map((issue) => {
+        pendingIssues.map(async (issue) => {
           const ultrafixSettings = resolveIssueUltrafixSettings(issue, contextConfig);
-          return updatePlanIssue(draftId, issue.issue_number, {
-            run_ultrafix: ultrafixSettings.runUltrafix,
-            ultrafix_goal: ultrafixSettings.ultrafixGoal,
-            ultrafix_max_cycles: ultrafixSettings.ultrafixMaxCycles
-          }).then((updatedIssue) => updatedIssue ?? issue);
+          return buildIssueForImplementation(issue, ultrafixSettings);
         })
       );
 

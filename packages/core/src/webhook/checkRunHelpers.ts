@@ -1,4 +1,5 @@
 /* eslint-disable max-lines */
+import { Redis } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
@@ -367,9 +368,49 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
 export interface PRAutoMergeInfo {
     hasLabel: boolean;
     hasUltrafixLabel?: boolean;
+    hasActiveUltrafixLoop?: boolean;
     isDraft: boolean;
     baseBranch: string;
     headBranch: string;
+}
+
+const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
+const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
+const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
+let ultrafixStateRedis: Redis | null = null;
+
+function getUltrafixStateRedis(): Redis {
+    if (!ultrafixStateRedis) {
+        ultrafixStateRedis = new Redis({
+            host: REDIS_HOST,
+            port: REDIS_PORT,
+            maxRetriesPerRequest: null,
+            enableReadyCheck: false
+        });
+    }
+    return ultrafixStateRedis;
+}
+
+function getUltrafixStateKey(owner: string, repoName: string, prNumber: number): string {
+    return `${ULTRAFIX_STATE_KEY_PREFIX}:${owner}:${repoName}:${prNumber}`;
+}
+
+export async function hasActiveUltrafixLoop(owner: string, repoName: string, prNumber: number): Promise<boolean> {
+    try {
+        const rawState = await getUltrafixStateRedis().get(getUltrafixStateKey(owner, repoName, prNumber));
+        if (!rawState) return false;
+
+        const parsedState = JSON.parse(rawState) as { active?: unknown };
+        return parsedState.active === true;
+    } catch (error) {
+        logger.warn({
+            owner,
+            repoName,
+            prNumber,
+            error: (error as Error).message
+        }, 'Failed to check ultrafix loop state');
+        return false;
+    }
 }
 
 /**
@@ -388,11 +429,12 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const labels = prResponse.data.labels as Array<{ name: string }>;
         const hasLabel = labels.some(label => label.name === 'auto-merge');
         const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
+        const hasActiveLoop = await hasActiveUltrafixLoop(owner, repoName, prNumber);
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;
 
-        return { hasLabel, hasUltrafixLabel, isDraft, baseBranch, headBranch };
+        return { hasLabel, hasUltrafixLabel, hasActiveUltrafixLoop: hasActiveLoop, isDraft, baseBranch, headBranch };
     } catch (error) {
         logger.warn({
             owner,
@@ -400,7 +442,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             prNumber,
             error: (error as Error).message
         }, 'Failed to check PR info');
-        return { hasLabel: false, hasUltrafixLabel: false, isDraft: false, baseBranch: '', headBranch: '' };
+        return { hasLabel: false, hasUltrafixLabel: false, hasActiveUltrafixLoop: false, isDraft: false, baseBranch: '', headBranch: '' };
     }
 }
 

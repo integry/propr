@@ -181,9 +181,12 @@ export interface RowActionsProps {
   issue: PlanIssue;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
-  onRunUltrafixChange: (issueNumber: number, runUltrafix: boolean) => void;
+  onRunUltrafixChange: (issueNumber: number, runUltrafix: boolean | null) => void;
   onUltrafixGoalChange: (issueNumber: number, value: number | null) => void;
   onUltrafixMaxCyclesChange: (issueNumber: number, value: number | null) => void;
+  plannerRunUltrafix?: boolean;
+  plannerUltrafixGoal?: number | null;
+  plannerUltrafixMaxCycles?: number | null;
   handleMultiToggle: (multi: boolean) => void;
   handleMultiModelChange: (models: AgentModelPair[]) => void;
   handleImplementClick: () => void;
@@ -206,13 +209,19 @@ export const RowActions: React.FC<RowActionsProps> = ({
   onRunUltrafixChange,
   onUltrafixGoalChange,
   onUltrafixMaxCyclesChange,
+  plannerRunUltrafix,
+  plannerUltrafixGoal,
+  plannerUltrafixMaxCycles,
   handleMultiToggle,
   handleMultiModelChange,
   handleImplementClick,
   handleToggleExpand
 }) => {
-  const ultrafixEnabled = issue.run_ultrafix ?? false;
+  const ultrafixEnabled = issue.run_ultrafix ?? plannerRunUltrafix ?? false;
   const issueNumber = issue.issue_number;
+  const ultrafixMode = issue.run_ultrafix === null ? 'inherit' : issue.run_ultrafix ? 'on' : 'off';
+  const effectiveGoalPlaceholder = plannerUltrafixGoal ? `Goal (${plannerUltrafixGoal})` : 'Goal';
+  const effectiveMaxPlaceholder = plannerUltrafixMaxCycles ? `Max (${plannerUltrafixMaxCycles})` : 'Max';
 
   return (
     <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
@@ -235,13 +244,19 @@ export const RowActions: React.FC<RowActionsProps> = ({
       {isPending && (
         <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 max-w-full">
           <label className="flex items-center gap-1 text-xs text-slate-600">
-            <input
-              type="checkbox"
-              checked={issue.run_ultrafix ?? false}
-              onChange={(e) => onRunUltrafixChange(issueNumber, e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            UF
+            <span>UF</span>
+            <select
+              value={ultrafixMode}
+              onChange={(e) => {
+                const value = e.target.value === 'inherit' ? null : e.target.value === 'on';
+                onRunUltrafixChange(issueNumber, value);
+              }}
+              className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-xs text-slate-700"
+            >
+              <option value="inherit">Inherit</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
           </label>
           <UltrafixSettingsControls
             enabled={ultrafixEnabled}
@@ -249,8 +264,8 @@ export const RowActions: React.FC<RowActionsProps> = ({
             maxCycles={issue.ultrafix_max_cycles}
             onGoalChange={(value) => onUltrafixGoalChange(issueNumber, value)}
             onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange(issueNumber, value)}
-            goalPlaceholder="Goal"
-            maxPlaceholder="Max"
+            goalPlaceholder={effectiveGoalPlaceholder}
+            maxPlaceholder={effectiveMaxPlaceholder}
             inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
             goalInputWidthClassName="w-14"
             maxInputWidthClassName="w-14"

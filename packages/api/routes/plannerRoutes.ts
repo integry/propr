@@ -37,12 +37,13 @@ export const attachmentUpload = upload.single('file');
 
 interface PlannerRoutesDeps { db: Knex; }
 
+class ExecutionSettingsValidationError extends Error {}
+
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
   const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
   const parseExistingExecutionConfig = (contextConfig: unknown): Record<string, unknown> => { if (!contextConfig) return {}; if (typeof contextConfig !== 'string') return contextConfig as Record<string, unknown>; try { return JSON.parse(contextConfig) as Record<string, unknown>; } catch { return {}; } };
   const sendExecutionSettingsResponse = (res: Response, updatedConfig: Record<string, unknown>): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
-  const isExecutionSettingsValidationError = (message: string): boolean => message.includes('must be a boolean') || message.includes('must be an integer') || message.includes('must be at least') || message.includes('must be at most');
 
   function parseOptionalInteger(
     value: unknown,
@@ -51,16 +52,16 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   ): number | null | undefined {
     if (value === undefined) return undefined;
     if (value === null || value === '') return null;
-    if (!Number.isInteger(value)) throw new Error(`${fieldName} must be an integer`);
+    if (!Number.isInteger(value)) throw new ExecutionSettingsValidationError(`${fieldName} must be an integer`);
     const parsedValue = value as number;
-    if (options?.minimum !== undefined && parsedValue < options.minimum) throw new Error(`${fieldName} must be at least ${options.minimum}`);
-    if (options?.maximum !== undefined && parsedValue > options.maximum) throw new Error(`${fieldName} must be at most ${options.maximum}`);
+    if (options?.minimum !== undefined && parsedValue < options.minimum) throw new ExecutionSettingsValidationError(`${fieldName} must be at least ${options.minimum}`);
+    if (options?.maximum !== undefined && parsedValue > options.maximum) throw new ExecutionSettingsValidationError(`${fieldName} must be at most ${options.maximum}`);
     return parsedValue;
   }
 
   function parseOptionalBoolean(value: unknown, fieldName: string): boolean | undefined {
     if (value === undefined) return undefined;
-    if (typeof value !== 'boolean') throw new Error(`${fieldName} must be a boolean`);
+    if (typeof value !== 'boolean') throw new ExecutionSettingsValidationError(`${fieldName} must be a boolean`);
     return value;
   }
 
@@ -339,9 +340,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       await db!('task_drafts').where({ draft_id: req.params.id }).update({ context_config: JSON.stringify(updatedConfig), updated_at: db!.fn.now() });
       sendExecutionSettingsResponse(res, updatedConfig);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update execution settings';
-      if (isExecutionSettingsValidationError(message)) {
-        res.status(400).json({ error: message });
+      if (error instanceof ExecutionSettingsValidationError) {
+        res.status(400).json({ error: error.message });
         return;
       }
       console.error('Update execution settings error:', error);

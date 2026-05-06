@@ -7,6 +7,8 @@ const mockOctokit = {
     request: mock.fn()
 };
 
+const mockRedisGet = mock.fn(async () => null);
+
 // Mock simple-git (transitive dependency)
 await mock.module('simple-git', {
     namedExports: {
@@ -18,7 +20,7 @@ await mock.module('simple-git', {
 // Mock ioredis
 await mock.module('ioredis', {
     defaultExport: function Redis() {
-        return { on: mock.fn(), quit: mock.fn(async () => {}) };
+        return { on: mock.fn(), get: mockRedisGet, quit: mock.fn(async () => {}) };
     }
 });
 
@@ -121,6 +123,8 @@ import type { PRMergeContext } from '../packages/core/src/webhook/checkRunHandle
 // Helper to reset all mocks
 function resetMocks(): void {
     mockOctokit.request.mock.resetCalls();
+    mockRedisGet.mock.resetCalls();
+    mockRedisGet.mock.mockImplementation(async () => null);
     mockFindPlanIssueByRepoAndPR.mock.resetCalls();
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
     mockUpdatePlanIssueByPR.mock.resetCalls();
@@ -522,9 +526,26 @@ describe('getPRAutoMergeInfo', () => {
 
         const result = await getPRAutoMergeInfo('owner', 'repo', 42);
         assert.strictEqual(result.hasLabel, true);
+        assert.strictEqual(result.hasActiveUltrafixLoop, false);
         assert.strictEqual(result.isDraft, false);
         assert.strictEqual(result.baseBranch, 'main');
         assert.strictEqual(result.headBranch, 'feature-branch');
+    });
+
+    test('returns hasActiveUltrafixLoop true when Redis state is active', async () => {
+        resetMocks();
+        mockRedisGet.mock.mockImplementation(async () => JSON.stringify({ active: true }));
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                draft: false,
+                base: { ref: 'main' },
+                head: { ref: 'feature-branch' }
+            }
+        }));
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+        assert.strictEqual(result.hasActiveUltrafixLoop, true);
     });
 
     test('returns hasLabel false when label is missing', async () => {
@@ -1197,6 +1218,7 @@ describe('shouldAutoMergePR', () => {
         headSha?: string;
         hasLabel?: boolean;
         hasUltrafixLabel?: boolean;
+        hasActiveUltrafixLoop?: boolean;
         isDraft?: boolean;
         baseBranch?: string;
         headBranch?: string;
@@ -1208,6 +1230,7 @@ describe('shouldAutoMergePR', () => {
             headSha = 'abc123sha',
             hasLabel = false,
             hasUltrafixLabel = false,
+            hasActiveUltrafixLoop = false,
             isDraft = false,
             baseBranch = 'main',
             headBranch = 'feature-branch'
@@ -1221,6 +1244,7 @@ describe('shouldAutoMergePR', () => {
             prInfo: {
                 hasLabel,
                 hasUltrafixLabel,
+                hasActiveUltrafixLoop,
                 isDraft,
                 baseBranch,
                 headBranch
@@ -1245,12 +1269,25 @@ describe('shouldAutoMergePR', () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
-            hasUltrafixLabel: true,
+            hasActiveUltrafixLoop: true,
             headBranch: 'feature-branch'
         });
 
         const result = await shouldAutoMergePR(ctx);
         assert.strictEqual(result, false);
+    });
+
+    test('does not block auto-merge on stale ultrafix label without active loop state', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasUltrafixLabel: true,
+            hasActiveUltrafixLoop: false,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
     });
 
     test('returns true with auto-merge label on linked issue', async () => {

@@ -214,6 +214,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             onRunUltrafixChange={handleRunUltrafixChange}
             onUltrafixGoalChange={handleUltrafixGoalChange}
             onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange}
+            plannerRunUltrafix={runUltrafix}
+            plannerUltrafixGoal={ultrafixGoal}
+            plannerUltrafixMaxCycles={ultrafixMaxCycles}
             implementing={implementingIssue === issue.issue_number}
             isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
             onImplementWithWarning={handleImplementWithWarning}
@@ -258,6 +261,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     onRunUltrafixChange={handleRunUltrafixChange}
                     onUltrafixGoalChange={handleUltrafixGoalChange}
                     onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange}
+                    plannerRunUltrafix={runUltrafix}
+                    plannerUltrafixGoal={ultrafixGoal}
+                    plannerUltrafixMaxCycles={ultrafixMaxCycles}
                     implementing={false}
                     task={issueTaskMap[issue.issue_number]}
                     draftId={draftId}
