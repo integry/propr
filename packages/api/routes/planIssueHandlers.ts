@@ -302,7 +302,11 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const { useEpic, autoMerge } = resolveImplementationSettings(req.body, contextConfig);
 
       if (agent_alias !== undefined || model_name !== undefined) {
-        await batchUpdatePlanIssueConfig(draftId, agent_alias, model_name);
+        await batchUpdatePlanIssueConfig({
+            draftId,
+            agentAlias: agent_alias,
+            modelName: model_name,
+        });
       }
 
       const issues = await getPlanIssuesByDraft(draftId);

@@ -427,14 +427,23 @@ export async function updatePlanIssueByPR(
 /**
  * Batch update agent/model for all issues in a draft.
  */
-export async function batchUpdatePlanIssueConfig(
-    draftId: string,
-    agentAlias?: string,
-    modelName?: string,
-    runUltrafix?: boolean | null,
-    ultrafixGoal?: number | null,
-    ultrafixMaxCycles?: number | null
-): Promise<void> {
+export interface BatchUpdatePlanIssueConfigInput {
+    draftId: string;
+    agentAlias?: string;
+    modelName?: string;
+    runUltrafix?: boolean | null;
+    ultrafixGoal?: number | null;
+    ultrafixMaxCycles?: number | null;
+}
+
+export async function batchUpdatePlanIssueConfig({
+    draftId,
+    agentAlias,
+    modelName,
+    runUltrafix,
+    ultrafixGoal,
+    ultrafixMaxCycles,
+}: BatchUpdatePlanIssueConfigInput): Promise<void> {
     try {
         const updateData: Record<string, unknown> = {
             updated_at: db.fn.now()

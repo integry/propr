@@ -194,6 +194,54 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({
   );
 };
 
+interface PlanHeaderSummaryProps {
+  planName: string;
+  draftStatus: string;
+  isPaused: boolean;
+  repository: string;
+  baseBranch: string;
+  initialPrompt?: string | null;
+}
+
+const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({
+  planName,
+  draftStatus,
+  isPaused,
+  repository,
+  baseBranch,
+  initialPrompt,
+}) => (
+  <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
+    <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
+      {planName}
+    </h1>
+    {draftStatus === 'merged' && (
+      <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1 flex-shrink-0">
+        <GitMerge size={12} /><span className="hidden sm:inline">Merged</span>
+      </span>
+    )}
+    {isPaused && (
+      <span className="px-2 py-1 rounded text-xs font-medium bg-orange-100 text-orange-700 flex items-center gap-1 flex-shrink-0">
+        <Pause size={12} /><span className="hidden sm:inline">Paused</span>
+      </span>
+    )}
+    <div className="hidden md:flex items-center gap-2 text-sm flex-shrink-0">
+      <div className="h-4 w-px bg-gray-300" />
+      <Github size={16} className="text-gray-500" />
+      <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
+      <span className="text-gray-400">/</span>
+      <GitBranch size={14} className="text-gray-500" />
+      <span className="text-gray-600">{baseBranch}</span>
+    </div>
+    {initialPrompt && (
+      <>
+        <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
+        <div className="hidden lg:block"><OriginalPromptPopover prompt={initialPrompt} /></div>
+      </>
+    )}
+  </div>
+);
+
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRefetch }) => {
   const navigate = useNavigate();
   const { addToast } = useToast();
@@ -358,35 +406,14 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
-        <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
-          <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
-            {planName}
-          </h1>
-          {draft.status === 'merged' && (
-            <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1 flex-shrink-0">
-              <GitMerge size={12} /><span className="hidden sm:inline">Merged</span>
-            </span>
-          )}
-          {isPaused && (
-            <span className="px-2 py-1 rounded text-xs font-medium bg-orange-100 text-orange-700 flex items-center gap-1 flex-shrink-0">
-              <Pause size={12} /><span className="hidden sm:inline">Paused</span>
-            </span>
-          )}
-          <div className="hidden md:flex items-center gap-2 text-sm flex-shrink-0">
-            <div className="h-4 w-px bg-gray-300" />
-            <Github size={16} className="text-gray-500" />
-            <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
-            <span className="text-gray-400">/</span>
-            <GitBranch size={14} className="text-gray-500" />
-            <span className="text-gray-600">{baseBranch}</span>
-          </div>
-          {draft.initial_prompt && (
-            <>
-              <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
-              <div className="hidden lg:block"><OriginalPromptPopover prompt={draft.initial_prompt} /></div>
-            </>
-          )}
-        </div>
+        <PlanHeaderSummary
+          planName={planName}
+          draftStatus={draft.status}
+          isPaused={isPaused}
+          repository={repository}
+          baseBranch={baseBranch}
+          initialPrompt={draft.initial_prompt}
+        />
 
         <PlanHeaderActions
           draftStatus={draft.status}
