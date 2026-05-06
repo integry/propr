@@ -8,6 +8,7 @@ import {
   useDraftCreation,
   usePlannerSettingsPersistence,
   useDraftContextConfigSync,
+  usePromptPersistence,
   type PlannerConfig
 } from './setupWizardHooks';
 import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
@@ -333,11 +334,12 @@ describe('setupWizardHooks branch resolution', () => {
     const replacementDraft = {
       draft_id: 'draft-2',
       repository: 'integry/propr',
-      initial_prompt: 'Prompt',
+      initial_prompt: 'Replacement prompt',
       status: 'draft',
-      attachments: [],
+      attachments: [{ id: 'attachment-2', filename: 'new.txt' } as never],
       created_at: '2026-05-06T00:00:00Z',
       context_config: {
+        baseBranch: 'release',
         contextRepositories: [],
         generationModel: null,
         manualFiles: [],
@@ -348,6 +350,9 @@ describe('setupWizardHooks branch resolution', () => {
     const { result } = renderHook(() => {
       const [config, setConfig] = useState<PlannerConfig>({
         ...baseConfig,
+        prompt: 'Stale prompt',
+        baseBranch: 'main',
+        files: [{ id: 'attachment-1', filename: 'old.txt' } as never],
         contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
         generationModel: 'gpt-5.4',
         manualFiles: ['src/a.ts'],
@@ -358,11 +363,52 @@ describe('setupWizardHooks branch resolution', () => {
     });
 
     await waitFor(() => {
+      expect(result.current.prompt).toBe('Replacement prompt');
+      expect(result.current.baseBranch).toBe('release');
+      expect(result.current.files).toEqual([{ id: 'attachment-2', filename: 'new.txt' }]);
       expect(result.current.contextRepositories).toEqual([]);
       expect(result.current.generationModel).toBeNull();
       expect(result.current.manualFiles).toEqual([]);
       expect(result.current.excludedFiles).toEqual([]);
     });
+  });
+
+  it('does not persist a stale prompt when the mounted wizard switches to a different draft', async () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = renderHook(
+        ({ draftId, prompt, initialPrompt }) => {
+          usePromptPersistence(draftId, prompt, initialPrompt);
+        },
+        {
+          initialProps: {
+            draftId: 'draft-1',
+            prompt: 'Edited prompt',
+            initialPrompt: 'Original prompt',
+          },
+        }
+      );
+
+      rerender({
+        draftId: 'draft-2',
+        prompt: 'Edited prompt',
+        initialPrompt: 'Replacement prompt',
+      });
+
+      await vi.advanceTimersByTimeAsync(1_100);
+      expect(mockUpdateDraft).not.toHaveBeenCalled();
+
+      rerender({
+        draftId: 'draft-2',
+        prompt: 'Replacement prompt',
+        initialPrompt: 'Replacement prompt',
+      });
+
+      await vi.advanceTimersByTimeAsync(1_100);
+      expect(mockUpdateDraft).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

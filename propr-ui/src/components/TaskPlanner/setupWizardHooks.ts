@@ -330,17 +330,25 @@ export function useDraftContextConfigSync(draft: PlannerDraft | undefined, setCo
   useEffect(() => {
     if (!draft) return;
     const draftConfig = (draft as DraftWithContextConfig).context_config;
-    const contextRepositories = draftConfig?.contextRepositories ?? [];
-    const generationModel = draftConfig?.generationModel ?? null;
-    const manualFiles = draftConfig?.manualFiles ?? [];
-    const excludedFiles = draftConfig?.excludedFiles ?? [];
-    setConfig(prev => (JSON.stringify(prev.contextRepositories) === JSON.stringify(contextRepositories) &&
-      prev.generationModel === generationModel &&
-      JSON.stringify(prev.manualFiles) === JSON.stringify(manualFiles) &&
-      JSON.stringify(prev.excludedFiles) === JSON.stringify(excludedFiles))
-      ? prev
-      : { ...prev, contextRepositories, generationModel, manualFiles, excludedFiles });
-  }, [draft, setConfig]);
+    setConfig(prev => (
+      prev.prompt === draft.initial_prompt &&
+      prev.baseBranch === (draftConfig?.baseBranch ?? '') &&
+      JSON.stringify(prev.files) === JSON.stringify(draft.attachments ?? []) &&
+      JSON.stringify(prev.contextRepositories) === JSON.stringify(draftConfig?.contextRepositories ?? []) &&
+      prev.generationModel === (draftConfig?.generationModel ?? null) &&
+      JSON.stringify(prev.manualFiles) === JSON.stringify(draftConfig?.manualFiles ?? []) &&
+      JSON.stringify(prev.excludedFiles) === JSON.stringify(draftConfig?.excludedFiles ?? [])
+    ) ? prev : {
+      ...prev,
+      prompt: draft.initial_prompt,
+      baseBranch: draftConfig?.baseBranch ?? '',
+      files: draft.attachments ?? [],
+      contextRepositories: draftConfig?.contextRepositories ?? [],
+      generationModel: draftConfig?.generationModel ?? null,
+      manualFiles: draftConfig?.manualFiles ?? [],
+      excludedFiles: draftConfig?.excludedFiles ?? []
+    });
+  }, [draft?.draft_id, setConfig]);
 }
 
 export function usePreviewTrace(draft: PlannerDraft | undefined, draftId: string, isPreviewLoading: boolean) {
@@ -379,11 +387,19 @@ const PROMPT_SAVE_DEBOUNCE = 1000;
 
 export function usePromptPersistence(draftId: string | undefined, prompt: string, initialPrompt: string | undefined) {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSavedPromptRef = useRef<string>(initialPrompt || '');
+  const lastSavedPromptRef = useRef<string>((initialPrompt || '').trim());
   const isMountedRef = useRef(true);
+  const previousDraftIdRef = useRef<string | undefined>(draftId);
   useEffect(() => { isMountedRef.current = true; return () => { isMountedRef.current = false; if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); }; }, []);
   useEffect(() => {
+    lastSavedPromptRef.current = (initialPrompt || '').trim();
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+  }, [draftId, initialPrompt]);
+  useEffect(() => {
     if (!draftId) return;
+    const draftChanged = previousDraftIdRef.current !== draftId;
+    previousDraftIdRef.current = draftId;
+    if (draftChanged) return;
     const trimmedPrompt = prompt.trim();
     if (trimmedPrompt === lastSavedPromptRef.current) return;
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
