@@ -120,16 +120,6 @@ async function triggerNextPlanIssueIfNeeded(
             return;
         }
 
-        const runUltrafix = planIssue.run_ultrafix === true || planIssue.run_ultrafix === 1;
-        if (runUltrafix) {
-            log.info({
-                repository,
-                issueNumber: issueRef.number,
-                draftId: planIssue.draft_id,
-            }, 'Skipping next issue trigger for no-changes case because ultrafix-enabled plan issues must remain blocked for manual review');
-            return;
-        }
-
         const labels = currentIssueData.data.labels.map((label) => label.name);
         if (!labels.includes('auto-merge')) {
             log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping next issue trigger');
@@ -216,14 +206,11 @@ export async function handleNoCodeChanges(options: {
     });
     const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
     const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
-    const runUltrafix = planIssue?.run_ultrafix === true || planIssue?.run_ultrafix === 1;
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,
         issue_number: issueRef.number,
-        body: runUltrafix
-            ? `✅ **No code changes needed - the implementation was already complete.**\n\nUltrafix was configured for this plan issue, so automatic sequencing remains blocked until a human reviews this result.\n\n${completionComment}`
-            : `✅ **No code changes needed - the implementation was already complete.**\n\n${completionComment}`,
+        body: `✅ **No code changes needed - the implementation was already complete.**\n\n${completionComment}`,
     });
 
     await triggerNextPlanIssueIfNeeded(issueRef, currentIssueData, correlatedLogger);

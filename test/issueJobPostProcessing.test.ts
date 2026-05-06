@@ -587,6 +587,7 @@ describe('performPostProcessing - Integration with Mocks', () => {
             assert.strictEqual(callArgs[1].repo, 'testrepo');
             assert.strictEqual(callArgs[1].issue_number, 123);
             assert.ok(callArgs[1].body.includes('No code changes needed'));
+            assert.ok(!callArgs[1].body.includes('automatic sequencing remains blocked'));
         });
 
         test('should update labels correctly (remove processing, add done)', async () => {
@@ -1541,6 +1542,16 @@ describe('triggerNextPlanIssueIfNeeded - Core Logic', () => {
         describe('triggers when auto-merge label is present', () => {
             test('should trigger when planIssue has draft_id and auto-merge label is present', () => {
                 const planIssue = { draft_id: 'draft-123' };
+                const labels = [{ name: 'auto-merge' }, { name: 'AI' }];
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.shouldTrigger, true);
+                assert.strictEqual(result.reason, 'proceed');
+            });
+
+            test('should still trigger when ultrafix is enabled for a no-changes issue', () => {
+                const planIssue = { draft_id: 'draft-999', run_ultrafix: true };
                 const labels = [{ name: 'auto-merge' }, { name: 'AI' }];
 
                 const result = shouldTriggerNextIssue(planIssue, labels);
