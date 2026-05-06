@@ -158,6 +158,49 @@ describe('setupWizardHooks branch resolution', () => {
     );
     expect(mockGeneratePlan).toHaveBeenCalled();
   });
+
+  it('continues generation when persisting the resolved baseBranch fails after draft creation', async () => {
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-1',
+      repository: 'integry/propr',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+    mockUpdateDraft.mockRejectedValue(new Error('Transient update failure'));
+
+    const navigate = vi.fn();
+    const setError = vi.fn();
+    const setIsCreating = vi.fn();
+
+    const { result } = renderHook(() => useDraftCreation({
+      selectedRepo: 'integry/propr',
+      config: { ...baseConfig, prompt: 'Test prompt', baseBranch: 'develop' },
+      localFiles: [],
+      navigate,
+      setError,
+      setIsCreating,
+    }));
+
+    await result.current();
+
+    expect(mockGeneratePlan).toHaveBeenCalledWith(
+      'draft-1',
+      expect.objectContaining({ baseBranch: 'develop' })
+    );
+    expect(navigate).toHaveBeenCalledWith(
+      '/studio/draft-1',
+      expect.objectContaining({
+        replace: true,
+        state: expect.objectContaining({
+          initialBaseBranch: 'develop',
+          baseBranchPersistenceWarning: expect.stringContaining('failed to save base branch "develop"')
+        })
+      })
+    );
+    expect(setError).not.toHaveBeenCalledWith('Transient update failure');
+  });
 });
 
 describe('computeIsGenerateDisabled', () => {

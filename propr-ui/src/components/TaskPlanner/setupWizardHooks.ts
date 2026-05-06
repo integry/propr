@@ -17,9 +17,9 @@ import { getUserRepoPreferences, UserRepoPreferences } from '../../api/userRepoP
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { resizeImage } from './imageUtils';
 import { IndexedRepository } from './ContextRepositoriesSection';
-import { constructDraftWithPlan, persistResolvedBaseBranch } from './useAutoDraftCreation';
+import { constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
 import type { RepoSelection } from '../RepositorySelector';
-export { useAutoDraftCreation, constructDraftWithPlan, persistResolvedBaseBranch } from './useAutoDraftCreation';
+export { useAutoDraftCreation, constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
 
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 
@@ -304,7 +304,13 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
     try {
       const { createDraft } = await import('../../api/proprApi');
       const newDraft = await createDraft(selectedRepo, config.prompt.trim(), { todoIds });
-      await persistResolvedBaseBranch(newDraft.draft_id, config.baseBranch);
+      let baseBranchPersistenceWarning: string | null = null;
+      try {
+        await persistResolvedBaseBranch(newDraft.draft_id, config.baseBranch);
+      } catch (err) {
+        console.error('Failed to persist resolved base branch:', err);
+        baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(config.baseBranch);
+      }
       for (const file of localFiles) {
         try { await uploadAttachment(newDraft.draft_id, file); }
         catch (uploadErr) { console.error('Failed to upload attachment:', uploadErr); }
@@ -313,7 +319,14 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
       await generatePlan(newDraft.draft_id, buildGenerationPayload(config));
       const draftWithPlan = constructDraftWithPlan(newDraft, config.baseBranch);
       draftWithPlan.status = 'generating';
-      navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan, initialBaseBranch: config.baseBranch } });
+      navigate(`/studio/${newDraft.draft_id}`, {
+        replace: true,
+        state: {
+          initialDraft: draftWithPlan,
+          initialBaseBranch: config.baseBranch,
+          baseBranchPersistenceWarning
+        }
+      });
     } catch (err) {
       setError((err as Error).message || 'Failed to create draft');
       setIsCreating(false);

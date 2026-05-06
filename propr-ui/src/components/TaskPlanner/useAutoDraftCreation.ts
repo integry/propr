@@ -40,6 +40,14 @@ export async function persistResolvedBaseBranch(draftId: string, baseBranch?: st
   } as Parameters<typeof updateDraft>[1] & { context_config: { baseBranch: string } });
 }
 
+export function getBaseBranchPersistenceWarning(baseBranch?: string): string | null {
+  if (!baseBranch) {
+    return null;
+  }
+
+  return `Draft created, but failed to save base branch "${baseBranch}". Reloading may require fetching the default branch again.`;
+}
+
 // Debounce delay before auto-creating draft after user starts typing
 const AUTO_DRAFT_DEBOUNCE_DELAY = 1000;
 
@@ -71,6 +79,7 @@ export function useAutoDraftCreation({
 }: AutoDraftCreationParams) {
   const [isAutoCreating, setIsAutoCreating] = useState(false);
   const [autoCreateError, setAutoCreateError] = useState<string | null>(null);
+  const [autoCreateWarning, setAutoCreateWarning] = useState<string | null>(null);
   const draftCreatedRef = useRef(false);
   const lastSelectionKeyRef = useRef(`${selectedRepo}:${resolvedBaseBranch}`);
 
@@ -89,10 +98,20 @@ export function useAutoDraftCreation({
 
     setIsAutoCreating(true);
     setAutoCreateError(null);
+    setAutoCreateWarning(null);
 
     try {
       const newDraft = await apiCreateDraft(repo, currentPrompt.trim(), { todoIds });
-      await persistResolvedBaseBranch(newDraft.draft_id, resolvedBaseBranch);
+      let baseBranchPersistenceWarning: string | null = null;
+
+      try {
+        await persistResolvedBaseBranch(newDraft.draft_id, resolvedBaseBranch);
+      } catch (err) {
+        console.error('Failed to persist resolved base branch:', err);
+        baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(resolvedBaseBranch);
+        setAutoCreateWarning(baseBranchPersistenceWarning);
+      }
+
       draftCreatedRef.current = true;
 
       // Upload any local files
@@ -114,7 +133,11 @@ export function useAutoDraftCreation({
         const draftWithPlan = constructDraftWithPlan(newDraft, resolvedBaseBranch);
         navigate(`/studio/${newDraft.draft_id}`, {
           replace: true,
-          state: { initialDraft: draftWithPlan, initialBaseBranch: resolvedBaseBranch }
+          state: {
+            initialDraft: draftWithPlan,
+            initialBaseBranch: resolvedBaseBranch,
+            baseBranchPersistenceWarning
+          }
         });
       }
     } catch (err) {
@@ -153,5 +176,5 @@ export function useAutoDraftCreation({
     };
   }, [isNewMode, selectedRepo, resolvedBaseBranch, prompt, debouncedCreateDraft]);
 
-  return { isAutoCreating, autoCreateError };
+  return { isAutoCreating, autoCreateError, autoCreateWarning };
 }

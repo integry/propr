@@ -3,17 +3,19 @@ import { render, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import SetupWizard from './SetupWizard';
-import { getDraft, createDraft, updateDraft } from '../../api/proprApi';
+import { getDraft, createDraft, updateDraft, getRepoBranches } from '../../api/proprApi';
 
 const mockGetDraft = vi.mocked(getDraft);
 const mockCreateDraft = vi.mocked(createDraft);
 const mockUpdateDraft = vi.mocked(updateDraft);
+const mockGetRepoBranches = vi.mocked(getRepoBranches);
 let lastLeftPaneProps: Record<string, unknown> | undefined;
 
 vi.mock('../../api/proprApi', () => ({
   getDraft: vi.fn(),
   createDraft: vi.fn(),
   updateDraft: vi.fn(),
+  getRepoBranches: vi.fn(),
 }));
 
 vi.mock('../../hooks/usePlannerSettings', () => ({
@@ -116,7 +118,9 @@ vi.mock('./setupWizardHooks', () => ({
   useAutoDraftCreation: () => ({
     isAutoCreating: false,
     autoCreateError: null,
+    autoCreateWarning: null,
   }),
+  getBaseBranchPersistenceWarning: (baseBranch?: string) => baseBranch ? `Draft created, but failed to save base branch "${baseBranch}".` : null,
   persistResolvedBaseBranch: (draftId: string, baseBranch?: string) => updateDraft(draftId, {
     context_config: { baseBranch }
   }),
@@ -222,6 +226,48 @@ describe('SetupWizard', () => {
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-2',
       expect.objectContaining({ context_config: { baseBranch: 'develop' } })
+    );
+  });
+
+  it('resolves the default branch before switching repos in edit mode when the entry has no baseBranch', async () => {
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-2',
+      repository: 'integry/other',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+    mockGetRepoBranches.mockResolvedValue({ defaultBranch: 'release', branches: ['release', 'main'] });
+
+    render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            context_config: { baseBranch: 'main' },
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    await act(async () => {
+      await (lastLeftPaneProps?.onRepoChange as ((repo: string, selection?: { baseBranch?: string }) => Promise<void>))(
+        'integry/other',
+        { repo: 'integry/other', option: { name: 'integry/other', enabled: true } }
+      );
+    });
+
+    expect(mockGetRepoBranches).toHaveBeenCalledWith('integry', 'other');
+    expect(mockUpdateDraft).toHaveBeenCalledWith(
+      'draft-2',
+      expect.objectContaining({ context_config: { baseBranch: 'release' } })
     );
   });
 });

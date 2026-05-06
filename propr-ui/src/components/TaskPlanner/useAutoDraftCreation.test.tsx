@@ -61,6 +61,38 @@ describe('useAutoDraftCreation', () => {
     });
   });
 
+  it('keeps navigating when persisting the resolved baseBranch fails after auto-creating a draft', async () => {
+    const navigate = vi.fn();
+    mockUpdateDraft.mockRejectedValue(new Error('Transient update failure'));
+
+    renderHook(() => useAutoDraftCreation({
+      isNewMode: true,
+      selectedRepo: 'integry/propr',
+      resolvedBaseBranch: 'develop',
+      prompt: 'Test prompt',
+      localFiles: [],
+      navigate,
+    }));
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(navigate).toHaveBeenCalledWith(
+        '/studio/draft-1',
+        expect.objectContaining({
+          replace: true,
+          state: expect.objectContaining({
+            initialBaseBranch: 'develop',
+            baseBranchPersistenceWarning: expect.stringContaining('failed to save base branch "develop"')
+          })
+        })
+      );
+    });
+  });
+
   it('waits for a resolved base branch before auto-creating a draft', async () => {
     const navigate = vi.fn();
 

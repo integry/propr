@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Download, Loader2 } from 'lucide-react';
-import { PlannerDraft, createDraft, GenerationTrace } from '../../api/proprApi';
+import { DraftContextConfig, PlannerDraft, createDraft, GenerationTrace, getRepoBranches } from '../../api/proprApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
@@ -27,6 +27,7 @@ import {
   useDraftCreation,
   useAutoDraftCreation,
   persistResolvedBaseBranch,
+  getBaseBranchPersistenceWarning,
   usePromptPersistence,
   computeIsGenerateDisabled,
   computeCanExport,
@@ -237,9 +238,12 @@ interface LocationState {
   initialPrompt?: string;
   initialRepository?: string;
   initialBaseBranch?: string;
+  baseBranchPersistenceWarning?: string | null;
   /** Optional array of to-do IDs to link to the draft when creating from To-Dos */
   todoIds?: string[];
 }
+
+type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
 
 // Main component - handles state and hooks
 export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete, onDraftCreated, onDraftCreatedInPlace }) => {
@@ -249,9 +253,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const savedSettings = useMemo(() => getPlannerSettings(), []);
   const { addToast } = useToast();
   const isNewMode = !draft;
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const draftContextConfig = (draft as any)?.context_config;
+  const draftContextConfig = (draft as DraftWithContextConfig | undefined)?.context_config;
   const [config, setConfig] = useState<PlannerConfig>(() => ({
     prompt: draft?.initial_prompt ?? locationState?.initialPrompt ?? '',
     baseBranch: draftContextConfig?.baseBranch ?? locationState?.initialBaseBranch ?? '',
@@ -278,8 +280,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   // Only update when values actually differ to prevent infinite update loops
   useEffect(() => {
     if (!draft) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const draftConfig = (draft as any)?.context_config;
+    const draftConfig = (draft as DraftWithContextConfig).context_config;
     if (draftConfig?.contextRepositories?.length > 0) {
       setConfig(prev => JSON.stringify(prev.contextRepositories) === JSON.stringify(draftConfig.contextRepositories) ? prev : { ...prev, contextRepositories: draftConfig.contextRepositories });
     }
@@ -369,7 +370,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   });
 
   // Auto-create draft when user starts typing in new mode
-  const { isAutoCreating, autoCreateError } = useAutoDraftCreation({
+  const { isAutoCreating, autoCreateError, autoCreateWarning } = useAutoDraftCreation({
     isNewMode,
     selectedRepo: repoLoader.selectedRepo,
     resolvedBaseBranch: config.baseBranch,
@@ -382,19 +383,49 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   });
 
   useEffect(() => { if (autoCreateError) addToast({ type: 'error', message: autoCreateError }); }, [autoCreateError, addToast]);
+  useEffect(() => { if (autoCreateWarning) addToast({ type: 'warning', message: autoCreateWarning }); }, [autoCreateWarning, addToast]);
+  useEffect(() => {
+    if (locationState?.baseBranchPersistenceWarning) {
+      addToast({ type: 'warning', message: locationState.baseBranchPersistenceWarning });
+    }
+  }, [locationState?.baseBranchPersistenceWarning, addToast]);
   const autoResize = useAutoResize(textareaRef);
 
   const handleRepoChangeInEditMode = useCallback(async (newRepo: string, selection?: RepoSelection) => {
     if (!newRepo) { setIsChangingRepo(false); return; }
-    if (newRepo === draft?.repository && (selection?.baseBranch || '') === config.baseBranch) { setIsChangingRepo(false); return; }
     setIsCreating(true); setError(null);
     try {
+      let resolvedBaseBranch = selection?.baseBranch || '';
+      if (!resolvedBaseBranch) {
+        const [owner, repo] = newRepo.split('/');
+        if (!owner || !repo) {
+          throw new Error('Invalid repository format');
+        }
+        const repoInfo = await getRepoBranches(owner, repo);
+        resolvedBaseBranch = repoInfo.defaultBranch;
+      }
+      if (newRepo === draft?.repository && resolvedBaseBranch === config.baseBranch) {
+        setIsCreating(false);
+        setIsChangingRepo(false);
+        return;
+      }
+
       const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled');
-      await persistResolvedBaseBranch(newDraft.draft_id, selection?.baseBranch);
+      let baseBranchPersistenceWarning: string | null = null;
+      try {
+        await persistResolvedBaseBranch(newDraft.draft_id, resolvedBaseBranch);
+      } catch (err) {
+        console.error('Failed to persist resolved base branch:', err);
+        baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(resolvedBaseBranch);
+      }
       onDraftCreated?.(newDraft.draft_id);
       navigate(`/studio/${newDraft.draft_id}`, {
         replace: true,
-        state: { initialRepository: newRepo, initialBaseBranch: selection?.baseBranch || '' }
+        state: {
+          initialRepository: newRepo,
+          initialBaseBranch: resolvedBaseBranch,
+          baseBranchPersistenceWarning
+        }
       });
     }
     catch (err) { setError((err as Error).message || 'Failed to change repository'); setIsCreating(false); setIsChangingRepo(false); }
