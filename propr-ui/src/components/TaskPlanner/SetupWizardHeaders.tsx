@@ -37,7 +37,8 @@ export const NewModeHeader: React.FC<{
   onRepoChange?: (repo: string, selection?: RepoSelection) => void;
   baseBranch: string;
   isLoadingBranches: boolean;
-}> = ({ reposLoading, selectedRepo, selectedBaseBranch, repos, onRepoChange, baseBranch, isLoadingBranches }) => {
+  branchError?: string | null;
+}> = ({ reposLoading, selectedRepo, selectedBaseBranch, repos, onRepoChange, baseBranch, isLoadingBranches, branchError }) => {
   if (reposLoading) {
     return <span className="text-gray-400 text-sm">Loading repositories...</span>;
   }
@@ -67,6 +68,9 @@ export const NewModeHeader: React.FC<{
           </div>
         </>
       )}
+      {branchError && (
+        <span className="text-red-500 text-xs ml-2 flex-shrink-0">{branchError}</span>
+      )}
     </>
   );
 };
@@ -77,18 +81,22 @@ export const EditModeHeader: React.FC<{
   isRepoLoading: boolean;
   baseBranch: string;
   selectedBaseBranch?: string;
+  configuredBaseBranch?: string;
   branchError: string | null;
   repoError: string | null;
   repos: Repo[];
   onRepoChange: (repo: string, selection?: RepoSelection) => void;
   reposLoading: boolean;
-}> = ({ repository, isRepoLoading, baseBranch, selectedBaseBranch, branchError, repoError, repos, onRepoChange, reposLoading }) => {
+}> = ({ repository, isRepoLoading, baseBranch, selectedBaseBranch, configuredBaseBranch, branchError, repoError, repos, onRepoChange, reposLoading }) => {
   const finalRepoOptions = useMemo(() => {
     const options = repos.length > 0 ? repos : (repository ? [{ name: repository, enabled: true }] : []);
-    const hasCurrentRepo = options.some(r => r.name === repository && (r.baseBranch || '') === (selectedBaseBranch || ''))
-      || options.some(r => r.name === repository && !selectedBaseBranch);
-    return hasCurrentRepo || !repository ? options : [{ name: repository, enabled: true, baseBranch: selectedBaseBranch || undefined }, ...options];
-  }, [repos, repository, selectedBaseBranch]);
+    const currentBaseBranch = configuredBaseBranch || selectedBaseBranch || '';
+    const hasCurrentRepo = options.some(r => r.name === repository && (r.baseBranch || '') === currentBaseBranch)
+      || options.some(r => r.name === repository && !currentBaseBranch);
+    return hasCurrentRepo || !repository || !currentBaseBranch
+      ? options
+      : [{ name: repository, enabled: true, baseBranch: currentBaseBranch }, ...options];
+  }, [repos, repository, selectedBaseBranch, configuredBaseBranch]);
 
   return (
     <>

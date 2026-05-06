@@ -89,6 +89,7 @@ interface SetupWizardLeftPaneProps {
   repos?: Repo[];
   selectedRepo?: string;
   selectedBaseBranch?: string;
+  configuredBaseBranch?: string;
   onRepoChange?: (repo: string, selection?: RepoSelection) => void;
   reposLoading?: boolean;
   baseBranch: string;
@@ -125,6 +126,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   repos = [],
   selectedRepo = '',
   selectedBaseBranch = '',
+  configuredBaseBranch,
   onRepoChange,
   reposLoading = false,
   baseBranch,
@@ -166,6 +168,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             onRepoChange={onRepoChange}
             baseBranch={baseBranch}
             isLoadingBranches={isRepoLoading}
+            branchError={repoError}
           />
         ) : (
           <EditModeHeader
@@ -173,6 +176,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             isRepoLoading={isRepoLoading}
             baseBranch={baseBranch}
             selectedBaseBranch={selectedBaseBranch}
+            configuredBaseBranch={configuredBaseBranch}
             branchError={branchError}
             repoError={repoError}
             repos={repos}

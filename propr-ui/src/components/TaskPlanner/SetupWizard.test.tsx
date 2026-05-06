@@ -10,6 +10,17 @@ const mockCreateDraft = vi.mocked(createDraft);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockGetRepoBranches = vi.mocked(getRepoBranches);
 let lastLeftPaneProps: Record<string, unknown> | undefined;
+const mockNavigate = vi.fn();
+let mockLocationState: Record<string, unknown> | undefined;
+
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+    useLocation: () => ({ state: mockLocationState }),
+  };
+});
 
 vi.mock('../../api/proprApi', () => ({
   getDraft: vi.fn(),
@@ -146,6 +157,7 @@ describe('SetupWizard', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     lastLeftPaneProps = undefined;
+    mockLocationState = undefined;
   });
 
   afterEach(() => {
@@ -268,6 +280,50 @@ describe('SetupWizard', () => {
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-2',
       expect.objectContaining({ context_config: { baseBranch: 'release' } })
+    );
+  });
+
+  it('preserves todoIds when switching repositories in edit mode', async () => {
+    mockLocationState = { todoIds: ['todo-1', 'todo-2'] };
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-2',
+      repository: 'integry/other',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+
+    render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            context_config: { baseBranch: 'main' },
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    await act(async () => {
+      await (lastLeftPaneProps?.onRepoChange as ((repo: string, selection?: { baseBranch?: string }) => Promise<void>))(
+        'integry/other',
+        { repo: 'integry/other', baseBranch: 'develop', option: { name: 'integry/other', enabled: true, baseBranch: 'develop' } }
+      );
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/studio/draft-2',
+      expect.objectContaining({
+        replace: true,
+        state: expect.objectContaining({ todoIds: ['todo-1', 'todo-2'] })
+      })
     );
   });
 });

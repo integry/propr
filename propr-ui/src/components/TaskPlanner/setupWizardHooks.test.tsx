@@ -37,6 +37,16 @@ const mockCreateDraft = vi.mocked(createDraft);
 const mockGeneratePlan = vi.mocked(generatePlan);
 const mockUpdateDraft = vi.mocked(updateDraft);
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 const baseConfig: PlannerConfig = {
   prompt: '',
   baseBranch: '',
@@ -102,6 +112,30 @@ describe('setupWizardHooks branch resolution', () => {
     expect(result.current.config.baseBranch).toBe('');
   });
 
+  it('ignores stale branch lookup results after the selected repo changes', async () => {
+    const firstRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
+    const secondRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
+    mockGetRepoBranches
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockReturnValueOnce(secondRequest.promise);
+
+    const { result, rerender } = renderHook(
+      ({ repo, configuredBaseBranch }: { repo: string; configuredBaseBranch: string }) => {
+        const [config, setConfig] = useState<PlannerConfig>(baseConfig);
+        const state = useBranchesLoader(repo, configuredBaseBranch, setConfig);
+        return { config, state };
+      },
+      { initialProps: { repo: 'integry/propr', configuredBaseBranch: '' } }
+    );
+
+    rerender({ repo: 'integry/other', configuredBaseBranch: '' });
+    secondRequest.resolve({ defaultBranch: 'release', branches: ['release'] });
+    await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
+
+    firstRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
+    await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
+  });
+
   it('preserves a draft context_config baseBranch instead of snapping back to the GitHub default branch', async () => {
     const draft = {
       draft_id: 'draft-1',
@@ -125,6 +159,51 @@ describe('setupWizardHooks branch resolution', () => {
 
     expect(result.current.state.isLoading).toBe(false);
     expect(mockGetRepoBranches).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale repo info lookups after the draft changes', async () => {
+    const firstRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
+    const secondRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
+    mockGetRepoBranches
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockReturnValueOnce(secondRequest.promise);
+
+    const { result, rerender } = renderHook(
+      ({ draft }) => {
+        const [config, setConfig] = useState<PlannerConfig>(baseConfig);
+        const state = useRepoInfoLoader(false, draft, setConfig);
+        return { config, state };
+      },
+      {
+        initialProps: {
+          draft: {
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+          },
+        },
+      }
+    );
+
+    rerender({
+      draft: {
+        draft_id: 'draft-2',
+        repository: 'integry/other',
+        initial_prompt: 'Test prompt',
+        status: 'draft',
+        attachments: [],
+        created_at: '2026-05-06T00:00:00Z',
+      },
+    });
+
+    secondRequest.resolve({ defaultBranch: 'release', branches: ['release'] });
+    await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
+
+    firstRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
+    await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
   });
 
   it('persists the resolved baseBranch when creating a draft before generation starts', async () => {

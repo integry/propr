@@ -90,6 +90,24 @@ describe('useAutoDraftCreation', () => {
     );
   });
 
+  it('clears the auto-creating state before navigation after successful auto-creation', async () => {
+    const navigate = vi.fn();
+
+    const { result } = renderHook(() => useAutoDraftCreation({
+      isNewMode: true,
+      selectedRepo: 'integry/propr',
+      resolvedBaseBranch: 'develop',
+      prompt: 'Test prompt',
+      localFiles: [],
+      navigate,
+    }));
+
+    await flushAutoCreate();
+
+    expect(navigate).toHaveBeenCalled();
+    expect(result.current.isAutoCreating).toBe(false);
+  });
+
   it('waits for a resolved base branch before auto-creating a draft', async () => {
     const navigate = vi.fn();
 

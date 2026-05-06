@@ -58,4 +58,42 @@ describe('SetupWizardHeaders', () => {
       option: expect.objectContaining({ name: 'integry/propr', baseBranch: 'main' }),
     }));
   });
+
+  it('does not synthesize a configured branch entry for an inferred default branch in edit mode', () => {
+    render(
+      <EditModeHeader
+        repository="integry/propr"
+        isRepoLoading={false}
+        baseBranch="main"
+        selectedBaseBranch="main"
+        configuredBaseBranch={undefined}
+        branchError={null}
+        repoError={null}
+        repos={[{ name: 'integry/propr', enabled: true }]}
+        onRepoChange={vi.fn()}
+        reposLoading={false}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: /propr$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /propr \(main\)/i })).not.toBeInTheDocument();
+  });
+
+  it('shows branch lookup failures in new mode', () => {
+    render(
+      <NewModeHeader
+        reposLoading={false}
+        selectedRepo="integry/propr"
+        selectedBaseBranch=""
+        repos={duplicateRepos}
+        onRepoChange={vi.fn()}
+        baseBranch=""
+        isLoadingBranches={false}
+        branchError="GitHub unavailable"
+      />
+    );
+
+    expect(screen.getByText('GitHub unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Unavailable')).toBeInTheDocument();
+  });
 });

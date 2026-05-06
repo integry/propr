@@ -1,17 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  uploadAttachment,
-  removeAttachment,
-  generatePlan,
-  abortGeneration,
-  getAgents,
-  getRepoConfig,
-  getRepoBranches,
-  updateDraft,
-  PlannerDraft,
-  PlannerAttachment,
-  AgentConfig
-} from '../../api/proprApi';
+import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, AgentConfig } from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getUserRepoPreferences, UserRepoPreferences } from '../../api/userRepoPreferencesApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
@@ -33,6 +21,8 @@ export interface PlannerConfig {
 }
 
 interface RepoInfoState { isLoading: boolean; error: string | null; }
+const clearResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) => setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
+const setResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, baseBranch: string) => setConfig(prev => prev.baseBranch === baseBranch ? prev : { ...prev, baseBranch });
 
 async function loadRepositories(
   savedLastRepository: string | undefined,
@@ -73,17 +63,7 @@ async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRe
 }
 
 async function processFileForUpload(file: File): Promise<File> { return file.type.startsWith('image/') ? resizeImage(file) : file; }
-function buildGenerationPayload(config: PlannerConfig) {
-  return {
-    baseBranch: config.baseBranch,
-    granularity: config.granularity,
-    contextLevel: config.contextLevel,
-    compress: config.compress,
-    contextRepositories: config.contextRepositories,
-    generationModel: config.generationModel || undefined,
-    excludedFiles: config.excludedFiles.length > 0 ? config.excludedFiles : undefined
-  };
-}
+function buildGenerationPayload(config: PlannerConfig) { return { baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, contextRepositories: config.contextRepositories, generationModel: config.generationModel || undefined, excludedFiles: config.excludedFiles.length > 0 ? config.excludedFiles : undefined }; }
 
 export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined) {
   const [repos, setRepos] = useState<Repo[]>([]);
@@ -113,30 +93,36 @@ export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: st
 
 export function useBranchesLoader(selectedRepo: string, selectedBaseBranch: string, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
   const [branchesState, setBranchesState] = useState<RepoInfoState>({ isLoading: false, error: null });
+  const requestIdRef = useRef(0);
   useEffect(() => {
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
     if (!selectedRepo) {
       setBranchesState({ isLoading: false, error: null });
-      setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
+      clearResolvedBaseBranch(setConfig);
       return;
     }
     if (selectedBaseBranch) {
       setBranchesState({ isLoading: false, error: null });
-      setConfig(prev => prev.baseBranch === selectedBaseBranch ? prev : { ...prev, baseBranch: selectedBaseBranch });
+      setResolvedBaseBranch(setConfig, selectedBaseBranch);
       return;
     }
     const [owner, repo] = selectedRepo.split('/');
     if (!owner || !repo) {
       setBranchesState({ isLoading: false, error: 'Invalid repository format' });
+      clearResolvedBaseBranch(setConfig);
       return;
     }
     setBranchesState({ isLoading: true, error: null });
     getRepoBranches(owner, repo).then(data => {
+      if (requestId !== requestIdRef.current) return;
       setBranchesState({ isLoading: false, error: null });
-      setConfig(prev => prev.baseBranch === data.defaultBranch ? prev : { ...prev, baseBranch: data.defaultBranch });
+      setResolvedBaseBranch(setConfig, data.defaultBranch);
     }).catch(err => {
+      if (requestId !== requestIdRef.current) return;
       console.error('Failed to load branches:', err);
       setBranchesState({ isLoading: false, error: (err as Error).message });
-      setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
+      clearResolvedBaseBranch(setConfig);
     });
   }, [selectedRepo, selectedBaseBranch, setConfig]);
   return branchesState;
@@ -144,26 +130,33 @@ export function useBranchesLoader(selectedRepo: string, selectedBaseBranch: stri
 
 export function useRepoInfoLoader(isNewMode: boolean, draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
   const [repoInfo, setRepoInfo] = useState<RepoInfoState>({ isLoading: !isNewMode, error: null });
+  const requestIdRef = useRef(0);
   useEffect(() => {
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
     if (isNewMode || !draft) return;
     const draftBaseBranch = (draft as PlannerDraft & { context_config?: { baseBranch?: string } }).context_config?.baseBranch;
     if (draftBaseBranch) {
       setRepoInfo({ isLoading: false, error: null });
-      setConfig(prev => prev.baseBranch === draftBaseBranch ? prev : { ...prev, baseBranch: draftBaseBranch });
+      setResolvedBaseBranch(setConfig, draftBaseBranch);
       return;
     }
     const [owner, repo] = draft.repository.split('/');
     if (!owner || !repo) {
       setRepoInfo({ isLoading: false, error: 'Invalid repository format' });
+      clearResolvedBaseBranch(setConfig);
       return;
     }
 
+    setRepoInfo({ isLoading: true, error: null });
     getRepoBranches(owner, repo).then(info => {
+      if (requestId !== requestIdRef.current) return;
       setRepoInfo({ isLoading: false, error: null });
-      setConfig(prev => prev.baseBranch === info.defaultBranch ? prev : { ...prev, baseBranch: info.defaultBranch });
+      setResolvedBaseBranch(setConfig, info.defaultBranch);
     }).catch(err => {
+      if (requestId !== requestIdRef.current) return;
       setRepoInfo({ isLoading: false, error: (err as Error).message });
-      setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
+      clearResolvedBaseBranch(setConfig);
     });
   }, [isNewMode, draft, setConfig]);
   return repoInfo;

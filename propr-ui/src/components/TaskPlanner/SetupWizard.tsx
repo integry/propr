@@ -61,6 +61,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const handleExcludeFile = (filePath: string) => setConfig(prev => ({ ...prev, excludedFiles: [...prev.excludedFiles, filePath] }));
   const isGenerating = generationPolling.isGenerating;
   const stats = contextRefresh.preview.data?.stats;
+  const configuredBaseBranch = (draft as DraftWithContextConfig | undefined)?.context_config?.baseBranch;
   return (
     <div className="h-full flex flex-col bg-white">
       <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-auto">
@@ -69,7 +70,8 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           repository={repository}
           repos={repoLoader.repos}
           selectedRepo={repoLoader.selectedRepo}
-          selectedBaseBranch={isNewMode ? repoLoader.selectedBaseBranch : config.baseBranch}
+          selectedBaseBranch={isNewMode ? repoLoader.selectedBaseBranch : configuredBaseBranch}
+          configuredBaseBranch={configuredBaseBranch}
           onRepoChange={onRepoChange}
           reposLoading={repoLoader.reposLoading}
           baseBranch={config.baseBranch}
@@ -314,12 +316,13 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         state: {
           initialRepository: newRepo,
           initialBaseBranch: resolvedBaseBranch,
-          baseBranchPersistenceWarning
+          baseBranchPersistenceWarning,
+          todoIds: locationState?.todoIds
         }
       });
     }
     catch (err) { setError((err as Error).message || 'Failed to change repository'); setIsCreating(false); }
-  }, [draft?.repository, config.baseBranch, config.prompt, onDraftCreated, navigate]);
+  }, [draft?.repository, config.baseBranch, config.prompt, onDraftCreated, navigate, locationState?.todoIds]);
   const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) { for (const file of Array.from(e.target.files)) await fileHandling.handleUpload(file); }
     if (fileInputRef.current) fileInputRef.current.value = '';
