@@ -956,6 +956,7 @@ describe('config route follow-up helpers', () => {
         await routes.getSettings({} as never, res as never);
 
         assert.deepStrictEqual(res.body, {
+            default_agent_alias: undefined,
             worker_concurrency: 5,
             github_user_whitelist: [],
             analysis_model_fast: 'claude-3-5-haiku-20241022',
@@ -1003,6 +1004,7 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(res.statusCode, 200);
         assert.deepStrictEqual(res.body, {
+            default_agent_alias: undefined,
             worker_concurrency: 5,
             github_user_whitelist: [],
             analysis_model_fast: 'claude-3-5-haiku-20241022',
@@ -2057,6 +2059,7 @@ describe('config route follow-up helpers', () => {
             await routes.getSettings({} as never, res as never);
 
             assert.deepStrictEqual(res.payload, {
+                default_agent_alias: undefined,
                 worker_concurrency: 7,
                 github_user_whitelist: ['alice'],
                 analysis_model_fast: 'fast-model',

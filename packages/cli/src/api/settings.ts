@@ -14,6 +14,11 @@ import { ApiClient, createApiClient } from "./index.js";
  */
 export interface SystemSettings {
   /**
+   * Alias of the default implementation agent.
+   */
+  default_agent_alias?: string;
+
+  /**
    * Number of concurrent workers for processing tasks.
    */
   worker_concurrency: number;
@@ -81,6 +86,11 @@ export type GetSettingsResponse = SystemSettings;
  * Supports partial updates - only include fields you want to change.
  */
 export interface UpdateSettingsOptions {
+  /**
+   * Alias of the default implementation agent.
+   */
+  default_agent_alias?: string;
+
   /**
    * Number of concurrent workers for processing tasks.
    */
@@ -163,6 +173,7 @@ export type SettingKey = keyof SystemSettings;
  * List of valid setting keys for validation.
  */
 export const VALID_SETTING_KEYS: SettingKey[] = [
+  "default_agent_alias",
   "worker_concurrency",
   "github_user_whitelist",
   "analysis_model_fast",
@@ -254,6 +265,7 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       // Parse comma-separated list
       return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
     case "analysis_model_fast":
+    case "default_agent_alias":
     case "planner_context_model":
     case "planner_generation_model":
       return value;

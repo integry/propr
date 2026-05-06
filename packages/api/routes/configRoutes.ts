@@ -270,6 +270,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         }
       }
       res.json({
+        default_agent_alias: settings.default_agent_alias as string | undefined,
         worker_concurrency: settings.worker_concurrency ?? envDefaults.worker_concurrency,
         github_user_whitelist: settings.github_user_whitelist ?? envDefaults.github_user_whitelist,
         analysis_model_fast: settings.analysis_model_fast ?? envDefaults.analysis_model_fast,
