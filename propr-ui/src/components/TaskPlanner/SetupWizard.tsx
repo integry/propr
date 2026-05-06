@@ -29,7 +29,7 @@ type SetupWizardContentProps = {
   fileHandling: ReturnType<typeof useFileHandling>; generationPolling: ReturnType<typeof useGenerationPolling>; contextExport: ReturnType<typeof useContextExport>;
   contextRefresh: ReturnType<typeof useContextRefresh>; generationHandlers: ReturnType<typeof useGenerationHandlers>; autoResize: () => void;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>; fileInputRef: React.RefObject<HTMLInputElement | null>; error: string | null; branchError: string | null;
-  isCreating: boolean;
+  isCreating: boolean; initialConfiguredBaseBranch: string;
   handleRepoChangeInEditMode: (repo: string, selection?: RepoSelection) => Promise<void>; handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
   handleExportContext: () => void; handleGenerate: () => Promise<void>; agents: ReturnType<typeof useAgentsLoader>; availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>; previewTrace?: GenerationTrace;
 };
@@ -38,7 +38,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const {
     isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo,
     fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers,
-    autoResize, textareaRef, fileInputRef, error, branchError, isCreating,
+    autoResize, textareaRef, fileInputRef, error, branchError, isCreating, initialConfiguredBaseBranch,
     handleRepoChangeInEditMode, handleFileInputChange, handleExportContext,
     handleGenerate, agents, availableRepos, previewTrace
   } = props;
@@ -62,6 +62,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const isGenerating = generationPolling.isGenerating;
   const stats = contextRefresh.preview.data?.stats;
   const configuredBaseBranch = (draft as DraftWithContextConfig | undefined)?.context_config?.baseBranch;
+  const selectedConfiguredBaseBranch = configuredBaseBranch ?? initialConfiguredBaseBranch;
   return (
     <div className="h-full flex flex-col bg-white">
       <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-auto">
@@ -70,7 +71,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           repository={repository}
           repos={repoLoader.repos}
           selectedRepo={repoLoader.selectedRepo}
-          selectedBaseBranch={isNewMode ? repoLoader.selectedBaseBranch : configuredBaseBranch}
+          selectedBaseBranch={isNewMode ? repoLoader.selectedBaseBranch : selectedConfiguredBaseBranch}
           configuredBaseBranch={configuredBaseBranch}
           onRepoChange={onRepoChange}
           reposLoading={repoLoader.reposLoading}
@@ -267,9 +268,10 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const { addToast } = useToast();
   const isNewMode = !draft;
   const draftContextConfig = (draft as DraftWithContextConfig | undefined)?.context_config;
+  const initialConfiguredBaseBranch = draftContextConfig?.baseBranch ?? locationState?.initialBaseBranch ?? '';
   const [config, setConfig] = useState<PlannerConfig>(() => ({
     prompt: draft?.initial_prompt ?? locationState?.initialPrompt ?? '',
-    baseBranch: draftContextConfig?.baseBranch ?? locationState?.initialBaseBranch ?? '',
+    baseBranch: initialConfiguredBaseBranch,
     granularity: savedSettings.lastGranularity,
     contextLevel: savedSettings.lastContextLevel,
     compress: false,
@@ -392,7 +394,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       contextRefresh={contextRefresh} generationHandlers={generationHandlers}
       autoResize={autoResize}
       textareaRef={textareaRef} fileInputRef={fileInputRef} error={error} branchError={branchError}
-      isCreating={isCreating || isAutoCreating}
+      isCreating={isCreating || isAutoCreating} initialConfiguredBaseBranch={initialConfiguredBaseBranch}
       handleRepoChangeInEditMode={handleRepoChangeInEditMode} handleFileInputChange={handleFileInputChange}
       handleExportContext={handleExportContext} handleGenerate={handleGenerate} agents={agents}
       availableRepos={availableRepos} previewTrace={previewTrace}

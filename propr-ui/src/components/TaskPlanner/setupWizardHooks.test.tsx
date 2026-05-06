@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, type PlannerConfig } from './setupWizardHooks';
+import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, usePlannerSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
 import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
+import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 
 vi.mock('../../api/proprApi', () => ({
   uploadAttachment: vi.fn(),
@@ -36,6 +37,7 @@ const mockGetRepoBranches = vi.mocked(getRepoBranches);
 const mockCreateDraft = vi.mocked(createDraft);
 const mockGeneratePlan = vi.mocked(generatePlan);
 const mockUpdateDraft = vi.mocked(updateDraft);
+const mockSavePlannerSettings = vi.mocked(savePlannerSettings);
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -280,6 +282,24 @@ describe('setupWizardHooks branch resolution', () => {
     );
     expect(setError).not.toHaveBeenCalledWith('Transient update failure');
   });
+
+  it('persists only the explicitly selected repo-entry branch for repository restoration', () => {
+    renderHook(() => usePlannerSettingsPersistence(
+      { ...baseConfig, baseBranch: 'main' },
+      undefined,
+      'integry/propr',
+      ''
+    ));
+
+    expect(mockSavePlannerSettings).toHaveBeenCalledWith({
+      lastRepository: 'integry/propr',
+      lastBaseBranch: null,
+    });
+    expect(mockSavePlannerSettings).not.toHaveBeenCalledWith({
+      lastRepository: 'integry/propr',
+      lastBaseBranch: 'main',
+    });
+  });
 });
 
 describe('computeIsGenerateDisabled', () => {
@@ -310,6 +330,21 @@ describe('computeIsGenerateDisabled', () => {
       repoInfoLoading: false,
       repoError: 'GitHub unavailable',
       baseBranch: '',
+    })).toBe(true);
+  });
+
+  it('blocks edit-mode generation while a replacement draft is being created', () => {
+    expect(computeIsGenerateDisabled({
+      isNewMode: false,
+      isCreating: true,
+      selectedRepo: 'integry/propr',
+      promptTrimmed: 'Test prompt',
+      reposLoading: false,
+      isGenerating: false,
+      branchError: null,
+      repoInfoLoading: false,
+      repoError: null,
+      baseBranch: 'main',
     })).toBe(true);
   });
 });

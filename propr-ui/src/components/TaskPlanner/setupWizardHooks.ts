@@ -181,8 +181,8 @@ export function usePlannerSettingsPersistence(config: PlannerConfig, draftReposi
   useEffect(() => { savePlannerSettings({ lastGranularity: config.granularity, lastContextLevel: config.contextLevel }); }, [config.granularity, config.contextLevel]);
   useEffect(() => {
     const repo = draftRepository || selectedRepo;
-    if (repo) savePlannerSettings({ lastRepository: repo, lastBaseBranch: config.baseBranch || selectedBaseBranch || null });
-  }, [config.baseBranch, draftRepository, selectedRepo, selectedBaseBranch]);
+    if (repo) savePlannerSettings({ lastRepository: repo, lastBaseBranch: selectedBaseBranch || null });
+  }, [draftRepository, selectedRepo, selectedBaseBranch]);
 }
 
 export function useFileHandling(isNewMode: boolean, draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, setError: React.Dispatch<React.SetStateAction<string | null>>) {
@@ -331,7 +331,7 @@ export function computeIsGenerateDisabled(p: GenerateDisabledParams): boolean {
   if (p.isNewMode) {
     return p.isCreating || !p.selectedRepo || !p.promptTrimmed || p.reposLoading || p.repoInfoLoading || !!p.repoError || !p.baseBranch;
   }
-  return p.isGenerating || !!p.branchError || p.repoInfoLoading || !!p.repoError || !p.promptTrimmed || !p.baseBranch;
+  return p.isCreating || p.isGenerating || !!p.branchError || p.repoInfoLoading || !!p.repoError || !p.promptTrimmed || !p.baseBranch;
 }
 
 export function computeCanExport(isNewMode: boolean, promptTrimmed: string, baseBranch: string): boolean {

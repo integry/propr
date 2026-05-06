@@ -241,6 +241,29 @@ describe('SetupWizard', () => {
     );
   });
 
+  it('preserves edit-mode selector state from router state before the draft branch reloads', () => {
+    mockLocationState = { initialBaseBranch: 'release' };
+
+    render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            context_config: {},
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(lastLeftPaneProps?.selectedBaseBranch).toBe('release');
+  });
+
   it('resolves the default branch before switching repos in edit mode when the entry has no baseBranch', async () => {
     mockCreateDraft.mockResolvedValue({
       draft_id: 'draft-2',
