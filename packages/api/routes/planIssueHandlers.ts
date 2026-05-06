@@ -129,7 +129,7 @@ async function syncModelLabels(params: {
   draftId: string;
   issueNumber: number;
   repository: string;
-  currentModelName: string | null | undefined;
+  currentModelName: string | null;
   modelName: string;
 }): Promise<void> {
   const [owner, repo] = params.repository.split('/');
@@ -158,12 +158,20 @@ async function syncModelLabels(params: {
   );
 }
 
+function normalizeRunUltrafix(value: boolean | number | null | undefined): boolean | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  return undefined;
+}
+
 function buildIssueUpdate(body: UpdateIssueRequestBody) {
   return {
     agent_alias: body.agent_alias !== undefined ? body.agent_alias : undefined,
     model_name: body.model_name !== undefined ? body.model_name : undefined,
     status: body.status !== undefined ? body.status : undefined,
-    run_ultrafix: body.run_ultrafix !== undefined ? body.run_ultrafix : undefined,
+    run_ultrafix: normalizeRunUltrafix(body.run_ultrafix),
     ultrafix_goal: body.ultrafix_goal !== undefined ? body.ultrafix_goal : undefined,
     ultrafix_max_cycles: body.ultrafix_max_cycles !== undefined ? body.ultrafix_max_cycles : undefined
   };
@@ -297,7 +305,7 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
           draftId,
           issueNumber,
           repository: ownership.draft!.repository as string,
-          currentModelName: currentIssue.model_name,
+          currentModelName: currentIssue.model_name ?? null,
           modelName: body.model_name
         });
       }
