@@ -181,6 +181,66 @@ interface LocationState {
 
 type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
 
+interface RepoChangeHandlerParams {
+  draft: PlannerDraft | undefined;
+  config: PlannerConfig;
+  locationTodoIds?: string[];
+  navigate: ReturnType<typeof useNavigate>;
+  onDraftCreated?: (draftId: string) => void;
+  setError: React.Dispatch<React.SetStateAction<string | null>>;
+  setIsCreating: React.Dispatch<React.SetStateAction<boolean>>;
+}
+
+function useRepoChangeInEditMode({
+  draft,
+  config,
+  locationTodoIds,
+  navigate,
+  onDraftCreated,
+  setError,
+  setIsCreating
+}: RepoChangeHandlerParams) {
+  return useCallback(async (newRepo: string, selection?: RepoSelection) => {
+    if (!newRepo) return;
+    setIsCreating(true);
+    setError(null);
+    try {
+      let resolvedBaseBranch = selection?.baseBranch || '';
+      if (!resolvedBaseBranch) {
+        const [owner, repo] = newRepo.split('/');
+        if (!owner || !repo) throw new Error('Invalid repository format');
+        const repoInfo = await getRepoBranches(owner, repo);
+        resolvedBaseBranch = repoInfo.defaultBranch;
+      }
+      if (newRepo === draft?.repository && resolvedBaseBranch === config.baseBranch) {
+        setIsCreating(false);
+        return;
+      }
+      const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled');
+      let baseBranchPersistenceWarning: string | null = null;
+      try {
+        await persistResolvedBaseBranch(newDraft.draft_id, resolvedBaseBranch);
+      } catch (err) {
+        console.error('Failed to persist resolved base branch:', err);
+        baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(resolvedBaseBranch);
+      }
+      onDraftCreated?.(newDraft.draft_id);
+      navigate(`/studio/${newDraft.draft_id}`, {
+        replace: true,
+        state: {
+          initialRepository: newRepo,
+          initialBaseBranch: resolvedBaseBranch,
+          baseBranchPersistenceWarning,
+          todoIds: locationTodoIds
+        }
+      });
+    } catch (err) {
+      setError((err as Error).message || 'Failed to change repository');
+      setIsCreating(false);
+    }
+  }, [config.baseBranch, config.prompt, draft?.repository, locationTodoIds, navigate, onDraftCreated, setError, setIsCreating]);
+}
+
 export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete, onDraftCreated, onDraftCreatedInPlace }) => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -284,45 +344,15 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   useEffect(() => { if (autoCreateWarning) addToast({ type: 'warning', message: autoCreateWarning }); }, [autoCreateWarning, addToast]);
   useEffect(() => { if (locationState?.baseBranchPersistenceWarning) addToast({ type: 'warning', message: locationState.baseBranchPersistenceWarning }); }, [locationState?.baseBranchPersistenceWarning, addToast]);
   const autoResize = useAutoResize(textareaRef);
-  const handleRepoChangeInEditMode = useCallback(async (newRepo: string, selection?: RepoSelection) => {
-    if (!newRepo) { return; }
-    setIsCreating(true); setError(null);
-    try {
-      let resolvedBaseBranch = selection?.baseBranch || '';
-      if (!resolvedBaseBranch) {
-        const [owner, repo] = newRepo.split('/');
-        if (!owner || !repo) {
-          throw new Error('Invalid repository format');
-        }
-        const repoInfo = await getRepoBranches(owner, repo);
-        resolvedBaseBranch = repoInfo.defaultBranch;
-      }
-      if (newRepo === draft?.repository && resolvedBaseBranch === config.baseBranch) {
-        setIsCreating(false);
-        return;
-      }
-
-      const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled');
-      let baseBranchPersistenceWarning: string | null = null;
-      try {
-        await persistResolvedBaseBranch(newDraft.draft_id, resolvedBaseBranch);
-      } catch (err) {
-        console.error('Failed to persist resolved base branch:', err);
-        baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(resolvedBaseBranch);
-      }
-      onDraftCreated?.(newDraft.draft_id);
-      navigate(`/studio/${newDraft.draft_id}`, {
-        replace: true,
-        state: {
-          initialRepository: newRepo,
-          initialBaseBranch: resolvedBaseBranch,
-          baseBranchPersistenceWarning,
-          todoIds: locationState?.todoIds
-        }
-      });
-    }
-    catch (err) { setError((err as Error).message || 'Failed to change repository'); setIsCreating(false); }
-  }, [draft?.repository, config.baseBranch, config.prompt, onDraftCreated, navigate, locationState?.todoIds]);
+  const handleRepoChangeInEditMode = useRepoChangeInEditMode({
+    draft,
+    config,
+    locationTodoIds: locationState?.todoIds,
+    navigate,
+    onDraftCreated,
+    setError,
+    setIsCreating
+  });
   const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) { for (const file of Array.from(e.target.files)) await fileHandling.handleUpload(file); }
     if (fileInputRef.current) fileInputRef.current.value = '';
