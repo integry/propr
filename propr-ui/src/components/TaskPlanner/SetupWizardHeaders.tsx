@@ -3,6 +3,7 @@ import { GitBranch } from 'lucide-react';
 import { RepositorySelector, RepoOption, RepoSelection } from '../RepositorySelector';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
+const BRANCH_TOOLTIP = 'Planner Studio uses the repository entry\'s configured branch. To plan against a different branch, add the repository again in Repositories with that branch.';
 
 // Helper to format repository name with bold repo part
 export const FormatRepoName: React.FC<{ repository: string }> = ({ repository }) => {
@@ -21,7 +22,7 @@ export const FormatRepoName: React.FC<{ repository: string }> = ({ repository })
 const BranchBadge: React.FC<{ baseBranch: string }> = ({ baseBranch }) => (
   <span
     className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700 max-w-full"
-    title={baseBranch || 'Branch unavailable'}
+    title={baseBranch ? `${baseBranch}\n\n${BRANCH_TOOLTIP}` : `Branch unavailable\n\n${BRANCH_TOOLTIP}`}
   >
     <GitBranch className="h-3 w-3 flex-shrink-0" />
     <span className="truncate font-mono">{baseBranch || 'Unavailable'}</span>

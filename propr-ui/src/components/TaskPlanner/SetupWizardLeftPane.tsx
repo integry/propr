@@ -185,9 +185,6 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           />
         )}
       </div>
-      <p className="mt-2 text-xs text-slate-500">
-        Planner Studio uses the repository entry&apos;s configured branch. To plan against a different branch, add the repository again in Repositories with that branch.
-      </p>
     </div>
 
     {/* Main content area */}

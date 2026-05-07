@@ -25,6 +25,10 @@ describe('SetupWizardHeaders', () => {
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText('Filter branches...')).not.toBeInTheDocument();
     expect(screen.getByText('develop')).toBeInTheDocument();
+    expect(screen.getByText('develop').closest('[title]')).toHaveAttribute(
+      'title',
+      'develop\n\nPlanner Studio uses the repository entry\'s configured branch. To plan against a different branch, add the repository again in Repositories with that branch.'
+    );
   });
 
   it('preserves duplicate repository selections by configured baseBranch in edit mode', () => {
