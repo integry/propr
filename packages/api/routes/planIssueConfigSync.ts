@@ -10,6 +10,7 @@ import { getLlmLabel, getOrCreateEpicLabel } from './planIssueHelpers.js';
 import { buildEffectiveIssueUltrafixUpdate, resolveIssueForImplementation } from './planIssueRouteUtils.js';
 
 const IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE = 5;
+const ULTRAFIX_SETTINGS_PERSIST_BATCH_SIZE = 5;
 
 type PlanIssueConfigState = {
   agent_alias?: string | null;
@@ -307,26 +308,29 @@ export async function persistEffectiveUltrafixSettings<T extends PlanIssueUltraf
   ultrafix_max_cycles: number | null;
 }>> {
   const resolvedIssues = params.issues.map((issue) => resolveIssueForImplementation(issue, params.contextConfig));
-
-  for (const [index, issue] of params.issues.entries()) {
-    const updates = buildEffectiveIssueUltrafixUpdate(issue, params.contextConfig);
-    if (!updates) continue;
-
-    const updatedIssue = await updatePlanIssue(params.draftId, issue.issue_number, updates);
-    if (!updatedIssue) {
-      throw new Error(`Issue ${issue.issue_number} not found in this plan`);
+  for (let index = 0; index < params.issues.length; index += ULTRAFIX_SETTINGS_PERSIST_BATCH_SIZE) {
+    const issueBatch = params.issues.slice(index, index + ULTRAFIX_SETTINGS_PERSIST_BATCH_SIZE);
+    const batchResults = await Promise.all(issueBatch.map(async (issue, batchIndex) => {
+      const updates = buildEffectiveIssueUltrafixUpdate(issue, params.contextConfig);
+      if (!updates) return null;
+      const updatedIssue = await updatePlanIssue(params.draftId, issue.issue_number, updates);
+      if (!updatedIssue) {
+        throw new Error(`Issue ${issue.issue_number} not found in this plan`);
+      }
+      return { issue, updatedIssue, resolvedIndex: index + batchIndex };
+    }));
+    for (const result of batchResults) {
+      if (!result) continue;
+      resolvedIssues[result.resolvedIndex] = resolveIssueForImplementation(
+        {
+          ...result.issue,
+          run_ultrafix: result.updatedIssue.run_ultrafix,
+          ultrafix_goal: result.updatedIssue.ultrafix_goal,
+          ultrafix_max_cycles: result.updatedIssue.ultrafix_max_cycles
+        },
+        params.contextConfig
+      );
     }
-
-    resolvedIssues[index] = resolveIssueForImplementation(
-      {
-        ...issue,
-        run_ultrafix: updatedIssue.run_ultrafix,
-        ultrafix_goal: updatedIssue.ultrafix_goal,
-        ultrafix_max_cycles: updatedIssue.ultrafix_max_cycles
-      },
-      params.contextConfig
-    );
   }
-
   return resolvedIssues;
 }

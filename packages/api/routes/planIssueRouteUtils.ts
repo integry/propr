@@ -335,20 +335,11 @@ export function buildNormalizedUltrafixUpdate(params: {
   const runUltrafix = normalizedRunUltrafix === undefined
     ? (requestedIssueOverrides && promoteRunUltrafixOnOverrides ? true : undefined)
     : normalizedRunUltrafix;
-  const shouldClearUltrafixOverrides = runUltrafix === false || runUltrafix === null;
 
   return {
     runUltrafix,
-    ultrafixGoal: shouldClearUltrafixOverrides
-      ? null
-      : params.hasUltrafixGoal
-        ? sanitizeUltrafixGoal(params.ultrafixGoal)
-        : undefined,
-    ultrafixMaxCycles: shouldClearUltrafixOverrides
-      ? null
-      : params.hasUltrafixMaxCycles
-        ? sanitizeUltrafixMaxCycles(params.ultrafixMaxCycles)
-        : undefined
+    ultrafixGoal: params.hasUltrafixGoal ? sanitizeUltrafixGoal(params.ultrafixGoal) : undefined,
+    ultrafixMaxCycles: params.hasUltrafixMaxCycles ? sanitizeUltrafixMaxCycles(params.ultrafixMaxCycles) : undefined
   };
 }
 

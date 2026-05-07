@@ -325,19 +325,13 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       if (agent_alias !== undefined || model_name !== undefined) {
         const pendingIssuesNeedingConfigSync = filterIssuesNeedingConfigSync({
           pendingIssues,
-          updates: {
-            agent_alias,
-            model_name
-          }
+          updates: { agent_alias, model_name }
         });
         await syncPendingIssueConfigs({
           draftId,
           repository,
           pendingIssues: pendingIssuesNeedingConfigSync,
-          updates: {
-            agent_alias,
-            model_name
-          }
+          updates: { agent_alias, model_name }
         });
       }
       const issues = agent_alias !== undefined || model_name !== undefined
@@ -358,17 +352,14 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         firstIssueNumber: pendingIssuesForImplementation[0].issue_number,
         contextConfig, correlationId, labelLogger
       });
-      const resolvedIssuesForImplementation = await persistEffectiveUltrafixSettings({ draftId, issues: pendingIssuesForImplementation, contextConfig });
-      const { results, queuedCount } = await processBatchIssues({
-        octokit,
-        owner,
-        repo,
-        draftId,
-        pendingIssues: resolvedIssuesForImplementation,
-        implementLabel,
-        epicLabelName,
-        autoMerge: autoMerge as boolean
-      });
+      const issuesToProcess = (autoMerge && epicLabelName) ? [pendingIssuesForImplementation[0]] : pendingIssuesForImplementation;
+      const results: Array<{ issueNumber: number; success: boolean; error?: string }> = [];
+      for (const issue of issuesToProcess) {
+        const [resolvedIssue] = await persistEffectiveUltrafixSettings({ draftId, issues: [issue], contextConfig });
+        const batchResult = await processBatchIssues({ octokit, owner, repo, draftId, pendingIssues: [resolvedIssue], implementLabel, epicLabelName, autoMerge: autoMerge as boolean });
+        results.push(...batchResult.results);
+      }
+      const queuedCount = (autoMerge && epicLabelName) ? pendingIssuesForImplementation.length - 1 : 0;
       const successCount = results.filter(r => r.success).length;
       const failedCount = results.filter(r => !r.success).length;
       const queuedMessage = queuedCount > 0 ? ` (${queuedCount} more queued for sequential processing)` : '';

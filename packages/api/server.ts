@@ -54,6 +54,7 @@ import { handleWebhookRequest } from './webhookHandler.js';
 type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 type RouteHandler = RequestHandler;
 type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
+type ShutdownTask = { name: string; close: () => Promise<void> };
 
 function buildRedisUrlFromOptions(options: RedisOptions): string {
   const protocol = options.tls ? 'rediss' : 'redis';
@@ -77,6 +78,24 @@ function getRedisRuntimeConfig(): { url: string; options: RedisOptions } {
   };
 }
 
+async function closeResources(tasks: ShutdownTask[]): Promise<void> {
+  const results = await Promise.allSettled(tasks.map(async ({ close }) => close()));
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      console.error(`Failed to close ${tasks[index].name}:`, result.reason);
+    }
+  });
+}
+
+function assertNoDuplicateRoutes(routes: RouteEntry[]): void {
+  const seen = new Set<string>();
+  routes.forEach(([method, path]) => {
+    const key = `${method} ${path}`;
+    if (seen.has(key)) throw new Error(`Duplicate route registration detected for ${key}`);
+    seen.add(key);
+  });
+}
+
 const redisRuntimeConfig = getRedisRuntimeConfig();
 const ioRedisClient = new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options);
 
@@ -95,13 +114,9 @@ function getCommentConfig(): CommentEventConfig {
 
 const processDetectedIssue = (issue: DetectedIssue, correlationId: string): Promise<void> =>
   processDetectedIssueBase(issue, correlationId, ioRedisClient as unknown as Parameters<typeof processDetectedIssueBase>[2]);
-
-const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
-    processCommentEvent(payload, eventType, correlationId, getCommentConfig());
-const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
-    handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
-const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
-    handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
+const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => processCommentEvent(payload, eventType, correlationId, getCommentConfig());
+const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
+const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 const app = express();
 const PORT = process.env.DASHBOARD_API_PORT || 4000;
@@ -203,125 +218,41 @@ function setupRoutes(): void {
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
-  const register = (
-    method: RouteMethod,
-    path: string,
-    ...handlers: RouteHandler[]
-  ): void => {
+  const register = (method: RouteMethod, path: string, ...handlers: RouteHandler[]): void => {
     app[method](path, ...handlers);
   };
 
   const routes: RouteEntry[] = [
-    ['get', '/api/status', statusRoutes.getStatus],
-    ['get', '/api/tasks', taskRoutes.getTasks],
-    ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview],
-    ['post', '/api/tasks/revert', taskRoutes.revertChanges],
-    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup],
-    ['delete', '/api/tasks/:taskId', taskRoutes.deleteTask],
-    ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory],
-    ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
-    ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges],
-    ['get', '/api/config/followup-keywords', configRoutes.getFollowupKeywords],
-    ['post', '/api/config/followup-keywords', configRoutes.postFollowupKeywords],
-    ['get', '/api/config/followup-ignore-keywords', configRoutes.getFollowupIgnoreKeywords],
-    ['post', '/api/config/followup-ignore-keywords', configRoutes.postFollowupIgnoreKeywords],
-    ['get', '/api/config/repos', configRoutes.getRepos],
-    ['post', '/api/config/repos', configRoutes.postRepos],
-    ['get', '/api/config/settings', configRoutes.getSettings],
-    ['post', '/api/config/settings', configRoutes.postSettings],
-    ['get', '/api/config/pr-label', configRoutes.getPrLabel],
-    ['post', '/api/config/pr-label', configRoutes.postPrLabel],
-    ['get', '/api/config/ai-primary-tag', configRoutes.getAiPrimaryTag],
-    ['post', '/api/config/ai-primary-tag', configRoutes.postAiPrimaryTag],
-    ['get', '/api/config/primary-processing-labels', configRoutes.getPrimaryProcessingLabels],
-    ['post', '/api/config/primary-processing-labels', configRoutes.postPrimaryProcessingLabels],
-    ['get', '/api/config/agents', configRoutes.getAgents],
-    ['post', '/api/config/agents', configRoutes.postAgents],
-    ['get', '/api/config/summarization', configRoutes.getSummarizationSettings],
-    ['post', '/api/config/summarization', configRoutes.postSummarizationSettings],
-    ['get', '/api/config/repos/indexing-status', configRoutes.getRepositoriesIndexingStatus],
-    ['post', '/api/config/repos/trigger-indexing', configRoutes.triggerIndexing],
-    ['post', '/api/config/repos/stop-indexing', configRoutes.stopIndexing],
-    ['post', '/api/config/summarization/reindex-all', configRoutes.triggerReindexAll],
-    ['get', '/api/config/agent-tank', configRoutes.getAgentTankSettings],
-    ['post', '/api/config/agent-tank', configRoutes.postAgentTankSettings],
-    ['get', '/api/config/agent-tank/status', configRoutes.getAgentTankStatus],
-    ['get', '/api/config/agent-tank/usage', configRoutes.getAgentTankUsage],
-    ['post', '/api/config/agent-tank/refresh', configRoutes.postAgentTankRefresh],
-    ['get', '/api/config/agent-tank/detect', configRoutes.getAgentTankDetect],
-    ['get', '/api/queue/stats', queueRoutes.getQueueStats],
-    ['get', '/api/activity', queueRoutes.getActivity],
-    ['get', '/api/metrics', queueRoutes.getMetrics],
-    ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary],
-    ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId],
-    ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs],
-    ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
-    ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs],
-    ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType],
-    ['get', '/api/task/:taskId/analysis', executionRoutes.getAnalysis],
-    ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
-    ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs],
-    ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask],
-    ['post', '/api/import-tasks', githubRoutes.importTasks],
-    ['get', '/api/github/repos', githubRoutes.getRepos],
-    ['get', '/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches],
-    ['get', '/api/planner/drafts', plannerRoutes.listDrafts],
-    ['get', '/api/planner/drafts/repositories', plannerRoutes.listRepositories],
-    ['post', '/api/planner/drafts', plannerRoutes.createDraft],
-    ['get', '/api/planner/drafts/:id', plannerRoutes.getDraft],
-    ['put', '/api/planner/drafts/:id', plannerRoutes.updateDraft],
-    ['delete', '/api/planner/drafts/:id', plannerRoutes.deleteDraft],
-    ['post', '/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment],
-    ['get', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent],
-    ['delete', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment],
-    ['get', '/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo],
-    ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
-    ['post', '/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue],
-    ['patch', '/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue],
-    ['post', '/api/planner/drafts/:id/implement-all', plannerRoutes.implementAllIssues],
-    ['post', '/api/planner/context/stats', plannerRoutes.getContextStats],
-    ['post', '/api/planner/preview', plannerRoutes.previewContext],
-    ['post', '/api/planner/preview/context', plannerRoutes.downloadContext],
-    ['post', '/api/planner/generate', plannerRoutes.generate],
-    ['post', '/api/planner/abort', plannerRoutes.abortGeneration],
-    ['post', '/api/planner/refine', plannerRoutes.refine],
-    ['post', '/api/planner/abort-refinement', plannerRoutes.abortRefinement],
-    ['post', '/api/planner/finalize', plannerRoutes.finalize],
-    ['post', '/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup],
-    ['post', '/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft],
-    ['post', '/api/planner/validate-context-repository', plannerRoutes.validateContextRepository],
-    ['post', '/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution],
-    ['post', '/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution],
-    ['patch', '/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings],
-    ['post', '/api/planner/relevance', relevanceRoutes.analyzeRelevance],
-    ['get', '/api/stats/tasks', statsRoutes.getTaskStats],
-    ['get', '/api/stats/repositories', statsRoutes.getRepositoryStats],
-    ['get', '/api/stats/overview', statsRoutes.getOverview],
-    ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount],
-    ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus],
-    ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
-    ['get', '/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree],
-    ['get', '/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary],
-    ['post', '/api/repos/chat', repoChatRoutes.postChat],
-    ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
-    ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages],
-    ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage],
-    ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages],
-    ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
-    ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories],
-    ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory],
-    ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory],
-    ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
-    ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories],
-    ['get', '/api/repos/todos', repoTodoRoutes.getTodos],
-    ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo],
-    ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
-    ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo],
-    ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo],
-    ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos],
-    ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
+    ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
+    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ['delete', '/api/tasks/:taskId', taskRoutes.deleteTask], ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
+    ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/config/followup-keywords', configRoutes.getFollowupKeywords], ['post', '/api/config/followup-keywords', configRoutes.postFollowupKeywords], ['get', '/api/config/followup-ignore-keywords', configRoutes.getFollowupIgnoreKeywords],
+    ['post', '/api/config/followup-ignore-keywords', configRoutes.postFollowupIgnoreKeywords], ['get', '/api/config/repos', configRoutes.getRepos], ['post', '/api/config/repos', configRoutes.postRepos], ['get', '/api/config/settings', configRoutes.getSettings],
+    ['post', '/api/config/settings', configRoutes.postSettings], ['get', '/api/config/pr-label', configRoutes.getPrLabel], ['post', '/api/config/pr-label', configRoutes.postPrLabel], ['get', '/api/config/ai-primary-tag', configRoutes.getAiPrimaryTag],
+    ['post', '/api/config/ai-primary-tag', configRoutes.postAiPrimaryTag], ['get', '/api/config/primary-processing-labels', configRoutes.getPrimaryProcessingLabels], ['post', '/api/config/primary-processing-labels', configRoutes.postPrimaryProcessingLabels], ['get', '/api/config/agents', configRoutes.getAgents],
+    ['post', '/api/config/agents', configRoutes.postAgents], ['get', '/api/config/summarization', configRoutes.getSummarizationSettings], ['post', '/api/config/summarization', configRoutes.postSummarizationSettings], ['get', '/api/config/repos/indexing-status', configRoutes.getRepositoriesIndexingStatus],
+    ['post', '/api/config/repos/trigger-indexing', configRoutes.triggerIndexing], ['post', '/api/config/repos/stop-indexing', configRoutes.stopIndexing], ['post', '/api/config/summarization/reindex-all', configRoutes.triggerReindexAll], ['get', '/api/config/agent-tank', configRoutes.getAgentTankSettings],
+    ['post', '/api/config/agent-tank', configRoutes.postAgentTankSettings], ['get', '/api/config/agent-tank/status', configRoutes.getAgentTankStatus], ['get', '/api/config/agent-tank/usage', configRoutes.getAgentTankUsage], ['post', '/api/config/agent-tank/refresh', configRoutes.postAgentTankRefresh],
+    ['get', '/api/config/agent-tank/detect', configRoutes.getAgentTankDetect], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
+    ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary], ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId], ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs], ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
+    ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs], ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/analysis', executionRoutes.getAnalysis], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
+    ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks], ['get', '/api/github/repos', githubRoutes.getRepos],
+    ['get', '/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches], ['get', '/api/planner/drafts', plannerRoutes.listDrafts], ['get', '/api/planner/drafts/repositories', plannerRoutes.listRepositories], ['post', '/api/planner/drafts', plannerRoutes.createDraft],
+    ['get', '/api/planner/drafts/:id', plannerRoutes.getDraft], ['put', '/api/planner/drafts/:id', plannerRoutes.updateDraft], ['delete', '/api/planner/drafts/:id', plannerRoutes.deleteDraft], ['post', '/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment],
+    ['get', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent], ['delete', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment], ['get', '/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo], ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
+    ['post', '/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue], ['patch', '/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue], ['post', '/api/planner/drafts/:id/implement-all', plannerRoutes.implementAllIssues], ['post', '/api/planner/context/stats', plannerRoutes.getContextStats],
+    ['post', '/api/planner/preview', plannerRoutes.previewContext], ['post', '/api/planner/preview/context', plannerRoutes.downloadContext], ['post', '/api/planner/generate', plannerRoutes.generate], ['post', '/api/planner/abort', plannerRoutes.abortGeneration],
+    ['post', '/api/planner/refine', plannerRoutes.refine], ['post', '/api/planner/abort-refinement', plannerRoutes.abortRefinement], ['post', '/api/planner/finalize', plannerRoutes.finalize], ['post', '/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup],
+    ['post', '/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft], ['post', '/api/planner/validate-context-repository', plannerRoutes.validateContextRepository], ['post', '/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution], ['post', '/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution],
+    ['patch', '/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings], ['post', '/api/planner/relevance', relevanceRoutes.analyzeRelevance], ['get', '/api/stats/tasks', statsRoutes.getTaskStats], ['get', '/api/stats/repositories', statsRoutes.getRepositoryStats],
+    ['get', '/api/stats/overview', statsRoutes.getOverview], ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount], ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus], ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
+    ['get', '/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree], ['get', '/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary], ['post', '/api/repos/chat', repoChatRoutes.postChat], ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
+    ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages], ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage], ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages], ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
+    ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory], ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
+    ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
+    ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
     ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
   ];
+  assertNoDuplicateRoutes(routes);
   routes.forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
 
   const agentVersionRoutes = createAgentVersionRoutes();
@@ -400,8 +331,13 @@ async function start(): Promise<void> {
 
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
-      await closeUltrafixStateRedis();
-      await closeSocketService();
+      await closeResources([
+        { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
+        { name: 'socket service', close: () => closeSocketService() },
+        { name: 'task queue', close: () => taskQueue.close() },
+        { name: 'redis client', close: () => redisClient.quit() },
+        { name: 'io redis client', close: () => ioRedisClient.quit() }
+      ]);
       httpServer.close(() => {
         console.log('Server closed');
         process.exit(0);
