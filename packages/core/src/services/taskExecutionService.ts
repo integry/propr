@@ -10,6 +10,7 @@ import {
   type CreatedIssue
 } from './githubIssueService.js';
 import { parseExistingContextConfig } from './planning/previewUtils.js';
+import type { TaskDraftConfig } from './planning/planningTypes.js';
 
 // Re-export Epic PR functions from separate module
 export {
@@ -38,11 +39,22 @@ interface TaskDraft {
   name: string;
   initial_prompt: string;
   plan_json: string | PlanTask[];
-  context_config: string | Record<string, unknown>;
+  context_config: string | TaskExecutionContextConfig;
   status: string;
   created_at: Date;
   updated_at: Date;
 }
+
+type TaskExecutionContextConfig = Partial<TaskDraftConfig> & {
+  useEpic?: boolean;
+  autoMerge?: boolean;
+  runUltrafix?: boolean;
+  ultrafixGoal?: number | null;
+  ultrafixMaxCycles?: number | null;
+  executionResults?: CreatedIssue[];
+  executionFailures?: Array<{ taskIndex: number; title: string; error: string }>;
+  executedAt?: string;
+};
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -59,16 +71,22 @@ interface ValidatedDraftData {
   };
 }
 
-function parseContextConfig(contextConfig: string | Record<string, unknown>): Record<string, unknown> {
+function parseContextConfig(
+  contextConfig: string | TaskExecutionContextConfig
+): TaskExecutionContextConfig {
+  if (typeof contextConfig !== 'string') {
+    return contextConfig ?? {};
+  }
+
   return parseExistingContextConfig(contextConfig) ?? {};
 }
 
 function buildExecutionContextConfig(
-  existingConfig: Record<string, unknown>,
+  existingConfig: TaskExecutionContextConfig,
   results: CreatedIssue[],
   failures: Array<{ taskIndex: number; title: string; error: string }>
-): Record<string, unknown> {
-  const updatedConfig: Record<string, unknown> = {
+): TaskExecutionContextConfig {
+  const updatedConfig: TaskExecutionContextConfig = {
     baseBranch: existingConfig.baseBranch,
     granularity: existingConfig.granularity,
     contextLevel: existingConfig.contextLevel,
