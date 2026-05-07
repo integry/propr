@@ -9,7 +9,7 @@ import { checkDbAndAuth, sendCheckError, verifyDraftOwnership, createDownloadCon
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
 import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createAbortGenerationHandler, createAbortRefinementHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
-import { linkTodosToDraft, pauseDraft, resumeDraft, parseExistingContextConfig } from '@propr/core';
+import { linkTodosToDraft, pauseDraft, resumeDraft, parseExistingContextConfig, type TaskDraftConfig } from '@propr/core';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -40,12 +40,20 @@ interface PlannerRoutesDeps { db: Knex; }
 class ExecutionSettingsValidationError extends Error {}
 class ExecutionSettingsContextConfigError extends Error {}
 
+type DraftExecutionConfig = Partial<TaskDraftConfig> & {
+  useEpic?: boolean;
+  autoMerge?: boolean;
+  runUltrafix?: boolean;
+  ultrafixGoal?: number | null;
+  ultrafixMaxCycles?: number | null;
+};
+
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
   const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
-  const parseExistingExecutionConfig = (contextConfig: unknown): Record<string, unknown> => {
-    const parsedConfig = parseExistingContextConfig(contextConfig as string | Record<string, unknown> | null | undefined);
-    if (parsedConfig) return parsedConfig as Record<string, unknown>;
+  const parseExistingExecutionConfig = (contextConfig: unknown): DraftExecutionConfig => {
+    const parsedConfig = parseExistingContextConfig(contextConfig as TaskDraftConfig | string | null | undefined);
+    if (parsedConfig) return parsedConfig as DraftExecutionConfig;
     if (contextConfig) {
       try {
         JSON.parse(contextConfig as string);
@@ -55,7 +63,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
     return {};
   };
-  const sendExecutionSettingsResponse = (res: Response, updatedConfig: Record<string, unknown>): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
+  const sendExecutionSettingsResponse = (res: Response, updatedConfig: DraftExecutionConfig): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
 
   function parseOptionalInteger(
     value: unknown,
@@ -316,9 +324,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const resumeDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'resume');
 
   function buildUpdatedExecutionConfig(
-    existingConfig: Record<string, unknown>,
+    existingConfig: DraftExecutionConfig,
     body: Record<string, unknown>,
-  ): Record<string, unknown> {
+  ): DraftExecutionConfig {
     const useEpic = parseOptionalBoolean(body.useEpic, 'useEpic');
     const autoMerge = parseOptionalBoolean(body.autoMerge, 'autoMerge');
     const runUltrafix = parseOptionalBoolean(body.runUltrafix, 'runUltrafix');
