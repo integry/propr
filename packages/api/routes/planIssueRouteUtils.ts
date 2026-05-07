@@ -122,8 +122,8 @@ export function resolveIssueUltrafixSettings(
   planIssue: {
     issue_number?: number;
     run_ultrafix?: boolean | number | null;
-    ultrafix_goal?: number | null;
-    ultrafix_max_cycles?: number | null;
+    ultrafix_goal?: unknown;
+    ultrafix_max_cycles?: unknown;
   },
   contextConfig: Record<string, unknown> | null
 ): ResolvedUltrafixSettings {
