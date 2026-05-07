@@ -103,13 +103,16 @@ export function buildUpdatedExecutionConfig(
     hasUltrafixGoal,
     hasUltrafixMaxCycles
   });
+  const updatedRunUltrafix = normalizedUltrafixUpdate.runUltrafix === null
+    ? existingConfig.runUltrafix
+    : normalizedUltrafixUpdate.runUltrafix;
 
   return {
     ...existingConfig,
     useEpic: useEpic ?? existingConfig.useEpic,
     autoMerge: autoMerge ?? existingConfig.autoMerge,
-    runUltrafix: normalizedUltrafixUpdate.runUltrafix !== undefined
-      ? normalizedUltrafixUpdate.runUltrafix
+    runUltrafix: updatedRunUltrafix !== undefined
+      ? updatedRunUltrafix
       : existingConfig.runUltrafix,
     ultrafixGoal: normalizedUltrafixUpdate.ultrafixGoal !== undefined
       ? normalizedUltrafixUpdate.ultrafixGoal
