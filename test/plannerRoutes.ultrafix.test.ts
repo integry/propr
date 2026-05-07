@@ -28,25 +28,20 @@ describe('plannerRoutes ultrafix execution config updates', () => {
     });
   });
 
-  test('planner-level ultrafix defaults do not implicitly enable ultrafix', () => {
-    const updated = buildUpdatedExecutionConfig(
-      {
-        useEpic: false,
-        autoMerge: false,
-        runUltrafix: false,
-      },
-      {
-        ultrafixGoal: 8,
-      }
+  test('planner-level ultrafix overrides are rejected unless ultrafix ends enabled', () => {
+    assert.throws(
+      () => buildUpdatedExecutionConfig(
+        {
+          useEpic: false,
+          autoMerge: false,
+          runUltrafix: false,
+        },
+        {
+          ultrafixGoal: 8,
+        }
+      ),
+      /runUltrafix must be true when ultrafixGoal or ultrafixMaxCycles is set/
     );
-
-    assert.deepStrictEqual(updated, {
-      useEpic: false,
-      autoMerge: false,
-      runUltrafix: false,
-      ultrafixGoal: 8,
-      ultrafixMaxCycles: undefined,
-    });
   });
 
   test('clearing draft ultrafix goal does not implicitly enable ultrafix', () => {
@@ -84,6 +79,22 @@ describe('plannerRoutes ultrafix execution config updates', () => {
         }
       ),
       /runUltrafix cannot be false when ultrafixGoal or ultrafixMaxCycles is set/
+    );
+  });
+
+  test('rejects persisted disabled draft ultrafix state when a patch only changes the goal', () => {
+    assert.throws(
+      () => buildUpdatedExecutionConfig(
+        {
+          runUltrafix: false,
+          ultrafixGoal: null,
+          ultrafixMaxCycles: null,
+        },
+        {
+          ultrafixGoal: 5,
+        }
+      ),
+      /runUltrafix must be true when ultrafixGoal or ultrafixMaxCycles is set/
     );
   });
 

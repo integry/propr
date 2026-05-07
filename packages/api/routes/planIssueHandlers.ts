@@ -45,6 +45,13 @@ export interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
 }
 
+class IssueConfigRollbackError extends Error {
+  constructor(readonly details: Record<string, unknown>) {
+    super('Failed to update issue and failed to roll back synchronized config changes');
+    this.name = 'IssueConfigRollbackError';
+  }
+}
+
 function validateIssueStatus(status: PlanIssueStatus | undefined): string | null {
   const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
   return status !== undefined && !validStatuses.includes(status)
@@ -104,6 +111,7 @@ async function rollbackIssueConfigUpdate(params: {
   currentIssue: Pick<PlanIssue, 'agent_alias' | 'model_name'>;
   configUpdates: { agent_alias?: string | null; model_name?: string | null };
   logMessage: string;
+  originalError: unknown;
 }): Promise<void> {
   if (!hasConfigUpdates(params.configUpdates)) return;
 
@@ -123,10 +131,18 @@ async function rollbackIssueConfigUpdate(params: {
       {
         draftId: params.draftId,
         issueNumber: params.issueNumber,
-        error: (rollbackError as Error).message
+        error: (rollbackError as Error).message,
+        originalError: params.originalError instanceof Error ? params.originalError.message : String(params.originalError)
       },
       params.logMessage
     );
+    throw new IssueConfigRollbackError({
+      draftId: params.draftId,
+      issueNumber: params.issueNumber,
+      repository: params.repository,
+      originalError: params.originalError instanceof Error ? params.originalError.message : String(params.originalError),
+      rollbackError: rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+    });
   }
 }
 
@@ -316,7 +332,8 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
           repository,
           currentIssue,
           configUpdates,
-          logMessage: 'Failed to roll back plan issue config after non-config update failure'
+          logMessage: 'Failed to roll back plan issue config after non-config update failure',
+          originalError: error
         });
         throw error;
       }
@@ -328,7 +345,8 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
           repository,
           currentIssue,
           configUpdates,
-          logMessage: 'Failed to roll back plan issue config after update returned no issue'
+          logMessage: 'Failed to roll back plan issue config after update returned no issue',
+          originalError: 'Issue not found in this plan'
         });
         res.status(404).json({ error: 'Issue not found in this plan' });
         return;
@@ -337,6 +355,14 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
     } catch (error) {
       if (error instanceof IssueConfigSyncReconciliationError) {
         sendIssueConfigSyncReconciliationError(res, error);
+        return;
+      }
+      if (error instanceof IssueConfigRollbackError) {
+        res.status(500).json({
+          error: error.message,
+          code: 'ISSUE_CONFIG_ROLLBACK_FAILED',
+          details: error.details
+        });
         return;
       }
       console.error('Update issue error:', error);

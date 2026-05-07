@@ -172,6 +172,58 @@ describe('planIssueHandlers follow-up fixes', () => {
     });
   });
 
+  test('updateIssueHandler surfaces non-reconciliation rollback failures to the caller', async () => {
+    resetMocks();
+    const handler = createUpdateIssueHandler({
+      verifyOwnership: async () => ({
+        authorized: true,
+        draft: {
+          repository: 'owner/repo',
+        },
+      }),
+    });
+
+    mockGetPlanIssue.mock.mockImplementation(async () => ({
+      issue_number: 18,
+      agent_alias: 'codex',
+      model_name: 'gpt-5.4',
+    }));
+    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => ({
+      issue_number: 18,
+      agent_alias: 'codex-next',
+      model_name: 'gpt-5.5',
+    }));
+    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => {
+      throw new Error('db write failed');
+    });
+    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => {
+      throw new Error('rollback db write failed');
+    });
+    mockSafeUpdateLabels.mock.mockImplementationOnce(async () => {});
+
+    const req = {
+      params: { id: 'draft-rollback-db', issueNumber: '18' },
+      user: { id: 'user-1' },
+      body: { model_name: 'gpt-5.5', status: 'under_review' },
+    };
+    const res = createResponse();
+
+    await handler(req as never, res as never);
+
+    assert.strictEqual(res.statusCode, 500);
+    assert.deepStrictEqual(res.body, {
+      error: 'Failed to update issue and failed to roll back synchronized config changes',
+      code: 'ISSUE_CONFIG_ROLLBACK_FAILED',
+      details: {
+        draftId: 'draft-rollback-db',
+        issueNumber: 18,
+        repository: 'owner/repo',
+        originalError: 'db write failed',
+        rollbackError: 'rollback db write failed',
+      },
+    });
+  });
+
   test('implementAllIssues only rewrites pending issues before implementation', async () => {
     resetMocks();
     const handler = createImplementAllIssuesHandler({

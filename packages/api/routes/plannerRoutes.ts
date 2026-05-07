@@ -129,20 +129,29 @@ export function buildUpdatedExecutionConfig(
   const updatedRunUltrafix = normalizedUltrafixUpdate.runUltrafix === null
     ? existingConfig.runUltrafix
     : normalizedUltrafixUpdate.runUltrafix;
+  const nextRunUltrafix = updatedRunUltrafix !== undefined
+    ? updatedRunUltrafix
+    : existingConfig.runUltrafix;
+  const nextUltrafixGoal = normalizedUltrafixUpdate.ultrafixGoal !== undefined
+    ? normalizedUltrafixUpdate.ultrafixGoal
+    : existingConfig.ultrafixGoal;
+  const nextUltrafixMaxCycles = normalizedUltrafixUpdate.ultrafixMaxCycles !== undefined
+    ? normalizedUltrafixUpdate.ultrafixMaxCycles
+    : existingConfig.ultrafixMaxCycles;
+  const hasUltrafixOverrides = nextUltrafixGoal !== null && nextUltrafixGoal !== undefined
+    || nextUltrafixMaxCycles !== null && nextUltrafixMaxCycles !== undefined;
+
+  if (nextRunUltrafix !== true && hasUltrafixOverrides) {
+    throw new ExecutionSettingsValidationError('runUltrafix must be true when ultrafixGoal or ultrafixMaxCycles is set');
+  }
 
   return {
     ...existingConfig,
     useEpic: useEpic ?? existingConfig.useEpic,
     autoMerge: autoMerge ?? existingConfig.autoMerge,
-    runUltrafix: updatedRunUltrafix !== undefined
-      ? updatedRunUltrafix
-      : existingConfig.runUltrafix,
-    ultrafixGoal: normalizedUltrafixUpdate.ultrafixGoal !== undefined
-      ? normalizedUltrafixUpdate.ultrafixGoal
-      : existingConfig.ultrafixGoal,
-    ultrafixMaxCycles: normalizedUltrafixUpdate.ultrafixMaxCycles !== undefined
-      ? normalizedUltrafixUpdate.ultrafixMaxCycles
-      : existingConfig.ultrafixMaxCycles,
+    runUltrafix: nextRunUltrafix,
+    ultrafixGoal: nextUltrafixGoal,
+    ultrafixMaxCycles: nextUltrafixMaxCycles,
   };
 }
 
