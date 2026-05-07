@@ -37,6 +37,7 @@ import {
   generateCorrelationId,
   processWebhookEvent,
   initializeWebhookHandler,
+  buildRedisRuntimeConfig,
   db,
   loadSettingsFromConfig,
   processDetectedIssue as processDetectedIssueBase,
@@ -49,7 +50,6 @@ import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
-import { buildRedisRuntimeConfig } from '../core/src/webhook/checkRunHelpers.js';
 
 type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 type RouteHandler = RequestHandler;

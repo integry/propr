@@ -117,8 +117,11 @@ export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
     }
 
     if (prInfo.hasUltrafixLabel && prInfo.ultrafixStateUnavailable) {
-        log.warn({ owner, repoName, prNumber }, 'Ultrafix state is unavailable, falling back to task-based auto-merge gating');
-    } else if (prInfo.hasUltrafixLabel && prInfo.ultrafixCompletionStatus === null) {
+        log.warn({ owner, repoName, prNumber }, 'Ultrafix state is unavailable while ultrafix label is present, keeping auto-merge blocked');
+        return false;
+    }
+
+    if (prInfo.hasUltrafixLabel && prInfo.ultrafixCompletionStatus === null) {
         log.info({ owner, repoName, prNumber }, 'Ultrafix label remains but no terminal loop state is persisted; deferring to active-task gating');
     }
 
