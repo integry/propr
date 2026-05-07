@@ -108,7 +108,6 @@ export async function updateIssueConfigWithRollback(params: {
   updates: PlanIssueConfigState;
   octokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 }): Promise<void> {
-  const hasAgentAliasUpdate = params.updates.agent_alias !== undefined;
   const hasModelNameUpdate = params.updates.model_name !== undefined;
   const nextConfig = resolveIssueConfigState(params.currentIssue, params.updates);
   const nextAgentAlias = nextConfig.agent_alias;

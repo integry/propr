@@ -45,6 +45,99 @@ function validateIssueStatus(status: PlanIssueStatus | undefined): string | null
     : null;
 }
 
+function validateUpdateIssueRequest(body: UpdateIssueRequestBody): string | null {
+  const statusError = validateIssueStatus(body.status);
+  if (statusError) return statusError;
+
+  const runUltrafixError = validateRunUltrafixValue(body.run_ultrafix);
+  if (runUltrafixError) return runUltrafixError;
+
+  const ultrafixGoalError = validateUltrafixValue(body.ultrafix_goal, 'ultrafix_goal', {
+    minimum: ULTRAFIX_GOAL_MIN,
+    maximum: ULTRAFIX_GOAL_MAX
+  });
+  if (ultrafixGoalError) return ultrafixGoalError;
+
+  const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafix_max_cycles, 'ultrafix_max_cycles', {
+    minimum: ULTRAFIX_MAX_CYCLES_MIN
+  });
+  if (ultrafixMaxCyclesError) return ultrafixMaxCyclesError;
+
+  return validateIssueUltrafixPayload(body);
+}
+
+function buildConfigUpdatesFromIssueUpdate(issueUpdates: ReturnType<typeof buildIssueUpdate>): {
+  agent_alias?: string | null;
+  model_name?: string | null;
+} {
+  const configUpdates: { agent_alias?: string | null; model_name?: string | null } = {};
+  if (issueUpdates.agent_alias !== undefined) configUpdates.agent_alias = issueUpdates.agent_alias;
+  if (issueUpdates.model_name !== undefined) configUpdates.model_name = issueUpdates.model_name;
+  return configUpdates;
+}
+
+function hasConfigUpdates(configUpdates: { agent_alias?: string | null; model_name?: string | null }): boolean {
+  return configUpdates.agent_alias !== undefined || configUpdates.model_name !== undefined;
+}
+
+function buildUpdatedConfigState(
+  currentIssue: Pick<PlanIssue, 'agent_alias' | 'model_name'>,
+  configUpdates: { agent_alias?: string | null; model_name?: string | null }
+): { agent_alias: string | null; model_name: string | null } {
+  return {
+    agent_alias: configUpdates.agent_alias !== undefined ? configUpdates.agent_alias ?? null : currentIssue.agent_alias ?? null,
+    model_name: configUpdates.model_name !== undefined ? configUpdates.model_name ?? null : currentIssue.model_name ?? null
+  };
+}
+
+async function rollbackIssueConfigUpdate(params: {
+  draftId: string;
+  issueNumber: number;
+  repository: string;
+  currentIssue: Pick<PlanIssue, 'agent_alias' | 'model_name'>;
+  configUpdates: { agent_alias?: string | null; model_name?: string | null };
+  logMessage: string;
+}): Promise<void> {
+  if (!hasConfigUpdates(params.configUpdates)) return;
+
+  try {
+    await updateIssueConfigWithRollback({
+      draftId: params.draftId,
+      issueNumber: params.issueNumber,
+      repository: params.repository,
+      currentIssue: buildUpdatedConfigState(params.currentIssue, params.configUpdates),
+      updates: buildIssueConfigRollbackUpdates(params.currentIssue, params.configUpdates)
+    });
+  } catch (rollbackError) {
+    logger.error(
+      {
+        draftId: params.draftId,
+        issueNumber: params.issueNumber,
+        error: (rollbackError as Error).message
+      },
+      params.logMessage
+    );
+  }
+}
+
+async function persistNonConfigIssueUpdates(params: {
+  draftId: string;
+  issueNumber: number;
+  issueUpdates: ReturnType<typeof buildIssueUpdate>;
+}): Promise<PlanIssue | null> {
+  const nonConfigUpdates = {
+    status: params.issueUpdates.status,
+    run_ultrafix: params.issueUpdates.run_ultrafix,
+    ultrafix_goal: params.issueUpdates.ultrafix_goal,
+    ultrafix_max_cycles: params.issueUpdates.ultrafix_max_cycles
+  };
+  const hasNonConfigUpdates = Object.values(nonConfigUpdates).some((value) => value !== undefined);
+
+  return hasNonConfigUpdates
+    ? updatePlanIssue(params.draftId, params.issueNumber, nonConfigUpdates)
+    : getPlanIssue(params.draftId, params.issueNumber);
+}
+
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
   return async function getIssues(req: Request, res: Response): Promise<void> {
     try {
@@ -161,99 +254,51 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const body = req.body as UpdateIssueRequestBody;
-      const statusError = validateIssueStatus(body.status);
-      if (statusError) { res.status(400).json({ error: statusError }); return; }
-      const runUltrafixError = validateRunUltrafixValue(body.run_ultrafix);
-      if (runUltrafixError) { res.status(400).json({ error: runUltrafixError }); return; }
-      const ultrafixGoalError = validateUltrafixValue(body.ultrafix_goal, 'ultrafix_goal', { minimum: ULTRAFIX_GOAL_MIN, maximum: ULTRAFIX_GOAL_MAX });
-      if (ultrafixGoalError) { res.status(400).json({ error: ultrafixGoalError }); return; }
-      const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafix_max_cycles, 'ultrafix_max_cycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
-      if (ultrafixMaxCyclesError) { res.status(400).json({ error: ultrafixMaxCyclesError }); return; }
-      const ultrafixPayloadError = validateIssueUltrafixPayload(body);
-      if (ultrafixPayloadError) { res.status(400).json({ error: ultrafixPayloadError }); return; }
+      const requestValidationError = validateUpdateIssueRequest(body);
+      if (requestValidationError) { res.status(400).json({ error: requestValidationError }); return; }
 
       const currentIssue = await getPlanIssue(draftId, issueNumber);
       if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
       const issueUpdates = buildIssueUpdate(body);
-      const configUpdates: { agent_alias?: string | null; model_name?: string | null } = {};
-      if (issueUpdates.agent_alias !== undefined) configUpdates.agent_alias = issueUpdates.agent_alias;
-      if (issueUpdates.model_name !== undefined) configUpdates.model_name = issueUpdates.model_name;
-      const hasConfigUpdates = configUpdates.agent_alias !== undefined || configUpdates.model_name !== undefined;
+      const repository = ownership.draft!.repository as string;
+      const configUpdates = buildConfigUpdatesFromIssueUpdate(issueUpdates);
+      const shouldUpdateConfig = hasConfigUpdates(configUpdates);
 
-      if (hasConfigUpdates) {
+      if (shouldUpdateConfig) {
         await updateIssueConfigWithRollback({
           draftId,
           issueNumber,
-          repository: ownership.draft!.repository as string,
+          repository,
           currentIssue,
           updates: configUpdates
         });
       }
 
-      const nonConfigUpdates = {
-        status: issueUpdates.status,
-        run_ultrafix: issueUpdates.run_ultrafix,
-        ultrafix_goal: issueUpdates.ultrafix_goal,
-        ultrafix_max_cycles: issueUpdates.ultrafix_max_cycles
-      };
-      const hasNonConfigUpdates = Object.values(nonConfigUpdates).some((value) => value !== undefined);
       let updated: PlanIssue | null;
 
       try {
-        updated = hasNonConfigUpdates
-          ? await updatePlanIssue(draftId, issueNumber, nonConfigUpdates)
-          : await getPlanIssue(draftId, issueNumber);
+        updated = await persistNonConfigIssueUpdates({ draftId, issueNumber, issueUpdates });
       } catch (error) {
-        if (hasConfigUpdates) {
-          try {
-            await updateIssueConfigWithRollback({
-              draftId,
-              issueNumber,
-              repository: ownership.draft!.repository as string,
-              currentIssue: {
-                agent_alias: configUpdates.agent_alias !== undefined ? configUpdates.agent_alias ?? null : currentIssue.agent_alias ?? null,
-                model_name: configUpdates.model_name !== undefined ? configUpdates.model_name ?? null : currentIssue.model_name ?? null
-              },
-              updates: buildIssueConfigRollbackUpdates(currentIssue, configUpdates)
-            });
-          } catch (rollbackError) {
-            logger.error(
-              {
-                draftId,
-                issueNumber,
-                error: (rollbackError as Error).message
-              },
-              'Failed to roll back plan issue config after non-config update failure'
-            );
-          }
-        }
+        await rollbackIssueConfigUpdate({
+          draftId,
+          issueNumber,
+          repository,
+          currentIssue,
+          configUpdates,
+          logMessage: 'Failed to roll back plan issue config after non-config update failure'
+        });
         throw error;
       }
 
       if (!updated) {
-        if (hasConfigUpdates) {
-          try {
-            await updateIssueConfigWithRollback({
-              draftId,
-              issueNumber,
-              repository: ownership.draft!.repository as string,
-              currentIssue: {
-                agent_alias: configUpdates.agent_alias !== undefined ? configUpdates.agent_alias ?? null : currentIssue.agent_alias ?? null,
-                model_name: configUpdates.model_name !== undefined ? configUpdates.model_name ?? null : currentIssue.model_name ?? null
-              },
-              updates: buildIssueConfigRollbackUpdates(currentIssue, configUpdates)
-            });
-          } catch (rollbackError) {
-            logger.error(
-              {
-                draftId,
-                issueNumber,
-                error: (rollbackError as Error).message
-              },
-              'Failed to roll back plan issue config after update returned no issue'
-            );
-          }
-        }
+        await rollbackIssueConfigUpdate({
+          draftId,
+          issueNumber,
+          repository,
+          currentIssue,
+          configUpdates,
+          logMessage: 'Failed to roll back plan issue config after update returned no issue'
+        });
         res.status(404).json({ error: 'Issue not found in this plan' });
         return;
       }
