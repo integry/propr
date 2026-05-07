@@ -1350,6 +1350,7 @@ describe('shouldAutoMergePR', () => {
         hasUltrafixLabel?: boolean;
         hasActiveUltrafixLoop?: boolean;
         ultrafixCompletionStatus?: 'succeeded' | 'failed' | null;
+        ultrafixStateUnavailable?: boolean;
         isDraft?: boolean;
         baseBranch?: string;
         headBranch?: string;
@@ -1363,6 +1364,7 @@ describe('shouldAutoMergePR', () => {
             hasUltrafixLabel = false,
             hasActiveUltrafixLoop = false,
             ultrafixCompletionStatus = null,
+            ultrafixStateUnavailable = false,
             isDraft = false,
             baseBranch = 'main',
             headBranch = 'feature-branch'
@@ -1378,6 +1380,7 @@ describe('shouldAutoMergePR', () => {
                 hasUltrafixLabel,
                 hasActiveUltrafixLoop,
                 ultrafixCompletionStatus,
+                ultrafixStateUnavailable,
                 isDraft,
                 baseBranch,
                 headBranch
@@ -1424,7 +1427,7 @@ describe('shouldAutoMergePR', () => {
         assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 0);
     });
 
-    test('blocks auto-merge when ultrafix label remains without a successful terminal state', async () => {
+    test('does not hard-block auto-merge solely because the ultrafix label remains without Redis state', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
@@ -1434,7 +1437,20 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, false);
+        assert.strictEqual(result, true);
+    });
+
+    test('does not hard-block auto-merge when ultrafix state is unavailable', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasUltrafixLabel: true,
+            ultrafixStateUnavailable: true,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
     });
 
     test('blocks auto-merge when ultrafix finished unsuccessfully', async () => {

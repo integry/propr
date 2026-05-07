@@ -228,7 +228,8 @@ export function validateRunUltrafixValue(value: unknown): string | null {
 export function buildIssueUpdate(body: UpdateIssueRequestBody) {
   const hasUltrafixGoal = body.ultrafix_goal !== undefined;
   const hasUltrafixMaxCycles = body.ultrafix_max_cycles !== undefined;
-  const requestedIssueOverrides = hasUltrafixGoal || hasUltrafixMaxCycles;
+  const requestedIssueOverrides = (hasUltrafixGoal && body.ultrafix_goal !== null)
+    || (hasUltrafixMaxCycles && body.ultrafix_max_cycles !== null);
   const normalizedRunUltrafix = normalizeRunUltrafix(body.run_ultrafix);
   const runUltrafix = normalizedRunUltrafix === undefined && requestedIssueOverrides
     ? true

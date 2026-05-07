@@ -479,7 +479,9 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const commentAuthor = comment.user.login;
     const parsedCommand = parseSlashCommand(comment.body);
     const botUsername = getBotUsername() || process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]';
-    const isSystemUltrafixComment = parsedCommand?.command === 'ultrafix' && commentAuthor === botUsername;
+    const isBotAuthoredComment = comment.user.type === 'Bot' || commentAuthor.includes('[bot]');
+    const isSystemUltrafixComment = parsedCommand?.command === 'ultrafix'
+        && (commentAuthor === botUsername || isBotAuthoredComment);
 
     const filterResult = filterCommentByAuthor(commentAuthor, comment.user.type ?? null, correlationId);
     if (filterResult.shouldFilter && !isSystemUltrafixComment) return;

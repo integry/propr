@@ -484,12 +484,13 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.ok(commentBody.includes('label'), 'Comment should mention the label as a circuit breaker');
     });
 
-    test('bot-authored system /ultrafix comment is allowed to start the loop', async () => {
-        process.env.GITHUB_BOT_USERNAME = 'propr.dev[bot]';
+    test('bot-authored system /ultrafix comment is allowed even when the login does not match configured bot identity', async () => {
+        process.env.GITHUB_BOT_USERNAME = 'configured-bot[bot]';
         mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
 
         const event = createPRCommentEvent('/ultrafix goal=8 max=4');
-        event.comment.user.login = 'propr.dev[bot]';
+        event.comment.user.login = 'automation-runner[bot]';
+        event.comment.user.type = 'Bot';
         const config = createTestConfig();
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-system-bot', config);

@@ -49,59 +49,11 @@ import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
+import { buildRedisRuntimeConfig } from '../core/src/webhook/checkRunHelpers.js';
 
 type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 type RouteHandler = RequestHandler;
 type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
-
-function buildRedisConnectionOptions(): RedisOptions {
-  const options: RedisOptions = {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-  };
-
-  if (process.env.REDIS_URL) {
-    const parsedUrl = new URL(process.env.REDIS_URL);
-    options.host = parsedUrl.hostname;
-    options.port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : (parsedUrl.protocol === 'rediss:' ? 6380 : 6379);
-    if (parsedUrl.username) {
-      options.username = decodeURIComponent(parsedUrl.username);
-    }
-    if (parsedUrl.password) {
-      options.password = decodeURIComponent(parsedUrl.password);
-    }
-    if (parsedUrl.protocol === 'rediss:') {
-      options.tls = {
-        rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
-      };
-    }
-    if (parsedUrl.pathname && parsedUrl.pathname !== '/') {
-      const db = parseInt(parsedUrl.pathname.slice(1), 10);
-      if (!Number.isNaN(db)) {
-        options.db = db;
-      }
-    }
-
-    return options;
-  }
-
-  options.host = process.env.REDIS_HOST || 'redis';
-  options.port = parseInt(process.env.REDIS_PORT || '6379', 10);
-
-  if (process.env.REDIS_USERNAME) {
-    options.username = process.env.REDIS_USERNAME;
-  }
-  if (process.env.REDIS_PASSWORD) {
-    options.password = process.env.REDIS_PASSWORD;
-  }
-  if (process.env.REDIS_TLS === 'true' || process.env.REDIS_TLS === '1') {
-    options.tls = {
-      rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
-    };
-  }
-
-  return options;
-}
 
 function buildRedisUrlFromOptions(options: RedisOptions): string {
   const protocol = options.tls ? 'rediss' : 'redis';
@@ -118,10 +70,7 @@ function buildRedisUrlFromOptions(options: RedisOptions): string {
 }
 
 function getRedisRuntimeConfig(): { url?: string; options: RedisOptions } {
-  const options = buildRedisConnectionOptions();
-  return process.env.REDIS_URL
-    ? { url: process.env.REDIS_URL, options }
-    : { options };
+  return buildRedisRuntimeConfig();
 }
 
 const redisRuntimeConfig = getRedisRuntimeConfig();

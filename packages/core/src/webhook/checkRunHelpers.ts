@@ -379,7 +379,7 @@ export interface PRAutoMergeInfo {
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
 let ultrafixStateRedis: Redis | null = null;
 
-function buildUltrafixStateRedisOptions(): { url?: string; options: RedisOptions } {
+export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions } {
     const options: RedisOptions = {
         maxRetriesPerRequest: null,
         enableReadyCheck: false
@@ -436,7 +436,7 @@ function buildUltrafixStateRedisOptions(): { url?: string; options: RedisOptions
 
 function getUltrafixStateRedis(): Redis {
     if (!ultrafixStateRedis) {
-        const { url, options } = buildUltrafixStateRedisOptions();
+        const { url, options } = buildRedisRuntimeConfig();
         ultrafixStateRedis = url ? new Redis(url, options) : new Redis(options);
     }
     return ultrafixStateRedis;

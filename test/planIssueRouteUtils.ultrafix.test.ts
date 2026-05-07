@@ -105,6 +105,21 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
     });
   });
 
+  test('clearing an issue-level ultrafix goal does not implicitly enable ultrafix', () => {
+    const update = buildIssueUpdate({
+      ultrafix_goal: null,
+    });
+
+    assert.deepStrictEqual(update, {
+      agent_alias: undefined,
+      model_name: undefined,
+      status: undefined,
+      run_ultrafix: undefined,
+      ultrafix_goal: null,
+      ultrafix_max_cycles: undefined,
+    });
+  });
+
   test('snapshots inherited planner ultrafix settings before implementation starts', async () => {
     const { updatePlanIssue } = await import('@propr/core');
     const updatePlanIssueMock = updatePlanIssue as unknown as {

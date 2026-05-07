@@ -49,23 +49,10 @@ type DraftExecutionConfig = Partial<TaskDraftConfig> & {
   ultrafixMaxCycles?: number | null;
 };
 
-export function createPlannerRoutes(deps: PlannerRoutesDeps) {
-  const { db } = deps;
-  const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
-  const parseExistingExecutionConfig = (contextConfig: unknown): DraftExecutionConfig => {
-    const parsedConfig = parseExistingContextConfig(contextConfig as TaskDraftConfig | string | null | undefined);
-    if (parsedConfig) return parsedConfig as DraftExecutionConfig;
-    if (contextConfig) {
-      try {
-        JSON.parse(contextConfig as string);
-      } catch (error) {
-        throw new ExecutionSettingsContextConfigError(`Failed to parse existing execution settings: ${(error as Error).message}`);
-      }
-    }
-    return {};
-  };
-  const sendExecutionSettingsResponse = (res: Response, updatedConfig: DraftExecutionConfig): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
-
+export function buildUpdatedExecutionConfig(
+  existingConfig: DraftExecutionConfig,
+  body: Record<string, unknown>,
+): DraftExecutionConfig {
   function parseOptionalInteger(
     value: unknown,
     fieldName: string,
@@ -85,6 +72,45 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     if (typeof value !== 'boolean') throw new ExecutionSettingsValidationError(`${fieldName} must be a boolean`);
     return value;
   }
+
+  const useEpic = parseOptionalBoolean(body.useEpic, 'useEpic');
+  const autoMerge = parseOptionalBoolean(body.autoMerge, 'autoMerge');
+  const runUltrafix = parseOptionalBoolean(body.runUltrafix, 'runUltrafix');
+  const ultrafixGoal = parseOptionalInteger(body.ultrafixGoal, 'ultrafixGoal', { minimum: ULTRAFIX_GOAL_MIN, maximum: ULTRAFIX_GOAL_MAX });
+  const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
+  const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
+  const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
+  const requestedUltrafixOverrides = (hasUltrafixGoal && ultrafixGoal !== null)
+    || (hasUltrafixMaxCycles && ultrafixMaxCycles !== null);
+  const nextRunUltrafix = runUltrafix ?? (requestedUltrafixOverrides ? true : existingConfig.runUltrafix);
+  const shouldClearUltrafixOverrides = nextRunUltrafix === false;
+
+  return {
+    ...existingConfig,
+    useEpic: useEpic ?? existingConfig.useEpic,
+    autoMerge: autoMerge ?? existingConfig.autoMerge,
+    runUltrafix: nextRunUltrafix,
+    ultrafixGoal: shouldClearUltrafixOverrides ? null : (hasUltrafixGoal ? ultrafixGoal : existingConfig.ultrafixGoal),
+    ultrafixMaxCycles: shouldClearUltrafixOverrides ? null : (hasUltrafixMaxCycles ? ultrafixMaxCycles : existingConfig.ultrafixMaxCycles),
+  };
+}
+
+export function createPlannerRoutes(deps: PlannerRoutesDeps) {
+  const { db } = deps;
+  const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
+  const parseExistingExecutionConfig = (contextConfig: unknown): DraftExecutionConfig => {
+    const parsedConfig = parseExistingContextConfig(contextConfig as TaskDraftConfig | string | null | undefined);
+    if (parsedConfig) return parsedConfig as DraftExecutionConfig;
+    if (contextConfig) {
+      try {
+        JSON.parse(contextConfig as string);
+      } catch (error) {
+        throw new ExecutionSettingsContextConfigError(`Failed to parse existing execution settings: ${(error as Error).message}`);
+      }
+    }
+    return {};
+  };
+  const sendExecutionSettingsResponse = (res: Response, updatedConfig: DraftExecutionConfig): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
 
   async function listRepositories(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
@@ -323,31 +349,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
   const pauseDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'pause');
   const resumeDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'resume');
-
-  function buildUpdatedExecutionConfig(
-    existingConfig: DraftExecutionConfig,
-    body: Record<string, unknown>,
-  ): DraftExecutionConfig {
-    const useEpic = parseOptionalBoolean(body.useEpic, 'useEpic');
-    const autoMerge = parseOptionalBoolean(body.autoMerge, 'autoMerge');
-    const runUltrafix = parseOptionalBoolean(body.runUltrafix, 'runUltrafix');
-    const ultrafixGoal = parseOptionalInteger(body.ultrafixGoal, 'ultrafixGoal', { minimum: ULTRAFIX_GOAL_MIN, maximum: ULTRAFIX_GOAL_MAX });
-    const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
-    const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
-    const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
-    const requestedUltrafixOverrides = hasUltrafixGoal || hasUltrafixMaxCycles;
-    const nextRunUltrafix = runUltrafix ?? (requestedUltrafixOverrides ? true : existingConfig.runUltrafix);
-    const shouldClearUltrafixOverrides = nextRunUltrafix === false;
-
-    return {
-      ...existingConfig,
-      useEpic: useEpic ?? existingConfig.useEpic,
-      autoMerge: autoMerge ?? existingConfig.autoMerge,
-      runUltrafix: nextRunUltrafix,
-      ultrafixGoal: shouldClearUltrafixOverrides ? null : (hasUltrafixGoal ? ultrafixGoal : existingConfig.ultrafixGoal),
-      ultrafixMaxCycles: shouldClearUltrafixOverrides ? null : (hasUltrafixMaxCycles ? ultrafixMaxCycles : existingConfig.ultrafixMaxCycles),
-    };
-  }
 
   async function updateExecutionSettings(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
