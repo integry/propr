@@ -386,6 +386,27 @@ function buildUltrafixStateRedisOptions(): { url?: string; options: RedisOptions
     };
 
     if (process.env.REDIS_URL) {
+        const parsedUrl = new URL(process.env.REDIS_URL);
+        options.host = parsedUrl.hostname;
+        options.port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : (parsedUrl.protocol === 'rediss:' ? 6380 : 6379);
+        if (parsedUrl.username) {
+            options.username = decodeURIComponent(parsedUrl.username);
+        }
+        if (parsedUrl.password) {
+            options.password = decodeURIComponent(parsedUrl.password);
+        }
+        if (parsedUrl.protocol === 'rediss:') {
+            options.tls = {
+                rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+            };
+        }
+        if (parsedUrl.pathname && parsedUrl.pathname !== '/') {
+            const db = parseInt(parsedUrl.pathname.slice(1), 10);
+            if (!Number.isNaN(db)) {
+                options.db = db;
+            }
+        }
+
         return {
             url: process.env.REDIS_URL,
             options

@@ -108,14 +108,14 @@ export function resolveImplementationSettings(
 function haveEquivalentUltrafixOverrides(
   planIssue: {
     run_ultrafix?: boolean | number | null;
-    ultrafix_goal?: number | null;
-    ultrafix_max_cycles?: number | null;
+    ultrafix_goal?: unknown;
+    ultrafix_max_cycles?: unknown;
   },
   issueOverrides: UpdatePlanIssueInput
 ): boolean {
   return normalizeRunUltrafix(planIssue.run_ultrafix) === normalizeRunUltrafix(issueOverrides.run_ultrafix)
-    && sanitizeUltrafixGoal(planIssue.ultrafix_goal) === sanitizeUltrafixGoal(issueOverrides.ultrafix_goal)
-    && sanitizeUltrafixMaxCycles(planIssue.ultrafix_max_cycles) === sanitizeUltrafixMaxCycles(issueOverrides.ultrafix_max_cycles);
+    && planIssue.ultrafix_goal === issueOverrides.ultrafix_goal
+    && planIssue.ultrafix_max_cycles === issueOverrides.ultrafix_max_cycles;
 }
 
 export function resolveIssueUltrafixSettings(
@@ -158,25 +158,13 @@ export function resolveIssueUltrafixSettings(
   };
 }
 
-function getIssueUltrafixOverrides(planIssue: {
-  issue_number?: number;
-  run_ultrafix?: boolean | number | null;
-  ultrafix_goal?: number | null;
-  ultrafix_max_cycles?: number | null;
-}): UpdatePlanIssueInput {
-  const runUltrafix = normalizeRunUltrafix(planIssue.run_ultrafix);
-  const hasExplicitUltrafixOverride = runUltrafix === true;
-
+function buildIssueUltrafixSnapshot(
+  ultrafixSettings: ResolvedUltrafixSettings
+): UpdatePlanIssueInput {
   return {
-    // `null` means "inherit planner defaults", so preserve it instead of
-    // materializing the resolved planner value into the issue record.
-    run_ultrafix: runUltrafix ?? null,
-    ultrafix_goal: hasExplicitUltrafixOverride
-      ? sanitizePersistedUltrafixGoal(planIssue.ultrafix_goal, { source: 'plan_issue', issueNumber: planIssue.issue_number })
-      : null,
-    ultrafix_max_cycles: hasExplicitUltrafixOverride
-      ? sanitizePersistedUltrafixMaxCycles(planIssue.ultrafix_max_cycles, { source: 'plan_issue', issueNumber: planIssue.issue_number })
-      : null
+    run_ultrafix: ultrafixSettings.runUltrafix,
+    ultrafix_goal: ultrafixSettings.runUltrafix ? ultrafixSettings.ultrafixGoal : null,
+    ultrafix_max_cycles: ultrafixSettings.runUltrafix ? ultrafixSettings.ultrafixMaxCycles : null
   };
 }
 
@@ -197,11 +185,11 @@ export function buildIssueForImplementation<T extends {
 export async function resolveAndPersistIssueUltrafixSettings<T extends {
   issue_number: number;
   run_ultrafix?: boolean | number | null;
-  ultrafix_goal?: number | null;
-  ultrafix_max_cycles?: number | null;
+  ultrafix_goal?: unknown;
+  ultrafix_max_cycles?: unknown;
 }>(draftId: string, planIssue: T, contextConfig: Record<string, unknown> | null): Promise<T> {
   const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
-  const issueOverrides = getIssueUltrafixOverrides(planIssue);
+  const issueOverrides = buildIssueUltrafixSnapshot(ultrafixSettings);
 
   if (haveEquivalentUltrafixOverrides(planIssue, issueOverrides)) {
     return buildIssueForImplementation(planIssue, ultrafixSettings);

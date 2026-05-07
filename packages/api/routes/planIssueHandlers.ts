@@ -68,7 +68,7 @@ async function resolveEpicLabel(
 
 function validateIssueStatus(status: PlanIssueStatus | undefined): string | null {
   const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
-  return status && !validStatuses.includes(status)
+  return status !== undefined && !validStatuses.includes(status)
     ? `Invalid status. Must be one of: ${validStatuses.join(', ')}`
     : null;
 }

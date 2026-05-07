@@ -11,6 +11,7 @@ await mock.module('@propr/core', {
 const {
   buildIssueUpdate,
   resolveIssueUltrafixSettings,
+  resolveAndPersistIssueUltrafixSettings,
 } = await import('../packages/api/routes/planIssueRouteUtils.ts');
 
 describe('planIssueRouteUtils ultrafix overrides', () => {
@@ -101,6 +102,96 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
       run_ultrafix: true,
       ultrafix_goal: 8,
       ultrafix_max_cycles: 3,
+    });
+  });
+
+  test('snapshots inherited planner ultrafix settings before implementation starts', async () => {
+    const { updatePlanIssue } = await import('@propr/core');
+    const updatePlanIssueMock = updatePlanIssue as unknown as {
+      mock: {
+        resetCalls: () => void;
+        mockImplementationOnce: (fn: (...args: unknown[]) => unknown) => void;
+        calls: Array<{ arguments: unknown[] }>;
+      };
+    };
+    updatePlanIssueMock.mock.resetCalls();
+    updatePlanIssueMock.mock.mockImplementationOnce(async (_draftId, _issueNumber, updates) => ({
+      issue_number: 17,
+      ...updates,
+    }));
+
+    const resolved = await resolveAndPersistIssueUltrafixSettings(
+      'draft-1',
+      {
+        issue_number: 17,
+        run_ultrafix: null,
+        ultrafix_goal: null,
+        ultrafix_max_cycles: null,
+      },
+      {
+        runUltrafix: true,
+        ultrafixGoal: 7,
+        ultrafixMaxCycles: 2,
+      }
+    );
+
+    assert.deepStrictEqual(updatePlanIssueMock.mock.calls[0].arguments, [
+      'draft-1',
+      17,
+      {
+        run_ultrafix: true,
+        ultrafix_goal: 7,
+        ultrafix_max_cycles: 2,
+      },
+    ]);
+    assert.deepStrictEqual(resolved, {
+      issue_number: 17,
+      run_ultrafix: true,
+      ultrafix_goal: 7,
+      ultrafix_max_cycles: 2,
+    });
+  });
+
+  test('cleans invalid persisted ultrafix values instead of only normalizing them in memory', async () => {
+    const { updatePlanIssue } = await import('@propr/core');
+    const updatePlanIssueMock = updatePlanIssue as unknown as {
+      mock: {
+        resetCalls: () => void;
+        mockImplementationOnce: (fn: (...args: unknown[]) => unknown) => void;
+        calls: Array<{ arguments: unknown[] }>;
+      };
+    };
+    updatePlanIssueMock.mock.resetCalls();
+    updatePlanIssueMock.mock.mockImplementationOnce(async (_draftId, _issueNumber, updates) => ({
+      issue_number: 22,
+      ...updates,
+    }));
+
+    const resolved = await resolveAndPersistIssueUltrafixSettings(
+      'draft-2',
+      {
+        issue_number: 22,
+        run_ultrafix: true,
+        ultrafix_goal: 99,
+        ultrafix_max_cycles: 0,
+      },
+      null
+    );
+
+    assert.deepStrictEqual(updatePlanIssueMock.mock.calls[0].arguments, [
+      'draft-2',
+      22,
+      {
+        run_ultrafix: true,
+        ultrafix_goal: null,
+        ultrafix_max_cycles: null,
+      },
+    ]);
+    assert.deepStrictEqual(resolved, {
+      issue_number: 22,
+      run_ultrafix: true,
+      ultrafix_goal: null,
+      ultrafix_max_cycles: null,
     });
   });
 });

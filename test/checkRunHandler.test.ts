@@ -581,7 +581,9 @@ describe('getPRAutoMergeInfo', () => {
         const originalRedisUrl = process.env.REDIS_URL;
         const originalRedisHost = process.env.REDIS_HOST;
         const originalRedisPort = process.env.REDIS_PORT;
+        const originalRedisTlsRejectUnauthorized = process.env.REDIS_TLS_REJECT_UNAUTHORIZED;
         process.env.REDIS_URL = 'rediss://user:secret@example.com:6380/4';
+        process.env.REDIS_TLS_REJECT_UNAUTHORIZED = 'false';
         delete process.env.REDIS_HOST;
         delete process.env.REDIS_PORT;
 
@@ -601,7 +603,15 @@ describe('getPRAutoMergeInfo', () => {
                 'rediss://user:secret@example.com:6380/4',
                 {
                     maxRetriesPerRequest: null,
-                    enableReadyCheck: false
+                    enableReadyCheck: false,
+                    host: 'example.com',
+                    port: 6380,
+                    username: 'user',
+                    password: 'secret',
+                    db: 4,
+                    tls: {
+                        rejectUnauthorized: false
+                    }
                 }
             ]);
         } finally {
@@ -611,6 +621,8 @@ describe('getPRAutoMergeInfo', () => {
             else process.env.REDIS_HOST = originalRedisHost;
             if (originalRedisPort === undefined) delete process.env.REDIS_PORT;
             else process.env.REDIS_PORT = originalRedisPort;
+            if (originalRedisTlsRejectUnauthorized === undefined) delete process.env.REDIS_TLS_REJECT_UNAUTHORIZED;
+            else process.env.REDIS_TLS_REJECT_UNAUTHORIZED = originalRedisTlsRejectUnauthorized;
         }
     });
 
