@@ -347,6 +347,42 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   const clearError = useCallback(() => setError(null), []);
 
+  const handleRunUltrafixChange = useCallback(async (issueNumber: number, runUltrafix: boolean | null) => {
+    try {
+      const updatedIssue = await updatePlanIssue(draftId, issueNumber, { run_ultrafix: runUltrafix });
+      setIssues(prev => prev.map(issue =>
+        issue.issue_number === issueNumber ? updatedIssue : issue
+      ));
+    } catch (err) {
+      console.error('Failed to update ultrafix setting:', err);
+      setError('Failed to update ultrafix setting');
+    }
+  }, [draftId]);
+
+  const handleUltrafixGoalChange = useCallback(async (issueNumber: number, value: number | null) => {
+    try {
+      const updatedIssue = await updatePlanIssue(draftId, issueNumber, { ultrafix_goal: value });
+      setIssues(prev => prev.map(issue =>
+        issue.issue_number === issueNumber ? updatedIssue : issue
+      ));
+    } catch (err) {
+      console.error('Failed to update ultrafix goal:', err);
+      setError('Failed to update ultrafix goal');
+    }
+  }, [draftId]);
+
+  const handleUltrafixMaxCyclesChange = useCallback(async (issueNumber: number, value: number | null) => {
+    try {
+      const updatedIssue = await updatePlanIssue(draftId, issueNumber, { ultrafix_max_cycles: value });
+      setIssues(prev => prev.map(issue =>
+        issue.issue_number === issueNumber ? updatedIssue : issue
+      ));
+    } catch (err) {
+      console.error('Failed to update ultrafix max cycles:', err);
+      setError('Failed to update ultrafix max cycles');
+    }
+  }, [draftId]);
+
   // Handlers for per-issue multi-mode state
   const handleIssueMultiToggle = useCallback((issueNumber: number, isMulti: boolean) => {
     setIssueMultiModeMap(prev => ({ ...prev, [issueNumber]: isMulti }));
@@ -369,6 +405,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     handleImplementIssue, handleGlobalAgentChange, handleGlobalModelChange,
     handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
     handleAgentChange, handleModelChange,
+    handleRunUltrafixChange, handleUltrafixGoalChange, handleUltrafixMaxCyclesChange,
     handleIssueMultiToggle, handleIssueMultiModelChange,
     handleRefresh, getUnmergedIssuesBefore,
   };

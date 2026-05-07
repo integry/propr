@@ -1,0 +1,336 @@
+import {
+  type PlanIssue,
+  db,
+  getAuthenticatedOctokit,
+  logger,
+  safeUpdateLabels,
+  updatePlanIssue
+} from '@propr/core';
+import { getLlmLabel, getOrCreateEpicLabel } from './planIssueHelpers.js';
+import { buildEffectiveIssueUltrafixUpdate, resolveIssueForImplementation } from './planIssueRouteUtils.js';
+
+const IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE = 5;
+const ULTRAFIX_SETTINGS_PERSIST_BATCH_SIZE = 5;
+
+type PlanIssueConfigState = {
+  agent_alias?: string | null;
+  model_name?: string | null;
+};
+
+type PlanIssueUltrafixState = Pick<PlanIssue,
+  'issue_number' | 'model_name' | 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'
+>;
+
+export class IssueConfigSyncReconciliationError extends Error {
+  constructor(message: string, readonly details: Record<string, unknown>) {
+    super(message);
+    this.name = 'IssueConfigSyncReconciliationError';
+  }
+}
+
+export async function resolveEpicLabel(
+  useEpic: boolean,
+  params: {
+    draftId: string;
+    owner: string;
+    repo: string;
+    draft: Record<string, unknown>;
+    firstIssueNumber: number;
+    contextConfig: Record<string, unknown> | null;
+    correlationId: string;
+    labelLogger: ReturnType<typeof logger.withCorrelation>;
+  }
+): Promise<string | null> {
+  if (!useEpic) return null;
+  return getOrCreateEpicLabel({
+    draftId: params.draftId,
+    owner: params.owner,
+    repo: params.repo,
+    planName: (params.draft.name as string) || 'Unnamed Plan',
+    firstIssueNumber: params.firstIssueNumber,
+    contextConfig: params.contextConfig,
+    correlationId: params.correlationId,
+    labelLogger: params.labelLogger,
+    db
+  });
+}
+
+async function syncModelLabels(params: {
+  draftId: string;
+  issueNumber: number;
+  repository: string;
+  currentModelName: string | null;
+  modelName: string | null;
+  octokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+}): Promise<void> {
+  const [owner, repo] = params.repository.split('/');
+  if (!owner || !repo) return;
+
+  const [oldLabel, newLabel, octokit] = await Promise.all([
+    getLlmLabel(params.currentModelName),
+    getLlmLabel(params.modelName),
+    params.octokit ? Promise.resolve(params.octokit) : getAuthenticatedOctokit()
+  ]);
+
+  const labelsToRemove = oldLabel && oldLabel !== newLabel ? [oldLabel] : [];
+  const labelsToAdd = newLabel ? [newLabel] : [];
+  if (labelsToRemove.length === 0 && labelsToAdd.length === 0) return;
+
+  await safeUpdateLabels(
+    {
+      octokit,
+      owner,
+      repo,
+      issueNumber: params.issueNumber,
+      logger: logger.withCorrelation(`update-issue-${params.draftId}-${params.issueNumber}`)
+    },
+    labelsToRemove,
+    labelsToAdd
+  );
+}
+
+function resolveIssueConfigState(
+  currentIssue: PlanIssueConfigState,
+  updates: PlanIssueConfigState
+): Required<PlanIssueConfigState> {
+  return {
+    agent_alias: updates.agent_alias !== undefined ? updates.agent_alias ?? null : currentIssue.agent_alias ?? null,
+    model_name: updates.model_name !== undefined ? updates.model_name ?? null : currentIssue.model_name ?? null
+  };
+}
+
+export function buildIssueConfigRollbackUpdates(
+  currentIssue: PlanIssueConfigState,
+  updates: PlanIssueConfigState
+): PlanIssueConfigState {
+  return {
+    agent_alias: updates.agent_alias !== undefined ? currentIssue.agent_alias ?? null : undefined,
+    model_name: updates.model_name !== undefined ? currentIssue.model_name ?? null : undefined
+  };
+}
+
+export async function updateIssueConfigWithRollback(params: {
+  draftId: string;
+  issueNumber: number;
+  repository: string;
+  currentIssue: PlanIssueConfigState;
+  updates: PlanIssueConfigState;
+  octokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+}): Promise<void> {
+  const hasModelNameUpdate = params.updates.model_name !== undefined;
+  const nextConfig = resolveIssueConfigState(params.currentIssue, params.updates);
+  const nextAgentAlias = nextConfig.agent_alias;
+  const nextModelName = nextConfig.model_name;
+  const configUnchanged = (
+    nextAgentAlias === (params.currentIssue.agent_alias ?? null)
+    && nextModelName === (params.currentIssue.model_name ?? null)
+  );
+
+  if (!hasModelNameUpdate && configUnchanged) {
+    return;
+  }
+
+  if (!hasModelNameUpdate) {
+    const nextIssue = await updatePlanIssue(params.draftId, params.issueNumber, params.updates);
+    if (!nextIssue) {
+      throw new Error('Issue not found in this plan');
+    }
+    return;
+  }
+
+  const octokit = params.octokit ?? await getAuthenticatedOctokit();
+
+  await syncModelLabels({
+    draftId: params.draftId,
+    issueNumber: params.issueNumber,
+    repository: params.repository,
+    currentModelName: params.currentIssue.model_name ?? null,
+    modelName: nextModelName,
+    octokit
+  });
+
+  if (configUnchanged) {
+    return;
+  }
+
+  try {
+    const nextIssue = await updatePlanIssue(params.draftId, params.issueNumber, params.updates);
+    if (!nextIssue) {
+      throw new Error('Issue not found in this plan');
+    }
+  } catch (error) {
+    try {
+      await syncModelLabels({
+        draftId: params.draftId,
+        issueNumber: params.issueNumber,
+        repository: params.repository,
+        currentModelName: nextModelName,
+        modelName: params.currentIssue.model_name ?? null,
+        octokit
+      });
+    } catch (rollbackError) {
+      const details = {
+        draftId: params.draftId,
+        issueNumber: params.issueNumber,
+        repository: params.repository,
+        persistedModelName: params.currentIssue.model_name ?? null,
+        githubLabelModelName: nextModelName,
+        updateError: error instanceof Error ? error.message : String(error),
+        rollbackError: rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+      };
+      logger.error(details, 'Plan issue config sync diverged after rollback failure; manual reconciliation required');
+      throw new IssueConfigSyncReconciliationError(
+        'Failed to persist issue config after GitHub labels changed; manual reconciliation required',
+        details
+      );
+    }
+    throw error;
+  }
+}
+
+export async function syncPendingIssueConfigs(params: {
+  draftId: string;
+  repository: string;
+  pendingIssues: Array<{
+    issue_number: number;
+    agent_alias?: string | null;
+    model_name?: string | null;
+  }>;
+  updates: {
+    agent_alias?: string | null;
+    model_name?: string | null;
+  };
+}): Promise<void> {
+  if (params.pendingIssues.length === 0) return;
+
+  const octokit = params.updates.model_name !== undefined
+    ? await getAuthenticatedOctokit()
+    : undefined;
+  const updatedIssues: typeof params.pendingIssues = [];
+
+  try {
+    for (let index = 0; index < params.pendingIssues.length; index += IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE) {
+      const issueBatch = params.pendingIssues.slice(index, index + IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE);
+      const batchResults = await Promise.allSettled(issueBatch.map(async (issue) => {
+        await updateIssueConfigWithRollback({
+          draftId: params.draftId,
+          issueNumber: issue.issue_number,
+          repository: params.repository,
+          currentIssue: issue,
+          updates: params.updates,
+          octokit
+        });
+        return issue;
+      }));
+
+      let batchFailure: unknown;
+      for (const result of batchResults) {
+        if (result.status === 'fulfilled') {
+          updatedIssues.push(result.value);
+          continue;
+        }
+        if (batchFailure === undefined) {
+          batchFailure = result.reason;
+        }
+      }
+
+      if (batchFailure !== undefined) {
+        throw batchFailure;
+      }
+    }
+  } catch (error) {
+    const rollbackFailures: Array<{ issueNumber: number; error: string }> = [];
+
+    for (let index = updatedIssues.length - 1; index >= 0; index -= 1) {
+      const issue = updatedIssues[index];
+
+      try {
+        await updateIssueConfigWithRollback({
+          draftId: params.draftId,
+          issueNumber: issue.issue_number,
+          repository: params.repository,
+          currentIssue: resolveIssueConfigState(issue, params.updates),
+          updates: buildIssueConfigRollbackUpdates(issue, params.updates),
+          octokit
+        });
+      } catch (rollbackError) {
+        rollbackFailures.push({
+          issueNumber: issue.issue_number,
+          error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+        });
+        logger.error(
+          {
+            draftId: params.draftId,
+            issueNumber: issue.issue_number,
+            error: (rollbackError as Error).message
+          },
+          'Failed to roll back plan issue config after batch sync failure'
+        );
+      }
+    }
+
+    if (rollbackFailures.length > 0) {
+      throw new IssueConfigSyncReconciliationError(
+        'Failed to fully roll back synced issue config updates; manual reconciliation required',
+        {
+          draftId: params.draftId,
+          repository: params.repository,
+          originalError: error instanceof Error ? error.message : String(error),
+          rollbackFailures
+        }
+      );
+    }
+
+    throw error;
+  }
+}
+
+export function filterIssuesNeedingConfigSync<T extends PlanIssueConfigState & { issue_number: number }>(params: {
+  pendingIssues: Array<T>;
+  updates: PlanIssueConfigState;
+}): Array<T> {
+  return params.pendingIssues.filter((issue) => (
+    params.updates.agent_alias !== undefined
+    && (issue.agent_alias ?? null) !== (params.updates.agent_alias ?? null)
+  ) || (
+    params.updates.model_name !== undefined
+    && (issue.model_name ?? null) !== (params.updates.model_name ?? null)
+  ));
+}
+
+export async function persistEffectiveUltrafixSettings<T extends PlanIssueUltrafixState>(params: {
+  draftId: string;
+  issues: Array<T>;
+  contextConfig: Record<string, unknown> | null;
+}): Promise<Array<Omit<T, 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'> & {
+  run_ultrafix: boolean;
+  ultrafix_goal: number | null;
+  ultrafix_max_cycles: number | null;
+}>> {
+  const resolvedIssues = params.issues.map((issue) => resolveIssueForImplementation(issue, params.contextConfig));
+  for (let index = 0; index < params.issues.length; index += ULTRAFIX_SETTINGS_PERSIST_BATCH_SIZE) {
+    const issueBatch = params.issues.slice(index, index + ULTRAFIX_SETTINGS_PERSIST_BATCH_SIZE);
+    const batchResults = await Promise.all(issueBatch.map(async (issue, batchIndex) => {
+      const updates = buildEffectiveIssueUltrafixUpdate(issue, params.contextConfig);
+      if (!updates) return null;
+      const updatedIssue = await updatePlanIssue(params.draftId, issue.issue_number, updates);
+      if (!updatedIssue) {
+        throw new Error(`Issue ${issue.issue_number} not found in this plan`);
+      }
+      return { issue, updatedIssue, resolvedIndex: index + batchIndex };
+    }));
+    for (const result of batchResults) {
+      if (!result) continue;
+      resolvedIssues[result.resolvedIndex] = resolveIssueForImplementation(
+        {
+          ...result.issue,
+          run_ultrafix: result.updatedIssue.run_ultrafix,
+          ultrafix_goal: result.updatedIssue.ultrafix_goal,
+          ultrafix_max_cycles: result.updatedIssue.ultrafix_max_cycles
+        },
+        params.contextConfig
+      );
+    }
+  }
+  return resolvedIssues;
+}

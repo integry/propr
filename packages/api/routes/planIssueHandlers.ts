@@ -4,110 +4,217 @@ import {
   getPlanIssuesByDraftPaginated,
   getPlanIssue,
   updatePlanIssue,
-  batchUpdatePlanIssueConfig,
   loadPrimaryProcessingLabels,
   getAuthenticatedOctokit,
-  safeUpdateLabels,
   logger,
-  db
+  type PlanIssue
 } from '@propr/core';
 import { PlanIssueStatus } from '@propr/core';
-import type { OwnershipResult } from './plannerHelpers.js';
 import {
-  getLlmLabel,
   handleMultiAgentImplementation,
   handleSingleAgentImplementation,
   processBatchIssues,
-  type ImplementIssueContext,
-  getOrCreateEpicLabel
+  type ImplementIssueContext
 } from './planIssueHelpers.js';
-
-interface PlanIssueDeps {
+import {
+  filterIssuesNeedingConfigSync,
+  buildIssueConfigRollbackUpdates,
+  IssueConfigSyncReconciliationError,
+  persistEffectiveUltrafixSettings,
+  resolveEpicLabel,
+  syncPendingIssueConfigs,
+  updateIssueConfigWithRollback
+} from './planIssueConfigSync.js';
+import {
+  buildIssueUpdate,
+  ContextConfigParseError,
+  normalizeOptionalConfigString,
+  parseContextConfig,
+  parseImplementationSettingsOverrides,
+  resolveIssueForResponse,
+  resolveImplementationSettings,
+  type UpdateIssueRequestBody,
+  validateOptionalConfigString,
+  validateUpdateIssueRequest
+} from './planIssueRouteUtils.js';
+import type { OwnershipResult } from './plannerHelpers.js';
+export interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
 }
-
-interface ImplementationSettings {
-  useEpic: boolean;
-  autoMerge: boolean;
-}
-
-function parseContextConfig(draft: Record<string, unknown>): Record<string, unknown> | null {
-  if (!draft.context_config) return null;
-  return typeof draft.context_config === 'string'
-    ? JSON.parse(draft.context_config as string)
-    : draft.context_config as Record<string, unknown>;
-}
-
-function resolveImplementationSettings(
-  reqBody: { useEpic?: boolean; autoMerge?: boolean },
-  contextConfig: Record<string, unknown> | null
-): ImplementationSettings {
-  return {
-    useEpic: reqBody.useEpic ?? contextConfig?.useEpic ?? false,
-    autoMerge: reqBody.autoMerge ?? contextConfig?.autoMerge ?? false
-  } as ImplementationSettings;
-}
-
-async function resolveEpicLabel(
-  useEpic: boolean,
-  params: {
-    draftId: string;
-    owner: string;
-    repo: string;
-    draft: Record<string, unknown>;
-    firstIssueNumber: number;
-    contextConfig: Record<string, unknown> | null;
-    correlationId: string;
-    labelLogger: ReturnType<typeof logger.withCorrelation>;
+class IssueConfigRollbackError extends Error {
+  constructor(readonly details: Record<string, unknown>) {
+    super('Failed to update issue and failed to roll back synchronized config changes');
+    this.name = 'IssueConfigRollbackError';
   }
-): Promise<string | null> {
-  if (!useEpic) return null;
-  return getOrCreateEpicLabel({
-    draftId: params.draftId,
-    owner: params.owner,
-    repo: params.repo,
-    planName: (params.draft.name as string) || 'Unnamed Plan',
-    firstIssueNumber: params.firstIssueNumber,
-    contextConfig: params.contextConfig,
-    correlationId: params.correlationId,
-    labelLogger: params.labelLogger,
-    db
+}
+function buildConfigUpdatesFromIssueUpdate(issueUpdates: ReturnType<typeof buildIssueUpdate>): { agent_alias?: string | null; model_name?: string | null } {
+  const configUpdates: { agent_alias?: string | null; model_name?: string | null } = {};
+  if (issueUpdates.agent_alias !== undefined) configUpdates.agent_alias = issueUpdates.agent_alias;
+  if (issueUpdates.model_name !== undefined) configUpdates.model_name = issueUpdates.model_name;
+  return configUpdates;
+}
+function hasConfigUpdates(configUpdates: { agent_alias?: string | null; model_name?: string | null }): boolean {
+  return configUpdates.agent_alias !== undefined || configUpdates.model_name !== undefined;
+}
+function buildUpdatedConfigState(
+  currentIssue: Pick<PlanIssue, 'agent_alias' | 'model_name'>,
+  configUpdates: { agent_alias?: string | null; model_name?: string | null }
+): { agent_alias: string | null; model_name: string | null } {
+  return {
+    agent_alias: configUpdates.agent_alias !== undefined ? configUpdates.agent_alias ?? null : currentIssue.agent_alias ?? null,
+    model_name: configUpdates.model_name !== undefined ? configUpdates.model_name ?? null : currentIssue.model_name ?? null
+  };
+}
+
+async function rollbackIssueConfigUpdate(params: {
+  draftId: string;
+  issueNumber: number;
+  repository: string;
+  currentIssue: Pick<PlanIssue, 'agent_alias' | 'model_name'>;
+  configUpdates: { agent_alias?: string | null; model_name?: string | null };
+  logMessage: string;
+  originalError: unknown;
+}): Promise<void> {
+  if (!hasConfigUpdates(params.configUpdates)) return;
+  try {
+    await updateIssueConfigWithRollback({
+      draftId: params.draftId,
+      issueNumber: params.issueNumber,
+      repository: params.repository,
+      currentIssue: buildUpdatedConfigState(params.currentIssue, params.configUpdates),
+      updates: buildIssueConfigRollbackUpdates(params.currentIssue, params.configUpdates)
+    });
+  } catch (rollbackError) {
+    if (rollbackError instanceof IssueConfigSyncReconciliationError) {
+      throw rollbackError;
+    }
+    logger.error(
+      {
+        draftId: params.draftId,
+        issueNumber: params.issueNumber,
+        error: (rollbackError as Error).message,
+        originalError: params.originalError instanceof Error ? params.originalError.message : String(params.originalError)
+      },
+      params.logMessage
+    );
+    throw new IssueConfigRollbackError({
+      draftId: params.draftId,
+      issueNumber: params.issueNumber,
+      repository: params.repository,
+      originalError: params.originalError instanceof Error ? params.originalError.message : String(params.originalError),
+      rollbackError: rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+    });
+  }
+}
+async function persistNonConfigIssueUpdates(params: {
+  draftId: string;
+  issueNumber: number;
+  issueUpdates: ReturnType<typeof buildIssueUpdate>;
+}): Promise<PlanIssue | null> {
+  const nonConfigUpdates = {
+    status: params.issueUpdates.status,
+    run_ultrafix: params.issueUpdates.run_ultrafix,
+    ultrafix_goal: params.issueUpdates.ultrafix_goal,
+    ultrafix_max_cycles: params.issueUpdates.ultrafix_max_cycles
+  };
+  const hasNonConfigUpdates = Object.values(nonConfigUpdates).some((value) => value !== undefined);
+  return hasNonConfigUpdates
+    ? updatePlanIssue(params.draftId, params.issueNumber, nonConfigUpdates)
+    : getPlanIssue(params.draftId, params.issueNumber);
+}
+function sendIssueConfigSyncReconciliationError(res: Response, error: IssueConfigSyncReconciliationError): void {
+  res.status(409).json({
+    error: error.message,
+    code: 'ISSUE_CONFIG_SYNC_RECONCILIATION_REQUIRED',
+    details: error.details
   });
 }
 
+async function loadPendingIssuesForImplementation(params: {
+  draftId: string;
+  repository: string;
+  existingIssues: PlanIssue[];
+  agent_alias: string | null | undefined;
+  model_name: string | null | undefined;
+}): Promise<PlanIssue[]> {
+  const { draftId, repository, existingIssues, agent_alias, model_name } = params;
+  const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
+  if (agent_alias === undefined && model_name === undefined) {
+    return pendingIssues;
+  }
+  const pendingIssuesNeedingConfigSync = filterIssuesNeedingConfigSync({
+    pendingIssues,
+    updates: { agent_alias, model_name }
+  });
+  await syncPendingIssueConfigs({
+    draftId,
+    repository,
+    pendingIssues: pendingIssuesNeedingConfigSync,
+    updates: { agent_alias, model_name }
+  });
+  const updatedIssues = await getPlanIssuesByDraft(draftId);
+  return updatedIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
+}
+
+async function implementPendingIssues(params: {
+  draftId: string;
+  owner: string;
+  repo: string;
+  pendingIssuesForImplementation: PlanIssue[];
+  contextConfig: ReturnType<typeof parseContextConfig>;
+  implementLabel: string;
+  autoMerge: boolean;
+  epicLabelName: string | null;
+}): Promise<Array<{ issueNumber: number; success: boolean; error?: string }>> {
+  const {
+    draftId,
+    owner,
+    repo,
+    pendingIssuesForImplementation,
+    contextConfig,
+    implementLabel,
+    autoMerge,
+    epicLabelName
+  } = params;
+  const octokit = await getAuthenticatedOctokit();
+  const issuesToProcess = (autoMerge && epicLabelName) ? [pendingIssuesForImplementation[0]] : pendingIssuesForImplementation;
+  const results: Array<{ issueNumber: number; success: boolean; error?: string }> = [];
+  for (const issue of issuesToProcess) {
+    const [resolvedIssue] = await persistEffectiveUltrafixSettings({ draftId, issues: [issue], contextConfig });
+    const batchResult = await processBatchIssues({
+      octokit,
+      owner,
+      repo,
+      draftId,
+      pendingIssues: [resolvedIssue],
+      implementLabel,
+      epicLabelName,
+      autoMerge
+    });
+    results.push(...batchResult.results);
+  }
+  return results;
+}
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
   return async function getIssues(req: Request, res: Response): Promise<void> {
     try {
-      const ownership = await deps.verifyOwnership(req.params.id, req.user!.id);
+      const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      // Check for pagination query params
       const { page, limit, status } = req.query;
       const hasPagination = page !== undefined || limit !== undefined;
-
       if (hasPagination) {
-        // Return paginated response
         const pageNum = page ? parseInt(page as string, 10) : 0;
         const limitNum = limit ? parseInt(limit as string, 10) : 50;
-
-        const options: { page?: number; limit?: number; status?: PlanIssueStatus } = {
-          page: isNaN(pageNum) ? 0 : pageNum,
-          limit: isNaN(limitNum) ? 50 : Math.min(limitNum, 100)
-        };
-
+        const options: { page?: number; limit?: number; status?: PlanIssueStatus } = { page: isNaN(pageNum) ? 0 : pageNum, limit: isNaN(limitNum) ? 50 : Math.min(limitNum, 100) };
         if (status) {
           const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
-          if (validStatuses.includes(status as PlanIssueStatus)) {
-            options.status = status as PlanIssueStatus;
-          }
+          if (validStatuses.includes(status as PlanIssueStatus)) options.status = status as PlanIssueStatus;
         }
-
         const result = await getPlanIssuesByDraftPaginated(req.params.id, options);
-        res.json(result);
+        res.json({ ...result, issues: result.issues.map((issue) => resolveIssueForResponse(issue)) });
       } else {
-        // Return all issues for backward compatibility
         const issues = await getPlanIssuesByDraft(req.params.id);
-        res.json(issues);
+        res.json(issues.map((issue) => resolveIssueForResponse(issue)));
       }
     } catch (error) {
       console.error('Get issues error:', error);
@@ -115,182 +222,134 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
     }
   };
 }
-
 export function createImplementIssueHandler(deps: PlanIssueDeps) {
   return async function implementIssue(req: Request, res: Response): Promise<void> {
     const draftId = req.params.id;
     const issueNumber = parseInt(req.params.issueNumber, 10);
-
     if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
-
     try {
       const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
       const draft = ownership.draft!;
       const repository = draft.repository as string;
       const [owner, repo] = repository.split('/');
-
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
-
-      const contextConfig = parseContextConfig(draft as Record<string, unknown>);
-
+      const contextConfig = parseContextConfig(draft.context_config);
+      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as { useEpic?: unknown; autoMerge?: unknown });
+      if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-
+      const [issueForImplementation] = await persistEffectiveUltrafixSettings({ draftId, issues: [planIssue], contextConfig });
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
       const octokit = await getAuthenticatedOctokit();
-
       const { models } = req.body as { models?: Array<{ agent_alias: string; model_name: string }> };
-      const { useEpic, autoMerge } = resolveImplementationSettings(req.body, contextConfig);
-
+      const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);
       const correlationId = `implement-${draftId}-${issueNumber}`;
       const labelLogger = logger.withCorrelation(correlationId);
-
-      // Get existing epic label or create new one (using first pending issue number for consistency)
-      const allIssues = await getPlanIssuesByDraft(draftId);
-      const pendingIssues = allIssues.filter(i => i.status === PlanIssueStatus.PENDING);
-      const firstIssueNumber = pendingIssues.length > 0 ? pendingIssues[0].issue_number : issueNumber;
-
-      const epicLabelName = await resolveEpicLabel(useEpic, {
-        draftId, owner, repo, draft: draft as Record<string, unknown>,
-        firstIssueNumber, contextConfig, correlationId, labelLogger
-      });
-
+      const firstPendingIssue = await getPlanIssuesByDraftPaginated(draftId, { status: PlanIssueStatus.PENDING, page: 0, limit: 1 });
+      const firstIssueNumber = firstPendingIssue.issues[0]?.issue_number ?? issueNumber;
+      const epicLabelName = await resolveEpicLabel(useEpic, { draftId, owner, repo, draft: draft as Record<string, unknown>, firstIssueNumber, contextConfig, correlationId, labelLogger });
       const context: ImplementIssueContext = {
         octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge: autoMerge as boolean, labelLogger
       };
-
       const result = (models && Array.isArray(models) && models.length > 0)
-        ? await handleMultiAgentImplementation({ ...context, draftId, planIssue, models })
-        : await handleSingleAgentImplementation({ ...context, draftId, planIssue });
-
+        ? await handleMultiAgentImplementation({ ...context, draftId, planIssue: issueForImplementation, models })
+        : await handleSingleAgentImplementation({ ...context, draftId, planIssue: issueForImplementation });
       res.json(result);
     } catch (error) {
+      if (error instanceof ContextConfigParseError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
       console.error('Implement issue error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
     }
   };
 }
-
 export function createUpdateIssueHandler(deps: PlanIssueDeps) {
   return async function updateIssueHandler(req: Request, res: Response): Promise<void> {
     const draftId = req.params.id;
     const issueNumber = parseInt(req.params.issueNumber, 10);
-
     if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
-
     try {
       const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const { agent_alias, model_name, status } = req.body;
-
-      const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
-      if (status && !validStatuses.includes(status)) {
-        res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
-        return;
-      }
-
-      // Get current plan issue to compare model changes
+      const body = req.body as UpdateIssueRequestBody;
+      const requestValidationError = validateUpdateIssueRequest(body);
+      if (requestValidationError) { res.status(400).json({ error: requestValidationError }); return; }
       const currentIssue = await getPlanIssue(draftId, issueNumber);
       if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-
-      // Update GitHub labels when model_name is provided
-      // Always ensure the correct label is set, even if model_name hasn't changed (sync behavior)
-      if (model_name !== undefined) {
-        const draft = ownership.draft!;
-        const repository = draft.repository as string;
-        const [owner, repo] = repository.split('/');
-
-        if (owner && repo) {
-          const oldLabel = await getLlmLabel(currentIssue.model_name);
-          const newLabel = await getLlmLabel(model_name);
-          const octokit = await getAuthenticatedOctokit();
-          const labelLogger = logger.withCorrelation(`update-issue-${draftId}-${issueNumber}`);
-
-          // Only remove old label if it's different from new label
-          const labelsToRemove = (oldLabel && oldLabel !== newLabel) ? [oldLabel] : [];
-          const labelsToAdd = newLabel ? [newLabel] : [];
-
-          if (labelsToRemove.length > 0 || labelsToAdd.length > 0) {
-            await safeUpdateLabels(
-              { octokit, owner, repo, issueNumber, logger: labelLogger },
-              labelsToRemove,
-              labelsToAdd
-            );
-          }
-        }
+      const issueUpdates = buildIssueUpdate(body);
+      const repository = ownership.draft!.repository as string;
+      const configUpdates = buildConfigUpdatesFromIssueUpdate(issueUpdates);
+      const shouldUpdateConfig = hasConfigUpdates(configUpdates);
+      if (shouldUpdateConfig) {
+        await updateIssueConfigWithRollback({ draftId, issueNumber, repository, currentIssue, updates: configUpdates });
       }
-
-      const updated = await updatePlanIssue(draftId, issueNumber, {
-        agent_alias: agent_alias !== undefined ? agent_alias : undefined,
-        model_name: model_name !== undefined ? model_name : undefined,
-        status: status !== undefined ? status : undefined
-      });
-
-      if (!updated) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      res.json(updated);
+      let updated: PlanIssue | null;
+      try {
+        updated = await persistNonConfigIssueUpdates({ draftId, issueNumber, issueUpdates });
+      } catch (error) {
+        await rollbackIssueConfigUpdate({ draftId, issueNumber, repository, currentIssue, configUpdates, logMessage: 'Failed to roll back plan issue config after non-config update failure', originalError: error });
+        throw error;
+      }
+      if (!updated) {
+        await rollbackIssueConfigUpdate({ draftId, issueNumber, repository, currentIssue, configUpdates, logMessage: 'Failed to roll back plan issue config after update returned no issue', originalError: 'Issue not found in this plan' });
+        res.status(404).json({ error: 'Issue not found in this plan' });
+        return;
+      }
+      res.json(resolveIssueForResponse(updated));
     } catch (error) {
+      if (error instanceof IssueConfigSyncReconciliationError) {
+        sendIssueConfigSyncReconciliationError(res, error);
+        return;
+      }
+      if (error instanceof IssueConfigRollbackError) {
+        res.status(500).json({ error: error.message, code: 'ISSUE_CONFIG_ROLLBACK_FAILED', details: error.details });
+        return;
+      }
       console.error('Update issue error:', error);
       res.status(500).json({ error: 'Failed to update issue' });
     }
   };
 }
-
 export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
   return async function implementAllIssues(req: Request, res: Response): Promise<void> {
     const draftId = req.params.id;
-
     try {
       const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
       const draft = ownership.draft!;
       const repository = draft.repository as string;
       const [owner, repo] = repository.split('/');
-
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
-
-      const contextConfig = parseContextConfig(draft as Record<string, unknown>);
-
-      const { agent_alias, model_name } = req.body;
-      const { useEpic, autoMerge } = resolveImplementationSettings(req.body, contextConfig);
-
-      if (agent_alias !== undefined || model_name !== undefined) {
-        await batchUpdatePlanIssueConfig(draftId, agent_alias, model_name);
-      }
-
-      const issues = await getPlanIssuesByDraft(draftId);
-      const pendingIssues = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
-
-      if (pendingIssues.length === 0) {
+      const contextConfig = parseContextConfig(draft.context_config);
+      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as { useEpic?: unknown; autoMerge?: unknown });
+      if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
+      const agentAliasError = validateOptionalConfigString(req.body.agent_alias, 'agent_alias');
+      if (agentAliasError) { res.status(400).json({ error: agentAliasError }); return; }
+      const modelNameError = validateOptionalConfigString(req.body.model_name, 'model_name');
+      if (modelNameError) { res.status(400).json({ error: modelNameError }); return; }
+      const agent_alias = normalizeOptionalConfigString(req.body.agent_alias);
+      const model_name = normalizeOptionalConfigString(req.body.model_name);
+      const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);
+      const existingIssues = await getPlanIssuesByDraft(draftId);
+      const pendingIssuesForImplementation = await loadPendingIssuesForImplementation({ draftId, repository, existingIssues, agent_alias, model_name });
+      if (pendingIssuesForImplementation.length === 0) {
         res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });
         return;
       }
-
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
-      const octokit = await getAuthenticatedOctokit();
       const correlationId = `implement-all-${draftId}`;
       const labelLogger = logger.withCorrelation(correlationId);
-
-      // Get existing epic label or create new one
-      const epicLabelName = await resolveEpicLabel(useEpic, {
-        draftId, owner, repo, draft: draft as Record<string, unknown>,
-        firstIssueNumber: pendingIssues[0].issue_number,
-        contextConfig, correlationId, labelLogger
-      });
-
-      const { results, queuedCount } = await processBatchIssues({
-        octokit, owner, repo, draftId, pendingIssues, implementLabel, epicLabelName, autoMerge: autoMerge as boolean
-      });
-
+      const epicLabelName = await resolveEpicLabel(useEpic, { draftId, owner, repo, draft: draft as Record<string, unknown>, firstIssueNumber: pendingIssuesForImplementation[0].issue_number, contextConfig, correlationId, labelLogger });
+      const results = await implementPendingIssues({ draftId, owner, repo, pendingIssuesForImplementation, contextConfig, implementLabel, autoMerge: autoMerge as boolean, epicLabelName });
+      const queuedCount = (autoMerge && epicLabelName) ? pendingIssuesForImplementation.length - 1 : 0;
       const successCount = results.filter(r => r.success).length;
       const failedCount = results.filter(r => !r.success).length;
       const queuedMessage = queuedCount > 0 ? ` (${queuedCount} more queued for sequential processing)` : '';
-
       res.json({
         success: failedCount === 0,
         message: `Implemented ${successCount} issues${failedCount > 0 ? `, ${failedCount} failed` : ''}${queuedMessage}`,
@@ -302,6 +361,14 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         autoMergeEnabled: autoMerge as boolean
       });
     } catch (error) {
+      if (error instanceof ContextConfigParseError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
+      if (error instanceof IssueConfigSyncReconciliationError) {
+        sendIssueConfigSyncReconciliationError(res, error);
+        return;
+      }
       console.error('Implement all issues error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issues' });
     }

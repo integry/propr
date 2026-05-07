@@ -9,6 +9,7 @@ import {
   type PlanTask,
   type CreatedIssue
 } from './githubIssueService.js';
+import type { TaskDraftConfig } from './planning/planningTypes.js';
 
 // Re-export Epic PR functions from separate module
 export {
@@ -37,11 +38,22 @@ interface TaskDraft {
   name: string;
   initial_prompt: string;
   plan_json: string | PlanTask[];
-  context_config: string | Record<string, unknown>;
+  context_config: string | TaskExecutionContextConfig;
   status: string;
   created_at: Date;
   updated_at: Date;
 }
+
+type TaskExecutionContextConfig = Partial<TaskDraftConfig> & {
+  useEpic?: boolean;
+  autoMerge?: boolean;
+  runUltrafix?: boolean;
+  ultrafixGoal?: number | null;
+  ultrafixMaxCycles?: number | null;
+  executionResults?: CreatedIssue[];
+  executionFailures?: Array<{ taskIndex: number; title: string; error: string }>;
+  executedAt?: string;
+};
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -51,6 +63,45 @@ interface ValidatedDraftData {
   owner: string;
   repoName: string;
   isReFinalization: boolean;
+  contextConfig: TaskExecutionContextConfig;
+}
+
+export function parseContextConfig(
+  contextConfig: string | TaskExecutionContextConfig
+): TaskExecutionContextConfig {
+  if (!contextConfig) {
+    return {};
+  }
+  if (typeof contextConfig !== 'string') {
+    return contextConfig ?? {};
+  }
+
+  const parsed = JSON.parse(contextConfig) as unknown;
+  if (!parsed) return {};
+  if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return parsed as TaskExecutionContextConfig;
+  }
+  throw new Error('Draft context_config must be a JSON object');
+}
+
+export function buildExecutionContextConfig(
+  existingConfig: TaskExecutionContextConfig,
+  results: CreatedIssue[],
+  failures: Array<{ taskIndex: number; title: string; error: string }>
+): TaskExecutionContextConfig {
+  const updatedConfig: TaskExecutionContextConfig = {
+    ...existingConfig,
+    executionResults: results,
+    executedAt: new Date().toISOString()
+  };
+
+  if (failures.length > 0) {
+    updatedConfig.executionFailures = failures;
+  } else {
+    delete updatedConfig.executionFailures;
+  }
+
+  return updatedConfig;
 }
 
 // Statuses that allow RE-finalization (will detach existing issues and recreate)
@@ -112,7 +163,16 @@ async function validateAndPrepareDraft(
     throw new Error(`Invalid repository format: ${draft.repository}`);
   }
 
-  return { draft, planJson, owner, repoName, isReFinalization };
+  const contextConfig = parseContextConfig(draft.context_config);
+
+  return {
+    draft,
+    planJson,
+    owner,
+    repoName,
+    isReFinalization,
+    contextConfig
+  };
 }
 
 export async function executeDraft(draftId: string, userId: string, correlationId?: string): Promise<ExecutionResult> {
@@ -137,7 +197,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     throw error;
   }
 
-  const { draft, planJson, owner, repoName } = validatedData;
+  const { draft, planJson, owner, repoName, contextConfig } = validatedData;
   const totalCount = planJson.length;
 
   // Emit initial progress event
@@ -183,6 +243,9 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       taskIndex: i,
       draftId,
       repository: draft.repository,
+      runUltrafix: contextConfig.runUltrafix === true,
+      ultrafixGoal: contextConfig.runUltrafix === true ? contextConfig.ultrafixGoal ?? null : null,
+      ultrafixMaxCycles: contextConfig.runUltrafix === true ? contextConfig.ultrafixMaxCycles ?? null : null,
       correlatedLogger,
       correlationId
     });
@@ -245,52 +308,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     }
   }
 
-  // Only avoid spreading context_config - extract specific fields safely
-  let baseBranch: unknown, granularity: unknown, contextLevel: unknown, compress: unknown,
-      manualFiles: unknown, autoFiles: unknown, contextRepositories: unknown, generationModel: unknown;
-
-  if (typeof draft.context_config === 'string') {
-    try {
-      const parsed = JSON.parse(draft.context_config);
-      baseBranch = parsed.baseBranch;
-      granularity = parsed.granularity;
-      contextLevel = parsed.contextLevel;
-      compress = parsed.compress;
-      manualFiles = parsed.manualFiles;
-      autoFiles = parsed.autoFiles;
-      contextRepositories = parsed.contextRepositories;
-      generationModel = parsed.generationModel;
-    } catch {
-      // Ignore parse errors
-    }
-  } else if (draft.context_config) {
-    const config = draft.context_config as Record<string, unknown>;
-    baseBranch = config.baseBranch;
-    granularity = config.granularity;
-    contextLevel = config.contextLevel;
-    compress = config.compress;
-    manualFiles = config.manualFiles;
-    autoFiles = config.autoFiles;
-    contextRepositories = config.contextRepositories;
-    generationModel = config.generationModel;
-  }
-
-  const updatedConfig: Record<string, unknown> = {
-    baseBranch,
-    granularity,
-    contextLevel,
-    compress,
-    manualFiles,
-    autoFiles,
-    contextRepositories,
-    generationModel,
-    executionResults: results,
-    executedAt: new Date().toISOString()
-  };
-
-  if (failures.length > 0) {
-    updatedConfig.executionFailures = failures;
-  }
+  const updatedConfig = buildExecutionContextConfig(contextConfig, results, failures);
 
   await db!('task_drafts')
     .where({ draft_id: draftId })

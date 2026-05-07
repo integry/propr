@@ -106,9 +106,10 @@ await mock.module('../packages/core/src/config/configManager.js', {
 });
 
 // Mock commentFilters
+const mockFilterCommentByAuthor = mock.fn(() => ({ shouldFilter: false }));
 await mock.module('../packages/core/src/utils/commentFilters.js', {
     namedExports: {
-        filterCommentByAuthor: mock.fn(() => ({ shouldFilter: false })),
+        filterCommentByAuthor: mockFilterCommentByAuthor,
         checkCommentTrigger: mock.fn(() => ({ isTriggered: true })),
         checkCommentIgnore: mock.fn(() => ({ shouldIgnore: false })),
     },
@@ -223,9 +224,11 @@ describe('commentEventHandler — /ultrafix command', () => {
         mockLoggerInstance.warn.mock.resetCalls();
         mockStartLoop.mock.resetCalls();
         mockGetPendingReviewState.mock.resetCalls();
+        mockFilterCommentByAuthor.mock.resetCalls();
         mockActiveJobs = [];
         mockWaitingJobs = [];
         mockDelayedJobs = [];
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: false }));
 
         // Default: Octokit returns a PR with no labels and empty comments
         mockOctokit.request.mock.mockImplementation(async (url: string) => {
@@ -479,5 +482,22 @@ describe('commentEventHandler — /ultrafix command', () => {
         const commentBody = (postCalls[0].arguments[1] as Record<string, unknown>).body as string;
         assert.ok(commentBody.includes('ultrafix'), 'Comment should mention ultrafix');
         assert.ok(commentBody.includes('label'), 'Comment should mention the label as a circuit breaker');
+    });
+
+    test('bot-authored system /ultrafix comment is allowed even when the login does not match configured bot identity', async () => {
+        process.env.GITHUB_BOT_USERNAME = 'configured-bot[bot]';
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
+
+        const event = createPRCommentEvent('/ultrafix goal=8 max=4');
+        event.comment.user.login = 'automation-runner[bot]';
+        event.comment.user.type = 'Bot';
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-system-bot', config);
+
+        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
     });
 });

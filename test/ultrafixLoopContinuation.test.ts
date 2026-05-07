@@ -6,6 +6,7 @@ import {
     saveState,
     loadState,
     clearState,
+    completeLoop,
     type UltrafixLoopState,
 } from '../src/jobs/ultrafixOrchestrationService.js';
 
@@ -87,18 +88,27 @@ describe('Ultrafix loop continuation logic', () => {
             assert.ok(decision.reason.includes('Goal met'));
         });
 
-        test('state is cleared when goal is met', async () => {
+        test('goal completion is persisted as a successful terminal state', async () => {
             const state = makeState({ lastAction: 'review', goal: 7 });
             await saveState(redis as any, state);
 
-            // Simulate: goal met → clear state
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
             const decision = determineNextAction(state, 8);
             assert.strictEqual(decision.action, null);
 
-            await clearState(redis as any, 'acme', 'web', 42);
+            await completeLoop(redis as any, {
+                owner: 'acme',
+                repo: 'web',
+                pr: 42,
+                completionStatus: 'succeeded',
+                completionReason: decision.reason,
+                finalScore: 8,
+            });
             const loaded = await loadState(redis as any, 'acme', 'web', 42);
-            assert.strictEqual(loaded, null);
+            assert.ok(loaded);
+            assert.strictEqual(loaded!.active, false);
+            assert.strictEqual(loaded!.completionStatus, 'succeeded');
+            assert.strictEqual(loaded!.finalScore, 8);
         });
     });
 
@@ -149,8 +159,8 @@ describe('Ultrafix loop continuation logic', () => {
         });
     });
 
-    describe('terminal conditions: state cleared', () => {
-        test('state is cleared on max cycles reached', async () => {
+    describe('terminal conditions: state persisted', () => {
+        test('failed terminal state is persisted when max cycles are reached', async () => {
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
             const state = makeState({ lastAction: 'fix', cycleCount: 5, reviewCount: 5, fixCount: 5, maxCycles: 5 });
             await saveState(redis as any, state);
@@ -159,10 +169,19 @@ describe('Ultrafix loop continuation logic', () => {
             assert.strictEqual(decision.action, null);
             assert.ok(decision.reason.includes('Max cycles'));
 
-            // Clear state on terminal
-            await clearState(redis as any, 'acme', 'web', 42);
+            await completeLoop(redis as any, {
+                owner: 'acme',
+                repo: 'web',
+                pr: 42,
+                completionStatus: 'failed',
+                completionReason: decision.reason,
+                finalScore: 4,
+            });
             const loaded = await loadState(redis as any, 'acme', 'web', 42);
-            assert.strictEqual(loaded, null);
+            assert.ok(loaded);
+            assert.strictEqual(loaded!.active, false);
+            assert.strictEqual(loaded!.completionStatus, 'failed');
+            assert.strictEqual(loaded!.finalScore, 4);
         });
 
         test('inactive loop returns null action', async () => {

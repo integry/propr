@@ -8,13 +8,10 @@
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import {
-    issueQueue,
     generateCorrelationId,
     getAuthenticatedOctokit,
     withRetry,
     retryConfigs,
-    safeRemoveLabel,
-    getPendingPrCommentsKey,
     type UltrafixCommandMeta,
 } from '@propr/core';
 import {
@@ -22,16 +19,22 @@ import {
     claimDeferredContinuation,
     recordAction,
     clearState,
+    completeLoop,
     determineNextAction,
-    hasFollowUpJobsForPR,
-    hasPendingBatchedComments,
-    checkReadiness,
     saveDeferredContinuation,
     clearDeferredContinuation,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
+import {
+    enqueueNextStep,
+    evaluateReadiness,
+    hasUltrafixLabel,
+    maybeEnableAutoMerge,
+    postPrComment,
+    removeUltrafixLabel,
+} from './ultrafixLoopContinuationHelpers.js';
 
 export interface UltrafixContinuationParams {
     owner: string;
@@ -48,9 +51,9 @@ export interface UltrafixContinuationParams {
 
 // --- Dependency injection for check_run status ---
 
-type ChecksPassingFn = (owner: string, repo: string, ref: string) => Promise<boolean>;
-type GetPRHeadFn = (owner: string, repo: string, pr: number) => Promise<string | null>;
-type GetCheckRunsStatusFn = (owner: string, repo: string, ref: string) => Promise<{ count: number; allPassing: boolean; anyPending: boolean; anyFailed: boolean }>;
+export type ChecksPassingFn = (owner: string, repo: string, ref: string) => Promise<boolean>;
+export type GetPRHeadFn = (owner: string, repo: string, pr: number) => Promise<string | null>;
+export type GetCheckRunsStatusFn = (owner: string, repo: string, ref: string) => Promise<{ count: number; allPassing: boolean; anyPending: boolean; anyFailed: boolean }>;
 
 let _areAllChecksPassing: ChecksPassingFn | null = null;
 let _getCurrentPRHead: GetPRHeadFn | null = null;
@@ -73,107 +76,6 @@ export interface ContinuationResult {
     score?: number | null;
     cycleCount?: number;
     deferred?: boolean;
-}
-
-/**
- * Check whether the `ultrafix` label is still on the PR.
- * If it has been removed, the loop should stop.
- */
-async function hasUltrafixLabel(
-    owner: string,
-    repo: string,
-    pullRequestNumber: number,
-    correlatedLogger: Logger,
-): Promise<boolean> {
-    try {
-        const octokit = await withRetry(
-            () => getAuthenticatedOctokit(),
-            { ...retryConfigs.githubApi },
-            'get_authenticated_octokit_ultrafix_label_check',
-        );
-        const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-            owner,
-            repo,
-            pull_number: pullRequestNumber,
-        });
-        return prData.data.labels.some((l: { name?: string }) => l.name === 'ultrafix');
-    } catch (err) {
-        correlatedLogger.warn(
-            { error: (err as Error).message, pullRequestNumber },
-            'Failed to check ultrafix label, assuming removed for safety',
-        );
-        return false;
-    }
-}
-
-/**
- * Remove the `ultrafix` label from the PR (called when loop finishes).
- */
-async function removeUltrafixLabel(
-    owner: string,
-    repo: string,
-    pullRequestNumber: number,
-    correlatedLogger: Logger,
-): Promise<void> {
-    try {
-        const octokit = await withRetry(
-            () => getAuthenticatedOctokit(),
-            { ...retryConfigs.githubApi },
-            'get_authenticated_octokit_ultrafix_label_remove',
-        );
-        await safeRemoveLabel(
-            { octokit, owner, repo, issueNumber: pullRequestNumber, logger: correlatedLogger },
-            'ultrafix',
-        );
-    } catch (err) {
-        correlatedLogger.warn(
-            { error: (err as Error).message, pullRequestNumber },
-            'Failed to remove ultrafix label',
-        );
-    }
-}
-
-/**
- * Enqueue the next ultrafix step (review or fix) as a PR comment job.
- */
-async function enqueueNextStep(
-    params: UltrafixContinuationParams,
-    nextAction: UltrafixAction,
-    delayMs: number,
-): Promise<void> {
-    const { owner, repo, pullRequestNumber, ultrafixMeta, correlatedLogger } = params;
-    const nextCorrelationId = generateCorrelationId();
-    const jobId = `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${Date.now()}`;
-
-    const commandMode = nextAction === 'review' ? 'review' as const : 'fix' as const;
-    const requestedModels = nextAction === 'review' && ultrafixMeta?.reviewModel ? [ultrafixMeta.reviewModel] : undefined;
-
-    await issueQueue.add('processPullRequestComment', {
-        pullRequestNumber,
-        repoOwner: owner,
-        repoName: repo,
-        correlationId: nextCorrelationId,
-        commandMode,
-        commandInstructions: ultrafixMeta?.instructions || '',
-        ultrafixMeta,
-        comments: [{
-            id: 0,
-            body: `Ultrafix loop: auto-scheduled /${nextAction}`,
-            author: 'propr-ultrafix',
-            type: 'issue' as const,
-            commandMode,
-            ultrafixMeta,
-        }],
-        ...(requestedModels && { requestedModels }),
-    }, {
-        jobId,
-        delay: delayMs,
-    });
-
-    correlatedLogger.info(
-        { pullRequestNumber, nextAction, jobId, delayMs, nextCorrelationId },
-        `Ultrafix loop: enqueued next ${nextAction} step`,
-    );
 }
 
 /**
@@ -256,10 +158,29 @@ export async function continueUltrafixLoop(
 
     // 6. If loop should stop, clean up
     if (decision.action === null) {
-        await clearState(redisClient, owner, repo, pullRequestNumber);
-        await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+        const goalReached = latestScore !== null && latestScore >= updatedState.goal;
+        await completeLoop(redisClient, {
+            owner,
+            repo,
+            pr: pullRequestNumber,
+            completionStatus: goalReached ? 'succeeded' : 'failed',
+            completionReason: decision.reason,
+            finalScore: latestScore,
+        });
+        if (goalReached) {
+            await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+            await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
+        } else {
+            await postPrComment({
+                owner,
+                repo,
+                pullRequestNumber,
+                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${updatedState.goal}/10. Last score: ${latestScore ?? 'unknown'}. Max cycles were exhausted, so manual review and merge are now required.`,
+                correlatedLogger,
+            });
+        }
         correlatedLogger.info(
-            { pullRequestNumber, reason: decision.reason, cycleCount: updatedState.cycleCount },
+            { pullRequestNumber, reason: decision.reason, cycleCount: updatedState.cycleCount, goalReached },
             'Ultrafix loop: loop finished',
         );
         return {
@@ -271,7 +192,11 @@ export async function continueUltrafixLoop(
     }
 
     // 7. Readiness gating — verify all conditions before enqueueing
-    const readiness = await evaluateReadiness(params);
+    const readiness = await evaluateReadiness(params, {
+        areAllChecksPassing: _areAllChecksPassing,
+        getCurrentPRHead: _getCurrentPRHead,
+        getCheckRunsStatus: _getCheckRunsStatus,
+    });
     correlatedLogger.info(
         { pullRequestNumber, ready: readiness.ready, reasons: readiness.reasons },
         'Ultrafix loop: readiness check',
@@ -363,7 +288,11 @@ export async function resumeDeferredContinuation(
         correlationId,
     };
 
-    const readiness = await evaluateReadiness(params);
+    const readiness = await evaluateReadiness(params, {
+        areAllChecksPassing: _areAllChecksPassing,
+        getCurrentPRHead: _getCurrentPRHead,
+        getCheckRunsStatus: _getCheckRunsStatus,
+    });
     correlatedLogger.info(
         { pr, ready: readiness.ready, reasons: readiness.reasons },
         'Ultrafix deferred resume: readiness re-check',
@@ -393,63 +322,4 @@ export async function resumeDeferredContinuation(
         nextAction: deferred.nextAction,
         cycleCount: state.cycleCount,
     };
-}
-
-async function evaluateCIChecksPassing(
-    params: Pick<UltrafixContinuationParams, 'owner' | 'repo' | 'pullRequestNumber' | 'completedAction' | 'correlatedLogger'>,
-): Promise<boolean> {
-    const { owner, repo, pullRequestNumber, completedAction, correlatedLogger } = params;
-    if (!_getCurrentPRHead) {
-        correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix readiness: check_run deps not wired, assuming checks NOT passing');
-        return false;
-    }
-    try {
-        const headSha = await _getCurrentPRHead(owner, repo, pullRequestNumber);
-        if (!headSha) return false;
-        if (_getCheckRunsStatus) {
-            const status = await _getCheckRunsStatus(owner, repo, headSha);
-            correlatedLogger.debug({ pullRequestNumber, ...status, completedAction }, 'Ultrafix readiness: check runs status');
-            if (completedAction === 'fix' && status.count === 0) {
-                correlatedLogger.info({ pullRequestNumber }, 'Ultrafix readiness: 0 checks after fix, CI likely not started yet');
-                return false;
-            }
-            return status.allPassing;
-        }
-        return _areAllChecksPassing ? _areAllChecksPassing(owner, repo, headSha) : false;
-    } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to check CI status, assuming NOT passing (fail-closed)');
-        return false;
-    }
-}
-
-async function evaluateReadiness(
-    params: UltrafixContinuationParams,
-): Promise<import('./ultrafixOrchestrationService.js').UltrafixReadinessResult> {
-    const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, currentJobId, completedAction } = params;
-
-    const allChecksPassing = await evaluateCIChecksPassing({ owner, repo, pullRequestNumber, completedAction, correlatedLogger });
-
-    let followUpJobsExist = false;
-    try {
-        followUpJobsExist = await hasFollowUpJobsForPR(owner, repo, pullRequestNumber, async () => {
-            const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']);
-            const filtered = currentJobId ? jobs.filter(j => j.id !== currentJobId) : jobs;
-            return filtered as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>;
-        });
-    } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to inspect queue, assuming no conflicts');
-    }
-
-    let pendingComments = false;
-    try {
-        pendingComments = await hasPendingBatchedComments(redisClient, getPendingPrCommentsKey(owner, repo, pullRequestNumber));
-    } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to check pending comments, assuming none');
-    }
-
-    return checkReadiness({
-        allChecksPassing,
-        hasFollowUpJobs: followUpJobsExist,
-        hasPendingComments: pendingComments,
-    });
 }

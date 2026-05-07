@@ -4,61 +4,26 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
+import { validatePagination, validateRepository, validateRepositoryFilter, validateEnum, validateUUID, ALLOWED_EXTENSIONS } from './validation.js';
+import { checkDbAndAuth, sendCheckError, verifyDraftOwnership, createDownloadContextHandler, createGetRepositoryInfoHandler, createGetAttachmentContentHandler, createPreviewContextHandler, createDeleteAttachmentHandler, createUploadAttachmentHandler, createGetContextStatsHandler, createGetIssuesHandler, createImplementIssueHandler, createUpdateIssueHandler, createImplementAllIssuesHandler, validatePreviewInput, withAuthCheck, createValidateContextRepositoryHandler } from './plannerHelpers.js';
+import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
+import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
+import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createAbortGenerationHandler, createAbortRefinementHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
 import {
-  validatePagination,
-  validateRepository,
-  validateRepositoryFilter,
-  validateEnum,
-  validateUUID,
-  ALLOWED_EXTENSIONS,
-} from './validation.js';
-import {
-  checkDbAndAuth,
-  sendCheckError,
-  verifyDraftOwnership,
-  createDownloadContextHandler,
-  createGetRepositoryInfoHandler,
-  createGetAttachmentContentHandler,
-  createPreviewContextHandler,
-  createDeleteAttachmentHandler,
-  createUploadAttachmentHandler,
-  createGetContextStatsHandler,
-  createGetIssuesHandler,
-  createImplementIssueHandler,
-  createUpdateIssueHandler,
-  createImplementAllIssuesHandler,
-  validatePreviewInput,
-  withAuthCheck,
-  createValidateContextRepositoryHandler
-} from './plannerHelpers.js';
-import {
-  parseSearchWords,
-  scoreDrafts,
-  sortDraftsByScore,
-  removeSearchScore
-} from './plannerSearchHelpers.js';
-import {
-  buildIssueSummaryMap,
-  parseDraftJsonFields,
-  attachIssueSummaries
-} from './plannerDraftHelpers.js';
-import {
-  createGenerateHandler,
-  createRefineHandler,
-  createFinalizeHandler,
-  createAbortGenerationHandler,
-  createAbortRefinementHandler,
-  createReviseDraftHandler
-} from './plannerActionHandlers.js';
-import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
+  buildNormalizedUltrafixUpdate,
+  ULTRAFIX_GOAL_MAX,
+  ULTRAFIX_GOAL_MIN,
+  ULTRAFIX_MAX_CYCLES_MIN,
+  validateRunUltrafixValue,
+  validateUltrafixPayload,
+  validateUltrafixValue
+} from './planIssueRouteUtils.js';
+import { linkTodosToDraft, pauseDraft, resumeDraft, parseExistingContextConfig, type TaskDraftConfig } from '@propr/core';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
 
-const ALLOWED_MIME_TYPES = [
-  'text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/pdf',
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
-];
+const ALLOWED_MIME_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 
 const upload = multer({
   dest: uploadDir,
@@ -79,12 +44,133 @@ const upload = multer({
 
 export const attachmentUpload = upload.single('file');
 
-interface PlannerRoutesDeps {
-  db: Knex;
+interface PlannerRoutesDeps { db: Knex; }
+
+class ExecutionSettingsValidationError extends Error {}
+class ExecutionSettingsContextConfigError extends Error {}
+
+type DraftExecutionConfig = Partial<TaskDraftConfig> & {
+  useEpic?: boolean;
+  autoMerge?: boolean;
+  runUltrafix?: boolean;
+  ultrafixGoal?: number | null;
+  ultrafixMaxCycles?: number | null;
+};
+
+function parseExecutionConfigRecord(contextConfig: unknown): Record<string, unknown> {
+  if (!contextConfig) return {};
+  if (typeof contextConfig !== 'string') {
+    if (typeof contextConfig === 'object' && !Array.isArray(contextConfig)) {
+      return { ...(contextConfig as Record<string, unknown>) };
+    }
+    throw new ExecutionSettingsContextConfigError('Failed to parse existing execution settings: context_config must be a JSON object');
+  }
+
+  try {
+    const parsed = JSON.parse(contextConfig) as unknown;
+    if (!parsed) return {};
+    if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    throw new ExecutionSettingsContextConfigError('Failed to parse existing execution settings: context_config must be a JSON object');
+  } catch (error) {
+    if (error instanceof ExecutionSettingsContextConfigError) throw error;
+    throw new ExecutionSettingsContextConfigError(`Failed to parse existing execution settings: ${(error as Error).message}`);
+  }
+}
+
+export function buildUpdatedExecutionConfig(
+  existingConfig: DraftExecutionConfig,
+  body: Record<string, unknown>,
+): DraftExecutionConfig {
+  function parseOptionalBoolean(value: unknown, fieldName: string): boolean | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'boolean') throw new ExecutionSettingsValidationError(`${fieldName} must be a boolean`);
+    return value;
+  }
+
+  const useEpic = parseOptionalBoolean(body.useEpic, 'useEpic');
+  const autoMerge = parseOptionalBoolean(body.autoMerge, 'autoMerge');
+  const runUltrafixError = validateRunUltrafixValue(body.runUltrafix, 'runUltrafix', { allowNull: false });
+  if (runUltrafixError) throw new ExecutionSettingsValidationError(runUltrafixError);
+  const ultrafixGoalError = validateUltrafixValue(body.ultrafixGoal, 'ultrafixGoal', {
+    minimum: ULTRAFIX_GOAL_MIN,
+    maximum: ULTRAFIX_GOAL_MAX
+  });
+  if (ultrafixGoalError) throw new ExecutionSettingsValidationError(ultrafixGoalError);
+  const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafixMaxCycles, 'ultrafixMaxCycles', {
+    minimum: ULTRAFIX_MAX_CYCLES_MIN
+  });
+  if (ultrafixMaxCyclesError) throw new ExecutionSettingsValidationError(ultrafixMaxCyclesError);
+  const ultrafixPayloadError = validateUltrafixPayload({
+    runUltrafix: body.runUltrafix as boolean | number | null | undefined,
+    ultrafixGoal: body.ultrafixGoal as number | null | undefined,
+    ultrafixMaxCycles: body.ultrafixMaxCycles as number | null | undefined,
+    fieldNames: {
+      run: 'runUltrafix',
+      goal: 'ultrafixGoal',
+      maxCycles: 'ultrafixMaxCycles'
+    }
+  });
+  if (ultrafixPayloadError) throw new ExecutionSettingsValidationError(ultrafixPayloadError);
+
+  const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
+  const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
+  const hasRunUltrafix = Object.prototype.hasOwnProperty.call(body, 'runUltrafix');
+  const normalizedUltrafixUpdate = buildNormalizedUltrafixUpdate({
+    runUltrafix: body.runUltrafix as boolean | number | null | undefined,
+    ultrafixGoal: body.ultrafixGoal as number | null | undefined,
+    ultrafixMaxCycles: body.ultrafixMaxCycles as number | null | undefined,
+    hasRunUltrafix,
+    hasUltrafixGoal,
+    hasUltrafixMaxCycles,
+    promoteRunUltrafixOnOverrides: false
+  });
+  const nextRunUltrafix = normalizedUltrafixUpdate.runUltrafix !== undefined
+    ? normalizedUltrafixUpdate.runUltrafix ?? undefined
+    : existingConfig.runUltrafix;
+  const nextUltrafixGoal = normalizedUltrafixUpdate.ultrafixGoal !== undefined
+    ? normalizedUltrafixUpdate.ultrafixGoal
+    : existingConfig.ultrafixGoal;
+  const nextUltrafixMaxCycles = normalizedUltrafixUpdate.ultrafixMaxCycles !== undefined
+    ? normalizedUltrafixUpdate.ultrafixMaxCycles
+    : existingConfig.ultrafixMaxCycles;
+  const hasUltrafixOverrides = nextUltrafixGoal !== null && nextUltrafixGoal !== undefined
+    || nextUltrafixMaxCycles !== null && nextUltrafixMaxCycles !== undefined;
+
+  if (nextRunUltrafix !== true && hasUltrafixOverrides) {
+    throw new ExecutionSettingsValidationError('runUltrafix must be true when ultrafixGoal or ultrafixMaxCycles is set');
+  }
+
+  return {
+    ...existingConfig,
+    useEpic: useEpic ?? (existingConfig.useEpic ?? undefined),
+    autoMerge: autoMerge ?? (existingConfig.autoMerge ?? undefined),
+    runUltrafix: nextRunUltrafix,
+    ultrafixGoal: nextUltrafixGoal,
+    ultrafixMaxCycles: nextUltrafixMaxCycles,
+  };
+}
+
+export function mergeExecutionContextConfig(
+  contextConfig: unknown,
+  updatedConfig: DraftExecutionConfig
+): DraftExecutionConfig {
+  return {
+    ...parseExecutionConfigRecord(contextConfig),
+    ...updatedConfig,
+  };
 }
 
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
+  const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
+  const parseExistingExecutionConfig = (contextConfig: unknown): DraftExecutionConfig => {
+    const parsedConfig = parseExistingContextConfig(contextConfig as TaskDraftConfig | string | null | undefined);
+    if (parsedConfig) return parsedConfig as DraftExecutionConfig;
+    return parseExecutionConfigRecord(contextConfig) as DraftExecutionConfig;
+  };
+  const sendExecutionSettingsResponse = (res: Response, updatedConfig: DraftExecutionConfig): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
 
   async function listRepositories(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
@@ -124,19 +210,12 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const excludeStatuses = req.query.excludeStatuses as string | undefined;
       let query = db!('task_drafts').where({ user_id: req.user!.id });
 
-      if (repository && repository !== 'all') {
-        query = query.andWhere('repository', repository);
-      }
-
-      if (status && status !== 'all' && (validStatuses as readonly string[]).includes(status)) {
-        query = query.andWhere('status', status);
-      }
+      if (repository && repository !== 'all') query = query.andWhere('repository', repository);
+      if (status && status !== 'all' && (validStatuses as readonly string[]).includes(status)) query = query.andWhere('status', status);
 
       if (excludeStatuses) {
         const statusesToExclude = excludeStatuses.split(',').filter(s => (validStatuses as readonly string[]).includes(s.trim()));
-        if (statusesToExclude.length > 0) {
-          query = query.whereNotIn('status', statusesToExclude);
-        }
+        if (statusesToExclude.length > 0) query = query.whereNotIn('status', statusesToExclude);
       }
 
       const searchWords = parseSearchWords(search);
@@ -154,19 +233,12 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt', 'paused', 'paused_at')
         .orderBy('updated_at', 'desc');
 
-      if (searchWords.length > 0) {
-        const exactPhrase = search!.trim().toLowerCase();
-        const scoredDrafts = scoreDrafts(drafts, searchWords, exactPhrase);
-        sortDraftsByScore(scoredDrafts);
-        drafts = removeSearchScore(scoredDrafts);
-      }
+      if (searchWords.length > 0) { const exactPhrase = search!.trim().toLowerCase(); const scoredDrafts = scoreDrafts(drafts, searchWords, exactPhrase); sortDraftsByScore(scoredDrafts); drafts = removeSearchScore(scoredDrafts); }
 
       const paginatedDrafts = drafts.slice(offset, offset + limit);
       const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
-        const issues = await db!('plan_issues')
-          .whereIn('draft_id', draftIds)
-          .select('draft_id', 'status');
+        const issues = await db!('plan_issues').whereIn('draft_id', draftIds).select('draft_id', 'status');
         const issueSummaries = buildIssueSummaryMap(issues);
         attachIssueSummaries(paginatedDrafts as Array<Record<string, unknown> & { draft_id: string }>, issueSummaries);
       }
@@ -203,9 +275,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       await db!('task_drafts')
         .insert({ draft_id: draftId, user_id: req.user!.id, repository, initial_prompt: prompt, name });
 
-      if (Array.isArray(todoIds) && todoIds.length > 0) {
-        await linkTodosToDraft(todoIds, draftId, req.user!.id);
-      }
+      if (Array.isArray(todoIds) && todoIds.length > 0) await linkTodosToDraft(todoIds, draftId, req.user!.id);
 
       const draft = await db!('task_drafts').where({ draft_id: draftId }).first();
       res.status(201).json(draft);
@@ -259,13 +329,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       await db!('task_drafts').where({ draft_id: req.params.id }).update(updateData);
       const updated = await db!('task_drafts').where({ draft_id: req.params.id }).first();
-      if (updated) {
-        const responseData: Record<string, unknown> & { task_title?: string } = { ...updated };
-        responseData.task_title = updated.name;
-        res.json(responseData);
-      } else {
-        res.json(updated);
-      }
+      if (updated) { const responseData: Record<string, unknown> & { task_title?: string } = { ...updated }; responseData.task_title = updated.name; res.json(responseData); } else { res.json(updated); }
     } catch (error) {
       console.error('Update draft error:', error);
       res.status(500).json({ error: 'Failed to update draft' });
@@ -287,8 +351,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       res.status(500).json({ error: 'Failed to delete draft' });
     }
   }
-
-  const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
 
   const uploadAttachment = withAuthCheck(db, createUploadAttachmentHandler({ verifyOwnership: ownershipVerifier }));
   const getContextStats = withAuthCheck(db, createGetContextStatsHandler({ verifyOwnership: ownershipVerifier }));
@@ -351,37 +413,27 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   async function updateExecutionSettings(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
     const idValidation = validateUUID(req.params.id, 'Draft ID');
     if (!idValidation.valid) { res.status(400).json({ error: idValidation.error }); return; }
 
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+      const existingConfig = parseExistingExecutionConfig(ownership.draft!.context_config);
+      const updatedConfig = buildUpdatedExecutionConfig(existingConfig, req.body as Record<string, unknown>);
+      const persistedConfig = mergeExecutionContextConfig(ownership.draft!.context_config, updatedConfig);
 
-      const { useEpic, autoMerge } = req.body;
-      const draft = ownership.draft!;
-      const existingConfig: Record<string, unknown> = draft.context_config
-        ? (typeof draft.context_config === 'string' ? JSON.parse(draft.context_config as string) : draft.context_config as Record<string, unknown>)
-        : {};
-
-      const updatedConfig = {
-        ...existingConfig,
-        useEpic: useEpic !== undefined ? useEpic : existingConfig.useEpic,
-        autoMerge: autoMerge !== undefined ? autoMerge : existingConfig.autoMerge,
-      };
-
-      await db!('task_drafts').where({ draft_id: req.params.id }).update({
-        context_config: JSON.stringify(updatedConfig),
-        updated_at: db!.fn.now()
-      });
-
-      res.json({
-        success: true,
-        useEpic: updatedConfig.useEpic ?? false,
-        autoMerge: updatedConfig.autoMerge ?? false
-      });
+      await db!('task_drafts').where({ draft_id: req.params.id }).update({ context_config: JSON.stringify(persistedConfig), updated_at: db!.fn.now() });
+      sendExecutionSettingsResponse(res, updatedConfig);
     } catch (error) {
+      if (error instanceof ExecutionSettingsValidationError) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
+      if (error instanceof ExecutionSettingsContextConfigError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
       console.error('Update execution settings error:', error);
       res.status(500).json({ error: 'Failed to update execution settings' });
     }

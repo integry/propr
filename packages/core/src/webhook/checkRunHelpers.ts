@@ -1,4 +1,5 @@
 /* eslint-disable max-lines */
+import { Redis, RedisOptions } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
@@ -366,9 +367,136 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
 
 export interface PRAutoMergeInfo {
     hasLabel: boolean;
+    hasUltrafixLabel?: boolean;
+    hasActiveUltrafixLoop?: boolean;
+    ultrafixCompletionStatus?: 'succeeded' | 'failed' | null;
+    ultrafixStateUnavailable?: boolean;
     isDraft: boolean;
     baseBranch: string;
     headBranch: string;
+}
+
+const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
+let ultrafixStateRedis: Redis | null = null;
+
+export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions } {
+    const options: RedisOptions = {
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false
+    };
+
+    if (process.env.REDIS_URL) {
+        const parsedUrl = new URL(process.env.REDIS_URL);
+        options.host = parsedUrl.hostname;
+        options.port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : (parsedUrl.protocol === 'rediss:' ? 6380 : 6379);
+        if (parsedUrl.username) {
+            options.username = decodeURIComponent(parsedUrl.username);
+        }
+        if (parsedUrl.password) {
+            options.password = decodeURIComponent(parsedUrl.password);
+        }
+        if (parsedUrl.protocol === 'rediss:') {
+            options.tls = {
+                rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+            };
+        }
+        if (parsedUrl.pathname && parsedUrl.pathname !== '/') {
+            const db = parseInt(parsedUrl.pathname.slice(1), 10);
+            if (!Number.isNaN(db)) {
+                options.db = db;
+            }
+        }
+
+        return {
+            url: process.env.REDIS_URL,
+            options
+        };
+    }
+
+    const redisOptions: RedisOptions = {
+        ...options,
+        host: process.env.REDIS_HOST || 'redis',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    };
+
+    if (process.env.REDIS_USERNAME) {
+        redisOptions.username = process.env.REDIS_USERNAME;
+    }
+    if (process.env.REDIS_PASSWORD) {
+        redisOptions.password = process.env.REDIS_PASSWORD;
+    }
+    if (process.env.REDIS_TLS === 'true' || process.env.REDIS_TLS === '1') {
+        redisOptions.tls = {
+            rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+        };
+    }
+
+    return { options: redisOptions };
+}
+
+function getUltrafixStateRedis(): Redis {
+    if (!ultrafixStateRedis) {
+        const { url, options } = buildRedisRuntimeConfig();
+        ultrafixStateRedis = url ? new Redis(url, options) : new Redis(options);
+    }
+    return ultrafixStateRedis;
+}
+
+export async function closeUltrafixStateRedis(): Promise<void> {
+    const client = ultrafixStateRedis;
+    ultrafixStateRedis = null;
+    if (!client) return;
+
+    try {
+        await client.quit();
+    } catch {
+        client.disconnect(false);
+    }
+}
+
+export function resetUltrafixStateRedisForTests(): void {
+    ultrafixStateRedis?.disconnect(false);
+    ultrafixStateRedis = null;
+}
+
+function getUltrafixStateKey(owner: string, repoName: string, prNumber: number): string {
+    return `${ULTRAFIX_STATE_KEY_PREFIX}:${owner}:${repoName}:${prNumber}`;
+}
+
+export async function hasActiveUltrafixLoop(owner: string, repoName: string, prNumber: number): Promise<boolean> {
+    const state = await getUltrafixLoopState(owner, repoName, prNumber);
+    return state?.unavailable === true ? true : state?.active === true;
+}
+
+export async function getUltrafixLoopState(
+    owner: string,
+    repoName: string,
+    prNumber: number
+): Promise<{ active: boolean; completionStatus: 'succeeded' | 'failed' | null; unavailable?: boolean } | null> {
+    try {
+        const rawState = await getUltrafixStateRedis().get(getUltrafixStateKey(owner, repoName, prNumber));
+        if (!rawState) return null;
+
+        const parsedState = JSON.parse(rawState) as { active?: unknown; completionStatus?: unknown };
+        return {
+            active: parsedState.active === true,
+            completionStatus: parsedState.completionStatus === 'succeeded' || parsedState.completionStatus === 'failed'
+                ? parsedState.completionStatus
+                : null
+        };
+    } catch (error) {
+        logger.warn({
+            owner,
+            repoName,
+            prNumber,
+            error: (error as Error).message
+        }, 'Failed to load ultrafix loop state');
+        return {
+            active: false,
+            completionStatus: null,
+            unavailable: true
+        };
+    }
 }
 
 /**
@@ -386,11 +514,22 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
 
         const labels = prResponse.data.labels as Array<{ name: string }>;
         const hasLabel = labels.some(label => label.name === 'auto-merge');
+        const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
+        const ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;
 
-        return { hasLabel, isDraft, baseBranch, headBranch };
+        return {
+            hasLabel,
+            hasUltrafixLabel,
+            hasActiveUltrafixLoop: ultrafixState?.active ?? false,
+            ultrafixCompletionStatus: ultrafixState?.completionStatus ?? null,
+            ultrafixStateUnavailable: ultrafixState?.unavailable === true,
+            isDraft,
+            baseBranch,
+            headBranch
+        };
     } catch (error) {
         logger.warn({
             owner,
@@ -398,7 +537,16 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             prNumber,
             error: (error as Error).message
         }, 'Failed to check PR info');
-        return { hasLabel: false, isDraft: false, baseBranch: '', headBranch: '' };
+        return {
+            hasLabel: false,
+            hasUltrafixLabel: false,
+            hasActiveUltrafixLoop: false,
+            ultrafixCompletionStatus: null,
+            ultrafixStateUnavailable: false,
+            isDraft: false,
+            baseBranch: '',
+            headBranch: ''
+        };
     }
 }
 

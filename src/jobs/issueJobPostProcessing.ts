@@ -3,15 +3,14 @@ import { setTimeout } from 'timers/promises';
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@propr/core';
 import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@propr/core';
+import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
 import { validatePRCreation } from '@propr/core';
-import { linkPRToPlanIssue, findPlanIssueByRepoAndNumber, getPlanIssuesByDraft, updatePlanIssueStatus, PlanIssueStatus } from '@propr/core';
-import { getAuthenticatedOctokit, getPrimaryProcessingLabels } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
 import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
-import { enableAutoMerge } from '../github/autoMergeOperations.js';
+import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostProcessingHelpers.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -68,23 +67,15 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
 
         // Handle the case where no code changes were needed (work already complete)
         if (commitResult === null && claudeResult?.success) {
-            correlatedLogger.info({ issueNumber: issueRef.number }, 'No code changes needed - work was already complete');
-
-            await safeUpdateLabels(
-                { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
-                [AI_PROCESSING_TAG], [AI_DONE_TAG]
-            );
-
-            const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-                body: `✅ **No code changes needed - the implementation was already complete.**\n\n${completionComment}`,
+            postProcessingResult = await handleNoCodeChanges({
+                octokit,
+                issueRef,
+                claudeResult,
+                currentIssueData,
+                AI_PROCESSING_TAG,
+                AI_DONE_TAG,
+                correlatedLogger,
             });
-
-            // Trigger the next pending issue in the plan (if this is part of a plan)
-            await triggerNextPlanIssueIfNeeded(issueRef, currentIssueData, correlatedLogger);
-
-            postProcessingResult = { success: true, pr: null, updatedLabels: [AI_DONE_TAG] };
             return { commitResult, postProcessingResult };
         }
 
@@ -109,26 +100,12 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
 
         // Update plan issue status to 'under_review' if PR was created successfully
         if (postProcessingResult?.pr?.number) {
-            const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-            await linkPRToPlanIssue(repository, issueRef.number, postProcessingResult.pr.number);
-            correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: postProcessingResult.pr.number }, 'Linked PR to plan issue');
-
-            // Check for auto-merge label and enable auto-merge on the PR
-            const currentLabels = currentIssueData.data.labels.map(label => label.name);
-            const hasAutoMergeLabel = currentLabels.some(label => label === 'auto-merge');
-            if (hasAutoMergeLabel) {
-                correlatedLogger.info({ prNumber: postProcessingResult.pr.number }, 'Auto-merge label detected, enabling auto-merge on PR');
-                const autoMergeResult = await enableAutoMerge({
-                    owner: issueRef.repoOwner,
-                    repoName: issueRef.repoName,
-                    prNumber: postProcessingResult.pr.number
-                });
-                if (autoMergeResult.success) {
-                    correlatedLogger.info({ prNumber: postProcessingResult.pr.number, autoMergeEnabled: autoMergeResult.autoMergeEnabled }, 'Auto-merge enabled successfully');
-                } else {
-                    correlatedLogger.warn({ prNumber: postProcessingResult.pr.number, error: autoMergeResult.error }, 'Failed to enable auto-merge on PR');
-                }
-            }
+            await handleCreatedPlanIssuePR({
+                issueRef,
+                currentIssueData,
+                prNumber: postProcessingResult.pr.number,
+                correlatedLogger,
+            });
         }
 
         await safeUpdateLabels(
@@ -334,101 +311,5 @@ async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Promise<v
                 status: err.status
             }, 'PR creation retry failed');
         }
-    }
-}
-
-/**
- * Triggers the next pending issue in a plan when the current issue completes without needing a PR.
- * This handles the case where work was already complete and no code changes were needed.
- */
-async function triggerNextPlanIssueIfNeeded(
-    issueRef: IssueJobData,
-    currentIssueData: { data: { title: string; labels: Array<{ name: string }> } },
-    log: Logger
-): Promise<void> {
-    try {
-        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-
-        // Check if this issue is part of a plan
-        const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
-        if (!planIssue || !planIssue.draft_id) {
-            log.debug({ issueNumber: issueRef.number }, 'Issue is not part of a plan, skipping next issue trigger');
-            return;
-        }
-
-        // Check if the issue has auto-merge label (indicates it's part of auto-processing flow)
-        const labels = currentIssueData.data.labels.map(l => l.name);
-        const hasAutoMerge = labels.includes('auto-merge');
-        if (!hasAutoMerge) {
-            log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping next issue trigger');
-            return;
-        }
-
-        // Mark the current issue as completed (since no PR was needed)
-        await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED);
-        log.info({ repository, issueNumber: issueRef.number }, 'Marked plan issue as merged (no changes needed)');
-
-        // Find the next pending issue in the plan
-        const planIssues = await getPlanIssuesByDraft(planIssue.draft_id);
-
-        // Check if there are any issues currently in progress (processing or under_review)
-        // These statuses indicate an active PR or processing that hasn't completed yet
-        const inProgressStatuses = ['processing', 'under_review', 'in_refinement', 'refinement_processing'];
-        const hasInProgressIssue = planIssues.some(issue =>
-            inProgressStatuses.includes(issue.status) && issue.issue_number !== issueRef.number
-        );
-        if (hasInProgressIssue) {
-            const inProgressIssues = planIssues.filter(issue =>
-                inProgressStatuses.includes(issue.status) && issue.issue_number !== issueRef.number
-            );
-            log.debug({
-                draftId: planIssue.draft_id,
-                inProgressIssues: inProgressIssues.map(i => ({ number: i.issue_number, status: i.status }))
-            }, 'Skipping next issue trigger - there are issues still in progress');
-            return;
-        }
-
-        const nextPending = planIssues.find(issue => issue.status === 'pending');
-        if (!nextPending) {
-            log.debug({ draftId: planIssue.draft_id }, 'No more pending issues in plan');
-            return;
-        }
-
-        // Get the epic label if present
-        const epicLabel = labels.find(label => label.startsWith('base-'));
-
-        // Build labels to add to the next issue
-        const processingLabels = getPrimaryProcessingLabels();
-        const primaryLabel = processingLabels[0] || 'AI';
-        const labelsToAdd = [primaryLabel, 'auto-merge'];
-        if (epicLabel) {
-            labelsToAdd.push(epicLabel);
-        }
-
-        log.info({
-            draftId: planIssue.draft_id,
-            nextIssueNumber: nextPending.issue_number,
-            labels: labelsToAdd
-        }, 'Triggering next pending issue in plan (no-changes case)');
-
-        const octokit = await getAuthenticatedOctokit();
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            issue_number: nextPending.issue_number,
-            labels: labelsToAdd
-        });
-
-        log.info({
-            draftId: planIssue.draft_id,
-            issueNumber: nextPending.issue_number,
-            labels: labelsToAdd
-        }, 'Added processing labels to next pending issue');
-
-    } catch (error) {
-        log.warn({
-            issueNumber: issueRef.number,
-            error: (error as Error).message
-        }, 'Failed to trigger next pending issue');
     }
 }

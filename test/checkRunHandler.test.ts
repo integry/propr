@@ -7,6 +7,9 @@ const mockOctokit = {
     request: mock.fn()
 };
 
+const mockRedisGet = mock.fn(async () => null);
+const redisConstructorCalls: unknown[][] = [];
+
 // Mock simple-git (transitive dependency)
 await mock.module('simple-git', {
     namedExports: {
@@ -17,8 +20,15 @@ await mock.module('simple-git', {
 
 // Mock ioredis
 await mock.module('ioredis', {
-    defaultExport: function Redis() {
-        return { on: mock.fn(), quit: mock.fn(async () => {}) };
+    defaultExport: function Redis(...args: unknown[]) {
+        redisConstructorCalls.push(args);
+        return { on: mock.fn(), get: mockRedisGet, quit: mock.fn(async () => {}) };
+    },
+    namedExports: {
+        Redis: function Redis(...args: unknown[]) {
+            redisConstructorCalls.push(args);
+            return { on: mock.fn(), get: mockRedisGet, quit: mock.fn(async () => {}) };
+        }
     }
 });
 
@@ -112,7 +122,8 @@ const {
     areAllChecksPassing,
     getPRAutoMergeInfo,
     linkedIssueHasAutoMergeLabel,
-    getFirstCommitMessage
+    getFirstCommitMessage,
+    resetUltrafixStateRedisForTests
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
 const { handleCheckRunEvent, shouldAutoMergePR } = await import('../packages/core/src/webhook/checkRunHandler.js');
@@ -121,10 +132,14 @@ import type { PRMergeContext } from '../packages/core/src/webhook/checkRunHandle
 // Helper to reset all mocks
 function resetMocks(): void {
     mockOctokit.request.mock.resetCalls();
+    mockRedisGet.mock.resetCalls();
+    mockRedisGet.mock.mockImplementation(async () => null);
+    redisConstructorCalls.length = 0;
     mockFindPlanIssueByRepoAndPR.mock.resetCalls();
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
     mockUpdatePlanIssueByPR.mock.resetCalls();
     mockTriggerNextPendingIssue.mock.resetCalls();
+    resetUltrafixStateRedisForTests();
 }
 
 // Helper to create a mock CheckRunEvent payload
@@ -522,9 +537,145 @@ describe('getPRAutoMergeInfo', () => {
 
         const result = await getPRAutoMergeInfo('owner', 'repo', 42);
         assert.strictEqual(result.hasLabel, true);
+        assert.strictEqual(result.hasActiveUltrafixLoop, false);
         assert.strictEqual(result.isDraft, false);
         assert.strictEqual(result.baseBranch, 'main');
         assert.strictEqual(result.headBranch, 'feature-branch');
+    });
+
+    test('returns hasActiveUltrafixLoop true when Redis state is active', async () => {
+        resetMocks();
+        mockRedisGet.mock.mockImplementation(async () => JSON.stringify({ active: true }));
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                draft: false,
+                base: { ref: 'main' },
+                head: { ref: 'feature-branch' }
+            }
+        }));
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+        assert.strictEqual(result.hasActiveUltrafixLoop, true);
+    });
+
+    test('returns ultrafix completion status when loop finished', async () => {
+        resetMocks();
+        mockRedisGet.mock.mockImplementation(async () => JSON.stringify({ active: false, completionStatus: 'failed' }));
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                draft: false,
+                base: { ref: 'main' },
+                head: { ref: 'feature-branch' }
+            }
+        }));
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+        assert.strictEqual(result.hasActiveUltrafixLoop, false);
+        assert.strictEqual(result.ultrafixCompletionStatus, 'failed');
+    });
+
+    test('uses REDIS_URL for ultrafix state lookup when configured', async () => {
+        resetMocks();
+        const originalRedisUrl = process.env.REDIS_URL;
+        const originalRedisHost = process.env.REDIS_HOST;
+        const originalRedisPort = process.env.REDIS_PORT;
+        const originalRedisTlsRejectUnauthorized = process.env.REDIS_TLS_REJECT_UNAUTHORIZED;
+        process.env.REDIS_URL = 'rediss://user:secret@example.com:6380/4';
+        process.env.REDIS_TLS_REJECT_UNAUTHORIZED = 'false';
+        delete process.env.REDIS_HOST;
+        delete process.env.REDIS_PORT;
+
+        try {
+            mockOctokit.request.mock.mockImplementation(async () => ({
+                data: {
+                    labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                    draft: false,
+                    base: { ref: 'main' },
+                    head: { ref: 'feature-branch' }
+                }
+            }));
+
+            await getPRAutoMergeInfo('owner', 'repo', 42);
+
+            assert.deepStrictEqual(redisConstructorCalls[0], [
+                'rediss://user:secret@example.com:6380/4',
+                {
+                    maxRetriesPerRequest: null,
+                    enableReadyCheck: false,
+                    host: 'example.com',
+                    port: 6380,
+                    username: 'user',
+                    password: 'secret',
+                    db: 4,
+                    tls: {
+                        rejectUnauthorized: false
+                    }
+                }
+            ]);
+        } finally {
+            if (originalRedisUrl === undefined) delete process.env.REDIS_URL;
+            else process.env.REDIS_URL = originalRedisUrl;
+            if (originalRedisHost === undefined) delete process.env.REDIS_HOST;
+            else process.env.REDIS_HOST = originalRedisHost;
+            if (originalRedisPort === undefined) delete process.env.REDIS_PORT;
+            else process.env.REDIS_PORT = originalRedisPort;
+            if (originalRedisTlsRejectUnauthorized === undefined) delete process.env.REDIS_TLS_REJECT_UNAUTHORIZED;
+            else process.env.REDIS_TLS_REJECT_UNAUTHORIZED = originalRedisTlsRejectUnauthorized;
+        }
+    });
+
+    test('uses Redis auth and TLS env config for ultrafix state lookup without REDIS_URL', async () => {
+        resetMocks();
+        const originalEnv = {
+            REDIS_URL: process.env.REDIS_URL,
+            REDIS_HOST: process.env.REDIS_HOST,
+            REDIS_PORT: process.env.REDIS_PORT,
+            REDIS_USERNAME: process.env.REDIS_USERNAME,
+            REDIS_PASSWORD: process.env.REDIS_PASSWORD,
+            REDIS_TLS: process.env.REDIS_TLS,
+            REDIS_TLS_REJECT_UNAUTHORIZED: process.env.REDIS_TLS_REJECT_UNAUTHORIZED,
+        };
+        delete process.env.REDIS_URL;
+        process.env.REDIS_HOST = 'secure-redis.internal';
+        process.env.REDIS_PORT = '6381';
+        process.env.REDIS_USERNAME = 'planner';
+        process.env.REDIS_PASSWORD = 'secret-pass';
+        process.env.REDIS_TLS = 'true';
+        process.env.REDIS_TLS_REJECT_UNAUTHORIZED = 'false';
+
+        try {
+            mockOctokit.request.mock.mockImplementation(async () => ({
+                data: {
+                    labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                    draft: false,
+                    base: { ref: 'main' },
+                    head: { ref: 'feature-branch' }
+                }
+            }));
+
+            await getPRAutoMergeInfo('owner', 'repo', 42);
+
+            assert.deepStrictEqual(redisConstructorCalls[0], [
+                {
+                    host: 'secure-redis.internal',
+                    port: 6381,
+                    username: 'planner',
+                    password: 'secret-pass',
+                    tls: {
+                        rejectUnauthorized: false
+                    },
+                    maxRetriesPerRequest: null,
+                    enableReadyCheck: false
+                }
+            ]);
+        } finally {
+            for (const [key, value] of Object.entries(originalEnv)) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+        }
     });
 
     test('returns hasLabel false when label is missing', async () => {
@@ -1196,6 +1347,10 @@ describe('shouldAutoMergePR', () => {
         prNumber?: number;
         headSha?: string;
         hasLabel?: boolean;
+        hasUltrafixLabel?: boolean;
+        hasActiveUltrafixLoop?: boolean;
+        ultrafixCompletionStatus?: 'succeeded' | 'failed' | null;
+        ultrafixStateUnavailable?: boolean;
         isDraft?: boolean;
         baseBranch?: string;
         headBranch?: string;
@@ -1206,6 +1361,10 @@ describe('shouldAutoMergePR', () => {
             prNumber = 42,
             headSha = 'abc123sha',
             hasLabel = false,
+            hasUltrafixLabel = false,
+            hasActiveUltrafixLoop = false,
+            ultrafixCompletionStatus = null,
+            ultrafixStateUnavailable = false,
             isDraft = false,
             baseBranch = 'main',
             headBranch = 'feature-branch'
@@ -1218,6 +1377,10 @@ describe('shouldAutoMergePR', () => {
             headSha,
             prInfo: {
                 hasLabel,
+                hasUltrafixLabel,
+                hasActiveUltrafixLoop,
+                ultrafixCompletionStatus,
+                ultrafixStateUnavailable,
                 isDraft,
                 baseBranch,
                 headBranch
@@ -1231,6 +1394,109 @@ describe('shouldAutoMergePR', () => {
         // No API calls needed - PR already has the label
         const ctx = createMockPRMergeContext({
             hasLabel: true,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
+    });
+
+    test('returns false when PR is blocked by ultrafix label', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasActiveUltrafixLoop: true,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, false);
+    });
+
+    test('blocks epic auto-merge progression while ultrafix loop is active', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: false,
+            hasActiveUltrafixLoop: true,
+            hasUltrafixLabel: true,
+            headBranch: '800-epic-short-name-x7y'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, false);
+        assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 0);
+    });
+
+    test('does not hard-block auto-merge solely because the ultrafix label remains without Redis state', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasUltrafixLabel: true,
+            hasActiveUltrafixLoop: false,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
+    });
+
+    test('falls back to auto-merge when ultrafix state is unavailable while ultrafix is still labeled', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasUltrafixLabel: true,
+            ultrafixStateUnavailable: true,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
+    });
+
+    test('falls back to linked issue auto-merge when ultrafix state is unavailable and PR has no direct label', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls')) {
+                return { data: { body: 'Fixes #100' } };
+            }
+            if (endpoint.includes('issues')) {
+                return { data: { labels: [{ name: 'auto-merge' }] } };
+            }
+            return { data: {} };
+        });
+
+        const ctx = createMockPRMergeContext({
+            hasLabel: false,
+            hasUltrafixLabel: true,
+            ultrafixStateUnavailable: true,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
+    });
+
+    test('blocks auto-merge when ultrafix finished unsuccessfully', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasUltrafixLabel: false,
+            hasActiveUltrafixLoop: false,
+            ultrafixCompletionStatus: 'failed',
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, false);
+    });
+
+    test('allows auto-merge after ultrafix completed successfully', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            hasUltrafixLabel: false,
+            hasActiveUltrafixLoop: false,
+            ultrafixCompletionStatus: 'succeeded',
             headBranch: 'feature-branch'
         });
 

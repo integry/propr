@@ -177,16 +177,22 @@ export const finalizePlan = async (draftId: string): Promise<FinalizeResponse> =
 export interface UpdateExecutionSettingsOptions {
   useEpic?: boolean;
   autoMerge?: boolean;
+  runUltrafix?: boolean;
+  ultrafixGoal?: number | null;
+  ultrafixMaxCycles?: number | null;
 }
 
 export interface UpdateExecutionSettingsResponse {
   success: boolean;
   useEpic: boolean;
   autoMerge: boolean;
+  runUltrafix: boolean;
+  ultrafixGoal: number | null;
+  ultrafixMaxCycles: number | null;
 }
 
 /**
- * Updates the execution settings (useEpic, autoMerge) for a draft.
+ * Updates the execution settings for a draft.
  * These settings are persisted in context_config and survive page refreshes.
  */
 export const updateExecutionSettings = async (
