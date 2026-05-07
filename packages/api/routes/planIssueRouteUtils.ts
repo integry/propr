@@ -168,12 +168,23 @@ function buildIssueUltrafixSnapshot(
   };
 }
 
+type IssueWithNormalizedUltrafix<T extends {
+  issue_number: number;
+  run_ultrafix?: boolean | number | null;
+  ultrafix_goal?: unknown;
+  ultrafix_max_cycles?: unknown;
+}> = Omit<T, 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'> & {
+  run_ultrafix: boolean;
+  ultrafix_goal: number | null;
+  ultrafix_max_cycles: number | null;
+};
+
 export function buildIssueForImplementation<T extends {
   issue_number: number;
   run_ultrafix?: boolean | number | null;
-  ultrafix_goal?: number | null;
-  ultrafix_max_cycles?: number | null;
-}>(planIssue: T, ultrafixSettings: ResolvedUltrafixSettings): T {
+  ultrafix_goal?: unknown;
+  ultrafix_max_cycles?: unknown;
+}>(planIssue: T, ultrafixSettings: ResolvedUltrafixSettings): IssueWithNormalizedUltrafix<T> {
   return {
     ...planIssue,
     run_ultrafix: ultrafixSettings.runUltrafix,
@@ -187,7 +198,7 @@ export async function resolveAndPersistIssueUltrafixSettings<T extends {
   run_ultrafix?: boolean | number | null;
   ultrafix_goal?: unknown;
   ultrafix_max_cycles?: unknown;
-}>(draftId: string, planIssue: T, contextConfig: Record<string, unknown> | null): Promise<T> {
+}>(draftId: string, planIssue: T, contextConfig: Record<string, unknown> | null): Promise<IssueWithNormalizedUltrafix<T>> {
   const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
   const issueOverrides = buildIssueUltrafixSnapshot(ultrafixSettings);
 
