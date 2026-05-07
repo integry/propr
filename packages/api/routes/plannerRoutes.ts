@@ -69,7 +69,7 @@ export function buildUpdatedExecutionConfig(
 
   const useEpic = parseOptionalBoolean(body.useEpic, 'useEpic');
   const autoMerge = parseOptionalBoolean(body.autoMerge, 'autoMerge');
-  const runUltrafixError = validateRunUltrafixValue(body.runUltrafix, 'runUltrafix');
+  const runUltrafixError = validateRunUltrafixValue(body.runUltrafix, 'runUltrafix', { allowNull: false });
   if (runUltrafixError) throw new ExecutionSettingsValidationError(runUltrafixError);
   const ultrafixGoalError = validateUltrafixValue(body.ultrafixGoal, 'ultrafixGoal', {
     minimum: ULTRAFIX_GOAL_MIN,

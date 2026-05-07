@@ -198,13 +198,19 @@ export async function syncPendingIssueConfigs(params: {
         return issue;
       }));
 
+      let batchFailure: unknown;
       for (const result of batchResults) {
         if (result.status === 'fulfilled') {
           updatedIssues.push(result.value);
           continue;
         }
+        if (batchFailure === undefined) {
+          batchFailure = result.reason;
+        }
+      }
 
-        throw result.reason;
+      if (batchFailure !== undefined) {
+        throw batchFailure;
       }
     }
   } catch (error) {

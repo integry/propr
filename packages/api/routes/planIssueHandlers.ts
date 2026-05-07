@@ -26,6 +26,7 @@ import {
   buildIssueUpdate,
   ContextConfigParseError,
   parseContextConfig,
+  resolveIssueForResponse,
   resolveIssueForImplementation,
   resolveImplementationSettings,
   ULTRAFIX_GOAL_MAX,
@@ -142,19 +143,11 @@ async function persistNonConfigIssueUpdates(params: {
     : getPlanIssue(params.draftId, params.issueNumber);
 }
 
-function resolveIssueForResponse<T extends PlanIssue>(
-  planIssue: T,
-  contextConfig: Record<string, unknown> | null
-) {
-  return resolveIssueForImplementation(planIssue, contextConfig);
-}
-
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
   return async function getIssues(req: Request, res: Response): Promise<void> {
     try {
-      const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id', 'context_config']);
+      const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-      const contextConfig = parseContextConfig(ownership.draft?.context_config);
 
       // Check for pagination query params
       const { page, limit, status } = req.query;
@@ -180,18 +173,14 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
         const result = await getPlanIssuesByDraftPaginated(req.params.id, options);
         res.json({
           ...result,
-          issues: result.issues.map((issue) => resolveIssueForResponse(issue, contextConfig))
+          issues: result.issues.map((issue) => resolveIssueForResponse(issue))
         });
       } else {
         // Return all issues for backward compatibility
         const issues = await getPlanIssuesByDraft(req.params.id);
-        res.json(issues.map((issue) => resolveIssueForResponse(issue, contextConfig)));
+        res.json(issues.map((issue) => resolveIssueForResponse(issue)));
       }
     } catch (error) {
-      if (error instanceof ContextConfigParseError) {
-        res.status(409).json({ error: error.message });
-        return;
-      }
       console.error('Get issues error:', error);
       res.status(500).json({ error: 'Failed to fetch issues' });
     }
@@ -321,7 +310,7 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
         res.status(404).json({ error: 'Issue not found in this plan' });
         return;
       }
-      res.json(updated);
+      res.json(resolveIssueForResponse(updated));
     } catch (error) {
       console.error('Update issue error:', error);
       res.status(500).json({ error: 'Failed to update issue' });

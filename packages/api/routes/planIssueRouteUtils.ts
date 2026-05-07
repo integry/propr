@@ -11,6 +11,12 @@ export interface ResolvedUltrafixSettings {
   ultrafixMaxCycles: number | null;
 }
 
+export interface PersistedIssueUltrafixSettings {
+  runUltrafix: boolean | null;
+  ultrafixGoal: number | null;
+  ultrafixMaxCycles: number | null;
+}
+
 export interface UpdateIssueRequestBody {
   agent_alias?: string;
   model_name?: string | null;
@@ -157,6 +163,33 @@ export function resolveIssueUltrafixSettings(
   };
 }
 
+export function resolvePersistedIssueUltrafixSettings(
+  planIssue: {
+    issue_number?: number;
+    run_ultrafix?: boolean | number | null;
+    ultrafix_goal?: unknown;
+    ultrafix_max_cycles?: unknown;
+  }
+): PersistedIssueUltrafixSettings {
+  const runUltrafix = planIssue.run_ultrafix === true || planIssue.run_ultrafix === 1
+    ? true
+    : planIssue.run_ultrafix === false || planIssue.run_ultrafix === 0
+      ? false
+      : null;
+
+  return {
+    runUltrafix,
+    ultrafixGoal: sanitizePersistedUltrafixGoal(planIssue.ultrafix_goal, {
+      source: 'plan_issue',
+      issueNumber: planIssue.issue_number
+    }),
+    ultrafixMaxCycles: sanitizePersistedUltrafixMaxCycles(planIssue.ultrafix_max_cycles, {
+      source: 'plan_issue',
+      issueNumber: planIssue.issue_number
+    })
+  };
+}
+
 type IssueWithNormalizedUltrafix<T extends {
   issue_number: number;
   run_ultrafix?: boolean | number | null;
@@ -164,6 +197,17 @@ type IssueWithNormalizedUltrafix<T extends {
   ultrafix_max_cycles?: unknown;
 }> = Omit<T, 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'> & {
   run_ultrafix: boolean;
+  ultrafix_goal: number | null;
+  ultrafix_max_cycles: number | null;
+};
+
+type IssueWithPersistedUltrafix<T extends {
+  issue_number: number;
+  run_ultrafix?: boolean | number | null;
+  ultrafix_goal?: unknown;
+  ultrafix_max_cycles?: unknown;
+}> = Omit<T, 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'> & {
+  run_ultrafix: boolean | null;
   ultrafix_goal: number | null;
   ultrafix_max_cycles: number | null;
 };
@@ -182,6 +226,20 @@ export function buildIssueForImplementation<T extends {
   };
 }
 
+export function buildIssueForResponse<T extends {
+  issue_number: number;
+  run_ultrafix?: boolean | number | null;
+  ultrafix_goal?: unknown;
+  ultrafix_max_cycles?: unknown;
+}>(planIssue: T, ultrafixSettings: PersistedIssueUltrafixSettings): IssueWithPersistedUltrafix<T> {
+  return {
+    ...planIssue,
+    run_ultrafix: ultrafixSettings.runUltrafix,
+    ultrafix_goal: ultrafixSettings.ultrafixGoal,
+    ultrafix_max_cycles: ultrafixSettings.ultrafixMaxCycles
+  };
+}
+
 export function resolveIssueForImplementation<T extends {
   issue_number: number;
   run_ultrafix?: boolean | number | null;
@@ -190,6 +248,16 @@ export function resolveIssueForImplementation<T extends {
 }>(planIssue: T, contextConfig: Record<string, unknown> | null): IssueWithNormalizedUltrafix<T> {
   const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
   return buildIssueForImplementation(planIssue, ultrafixSettings);
+}
+
+export function resolveIssueForResponse<T extends {
+  issue_number: number;
+  run_ultrafix?: boolean | number | null;
+  ultrafix_goal?: unknown;
+  ultrafix_max_cycles?: unknown;
+}>(planIssue: T): IssueWithPersistedUltrafix<T> {
+  const ultrafixSettings = resolvePersistedIssueUltrafixSettings(planIssue);
+  return buildIssueForResponse(planIssue, ultrafixSettings);
 }
 
 export function normalizeRunUltrafix(value: boolean | number | null | undefined): boolean | null | undefined {
@@ -202,11 +270,18 @@ export function normalizeRunUltrafix(value: boolean | number | null | undefined)
 
 export function validateRunUltrafixValue(
   value: unknown,
-  fieldName = 'run_ultrafix'
+  fieldName = 'run_ultrafix',
+  options: { allowNull?: boolean } = {}
 ): string | null {
-  if (value === undefined || value === null) return null;
+  const allowNull = options.allowNull ?? true;
+  if (value === undefined) return null;
+  if (value === null) {
+    return allowNull ? null : `${fieldName} must be a boolean, 1, or 0`;
+  }
   if (value === true || value === false || value === 1 || value === 0) return null;
-  return `${fieldName} must be a boolean, 1, 0, or null`;
+  return allowNull
+    ? `${fieldName} must be a boolean, 1, 0, or null`
+    : `${fieldName} must be a boolean, 1, or 0`;
 }
 
 export function validateUltrafixPayload(params: {
