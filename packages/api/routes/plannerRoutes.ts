@@ -144,8 +144,8 @@ export function buildUpdatedExecutionConfig(
 
   return {
     ...existingConfig,
-    useEpic: useEpic ?? existingConfig.useEpic,
-    autoMerge: autoMerge ?? existingConfig.autoMerge,
+    useEpic: useEpic ?? (existingConfig.useEpic ?? undefined),
+    autoMerge: autoMerge ?? (existingConfig.autoMerge ?? undefined),
     runUltrafix: nextRunUltrafix,
     ultrafixGoal: nextUltrafixGoal,
     ultrafixMaxCycles: nextUltrafixMaxCycles,
