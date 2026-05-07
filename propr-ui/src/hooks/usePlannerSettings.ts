@@ -4,12 +4,14 @@ const STORAGE_KEY = 'plannerSettings';
 
 export interface PlannerSettings {
   lastRepository: string | null;
+  lastBaseBranch: string | null;
   lastGranularity: Granularity;
   lastContextLevel: number;
 }
 
 const DEFAULT_SETTINGS: PlannerSettings = {
   lastRepository: null,
+  lastBaseBranch: null,
   lastGranularity: 'balanced',
   lastContextLevel: 50,
 };
@@ -27,6 +29,7 @@ export const getPlannerSettings = (): PlannerSettings => {
     // Validate and merge with defaults to ensure all fields exist
     return {
       lastRepository: typeof parsed.lastRepository === 'string' ? parsed.lastRepository : DEFAULT_SETTINGS.lastRepository,
+      lastBaseBranch: typeof parsed.lastBaseBranch === 'string' ? parsed.lastBaseBranch : DEFAULT_SETTINGS.lastBaseBranch,
       lastGranularity: ['single', 'balanced', 'granular'].includes(parsed.lastGranularity)
         ? parsed.lastGranularity
         : DEFAULT_SETTINGS.lastGranularity,

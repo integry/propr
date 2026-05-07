@@ -2,6 +2,14 @@
 
 The ProPR system supports repository-specific default branch configuration through environment variables. This allows you to override the automatic branch detection for specific repositories.
 
+## Planner Studio Behavior
+
+Planner Studio does not support ad hoc branch selection. It resolves the planning branch from the monitored repository entry you selected:
+
+- If the repository entry has `baseBranch`, Planner Studio uses that branch.
+- If the repository entry has no `baseBranch`, Planner Studio falls back to the repository default branch.
+- If you need planning against a different branch of the same `owner/repo`, add that repository again as a separate monitored entry with its own `baseBranch`.
+
 ## Configuration Format
 
 Set environment variables using the pattern:
