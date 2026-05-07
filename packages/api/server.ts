@@ -54,7 +54,7 @@ import { handleWebhookRequest } from './webhookHandler.js';
 type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 type RouteHandler = RequestHandler;
 type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
-type ShutdownTask = { name: string; close: () => Promise<void> };
+type ShutdownTask = { name: string; close: () => Promise<unknown> };
 
 function buildRedisUrlFromOptions(options: RedisOptions): string {
   const protocol = options.tls ? 'rediss' : 'redis';
