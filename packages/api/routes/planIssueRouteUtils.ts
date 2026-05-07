@@ -5,6 +5,11 @@ export interface ImplementationSettings {
   autoMerge: boolean;
 }
 
+export interface ImplementationSettingsOverrides {
+  useEpic?: boolean;
+  autoMerge?: boolean;
+}
+
 export interface ResolvedUltrafixSettings {
   runUltrafix: boolean;
   ultrafixGoal: number | null;
@@ -113,8 +118,35 @@ export function validateUltrafixValue(
   return null;
 }
 
+function validateOptionalBoolean(value: unknown, fieldName: string): string | null {
+  if (value === undefined) return null;
+  return typeof value === 'boolean' ? null : `${fieldName} must be a boolean`;
+}
+
+export function parseImplementationSettingsOverrides(
+  reqBody: { useEpic?: unknown; autoMerge?: unknown }
+): { settings: ImplementationSettingsOverrides; error: string | null } {
+  const useEpicError = validateOptionalBoolean(reqBody.useEpic, 'useEpic');
+  if (useEpicError) {
+    return { settings: {}, error: useEpicError };
+  }
+
+  const autoMergeError = validateOptionalBoolean(reqBody.autoMerge, 'autoMerge');
+  if (autoMergeError) {
+    return { settings: {}, error: autoMergeError };
+  }
+
+  return {
+    settings: {
+      ...(reqBody.useEpic !== undefined ? { useEpic: reqBody.useEpic as boolean } : {}),
+      ...(reqBody.autoMerge !== undefined ? { autoMerge: reqBody.autoMerge as boolean } : {})
+    },
+    error: null
+  };
+}
+
 export function resolveImplementationSettings(
-  reqBody: { useEpic?: boolean; autoMerge?: boolean },
+  reqBody: ImplementationSettingsOverrides,
   contextConfig: Record<string, unknown> | null
 ): ImplementationSettings {
   return {

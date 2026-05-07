@@ -324,7 +324,6 @@ function setupRoutes(): void {
   ];
   routes.forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
 
-  app.use('/api/agents', agentRoutes.router);
   const agentVersionRoutes = createAgentVersionRoutes();
   const agentVersionRouteEntries: RouteEntry[] = [
     ['get', '/api/agents/versions/:agentType', agentVersionRoutes.getVersions],
@@ -335,6 +334,7 @@ function setupRoutes(): void {
     ['get', '/api/agents/:agentType/image-tag', agentVersionRoutes.getImageTag],
   ];
   agentVersionRouteEntries.forEach(([method, path, handler]) => register(method, path, handler));
+  app.use('/api/agents', agentRoutes.router);
 
   setupWebhookRoute();
 }

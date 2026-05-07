@@ -27,6 +27,7 @@ import {
   buildIssueUpdate,
   ContextConfigParseError,
   parseContextConfig,
+  parseImplementationSettingsOverrides,
   resolveIssueForResponse,
   resolveIssueForImplementation,
   resolveImplementationSettings,
@@ -115,6 +116,9 @@ async function rollbackIssueConfigUpdate(params: {
       updates: buildIssueConfigRollbackUpdates(params.currentIssue, params.configUpdates)
     });
   } catch (rollbackError) {
+    if (rollbackError instanceof IssueConfigSyncReconciliationError) {
+      throw rollbackError;
+    }
     logger.error(
       {
         draftId: params.draftId,
@@ -221,13 +225,18 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
       const issueForImplementation = resolveIssueForImplementation(planIssue, contextConfig);
+      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as {
+        useEpic?: unknown;
+        autoMerge?: unknown;
+      });
+      if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
 
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
       const octokit = await getAuthenticatedOctokit();
 
       const { models } = req.body as { models?: Array<{ agent_alias: string; model_name: string }> };
-      const { useEpic, autoMerge } = resolveImplementationSettings(req.body, contextConfig);
+      const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);
 
       const correlationId = `implement-${draftId}-${issueNumber}`;
       const labelLogger = logger.withCorrelation(correlationId);
@@ -351,9 +360,14 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
 
       const contextConfig = parseContextConfig(draft.context_config);
+      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as {
+        useEpic?: unknown;
+        autoMerge?: unknown;
+      });
+      if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
 
       const { agent_alias, model_name } = req.body;
-      const { useEpic, autoMerge } = resolveImplementationSettings(req.body, contextConfig);
+      const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);
       const existingIssues = await getPlanIssuesByDraft(draftId);
       const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
