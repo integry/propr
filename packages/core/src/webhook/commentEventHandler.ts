@@ -67,10 +67,42 @@ interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
+type PRComment = { id: number; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 
 async function prHasProcessingLabel(prLabels: Label[]): Promise<boolean> {
     const processingLabels = await loadPrimaryProcessingLabels();
     return prLabels.some(label => processingLabels.includes(label.name));
+}
+
+function getCommentEventDetails(
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    eventType: CommentEventType,
+    repoFullName: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>,
+): { prNumber: number; comment: PRComment } | null {
+    if (eventType === 'issue_comment') {
+        const issuePayload = payload as IssueCommentEvent;
+        if (!issuePayload.issue.pull_request) {
+            correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
+            return null;
+        }
+
+        return {
+            prNumber: issuePayload.issue.number,
+            comment: issuePayload.comment,
+        };
+    }
+
+    if (eventType === 'pull_request_review_comment') {
+        const prPayload = payload as PullRequestReviewCommentEvent;
+        return {
+            prNumber: prPayload.pull_request.number,
+            comment: prPayload.comment,
+        };
+    }
+
+    correlatedLogger.warn({ eventType }, 'Unknown event type for comment processing');
+    return null;
 }
 
 export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
@@ -462,19 +494,10 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const repo = payload.repository.name;
     const repoFullName = `${owner}/${repo}`;
 
-    let prNumber: number;
-    let comment: { id: number; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+    const eventDetails = getCommentEventDetails(payload, eventType, repoFullName, correlatedLogger);
+    if (!eventDetails) return;
 
-    if (eventType === 'issue_comment') {
-        const issuePayload = payload as IssueCommentEvent;
-        if (!issuePayload.issue.pull_request) { correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping'); return; }
-        prNumber = issuePayload.issue.number;
-        comment = issuePayload.comment;
-    } else if (eventType === 'pull_request_review_comment') {
-        const prPayload = payload as PullRequestReviewCommentEvent;
-        prNumber = prPayload.pull_request.number;
-        comment = prPayload.comment;
-    } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment processing'); return; }
+    const { prNumber, comment } = eventDetails;
 
     const commentAuthor = comment.user.login;
     const parsedCommand = parseSlashCommand(comment.body);
