@@ -508,7 +508,6 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const isSystemUltrafixComment = parsedCommand?.command === 'ultrafix'
         && (
             configuredBotUsernames.has(commentAuthor)
-            || comment.user.type === 'Bot'
         );
 
     const filterResult = filterCommentByAuthor(commentAuthor, comment.user.type ?? null, correlationId);

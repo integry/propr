@@ -1,4 +1,4 @@
-import { PlanIssueStatus, logger, updatePlanIssue, type UpdatePlanIssueInput } from '@propr/core';
+import { PlanIssueStatus, logger } from '@propr/core';
 
 export interface ImplementationSettings {
   useEpic: boolean;
@@ -105,19 +105,6 @@ export function resolveImplementationSettings(
   };
 }
 
-function haveEquivalentUltrafixOverrides(
-  planIssue: {
-    run_ultrafix?: boolean | number | null;
-    ultrafix_goal?: unknown;
-    ultrafix_max_cycles?: unknown;
-  },
-  issueOverrides: UpdatePlanIssueInput
-): boolean {
-  return normalizeRunUltrafix(planIssue.run_ultrafix) === normalizeRunUltrafix(issueOverrides.run_ultrafix)
-    && planIssue.ultrafix_goal === issueOverrides.ultrafix_goal
-    && planIssue.ultrafix_max_cycles === issueOverrides.ultrafix_max_cycles;
-}
-
 export function resolveIssueUltrafixSettings(
   planIssue: {
     issue_number?: number;
@@ -158,16 +145,6 @@ export function resolveIssueUltrafixSettings(
   };
 }
 
-function buildIssueUltrafixSnapshot(
-  ultrafixSettings: ResolvedUltrafixSettings
-): UpdatePlanIssueInput {
-  return {
-    run_ultrafix: ultrafixSettings.runUltrafix,
-    ultrafix_goal: ultrafixSettings.runUltrafix ? ultrafixSettings.ultrafixGoal : null,
-    ultrafix_max_cycles: ultrafixSettings.runUltrafix ? ultrafixSettings.ultrafixMaxCycles : null
-  };
-}
-
 type IssueWithNormalizedUltrafix<T extends {
   issue_number: number;
   run_ultrafix?: boolean | number | null;
@@ -193,22 +170,14 @@ export function buildIssueForImplementation<T extends {
   };
 }
 
-export async function resolveAndPersistIssueUltrafixSettings<T extends {
+export function resolveIssueForImplementation<T extends {
   issue_number: number;
   run_ultrafix?: boolean | number | null;
   ultrafix_goal?: unknown;
   ultrafix_max_cycles?: unknown;
-}>(draftId: string, planIssue: T, contextConfig: Record<string, unknown> | null): Promise<IssueWithNormalizedUltrafix<T>> {
+}>(planIssue: T, contextConfig: Record<string, unknown> | null): IssueWithNormalizedUltrafix<T> {
   const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
-  const issueOverrides = buildIssueUltrafixSnapshot(ultrafixSettings);
-
-  if (haveEquivalentUltrafixOverrides(planIssue, issueOverrides)) {
-    return buildIssueForImplementation(planIssue, ultrafixSettings);
-  }
-
-  const persistedIssue = await updatePlanIssue(draftId, planIssue.issue_number, issueOverrides);
-
-  return buildIssueForImplementation((persistedIssue as T | null) ?? planIssue, ultrafixSettings);
+  return buildIssueForImplementation(planIssue, ultrafixSettings);
 }
 
 export function normalizeRunUltrafix(value: boolean | number | null | undefined): boolean | null | undefined {

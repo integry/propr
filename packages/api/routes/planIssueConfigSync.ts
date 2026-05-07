@@ -14,6 +14,11 @@ export interface PlanIssueDeps {
 
 const IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE = 5;
 
+type PlanIssueConfigState = {
+  agent_alias?: string | null;
+  model_name?: string | null;
+};
+
 export async function resolveEpicLabel(
   useEpic: boolean,
   params: {
@@ -75,24 +80,39 @@ async function syncModelLabels(params: {
   );
 }
 
+function resolveIssueConfigState(
+  currentIssue: PlanIssueConfigState,
+  updates: PlanIssueConfigState
+): Required<PlanIssueConfigState> {
+  return {
+    agent_alias: updates.agent_alias !== undefined ? updates.agent_alias ?? null : currentIssue.agent_alias ?? null,
+    model_name: updates.model_name !== undefined ? updates.model_name ?? null : currentIssue.model_name ?? null
+  };
+}
+
+export function buildIssueConfigRollbackUpdates(
+  currentIssue: PlanIssueConfigState,
+  updates: PlanIssueConfigState
+): PlanIssueConfigState {
+  return {
+    agent_alias: updates.agent_alias !== undefined ? currentIssue.agent_alias ?? null : undefined,
+    model_name: updates.model_name !== undefined ? currentIssue.model_name ?? null : undefined
+  };
+}
+
 export async function updateIssueConfigWithRollback(params: {
   draftId: string;
   issueNumber: number;
   repository: string;
-  currentIssue: {
-    agent_alias?: string | null;
-    model_name?: string | null;
-  };
-  updates: {
-    agent_alias?: string | null;
-    model_name?: string | null;
-  };
+  currentIssue: PlanIssueConfigState;
+  updates: PlanIssueConfigState;
   octokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 }): Promise<void> {
   const hasAgentAliasUpdate = params.updates.agent_alias !== undefined;
   const hasModelNameUpdate = params.updates.model_name !== undefined;
-  const nextAgentAlias = hasAgentAliasUpdate ? params.updates.agent_alias ?? null : params.currentIssue.agent_alias ?? null;
-  const nextModelName = hasModelNameUpdate ? params.updates.model_name ?? null : params.currentIssue.model_name ?? null;
+  const nextConfig = resolveIssueConfigState(params.currentIssue, params.updates);
+  const nextAgentAlias = nextConfig.agent_alias;
+  const nextModelName = nextConfig.model_name;
 
   if (
     nextAgentAlias === (params.currentIssue.agent_alias ?? null)
@@ -167,16 +187,49 @@ export async function syncPendingIssueConfigs(params: {
   const octokit = params.updates.model_name !== undefined
     ? await getAuthenticatedOctokit()
     : undefined;
+  const updatedIssues: typeof params.pendingIssues = [];
 
-  for (let index = 0; index < params.pendingIssues.length; index += IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE) {
-    const issueBatch = params.pendingIssues.slice(index, index + IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE);
-    await Promise.all(issueBatch.map((issue) => updateIssueConfigWithRollback({
-      draftId: params.draftId,
-      issueNumber: issue.issue_number,
-      repository: params.repository,
-      currentIssue: issue,
-      updates: params.updates,
-      octokit
-    })));
+  try {
+    for (let index = 0; index < params.pendingIssues.length; index += IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE) {
+      const issueBatch = params.pendingIssues.slice(index, index + IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE);
+
+      for (const issue of issueBatch) {
+        await updateIssueConfigWithRollback({
+          draftId: params.draftId,
+          issueNumber: issue.issue_number,
+          repository: params.repository,
+          currentIssue: issue,
+          updates: params.updates,
+          octokit
+        });
+        updatedIssues.push(issue);
+      }
+    }
+  } catch (error) {
+    for (let index = updatedIssues.length - 1; index >= 0; index -= 1) {
+      const issue = updatedIssues[index];
+
+      try {
+        await updateIssueConfigWithRollback({
+          draftId: params.draftId,
+          issueNumber: issue.issue_number,
+          repository: params.repository,
+          currentIssue: resolveIssueConfigState(issue, params.updates),
+          updates: buildIssueConfigRollbackUpdates(issue, params.updates),
+          octokit
+        });
+      } catch (rollbackError) {
+        logger.error(
+          {
+            draftId: params.draftId,
+            issueNumber: issue.issue_number,
+            error: (rollbackError as Error).message
+          },
+          'Failed to roll back plan issue config after batch sync failure'
+        );
+      }
+    }
+
+    throw error;
   }
 }

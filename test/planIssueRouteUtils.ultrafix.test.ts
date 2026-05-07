@@ -4,14 +4,13 @@ import assert from 'node:assert';
 await mock.module('@propr/core', {
   namedExports: {
     PlanIssueStatus: {},
-    updatePlanIssue: mock.fn(async () => null),
   },
 });
 
 const {
   buildIssueUpdate,
+  resolveIssueForImplementation,
   resolveIssueUltrafixSettings,
-  resolveAndPersistIssueUltrafixSettings,
   validateIssueUltrafixPayload,
 } = await import('../packages/api/routes/planIssueRouteUtils.ts');
 
@@ -145,23 +144,8 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
     );
   });
 
-  test('snapshots inherited planner ultrafix settings before implementation starts', async () => {
-    const { updatePlanIssue } = await import('@propr/core');
-    const updatePlanIssueMock = updatePlanIssue as unknown as {
-      mock: {
-        resetCalls: () => void;
-        mockImplementationOnce: (fn: (...args: unknown[]) => unknown) => void;
-        calls: Array<{ arguments: unknown[] }>;
-      };
-    };
-    updatePlanIssueMock.mock.resetCalls();
-    updatePlanIssueMock.mock.mockImplementationOnce(async (_draftId, _issueNumber, updates) => ({
-      issue_number: 17,
-      ...updates,
-    }));
-
-    const resolved = await resolveAndPersistIssueUltrafixSettings(
-      'draft-1',
+  test('implementation resolves inherited planner ultrafix settings without persisting them', () => {
+    const resolved = resolveIssueForImplementation(
       {
         issue_number: 17,
         run_ultrafix: null,
@@ -175,15 +159,6 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
       }
     );
 
-    assert.deepStrictEqual(updatePlanIssueMock.mock.calls[0].arguments, [
-      'draft-1',
-      17,
-      {
-        run_ultrafix: true,
-        ultrafix_goal: 7,
-        ultrafix_max_cycles: 2,
-      },
-    ]);
     assert.deepStrictEqual(resolved, {
       issue_number: 17,
       run_ultrafix: true,
@@ -192,23 +167,8 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
     });
   });
 
-  test('cleans invalid persisted ultrafix values instead of only normalizing them in memory', async () => {
-    const { updatePlanIssue } = await import('@propr/core');
-    const updatePlanIssueMock = updatePlanIssue as unknown as {
-      mock: {
-        resetCalls: () => void;
-        mockImplementationOnce: (fn: (...args: unknown[]) => unknown) => void;
-        calls: Array<{ arguments: unknown[] }>;
-      };
-    };
-    updatePlanIssueMock.mock.resetCalls();
-    updatePlanIssueMock.mock.mockImplementationOnce(async (_draftId, _issueNumber, updates) => ({
-      issue_number: 22,
-      ...updates,
-    }));
-
-    const resolved = await resolveAndPersistIssueUltrafixSettings(
-      'draft-2',
+  test('invalid persisted ultrafix values are normalized in memory for implementation', () => {
+    const resolved = resolveIssueForImplementation(
       {
         issue_number: 22,
         run_ultrafix: true,
@@ -218,15 +178,6 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
       null
     );
 
-    assert.deepStrictEqual(updatePlanIssueMock.mock.calls[0].arguments, [
-      'draft-2',
-      22,
-      {
-        run_ultrafix: true,
-        ultrafix_goal: null,
-        ultrafix_max_cycles: null,
-      },
-    ]);
     assert.deepStrictEqual(resolved, {
       issue_number: 22,
       run_ultrafix: true,

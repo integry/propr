@@ -6,7 +6,8 @@ import {
   updatePlanIssue,
   loadPrimaryProcessingLabels,
   getAuthenticatedOctokit,
-  logger
+  logger,
+  type PlanIssue
 } from '@propr/core';
 import { PlanIssueStatus } from '@propr/core';
 import {
@@ -16,6 +17,7 @@ import {
   type ImplementIssueContext
 } from './planIssueHelpers.js';
 import {
+  buildIssueConfigRollbackUpdates,
   resolveEpicLabel,
   syncPendingIssueConfigs,
   updateIssueConfigWithRollback,
@@ -25,7 +27,7 @@ import {
   buildIssueUpdate,
   ContextConfigParseError,
   parseContextConfig,
-  resolveAndPersistIssueUltrafixSettings,
+  resolveIssueForImplementation,
   resolveImplementationSettings,
   ULTRAFIX_GOAL_MAX,
   ULTRAFIX_GOAL_MIN,
@@ -105,7 +107,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
 
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      const issueForImplementation = await resolveAndPersistIssueUltrafixSettings(draftId, planIssue, contextConfig);
+      const issueForImplementation = resolveIssueForImplementation(planIssue, contextConfig);
 
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
@@ -176,8 +178,9 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       const configUpdates: { agent_alias?: string | null; model_name?: string | null } = {};
       if (issueUpdates.agent_alias !== undefined) configUpdates.agent_alias = issueUpdates.agent_alias;
       if (issueUpdates.model_name !== undefined) configUpdates.model_name = issueUpdates.model_name;
+      const hasConfigUpdates = configUpdates.agent_alias !== undefined || configUpdates.model_name !== undefined;
 
-      if (configUpdates.agent_alias !== undefined || configUpdates.model_name !== undefined) {
+      if (hasConfigUpdates) {
         await updateIssueConfigWithRollback({
           draftId,
           issueNumber,
@@ -194,11 +197,66 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
         ultrafix_max_cycles: issueUpdates.ultrafix_max_cycles
       };
       const hasNonConfigUpdates = Object.values(nonConfigUpdates).some((value) => value !== undefined);
-      const updated = hasNonConfigUpdates
-        ? await updatePlanIssue(draftId, issueNumber, nonConfigUpdates)
-        : await getPlanIssue(draftId, issueNumber);
+      let updated: PlanIssue | null;
 
-      if (!updated) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
+      try {
+        updated = hasNonConfigUpdates
+          ? await updatePlanIssue(draftId, issueNumber, nonConfigUpdates)
+          : await getPlanIssue(draftId, issueNumber);
+      } catch (error) {
+        if (hasConfigUpdates) {
+          try {
+            await updateIssueConfigWithRollback({
+              draftId,
+              issueNumber,
+              repository: ownership.draft!.repository as string,
+              currentIssue: {
+                agent_alias: configUpdates.agent_alias !== undefined ? configUpdates.agent_alias ?? null : currentIssue.agent_alias ?? null,
+                model_name: configUpdates.model_name !== undefined ? configUpdates.model_name ?? null : currentIssue.model_name ?? null
+              },
+              updates: buildIssueConfigRollbackUpdates(currentIssue, configUpdates)
+            });
+          } catch (rollbackError) {
+            logger.error(
+              {
+                draftId,
+                issueNumber,
+                error: (rollbackError as Error).message
+              },
+              'Failed to roll back plan issue config after non-config update failure'
+            );
+          }
+        }
+        throw error;
+      }
+
+      if (!updated) {
+        if (hasConfigUpdates) {
+          try {
+            await updateIssueConfigWithRollback({
+              draftId,
+              issueNumber,
+              repository: ownership.draft!.repository as string,
+              currentIssue: {
+                agent_alias: configUpdates.agent_alias !== undefined ? configUpdates.agent_alias ?? null : currentIssue.agent_alias ?? null,
+                model_name: configUpdates.model_name !== undefined ? configUpdates.model_name ?? null : currentIssue.model_name ?? null
+              },
+              updates: buildIssueConfigRollbackUpdates(currentIssue, configUpdates)
+            });
+          } catch (rollbackError) {
+            logger.error(
+              {
+                draftId,
+                issueNumber,
+                error: (rollbackError as Error).message
+              },
+              'Failed to roll back plan issue config after update returned no issue'
+            );
+          }
+        }
+        res.status(404).json({ error: 'Issue not found in this plan' });
+        return;
+      }
       res.json(updated);
     } catch (error) {
       console.error('Update issue error:', error);
@@ -263,9 +321,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         contextConfig, correlationId, labelLogger
       });
 
-      const resolvedIssuesForImplementation = await Promise.all(
-        pendingIssuesForImplementation.map((issue) => resolveAndPersistIssueUltrafixSettings(draftId, issue, contextConfig))
-      );
+      const resolvedIssuesForImplementation = pendingIssuesForImplementation.map((issue) => resolveIssueForImplementation(issue, contextConfig));
 
       const { results, queuedCount } = await processBatchIssues({
         octokit,
