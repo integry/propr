@@ -116,6 +116,11 @@ export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
         return false;
     }
 
+    if (prInfo.hasUltrafixLabel && prInfo.ultrafixStateUnavailable) {
+        log.warn({ owner, repoName, prNumber }, 'Ultrafix state is unavailable, keeping auto-merge blocked');
+        return false;
+    }
+
     if (prInfo.hasUltrafixLabel && prInfo.ultrafixCompletionStatus !== 'succeeded') {
         log.info({ owner, repoName, prNumber }, 'PR still has an unresolved ultrafix requirement, skipping auto-merge');
         return false;

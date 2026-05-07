@@ -259,6 +259,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
               <option value="off">Off</option>
             </select>
           </label>
+          <span className="text-[10px] text-slate-500">Inherit follows planner defaults and updates if those defaults change later.</span>
           <UltrafixSettingsControls
             enabled={ultrafixEnabled}
             goal={issue.run_ultrafix === true ? issue.ultrafix_goal : null}

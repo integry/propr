@@ -370,6 +370,7 @@ export interface PRAutoMergeInfo {
     hasUltrafixLabel?: boolean;
     hasActiveUltrafixLoop?: boolean;
     ultrafixCompletionStatus?: 'succeeded' | 'failed' | null;
+    ultrafixStateUnavailable?: boolean;
     isDraft: boolean;
     baseBranch: string;
     headBranch: string;
@@ -429,28 +430,15 @@ function getUltrafixStateKey(owner: string, repoName: string, prNumber: number):
 }
 
 export async function hasActiveUltrafixLoop(owner: string, repoName: string, prNumber: number): Promise<boolean> {
-    try {
-        const rawState = await getUltrafixStateRedis().get(getUltrafixStateKey(owner, repoName, prNumber));
-        if (!rawState) return false;
-
-        const parsedState = JSON.parse(rawState) as { active?: unknown };
-        return parsedState.active === true;
-    } catch (error) {
-        logger.warn({
-            owner,
-            repoName,
-            prNumber,
-            error: (error as Error).message
-        }, 'Failed to check ultrafix loop state');
-        return false;
-    }
+    const state = await getUltrafixLoopState(owner, repoName, prNumber);
+    return state?.unavailable === true ? true : state?.active === true;
 }
 
 export async function getUltrafixLoopState(
     owner: string,
     repoName: string,
     prNumber: number
-): Promise<{ active: boolean; completionStatus: 'succeeded' | 'failed' | null } | null> {
+): Promise<{ active: boolean; completionStatus: 'succeeded' | 'failed' | null; unavailable?: boolean } | null> {
     try {
         const rawState = await getUltrafixStateRedis().get(getUltrafixStateKey(owner, repoName, prNumber));
         if (!rawState) return null;
@@ -469,7 +457,11 @@ export async function getUltrafixLoopState(
             prNumber,
             error: (error as Error).message
         }, 'Failed to load ultrafix loop state');
-        return null;
+        return {
+            active: false,
+            completionStatus: null,
+            unavailable: true
+        };
     }
 }
 
@@ -499,6 +491,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             hasUltrafixLabel,
             hasActiveUltrafixLoop: ultrafixState?.active ?? false,
             ultrafixCompletionStatus: ultrafixState?.completionStatus ?? null,
+            ultrafixStateUnavailable: ultrafixState?.unavailable === true,
             isDraft,
             baseBranch,
             headBranch
@@ -515,6 +508,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             hasUltrafixLabel: false,
             hasActiveUltrafixLoop: false,
             ultrafixCompletionStatus: null,
+            ultrafixStateUnavailable: false,
             isDraft: false,
             baseBranch: '',
             headBranch: ''

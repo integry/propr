@@ -306,12 +306,19 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       const shouldQueueSequentially = autoMerge && !!epicLabelName;
       const issuesForImmediateImplementation = shouldQueueSequentially ? [pendingIssues[0]] : pendingIssues;
-      await Promise.all(
+      const resolvedIssuesForImplementation = await Promise.all(
         issuesForImmediateImplementation.map((issue) => resolveAndPersistIssueUltrafixSettings(draftId, issue, contextConfig))
       );
 
       const { results, queuedCount } = await processBatchIssues({
-        octokit, owner, repo, draftId, pendingIssues, implementLabel, epicLabelName, autoMerge: autoMerge as boolean
+        octokit,
+        owner,
+        repo,
+        draftId,
+        pendingIssues: resolvedIssuesForImplementation,
+        implementLabel,
+        epicLabelName,
+        autoMerge: autoMerge as boolean
       });
 
       const successCount = results.filter(r => r.success).length;

@@ -9,6 +9,7 @@ import {
   type PlanTask,
   type CreatedIssue
 } from './githubIssueService.js';
+import { parseExistingContextConfig } from './planning/previewUtils.js';
 
 // Re-export Epic PR functions from separate module
 export {
@@ -59,15 +60,7 @@ interface ValidatedDraftData {
 }
 
 function parseContextConfig(contextConfig: string | Record<string, unknown>): Record<string, unknown> {
-  if (!contextConfig) return {};
-  if (typeof contextConfig === 'string') {
-    try {
-      return JSON.parse(contextConfig);
-    } catch {
-      return {};
-    }
-  }
-  return contextConfig;
+  return parseExistingContextConfig(contextConfig) ?? {};
 }
 
 function buildExecutionContextConfig(

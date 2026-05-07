@@ -119,10 +119,11 @@ function parsePlanTasks(planJson: DraftWithPlan['plan_json']): PlanTask[] {
 }
 
 function buildFooterStats(issues: PlanIssue[]): FooterStats {
+  const underReviewStatuses = new Set(['under_review', 'in_refinement', 'pr_open', 'pr_review']);
   return {
     total: issues.length,
     merged: issues.filter(i => i.status === 'merged').length,
-    underReview: issues.filter(i => i.status === 'under_review' || i.status === 'in_refinement').length,
+    underReview: issues.filter(i => underReviewStatuses.has(i.status as string)).length,
     pending: issues.filter(i => i.status === 'pending').length,
     processing: issues.filter(i => i.status === 'processing' || i.status === 'refinement_processing').length,
   };

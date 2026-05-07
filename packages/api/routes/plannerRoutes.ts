@@ -9,7 +9,7 @@ import { checkDbAndAuth, sendCheckError, verifyDraftOwnership, createDownloadCon
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
 import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createAbortGenerationHandler, createAbortRefinementHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
-import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
+import { linkTodosToDraft, pauseDraft, resumeDraft, parseExistingContextConfig } from '@propr/core';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -44,13 +44,16 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
   const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
   const parseExistingExecutionConfig = (contextConfig: unknown): Record<string, unknown> => {
-    if (!contextConfig) return {};
-    if (typeof contextConfig !== 'string') return contextConfig as Record<string, unknown>;
-    try {
-      return JSON.parse(contextConfig) as Record<string, unknown>;
-    } catch (error) {
-      throw new ExecutionSettingsContextConfigError(`Failed to parse existing execution settings: ${(error as Error).message}`);
+    const parsedConfig = parseExistingContextConfig(contextConfig as string | Record<string, unknown> | null | undefined);
+    if (parsedConfig) return parsedConfig as Record<string, unknown>;
+    if (contextConfig) {
+      try {
+        JSON.parse(contextConfig as string);
+      } catch (error) {
+        throw new ExecutionSettingsContextConfigError(`Failed to parse existing execution settings: ${(error as Error).message}`);
+      }
     }
+    return {};
   };
   const sendExecutionSettingsResponse = (res: Response, updatedConfig: Record<string, unknown>): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
 

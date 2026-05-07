@@ -143,6 +143,7 @@ export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
 export { generatePlan, refinePlan, generateContextPreview, checkoutBranch, PlanningFailedError, BranchNotFoundError, buildFullContext } from './services/taskPlanningService.js';
 export type { GeneratePlanOptions, RefinePlanOptions, RefinePlanResult, RefinePlanEstimation, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';
+export { parseExistingContextConfig } from './services/planning/previewUtils.js';
 export { pauseDraft, resumeDraft, isDraftPaused, getDraftPauseState } from './services/taskPlanning/draftPauseResume.js';
 export type { PauseResumeResult } from './services/taskPlanning/draftPauseResume.js';
 export { estimateLlmDuration, estimateUsagePercent } from './utils/llmEstimation.js';

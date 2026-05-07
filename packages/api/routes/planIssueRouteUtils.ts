@@ -11,6 +11,12 @@ export interface ResolvedUltrafixSettings {
   ultrafixMaxCycles: number | null;
 }
 
+interface IssueUltrafixOverrides {
+  runUltrafix: boolean | null;
+  ultrafixGoal: number | null;
+  ultrafixMaxCycles: number | null;
+}
+
 export interface UpdateIssueRequestBody {
   agent_alias?: string;
   model_name?: string | null;
@@ -107,6 +113,23 @@ export function resolveIssueUltrafixSettings(
   };
 }
 
+function getIssueUltrafixOverrides(planIssue: {
+  run_ultrafix?: boolean | number | null;
+  ultrafix_goal?: number | null;
+  ultrafix_max_cycles?: number | null;
+}): IssueUltrafixOverrides {
+  const runUltrafix = normalizeRunUltrafix(planIssue.run_ultrafix);
+  const hasExplicitUltrafixOverride = runUltrafix === true;
+
+  return {
+    // `null` means "inherit planner defaults", so preserve it instead of
+    // materializing the resolved planner value into the issue record.
+    runUltrafix: runUltrafix ?? null,
+    ultrafixGoal: hasExplicitUltrafixOverride ? sanitizeUltrafixGoal(planIssue.ultrafix_goal) : null,
+    ultrafixMaxCycles: hasExplicitUltrafixOverride ? sanitizeUltrafixMaxCycles(planIssue.ultrafix_max_cycles) : null
+  };
+}
+
 export function buildIssueForImplementation<T extends {
   issue_number: number;
   run_ultrafix?: boolean | number | null;
@@ -129,13 +152,14 @@ export async function resolveAndPersistIssueUltrafixSettings<T extends {
 }>(draftId: string, planIssue: T, contextConfig: Record<string, unknown> | null): Promise<T> {
   const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
   const issueForImplementation = buildIssueForImplementation(planIssue, ultrafixSettings);
+  const issueOverrides = getIssueUltrafixOverrides(planIssue);
   const persistedIssue = await updatePlanIssue(draftId, planIssue.issue_number, {
-    run_ultrafix: issueForImplementation.run_ultrafix === true,
-    ultrafix_goal: issueForImplementation.ultrafix_goal,
-    ultrafix_max_cycles: issueForImplementation.ultrafix_max_cycles
+    run_ultrafix: issueOverrides.runUltrafix,
+    ultrafix_goal: issueOverrides.ultrafixGoal,
+    ultrafix_max_cycles: issueOverrides.ultrafixMaxCycles
   });
 
-  return (persistedIssue as T | null) ?? issueForImplementation;
+  return buildIssueForImplementation((persistedIssue as T | null) ?? planIssue, ultrafixSettings);
 }
 
 export function normalizeRunUltrafix(value: boolean | number | null | undefined): boolean | null | undefined {
@@ -149,7 +173,7 @@ export function normalizeRunUltrafix(value: boolean | number | null | undefined)
 export function validateRunUltrafixValue(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   if (value === true || value === false || value === 1 || value === 0) return null;
-  return 'run_ultrafix must be a boolean, 1, 0, or null';
+  return 'run_ultrafix must be a boolean, 1, 0, or null (where null means inherit planner defaults)';
 }
 
 export function buildIssueUpdate(body: UpdateIssueRequestBody) {
