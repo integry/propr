@@ -4,13 +4,17 @@
 export async function up(knex) {
   const isSQLite = knex.client.config.client === 'sqlite3' || knex.client.config.client === 'better-sqlite3';
 
-  await knex.schema.alterTable('plan_issues', (table) => {
-    table.boolean('run_ultrafix').nullable();
-    table.integer('ultrafix_goal').nullable();
-    table.integer('ultrafix_max_cycles').nullable();
-  });
+  if (isSQLite) {
+    await knex.raw('ALTER TABLE plan_issues ADD COLUMN run_ultrafix boolean NULL');
+    await knex.raw('ALTER TABLE plan_issues ADD COLUMN ultrafix_goal integer NULL CHECK (ultrafix_goal IS NULL OR ultrafix_goal BETWEEN 1 AND 10)');
+    await knex.raw('ALTER TABLE plan_issues ADD COLUMN ultrafix_max_cycles integer NULL CHECK (ultrafix_max_cycles IS NULL OR ultrafix_max_cycles >= 1)');
+  } else {
+    await knex.schema.alterTable('plan_issues', (table) => {
+      table.boolean('run_ultrafix').nullable();
+      table.integer('ultrafix_goal').nullable();
+      table.integer('ultrafix_max_cycles').nullable();
+    });
 
-  if (!isSQLite) {
     await knex.raw(`
       ALTER TABLE plan_issues
       ADD CONSTRAINT chk_plan_issues_ultrafix_goal

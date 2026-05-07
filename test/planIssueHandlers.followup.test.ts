@@ -168,4 +168,52 @@ describe('planIssueHandlers follow-up fixes', () => {
     );
     assert.strictEqual(mockSafeUpdateLabels.mock.calls.length, 2);
   });
+
+  test('updateIssueHandler preserves stored ultrafix disablement for partial PATCH updates', async () => {
+    resetMocks();
+    const handler = createUpdateIssueHandler({
+      verifyOwnership: async () => ({
+        authorized: true,
+        draft: {
+          repository: 'owner/repo',
+        },
+      }),
+    });
+
+    mockGetPlanIssue.mock.mockImplementationOnce(async () => ({
+      issue_number: 14,
+      agent_alias: 'codex',
+      model_name: 'gpt-5.4',
+      run_ultrafix: false,
+      ultrafix_goal: null,
+      ultrafix_max_cycles: null,
+    }));
+    mockUpdatePlanIssue.mock.mockImplementationOnce(async (_draftId, issueNumber, updates) => ({
+      issue_number: issueNumber as number,
+      agent_alias: 'codex',
+      model_name: 'gpt-5.4',
+      ...updates,
+    }));
+
+    const req = {
+      params: { id: 'draft-3', issueNumber: '14' },
+      user: { id: 'user-1' },
+      body: { ultrafix_goal: null },
+    };
+    const res = createResponse();
+
+    await handler(req as never, res as never);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(mockUpdatePlanIssue.mock.calls[0]?.arguments, [
+      'draft-3',
+      14,
+      {
+        status: undefined,
+        run_ultrafix: false,
+        ultrafix_goal: null,
+        ultrafix_max_cycles: null,
+      },
+    ]);
+  });
 });

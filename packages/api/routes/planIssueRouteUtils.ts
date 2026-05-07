@@ -358,7 +358,10 @@ export function buildNormalizedUltrafixUpdate(params: {
   };
 }
 
-export function buildIssueUpdate(body: UpdateIssueRequestBody) {
+export function buildIssueUpdate(
+  body: UpdateIssueRequestBody,
+  options: { existingRunUltrafix?: boolean | null } = {}
+) {
   const hasUltrafixGoal = body.ultrafix_goal !== undefined;
   const hasUltrafixMaxCycles = body.ultrafix_max_cycles !== undefined;
   const normalizedUltrafixUpdate = buildNormalizedUltrafixUpdate({
@@ -366,7 +369,8 @@ export function buildIssueUpdate(body: UpdateIssueRequestBody) {
     ultrafixGoal: body.ultrafix_goal,
     ultrafixMaxCycles: body.ultrafix_max_cycles,
     hasUltrafixGoal,
-    hasUltrafixMaxCycles
+    hasUltrafixMaxCycles,
+    existingRunUltrafix: options.existingRunUltrafix
   });
 
   return {

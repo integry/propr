@@ -267,7 +267,13 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
 
       const currentIssue = await getPlanIssue(draftId, issueNumber);
       if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      const issueUpdates = buildIssueUpdate(body);
+      const issueUpdates = buildIssueUpdate(body, {
+        existingRunUltrafix: currentIssue.run_ultrafix === true || currentIssue.run_ultrafix === 1
+          ? true
+          : currentIssue.run_ultrafix === false || currentIssue.run_ultrafix === 0
+            ? false
+            : null
+      });
       const repository = ownership.draft!.repository as string;
       const configUpdates = buildConfigUpdatesFromIssueUpdate(issueUpdates);
       const shouldUpdateConfig = hasConfigUpdates(configUpdates);

@@ -120,6 +120,46 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
     });
   });
 
+  test('partial issue ultrafix updates preserve explicit disabled state', () => {
+    const update = buildIssueUpdate(
+      {
+        ultrafix_goal: null,
+      },
+      {
+        existingRunUltrafix: false,
+      }
+    );
+
+    assert.deepStrictEqual(update, {
+      agent_alias: undefined,
+      model_name: undefined,
+      status: undefined,
+      run_ultrafix: false,
+      ultrafix_goal: null,
+      ultrafix_max_cycles: null,
+    });
+  });
+
+  test('partial issue ultrafix updates preserve explicit enabled state', () => {
+    const update = buildIssueUpdate(
+      {
+        ultrafix_goal: 6,
+      },
+      {
+        existingRunUltrafix: true,
+      }
+    );
+
+    assert.deepStrictEqual(update, {
+      agent_alias: undefined,
+      model_name: undefined,
+      status: undefined,
+      run_ultrafix: true,
+      ultrafix_goal: 6,
+      ultrafix_max_cycles: undefined,
+    });
+  });
+
   test('rejects inherit mode when explicit ultrafix overrides are provided', () => {
     const error = validateIssueUltrafixPayload({
       run_ultrafix: null,

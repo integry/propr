@@ -1440,7 +1440,7 @@ describe('shouldAutoMergePR', () => {
         assert.strictEqual(result, true);
     });
 
-    test('blocks auto-merge when ultrafix state is unavailable while ultrafix is still labeled', async () => {
+    test('falls back to auto-merge when ultrafix state is unavailable while ultrafix is still labeled', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
@@ -1450,7 +1450,30 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, false);
+        assert.strictEqual(result, true);
+    });
+
+    test('falls back to linked issue auto-merge when ultrafix state is unavailable and PR has no direct label', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls')) {
+                return { data: { body: 'Fixes #100' } };
+            }
+            if (endpoint.includes('issues')) {
+                return { data: { labels: [{ name: 'auto-merge' }] } };
+            }
+            return { data: {} };
+        });
+
+        const ctx = createMockPRMergeContext({
+            hasLabel: false,
+            hasUltrafixLabel: true,
+            ultrafixStateUnavailable: true,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
     });
 
     test('blocks auto-merge when ultrafix finished unsuccessfully', async () => {
