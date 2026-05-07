@@ -255,7 +255,8 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       const configUpdates = buildConfigUpdatesFromIssueUpdate(issueUpdates);
       const shouldUpdateConfig = hasConfigUpdates(configUpdates);
       if (shouldUpdateConfig) {
-      if (shouldUpdateConfig) await updateIssueConfigWithRollback({ draftId, issueNumber, repository, currentIssue, updates: configUpdates });
+        await updateIssueConfigWithRollback({ draftId, issueNumber, repository, currentIssue, updates: configUpdates });
+      }
       let updated: PlanIssue | null;
       try {
         updated = await persistNonConfigIssueUpdates({ draftId, issueNumber, issueUpdates });
