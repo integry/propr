@@ -33,6 +33,8 @@ await mock.module('../packages/api/routes/planIssueHelpers.js', {
 });
 
 const {
+  filterIssuesNeedingConfigSync,
+  persistEffectiveUltrafixSettings,
   syncPendingIssueConfigs,
   updateIssueConfigWithRollback,
 } = await import('../packages/api/routes/planIssueConfigSync.ts');
@@ -112,6 +114,51 @@ describe('planIssueConfigSync rollback behavior', () => {
       [['llm:gpt-5.4'], ['llm:gpt-5.5']],
       [['llm:gpt-5.4'], ['llm:gpt-5.5']],
       [['llm:gpt-5.5'], ['llm:gpt-5.4']],
+    ]);
+  });
+
+  test('filters implement-all config sync to pending issues with actual config changes', () => {
+    const filtered = filterIssuesNeedingConfigSync({
+      pendingIssues: [
+        { issue_number: 1, agent_alias: 'codex', model_name: 'gpt-5.4' },
+        { issue_number: 2, agent_alias: 'reviewer', model_name: 'gpt-5.5' },
+        { issue_number: 3, agent_alias: 'codex', model_name: 'gpt-5.4' },
+      ],
+      updates: {
+        agent_alias: 'codex',
+        model_name: 'gpt-5.5',
+      },
+    });
+
+    assert.deepStrictEqual(filtered.map((issue) => issue.issue_number), [1, 3]);
+  });
+
+  test('persists effective ultrafix settings only for issues that inherit planner defaults', async () => {
+    resetMocks();
+    mockUpdatePlanIssue.mock.mockImplementation(async (_draftId, issueNumber, updates) => ({
+      issue_number: issueNumber as number,
+      ...updates,
+    }));
+
+    const resolvedIssues = await persistEffectiveUltrafixSettings({
+      draftId: 'draft-ultrafix',
+      issues: [
+        { issue_number: 1, run_ultrafix: null, ultrafix_goal: null, ultrafix_max_cycles: null },
+        { issue_number: 2, run_ultrafix: true, ultrafix_goal: 5, ultrafix_max_cycles: 2 },
+      ],
+      contextConfig: {
+        runUltrafix: true,
+        ultrafixGoal: 5,
+        ultrafixMaxCycles: 2,
+      },
+    });
+
+    assert.deepStrictEqual(mockUpdatePlanIssue.mock.calls.map((call) => call.arguments), [
+      ['draft-ultrafix', 1, { run_ultrafix: true, ultrafix_goal: 5, ultrafix_max_cycles: 2 }],
+    ]);
+    assert.deepStrictEqual(resolvedIssues, [
+      { issue_number: 1, run_ultrafix: true, ultrafix_goal: 5, ultrafix_max_cycles: 2 },
+      { issue_number: 2, run_ultrafix: true, ultrafix_goal: 5, ultrafix_max_cycles: 2 },
     ]);
   });
 });

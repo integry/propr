@@ -17,8 +17,10 @@ import {
   type ImplementIssueContext
 } from './planIssueHelpers.js';
 import {
+  filterIssuesNeedingConfigSync,
   buildIssueConfigRollbackUpdates,
   IssueConfigSyncReconciliationError,
+  persistEffectiveUltrafixSettings,
   resolveEpicLabel,
   syncPendingIssueConfigs,
   updateIssueConfigWithRollback
@@ -29,7 +31,6 @@ import {
   parseContextConfig,
   parseImplementationSettingsOverrides,
   resolveIssueForResponse,
-  resolveIssueForImplementation,
   resolveImplementationSettings,
   ULTRAFIX_GOAL_MAX,
   ULTRAFIX_GOAL_MIN,
@@ -201,7 +202,11 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const contextConfig = parseContextConfig(draft.context_config);
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      const issueForImplementation = resolveIssueForImplementation(planIssue, contextConfig);
+      const [issueForImplementation] = await persistEffectiveUltrafixSettings({
+        draftId,
+        issues: [planIssue],
+        contextConfig
+      });
       const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as {
         useEpic?: unknown;
         autoMerge?: unknown;
@@ -325,10 +330,17 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const existingIssues = await getPlanIssuesByDraft(draftId);
       const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
       if (agent_alias !== undefined || model_name !== undefined) {
+        const pendingIssuesNeedingConfigSync = filterIssuesNeedingConfigSync({
+          pendingIssues,
+          updates: {
+            agent_alias,
+            model_name
+          }
+        });
         await syncPendingIssueConfigs({
           draftId,
           repository,
-          pendingIssues,
+          pendingIssues: pendingIssuesNeedingConfigSync,
           updates: {
             agent_alias,
             model_name
@@ -353,7 +365,11 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         firstIssueNumber: pendingIssuesForImplementation[0].issue_number,
         contextConfig, correlationId, labelLogger
       });
-      const resolvedIssuesForImplementation = pendingIssuesForImplementation.map((issue) => resolveIssueForImplementation(issue, contextConfig));
+      const resolvedIssuesForImplementation = await persistEffectiveUltrafixSettings({
+        draftId,
+        issues: pendingIssuesForImplementation,
+        contextConfig
+      });
       const { results, queuedCount } = await processBatchIssues({
         octokit,
         owner,

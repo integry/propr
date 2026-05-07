@@ -14,6 +14,7 @@ const mockLoggerWithCorrelation = mock.fn(() => ({
   debug: mock.fn(),
 }));
 const mockProcessBatchIssues = mock.fn(async () => ({ results: [], queuedCount: 0 }));
+const mockHandleSingleAgentImplementation = mock.fn();
 
 await mock.module('@propr/core', {
   namedExports: {
@@ -41,13 +42,17 @@ await mock.module('../packages/api/routes/planIssueHelpers.js', {
   namedExports: {
     getLlmLabel: mock.fn(async (modelName: string | null) => modelName ? `llm:${modelName}` : null),
     handleMultiAgentImplementation: mock.fn(),
-    handleSingleAgentImplementation: mock.fn(),
+    handleSingleAgentImplementation: mockHandleSingleAgentImplementation,
     processBatchIssues: mockProcessBatchIssues,
     getOrCreateEpicLabel: mock.fn(async () => null),
   },
 });
 
-const { createUpdateIssueHandler, createImplementAllIssuesHandler } = await import('../packages/api/routes/planIssueHandlers.ts');
+const {
+  createImplementAllIssuesHandler,
+  createImplementIssueHandler,
+  createUpdateIssueHandler
+} = await import('../packages/api/routes/planIssueHandlers.ts');
 
 function resetMocks(): void {
   mockGetPlanIssue.mock.resetCalls();
@@ -58,6 +63,7 @@ function resetMocks(): void {
   mockSafeUpdateLabels.mock.resetCalls();
   mockLoggerWithCorrelation.mock.resetCalls();
   mockProcessBatchIssues.mock.resetCalls();
+  mockHandleSingleAgentImplementation.mock.resetCalls();
   mockSafeUpdateLabels.mock.mockImplementation(async () => {});
 }
 
@@ -268,6 +274,123 @@ describe('planIssueHandlers follow-up fixes', () => {
       [1, 3]
     );
     assert.strictEqual(mockSafeUpdateLabels.mock.calls.length, 2);
+  });
+
+  test('implementIssue persists effective ultrafix settings before implementation starts', async () => {
+    resetMocks();
+    const handler = createImplementIssueHandler({
+      verifyOwnership: async () => ({
+        authorized: true,
+        draft: {
+          repository: 'owner/repo',
+          name: 'Plan',
+          context_config: JSON.stringify({
+            runUltrafix: true,
+            ultrafixGoal: 7,
+            ultrafixMaxCycles: 2,
+          }),
+        },
+      }),
+    });
+
+    mockGetPlanIssue.mock.mockImplementationOnce(async () => ({
+      issue_number: 17,
+      status: 'pending',
+      agent_alias: 'codex',
+      model_name: 'gpt-5.4',
+      run_ultrafix: null,
+      ultrafix_goal: null,
+      ultrafix_max_cycles: null,
+    }));
+    mockUpdatePlanIssue.mock.mockImplementationOnce(async (_draftId, issueNumber, updates) => ({
+      issue_number: issueNumber as number,
+      status: 'pending',
+      agent_alias: 'codex',
+      model_name: 'gpt-5.4',
+      ...updates,
+    }));
+    mockHandleSingleAgentImplementation.mock.mockImplementationOnce(async (params) => ({
+      success: true,
+      planIssue: params.planIssue,
+    }));
+
+    const req = {
+      params: { id: 'draft-implement', issueNumber: '17' },
+      user: { id: 'user-1' },
+      body: {},
+    };
+    const res = createResponse();
+
+    await handler(req as never, res as never);
+
+    assert.deepStrictEqual(mockUpdatePlanIssue.mock.calls[0]?.arguments, [
+      'draft-implement',
+      17,
+      { run_ultrafix: true, ultrafix_goal: 7, ultrafix_max_cycles: 2 },
+    ]);
+    assert.deepStrictEqual(mockHandleSingleAgentImplementation.mock.calls[0]?.arguments[0].planIssue, {
+      issue_number: 17,
+      status: 'pending',
+      agent_alias: 'codex',
+      model_name: 'gpt-5.4',
+      run_ultrafix: true,
+      ultrafix_goal: 7,
+      ultrafix_max_cycles: 2,
+    });
+    assert.strictEqual(res.statusCode, 200);
+  });
+
+  test('implementAllIssues persists effective ultrafix settings before batch implementation', async () => {
+    resetMocks();
+    const handler = createImplementAllIssuesHandler({
+      verifyOwnership: async () => ({
+        authorized: true,
+        draft: {
+          repository: 'owner/repo',
+          name: 'Plan',
+          context_config: {
+            runUltrafix: true,
+            ultrafixGoal: 6,
+            ultrafixMaxCycles: 3,
+          },
+        },
+      }),
+    });
+
+    mockGetPlanIssuesByDraft
+      .mockImplementationOnce(async () => [
+        { issue_number: 1, status: 'pending', agent_alias: 'codex', model_name: 'gpt-5.4', run_ultrafix: null, ultrafix_goal: null, ultrafix_max_cycles: null },
+        { issue_number: 2, status: 'pending', agent_alias: 'codex', model_name: 'gpt-5.4', run_ultrafix: true, ultrafix_goal: 6, ultrafix_max_cycles: 3 },
+      ]);
+    mockUpdatePlanIssue.mock.mockImplementationOnce(async (_draftId, issueNumber, updates) => ({
+      issue_number: issueNumber as number,
+      status: 'pending',
+      agent_alias: 'codex',
+      model_name: 'gpt-5.4',
+      ...updates,
+    }));
+    mockProcessBatchIssues.mock.mockImplementationOnce(async ({ pendingIssues }) => ({
+      results: pendingIssues.map((issue: { issue_number: number }) => ({ success: true, issueNumber: issue.issue_number })),
+      queuedCount: 0,
+    }));
+
+    const req = {
+      params: { id: 'draft-batch' },
+      user: { id: 'user-1' },
+      body: {},
+    };
+    const res = createResponse();
+
+    await handler(req as never, res as never);
+
+    assert.deepStrictEqual(mockUpdatePlanIssue.mock.calls.map((call) => call.arguments), [
+      ['draft-batch', 1, { run_ultrafix: true, ultrafix_goal: 6, ultrafix_max_cycles: 3 }],
+    ]);
+    assert.deepStrictEqual(mockProcessBatchIssues.mock.calls[0]?.arguments[0].pendingIssues, [
+      { issue_number: 1, status: 'pending', agent_alias: 'codex', model_name: 'gpt-5.4', run_ultrafix: true, ultrafix_goal: 6, ultrafix_max_cycles: 3 },
+      { issue_number: 2, status: 'pending', agent_alias: 'codex', model_name: 'gpt-5.4', run_ultrafix: true, ultrafix_goal: 6, ultrafix_max_cycles: 3 },
+    ]);
+    assert.strictEqual(res.statusCode, 200);
   });
 
   test('updateIssueHandler preserves stored ultrafix disablement for partial PATCH updates', async () => {

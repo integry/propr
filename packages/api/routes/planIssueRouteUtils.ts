@@ -292,6 +292,33 @@ export function resolveIssueForResponse<T extends {
   return buildIssueForResponse(planIssue, ultrafixSettings);
 }
 
+export function buildEffectiveIssueUltrafixUpdate<T extends {
+  issue_number: number;
+  run_ultrafix?: boolean | number | null;
+  ultrafix_goal?: unknown;
+  ultrafix_max_cycles?: unknown;
+}>(
+  planIssue: T,
+  contextConfig: Record<string, unknown> | null
+): { run_ultrafix: boolean; ultrafix_goal: number | null; ultrafix_max_cycles: number | null } | null {
+  const resolvedIssue = resolveIssueForImplementation(planIssue, contextConfig);
+  const persistedSettings = resolvePersistedIssueUltrafixSettings(planIssue);
+
+  if (
+    persistedSettings.runUltrafix === resolvedIssue.run_ultrafix
+    && persistedSettings.ultrafixGoal === resolvedIssue.ultrafix_goal
+    && persistedSettings.ultrafixMaxCycles === resolvedIssue.ultrafix_max_cycles
+  ) {
+    return null;
+  }
+
+  return {
+    run_ultrafix: resolvedIssue.run_ultrafix,
+    ultrafix_goal: resolvedIssue.ultrafix_goal,
+    ultrafix_max_cycles: resolvedIssue.ultrafix_max_cycles
+  };
+}
+
 export function normalizeRunUltrafix(value: boolean | number | null | undefined): boolean | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;

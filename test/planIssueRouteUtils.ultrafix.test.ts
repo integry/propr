@@ -8,6 +8,7 @@ await mock.module('@propr/core', {
 });
 
 const {
+  buildEffectiveIssueUltrafixUpdate,
   buildIssueUpdate,
   resolveIssueForImplementation,
   resolveIssueUltrafixSettings,
@@ -184,7 +185,7 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
     );
   });
 
-  test('implementation resolves inherited planner ultrafix settings without persisting them', () => {
+  test('implementation resolves inherited planner ultrafix settings', () => {
     const resolved = resolveIssueForImplementation(
       {
         issue_number: 17,
@@ -201,6 +202,28 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
 
     assert.deepStrictEqual(resolved, {
       issue_number: 17,
+      run_ultrafix: true,
+      ultrafix_goal: 7,
+      ultrafix_max_cycles: 2,
+    });
+  });
+
+  test('builds persistence updates when implementation resolves inherited planner ultrafix settings', () => {
+    const updates = buildEffectiveIssueUltrafixUpdate(
+      {
+        issue_number: 17,
+        run_ultrafix: null,
+        ultrafix_goal: null,
+        ultrafix_max_cycles: null,
+      },
+      {
+        runUltrafix: true,
+        ultrafixGoal: 7,
+        ultrafixMaxCycles: 2,
+      }
+    );
+
+    assert.deepStrictEqual(updates, {
       run_ultrafix: true,
       ultrafix_goal: 7,
       ultrafix_max_cycles: 2,
@@ -224,5 +247,23 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
       ultrafix_goal: null,
       ultrafix_max_cycles: null,
     });
+  });
+
+  test('skips persistence updates when stored and effective ultrafix settings already match', () => {
+    const updates = buildEffectiveIssueUltrafixUpdate(
+      {
+        issue_number: 23,
+        run_ultrafix: true,
+        ultrafix_goal: 6,
+        ultrafix_max_cycles: 3,
+      },
+      {
+        runUltrafix: true,
+        ultrafixGoal: 6,
+        ultrafixMaxCycles: 3,
+      }
+    );
+
+    assert.strictEqual(updates, null);
   });
 });

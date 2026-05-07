@@ -1,4 +1,5 @@
 import {
+  type PlanIssue,
   db,
   getAuthenticatedOctokit,
   logger,
@@ -6,6 +7,7 @@ import {
   updatePlanIssue
 } from '@propr/core';
 import { getLlmLabel, getOrCreateEpicLabel } from './planIssueHelpers.js';
+import { buildEffectiveIssueUltrafixUpdate, resolveIssueForImplementation } from './planIssueRouteUtils.js';
 
 const IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE = 5;
 
@@ -276,4 +278,45 @@ export async function syncPendingIssueConfigs(params: {
 
     throw error;
   }
+}
+
+export function filterIssuesNeedingConfigSync<T extends PlanIssueConfigState>(params: {
+  pendingIssues: Array<T>;
+  updates: PlanIssueConfigState;
+}): Array<T> {
+  return params.pendingIssues.filter((issue) => (
+    params.updates.agent_alias !== undefined
+    && (issue.agent_alias ?? null) !== (params.updates.agent_alias ?? null)
+  ) || (
+    params.updates.model_name !== undefined
+    && (issue.model_name ?? null) !== (params.updates.model_name ?? null)
+  ));
+}
+
+export async function persistEffectiveUltrafixSettings<T extends Pick<PlanIssue,
+  'issue_number' | 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'
+>>(params: {
+  draftId: string;
+  issues: Array<T>;
+  contextConfig: Record<string, unknown> | null;
+}): Promise<Array<T & {
+  run_ultrafix: boolean;
+  ultrafix_goal: number | null;
+  ultrafix_max_cycles: number | null;
+}>> {
+  const resolvedIssues = params.issues.map((issue) => resolveIssueForImplementation(issue, params.contextConfig));
+
+  for (const [index, issue] of params.issues.entries()) {
+    const updates = buildEffectiveIssueUltrafixUpdate(issue, params.contextConfig);
+    if (!updates) continue;
+
+    const updatedIssue = await updatePlanIssue(params.draftId, issue.issue_number, updates);
+    if (!updatedIssue) {
+      throw new Error(`Issue ${issue.issue_number} not found in this plan`);
+    }
+
+    resolvedIssues[index] = resolveIssueForImplementation(updatedIssue as T, params.contextConfig);
+  }
+
+  return resolvedIssues;
 }
