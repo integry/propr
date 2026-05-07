@@ -154,6 +154,71 @@ function sendIssueConfigSyncReconciliationError(res: Response, error: IssueConfi
     details: error.details
   });
 }
+async function loadPendingIssuesForImplementation(params: {
+  draftId: string;
+  repository: string;
+  existingIssues: PlanIssue[];
+  agent_alias: unknown;
+  model_name: unknown;
+}): Promise<PlanIssue[]> {
+  const { draftId, repository, existingIssues, agent_alias, model_name } = params;
+  const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
+  if (agent_alias === undefined && model_name === undefined) {
+    return pendingIssues;
+  }
+  const pendingIssuesNeedingConfigSync = filterIssuesNeedingConfigSync({
+    pendingIssues,
+    updates: { agent_alias, model_name }
+  });
+  await syncPendingIssueConfigs({
+    draftId,
+    repository,
+    pendingIssues: pendingIssuesNeedingConfigSync,
+    updates: { agent_alias, model_name }
+  });
+  const updatedIssues = await getPlanIssuesByDraft(draftId);
+  return updatedIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
+}
+
+async function implementPendingIssues(params: {
+  draftId: string;
+  owner: string;
+  repo: string;
+  pendingIssuesForImplementation: PlanIssue[];
+  contextConfig: ReturnType<typeof parseContextConfig>;
+  implementLabel: string;
+  autoMerge: boolean;
+  epicLabelName: string | null;
+}): Promise<Array<{ issueNumber: number; success: boolean; error?: string }>> {
+  const {
+    draftId,
+    owner,
+    repo,
+    pendingIssuesForImplementation,
+    contextConfig,
+    implementLabel,
+    autoMerge,
+    epicLabelName
+  } = params;
+  const octokit = await getAuthenticatedOctokit();
+  const issuesToProcess = (autoMerge && epicLabelName) ? [pendingIssuesForImplementation[0]] : pendingIssuesForImplementation;
+  const results: Array<{ issueNumber: number; success: boolean; error?: string }> = [];
+  for (const issue of issuesToProcess) {
+    const [resolvedIssue] = await persistEffectiveUltrafixSettings({ draftId, issues: [issue], contextConfig });
+    const batchResult = await processBatchIssues({
+      octokit,
+      owner,
+      repo,
+      draftId,
+      pendingIssues: [resolvedIssue],
+      implementLabel,
+      epicLabelName,
+      autoMerge
+    });
+    results.push(...batchResult.results);
+  }
+  return results;
+}
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
   return async function getIssues(req: Request, res: Response): Promise<void> {
     try {
@@ -321,30 +386,19 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const { agent_alias, model_name } = req.body;
       const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);
       const existingIssues = await getPlanIssuesByDraft(draftId);
-      const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
-      if (agent_alias !== undefined || model_name !== undefined) {
-        const pendingIssuesNeedingConfigSync = filterIssuesNeedingConfigSync({
-          pendingIssues,
-          updates: { agent_alias, model_name }
-        });
-        await syncPendingIssueConfigs({
-          draftId,
-          repository,
-          pendingIssues: pendingIssuesNeedingConfigSync,
-          updates: { agent_alias, model_name }
-        });
-      }
-      const issues = agent_alias !== undefined || model_name !== undefined
-        ? await getPlanIssuesByDraft(draftId)
-        : existingIssues;
-      const pendingIssuesForImplementation = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
+      const pendingIssuesForImplementation = await loadPendingIssuesForImplementation({
+        draftId,
+        repository,
+        existingIssues,
+        agent_alias,
+        model_name
+      });
       if (pendingIssuesForImplementation.length === 0) {
         res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });
         return;
       }
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
-      const octokit = await getAuthenticatedOctokit();
       const correlationId = `implement-all-${draftId}`;
       const labelLogger = logger.withCorrelation(correlationId);
       const epicLabelName = await resolveEpicLabel(useEpic, {
@@ -352,13 +406,16 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         firstIssueNumber: pendingIssuesForImplementation[0].issue_number,
         contextConfig, correlationId, labelLogger
       });
-      const issuesToProcess = (autoMerge && epicLabelName) ? [pendingIssuesForImplementation[0]] : pendingIssuesForImplementation;
-      const results: Array<{ issueNumber: number; success: boolean; error?: string }> = [];
-      for (const issue of issuesToProcess) {
-        const [resolvedIssue] = await persistEffectiveUltrafixSettings({ draftId, issues: [issue], contextConfig });
-        const batchResult = await processBatchIssues({ octokit, owner, repo, draftId, pendingIssues: [resolvedIssue], implementLabel, epicLabelName, autoMerge: autoMerge as boolean });
-        results.push(...batchResult.results);
-      }
+      const results = await implementPendingIssues({
+        draftId,
+        owner,
+        repo,
+        pendingIssuesForImplementation,
+        contextConfig,
+        implementLabel,
+        autoMerge: autoMerge as boolean,
+        epicLabelName
+      });
       const queuedCount = (autoMerge && epicLabelName) ? pendingIssuesForImplementation.length - 1 : 0;
       const successCount = results.filter(r => r.success).length;
       const failedCount = results.filter(r => !r.success).length;
