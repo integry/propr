@@ -4,7 +4,6 @@ import {
   getPlanIssuesByDraftPaginated,
   getPlanIssue,
   updatePlanIssue,
-  batchUpdatePlanIssueConfig,
   loadPrimaryProcessingLabels,
   getAuthenticatedOctokit,
   safeUpdateLabels,
@@ -31,6 +30,7 @@ import {
   ULTRAFIX_GOAL_MIN,
   ULTRAFIX_MAX_CYCLES_MIN,
   type UpdateIssueRequestBody,
+  validateIssueUltrafixPayload,
   validateRunUltrafixValue,
   validateUltrafixValue
 } from './planIssueRouteUtils.js';
@@ -107,29 +107,53 @@ async function syncModelLabels(params: {
   );
 }
 
-async function syncModelLabelsForIssues(params: {
+async function updateIssueConfigWithRollback(params: {
   draftId: string;
+  issueNumber: number;
   repository: string;
-  issues: Array<{ issue_number: number; model_name?: string | null }>;
-  modelName: string | null;
+  currentIssue: {
+    agent_alias?: string | null;
+    model_name?: string | null;
+  };
+  updates: {
+    agent_alias?: string | null;
+    model_name?: string | null;
+  };
 }): Promise<void> {
-  const octokit = await getAuthenticatedOctokit();
-  const maxConcurrentUpdates = 5;
+  const nextIssue = await updatePlanIssue(params.draftId, params.issueNumber, params.updates);
+  if (!nextIssue) {
+    throw new Error('Issue not found in this plan');
+  }
 
-  for (let index = 0; index < params.issues.length; index += maxConcurrentUpdates) {
-    const batch = params.issues.slice(index, index + maxConcurrentUpdates);
-    await Promise.all(
-      batch.map((issue) =>
-        syncModelLabels({
+  if (params.updates.model_name === undefined) {
+    return;
+  }
+
+  try {
+    await syncModelLabels({
+      draftId: params.draftId,
+      issueNumber: params.issueNumber,
+      repository: params.repository,
+      currentModelName: params.currentIssue.model_name ?? null,
+      modelName: params.updates.model_name
+    });
+  } catch (error) {
+    try {
+      await updatePlanIssue(params.draftId, params.issueNumber, {
+        agent_alias: params.currentIssue.agent_alias ?? null,
+        model_name: params.currentIssue.model_name ?? null
+      });
+    } catch (rollbackError) {
+      logger.error(
+        {
           draftId: params.draftId,
-          issueNumber: issue.issue_number,
-          repository: params.repository,
-          currentModelName: issue.model_name ?? null,
-          modelName: params.modelName,
-          octokit
-        })
-      )
-    );
+          issueNumber: params.issueNumber,
+          error: (rollbackError as Error).message
+        },
+        'Failed to roll back plan issue config after GitHub label sync failure'
+      );
+    }
+    throw error;
   }
 }
 
@@ -258,21 +282,36 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       if (ultrafixGoalError) { res.status(400).json({ error: ultrafixGoalError }); return; }
       const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafix_max_cycles, 'ultrafix_max_cycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
       if (ultrafixMaxCyclesError) { res.status(400).json({ error: ultrafixMaxCyclesError }); return; }
+      const ultrafixPayloadError = validateIssueUltrafixPayload(body);
+      if (ultrafixPayloadError) { res.status(400).json({ error: ultrafixPayloadError }); return; }
 
       const currentIssue = await getPlanIssue(draftId, issueNumber);
       if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
+      const issueUpdates = buildIssueUpdate(body);
+      const configUpdates: { agent_alias?: string | null; model_name?: string | null } = {};
+      if (issueUpdates.agent_alias !== undefined) configUpdates.agent_alias = issueUpdates.agent_alias;
+      if (issueUpdates.model_name !== undefined) configUpdates.model_name = issueUpdates.model_name;
 
-      if (body.model_name !== undefined) {
-        await syncModelLabels({
+      if (configUpdates.agent_alias !== undefined || configUpdates.model_name !== undefined) {
+        await updateIssueConfigWithRollback({
           draftId,
           issueNumber,
           repository: ownership.draft!.repository as string,
-          currentModelName: currentIssue.model_name ?? null,
-          modelName: body.model_name
+          currentIssue,
+          updates: configUpdates
         });
       }
 
-      const updated = await updatePlanIssue(draftId, issueNumber, buildIssueUpdate(body));
+      const nonConfigUpdates = {
+        status: issueUpdates.status,
+        run_ultrafix: issueUpdates.run_ultrafix,
+        ultrafix_goal: issueUpdates.ultrafix_goal,
+        ultrafix_max_cycles: issueUpdates.ultrafix_max_cycles
+      };
+      const hasNonConfigUpdates = Object.values(nonConfigUpdates).some((value) => value !== undefined);
+      const updated = hasNonConfigUpdates
+        ? await updatePlanIssue(draftId, issueNumber, nonConfigUpdates)
+        : await getPlanIssue(draftId, issueNumber);
 
       if (!updated) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
       res.json(updated);
@@ -305,18 +344,16 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
       if (agent_alias !== undefined || model_name !== undefined) {
-        await batchUpdatePlanIssueConfig({
-          draftId,
-          agentAlias: agent_alias,
-          modelName: model_name,
-        });
-
-        if (model_name !== undefined) {
-          await syncModelLabelsForIssues({
+        for (const issue of pendingIssues) {
+          await updateIssueConfigWithRollback({
             draftId,
+            issueNumber: issue.issue_number,
             repository,
-            issues: pendingIssues,
-            modelName: model_name
+            currentIssue: issue,
+            updates: {
+              agent_alias,
+              model_name
+            }
           });
         }
       }

@@ -12,6 +12,7 @@ const {
   buildIssueUpdate,
   resolveIssueUltrafixSettings,
   resolveAndPersistIssueUltrafixSettings,
+  validateIssueUltrafixPayload,
 } = await import('../packages/api/routes/planIssueRouteUtils.ts');
 
 describe('planIssueRouteUtils ultrafix overrides', () => {
@@ -118,6 +119,30 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
       ultrafix_goal: null,
       ultrafix_max_cycles: undefined,
     });
+  });
+
+  test('rejects inherit mode when explicit ultrafix overrides are provided', () => {
+    const error = validateIssueUltrafixPayload({
+      run_ultrafix: null,
+      ultrafix_goal: 5,
+    });
+
+    assert.strictEqual(
+      error,
+      'run_ultrafix cannot inherit planner defaults when ultrafix_goal or ultrafix_max_cycles is set'
+    );
+  });
+
+  test('rejects disabled ultrafix when explicit ultrafix overrides are provided', () => {
+    const error = validateIssueUltrafixPayload({
+      run_ultrafix: false,
+      ultrafix_max_cycles: 3,
+    });
+
+    assert.strictEqual(
+      error,
+      'run_ultrafix cannot be false when ultrafix_goal or ultrafix_max_cycles is set'
+    );
   });
 
   test('snapshots inherited planner ultrafix settings before implementation starts', async () => {

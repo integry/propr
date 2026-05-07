@@ -225,6 +225,22 @@ export function validateRunUltrafixValue(value: unknown): string | null {
   return 'run_ultrafix must be a boolean, 1, 0, or null (where null means inherit planner defaults)';
 }
 
+export function validateIssueUltrafixPayload(body: UpdateIssueRequestBody): string | null {
+  const normalizedRunUltrafix = normalizeRunUltrafix(body.run_ultrafix);
+  const hasExplicitOverrides = body.ultrafix_goal !== undefined && body.ultrafix_goal !== null
+    || body.ultrafix_max_cycles !== undefined && body.ultrafix_max_cycles !== null;
+
+  if (normalizedRunUltrafix === false && hasExplicitOverrides) {
+    return 'run_ultrafix cannot be false when ultrafix_goal or ultrafix_max_cycles is set';
+  }
+
+  if (normalizedRunUltrafix === null && hasExplicitOverrides) {
+    return 'run_ultrafix cannot inherit planner defaults when ultrafix_goal or ultrafix_max_cycles is set';
+  }
+
+  return null;
+}
+
 export function buildIssueUpdate(body: UpdateIssueRequestBody) {
   const hasUltrafixGoal = body.ultrafix_goal !== undefined;
   const hasUltrafixMaxCycles = body.ultrafix_max_cycles !== undefined;

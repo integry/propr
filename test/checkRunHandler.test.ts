@@ -1440,7 +1440,7 @@ describe('shouldAutoMergePR', () => {
         assert.strictEqual(result, true);
     });
 
-    test('does not hard-block auto-merge when ultrafix state is unavailable', async () => {
+    test('blocks auto-merge when ultrafix state is unavailable while ultrafix is still labeled', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
@@ -1450,7 +1450,7 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
     test('blocks auto-merge when ultrafix finished unsuccessfully', async () => {

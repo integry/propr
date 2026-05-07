@@ -26,4 +26,19 @@ describe('plannerRoutes ultrafix execution config updates', () => {
       ultrafixMaxCycles: null,
     });
   });
+
+  test('rejects contradictory draft ultrafix payloads', () => {
+    assert.throws(
+      () => buildUpdatedExecutionConfig(
+        {
+          runUltrafix: false,
+        },
+        {
+          runUltrafix: false,
+          ultrafixGoal: 5,
+        }
+      ),
+      /runUltrafix cannot be false when ultrafixGoal or ultrafixMaxCycles is set/
+    );
+  });
 });

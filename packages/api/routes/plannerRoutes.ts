@@ -82,6 +82,9 @@ export function buildUpdatedExecutionConfig(
   const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
   const requestedUltrafixOverrides = (hasUltrafixGoal && ultrafixGoal !== null)
     || (hasUltrafixMaxCycles && ultrafixMaxCycles !== null);
+  if (runUltrafix === false && requestedUltrafixOverrides) {
+    throw new ExecutionSettingsValidationError('runUltrafix cannot be false when ultrafixGoal or ultrafixMaxCycles is set');
+  }
   const nextRunUltrafix = runUltrafix ?? (requestedUltrafixOverrides ? true : existingConfig.runUltrafix);
   const shouldClearUltrafixOverrides = nextRunUltrafix === false;
 
