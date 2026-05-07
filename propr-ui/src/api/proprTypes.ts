@@ -87,6 +87,22 @@ export interface AgentConfig {
   modelCustomLabels?: Record<string, string>;
 }
 
+export interface SystemSettings {
+  default_agent_alias?: string;
+  worker_concurrency?: string | number;
+  github_user_whitelist?: string[];
+  analysis_model_fast?: string;
+  planner_context_model?: string;
+  planner_generation_model?: string;
+  auto_followup_score_threshold?: number;
+  auto_resolve_merge_conflicts?: boolean;
+  pr_review_model?: string;
+  ultrafix_rating_goal?: number;
+  ultrafix_max_cycles?: number;
+  ultrafix_pause_seconds?: number;
+  invalid_settings?: Record<string, unknown>;
+}
+
 export interface RevertParams {
   repo: string;
   pr: string;
