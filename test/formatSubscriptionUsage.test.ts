@@ -151,30 +151,30 @@ describe('formatSubscriptionUsage', () => {
 
     // --- percentLeft legacy delta ---
 
-    test('correctly converts percentLeft-only delta to percent used', () => {
+    test('correctly converts negative percentLeft delta to percent used', () => {
         const result = formatSubscriptionUsage({
             delta: {
-                session: { percentLeft: 84 },
+                session: { percentLeft: -16 },
             },
             agent: 'claude',
         });
         assert.strictEqual(result, 'Session +16%');
     });
 
-    test('handles percentLeft of 100 (0% used) as empty', () => {
+    test('handles zero percentLeft delta as empty', () => {
         const result = formatSubscriptionUsage({
             delta: {
-                session: { percentLeft: 100 },
+                session: { percentLeft: 0 },
             },
             agent: 'claude',
         });
         assert.strictEqual(result, '');
     });
 
-    test('handles percentLeft of 0 (100% used)', () => {
+    test('handles large negative percentLeft delta as 100% used', () => {
         const result = formatSubscriptionUsage({
             delta: {
-                session: { percentLeft: 0 },
+                session: { percentLeft: -100 },
             },
             agent: 'claude',
         });

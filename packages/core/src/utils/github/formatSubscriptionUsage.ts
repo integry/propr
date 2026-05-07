@@ -38,8 +38,8 @@ function clampPercent(value: number): number {
     return Math.min(100, Math.max(0, value));
 }
 
-function extractPercentFromObject(obj: Record<string, unknown>): number | null {
-    if (typeof obj.percentLeft === 'number') return clampPercent(100 - obj.percentLeft);
+function extractPercentFromDeltaObject(obj: Record<string, unknown>): number | null {
+    if (typeof obj.percentLeft === 'number') return clampPercent(-obj.percentLeft);
     if (typeof obj.percent === 'number') return clampPercent(obj.percent);
     if (typeof obj.percentUsed === 'number') return clampPercent(obj.percentUsed);
     return null;
@@ -54,15 +54,11 @@ function extractRecordsFromArray(
     for (const item of items) {
         if (!item || typeof item !== 'object') continue;
         const entry = item as Record<string, unknown>;
-        const rawName =
-            typeof entry.model === 'string' ? entry.model :
-            typeof entry.metricKey === 'string' ? entry.metricKey :
-            key;
-        const percentValue = extractPercentFromObject(entry);
+        const percentValue = extractPercentFromDeltaObject(entry);
         if (percentValue !== null && percentValue > 0) {
             records.push({
                 agent,
-                metricKey: humanizeKey(rawName),
+                metricKey: humanizeKey(key),
                 metricValue: percentValue,
             });
         }
@@ -109,7 +105,7 @@ function extractRecordsFromDelta(
         }
 
         if (typeof value === 'object' && !Array.isArray(value)) {
-            const percentValue = extractPercentFromObject(value as Record<string, unknown>);
+            const percentValue = extractPercentFromDeltaObject(value as Record<string, unknown>);
             if (percentValue !== null && percentValue > 0) {
                 records.push({ agent, metricKey: label, metricValue: percentValue });
             }
