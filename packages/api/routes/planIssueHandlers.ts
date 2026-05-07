@@ -20,8 +20,7 @@ import {
   buildIssueConfigRollbackUpdates,
   resolveEpicLabel,
   syncPendingIssueConfigs,
-  updateIssueConfigWithRollback,
-  type PlanIssueDeps
+  updateIssueConfigWithRollback
 } from './planIssueConfigSync.js';
 import {
   buildIssueUpdate,
@@ -37,6 +36,11 @@ import {
   validateRunUltrafixValue,
   validateUltrafixValue
 } from './planIssueRouteUtils.js';
+import type { OwnershipResult } from './plannerHelpers.js';
+
+export interface PlanIssueDeps {
+  verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
+}
 
 function validateIssueStatus(status: PlanIssueStatus | undefined): string | null {
   const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
@@ -49,8 +53,8 @@ function validateUpdateIssueRequest(body: UpdateIssueRequestBody): string | null
   const statusError = validateIssueStatus(body.status);
   if (statusError) return statusError;
 
-  const runUltrafixError = validateRunUltrafixValue(body.run_ultrafix);
-  if (runUltrafixError) return runUltrafixError;
+  const runUltrafixError = validateRunUltrafixValue(body.run_ultrafix, 'run_ultrafix');
+  if (runUltrafixError) return `${runUltrafixError} (where null means inherit planner defaults)`;
 
   const ultrafixGoalError = validateUltrafixValue(body.ultrafix_goal, 'ultrafix_goal', {
     minimum: ULTRAFIX_GOAL_MIN,
@@ -138,11 +142,19 @@ async function persistNonConfigIssueUpdates(params: {
     : getPlanIssue(params.draftId, params.issueNumber);
 }
 
+function resolveIssueForResponse<T extends PlanIssue>(
+  planIssue: T,
+  contextConfig: Record<string, unknown> | null
+) {
+  return resolveIssueForImplementation(planIssue, contextConfig);
+}
+
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
   return async function getIssues(req: Request, res: Response): Promise<void> {
     try {
-      const ownership = await deps.verifyOwnership(req.params.id, req.user!.id);
+      const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+      const contextConfig = parseContextConfig(ownership.draft?.context_config);
 
       // Check for pagination query params
       const { page, limit, status } = req.query;
@@ -166,13 +178,20 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
         }
 
         const result = await getPlanIssuesByDraftPaginated(req.params.id, options);
-        res.json(result);
+        res.json({
+          ...result,
+          issues: result.issues.map((issue) => resolveIssueForResponse(issue, contextConfig))
+        });
       } else {
         // Return all issues for backward compatibility
         const issues = await getPlanIssuesByDraft(req.params.id);
-        res.json(issues);
+        res.json(issues.map((issue) => resolveIssueForResponse(issue, contextConfig)));
       }
     } catch (error) {
+      if (error instanceof ContextConfigParseError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
       console.error('Get issues error:', error);
       res.status(500).json({ error: 'Failed to fetch issues' });
     }

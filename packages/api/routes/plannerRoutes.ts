@@ -9,7 +9,15 @@ import { checkDbAndAuth, sendCheckError, verifyDraftOwnership, createDownloadCon
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
 import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createAbortGenerationHandler, createAbortRefinementHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
-import { ULTRAFIX_GOAL_MAX, ULTRAFIX_GOAL_MIN, ULTRAFIX_MAX_CYCLES_MIN } from './planIssueRouteUtils.js';
+import {
+  buildNormalizedUltrafixUpdate,
+  ULTRAFIX_GOAL_MAX,
+  ULTRAFIX_GOAL_MIN,
+  ULTRAFIX_MAX_CYCLES_MIN,
+  validateRunUltrafixValue,
+  validateUltrafixPayload,
+  validateUltrafixValue
+} from './planIssueRouteUtils.js';
 import { linkTodosToDraft, pauseDraft, resumeDraft, parseExistingContextConfig, type TaskDraftConfig } from '@propr/core';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
@@ -53,20 +61,6 @@ export function buildUpdatedExecutionConfig(
   existingConfig: DraftExecutionConfig,
   body: Record<string, unknown>,
 ): DraftExecutionConfig {
-  function parseOptionalInteger(
-    value: unknown,
-    fieldName: string,
-    options?: { minimum?: number; maximum?: number }
-  ): number | null | undefined {
-    if (value === undefined) return undefined;
-    if (value === null || value === '') return null;
-    if (!Number.isInteger(value)) throw new ExecutionSettingsValidationError(`${fieldName} must be an integer`);
-    const parsedValue = value as number;
-    if (options?.minimum !== undefined && parsedValue < options.minimum) throw new ExecutionSettingsValidationError(`${fieldName} must be at least ${options.minimum}`);
-    if (options?.maximum !== undefined && parsedValue > options.maximum) throw new ExecutionSettingsValidationError(`${fieldName} must be at most ${options.maximum}`);
-    return parsedValue;
-  }
-
   function parseOptionalBoolean(value: unknown, fieldName: string): boolean | undefined {
     if (value === undefined) return undefined;
     if (typeof value !== 'boolean') throw new ExecutionSettingsValidationError(`${fieldName} must be a boolean`);
@@ -75,26 +69,51 @@ export function buildUpdatedExecutionConfig(
 
   const useEpic = parseOptionalBoolean(body.useEpic, 'useEpic');
   const autoMerge = parseOptionalBoolean(body.autoMerge, 'autoMerge');
-  const runUltrafix = parseOptionalBoolean(body.runUltrafix, 'runUltrafix');
-  const ultrafixGoal = parseOptionalInteger(body.ultrafixGoal, 'ultrafixGoal', { minimum: ULTRAFIX_GOAL_MIN, maximum: ULTRAFIX_GOAL_MAX });
-  const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
+  const runUltrafixError = validateRunUltrafixValue(body.runUltrafix, 'runUltrafix');
+  if (runUltrafixError) throw new ExecutionSettingsValidationError(runUltrafixError);
+  const ultrafixGoalError = validateUltrafixValue(body.ultrafixGoal, 'ultrafixGoal', {
+    minimum: ULTRAFIX_GOAL_MIN,
+    maximum: ULTRAFIX_GOAL_MAX
+  });
+  if (ultrafixGoalError) throw new ExecutionSettingsValidationError(ultrafixGoalError);
+  const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafixMaxCycles, 'ultrafixMaxCycles', {
+    minimum: ULTRAFIX_MAX_CYCLES_MIN
+  });
+  if (ultrafixMaxCyclesError) throw new ExecutionSettingsValidationError(ultrafixMaxCyclesError);
+  const ultrafixPayloadError = validateUltrafixPayload({
+    runUltrafix: body.runUltrafix as boolean | number | null | undefined,
+    ultrafixGoal: body.ultrafixGoal as number | null | undefined,
+    ultrafixMaxCycles: body.ultrafixMaxCycles as number | null | undefined,
+    fieldNames: {
+      run: 'runUltrafix',
+      goal: 'ultrafixGoal',
+      maxCycles: 'ultrafixMaxCycles'
+    }
+  });
+  if (ultrafixPayloadError) throw new ExecutionSettingsValidationError(ultrafixPayloadError);
+
   const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
   const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
-  const requestedUltrafixOverrides = (hasUltrafixGoal && ultrafixGoal !== null)
-    || (hasUltrafixMaxCycles && ultrafixMaxCycles !== null);
-  if (runUltrafix === false && requestedUltrafixOverrides) {
-    throw new ExecutionSettingsValidationError('runUltrafix cannot be false when ultrafixGoal or ultrafixMaxCycles is set');
-  }
-  const nextRunUltrafix = runUltrafix ?? (requestedUltrafixOverrides ? true : existingConfig.runUltrafix);
-  const shouldClearUltrafixOverrides = nextRunUltrafix === false;
+  const normalizedUltrafixUpdate = buildNormalizedUltrafixUpdate({
+    runUltrafix: body.runUltrafix as boolean | number | null | undefined,
+    ultrafixGoal: body.ultrafixGoal as number | null | undefined,
+    ultrafixMaxCycles: body.ultrafixMaxCycles as number | null | undefined,
+    hasUltrafixGoal,
+    hasUltrafixMaxCycles,
+    existingRunUltrafix: existingConfig.runUltrafix ?? null
+  });
 
   return {
     ...existingConfig,
     useEpic: useEpic ?? existingConfig.useEpic,
     autoMerge: autoMerge ?? existingConfig.autoMerge,
-    runUltrafix: nextRunUltrafix,
-    ultrafixGoal: shouldClearUltrafixOverrides ? null : (hasUltrafixGoal ? ultrafixGoal : existingConfig.ultrafixGoal),
-    ultrafixMaxCycles: shouldClearUltrafixOverrides ? null : (hasUltrafixMaxCycles ? ultrafixMaxCycles : existingConfig.ultrafixMaxCycles),
+    runUltrafix: normalizedUltrafixUpdate.runUltrafix ?? undefined,
+    ultrafixGoal: normalizedUltrafixUpdate.ultrafixGoal !== undefined
+      ? normalizedUltrafixUpdate.ultrafixGoal
+      : existingConfig.ultrafixGoal,
+    ultrafixMaxCycles: normalizedUltrafixUpdate.ultrafixMaxCycles !== undefined
+      ? normalizedUltrafixUpdate.ultrafixMaxCycles
+      : existingConfig.ultrafixMaxCycles,
   };
 }
 

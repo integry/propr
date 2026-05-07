@@ -5,12 +5,7 @@ import {
   safeUpdateLabels,
   updatePlanIssue
 } from '@propr/core';
-import type { OwnershipResult } from './plannerHelpers.js';
 import { getLlmLabel, getOrCreateEpicLabel } from './planIssueHelpers.js';
-
-export interface PlanIssueDeps {
-  verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
-}
 
 const IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE = 5;
 
@@ -191,8 +186,7 @@ export async function syncPendingIssueConfigs(params: {
   try {
     for (let index = 0; index < params.pendingIssues.length; index += IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE) {
       const issueBatch = params.pendingIssues.slice(index, index + IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE);
-
-      for (const issue of issueBatch) {
+      const batchResults = await Promise.allSettled(issueBatch.map(async (issue) => {
         await updateIssueConfigWithRollback({
           draftId: params.draftId,
           issueNumber: issue.issue_number,
@@ -201,7 +195,16 @@ export async function syncPendingIssueConfigs(params: {
           updates: params.updates,
           octokit
         });
-        updatedIssues.push(issue);
+        return issue;
+      }));
+
+      for (const result of batchResults) {
+        if (result.status === 'fulfilled') {
+          updatedIssues.push(result.value);
+          continue;
+        }
+
+        throw result.reason;
       }
     }
   } catch (error) {

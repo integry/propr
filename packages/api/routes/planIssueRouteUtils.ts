@@ -50,6 +50,18 @@ export function sanitizeUltrafixMaxCycles(value: unknown): number | null {
     : null;
 }
 
+type UltrafixFieldNames = {
+  run: string;
+  goal: string;
+  maxCycles: string;
+};
+
+type NormalizedUltrafixUpdate = {
+  runUltrafix: boolean | null | undefined;
+  ultrafixGoal: number | null | undefined;
+  ultrafixMaxCycles: number | null | undefined;
+};
+
 function logInvalidPersistedUltrafixValue(params: {
   source: 'plan_issue' | 'planner_context';
   issueNumber?: number;
@@ -188,53 +200,106 @@ export function normalizeRunUltrafix(value: boolean | number | null | undefined)
   return undefined;
 }
 
-export function validateRunUltrafixValue(value: unknown): string | null {
+export function validateRunUltrafixValue(
+  value: unknown,
+  fieldName = 'run_ultrafix'
+): string | null {
   if (value === undefined || value === null) return null;
   if (value === true || value === false || value === 1 || value === 0) return null;
-  return 'run_ultrafix must be a boolean, 1, 0, or null (where null means inherit planner defaults)';
+  return `${fieldName} must be a boolean, 1, 0, or null`;
 }
 
-export function validateIssueUltrafixPayload(body: UpdateIssueRequestBody): string | null {
-  const normalizedRunUltrafix = normalizeRunUltrafix(body.run_ultrafix);
-  const hasExplicitOverrides = body.ultrafix_goal !== undefined && body.ultrafix_goal !== null
-    || body.ultrafix_max_cycles !== undefined && body.ultrafix_max_cycles !== null;
-
-  if (normalizedRunUltrafix === false && hasExplicitOverrides) {
-    return 'run_ultrafix cannot be false when ultrafix_goal or ultrafix_max_cycles is set';
+export function validateUltrafixPayload(params: {
+  runUltrafix: boolean | number | null | undefined;
+  ultrafixGoal: number | null | undefined;
+  ultrafixMaxCycles: number | null | undefined;
+  fieldNames?: UltrafixFieldNames;
+  allowInheritedRun?: boolean;
+}): string | null {
+  const fieldNames = params.fieldNames ?? {
+    run: 'run_ultrafix',
+    goal: 'ultrafix_goal',
+    maxCycles: 'ultrafix_max_cycles'
+  };
+  const runUltrafixError = validateRunUltrafixValue(params.runUltrafix, fieldNames.run);
+  if (runUltrafixError) {
+    return params.allowInheritedRun
+      ? `${runUltrafixError} (where null means inherit planner defaults)`
+      : runUltrafixError;
   }
 
-  if (normalizedRunUltrafix === null && hasExplicitOverrides) {
-    return 'run_ultrafix cannot inherit planner defaults when ultrafix_goal or ultrafix_max_cycles is set';
+  const normalizedRunUltrafix = normalizeRunUltrafix(params.runUltrafix);
+  const hasExplicitOverrides = params.ultrafixGoal !== undefined && params.ultrafixGoal !== null
+    || params.ultrafixMaxCycles !== undefined && params.ultrafixMaxCycles !== null;
+
+  if (normalizedRunUltrafix === false && hasExplicitOverrides) {
+    return `${fieldNames.run} cannot be false when ${fieldNames.goal} or ${fieldNames.maxCycles} is set`;
+  }
+
+  if (params.allowInheritedRun && normalizedRunUltrafix === null && hasExplicitOverrides) {
+    return `${fieldNames.run} cannot inherit planner defaults when ${fieldNames.goal} or ${fieldNames.maxCycles} is set`;
   }
 
   return null;
 }
 
+export function validateIssueUltrafixPayload(body: UpdateIssueRequestBody): string | null {
+  return validateUltrafixPayload({
+    runUltrafix: body.run_ultrafix,
+    ultrafixGoal: body.ultrafix_goal,
+    ultrafixMaxCycles: body.ultrafix_max_cycles,
+    allowInheritedRun: true
+  });
+}
+
+export function buildNormalizedUltrafixUpdate(params: {
+  runUltrafix: boolean | number | null | undefined;
+  ultrafixGoal: number | null | undefined;
+  ultrafixMaxCycles: number | null | undefined;
+  hasUltrafixGoal: boolean;
+  hasUltrafixMaxCycles: boolean;
+  existingRunUltrafix?: boolean | null;
+}): NormalizedUltrafixUpdate {
+  const requestedIssueOverrides = (params.hasUltrafixGoal && params.ultrafixGoal !== null)
+    || (params.hasUltrafixMaxCycles && params.ultrafixMaxCycles !== null);
+  const normalizedRunUltrafix = normalizeRunUltrafix(params.runUltrafix);
+  const runUltrafix = normalizedRunUltrafix === undefined
+    ? (requestedIssueOverrides ? true : params.existingRunUltrafix)
+    : normalizedRunUltrafix;
+  const shouldClearUltrafixOverrides = runUltrafix === false || runUltrafix === null;
+
+  return {
+    runUltrafix,
+    ultrafixGoal: shouldClearUltrafixOverrides
+      ? null
+      : params.hasUltrafixGoal
+        ? sanitizeUltrafixGoal(params.ultrafixGoal)
+        : undefined,
+    ultrafixMaxCycles: shouldClearUltrafixOverrides
+      ? null
+      : params.hasUltrafixMaxCycles
+        ? sanitizeUltrafixMaxCycles(params.ultrafixMaxCycles)
+        : undefined
+  };
+}
+
 export function buildIssueUpdate(body: UpdateIssueRequestBody) {
   const hasUltrafixGoal = body.ultrafix_goal !== undefined;
   const hasUltrafixMaxCycles = body.ultrafix_max_cycles !== undefined;
-  const requestedIssueOverrides = (hasUltrafixGoal && body.ultrafix_goal !== null)
-    || (hasUltrafixMaxCycles && body.ultrafix_max_cycles !== null);
-  const normalizedRunUltrafix = normalizeRunUltrafix(body.run_ultrafix);
-  const runUltrafix = normalizedRunUltrafix === undefined && requestedIssueOverrides
-    ? true
-    : normalizedRunUltrafix;
-  const shouldClearUltrafixOverrides = runUltrafix === false || runUltrafix === null;
+  const normalizedUltrafixUpdate = buildNormalizedUltrafixUpdate({
+    runUltrafix: body.run_ultrafix,
+    ultrafixGoal: body.ultrafix_goal,
+    ultrafixMaxCycles: body.ultrafix_max_cycles,
+    hasUltrafixGoal,
+    hasUltrafixMaxCycles
+  });
 
   return {
     agent_alias: body.agent_alias !== undefined ? body.agent_alias : undefined,
     model_name: body.model_name !== undefined ? body.model_name : undefined,
     status: body.status !== undefined ? body.status : undefined,
-    run_ultrafix: runUltrafix,
-    ultrafix_goal: shouldClearUltrafixOverrides
-      ? null
-      : hasUltrafixGoal
-        ? sanitizeUltrafixGoal(body.ultrafix_goal)
-        : undefined,
-    ultrafix_max_cycles: shouldClearUltrafixOverrides
-      ? null
-      : hasUltrafixMaxCycles
-        ? sanitizeUltrafixMaxCycles(body.ultrafix_max_cycles)
-        : undefined
+    run_ultrafix: normalizedUltrafixUpdate.runUltrafix,
+    ultrafix_goal: normalizedUltrafixUpdate.ultrafixGoal,
+    ultrafix_max_cycles: normalizedUltrafixUpdate.ultrafixMaxCycles
   };
 }
