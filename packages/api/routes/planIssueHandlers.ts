@@ -302,6 +302,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const { agent_alias, model_name } = req.body;
       const { useEpic, autoMerge } = resolveImplementationSettings(req.body, contextConfig);
       const existingIssues = await getPlanIssuesByDraft(draftId);
+      const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
       if (agent_alias !== undefined || model_name !== undefined) {
         await batchUpdatePlanIssueConfig({
@@ -314,7 +315,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
           await syncModelLabelsForIssues({
             draftId,
             repository,
-            issues: existingIssues,
+            issues: pendingIssues,
             modelName: model_name
           });
         }
@@ -323,9 +324,9 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const issues = agent_alias !== undefined || model_name !== undefined
         ? await getPlanIssuesByDraft(draftId)
         : existingIssues;
-      const pendingIssues = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
+      const pendingIssuesForImplementation = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
-      if (pendingIssues.length === 0) {
+      if (pendingIssuesForImplementation.length === 0) {
         res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });
         return;
       }
@@ -339,12 +340,12 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       // Get existing epic label or create new one
       const epicLabelName = await resolveEpicLabel(useEpic, {
         draftId, owner, repo, draft: draft as Record<string, unknown>,
-        firstIssueNumber: pendingIssues[0].issue_number,
+        firstIssueNumber: pendingIssuesForImplementation[0].issue_number,
         contextConfig, correlationId, labelLogger
       });
 
       const resolvedIssuesForImplementation = await Promise.all(
-        pendingIssues.map((issue) => resolveAndPersistIssueUltrafixSettings(draftId, issue, contextConfig))
+        pendingIssuesForImplementation.map((issue) => resolveAndPersistIssueUltrafixSettings(draftId, issue, contextConfig))
       );
 
       const { results, queuedCount } = await processBatchIssues({

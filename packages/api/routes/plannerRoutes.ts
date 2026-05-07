@@ -335,7 +335,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
     const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
     const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
-    const nextRunUltrafix = runUltrafix ?? existingConfig.runUltrafix;
+    const requestedUltrafixOverrides = hasUltrafixGoal || hasUltrafixMaxCycles;
+    const nextRunUltrafix = runUltrafix ?? (requestedUltrafixOverrides ? true : existingConfig.runUltrafix);
     const shouldClearUltrafixOverrides = nextRunUltrafix === false;
 
     return {

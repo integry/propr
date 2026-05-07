@@ -105,6 +105,19 @@ export function resolveImplementationSettings(
   };
 }
 
+function haveEquivalentUltrafixOverrides(
+  planIssue: {
+    run_ultrafix?: boolean | number | null;
+    ultrafix_goal?: number | null;
+    ultrafix_max_cycles?: number | null;
+  },
+  issueOverrides: UpdatePlanIssueInput
+): boolean {
+  return normalizeRunUltrafix(planIssue.run_ultrafix) === normalizeRunUltrafix(issueOverrides.run_ultrafix)
+    && sanitizeUltrafixGoal(planIssue.ultrafix_goal) === sanitizeUltrafixGoal(issueOverrides.ultrafix_goal)
+    && sanitizeUltrafixMaxCycles(planIssue.ultrafix_max_cycles) === sanitizeUltrafixMaxCycles(issueOverrides.ultrafix_max_cycles);
+}
+
 export function resolveIssueUltrafixSettings(
   planIssue: {
     issue_number?: number;
@@ -190,11 +203,7 @@ export async function resolveAndPersistIssueUltrafixSettings<T extends {
   const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
   const issueOverrides = getIssueUltrafixOverrides(planIssue);
 
-  if (
-    planIssue.run_ultrafix === issueOverrides.run_ultrafix &&
-    planIssue.ultrafix_goal === issueOverrides.ultrafix_goal &&
-    planIssue.ultrafix_max_cycles === issueOverrides.ultrafix_max_cycles
-  ) {
+  if (haveEquivalentUltrafixOverrides(planIssue, issueOverrides)) {
     return buildIssueForImplementation(planIssue, ultrafixSettings);
   }
 
