@@ -14,7 +14,7 @@ type PlanIssueConfigState = {
   model_name?: string | null;
 };
 
-class IssueConfigSyncReconciliationError extends Error {
+export class IssueConfigSyncReconciliationError extends Error {
   constructor(message: string, readonly details: Record<string, unknown>) {
     super(message);
     this.name = 'IssueConfigSyncReconciliationError';

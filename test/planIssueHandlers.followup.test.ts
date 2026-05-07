@@ -123,6 +123,55 @@ describe('planIssueHandlers follow-up fixes', () => {
     ]);
   });
 
+  test('updateIssueHandler returns a reconciliation payload when rollback fails', async () => {
+    resetMocks();
+    const handler = createUpdateIssueHandler({
+      verifyOwnership: async () => ({
+        authorized: true,
+        draft: {
+          repository: 'owner/repo',
+        },
+      }),
+    });
+
+    mockGetPlanIssue.mock.mockImplementation(async () => ({
+      issue_number: 16,
+      agent_alias: 'codex',
+      model_name: 'gpt-5.4',
+    }));
+    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => {
+      throw new Error('db write failed');
+    });
+    mockSafeUpdateLabels.mock.mockImplementationOnce(async () => {});
+    mockSafeUpdateLabels.mock.mockImplementationOnce(async () => {
+      throw new Error('rollback label sync failed');
+    });
+
+    const req = {
+      params: { id: 'draft-rollback', issueNumber: '16' },
+      user: { id: 'user-1' },
+      body: { model_name: 'gpt-5.5' },
+    };
+    const res = createResponse();
+
+    await handler(req as never, res as never);
+
+    assert.strictEqual(res.statusCode, 409);
+    assert.deepStrictEqual(res.body, {
+      error: 'Failed to persist issue config after GitHub labels changed; manual reconciliation required',
+      code: 'ISSUE_CONFIG_SYNC_RECONCILIATION_REQUIRED',
+      details: {
+        draftId: 'draft-rollback',
+        issueNumber: 16,
+        repository: 'owner/repo',
+        persistedModelName: 'gpt-5.4',
+        githubLabelModelName: 'gpt-5.5',
+        updateError: 'db write failed',
+        rollbackError: 'rollback label sync failed',
+      },
+    });
+  });
+
   test('implementAllIssues only rewrites pending issues before implementation', async () => {
     resetMocks();
     const handler = createImplementAllIssuesHandler({

@@ -9,7 +9,6 @@ import {
   type PlanTask,
   type CreatedIssue
 } from './githubIssueService.js';
-import { parseExistingContextConfig } from './planning/previewUtils.js';
 import type { TaskDraftConfig } from './planning/planningTypes.js';
 
 // Re-export Epic PR functions from separate module
@@ -67,17 +66,25 @@ interface ValidatedDraftData {
   contextConfig: TaskExecutionContextConfig;
 }
 
-function parseContextConfig(
+export function parseContextConfig(
   contextConfig: string | TaskExecutionContextConfig
 ): TaskExecutionContextConfig {
+  if (!contextConfig) {
+    return {};
+  }
   if (typeof contextConfig !== 'string') {
     return contextConfig ?? {};
   }
 
-  return parseExistingContextConfig(contextConfig) ?? {};
+  const parsed = JSON.parse(contextConfig) as unknown;
+  if (!parsed) return {};
+  if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return parsed as TaskExecutionContextConfig;
+  }
+  throw new Error('Draft context_config must be a JSON object');
 }
 
-function buildExecutionContextConfig(
+export function buildExecutionContextConfig(
   existingConfig: TaskExecutionContextConfig,
   results: CreatedIssue[],
   failures: Array<{ taskIndex: number; title: string; error: string }>

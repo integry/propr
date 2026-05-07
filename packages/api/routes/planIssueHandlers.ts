@@ -18,6 +18,7 @@ import {
 } from './planIssueHelpers.js';
 import {
   buildIssueConfigRollbackUpdates,
+  IssueConfigSyncReconciliationError,
   resolveEpicLabel,
   syncPendingIssueConfigs,
   updateIssueConfigWithRollback
@@ -141,6 +142,17 @@ async function persistNonConfigIssueUpdates(params: {
   return hasNonConfigUpdates
     ? updatePlanIssue(params.draftId, params.issueNumber, nonConfigUpdates)
     : getPlanIssue(params.draftId, params.issueNumber);
+}
+
+function sendIssueConfigSyncReconciliationError(
+  res: Response,
+  error: IssueConfigSyncReconciliationError
+): void {
+  res.status(409).json({
+    error: error.message,
+    code: 'ISSUE_CONFIG_SYNC_RECONCILIATION_REQUIRED',
+    details: error.details
+  });
 }
 
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
@@ -314,6 +326,10 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       }
       res.json(resolveIssueForResponse(updated));
     } catch (error) {
+      if (error instanceof IssueConfigSyncReconciliationError) {
+        sendIssueConfigSyncReconciliationError(res, error);
+        return;
+      }
       console.error('Update issue error:', error);
       res.status(500).json({ error: 'Failed to update issue' });
     }
@@ -406,6 +422,10 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
     } catch (error) {
       if (error instanceof ContextConfigParseError) {
         res.status(409).json({ error: error.message });
+        return;
+      }
+      if (error instanceof IssueConfigSyncReconciliationError) {
+        sendIssueConfigSyncReconciliationError(res, error);
         return;
       }
       console.error('Implement all issues error:', error);

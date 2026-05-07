@@ -57,6 +57,28 @@ type DraftExecutionConfig = Partial<TaskDraftConfig> & {
   ultrafixMaxCycles?: number | null;
 };
 
+function parseExecutionConfigRecord(contextConfig: unknown): Record<string, unknown> {
+  if (!contextConfig) return {};
+  if (typeof contextConfig !== 'string') {
+    if (typeof contextConfig === 'object' && !Array.isArray(contextConfig)) {
+      return { ...(contextConfig as Record<string, unknown>) };
+    }
+    throw new ExecutionSettingsContextConfigError('Failed to parse existing execution settings: context_config must be a JSON object');
+  }
+
+  try {
+    const parsed = JSON.parse(contextConfig) as unknown;
+    if (!parsed) return {};
+    if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    throw new ExecutionSettingsContextConfigError('Failed to parse existing execution settings: context_config must be a JSON object');
+  } catch (error) {
+    if (error instanceof ExecutionSettingsContextConfigError) throw error;
+    throw new ExecutionSettingsContextConfigError(`Failed to parse existing execution settings: ${(error as Error).message}`);
+  }
+}
+
 export function buildUpdatedExecutionConfig(
   existingConfig: DraftExecutionConfig,
   body: Record<string, unknown>,
@@ -101,7 +123,8 @@ export function buildUpdatedExecutionConfig(
     ultrafixMaxCycles: body.ultrafixMaxCycles as number | null | undefined,
     hasRunUltrafix,
     hasUltrafixGoal,
-    hasUltrafixMaxCycles
+    hasUltrafixMaxCycles,
+    promoteRunUltrafixOnOverrides: false
   });
   const updatedRunUltrafix = normalizedUltrafixUpdate.runUltrafix === null
     ? existingConfig.runUltrafix
@@ -123,20 +146,23 @@ export function buildUpdatedExecutionConfig(
   };
 }
 
+export function mergeExecutionContextConfig(
+  contextConfig: unknown,
+  updatedConfig: DraftExecutionConfig
+): DraftExecutionConfig {
+  return {
+    ...parseExecutionConfigRecord(contextConfig),
+    ...updatedConfig,
+  };
+}
+
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
   const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
   const parseExistingExecutionConfig = (contextConfig: unknown): DraftExecutionConfig => {
     const parsedConfig = parseExistingContextConfig(contextConfig as TaskDraftConfig | string | null | undefined);
     if (parsedConfig) return parsedConfig as DraftExecutionConfig;
-    if (contextConfig) {
-      try {
-        JSON.parse(contextConfig as string);
-      } catch (error) {
-        throw new ExecutionSettingsContextConfigError(`Failed to parse existing execution settings: ${(error as Error).message}`);
-      }
-    }
-    return {};
+    return parseExecutionConfigRecord(contextConfig) as DraftExecutionConfig;
   };
   const sendExecutionSettingsResponse = (res: Response, updatedConfig: DraftExecutionConfig): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
 
@@ -389,8 +415,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
       const existingConfig = parseExistingExecutionConfig(ownership.draft!.context_config);
       const updatedConfig = buildUpdatedExecutionConfig(existingConfig, req.body as Record<string, unknown>);
+      const persistedConfig = mergeExecutionContextConfig(ownership.draft!.context_config, updatedConfig);
 
-      await db!('task_drafts').where({ draft_id: req.params.id }).update({ context_config: JSON.stringify(updatedConfig), updated_at: db!.fn.now() });
+      await db!('task_drafts').where({ draft_id: req.params.id }).update({ context_config: JSON.stringify(persistedConfig), updated_at: db!.fn.now() });
       sendExecutionSettingsResponse(res, updatedConfig);
     } catch (error) {
       if (error instanceof ExecutionSettingsValidationError) {

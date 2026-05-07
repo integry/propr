@@ -334,6 +334,7 @@ export function buildNormalizedUltrafixUpdate(params: {
   hasRunUltrafix: boolean;
   hasUltrafixGoal: boolean;
   hasUltrafixMaxCycles: boolean;
+  promoteRunUltrafixOnOverrides?: boolean;
 }): NormalizedUltrafixUpdate {
   const hasAnyUltrafixUpdate = params.hasRunUltrafix || params.hasUltrafixGoal || params.hasUltrafixMaxCycles;
   if (!hasAnyUltrafixUpdate) {
@@ -344,11 +345,12 @@ export function buildNormalizedUltrafixUpdate(params: {
     };
   }
 
+  const promoteRunUltrafixOnOverrides = params.promoteRunUltrafixOnOverrides ?? true;
   const requestedIssueOverrides = (params.hasUltrafixGoal && params.ultrafixGoal !== null)
     || (params.hasUltrafixMaxCycles && params.ultrafixMaxCycles !== null);
   const normalizedRunUltrafix = normalizeRunUltrafix(params.runUltrafix);
   const runUltrafix = normalizedRunUltrafix === undefined
-    ? (requestedIssueOverrides ? true : undefined)
+    ? (requestedIssueOverrides && promoteRunUltrafixOnOverrides ? true : undefined)
     : normalizedRunUltrafix;
   const shouldClearUltrafixOverrides = runUltrafix === false || runUltrafix === null;
 
