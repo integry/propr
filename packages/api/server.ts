@@ -75,11 +75,17 @@ function buildRedisConnectionOptions(): RedisOptions {
         rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
       };
     }
+    if (parsedUrl.pathname && parsedUrl.pathname !== '/') {
+      const db = parseInt(parsedUrl.pathname.slice(1), 10);
+      if (!Number.isNaN(db)) {
+        options.db = db;
+      }
+    }
 
     return options;
   }
 
-  options.host = process.env.REDIS_HOST || '127.0.0.1';
+  options.host = process.env.REDIS_HOST || 'redis';
   options.port = parseInt(process.env.REDIS_PORT || '6379', 10);
 
   if (process.env.REDIS_USERNAME) {
@@ -106,8 +112,9 @@ function buildRedisUrlFromOptions(options: RedisOptions): string {
     : options.password
       ? `:${encodeURIComponent(options.password)}@`
       : '';
+  const database = typeof options.db === 'number' ? `/${options.db}` : '';
 
-  return `${protocol}://${credentials}${host}:${port}`;
+  return `${protocol}://${credentials}${host}:${port}${database}`;
 }
 
 function getRedisRuntimeConfig(): { url?: string; options: RedisOptions } {

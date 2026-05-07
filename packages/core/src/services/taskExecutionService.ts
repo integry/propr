@@ -64,6 +64,7 @@ interface ValidatedDraftData {
   owner: string;
   repoName: string;
   isReFinalization: boolean;
+  contextConfig: TaskExecutionContextConfig;
 }
 
 function parseContextConfig(
@@ -155,12 +156,15 @@ async function validateAndPrepareDraft(
     throw new Error(`Invalid repository format: ${draft.repository}`);
   }
 
+  const contextConfig = parseContextConfig(draft.context_config);
+
   return {
     draft,
     planJson,
     owner,
     repoName,
-    isReFinalization
+    isReFinalization,
+    contextConfig
   };
 }
 
@@ -186,7 +190,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     throw error;
   }
 
-  const { draft, planJson, owner, repoName } = validatedData;
+  const { draft, planJson, owner, repoName, contextConfig } = validatedData;
   const totalCount = planJson.length;
 
   // Emit initial progress event
@@ -232,6 +236,9 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       taskIndex: i,
       draftId,
       repository: draft.repository,
+      runUltrafix: contextConfig.runUltrafix === true,
+      ultrafixGoal: contextConfig.runUltrafix === true ? contextConfig.ultrafixGoal ?? null : null,
+      ultrafixMaxCycles: contextConfig.runUltrafix === true ? contextConfig.ultrafixMaxCycles ?? null : null,
       correlatedLogger,
       correlationId
     });
@@ -294,7 +301,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     }
   }
 
-  const updatedConfig = buildExecutionContextConfig(parseContextConfig(draft.context_config), results, failures);
+  const updatedConfig = buildExecutionContextConfig(contextConfig, results, failures);
 
   await db!('task_drafts')
     .where({ draft_id: draftId })

@@ -87,4 +87,20 @@ describe('planIssueRouteUtils ultrafix overrides', () => {
       ultrafix_max_cycles: null,
     });
   });
+
+  test('issue-level goal or max updates promote the issue to explicit ultrafix mode', () => {
+    const update = buildIssueUpdate({
+      ultrafix_goal: 8,
+      ultrafix_max_cycles: 3,
+    });
+
+    assert.deepStrictEqual(update, {
+      agent_alias: undefined,
+      model_name: undefined,
+      status: undefined,
+      run_ultrafix: true,
+      ultrafix_goal: 8,
+      ultrafix_max_cycles: 3,
+    });
+  });
 });

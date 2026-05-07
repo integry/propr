@@ -218,7 +218,13 @@ export function validateRunUltrafixValue(value: unknown): string | null {
 }
 
 export function buildIssueUpdate(body: UpdateIssueRequestBody) {
-  const runUltrafix = normalizeRunUltrafix(body.run_ultrafix);
+  const hasUltrafixGoal = body.ultrafix_goal !== undefined;
+  const hasUltrafixMaxCycles = body.ultrafix_max_cycles !== undefined;
+  const requestedIssueOverrides = hasUltrafixGoal || hasUltrafixMaxCycles;
+  const normalizedRunUltrafix = normalizeRunUltrafix(body.run_ultrafix);
+  const runUltrafix = normalizedRunUltrafix === undefined && requestedIssueOverrides
+    ? true
+    : normalizedRunUltrafix;
   const shouldClearUltrafixOverrides = runUltrafix === false || runUltrafix === null;
 
   return {
@@ -228,12 +234,12 @@ export function buildIssueUpdate(body: UpdateIssueRequestBody) {
     run_ultrafix: runUltrafix,
     ultrafix_goal: shouldClearUltrafixOverrides
       ? null
-      : body.ultrafix_goal !== undefined
+      : hasUltrafixGoal
         ? sanitizeUltrafixGoal(body.ultrafix_goal)
         : undefined,
     ultrafix_max_cycles: shouldClearUltrafixOverrides
       ? null
-      : body.ultrafix_max_cycles !== undefined
+      : hasUltrafixMaxCycles
         ? sanitizeUltrafixMaxCycles(body.ultrafix_max_cycles)
         : undefined
   };
