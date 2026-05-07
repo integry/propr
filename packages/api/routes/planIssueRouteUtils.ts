@@ -1,4 +1,4 @@
-import { PlanIssueStatus, updatePlanIssue } from '@propr/core';
+import { PlanIssueStatus, updatePlanIssue, type UpdatePlanIssueInput } from '@propr/core';
 
 export interface ImplementationSettings {
   useEpic: boolean;
@@ -7,12 +7,6 @@ export interface ImplementationSettings {
 
 export interface ResolvedUltrafixSettings {
   runUltrafix: boolean;
-  ultrafixGoal: number | null;
-  ultrafixMaxCycles: number | null;
-}
-
-interface IssueUltrafixOverrides {
-  runUltrafix: boolean | null;
   ultrafixGoal: number | null;
   ultrafixMaxCycles: number | null;
 }
@@ -117,16 +111,16 @@ function getIssueUltrafixOverrides(planIssue: {
   run_ultrafix?: boolean | number | null;
   ultrafix_goal?: number | null;
   ultrafix_max_cycles?: number | null;
-}): IssueUltrafixOverrides {
+}): UpdatePlanIssueInput {
   const runUltrafix = normalizeRunUltrafix(planIssue.run_ultrafix);
   const hasExplicitUltrafixOverride = runUltrafix === true;
 
   return {
     // `null` means "inherit planner defaults", so preserve it instead of
     // materializing the resolved planner value into the issue record.
-    runUltrafix: runUltrafix ?? null,
-    ultrafixGoal: hasExplicitUltrafixOverride ? sanitizeUltrafixGoal(planIssue.ultrafix_goal) : null,
-    ultrafixMaxCycles: hasExplicitUltrafixOverride ? sanitizeUltrafixMaxCycles(planIssue.ultrafix_max_cycles) : null
+    run_ultrafix: runUltrafix ?? null,
+    ultrafix_goal: hasExplicitUltrafixOverride ? sanitizeUltrafixGoal(planIssue.ultrafix_goal) : null,
+    ultrafix_max_cycles: hasExplicitUltrafixOverride ? sanitizeUltrafixMaxCycles(planIssue.ultrafix_max_cycles) : null
   };
 }
 
@@ -154,9 +148,9 @@ export async function resolveAndPersistIssueUltrafixSettings<T extends {
   const issueOverrides = getIssueUltrafixOverrides(planIssue);
 
   if (
-    planIssue.run_ultrafix === issueOverrides.runUltrafix &&
-    planIssue.ultrafix_goal === issueOverrides.ultrafixGoal &&
-    planIssue.ultrafix_max_cycles === issueOverrides.ultrafixMaxCycles
+    planIssue.run_ultrafix === issueOverrides.run_ultrafix &&
+    planIssue.ultrafix_goal === issueOverrides.ultrafix_goal &&
+    planIssue.ultrafix_max_cycles === issueOverrides.ultrafix_max_cycles
   ) {
     return buildIssueForImplementation(planIssue, ultrafixSettings);
   }
