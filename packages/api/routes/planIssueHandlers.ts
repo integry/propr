@@ -72,10 +72,7 @@ function validateUpdateIssueRequest(body: UpdateIssueRequestBody): string | null
   if (ultrafixMaxCyclesError) return ultrafixMaxCyclesError;
   return validateIssueUltrafixPayload(body);
 }
-function buildConfigUpdatesFromIssueUpdate(issueUpdates: ReturnType<typeof buildIssueUpdate>): {
-  agent_alias?: string | null;
-  model_name?: string | null;
-} {
+function buildConfigUpdatesFromIssueUpdate(issueUpdates: ReturnType<typeof buildIssueUpdate>): { agent_alias?: string | null; model_name?: string | null } {
   const configUpdates: { agent_alias?: string | null; model_name?: string | null } = {};
   if (issueUpdates.agent_alias !== undefined) configUpdates.agent_alias = issueUpdates.agent_alias;
   if (issueUpdates.model_name !== undefined) configUpdates.model_name = issueUpdates.model_name;
@@ -145,11 +142,11 @@ async function persistNonConfigIssueUpdates(params: {
     ultrafix_max_cycles: params.issueUpdates.ultrafix_max_cycles
   };
   const hasNonConfigUpdates = Object.values(nonConfigUpdates).some((value) => value !== undefined);
-
   return hasNonConfigUpdates
     ? updatePlanIssue(params.draftId, params.issueNumber, nonConfigUpdates)
     : getPlanIssue(params.draftId, params.issueNumber);
 }
+
 function sendIssueConfigSyncReconciliationError(res: Response, error: IssueConfigSyncReconciliationError): void {
   res.status(409).json({
     error: error.message,
@@ -202,11 +199,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const contextConfig = parseContextConfig(draft.context_config);
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      const [issueForImplementation] = await persistEffectiveUltrafixSettings({
-        draftId,
-        issues: [planIssue],
-        contextConfig
-      });
+      const [issueForImplementation] = await persistEffectiveUltrafixSettings({ draftId, issues: [planIssue], contextConfig });
       const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as {
         useEpic?: unknown;
         autoMerge?: unknown;
@@ -365,11 +358,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         firstIssueNumber: pendingIssuesForImplementation[0].issue_number,
         contextConfig, correlationId, labelLogger
       });
-      const resolvedIssuesForImplementation = await persistEffectiveUltrafixSettings({
-        draftId,
-        issues: pendingIssuesForImplementation,
-        contextConfig
-      });
+      const resolvedIssuesForImplementation = await persistEffectiveUltrafixSettings({ draftId, issues: pendingIssuesForImplementation, contextConfig });
       const { results, queuedCount } = await processBatchIssues({
         octokit,
         owner,
