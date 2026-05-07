@@ -220,10 +220,12 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const correlationId = `implement-${draftId}-${issueNumber}`;
       const labelLogger = logger.withCorrelation(correlationId);
 
-      // Get existing epic label or create new one (using first pending issue number for consistency)
-      const allIssues = await getPlanIssuesByDraft(draftId);
-      const pendingIssues = allIssues.filter(i => i.status === PlanIssueStatus.PENDING);
-      const firstIssueNumber = pendingIssues.length > 0 ? pendingIssues[0].issue_number : issueNumber;
+      const firstPendingIssue = await getPlanIssuesByDraftPaginated(draftId, {
+        status: PlanIssueStatus.PENDING,
+        page: 0,
+        limit: 1
+      });
+      const firstIssueNumber = firstPendingIssue.issues[0]?.issue_number ?? issueNumber;
 
       const epicLabelName = await resolveEpicLabel(useEpic, {
         draftId, owner, repo, draft: draft as Record<string, unknown>,

@@ -108,7 +108,9 @@ export function buildUpdatedExecutionConfig(
     ...existingConfig,
     useEpic: useEpic ?? existingConfig.useEpic,
     autoMerge: autoMerge ?? existingConfig.autoMerge,
-    runUltrafix: normalizedUltrafixUpdate.runUltrafix ?? undefined,
+    runUltrafix: normalizedUltrafixUpdate.runUltrafix !== undefined
+      ? normalizedUltrafixUpdate.runUltrafix
+      : existingConfig.runUltrafix,
     ultrafixGoal: normalizedUltrafixUpdate.ultrafixGoal !== undefined
       ? normalizedUltrafixUpdate.ultrafixGoal
       : existingConfig.ultrafixGoal,

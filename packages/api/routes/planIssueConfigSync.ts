@@ -14,6 +14,13 @@ type PlanIssueConfigState = {
   model_name?: string | null;
 };
 
+class IssueConfigSyncReconciliationError extends Error {
+  constructor(message: string, readonly details: Record<string, unknown>) {
+    super(message);
+    this.name = 'IssueConfigSyncReconciliationError';
+  }
+}
+
 export async function resolveEpicLabel(
   useEpic: boolean,
   params: {
@@ -155,13 +162,19 @@ export async function updateIssueConfigWithRollback(params: {
         octokit
       });
     } catch (rollbackError) {
-      logger.error(
-        {
-          draftId: params.draftId,
-          issueNumber: params.issueNumber,
-          error: (rollbackError as Error).message
-        },
-        'Failed to roll back GitHub labels after plan issue config update failure'
+      const details = {
+        draftId: params.draftId,
+        issueNumber: params.issueNumber,
+        repository: params.repository,
+        persistedModelName: params.currentIssue.model_name ?? null,
+        githubLabelModelName: nextModelName,
+        updateError: error instanceof Error ? error.message : String(error),
+        rollbackError: rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+      };
+      logger.error(details, 'Plan issue config sync diverged after rollback failure; manual reconciliation required');
+      throw new IssueConfigSyncReconciliationError(
+        'Failed to persist issue config after GitHub labels changed; manual reconciliation required',
+        details
       );
     }
     throw error;
@@ -219,6 +232,8 @@ export async function syncPendingIssueConfigs(params: {
       }
     }
   } catch (error) {
+    const rollbackFailures: Array<{ issueNumber: number; error: string }> = [];
+
     for (let index = updatedIssues.length - 1; index >= 0; index -= 1) {
       const issue = updatedIssues[index];
 
@@ -232,6 +247,10 @@ export async function syncPendingIssueConfigs(params: {
           octokit
         });
       } catch (rollbackError) {
+        rollbackFailures.push({
+          issueNumber: issue.issue_number,
+          error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+        });
         logger.error(
           {
             draftId: params.draftId,
@@ -241,6 +260,18 @@ export async function syncPendingIssueConfigs(params: {
           'Failed to roll back plan issue config after batch sync failure'
         );
       }
+    }
+
+    if (rollbackFailures.length > 0) {
+      throw new IssueConfigSyncReconciliationError(
+        'Failed to fully roll back synced issue config updates; manual reconciliation required',
+        {
+          draftId: params.draftId,
+          repository: params.repository,
+          originalError: error instanceof Error ? error.message : String(error),
+          rollbackFailures
+        }
+      );
     }
 
     throw error;
