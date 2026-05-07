@@ -28,17 +28,14 @@ import {
 import {
   buildIssueUpdate,
   ContextConfigParseError,
+  normalizeOptionalConfigString,
   parseContextConfig,
   parseImplementationSettingsOverrides,
   resolveIssueForResponse,
   resolveImplementationSettings,
-  ULTRAFIX_GOAL_MAX,
-  ULTRAFIX_GOAL_MIN,
-  ULTRAFIX_MAX_CYCLES_MIN,
   type UpdateIssueRequestBody,
-  validateIssueUltrafixPayload,
-  validateRunUltrafixValue,
-  validateUltrafixValue
+  validateOptionalConfigString,
+  validateUpdateIssueRequest
 } from './planIssueRouteUtils.js';
 import type { OwnershipResult } from './plannerHelpers.js';
 export interface PlanIssueDeps {
@@ -49,30 +46,6 @@ class IssueConfigRollbackError extends Error {
     super('Failed to update issue and failed to roll back synchronized config changes');
     this.name = 'IssueConfigRollbackError';
   }
-}
-function validateIssueStatus(status: PlanIssueStatus | undefined): string | null {
-  const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
-  return status !== undefined && !validStatuses.includes(status)
-    ? `Invalid status. Must be one of: ${validStatuses.join(', ')}`
-    : null;
-}
-function normalizeOptionalConfigString(value: unknown): string | null | undefined {
-  if (value === undefined || value === null || typeof value === 'string') {
-    return value;
-  }
-  return undefined;
-}
-
-function validateUpdateIssueRequest(body: UpdateIssueRequestBody): string | null {
-  const statusError = validateIssueStatus(body.status);
-  if (statusError) return statusError;
-  const runUltrafixError = validateRunUltrafixValue(body.run_ultrafix, 'run_ultrafix');
-  if (runUltrafixError) return `${runUltrafixError} (where null means inherit planner defaults)`;
-  const ultrafixGoalError = validateUltrafixValue(body.ultrafix_goal, 'ultrafix_goal', { minimum: ULTRAFIX_GOAL_MIN, maximum: ULTRAFIX_GOAL_MAX });
-  if (ultrafixGoalError) return ultrafixGoalError;
-  const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafix_max_cycles, 'ultrafix_max_cycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
-  if (ultrafixMaxCyclesError) return ultrafixMaxCyclesError;
-  return validateIssueUltrafixPayload(body);
 }
 function buildConfigUpdatesFromIssueUpdate(issueUpdates: ReturnType<typeof buildIssueUpdate>): { agent_alias?: string | null; model_name?: string | null } {
   const configUpdates: { agent_alias?: string | null; model_name?: string | null } = {};
@@ -262,11 +235,11 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const [owner, repo] = repository.split('/');
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
       const contextConfig = parseContextConfig(draft.context_config);
+      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as { useEpic?: unknown; autoMerge?: unknown });
+      if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
       const [issueForImplementation] = await persistEffectiveUltrafixSettings({ draftId, issues: [planIssue], contextConfig });
-      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as { useEpic?: unknown; autoMerge?: unknown });
-      if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
       const octokit = await getAuthenticatedOctokit();
@@ -354,6 +327,10 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const contextConfig = parseContextConfig(draft.context_config);
       const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as { useEpic?: unknown; autoMerge?: unknown });
       if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
+      const agentAliasError = validateOptionalConfigString(req.body.agent_alias, 'agent_alias');
+      if (agentAliasError) { res.status(400).json({ error: agentAliasError }); return; }
+      const modelNameError = validateOptionalConfigString(req.body.model_name, 'model_name');
+      if (modelNameError) { res.status(400).json({ error: modelNameError }); return; }
       const agent_alias = normalizeOptionalConfigString(req.body.agent_alias);
       const model_name = normalizeOptionalConfigString(req.body.model_name);
       const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);

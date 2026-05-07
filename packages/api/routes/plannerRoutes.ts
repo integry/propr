@@ -126,11 +126,8 @@ export function buildUpdatedExecutionConfig(
     hasUltrafixMaxCycles,
     promoteRunUltrafixOnOverrides: false
   });
-  const updatedRunUltrafix = normalizedUltrafixUpdate.runUltrafix === null
-    ? existingConfig.runUltrafix
-    : normalizedUltrafixUpdate.runUltrafix;
-  const nextRunUltrafix = updatedRunUltrafix !== undefined
-    ? updatedRunUltrafix
+  const nextRunUltrafix = normalizedUltrafixUpdate.runUltrafix !== undefined
+    ? normalizedUltrafixUpdate.runUltrafix
     : existingConfig.runUltrafix;
   const nextUltrafixGoal = normalizedUltrafixUpdate.ultrafixGoal !== undefined
     ? normalizedUltrafixUpdate.ultrafixGoal

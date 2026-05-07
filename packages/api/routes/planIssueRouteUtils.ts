@@ -5,7 +5,7 @@ export interface ImplementationSettingsOverrides { useEpic?: boolean; autoMerge?
 export interface ResolvedUltrafixSettings { runUltrafix: boolean; ultrafixGoal: number | null; ultrafixMaxCycles: number | null; }
 export interface PersistedIssueUltrafixSettings { runUltrafix: boolean | null; ultrafixGoal: number | null; ultrafixMaxCycles: number | null; }
 export interface UpdateIssueRequestBody {
-  agent_alias?: string;
+  agent_alias?: string | null;
   model_name?: string | null;
   status?: PlanIssueStatus;
   run_ultrafix?: boolean | number | null;
@@ -16,7 +16,6 @@ export interface UpdateIssueRequestBody {
 export const ULTRAFIX_GOAL_MIN = 1;
 export const ULTRAFIX_GOAL_MAX = 10;
 export const ULTRAFIX_MAX_CYCLES_MIN = 1;
-
 export class ContextConfigParseError extends Error {}
 
 export function parseContextConfig(contextConfig: unknown): Record<string, unknown> | null {
@@ -89,6 +88,18 @@ export function validateUltrafixValue(
     return `${fieldName} must be at most ${options.maximum}`;
   }
   return null;
+}
+
+export function validateOptionalConfigString(value: unknown, fieldName: string): string | null {
+  if (value === undefined || value === null) return null;
+  return typeof value === 'string' ? null : `${fieldName} must be a string or null`;
+}
+
+export function normalizeOptionalConfigString(value: unknown): string | null | undefined {
+  if (value === undefined || value === null || typeof value === 'string') {
+    return value;
+  }
+  return undefined;
 }
 
 function validateOptionalBoolean(value: unknown, fieldName: string): string | null {
@@ -315,6 +326,34 @@ export function validateIssueUltrafixPayload(body: UpdateIssueRequestBody): stri
     ultrafixMaxCycles: body.ultrafix_max_cycles,
     allowInheritedRun: true
   });
+}
+
+export function validateIssueStatus(status: PlanIssueStatus | undefined): string | null {
+  const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
+  return status !== undefined && !validStatuses.includes(status)
+    ? `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+    : null;
+}
+
+export function validateUpdateIssueRequest(body: UpdateIssueRequestBody): string | null {
+  const statusError = validateIssueStatus(body.status);
+  if (statusError) return statusError;
+  const agentAliasError = validateOptionalConfigString(body.agent_alias, 'agent_alias');
+  if (agentAliasError) return agentAliasError;
+  const modelNameError = validateOptionalConfigString(body.model_name, 'model_name');
+  if (modelNameError) return modelNameError;
+  const runUltrafixError = validateRunUltrafixValue(body.run_ultrafix, 'run_ultrafix');
+  if (runUltrafixError) return `${runUltrafixError} (where null means inherit planner defaults)`;
+  const ultrafixGoalError = validateUltrafixValue(body.ultrafix_goal, 'ultrafix_goal', {
+    minimum: ULTRAFIX_GOAL_MIN,
+    maximum: ULTRAFIX_GOAL_MAX
+  });
+  if (ultrafixGoalError) return ultrafixGoalError;
+  const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafix_max_cycles, 'ultrafix_max_cycles', {
+    minimum: ULTRAFIX_MAX_CYCLES_MIN
+  });
+  if (ultrafixMaxCyclesError) return ultrafixMaxCyclesError;
+  return validateIssueUltrafixPayload(body);
 }
 
 export function buildNormalizedUltrafixUpdate(params: {
