@@ -39,6 +39,8 @@ interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
 }
 
+const IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE = 5;
+
 async function resolveEpicLabel(
   useEpic: boolean,
   params: {
@@ -119,29 +121,53 @@ async function updateIssueConfigWithRollback(params: {
     agent_alias?: string | null;
     model_name?: string | null;
   };
+  octokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 }): Promise<void> {
-  const nextIssue = await updatePlanIssue(params.draftId, params.issueNumber, params.updates);
-  if (!nextIssue) {
-    throw new Error('Issue not found in this plan');
-  }
+  const hasAgentAliasUpdate = params.updates.agent_alias !== undefined;
+  const hasModelNameUpdate = params.updates.model_name !== undefined;
+  const nextAgentAlias = hasAgentAliasUpdate ? params.updates.agent_alias ?? null : params.currentIssue.agent_alias ?? null;
+  const nextModelName = hasModelNameUpdate ? params.updates.model_name ?? null : params.currentIssue.model_name ?? null;
 
-  if (params.updates.model_name === undefined) {
+  if (
+    nextAgentAlias === (params.currentIssue.agent_alias ?? null)
+    && nextModelName === (params.currentIssue.model_name ?? null)
+  ) {
     return;
   }
 
+  if (!hasModelNameUpdate) {
+    const nextIssue = await updatePlanIssue(params.draftId, params.issueNumber, params.updates);
+    if (!nextIssue) {
+      throw new Error('Issue not found in this plan');
+    }
+    return;
+  }
+
+  const octokit = params.octokit ?? await getAuthenticatedOctokit();
+
+  await syncModelLabels({
+    draftId: params.draftId,
+    issueNumber: params.issueNumber,
+    repository: params.repository,
+    currentModelName: params.currentIssue.model_name ?? null,
+    modelName: nextModelName,
+    octokit
+  });
+
   try {
-    await syncModelLabels({
-      draftId: params.draftId,
-      issueNumber: params.issueNumber,
-      repository: params.repository,
-      currentModelName: params.currentIssue.model_name ?? null,
-      modelName: params.updates.model_name
-    });
+    const nextIssue = await updatePlanIssue(params.draftId, params.issueNumber, params.updates);
+    if (!nextIssue) {
+      throw new Error('Issue not found in this plan');
+    }
   } catch (error) {
     try {
-      await updatePlanIssue(params.draftId, params.issueNumber, {
-        agent_alias: params.currentIssue.agent_alias ?? null,
-        model_name: params.currentIssue.model_name ?? null
+      await syncModelLabels({
+        draftId: params.draftId,
+        issueNumber: params.issueNumber,
+        repository: params.repository,
+        currentModelName: nextModelName,
+        modelName: params.currentIssue.model_name ?? null,
+        octokit
       });
     } catch (rollbackError) {
       logger.error(
@@ -150,10 +176,42 @@ async function updateIssueConfigWithRollback(params: {
           issueNumber: params.issueNumber,
           error: (rollbackError as Error).message
         },
-        'Failed to roll back plan issue config after GitHub label sync failure'
+        'Failed to roll back GitHub labels after plan issue config update failure'
       );
     }
     throw error;
+  }
+}
+
+async function syncPendingIssueConfigs(params: {
+  draftId: string;
+  repository: string;
+  pendingIssues: Array<{
+    issue_number: number;
+    agent_alias?: string | null;
+    model_name?: string | null;
+  }>;
+  updates: {
+    agent_alias?: string | null;
+    model_name?: string | null;
+  };
+}): Promise<void> {
+  if (params.pendingIssues.length === 0) return;
+
+  const octokit = params.updates.model_name !== undefined
+    ? await getAuthenticatedOctokit()
+    : undefined;
+
+  for (let index = 0; index < params.pendingIssues.length; index += IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE) {
+    const issueBatch = params.pendingIssues.slice(index, index + IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE);
+    await Promise.all(issueBatch.map((issue) => updateIssueConfigWithRollback({
+      draftId: params.draftId,
+      issueNumber: issue.issue_number,
+      repository: params.repository,
+      currentIssue: issue,
+      updates: params.updates,
+      octokit
+    })));
   }
 }
 
@@ -344,18 +402,15 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
       if (agent_alias !== undefined || model_name !== undefined) {
-        for (const issue of pendingIssues) {
-          await updateIssueConfigWithRollback({
-            draftId,
-            issueNumber: issue.issue_number,
-            repository,
-            currentIssue: issue,
-            updates: {
-              agent_alias,
-              model_name
-            }
-          });
-        }
+        await syncPendingIssueConfigs({
+          draftId,
+          repository,
+          pendingIssues,
+          updates: {
+            agent_alias,
+            model_name
+          }
+        });
       }
 
       const issues = agent_alias !== undefined || model_name !== undefined

@@ -415,7 +415,7 @@ export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions
 
     const redisOptions: RedisOptions = {
         ...options,
-        host: process.env.REDIS_HOST || '127.0.0.1',
+        host: process.env.REDIS_HOST || 'redis',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
     };
 
