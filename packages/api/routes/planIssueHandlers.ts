@@ -62,19 +62,15 @@ function normalizeOptionalConfigString(value: unknown): string | null | undefine
   }
   return undefined;
 }
+
 function validateUpdateIssueRequest(body: UpdateIssueRequestBody): string | null {
   const statusError = validateIssueStatus(body.status);
   if (statusError) return statusError;
   const runUltrafixError = validateRunUltrafixValue(body.run_ultrafix, 'run_ultrafix');
   if (runUltrafixError) return `${runUltrafixError} (where null means inherit planner defaults)`;
-  const ultrafixGoalError = validateUltrafixValue(body.ultrafix_goal, 'ultrafix_goal', {
-    minimum: ULTRAFIX_GOAL_MIN,
-    maximum: ULTRAFIX_GOAL_MAX
-  });
+  const ultrafixGoalError = validateUltrafixValue(body.ultrafix_goal, 'ultrafix_goal', { minimum: ULTRAFIX_GOAL_MIN, maximum: ULTRAFIX_GOAL_MAX });
   if (ultrafixGoalError) return ultrafixGoalError;
-  const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafix_max_cycles, 'ultrafix_max_cycles', {
-    minimum: ULTRAFIX_MAX_CYCLES_MIN
-  });
+  const ultrafixMaxCyclesError = validateUltrafixValue(body.ultrafix_max_cycles, 'ultrafix_max_cycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
   if (ultrafixMaxCyclesError) return ultrafixMaxCyclesError;
   return validateIssueUltrafixPayload(body);
 }
@@ -96,6 +92,7 @@ function buildUpdatedConfigState(
     model_name: configUpdates.model_name !== undefined ? configUpdates.model_name ?? null : currentIssue.model_name ?? null
   };
 }
+
 async function rollbackIssueConfigUpdate(params: {
   draftId: string;
   issueNumber: number;
@@ -152,7 +149,6 @@ async function persistNonConfigIssueUpdates(params: {
     ? updatePlanIssue(params.draftId, params.issueNumber, nonConfigUpdates)
     : getPlanIssue(params.draftId, params.issueNumber);
 }
-
 function sendIssueConfigSyncReconciliationError(res: Response, error: IssueConfigSyncReconciliationError): void {
   res.status(409).json({
     error: error.message,
@@ -160,6 +156,7 @@ function sendIssueConfigSyncReconciliationError(res: Response, error: IssueConfi
     details: error.details
   });
 }
+
 async function loadPendingIssuesForImplementation(params: {
   draftId: string;
   repository: string;
@@ -235,10 +232,7 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
       if (hasPagination) {
         const pageNum = page ? parseInt(page as string, 10) : 0;
         const limitNum = limit ? parseInt(limit as string, 10) : 50;
-        const options: { page?: number; limit?: number; status?: PlanIssueStatus } = {
-          page: isNaN(pageNum) ? 0 : pageNum,
-          limit: isNaN(limitNum) ? 50 : Math.min(limitNum, 100)
-        };
+        const options: { page?: number; limit?: number; status?: PlanIssueStatus } = { page: isNaN(pageNum) ? 0 : pageNum, limit: isNaN(limitNum) ? 50 : Math.min(limitNum, 100) };
         if (status) {
           const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
           if (validStatuses.includes(status as PlanIssueStatus)) options.status = status as PlanIssueStatus;
@@ -271,10 +265,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const planIssue = await getPlanIssue(draftId, issueNumber);
       if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
       const [issueForImplementation] = await persistEffectiveUltrafixSettings({ draftId, issues: [planIssue], contextConfig });
-      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as {
-        useEpic?: unknown;
-        autoMerge?: unknown;
-      });
+      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as { useEpic?: unknown; autoMerge?: unknown });
       if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
@@ -285,10 +276,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const labelLogger = logger.withCorrelation(correlationId);
       const firstPendingIssue = await getPlanIssuesByDraftPaginated(draftId, { status: PlanIssueStatus.PENDING, page: 0, limit: 1 });
       const firstIssueNumber = firstPendingIssue.issues[0]?.issue_number ?? issueNumber;
-      const epicLabelName = await resolveEpicLabel(useEpic, {
-        draftId, owner, repo, draft: draft as Record<string, unknown>,
-        firstIssueNumber, contextConfig, correlationId, labelLogger
-      });
+      const epicLabelName = await resolveEpicLabel(useEpic, { draftId, owner, repo, draft: draft as Record<string, unknown>, firstIssueNumber, contextConfig, correlationId, labelLogger });
       const context: ImplementIssueContext = {
         octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge: autoMerge as boolean, labelLogger
       };
@@ -330,27 +318,11 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       try {
         updated = await persistNonConfigIssueUpdates({ draftId, issueNumber, issueUpdates });
       } catch (error) {
-        await rollbackIssueConfigUpdate({
-          draftId,
-          issueNumber,
-          repository,
-          currentIssue,
-          configUpdates,
-          logMessage: 'Failed to roll back plan issue config after non-config update failure',
-          originalError: error
-        });
+        await rollbackIssueConfigUpdate({ draftId, issueNumber, repository, currentIssue, configUpdates, logMessage: 'Failed to roll back plan issue config after non-config update failure', originalError: error });
         throw error;
       }
       if (!updated) {
-        await rollbackIssueConfigUpdate({
-          draftId,
-          issueNumber,
-          repository,
-          currentIssue,
-          configUpdates,
-          logMessage: 'Failed to roll back plan issue config after update returned no issue',
-          originalError: 'Issue not found in this plan'
-        });
+        await rollbackIssueConfigUpdate({ draftId, issueNumber, repository, currentIssue, configUpdates, logMessage: 'Failed to roll back plan issue config after update returned no issue', originalError: 'Issue not found in this plan' });
         res.status(404).json({ error: 'Issue not found in this plan' });
         return;
       }
@@ -361,11 +333,7 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
         return;
       }
       if (error instanceof IssueConfigRollbackError) {
-        res.status(500).json({
-          error: error.message,
-          code: 'ISSUE_CONFIG_ROLLBACK_FAILED',
-          details: error.details
-        });
+        res.status(500).json({ error: error.message, code: 'ISSUE_CONFIG_ROLLBACK_FAILED', details: error.details });
         return;
       }
       console.error('Update issue error:', error);
@@ -384,22 +352,13 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const [owner, repo] = repository.split('/');
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
       const contextConfig = parseContextConfig(draft.context_config);
-      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as {
-        useEpic?: unknown;
-        autoMerge?: unknown;
-      });
+      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as { useEpic?: unknown; autoMerge?: unknown });
       if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
       const agent_alias = normalizeOptionalConfigString(req.body.agent_alias);
       const model_name = normalizeOptionalConfigString(req.body.model_name);
       const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);
       const existingIssues = await getPlanIssuesByDraft(draftId);
-      const pendingIssuesForImplementation = await loadPendingIssuesForImplementation({
-        draftId,
-        repository,
-        existingIssues,
-        agent_alias,
-        model_name
-      });
+      const pendingIssuesForImplementation = await loadPendingIssuesForImplementation({ draftId, repository, existingIssues, agent_alias, model_name });
       if (pendingIssuesForImplementation.length === 0) {
         res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });
         return;
@@ -408,21 +367,8 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const implementLabel = processingLabels[0] || 'AI';
       const correlationId = `implement-all-${draftId}`;
       const labelLogger = logger.withCorrelation(correlationId);
-      const epicLabelName = await resolveEpicLabel(useEpic, {
-        draftId, owner, repo, draft: draft as Record<string, unknown>,
-        firstIssueNumber: pendingIssuesForImplementation[0].issue_number,
-        contextConfig, correlationId, labelLogger
-      });
-      const results = await implementPendingIssues({
-        draftId,
-        owner,
-        repo,
-        pendingIssuesForImplementation,
-        contextConfig,
-        implementLabel,
-        autoMerge: autoMerge as boolean,
-        epicLabelName
-      });
+      const epicLabelName = await resolveEpicLabel(useEpic, { draftId, owner, repo, draft: draft as Record<string, unknown>, firstIssueNumber: pendingIssuesForImplementation[0].issue_number, contextConfig, correlationId, labelLogger });
+      const results = await implementPendingIssues({ draftId, owner, repo, pendingIssuesForImplementation, contextConfig, implementLabel, autoMerge: autoMerge as boolean, epicLabelName });
       const queuedCount = (autoMerge && epicLabelName) ? pendingIssuesForImplementation.length - 1 : 0;
       const successCount = results.filter(r => r.success).length;
       const failedCount = results.filter(r => !r.success).length;
