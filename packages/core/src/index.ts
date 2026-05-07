@@ -58,7 +58,7 @@ export type {
     PaginatedPlanIssuesResult
 } from './config/planIssueManager.js';
 export { resolvePlanIssueDefaultSelection } from './config/planIssueDefaults.js';
-export type { PlanIssueDefaultSelection } from './config/planIssueDefaults.js';
+export type { PlanIssueDefaultSelection } from './config/planIssueDefaultSelection.js';
 export { getPlanIssueDefaultSelection } from './config/planIssueDefaultSelection.js';
 export type { PlanIssueSelectionAgent } from './config/planIssueDefaultSelection.js';
 export { resolveModelAlias, getDefaultModel, getPreferredModelForAgent, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, resolveLlmLabel, getOpenRouterId, resolveCustomLabel, getAllCustomLabels, findMatchingModel, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from './config/modelAliases.js';
