@@ -56,6 +56,12 @@ function validateIssueStatus(status: PlanIssueStatus | undefined): string | null
     ? `Invalid status. Must be one of: ${validStatuses.join(', ')}`
     : null;
 }
+function normalizeOptionalConfigString(value: unknown): string | null | undefined {
+  if (value === undefined || value === null || typeof value === 'string') {
+    return value;
+  }
+  return undefined;
+}
 function validateUpdateIssueRequest(body: UpdateIssueRequestBody): string | null {
   const statusError = validateIssueStatus(body.status);
   if (statusError) return statusError;
@@ -383,7 +389,8 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         autoMerge?: unknown;
       });
       if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
-      const { agent_alias, model_name } = req.body;
+      const agent_alias = normalizeOptionalConfigString(req.body.agent_alias);
+      const model_name = normalizeOptionalConfigString(req.body.model_name);
       const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);
       const existingIssues = await getPlanIssuesByDraft(draftId);
       const pendingIssuesForImplementation = await loadPendingIssuesForImplementation({
