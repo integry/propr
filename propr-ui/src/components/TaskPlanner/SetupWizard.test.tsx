@@ -3,19 +3,37 @@ import { render, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import SetupWizard from './SetupWizard';
-import { getDraft } from '../../api/proprApi';
+import { getDraft, createDraft, updateDraft, getRepoBranches } from '../../api/proprApi';
 
 const mockGetDraft = vi.mocked(getDraft);
+const mockCreateDraft = vi.mocked(createDraft);
+const mockUpdateDraft = vi.mocked(updateDraft);
+const mockGetRepoBranches = vi.mocked(getRepoBranches);
+let lastLeftPaneProps: Record<string, unknown> | undefined;
+const mockNavigate = vi.fn();
+let mockLocationState: Record<string, unknown> | undefined;
+
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+    useLocation: () => ({ state: mockLocationState }),
+  };
+});
 
 vi.mock('../../api/proprApi', () => ({
   getDraft: vi.fn(),
   createDraft: vi.fn(),
+  updateDraft: vi.fn(),
+  getRepoBranches: vi.fn(),
 }));
 
 vi.mock('../../hooks/usePlannerSettings', () => ({
   getPlannerSettings: () => ({
     lastGranularity: 'medium',
     lastContextLevel: 50,
+    lastBaseBranch: null,
   }),
   savePlannerSettings: vi.fn(),
 }));
@@ -65,7 +83,10 @@ vi.mock('./SetupWizardComponents', () => ({
 }));
 
 vi.mock('./SetupWizardLeftPane', () => ({
-  SetupWizardLeftPane: () => <div>left pane</div>,
+  SetupWizardLeftPane: (props: Record<string, unknown>) => {
+    lastLeftPaneProps = props;
+    return <div>left pane</div>;
+  },
 }));
 
 vi.mock('./SetupWizardRightPane', () => ({
@@ -76,18 +97,17 @@ vi.mock('./setupWizardHooks', () => ({
   useRepositoryLoader: () => ({
     repos: [{ name: 'integry/propr', enabled: true }],
     selectedRepo: 'integry/propr',
-    setSelectedRepo: vi.fn(),
+    selectedBaseBranch: 'develop',
+    setSelectedRepository: vi.fn(),
     reposLoading: false,
     loadError: null,
   }),
   useBranchesLoader: () => ({
     isLoading: false,
-    branches: ['main'],
     error: null,
   }),
   useRepoInfoLoader: () => ({
     isLoading: false,
-    branches: ['main'],
     error: null,
   }),
   useAgentsLoader: () => [],
@@ -109,6 +129,14 @@ vi.mock('./setupWizardHooks', () => ({
   useAutoDraftCreation: () => ({
     isAutoCreating: false,
     autoCreateError: null,
+    autoCreateWarning: null,
+  }),
+  useDraftContextConfigSync: vi.fn(),
+  usePreviewTrace: () => undefined,
+  useSetupWizardEffects: vi.fn(),
+  getBaseBranchPersistenceWarning: (baseBranch?: string) => baseBranch ? `Draft created, but failed to save base branch "${baseBranch}".` : null,
+  persistResolvedBaseBranch: (draftId: string, baseBranch?: string) => updateDraft(draftId, {
+    context_config: { baseBranch }
   }),
   usePromptPersistence: vi.fn(),
   computeIsGenerateDisabled: () => false,
@@ -131,6 +159,8 @@ describe('SetupWizard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    lastLeftPaneProps = undefined;
+    mockLocationState = undefined;
   });
 
   afterEach(() => {
@@ -170,5 +200,238 @@ describe('SetupWizard', () => {
     });
 
     expect(mockGetDraft).not.toHaveBeenCalled();
+  });
+
+  it('anchors edit-mode selector state to the draft branch and persists branch on repo switch', async () => {
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-2',
+      repository: 'integry/other',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+
+    render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            context_config: { baseBranch: 'main' },
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(lastLeftPaneProps?.selectedBaseBranch).toBe('main');
+
+    await act(async () => {
+      await (lastLeftPaneProps?.onRepoChange as ((repo: string, selection?: { baseBranch?: string }) => Promise<void>))(
+        'integry/other',
+        { repo: 'integry/other', baseBranch: 'develop', option: { name: 'integry/other', enabled: true, baseBranch: 'develop' } }
+      );
+    });
+
+    expect(mockUpdateDraft).toHaveBeenCalledWith(
+      'draft-2',
+      expect.objectContaining({ context_config: { baseBranch: 'develop' } })
+    );
+  });
+
+  it('preserves edit-mode selector state from router state before the draft branch reloads', () => {
+    mockLocationState = { initialBaseBranch: 'release' };
+
+    render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            context_config: {},
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(lastLeftPaneProps?.selectedBaseBranch).toBe('release');
+  });
+
+  it('resolves the default branch before switching repos in edit mode when the entry has no baseBranch', async () => {
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-2',
+      repository: 'integry/other',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+    mockGetRepoBranches.mockResolvedValue({ defaultBranch: 'release', branches: ['release', 'main'] });
+
+    render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            context_config: { baseBranch: 'main' },
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    await act(async () => {
+      await (lastLeftPaneProps?.onRepoChange as ((repo: string, selection?: { baseBranch?: string }) => Promise<void>))(
+        'integry/other',
+        { repo: 'integry/other', option: { name: 'integry/other', enabled: true } }
+      );
+    });
+
+    expect(mockGetRepoBranches).toHaveBeenCalledWith('integry', 'other');
+    expect(mockUpdateDraft).toHaveBeenCalledWith(
+      'draft-2',
+      expect.objectContaining({ context_config: { baseBranch: 'release' } })
+    );
+  });
+
+  it('preserves todoIds when switching repositories in edit mode', async () => {
+    mockLocationState = { todoIds: ['todo-1', 'todo-2'] };
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-2',
+      repository: 'integry/other',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+
+    render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            context_config: { baseBranch: 'main' },
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    await act(async () => {
+      await (lastLeftPaneProps?.onRepoChange as ((repo: string, selection?: { baseBranch?: string }) => Promise<void>))(
+        'integry/other',
+        { repo: 'integry/other', baseBranch: 'develop', option: { name: 'integry/other', enabled: true, baseBranch: 'develop' } }
+      );
+    });
+
+    expect(mockCreateDraft).toHaveBeenCalledWith(
+      'integry/other',
+      'Test prompt',
+      { todoIds: ['todo-1', 'todo-2'] }
+    );
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/studio/draft-2',
+      expect.objectContaining({
+        replace: true,
+        state: expect.objectContaining({ todoIds: ['todo-1', 'todo-2'] })
+      })
+    );
+  });
+
+  it('ignores stale repo switches in edit mode when a newer selection finishes first', async () => {
+    let resolveFirstLookup: ((value: { defaultBranch: string; branches: string[] }) => void) | undefined;
+    let resolveSecondLookup: ((value: { defaultBranch: string; branches: string[] }) => void) | undefined;
+
+    mockGetRepoBranches
+      .mockImplementationOnce(() => new Promise(resolve => {
+        resolveFirstLookup = resolve;
+      }))
+      .mockImplementationOnce(() => new Promise(resolve => {
+        resolveSecondLookup = resolve;
+      }));
+    mockCreateDraft.mockResolvedValue({
+      draft_id: 'draft-2',
+      repository: 'integry/newer',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: [],
+      created_at: '2026-05-06T00:00:00Z',
+    });
+
+    render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'draft',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            context_config: { baseBranch: 'main' },
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    const onRepoChange = lastLeftPaneProps?.onRepoChange as ((repo: string, selection?: { baseBranch?: string }) => Promise<void>);
+
+    const firstChange = onRepoChange(
+      'integry/older',
+      { repo: 'integry/older', option: { name: 'integry/older', enabled: true } }
+    );
+    const secondChange = onRepoChange(
+      'integry/newer',
+      { repo: 'integry/newer', option: { name: 'integry/newer', enabled: true } }
+    );
+
+    await act(async () => {
+      resolveSecondLookup?.({ defaultBranch: 'develop', branches: ['develop'] });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await secondChange;
+    });
+    await act(async () => {
+      resolveFirstLookup?.({ defaultBranch: 'release', branches: ['release'] });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await firstChange;
+    });
+
+    expect(mockCreateDraft).toHaveBeenCalledTimes(1);
+    expect(mockCreateDraft).toHaveBeenCalledWith('integry/newer', 'Test prompt', { todoIds: undefined });
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/studio/draft-2',
+      expect.objectContaining({
+        state: expect.objectContaining({
+          initialRepository: 'integry/newer',
+          initialBaseBranch: 'develop'
+        })
+      })
+    );
   });
 });

@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue, AgentModelPair } from '../../api/planIssuesApi';
-import { AgentConfig, getAgents } from '../../api/proprApi';
+import { AgentConfig, SystemSettings, getAgents, getSettings } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
 import { DraftUpdatePayload } from '@propr/shared';
 import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, ExecutionStepData } from './planIssuesManagerUtils';
+import { applyPlanIssueDefaults, resolvePlanIssueDefaultSelection } from './planIssueDefaultSelection';
 export type { IssueCreationProgress } from './planIssuesManagerUtils';
 
 interface UsePlanIssuesManagerProps {
@@ -24,6 +25,7 @@ interface UsePlanIssuesManagerProps {
 export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete }: UsePlanIssuesManagerProps) {
   const [issues, setIssues] = useState<PlanIssue[]>([]);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
+  const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [implementingIssue, setImplementingIssue] = useState<number | null>(null);
@@ -57,18 +59,15 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     return map;
   }, [tasks]);
 
-  const issuesWithDefaults = useMemo(() => {
-    const defaultAgent = agents.find(a => a.enabled);
-    if (!defaultAgent) return issues;
-    const defaultAlias = defaultAgent.alias;
-    const defaultModel = defaultAgent.defaultModel ?? defaultAgent.supportedModels?.[0] ?? null;
-    return issues.map(issue => {
-      if (issue.status === 'pending' && !issue.agent_alias) {
-        return { ...issue, agent_alias: defaultAlias, model_name: defaultModel };
-      }
-      return issue;
-    });
-  }, [issues, agents]);
+  const defaultSelection = useMemo(
+    () => resolvePlanIssueDefaultSelection(agents, settings?.default_agent_alias),
+    [agents, settings?.default_agent_alias]
+  );
+
+  const issuesWithDefaults = useMemo(
+    () => applyPlanIssueDefaults(issues, defaultSelection),
+    [issues, defaultSelection]
+  );
 
   const { activeIssues, mergedIssues, pendingCount, hasActiveIssues, firstPendingIssueNumber, sortedIssues } = useMemo(() => {
     const active: PlanIssue[] = [], merged: PlanIssue[] = [];
@@ -132,24 +131,35 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     try {
       const { agents: fetchedAgents } = await getAgents();
       setAgents(fetchedAgents);
-      const enabledAgent = fetchedAgents.find(a => a.enabled);
-      if (enabledAgent && !globalAgent) {
-        setGlobalAgent(enabledAgent.alias);
-        setGlobalModel(enabledAgent.defaultModel ?? enabledAgent.supportedModels?.[0] ?? null);
-      }
     } catch (err) {
       console.error('Failed to fetch agents:', err);
     }
-  }, [globalAgent]);
+  }, []);
+
+  const fetchSettings = useCallback(async () => {
+    try {
+      setSettings(await getSettings());
+    } catch (err) {
+      console.error('Failed to fetch settings:', err);
+      setSettings(null);
+    }
+  }, []);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      await Promise.all([fetchIssues(), fetchAgents()]);
+      await Promise.all([fetchIssues(), fetchAgents(), fetchSettings()]);
       setLoading(false);
     };
     load();
-  }, [fetchIssues, fetchAgents]);
+  }, [fetchIssues, fetchAgents, fetchSettings]);
+
+  useEffect(() => {
+    if (!globalAgent && defaultSelection.agentAlias) {
+      setGlobalAgent(defaultSelection.agentAlias);
+      setGlobalModel(defaultSelection.modelName);
+    }
+  }, [defaultSelection, globalAgent]);
 
   const handleTaskUpdate = useCallback(async () => { await fetchIssues(); }, [fetchIssues]);
 

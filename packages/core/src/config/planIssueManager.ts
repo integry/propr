@@ -1,6 +1,7 @@
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { checkAndUpdateDraftStatus } from '../services/taskPlanningService.js';
+import { resolvePlanIssueDefaultSelection } from './planIssueDefaults.js';
 
 /**
  * Status enum for plan issues.
@@ -97,12 +98,17 @@ export interface PaginatedPlanIssuesResult {
  */
 export async function createPlanIssue(input: CreatePlanIssueInput): Promise<PlanIssue> {
     try {
+        const selection = await resolvePlanIssueDefaultSelection({
+            agent_alias: input.agent_alias ?? null,
+            model_name: input.model_name ?? null
+        });
+
         const [id] = await db('plan_issues').insert({
             draft_id: input.draft_id,
             repository: input.repository,
             issue_number: input.issue_number,
-            agent_alias: input.agent_alias || null,
-            model_name: input.model_name || null,
+            agent_alias: selection.agent_alias,
+            model_name: selection.model_name,
             run_ultrafix: input.run_ultrafix ?? null,
             ultrafix_goal: input.ultrafix_goal ?? null,
             ultrafix_max_cycles: input.ultrafix_max_cycles ?? null,
