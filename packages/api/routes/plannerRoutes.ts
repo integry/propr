@@ -127,7 +127,7 @@ export function buildUpdatedExecutionConfig(
     promoteRunUltrafixOnOverrides: false
   });
   const nextRunUltrafix = normalizedUltrafixUpdate.runUltrafix !== undefined
-    ? normalizedUltrafixUpdate.runUltrafix
+    ? normalizedUltrafixUpdate.runUltrafix ?? undefined
     : existingConfig.runUltrafix;
   const nextUltrafixGoal = normalizedUltrafixUpdate.ultrafixGoal !== undefined
     ? normalizedUltrafixUpdate.ultrafixGoal
