@@ -16,6 +16,10 @@ type PlanIssueConfigState = {
   model_name?: string | null;
 };
 
+type PlanIssueUltrafixState = Pick<PlanIssue,
+  'issue_number' | 'model_name' | 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'
+>;
+
 export class IssueConfigSyncReconciliationError extends Error {
   constructor(message: string, readonly details: Record<string, unknown>) {
     super(message);
@@ -280,7 +284,7 @@ export async function syncPendingIssueConfigs(params: {
   }
 }
 
-export function filterIssuesNeedingConfigSync<T extends PlanIssueConfigState>(params: {
+export function filterIssuesNeedingConfigSync<T extends PlanIssueConfigState & { issue_number: number }>(params: {
   pendingIssues: Array<T>;
   updates: PlanIssueConfigState;
 }): Array<T> {
@@ -293,13 +297,11 @@ export function filterIssuesNeedingConfigSync<T extends PlanIssueConfigState>(pa
   ));
 }
 
-export async function persistEffectiveUltrafixSettings<T extends Pick<PlanIssue,
-  'issue_number' | 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'
->>(params: {
+export async function persistEffectiveUltrafixSettings<T extends PlanIssueUltrafixState>(params: {
   draftId: string;
   issues: Array<T>;
   contextConfig: Record<string, unknown> | null;
-}): Promise<Array<T & {
+}): Promise<Array<Omit<T, 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'> & {
   run_ultrafix: boolean;
   ultrafix_goal: number | null;
   ultrafix_max_cycles: number | null;
@@ -315,7 +317,15 @@ export async function persistEffectiveUltrafixSettings<T extends Pick<PlanIssue,
       throw new Error(`Issue ${issue.issue_number} not found in this plan`);
     }
 
-    resolvedIssues[index] = resolveIssueForImplementation(updatedIssue as T, params.contextConfig);
+    resolvedIssues[index] = resolveIssueForImplementation(
+      {
+        ...issue,
+        run_ultrafix: updatedIssue.run_ultrafix,
+        ultrafix_goal: updatedIssue.ultrafix_goal,
+        ultrafix_max_cycles: updatedIssue.ultrafix_max_cycles
+      },
+      params.contextConfig
+    );
   }
 
   return resolvedIssues;
