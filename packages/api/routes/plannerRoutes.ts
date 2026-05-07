@@ -94,13 +94,14 @@ export function buildUpdatedExecutionConfig(
 
   const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
   const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
+  const hasRunUltrafix = Object.prototype.hasOwnProperty.call(body, 'runUltrafix');
   const normalizedUltrafixUpdate = buildNormalizedUltrafixUpdate({
     runUltrafix: body.runUltrafix as boolean | number | null | undefined,
     ultrafixGoal: body.ultrafixGoal as number | null | undefined,
     ultrafixMaxCycles: body.ultrafixMaxCycles as number | null | undefined,
+    hasRunUltrafix,
     hasUltrafixGoal,
-    hasUltrafixMaxCycles,
-    existingRunUltrafix: existingConfig.runUltrafix ?? null
+    hasUltrafixMaxCycles
   });
 
   return {

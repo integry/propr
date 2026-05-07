@@ -331,15 +331,24 @@ export function buildNormalizedUltrafixUpdate(params: {
   runUltrafix: boolean | number | null | undefined;
   ultrafixGoal: number | null | undefined;
   ultrafixMaxCycles: number | null | undefined;
+  hasRunUltrafix: boolean;
   hasUltrafixGoal: boolean;
   hasUltrafixMaxCycles: boolean;
-  existingRunUltrafix?: boolean | null;
 }): NormalizedUltrafixUpdate {
+  const hasAnyUltrafixUpdate = params.hasRunUltrafix || params.hasUltrafixGoal || params.hasUltrafixMaxCycles;
+  if (!hasAnyUltrafixUpdate) {
+    return {
+      runUltrafix: undefined,
+      ultrafixGoal: undefined,
+      ultrafixMaxCycles: undefined
+    };
+  }
+
   const requestedIssueOverrides = (params.hasUltrafixGoal && params.ultrafixGoal !== null)
     || (params.hasUltrafixMaxCycles && params.ultrafixMaxCycles !== null);
   const normalizedRunUltrafix = normalizeRunUltrafix(params.runUltrafix);
   const runUltrafix = normalizedRunUltrafix === undefined
-    ? (requestedIssueOverrides ? true : params.existingRunUltrafix)
+    ? (requestedIssueOverrides ? true : undefined)
     : normalizedRunUltrafix;
   const shouldClearUltrafixOverrides = runUltrafix === false || runUltrafix === null;
 
@@ -359,18 +368,18 @@ export function buildNormalizedUltrafixUpdate(params: {
 }
 
 export function buildIssueUpdate(
-  body: UpdateIssueRequestBody,
-  options: { existingRunUltrafix?: boolean | null } = {}
+  body: UpdateIssueRequestBody
 ) {
+  const hasRunUltrafix = body.run_ultrafix !== undefined;
   const hasUltrafixGoal = body.ultrafix_goal !== undefined;
   const hasUltrafixMaxCycles = body.ultrafix_max_cycles !== undefined;
   const normalizedUltrafixUpdate = buildNormalizedUltrafixUpdate({
     runUltrafix: body.run_ultrafix,
     ultrafixGoal: body.ultrafix_goal,
     ultrafixMaxCycles: body.ultrafix_max_cycles,
+    hasRunUltrafix,
     hasUltrafixGoal,
-    hasUltrafixMaxCycles,
-    existingRunUltrafix: options.existingRunUltrafix
+    hasUltrafixMaxCycles
   });
 
   return {

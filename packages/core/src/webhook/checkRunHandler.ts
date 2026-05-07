@@ -119,13 +119,17 @@ export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
     if (prInfo.hasUltrafixLabel && prInfo.ultrafixStateUnavailable) {
         log.warn(
             { owner, repoName, prNumber },
-            'Ultrafix state is unavailable while ultrafix label is present, falling back to normal auto-merge checks'
+            'Ultrafix state is unavailable while ultrafix label is present, keeping auto-merge blocked'
         );
-    } else if (prInfo.hasUltrafixLabel && prInfo.ultrafixCompletionStatus !== 'succeeded') {
+        return false;
+    }
+
+    if (prInfo.hasUltrafixLabel && prInfo.ultrafixCompletionStatus !== 'succeeded') {
         log.info(
             { owner, repoName, prNumber, ultrafixCompletionStatus: prInfo.ultrafixCompletionStatus },
-            'Ultrafix label remains without persisted completion state, falling back to normal auto-merge checks'
+            'Ultrafix label remains without a successful completion state, keeping auto-merge blocked'
         );
+        return false;
     }
 
     if (isEpicBranch(prInfo.headBranch)) {
