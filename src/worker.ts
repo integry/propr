@@ -8,6 +8,7 @@ import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
+import { loadSettingsFromConfig } from '@propr/core';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
 import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
@@ -156,10 +157,12 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
             } else {
                 logger.info({ concurrency: workerConcurrency }, 'Using worker_concurrency from environment variable');
             }
+            await loadSettingsFromConfig();
+            logger.info('Successfully initialized runtime settings from config repo');
         }
     } catch (error) {
         const err = error as Error;
-        logger.warn({ error: err.message }, 'Failed to load settings from config, using environment variable for worker_concurrency');
+        logger.warn({ error: err.message }, 'Failed to load settings from config, using environment fallbacks for worker runtime settings');
     }
 
     try {
@@ -260,6 +263,17 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
                     } catch (agentError) {
                         const err = agentError as Error;
                         logger.error({ error: err.message }, 'Failed to refresh AgentRegistry');
+                    }
+                }
+
+                if (event.subtype === 'settings_update') {
+                    logger.info('Reloading worker runtime settings due to settings_update event...');
+                    try {
+                        await loadSettingsFromConfig();
+                        logger.info('Worker runtime settings reloaded successfully');
+                    } catch (settingsError) {
+                        const err = settingsError as Error;
+                        logger.error({ error: err.message }, 'Failed to reload worker runtime settings');
                     }
                 }
             } catch (parseError) {
