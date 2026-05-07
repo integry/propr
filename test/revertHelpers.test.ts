@@ -123,6 +123,7 @@ describe('checkRevertAuthorization — route-level', () => {
         assert.strictEqual(result.authorized, false);
         if (!result.authorized) {
             assert.strictEqual(result.status, 503);
+            assert.ok(result.error.includes('SYSTEM_TASK_SECRET'));
         }
     });
 

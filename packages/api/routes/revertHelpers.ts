@@ -161,7 +161,7 @@ export function checkRevertAuthorization(req: { user?: unknown }): Authorization
   const systemTaskSecret = process.env.SYSTEM_TASK_SECRET;
   if (!systemTaskSecret) {
     logger.error('[revert] SYSTEM_TASK_SECRET is not configured');
-    return { authorized: false, status: 503, error: 'System task authorization is not configured' };
+    return { authorized: false, status: 503, error: 'System task authorization is not configured: SYSTEM_TASK_SECRET is missing on the API service' };
   }
 
   return { authorized: true, requestingUser: baseResult.requestingUser, systemTaskSecret };
