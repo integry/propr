@@ -121,8 +121,12 @@ export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
         return false;
     }
 
-    if (prInfo.hasUltrafixLabel && prInfo.ultrafixCompletionStatus === null) {
-        log.info({ owner, repoName, prNumber }, 'Ultrafix label remains but no terminal loop state is persisted; deferring to active-task gating');
+    if (prInfo.hasUltrafixLabel && prInfo.ultrafixCompletionStatus !== 'succeeded') {
+        log.info(
+            { owner, repoName, prNumber, ultrafixCompletionStatus: prInfo.ultrafixCompletionStatus },
+            'Ultrafix label remains without a successful terminal state, keeping auto-merge blocked'
+        );
+        return false;
     }
 
     if (isEpicBranch(prInfo.headBranch)) {

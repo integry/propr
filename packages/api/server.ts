@@ -69,14 +69,16 @@ function buildRedisUrlFromOptions(options: RedisOptions): string {
   return `${protocol}://${credentials}${host}:${port}${database}`;
 }
 
-function getRedisRuntimeConfig(): { url?: string; options: RedisOptions } {
-  return buildRedisRuntimeConfig();
+function getRedisRuntimeConfig(): { url: string; options: RedisOptions } {
+  const runtimeConfig = buildRedisRuntimeConfig();
+  return {
+    url: runtimeConfig.url || buildRedisUrlFromOptions(runtimeConfig.options),
+    options: { ...runtimeConfig.options }
+  };
 }
 
 const redisRuntimeConfig = getRedisRuntimeConfig();
-const ioRedisClient = redisRuntimeConfig.url
-  ? new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options)
-  : new Redis(redisRuntimeConfig.options);
+const ioRedisClient = new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options);
 
 const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
@@ -164,7 +166,7 @@ let taskQueue: Queue;
 
 async function initRedis(): Promise<void> {
   redisClient = createClient({
-    url: redisRuntimeConfig.url || buildRedisUrlFromOptions(redisRuntimeConfig.options)
+    url: redisRuntimeConfig.url
   });
   
   redisClient.on('error', (err) => console.error('Redis Client Error', err));
@@ -172,7 +174,7 @@ async function initRedis(): Promise<void> {
   
   const queueName = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
   taskQueue = new Queue(queueName, {
-    connection: redisRuntimeConfig.options
+    connection: { ...redisRuntimeConfig.options }
   });
   
   console.log('Connected to Redis');

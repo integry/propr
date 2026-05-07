@@ -107,11 +107,12 @@ export async function updateIssueConfigWithRollback(params: {
   const nextConfig = resolveIssueConfigState(params.currentIssue, params.updates);
   const nextAgentAlias = nextConfig.agent_alias;
   const nextModelName = nextConfig.model_name;
-
-  if (
+  const configUnchanged = (
     nextAgentAlias === (params.currentIssue.agent_alias ?? null)
     && nextModelName === (params.currentIssue.model_name ?? null)
-  ) {
+  );
+
+  if (!hasModelNameUpdate && configUnchanged) {
     return;
   }
 
@@ -133,6 +134,10 @@ export async function updateIssueConfigWithRollback(params: {
     modelName: nextModelName,
     octokit
   });
+
+  if (configUnchanged) {
+    return;
+  }
 
   try {
     const nextIssue = await updatePlanIssue(params.draftId, params.issueNumber, params.updates);
