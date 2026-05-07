@@ -79,6 +79,7 @@ async function syncModelLabels(params: {
   repository: string;
   currentModelName: string | null;
   modelName: string | null;
+  octokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 }): Promise<void> {
   const [owner, repo] = params.repository.split('/');
   if (!owner || !repo) return;
@@ -86,7 +87,7 @@ async function syncModelLabels(params: {
   const [oldLabel, newLabel, octokit] = await Promise.all([
     getLlmLabel(params.currentModelName),
     getLlmLabel(params.modelName),
-    getAuthenticatedOctokit()
+    params.octokit ? Promise.resolve(params.octokit) : getAuthenticatedOctokit()
   ]);
 
   const labelsToRemove = oldLabel && oldLabel !== newLabel ? [oldLabel] : [];
@@ -112,17 +113,24 @@ async function syncModelLabelsForIssues(params: {
   issues: Array<{ issue_number: number; model_name?: string | null }>;
   modelName: string | null;
 }): Promise<void> {
-  await Promise.all(
-    params.issues.map((issue) =>
-      syncModelLabels({
-        draftId: params.draftId,
-        issueNumber: issue.issue_number,
-        repository: params.repository,
-        currentModelName: issue.model_name ?? null,
-        modelName: params.modelName
-      })
-    )
-  );
+  const octokit = await getAuthenticatedOctokit();
+  const maxConcurrentUpdates = 5;
+
+  for (let index = 0; index < params.issues.length; index += maxConcurrentUpdates) {
+    const batch = params.issues.slice(index, index + maxConcurrentUpdates);
+    await Promise.all(
+      batch.map((issue) =>
+        syncModelLabels({
+          draftId: params.draftId,
+          issueNumber: issue.issue_number,
+          repository: params.repository,
+          currentModelName: issue.model_name ?? null,
+          modelName: params.modelName,
+          octokit
+        })
+      )
+    );
+  }
 }
 
 

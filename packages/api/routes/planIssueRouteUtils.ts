@@ -1,4 +1,4 @@
-import { PlanIssueStatus, updatePlanIssue, type UpdatePlanIssueInput } from '@propr/core';
+import { PlanIssueStatus, logger, updatePlanIssue, type UpdatePlanIssueInput } from '@propr/core';
 
 export interface ImplementationSettings {
   useEpic: boolean;
@@ -50,6 +50,37 @@ export function sanitizeUltrafixMaxCycles(value: unknown): number | null {
     : null;
 }
 
+function logInvalidPersistedUltrafixValue(params: {
+  source: 'plan_issue' | 'planner_context';
+  issueNumber?: number;
+  fieldName: 'ultrafix_goal' | 'ultrafix_max_cycles';
+  value: unknown;
+}): void {
+  logger.warn(params, 'Invalid persisted ultrafix value found; normalizing to null');
+}
+
+function sanitizePersistedUltrafixGoal(
+  value: unknown,
+  params: { source: 'plan_issue' | 'planner_context'; issueNumber?: number }
+): number | null {
+  const sanitized = sanitizeUltrafixGoal(value);
+  if (value !== null && value !== undefined && sanitized === null) {
+    logInvalidPersistedUltrafixValue({ ...params, fieldName: 'ultrafix_goal', value });
+  }
+  return sanitized;
+}
+
+function sanitizePersistedUltrafixMaxCycles(
+  value: unknown,
+  params: { source: 'plan_issue' | 'planner_context'; issueNumber?: number }
+): number | null {
+  const sanitized = sanitizeUltrafixMaxCycles(value);
+  if (value !== null && value !== undefined && sanitized === null) {
+    logInvalidPersistedUltrafixValue({ ...params, fieldName: 'ultrafix_max_cycles', value });
+  }
+  return sanitized;
+}
+
 export function validateUltrafixValue(
   value: unknown,
   fieldName: string,
@@ -76,6 +107,7 @@ export function resolveImplementationSettings(
 
 export function resolveIssueUltrafixSettings(
   planIssue: {
+    issue_number?: number;
     run_ultrafix?: boolean | number | null;
     ultrafix_goal?: number | null;
     ultrafix_max_cycles?: number | null;
@@ -91,13 +123,19 @@ export function resolveIssueUltrafixSettings(
   const runUltrafix = issueRunUltrafix ?? plannerRunUltrafix;
   const ultrafixGoal = runUltrafix
     ? issueRunUltrafix === true
-      ? (sanitizeUltrafixGoal(planIssue.ultrafix_goal) ?? sanitizeUltrafixGoal(contextConfig?.ultrafixGoal))
-      : sanitizeUltrafixGoal(contextConfig?.ultrafixGoal)
+      ? (
+        sanitizePersistedUltrafixGoal(planIssue.ultrafix_goal, { source: 'plan_issue', issueNumber: planIssue.issue_number })
+        ?? sanitizePersistedUltrafixGoal(contextConfig?.ultrafixGoal, { source: 'planner_context', issueNumber: planIssue.issue_number })
+      )
+      : sanitizePersistedUltrafixGoal(contextConfig?.ultrafixGoal, { source: 'planner_context', issueNumber: planIssue.issue_number })
     : null;
   const ultrafixMaxCycles = runUltrafix
     ? issueRunUltrafix === true
-      ? (sanitizeUltrafixMaxCycles(planIssue.ultrafix_max_cycles) ?? sanitizeUltrafixMaxCycles(contextConfig?.ultrafixMaxCycles))
-      : sanitizeUltrafixMaxCycles(contextConfig?.ultrafixMaxCycles)
+      ? (
+        sanitizePersistedUltrafixMaxCycles(planIssue.ultrafix_max_cycles, { source: 'plan_issue', issueNumber: planIssue.issue_number })
+        ?? sanitizePersistedUltrafixMaxCycles(contextConfig?.ultrafixMaxCycles, { source: 'planner_context', issueNumber: planIssue.issue_number })
+      )
+      : sanitizePersistedUltrafixMaxCycles(contextConfig?.ultrafixMaxCycles, { source: 'planner_context', issueNumber: planIssue.issue_number })
     : null;
 
   return {
@@ -108,6 +146,7 @@ export function resolveIssueUltrafixSettings(
 }
 
 function getIssueUltrafixOverrides(planIssue: {
+  issue_number?: number;
   run_ultrafix?: boolean | number | null;
   ultrafix_goal?: number | null;
   ultrafix_max_cycles?: number | null;
@@ -119,8 +158,12 @@ function getIssueUltrafixOverrides(planIssue: {
     // `null` means "inherit planner defaults", so preserve it instead of
     // materializing the resolved planner value into the issue record.
     run_ultrafix: runUltrafix ?? null,
-    ultrafix_goal: hasExplicitUltrafixOverride ? sanitizeUltrafixGoal(planIssue.ultrafix_goal) : null,
-    ultrafix_max_cycles: hasExplicitUltrafixOverride ? sanitizeUltrafixMaxCycles(planIssue.ultrafix_max_cycles) : null
+    ultrafix_goal: hasExplicitUltrafixOverride
+      ? sanitizePersistedUltrafixGoal(planIssue.ultrafix_goal, { source: 'plan_issue', issueNumber: planIssue.issue_number })
+      : null,
+    ultrafix_max_cycles: hasExplicitUltrafixOverride
+      ? sanitizePersistedUltrafixMaxCycles(planIssue.ultrafix_max_cycles, { source: 'plan_issue', issueNumber: planIssue.issue_number })
+      : null
   };
 }
 

@@ -4,7 +4,7 @@ import cors from 'cors';
 import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
-import { Redis } from 'ioredis';
+import { Redis, RedisOptions } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import {
@@ -50,12 +50,73 @@ import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfi
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
 
-const ioRedisClient = new Redis({
-  host: process.env.REDIS_HOST || '127.0.0.1',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false,
-});
+function buildRedisConnectionOptions(): RedisOptions {
+  const options: RedisOptions = {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  };
+
+  if (process.env.REDIS_URL) {
+    const parsedUrl = new URL(process.env.REDIS_URL);
+    options.host = parsedUrl.hostname;
+    options.port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : (parsedUrl.protocol === 'rediss:' ? 6380 : 6379);
+    if (parsedUrl.username) {
+      options.username = decodeURIComponent(parsedUrl.username);
+    }
+    if (parsedUrl.password) {
+      options.password = decodeURIComponent(parsedUrl.password);
+    }
+    if (parsedUrl.protocol === 'rediss:') {
+      options.tls = {
+        rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+      };
+    }
+
+    return options;
+  }
+
+  options.host = process.env.REDIS_HOST || '127.0.0.1';
+  options.port = parseInt(process.env.REDIS_PORT || '6379', 10);
+
+  if (process.env.REDIS_USERNAME) {
+    options.username = process.env.REDIS_USERNAME;
+  }
+  if (process.env.REDIS_PASSWORD) {
+    options.password = process.env.REDIS_PASSWORD;
+  }
+  if (process.env.REDIS_TLS === 'true' || process.env.REDIS_TLS === '1') {
+    options.tls = {
+      rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+    };
+  }
+
+  return options;
+}
+
+function buildRedisUrlFromOptions(options: RedisOptions): string {
+  const protocol = options.tls ? 'rediss' : 'redis';
+  const host = options.host || '127.0.0.1';
+  const port = options.port || 6379;
+  const credentials = options.username
+    ? `${encodeURIComponent(options.username)}:${encodeURIComponent(options.password || '')}@`
+    : options.password
+      ? `:${encodeURIComponent(options.password)}@`
+      : '';
+
+  return `${protocol}://${credentials}${host}:${port}`;
+}
+
+function getRedisRuntimeConfig(): { url?: string; options: RedisOptions } {
+  const options = buildRedisConnectionOptions();
+  return process.env.REDIS_URL
+    ? { url: process.env.REDIS_URL, options }
+    : { options };
+}
+
+const redisRuntimeConfig = getRedisRuntimeConfig();
+const ioRedisClient = redisRuntimeConfig.url
+  ? new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options)
+  : new Redis(redisRuntimeConfig.options);
 
 const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
@@ -143,7 +204,7 @@ let taskQueue: Queue;
 
 async function initRedis(): Promise<void> {
   redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'redis'}:${process.env.REDIS_PORT || 6379}`
+    url: redisRuntimeConfig.url || buildRedisUrlFromOptions(redisRuntimeConfig.options)
   });
   
   redisClient.on('error', (err) => console.error('Redis Client Error', err));
@@ -151,10 +212,7 @@ async function initRedis(): Promise<void> {
   
   const queueName = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
   taskQueue = new Queue(queueName, {
-    connection: {
-      host: process.env.REDIS_HOST || 'redis',
-      port: parseInt(process.env.REDIS_PORT || '6379', 10)
-    }
+    connection: redisRuntimeConfig.options
   });
   
   console.log('Connected to Redis');
