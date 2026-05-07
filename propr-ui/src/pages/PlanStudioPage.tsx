@@ -13,6 +13,7 @@ import { PlannerDraft, DraftWithPlan } from '../api/plannerApi';
 
 interface LocationState {
   initialDraft?: DraftWithPlan;
+  initialBaseBranch?: string;
 }
 
 interface PlanStudioPageProps {

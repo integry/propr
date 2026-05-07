@@ -5,6 +5,7 @@ import { AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
 import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
 import { ManualFileSelector } from './ManualFileSelector';
+import { RepoSelection } from '../RepositorySelector';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 
@@ -87,16 +88,14 @@ interface SetupWizardLeftPaneProps {
   repository: string;
   repos?: Repo[];
   selectedRepo?: string;
-  onRepoChange?: (repo: string) => void;
+  selectedBaseBranch?: string;
+  configuredBaseBranch?: string;
+  onRepoChange?: (repo: string, selection?: RepoSelection) => void;
   reposLoading?: boolean;
   baseBranch: string;
-  branches: string[];
   isRepoLoading: boolean;
   branchError: string | null;
   repoError: string | null;
-  onBranchChange: (branch: string) => void;
-  isChangingRepo?: boolean;
-  onChangeRepoClick?: () => void;
   prompt: string;
   onPromptChange: (prompt: string) => void;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -126,16 +125,14 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   repository,
   repos = [],
   selectedRepo = '',
+  selectedBaseBranch = '',
+  configuredBaseBranch,
   onRepoChange,
   reposLoading = false,
   baseBranch,
-  branches,
   isRepoLoading,
   branchError,
   repoError,
-  onBranchChange,
-  isChangingRepo = false,
-  onChangeRepoClick,
   prompt,
   onPromptChange,
   textareaRef,
@@ -166,24 +163,22 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           <NewModeHeader
             reposLoading={reposLoading}
             selectedRepo={selectedRepo}
+            selectedBaseBranch={selectedBaseBranch}
             repos={repos}
             onRepoChange={onRepoChange}
-            branches={branches}
             baseBranch={baseBranch}
             isLoadingBranches={isRepoLoading}
-            onBranchChange={onBranchChange}
+            branchError={repoError}
           />
         ) : (
           <EditModeHeader
             repository={repository}
             isRepoLoading={isRepoLoading}
             baseBranch={baseBranch}
-            branches={branches}
+            selectedBaseBranch={selectedBaseBranch}
+            configuredBaseBranch={configuredBaseBranch}
             branchError={branchError}
             repoError={repoError}
-            onBranchChange={onBranchChange}
-            isChangingRepo={isChangingRepo}
-            onChangeRepoClick={onChangeRepoClick || (() => {})}
             repos={repos}
             onRepoChange={onRepoChange || (() => {})}
             reposLoading={reposLoading}

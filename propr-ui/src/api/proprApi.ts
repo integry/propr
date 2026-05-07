@@ -8,7 +8,8 @@ import type {
   SystemStatus, StatusResponse, TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
   GetTasksOptions, MonitoredRepo, RepoConfigResponse, RepoBranchesResponse,
   StopExecutionResponse, DeleteTaskResponse, AgentConfig, RevertParams,
-  RevertPreviewResponse, SummarizationSettings, TriggerReindexAllResponse, PostFollowupResponse
+  RevertPreviewResponse, SummarizationSettings, TriggerReindexAllResponse, PostFollowupResponse,
+  SystemSettings
 } from './proprTypes';
 
 export type { UserRepoPreferences } from './userRepoPreferencesApi';
@@ -119,7 +120,7 @@ export const getRepoBranches = async (owner: string, repo: string): Promise<Repo
   return response.json();
 };
 
-export const getSettings = async (): Promise<unknown> => {
+export const getSettings = async (): Promise<SystemSettings> => {
   const response = await fetch(`${API_BASE_URL}/api/config/settings`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
