@@ -151,7 +151,6 @@ export async function resolveAndPersistIssueUltrafixSettings<T extends {
   ultrafix_max_cycles?: number | null;
 }>(draftId: string, planIssue: T, contextConfig: Record<string, unknown> | null): Promise<T> {
   const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
-  const issueForImplementation = buildIssueForImplementation(planIssue, ultrafixSettings);
   const issueOverrides = getIssueUltrafixOverrides(planIssue);
   const persistedIssue = await updatePlanIssue(draftId, planIssue.issue_number, {
     run_ultrafix: issueOverrides.runUltrafix,
