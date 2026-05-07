@@ -164,8 +164,8 @@ async function loadPendingIssuesForImplementation(params: {
   draftId: string;
   repository: string;
   existingIssues: PlanIssue[];
-  agent_alias: unknown;
-  model_name: unknown;
+  agent_alias: string | null | undefined;
+  model_name: string | null | undefined;
 }): Promise<PlanIssue[]> {
   const { draftId, repository, existingIssues, agent_alias, model_name } = params;
   const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
