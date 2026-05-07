@@ -219,11 +219,7 @@ async function initRedis(): Promise<void> {
 }
 
 function setupRoutes(): void {
-  // Apply authentication middleware globally to all /api routes
-  // Note: /api/auth/* routes are set up before setupRoutes via setupAuth and remain accessible
-  // The /webhook endpoint is set up separately and uses signature verification instead
   app.use('/api', ensureAuthenticated);
-
   const statusRoutes = createStatusRoutes({ redisClient });
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
@@ -245,152 +241,61 @@ function setupRoutes(): void {
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
+  const register = (
+    method: 'get' | 'post' | 'put' | 'patch' | 'delete',
+    path: string,
+    ...handlers: Parameters<typeof app.get>[1][]
+  ): void => {
+    app[method](path, ...handlers);
+  };
 
-  app.get('/api/status', statusRoutes.getStatus);
-  app.get('/api/tasks', taskRoutes.getTasks);
-  app.get('/api/tasks/revert-preview', taskRoutes.getRevertPreview);
-  app.post('/api/tasks/revert', taskRoutes.revertChanges);
-  app.post('/api/tasks/:taskId/followup', taskRoutes.postFollowup);
-  app.delete('/api/tasks/:taskId', taskRoutes.deleteTask);
-  app.get('/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory);
-  app.get('/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails);
-  app.get('/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges);
+  [
+    ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview],
+    ['post', '/api/tasks/revert', taskRoutes.revertChanges], ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ['delete', '/api/tasks/:taskId', taskRoutes.deleteTask],
+    ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails], ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges],
+    ['get', '/api/config/followup-keywords', configRoutes.getFollowupKeywords], ['post', '/api/config/followup-keywords', configRoutes.postFollowupKeywords], ['get', '/api/config/followup-ignore-keywords', configRoutes.getFollowupIgnoreKeywords],
+    ['post', '/api/config/followup-ignore-keywords', configRoutes.postFollowupIgnoreKeywords], ['get', '/api/config/repos', configRoutes.getRepos], ['post', '/api/config/repos', configRoutes.postRepos],
+    ['get', '/api/config/settings', configRoutes.getSettings], ['post', '/api/config/settings', configRoutes.postSettings], ['get', '/api/config/pr-label', configRoutes.getPrLabel],
+    ['post', '/api/config/pr-label', configRoutes.postPrLabel], ['get', '/api/config/ai-primary-tag', configRoutes.getAiPrimaryTag], ['post', '/api/config/ai-primary-tag', configRoutes.postAiPrimaryTag],
+    ['get', '/api/config/primary-processing-labels', configRoutes.getPrimaryProcessingLabels], ['post', '/api/config/primary-processing-labels', configRoutes.postPrimaryProcessingLabels], ['get', '/api/config/agents', configRoutes.getAgents],
+    ['post', '/api/config/agents', configRoutes.postAgents], ['get', '/api/config/summarization', configRoutes.getSummarizationSettings], ['post', '/api/config/summarization', configRoutes.postSummarizationSettings],
+    ['get', '/api/config/repos/indexing-status', configRoutes.getRepositoriesIndexingStatus], ['post', '/api/config/repos/trigger-indexing', configRoutes.triggerIndexing], ['post', '/api/config/repos/stop-indexing', configRoutes.stopIndexing],
+    ['post', '/api/config/summarization/reindex-all', configRoutes.triggerReindexAll], ['get', '/api/config/agent-tank', configRoutes.getAgentTankSettings], ['post', '/api/config/agent-tank', configRoutes.postAgentTankSettings],
+    ['get', '/api/config/agent-tank/status', configRoutes.getAgentTankStatus], ['get', '/api/config/agent-tank/usage', configRoutes.getAgentTankUsage], ['post', '/api/config/agent-tank/refresh', configRoutes.postAgentTankRefresh],
+    ['get', '/api/config/agent-tank/detect', configRoutes.getAgentTankDetect], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity],
+    ['get', '/api/metrics', queueRoutes.getMetrics], ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary], ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId],
+    ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs], ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt], ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs],
+    ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/analysis', executionRoutes.getAnalysis], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
+    ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks],
+    ['get', '/api/github/repos', githubRoutes.getRepos], ['get', '/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches], ['get', '/api/planner/drafts', plannerRoutes.listDrafts],
+    ['get', '/api/planner/drafts/repositories', plannerRoutes.listRepositories], ['post', '/api/planner/drafts', plannerRoutes.createDraft], ['get', '/api/planner/drafts/:id', plannerRoutes.getDraft],
+    ['put', '/api/planner/drafts/:id', plannerRoutes.updateDraft], ['delete', '/api/planner/drafts/:id', plannerRoutes.deleteDraft], ['post', '/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment],
+    ['get', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent], ['delete', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment], ['get', '/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo],
+    ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues], ['post', '/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue], ['patch', '/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue],
+    ['post', '/api/planner/drafts/:id/implement-all', plannerRoutes.implementAllIssues], ['post', '/api/planner/context/stats', plannerRoutes.getContextStats], ['post', '/api/planner/preview', plannerRoutes.previewContext],
+    ['post', '/api/planner/preview/context', plannerRoutes.downloadContext], ['post', '/api/planner/generate', plannerRoutes.generate], ['post', '/api/planner/abort', plannerRoutes.abortGeneration],
+    ['post', '/api/planner/refine', plannerRoutes.refine], ['post', '/api/planner/abort-refinement', plannerRoutes.abortRefinement], ['post', '/api/planner/finalize', plannerRoutes.finalize],
+    ['post', '/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup], ['post', '/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft], ['post', '/api/planner/validate-context-repository', plannerRoutes.validateContextRepository],
+    ['post', '/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution], ['post', '/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution], ['patch', '/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings],
+    ['post', '/api/planner/relevance', relevanceRoutes.analyzeRelevance], ['get', '/api/stats/tasks', statsRoutes.getTaskStats], ['get', '/api/stats/repositories', statsRoutes.getRepositoryStats],
+    ['get', '/api/stats/overview', statsRoutes.getOverview], ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount], ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus],
+    ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree], ['get', '/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree], ['get', '/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary],
+    ['post', '/api/repos/chat', repoChatRoutes.postChat], ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages], ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages],
+    ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage], ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages], ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
+    ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory],
+    ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory], ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos],
+    ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo], ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo],
+    ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
+    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
+  ].forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
 
-  app.get('/api/config/followup-keywords', configRoutes.getFollowupKeywords);
-  app.post('/api/config/followup-keywords', configRoutes.postFollowupKeywords);
-  app.get('/api/config/followup-ignore-keywords', configRoutes.getFollowupIgnoreKeywords);
-  app.post('/api/config/followup-ignore-keywords', configRoutes.postFollowupIgnoreKeywords);
-  app.get('/api/config/repos', configRoutes.getRepos);
-  app.post('/api/config/repos', configRoutes.postRepos);
-  app.get('/api/config/settings', configRoutes.getSettings);
-  app.post('/api/config/settings', configRoutes.postSettings);
-  app.get('/api/config/pr-label', configRoutes.getPrLabel);
-  app.post('/api/config/pr-label', configRoutes.postPrLabel);
-  app.get('/api/config/ai-primary-tag', configRoutes.getAiPrimaryTag);
-  app.post('/api/config/ai-primary-tag', configRoutes.postAiPrimaryTag);
-  app.get('/api/config/primary-processing-labels', configRoutes.getPrimaryProcessingLabels);
-  app.post('/api/config/primary-processing-labels', configRoutes.postPrimaryProcessingLabels);
-  app.get('/api/config/agents', configRoutes.getAgents);
-  app.post('/api/config/agents', configRoutes.postAgents);
-  app.get('/api/config/summarization', configRoutes.getSummarizationSettings);
-  app.post('/api/config/summarization', configRoutes.postSummarizationSettings);
-  app.get('/api/config/repos/indexing-status', configRoutes.getRepositoriesIndexingStatus);
-  app.post('/api/config/repos/trigger-indexing', configRoutes.triggerIndexing);
-  app.post('/api/config/repos/stop-indexing', configRoutes.stopIndexing);
-  app.post('/api/config/summarization/reindex-all', configRoutes.triggerReindexAll);
-
-  app.get('/api/config/agent-tank', configRoutes.getAgentTankSettings);
-  app.post('/api/config/agent-tank', configRoutes.postAgentTankSettings);
-  app.get('/api/config/agent-tank/status', configRoutes.getAgentTankStatus);
-  app.get('/api/config/agent-tank/usage', configRoutes.getAgentTankUsage);
-  app.post('/api/config/agent-tank/refresh', configRoutes.postAgentTankRefresh);
-  app.get('/api/config/agent-tank/detect', configRoutes.getAgentTankDetect);
-
-  app.get('/api/queue/stats', queueRoutes.getQueueStats);
-  app.get('/api/activity', queueRoutes.getActivity);
-  app.get('/api/metrics', queueRoutes.getMetrics);
-
-  app.get('/api/llm-metrics', llmMetricsRoutes.getSummary);
-  app.get('/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId);
-
-  app.get('/api/llm-logs', llmLogsRoutes.getLlmLogs);
-
-  app.get('/api/execution/:sessionId/prompt', executionRoutes.getPrompt);
-  app.get('/api/execution/:sessionId/logs', executionRoutes.getLogs);
-  app.get('/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType);
-  app.get('/api/task/:taskId/analysis', executionRoutes.getAnalysis);
-
-  app.get('/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo);
-  app.get('/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs);
-  app.post('/api/task/:taskId/stop', dockerRoutes.stopTask);
-
-  app.post('/api/import-tasks', githubRoutes.importTasks);
-  app.get('/api/github/repos', githubRoutes.getRepos);
-  app.get('/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches);
-
-  app.get('/api/planner/drafts', plannerRoutes.listDrafts);
-  app.get('/api/planner/drafts/repositories', plannerRoutes.listRepositories);
-  app.post('/api/planner/drafts', plannerRoutes.createDraft);
-  app.get('/api/planner/drafts/:id', plannerRoutes.getDraft);
-  app.put('/api/planner/drafts/:id', plannerRoutes.updateDraft);
-  app.delete('/api/planner/drafts/:id', plannerRoutes.deleteDraft);
-  app.post('/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment);
-  app.get('/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent);
-  app.delete('/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment);
-  app.get('/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo);
-  // Plan issue management endpoints
-  app.get('/api/planner/drafts/:id/issues', plannerRoutes.getIssues);
-  app.post('/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue);
-  app.patch('/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue);
-  app.post('/api/planner/drafts/:id/implement-all', plannerRoutes.implementAllIssues);
-  app.post('/api/planner/context/stats', plannerRoutes.getContextStats);
-  app.post('/api/planner/preview', plannerRoutes.previewContext);
-  app.post('/api/planner/preview/context', plannerRoutes.downloadContext);
-  app.post('/api/planner/generate', plannerRoutes.generate);
-  app.post('/api/planner/abort', plannerRoutes.abortGeneration);
-  app.post('/api/planner/refine', plannerRoutes.refine);
-  app.post('/api/planner/abort-refinement', plannerRoutes.abortRefinement);
-  app.post('/api/planner/finalize', plannerRoutes.finalize);
-  app.post('/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup);
-  app.post('/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft);
-  app.post('/api/planner/validate-context-repository', plannerRoutes.validateContextRepository);
-  app.post('/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution);
-  app.post('/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution);
-  app.patch('/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings);
-
-  app.post('/api/planner/relevance', relevanceRoutes.analyzeRelevance);
-
-  // Agent chat API routes
   app.use('/api/agents', agentRoutes.router);
-
-  // Agent version management routes
   const agentVersionRoutes = createAgentVersionRoutes();
-  app.get('/api/agents/versions/:agentType', agentVersionRoutes.getVersions);
-  app.post('/api/agents/:agentId/build-image', agentVersionRoutes.buildImage);
-  app.delete('/api/agents/:agentType/images/cleanup', agentVersionRoutes.cleanupImages);
-  app.get('/api/agents/:agentType/images', agentVersionRoutes.listImages);
-  app.post('/api/agents/resolve-version', agentVersionRoutes.resolveVersionEndpoint);
-  app.get('/api/agents/:agentType/image-tag', agentVersionRoutes.getImageTag);
-
-  // Stats routes
-  app.get('/api/stats/tasks', statsRoutes.getTaskStats);
-  app.get('/api/stats/repositories', statsRoutes.getRepositoryStats);
-  app.get('/api/stats/overview', statsRoutes.getOverview);
-  app.get('/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount);
-  // Summary browser routes for exploring repository file summaries
-  app.get('/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus);
-  app.get('/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree);
-  app.get('/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree);
-  app.get('/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary);
-
-  // Repository chat endpoints for LLM integration and message persistence
-  app.post('/api/repos/chat', repoChatRoutes.postChat);
-  app.get('/api/repos/chat/messages', repoChatRoutes.getMessages);
-  app.post('/api/repos/chat/messages', repoChatRoutes.saveMessages);
-  app.delete('/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage);
-  app.delete('/api/repos/chat/messages', repoChatRoutes.clearMessages);
-
-  // Repository improvements endpoint for generating suggestions
-  app.post('/api/repos/improvements', repoImprovementsRoutes.postImprovements);
-
-  // Repository to-do endpoints for managing ideas, notes, and future tasks
-  // Category endpoints
-  app.get('/api/repos/todos/categories', repoTodoRoutes.getCategories);
-  app.post('/api/repos/todos/categories', repoTodoRoutes.createCategory);
-  app.put('/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory);
-  app.delete('/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory);
-  app.post('/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories);
-  // Todo endpoints
-  app.get('/api/repos/todos', repoTodoRoutes.getTodos);
-  app.get('/api/repos/todos/:todoId', repoTodoRoutes.getTodo);
-  app.post('/api/repos/todos', repoTodoRoutes.createTodo);
-  app.put('/api/repos/todos/:todoId', repoTodoRoutes.updateTodo);
-  app.delete('/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo);
-  app.post('/api/repos/todos/reorder', repoTodoRoutes.reorderTodos);
-
-  // User-specific repository preferences endpoints
-  app.get('/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences);
-  app.post('/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences);
+  [
+    ['get', '/api/agents/versions/:agentType', agentVersionRoutes.getVersions], ['post', '/api/agents/:agentId/build-image', agentVersionRoutes.buildImage],
+    ['delete', '/api/agents/:agentType/images/cleanup', agentVersionRoutes.cleanupImages], ['get', '/api/agents/:agentType/images', agentVersionRoutes.listImages],
+    ['post', '/api/agents/resolve-version', agentVersionRoutes.resolveVersionEndpoint], ['get', '/api/agents/:agentType/image-tag', agentVersionRoutes.getImageTag],
+  ].forEach(([method, path, handler]) => register(method, path, handler));
 
   setupWebhookRoute();
 }
@@ -408,17 +313,9 @@ function setupWebhookRoute(): void {
     try {
       await handleWebhookRequest(req, res, {
         webhookSecret: process.env.GH_WEBHOOK_SECRET,
-        redis: {
-          set: (key, value, opts) => {
-            if (opts) {
-              return redisClient.set(key, value, {
-                ...(opts.NX ? { NX: true as const } : {}),
-                ...(opts.EX != null ? { EX: opts.EX } : {}),
-              }) as Promise<string | null>;
-            }
-            return redisClient.set(key, value) as Promise<string | null>;
-          },
-        },
+        redis: { set: (key, value, opts) => opts
+          ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
+          : redisClient.set(key, value) as Promise<string | null> },
         processor: (payload, event, cid, deliveryId) => processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId),
         correlationId,
       });
@@ -442,38 +339,18 @@ const httpServer: HttpServer = createServer(app);
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
-    try {
-      await db.migrate.latest();
-      console.log('Database migrations completed successfully');
-    } catch (error) {
-      console.error('Database migration failed:', error);
-    }
+    try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
     await initRedis();
     setupRoutes();
-
-    // Initialize Socket.IO with the HTTP server and shared CORS configuration
     const socketService = initSocketService(httpServer, validateCorsOrigin);
     console.log('[WebSocket] Socket.IO server initialized');
-
-    // Initialize queue features for real-time broadcasting
-    socketService.initQueueFeatures({
-      taskQueue,
-      redisClient,
-      db
-    });
+    socketService.initQueueFeatures({ taskQueue, redisClient, db });
     console.log('[WebSocket] Queue features initialized for real-time updates');
-
     try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
-
     await initializeUltrafix(ioRedisClient);
-
     try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
-
-    // Use httpServer.listen instead of app.listen for Socket.IO support
     httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT} (with WebSocket support)`); });
-
-    // Start background job to check for scheduled delayed reindex (every 30 seconds)
     setInterval(async () => {
       try {
         await checkAndExecuteDelayedReindex(redisClient as RedisClientType);
@@ -482,7 +359,6 @@ async function start(): Promise<void> {
       }
     }, 30 * 1000);
 
-    // Handle graceful shutdown
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
       await closeUltrafixStateRedis();
