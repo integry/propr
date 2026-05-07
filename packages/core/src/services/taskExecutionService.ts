@@ -87,25 +87,15 @@ function buildExecutionContextConfig(
   failures: Array<{ taskIndex: number; title: string; error: string }>
 ): TaskExecutionContextConfig {
   const updatedConfig: TaskExecutionContextConfig = {
-    baseBranch: existingConfig.baseBranch,
-    granularity: existingConfig.granularity,
-    contextLevel: existingConfig.contextLevel,
-    compress: existingConfig.compress,
-    manualFiles: existingConfig.manualFiles,
-    autoFiles: existingConfig.autoFiles,
-    contextRepositories: existingConfig.contextRepositories,
-    generationModel: existingConfig.generationModel,
-    useEpic: typeof existingConfig.useEpic === 'boolean' ? existingConfig.useEpic : undefined,
-    autoMerge: typeof existingConfig.autoMerge === 'boolean' ? existingConfig.autoMerge : undefined,
-    runUltrafix: typeof existingConfig.runUltrafix === 'boolean' ? existingConfig.runUltrafix : undefined,
-    ultrafixGoal: Number.isInteger(existingConfig.ultrafixGoal) ? existingConfig.ultrafixGoal : null,
-    ultrafixMaxCycles: Number.isInteger(existingConfig.ultrafixMaxCycles) ? existingConfig.ultrafixMaxCycles : null,
+    ...existingConfig,
     executionResults: results,
     executedAt: new Date().toISOString()
   };
 
   if (failures.length > 0) {
     updatedConfig.executionFailures = failures;
+  } else {
+    delete updatedConfig.executionFailures;
   }
 
   return updatedConfig;

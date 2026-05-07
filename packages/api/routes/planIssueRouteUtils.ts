@@ -152,11 +152,16 @@ export async function resolveAndPersistIssueUltrafixSettings<T extends {
 }>(draftId: string, planIssue: T, contextConfig: Record<string, unknown> | null): Promise<T> {
   const ultrafixSettings = resolveIssueUltrafixSettings(planIssue, contextConfig);
   const issueOverrides = getIssueUltrafixOverrides(planIssue);
-  const persistedIssue = await updatePlanIssue(draftId, planIssue.issue_number, {
-    run_ultrafix: issueOverrides.runUltrafix,
-    ultrafix_goal: issueOverrides.ultrafixGoal,
-    ultrafix_max_cycles: issueOverrides.ultrafixMaxCycles
-  });
+
+  if (
+    planIssue.run_ultrafix === issueOverrides.runUltrafix &&
+    planIssue.ultrafix_goal === issueOverrides.ultrafixGoal &&
+    planIssue.ultrafix_max_cycles === issueOverrides.ultrafixMaxCycles
+  ) {
+    return buildIssueForImplementation(planIssue, ultrafixSettings);
+  }
+
+  const persistedIssue = await updatePlanIssue(draftId, planIssue.issue_number, issueOverrides);
 
   return buildIssueForImplementation((persistedIssue as T | null) ?? planIssue, ultrafixSettings);
 }

@@ -462,7 +462,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const repoFullName = `${owner}/${repo}`;
 
     let prNumber: number;
-    let comment: { id: number; body: string; user: { login: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+    let comment: { id: number; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 
     if (eventType === 'issue_comment') {
         const issuePayload = payload as IssueCommentEvent;
@@ -478,9 +478,11 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const commentAuthor = comment.user.login;
     const parsedCommand = parseSlashCommand(comment.body);
     const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]';
-    const isSystemUltrafixComment = parsedCommand?.command === 'ultrafix' && commentAuthor === botUsername;
+    const isSystemUltrafixComment = parsedCommand?.command === 'ultrafix' && (
+        commentAuthor === botUsername || comment.user.type === 'Bot'
+    );
 
-    const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
+    const filterResult = filterCommentByAuthor(commentAuthor, comment.user.type ?? null, correlationId);
     if (filterResult.shouldFilter && !isSystemUltrafixComment) return;
 
     // Check for ignore keywords

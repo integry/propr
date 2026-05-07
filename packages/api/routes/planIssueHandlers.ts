@@ -304,10 +304,8 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         contextConfig, correlationId, labelLogger
       });
 
-      const shouldQueueSequentially = autoMerge && !!epicLabelName;
-      const issuesForImmediateImplementation = shouldQueueSequentially ? [pendingIssues[0]] : pendingIssues;
       const resolvedIssuesForImplementation = await Promise.all(
-        issuesForImmediateImplementation.map((issue) => resolveAndPersistIssueUltrafixSettings(draftId, issue, contextConfig))
+        pendingIssues.map((issue) => resolveAndPersistIssueUltrafixSettings(draftId, issue, contextConfig))
       );
 
       const { results, queuedCount } = await processBatchIssues({
