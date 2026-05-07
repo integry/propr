@@ -51,11 +51,6 @@ export interface ProcessTaskOptions {
   taskIndex: number;
   draftId: string;
   repository: string;
-  ultrafixDefaults?: {
-    runUltrafix: boolean | null;
-    ultrafixGoal: number | null;
-    ultrafixMaxCycles: number | null;
-  };
   correlatedLogger: Logger | EnhancedLogger;
   correlationId?: string;
 }
@@ -167,7 +162,7 @@ export async function postIssueComments(options: PostIssueCommentsOptions): Prom
 }
 
 export async function processTaskAndCreateIssue(options: ProcessTaskOptions): Promise<ProcessTaskResult> {
-  const { octokit, owner, repoName, task, taskIndex, draftId, repository, ultrafixDefaults, correlatedLogger, correlationId } = options;
+  const { octokit, owner, repoName, task, taskIndex, draftId, repository, correlatedLogger, correlationId } = options;
 
   correlatedLogger.info({
     draftId,
@@ -202,9 +197,6 @@ export async function processTaskAndCreateIssue(options: ProcessTaskOptions): Pr
       draft_id: draftId,
       repository,
       issue_number: createdIssue.number,
-      run_ultrafix: ultrafixDefaults?.runUltrafix ?? null,
-      ultrafix_goal: ultrafixDefaults?.ultrafixGoal ?? null,
-      ultrafix_max_cycles: ultrafixDefaults?.ultrafixMaxCycles ?? null,
     });
     correlatedLogger.info({
       draftId,

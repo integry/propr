@@ -42,7 +42,8 @@ import {
   processDetectedIssue as processDetectedIssueBase,
   handleCommentDeleted,
   handleCommentEdited,
-  processCommentEvent
+  processCommentEvent,
+  closeUltrafixStateRedis
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
@@ -426,6 +427,7 @@ async function start(): Promise<void> {
     // Handle graceful shutdown
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
+      await closeUltrafixStateRedis();
       await closeSocketService();
       httpServer.close(() => {
         console.log('Server closed');

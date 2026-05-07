@@ -421,7 +421,20 @@ function getUltrafixStateRedis(): Redis {
     return ultrafixStateRedis;
 }
 
+export async function closeUltrafixStateRedis(): Promise<void> {
+    const client = ultrafixStateRedis;
+    ultrafixStateRedis = null;
+    if (!client) return;
+
+    try {
+        await client.quit();
+    } catch {
+        client.disconnect(false);
+    }
+}
+
 export function resetUltrafixStateRedisForTests(): void {
+    ultrafixStateRedis?.disconnect(false);
     ultrafixStateRedis = null;
 }
 

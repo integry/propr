@@ -64,11 +64,6 @@ interface ValidatedDraftData {
   owner: string;
   repoName: string;
   isReFinalization: boolean;
-  ultrafixDefaults: {
-    runUltrafix: boolean | null;
-    ultrafixGoal: number | null;
-    ultrafixMaxCycles: number | null;
-  };
 }
 
 function parseContextConfig(
@@ -160,19 +155,12 @@ async function validateAndPrepareDraft(
     throw new Error(`Invalid repository format: ${draft.repository}`);
   }
 
-  const contextConfig = parseContextConfig(draft.context_config);
-
   return {
     draft,
     planJson,
     owner,
     repoName,
-    isReFinalization,
-    ultrafixDefaults: {
-      runUltrafix: typeof contextConfig.runUltrafix === 'boolean' ? contextConfig.runUltrafix : null,
-      ultrafixGoal: Number.isInteger(contextConfig.ultrafixGoal) ? contextConfig.ultrafixGoal as number : null,
-      ultrafixMaxCycles: Number.isInteger(contextConfig.ultrafixMaxCycles) ? contextConfig.ultrafixMaxCycles as number : null,
-    }
+    isReFinalization
   };
 }
 
@@ -198,7 +186,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     throw error;
   }
 
-  const { draft, planJson, owner, repoName, ultrafixDefaults } = validatedData;
+  const { draft, planJson, owner, repoName } = validatedData;
   const totalCount = planJson.length;
 
   // Emit initial progress event
@@ -244,7 +232,6 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       taskIndex: i,
       draftId,
       repository: draft.repository,
-      ultrafixDefaults,
       correlatedLogger,
       correlationId
     });

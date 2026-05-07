@@ -106,6 +106,25 @@ async function syncModelLabels(params: {
   );
 }
 
+async function syncModelLabelsForIssues(params: {
+  draftId: string;
+  repository: string;
+  issues: Array<{ issue_number: number; model_name?: string | null }>;
+  modelName: string | null;
+}): Promise<void> {
+  await Promise.all(
+    params.issues.map((issue) =>
+      syncModelLabels({
+        draftId: params.draftId,
+        issueNumber: issue.issue_number,
+        repository: params.repository,
+        currentModelName: issue.model_name ?? null,
+        modelName: params.modelName
+      })
+    )
+  );
+}
+
 
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
   return async function getIssues(req: Request, res: Response): Promise<void> {
@@ -274,16 +293,28 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       const { agent_alias, model_name } = req.body;
       const { useEpic, autoMerge } = resolveImplementationSettings(req.body, contextConfig);
+      const existingIssues = await getPlanIssuesByDraft(draftId);
 
       if (agent_alias !== undefined || model_name !== undefined) {
         await batchUpdatePlanIssueConfig({
-            draftId,
-            agentAlias: agent_alias,
-            modelName: model_name,
+          draftId,
+          agentAlias: agent_alias,
+          modelName: model_name,
         });
+
+        if (model_name !== undefined) {
+          await syncModelLabelsForIssues({
+            draftId,
+            repository,
+            issues: existingIssues,
+            modelName: model_name
+          });
+        }
       }
 
-      const issues = await getPlanIssuesByDraft(draftId);
+      const issues = agent_alias !== undefined || model_name !== undefined
+        ? await getPlanIssuesByDraft(draftId)
+        : existingIssues;
       const pendingIssues = issues.filter(issue => issue.status === PlanIssueStatus.PENDING);
 
       if (pendingIssues.length === 0) {

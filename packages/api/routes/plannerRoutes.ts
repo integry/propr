@@ -9,6 +9,7 @@ import { checkDbAndAuth, sendCheckError, verifyDraftOwnership, createDownloadCon
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
 import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createAbortGenerationHandler, createAbortRefinementHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
+import { ULTRAFIX_GOAL_MAX, ULTRAFIX_GOAL_MIN, ULTRAFIX_MAX_CYCLES_MIN } from './planIssueRouteUtils.js';
 import { linkTodosToDraft, pauseDraft, resumeDraft, parseExistingContextConfig, type TaskDraftConfig } from '@propr/core';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
@@ -330,8 +331,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const useEpic = parseOptionalBoolean(body.useEpic, 'useEpic');
     const autoMerge = parseOptionalBoolean(body.autoMerge, 'autoMerge');
     const runUltrafix = parseOptionalBoolean(body.runUltrafix, 'runUltrafix');
-    const ultrafixGoal = parseOptionalInteger(body.ultrafixGoal, 'ultrafixGoal', { minimum: 1, maximum: 10 });
-    const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: 1 });
+    const ultrafixGoal = parseOptionalInteger(body.ultrafixGoal, 'ultrafixGoal', { minimum: ULTRAFIX_GOAL_MIN, maximum: ULTRAFIX_GOAL_MAX });
+    const ultrafixMaxCycles = parseOptionalInteger(body.ultrafixMaxCycles, 'ultrafixMaxCycles', { minimum: ULTRAFIX_MAX_CYCLES_MIN });
     const hasUltrafixGoal = Object.prototype.hasOwnProperty.call(body, 'ultrafixGoal');
     const hasUltrafixMaxCycles = Object.prototype.hasOwnProperty.call(body, 'ultrafixMaxCycles');
     const nextRunUltrafix = runUltrafix ?? existingConfig.runUltrafix;
