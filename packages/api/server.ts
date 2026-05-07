@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, RequestHandler } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
 import { createClient, RedisClientType } from 'redis';
@@ -49,6 +49,10 @@ import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
+
+type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
+type RouteHandler = RequestHandler;
+type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
 
 function buildRedisConnectionOptions(): RedisOptions {
   const options: RedisOptions = {
@@ -242,14 +246,14 @@ function setupRoutes(): void {
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const register = (
-    method: 'get' | 'post' | 'put' | 'patch' | 'delete',
+    method: RouteMethod,
     path: string,
-    ...handlers: Parameters<typeof app.get>[1][]
+    ...handlers: RouteHandler[]
   ): void => {
     app[method](path, ...handlers);
   };
 
-  [
+  const routes: RouteEntry[] = [
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview],
     ['post', '/api/tasks/revert', taskRoutes.revertChanges], ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ['delete', '/api/tasks/:taskId', taskRoutes.deleteTask],
     ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails], ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges],
@@ -287,15 +291,17 @@ function setupRoutes(): void {
     ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo], ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo],
     ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
     ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
-  ].forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
+  ];
+  routes.forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
 
   app.use('/api/agents', agentRoutes.router);
   const agentVersionRoutes = createAgentVersionRoutes();
-  [
+  const agentVersionRouteEntries: RouteEntry[] = [
     ['get', '/api/agents/versions/:agentType', agentVersionRoutes.getVersions], ['post', '/api/agents/:agentId/build-image', agentVersionRoutes.buildImage],
     ['delete', '/api/agents/:agentType/images/cleanup', agentVersionRoutes.cleanupImages], ['get', '/api/agents/:agentType/images', agentVersionRoutes.listImages],
     ['post', '/api/agents/resolve-version', agentVersionRoutes.resolveVersionEndpoint], ['get', '/api/agents/:agentType/image-tag', agentVersionRoutes.getImageTag],
-  ].forEach(([method, path, handler]) => register(method, path, handler));
+  ];
+  agentVersionRouteEntries.forEach(([method, path, handler]) => register(method, path, handler));
 
   setupWebhookRoute();
 }
