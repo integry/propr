@@ -14,6 +14,10 @@ interface UseDraftResult {
   refetch: () => Promise<void>;
 }
 
+function ensureArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
 // Helper to safely parse JSON string fields that should be arrays/objects
 function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
   const result = { ...data };
@@ -29,6 +33,9 @@ function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
   if (typeof result.generation_trace === 'string') {
     try { result.generation_trace = JSON.parse(result.generation_trace as string); } catch { result.generation_trace = null; }
   }
+  result.plan_json = ensureArray(result.plan_json);
+  result.chat_history = ensureArray(result.chat_history);
+  result.attachments = ensureArray(result.attachments);
   return result;
 }
 

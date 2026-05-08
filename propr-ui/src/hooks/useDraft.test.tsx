@@ -236,4 +236,24 @@ describe('useDraft', () => {
       expect(mockGetDraft).toHaveBeenCalledTimes(2);
     });
   });
+
+  it('normalizes malformed attachments payloads to an empty array', async () => {
+    mockGetDraft.mockResolvedValueOnce({
+      draft_id: 'draft-1',
+      repository: 'integry/propr',
+      initial_prompt: 'Test prompt',
+      status: 'draft',
+      attachments: { id: 'bad-shape' },
+      created_at: '2026-05-05T00:00:00Z',
+      generation_trace: {
+        steps: [],
+      },
+    } as never);
+
+    const { result } = renderHook(() => useDraft('draft-1'));
+
+    await waitFor(() => {
+      expect(result.current.draft?.attachments).toEqual([]);
+    });
+  });
 });

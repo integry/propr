@@ -12,6 +12,7 @@ export interface Repo { name: string; enabled: boolean; baseBranch?: string; sta
 export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[];
   contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
 interface RepoInfoState { isLoading: boolean; error: string | null; }
+const ensureArray = <T,>(value: T[] | unknown): T[] => Array.isArray(value) ? value : [];
 const clearResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) => setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
 const setResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, baseBranch: string) => setConfig(prev => prev.baseBranch === baseBranch ? prev : { ...prev, baseBranch });
 async function loadRepositories(savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined): Promise<{ repos: Repo[]; selectedRepo: string; selectedBaseBranch: string }> {
@@ -307,11 +308,11 @@ function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigSna
   return {
     prompt: draft.initial_prompt,
     baseBranch: draftConfig?.baseBranch ?? '',
-    files: draft.attachments ?? [],
-    contextRepositories: draftConfig?.contextRepositories ?? [],
+    files: ensureArray<PlannerAttachment>(draft.attachments),
+    contextRepositories: ensureArray<{ repository: string; branch?: string }>(draftConfig?.contextRepositories),
     generationModel: draftConfig?.generationModel ?? null,
-    manualFiles: draftConfig?.manualFiles ?? [],
-    excludedFiles: draftConfig?.excludedFiles ?? []
+    manualFiles: ensureArray<string>(draftConfig?.manualFiles),
+    excludedFiles: ensureArray<string>(draftConfig?.excludedFiles)
   };
 }
 function matchesDraftConfig(prev: PlannerConfig, next: DraftConfigSnapshot): boolean {

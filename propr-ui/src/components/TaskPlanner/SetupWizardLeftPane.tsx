@@ -22,8 +22,10 @@ const AttachmentsSection: React.FC<{
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }> = ({ isNewMode, localFiles, files, draftId, onRemoveLocalFile, onRemoveFile, isUploading, isGenerating, fileInputRef, onFileInputChange }) => {
-  const hasLocalFiles = isNewMode && localFiles.length > 0;
-  const hasRemoteFiles = !isNewMode && files.length > 0;
+  const safeLocalFiles = Array.isArray(localFiles) ? localFiles : [];
+  const safeFiles = Array.isArray(files) ? files : [];
+  const hasLocalFiles = isNewMode && safeLocalFiles.length > 0;
+  const hasRemoteFiles = !isNewMode && safeFiles.length > 0;
   const hasAnyFiles = hasLocalFiles || hasRemoteFiles;
 
   return (
@@ -60,14 +62,14 @@ const AttachmentsSection: React.FC<{
       {/* Attached files shown inline after the button */}
       {hasAnyFiles && (
         <div className="flex flex-wrap gap-2">
-          {hasLocalFiles && localFiles.map((file, index) => (
+          {hasLocalFiles && safeLocalFiles.map((file, index) => (
             <AttachmentChip
               key={`file-${index}`}
               file={file}
               onRemove={() => onRemoveLocalFile?.(index)}
             />
           ))}
-          {hasRemoteFiles && files.map((attachment) => (
+          {hasRemoteFiles && safeFiles.map((attachment) => (
             <RemoteAttachmentChip
               key={attachment.id}
               name={attachment.originalName}

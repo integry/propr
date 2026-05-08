@@ -217,6 +217,7 @@ interface LocationState {
 }
 
 type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
+const ensureArray = <T,>(value: T[] | unknown): T[] => Array.isArray(value) ? value : [];
 
 interface RepoChangeHandlerParams { draft: PlannerDraft | undefined; config: PlannerConfig; locationTodoIds?: string[]; navigate: ReturnType<typeof useNavigate>; onDraftCreated?: (draftId: string) => void;
   setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; }
@@ -280,11 +281,11 @@ function useSetupWizardConfig(draft: PlannerDraft | undefined, locationState: Lo
     granularity: savedSettings.lastGranularity,
     contextLevel: savedSettings.lastContextLevel,
     compress: false,
-    files: draft?.attachments ?? [],
-    contextRepositories: draftContextConfig?.contextRepositories ?? [],
+    files: ensureArray(draft?.attachments),
+    contextRepositories: ensureArray(draftContextConfig?.contextRepositories),
     generationModel: draftContextConfig?.generationModel ?? null,
-    manualFiles: draftContextConfig?.manualFiles ?? [],
-    excludedFiles: draftContextConfig?.excludedFiles ?? []
+    manualFiles: ensureArray(draftContextConfig?.manualFiles),
+    excludedFiles: ensureArray(draftContextConfig?.excludedFiles)
   }));
 
   return { config, setConfig, savedSettings, draftContextConfig, initialConfiguredBaseBranch };
