@@ -301,13 +301,17 @@ export function useAutoResize(textareaRef: React.RefObject<HTMLTextAreaElement |
   }, [textareaRef]);
 }
 type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
-type DraftConfigSnapshot = Pick<PlannerConfig, 'prompt' | 'baseBranch' | 'files' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>;
+type DraftConfigSnapshot = Pick<PlannerConfig, 'prompt' | 'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'files' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>;
+type PersistedDraftSettings = Pick<PlannerConfig, 'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>;
 function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigSnapshot | null {
   if (!draft) return null;
   const draftConfig = (draft as DraftWithContextConfig).context_config;
   return {
     prompt: draft.initial_prompt,
     baseBranch: draftConfig?.baseBranch ?? '',
+    granularity: draftConfig?.granularity ?? 'balanced',
+    contextLevel: draftConfig?.contextLevel ?? 50,
+    compress: draftConfig?.compress ?? false,
     files: ensureArray<PlannerAttachment>(draft.attachments),
     contextRepositories: ensureArray<{ repository: string; branch?: string }>(draftConfig?.contextRepositories),
     generationModel: draftConfig?.generationModel ?? null,
@@ -318,6 +322,9 @@ function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigSna
 function matchesDraftConfig(prev: PlannerConfig, next: DraftConfigSnapshot): boolean {
   return prev.prompt === next.prompt &&
     prev.baseBranch === next.baseBranch &&
+    prev.granularity === next.granularity &&
+    prev.contextLevel === next.contextLevel &&
+    prev.compress === next.compress &&
     JSON.stringify(prev.files) === JSON.stringify(next.files) &&
     JSON.stringify(prev.contextRepositories) === JSON.stringify(next.contextRepositories) &&
     prev.generationModel === next.generationModel &&
@@ -326,10 +333,14 @@ function matchesDraftConfig(prev: PlannerConfig, next: DraftConfigSnapshot): boo
 }
 export function useDraftContextConfigSync(draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
   const draftSnapshot = getDraftConfigSnapshot(draft);
+  const previousDraftIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!draftSnapshot) return;
+    const draftChanged = previousDraftIdRef.current !== draft?.draft_id;
+    previousDraftIdRef.current = draft?.draft_id;
+    if (!draftChanged) return;
     setConfig(prev => matchesDraftConfig(prev, draftSnapshot) ? prev : { ...prev, ...draftSnapshot });
-  }, [draftSnapshot, setConfig]);
+  }, [draft?.draft_id, draftSnapshot, setConfig]);
 }
 export function usePreviewTrace(draft: PlannerDraft | undefined, draftId: string, isPreviewLoading: boolean) {
   const [previewTrace, setPreviewTrace] = useState<GenerationTrace | undefined>();
@@ -389,4 +400,71 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
     }, PROMPT_SAVE_DEBOUNCE);
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   }, [draftId, prompt]);
+}
+function getPersistedDraftSettings(config: PlannerConfig): PersistedDraftSettings {
+  return {
+    baseBranch: config.baseBranch,
+    granularity: config.granularity,
+    contextLevel: config.contextLevel,
+    compress: config.compress,
+    contextRepositories: config.contextRepositories,
+    generationModel: config.generationModel,
+    manualFiles: config.manualFiles,
+    excludedFiles: config.excludedFiles,
+  };
+}
+
+function serializePersistedDraftSettings(settings: PersistedDraftSettings): string {
+  return JSON.stringify(settings);
+}
+
+const SETTINGS_SAVE_DEBOUNCE = 1000;
+export function useDraftSettingsPersistence(draftId: string | undefined, config: PlannerConfig, draft: PlannerDraft | undefined) {
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
+  const previousDraftIdRef = useRef<string | undefined>(draftId);
+  const serverSettings = draft ? getPersistedDraftSettings({
+    ...config,
+    ...(getDraftConfigSnapshot(draft) ?? {}),
+  }) : null;
+  const lastSavedSettingsRef = useRef<string>(serverSettings ? serializePersistedDraftSettings(serverSettings) : '');
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const draftChanged = previousDraftIdRef.current !== draftId;
+    previousDraftIdRef.current = draftId;
+    if (draftChanged) {
+      lastSavedSettingsRef.current = serverSettings ? serializePersistedDraftSettings(serverSettings) : '';
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    }
+  }, [draftId, serverSettings]);
+
+  useEffect(() => {
+    if (!draftId) return;
+    const settings = getPersistedDraftSettings(config);
+    const serializedSettings = serializePersistedDraftSettings(settings);
+    if (serializedSettings === lastSavedSettingsRef.current) return;
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(async () => {
+      if (!isMountedRef.current) return;
+      try {
+        await updateDraft(draftId, {
+          context_config: settings
+        } as Parameters<typeof updateDraft>[1] & { context_config: PersistedDraftSettings });
+        lastSavedSettingsRef.current = serializedSettings;
+      } catch (err) {
+        console.error('Failed to persist draft settings:', err);
+      }
+    }, SETTINGS_SAVE_DEBOUNCE);
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [draftId, config]);
 }

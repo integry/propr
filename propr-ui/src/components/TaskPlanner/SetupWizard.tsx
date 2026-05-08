@@ -29,6 +29,7 @@ import {
   persistResolvedBaseBranch,
   getBaseBranchPersistenceWarning,
   usePromptPersistence,
+  useDraftSettingsPersistence,
   computeIsGenerateDisabled,
   computeCanExport,
   useAutoResize,
@@ -278,9 +279,9 @@ function useSetupWizardConfig(draft: PlannerDraft | undefined, locationState: Lo
   const [config, setConfig] = useState<PlannerConfig>(() => ({
     prompt: draft?.initial_prompt ?? locationState?.initialPrompt ?? '',
     baseBranch: initialConfiguredBaseBranch,
-    granularity: savedSettings.lastGranularity,
-    contextLevel: savedSettings.lastContextLevel,
-    compress: false,
+    granularity: draftContextConfig?.granularity ?? savedSettings.lastGranularity,
+    contextLevel: draftContextConfig?.contextLevel ?? savedSettings.lastContextLevel,
+    compress: draftContextConfig?.compress ?? false,
     files: ensureArray(draft?.attachments),
     contextRepositories: ensureArray(draftContextConfig?.contextRepositories),
     generationModel: draftContextConfig?.generationModel ?? null,
@@ -317,6 +318,7 @@ function useSetupWizardLoaders({ isNewMode, draft, locationState, savedSettings,
     repoLoader.selectedBaseBranch
   );
   usePromptPersistence(draft?.draft_id, config.prompt, draft?.initial_prompt);
+  useDraftSettingsPersistence(draft?.draft_id, config, draft);
 
   return { repoLoader, newModeBranches, repoInfo, agents, availableRepos };
 }
