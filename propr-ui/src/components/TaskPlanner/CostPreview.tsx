@@ -73,6 +73,19 @@ const LoadingState: React.FC<LoadingStateProps> = ({ previewTrace }) => {
   );
 };
 
+const DeferredLoadingState: React.FC = () => (
+  <div className="pt-3 sm:pt-4 border-t border-gray-200">
+    <div className="flex items-center justify-between">
+      <span className="hidden sm:inline text-gray-500">
+        Cost estimate will be available after context analysis
+      </span>
+      <span className="sm:hidden text-gray-500 text-xs">
+        Cost after context analysis
+      </span>
+    </div>
+  </div>
+);
+
 const ErrorState: React.FC<{ error: string }> = ({ error }) => (
   <div className="pt-4 border-t border-gray-200">
     <span className="text-red-600">{error}</span>
@@ -220,6 +233,7 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   showPreviewProgress = true
 }) => {
   if (preview.isLoading && showPreviewProgress) return <LoadingState previewTrace={previewTrace} />;
+  if (preview.isLoading && !preview.data) return <DeferredLoadingState />;
   if (preview.error) return <ErrorState error={preview.error} />;
   if (!preview.data) return (
     <EmptyState

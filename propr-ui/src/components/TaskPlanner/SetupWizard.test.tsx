@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import React from 'react';
 import { render, act, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -26,6 +27,14 @@ const createdDraft = { draft_id: 'draft-2', repository: 'integry/other', initial
 const fullContextConfig = { baseBranch: 'main', granularity: 'large', contextLevel: 75, compress: true, contextRepositories: [{ repository: 'integry/shared', branch: 'release' }], generationModel: 'gpt-5.4', manualFiles: ['src/keep.ts'], excludedFiles: ['src/skip.ts'] };
 const renderSetupWizard = (draftOverrides: Record<string, unknown> = {}) => render(<MemoryRouter><SetupWizard draft={{ ...baseDraft, ...draftOverrides }} onGenerateComplete={vi.fn()} /></MemoryRouter>);
 const triggerRepoChange = (repo: string, selection?: Record<string, unknown> & { baseBranch?: string }) => (lastLeftPaneProps?.onRepoChange as ((nextRepo: string, nextSelection?: Record<string, unknown> & { baseBranch?: string }) => Promise<void>))(repo, selection);
+const setViewportWidth = (width: number) => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: width,
+  });
+  window.dispatchEvent(new Event('resize'));
+};
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return {
@@ -188,6 +197,7 @@ describe('SetupWizard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    setViewportWidth(1024);
     lastLeftPaneProps = undefined;
     mockGenerationPollingState = {
       isGenerating: false,
@@ -332,6 +342,7 @@ describe('SetupWizard', () => {
   });
 
   it('renders generation progress only in the left pane while generating', () => {
+    setViewportWidth(767);
     mockGenerationPollingState = {
       isGenerating: true,
       generationTrace: {
@@ -378,5 +389,32 @@ describe('SetupWizard', () => {
     expect(rightPane.queryByTestId('generation-progress')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('generation-progress')).toHaveLength(1);
     expect(rightPane.queryByText('Analyzing context...')).not.toBeInTheDocument();
+    expect(rightPane.queryByText('Enter prompt for cost')).not.toBeInTheDocument();
+    expect(rightPane.getByText('Cost after context analysis')).toBeInTheDocument();
+  });
+
+  it('preserves right-pane preview progress on desktop while generating', () => {
+    setViewportWidth(1024);
+    mockGenerationPollingState = {
+      isGenerating: true,
+      generationTrace: {
+        steps: [
+          { name: 'relevance', status: 'completed' },
+          { name: 'context', status: 'in_progress' },
+        ],
+      },
+      generationError: null,
+    };
+    mockPreviewTrace = {
+      steps: [
+        { name: 'relevance', status: 'completed' },
+        { name: 'context', status: 'in_progress' },
+      ],
+    };
+
+    renderSetupWizard({ status: 'generating', generation_trace: mockPreviewTrace, context_config: {} });
+
+    const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
+    expect(rightPane.getByTestId('generation-progress')).toBeInTheDocument();
   });
 });

@@ -6,6 +6,7 @@ import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
 import { useContextRefresh } from '../../hooks/useContextRefresh';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { useToast } from '../ui/useToast';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
@@ -71,6 +72,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const handleRemoveManualFile = removeConfigArrayValue(setConfig, 'manualFiles', (value, filePath) => value === filePath);
   const handleExcludeFile = appendConfigArrayValue(setConfig, 'excludedFiles');
   const isGenerating = generationPolling.isGenerating;
+  const isMobile = useIsMobile(768);
   const stats = contextRefresh.preview.data?.stats;
   const configuredBaseBranch = (draft as DraftWithContextConfig | undefined)?.context_config?.baseBranch;
   return (
@@ -129,7 +131,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           onManualRefresh={contextRefresh.handleManualRefresh}
           isNewMode={isNewMode}
           previewTrace={previewTrace}
-          showPreviewProgress={!isGenerating}
+          showPreviewProgress={!isGenerating || !isMobile}
           onExcludeFile={handleExcludeFile}
         />
       </div>
