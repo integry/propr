@@ -317,18 +317,18 @@ const PlansPage: React.FC = () => {
     <div className="flex flex-col h-full">
       {/* Anchored Header - compact on mobile */}
       <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-        <div className="flex items-center justify-between gap-2 sm:gap-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Plans</h1>
-          <div className="flex items-center gap-2 sm:gap-4 flex-1 justify-end">
-            {/* Search input - hidden on mobile, shown on desktop */}
-            <div className="relative hidden sm:block">
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-1 sm:flex-row sm:items-center sm:justify-end sm:gap-4">
+            {/* Search input */}
+            <div className="relative min-w-0 w-full sm:w-auto">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search plans..."
-                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="w-full min-w-0 border border-gray-300 rounded-md bg-white py-2 pl-9 pr-8 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 sm:w-64"
               />
               {searchQuery && (
                 <button
@@ -340,33 +340,34 @@ const PlansPage: React.FC = () => {
                 </button>
               )}
             </div>
-            {/* Filters row - inline on all screen sizes */}
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
-              <select
-                value={statusFilter}
-                onChange={(e) => handleStatusFilterChange(e.target.value)}
-                className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-              >
-                <option value="all">All Statuses</option>
-                <option value="draft">Draft</option>
-                <option value="review">Ready for Review</option>
-                <option value="generating">Generating</option>
-                <option value="refining">Refining</option>
-                <option value="executed">Issues Created</option>
-                <option value="pr_created">PR Created</option>
-                <option value="merged">Merged</option>
-              </select>
-              {allRepositories.length > 0 && (
-                <RepositorySelector
-                  repos={repoFilterOptions}
-                  selectedRepo={repoFilter}
-                  onRepoChange={handleFilterChange}
-                  variant="default"
-                  labelLayout="stacked"
-                  className="w-[220px] sm:w-[320px]"
-                />
-              )}
+              <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                <select
+                  value={statusFilter}
+                  onChange={(e) => handleStatusFilterChange(e.target.value)}
+                  className="w-full border border-gray-300 rounded-md bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 sm:w-auto"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="draft">Draft</option>
+                  <option value="review">Ready for Review</option>
+                  <option value="generating">Generating</option>
+                  <option value="refining">Refining</option>
+                  <option value="executed">Issues Created</option>
+                  <option value="pr_created">PR Created</option>
+                  <option value="merged">Merged</option>
+                </select>
+                {allRepositories.length > 0 && (
+                  <RepositorySelector
+                    repos={repoFilterOptions}
+                    selectedRepo={repoFilter}
+                    onRepoChange={handleFilterChange}
+                    variant="default"
+                    labelLayout="stacked"
+                    className="w-full min-w-0 sm:w-[320px]"
+                  />
+                )}
+              </div>
             </div>
           </div>
         </div>

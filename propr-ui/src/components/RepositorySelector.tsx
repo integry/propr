@@ -221,7 +221,7 @@ const BreadcrumbTrigger: React.FC<{
   onClick: () => void;
 }> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isOpen, onClick }) => (
   <>
-    <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50" title={getBreadcrumbTitle(selectedRepoData, selectedRepo, placeholder, reposCount)}>
+    <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full min-w-0 flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50" title={getBreadcrumbTitle(selectedRepoData, selectedRepo, placeholder, reposCount)}>
       {selectedRepoData ? <RepoIcon repoName={selectedRepoData.name} iconPath={selectedRepoData.iconPath} /> : <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />}
       <span className="truncate">{getBreadcrumbLabel(selectedRepoData, selectedRepo, placeholder, reposCount)}</span>
     </button>
@@ -240,7 +240,7 @@ const DefaultTrigger: React.FC<{
   onClick: () => void;
   labelLayout: 'inline' | 'stacked';
 }> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isLoading, isOpen, onClick, labelLayout }) => (
-  <button type="button" onClick={onClick} disabled={disabled || isLoading || reposCount === 0} className={`w-full px-3 ${labelLayout === 'stacked' ? 'py-1' : 'py-2'} bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 flex items-center gap-2 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500`}>
+  <button type="button" onClick={onClick} disabled={disabled || isLoading || reposCount === 0} className={`w-full min-w-0 px-3 ${labelLayout === 'stacked' ? 'py-1' : 'py-2'} bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 flex items-center gap-2 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500`}>
     {selectedRepoData ? (
       <>
         <RepoIcon repoName={selectedRepoData.name} iconPath={selectedRepoData.iconPath} />
@@ -253,7 +253,7 @@ const DefaultTrigger: React.FC<{
     ) : (
       <>
         {isLoading ? <Loader2 className="w-4 h-4 text-gray-400 flex-shrink-0 animate-spin" /> : <Github className="w-4 h-4 text-gray-400 flex-shrink-0" />}
-        <span className="flex-1 text-left text-gray-500 text-sm">{isLoading ? 'Loading repositories...' : selectedRepo ? <FormatRepoName name={selectedRepo} /> : reposCount === 0 ? 'No repositories configured' : placeholder}</span>
+        <span className="flex-1 min-w-0 truncate text-left text-gray-500 text-sm">{isLoading ? 'Loading repositories...' : selectedRepo ? <FormatRepoName name={selectedRepo} /> : reposCount === 0 ? 'No repositories configured' : placeholder}</span>
       </>
     )}
     <ChevronDown className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
@@ -387,7 +387,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   if (variant === 'breadcrumb') {
     return (
-      <div ref={containerRef} className={`relative inline-flex items-center ${className}`}>
+      <div ref={containerRef} className={`relative inline-flex min-w-0 items-center ${className}`}>
         <BreadcrumbTrigger selectedRepoData={selectedRepoData} selectedRepo={selectedRepo} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isOpen={isOpen} onClick={handleToggle} />
         {dropdownContent}
       </div>
@@ -395,7 +395,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   }
 
   return (
-    <div ref={containerRef} className={`relative ${className}`}>
+    <div ref={containerRef} className={`relative min-w-0 ${className}`}>
       <DefaultTrigger selectedRepoData={selectedRepoData} selectedRepo={selectedRepo} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isLoading={effectiveLoading} isOpen={isOpen} onClick={handleToggle} labelLayout={labelLayout} />
       {dropdownContent}
     </div>

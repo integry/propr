@@ -372,6 +372,22 @@ describe('RepositorySelector', () => {
     expect(trigger.textContent).toContain('Loading repositories...');
   });
 
+  it('adds shrink-safe classes to the default trigger container', () => {
+    render(
+      <RepositorySelector
+        repos={[{ name: 'integry/propr', enabled: true }]}
+        selectedRepo="integry/propr"
+        onRepoChange={vi.fn()}
+        variant="default"
+        className="w-full"
+      />
+    );
+
+    const trigger = screen.getByRole('button');
+    expect(trigger).toHaveClass('min-w-0');
+    expect(trigger.parentElement).toHaveClass('min-w-0');
+  });
+
   it('keeps the full owner/repo in the breadcrumb tooltip for normal repositories', () => {
     render(
       <RepositorySelector
