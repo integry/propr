@@ -20,6 +20,7 @@ let mockGenerationPollingState: {
   generationTrace: undefined,
   generationError: null,
 };
+let mockPreviewTrace: Record<string, unknown> | undefined;
 const mockNavigate = vi.fn();
 let mockLocationState: Record<string, unknown> | undefined;
 
@@ -84,7 +85,7 @@ vi.mock('./ComposerControls', () => ({
 }));
 
 vi.mock('./GenerationProgress', () => ({
-  GenerationProgress: () => <div>generation progress</div>,
+  GenerationProgress: () => <div data-testid="generation-progress">generation progress</div>,
 }));
 
 vi.mock('./SetupWizardComponents', () => ({
@@ -92,20 +93,43 @@ vi.mock('./SetupWizardComponents', () => ({
   ModelSelector: () => <div>model selector</div>,
 }));
 
-vi.mock('./SetupWizardLeftPane', () => ({
-  SetupWizardLeftPane: (props: Record<string, unknown>) => {
-    lastLeftPaneProps = props;
-    return (
-      <div>
-        left pane
-        {props.isGenerating ? <div>generation progress</div> : null}
-      </div>
-    );
-  },
+vi.mock('./SetupWizardLeftPane', async () => {
+  const actual = await vi.importActual<typeof import('./SetupWizardLeftPane')>('./SetupWizardLeftPane');
+  return {
+    SetupWizardLeftPane: (props: Record<string, unknown>) => {
+      lastLeftPaneProps = props;
+      return <actual.SetupWizardLeftPane {...props} />;
+    },
+  };
+});
+
+vi.mock('./SetupWizardRightPane', async () => {
+  const actual = await vi.importActual<typeof import('./SetupWizardRightPane')>('./SetupWizardRightPane');
+  return {
+    SetupWizardRightPane: (props: Record<string, unknown>) => (
+      <actual.SetupWizardRightPane {...props} />
+    ),
+  };
+});
+
+vi.mock('./ManualFileSelector', () => ({
+  ManualFileSelector: () => <div>manual file selector</div>,
 }));
 
-vi.mock('./SetupWizardRightPane', () => ({
-  SetupWizardRightPane: () => <div>right pane</div>,
+vi.mock('../RepositorySelector', () => ({
+  RepositorySelector: () => <div>repository selector</div>,
+}));
+
+vi.mock('./SmartFileSelection', () => ({
+  SmartFileSelection: () => <div>smart file selection</div>,
+}));
+
+vi.mock('./SkeletonLoader', () => ({
+  FileSelectionSkeleton: () => <div>file selection skeleton</div>,
+}));
+
+vi.mock('./ContextRepositoriesSection', () => ({
+  ContextRepositoriesSection: () => <div>context repositories</div>,
 }));
 
 vi.mock('./setupWizardHooks', () => ({
@@ -148,7 +172,7 @@ vi.mock('./setupWizardHooks', () => ({
   }),
   useDraftContextConfigSync: vi.fn(),
   useDraftSettingsPersistence: vi.fn(),
-  usePreviewTrace: () => undefined,
+  usePreviewTrace: () => mockPreviewTrace,
   useSetupWizardEffects: vi.fn(),
   getBaseBranchPersistenceWarning: (baseBranch?: string) => baseBranch ? `Draft created, but failed to save base branch "${baseBranch}".` : null,
   persistResolvedBaseBranch: (draftId: string, baseBranch?: string) => updateDraft(draftId, {
@@ -181,6 +205,7 @@ describe('SetupWizard', () => {
       generationTrace: undefined,
       generationError: null,
     };
+    mockPreviewTrace = undefined;
     mockLocationState = undefined;
   });
 
@@ -469,7 +494,14 @@ describe('SetupWizard', () => {
       generationError: null,
     };
 
-    const { getAllByText } = render(
+    mockPreviewTrace = {
+      steps: [
+        { name: 'relevance', status: 'completed' },
+        { name: 'context', status: 'in_progress' },
+      ],
+    };
+
+    const { getAllByTestId } = render(
       <MemoryRouter>
         <SetupWizard
           draft={{
@@ -492,6 +524,6 @@ describe('SetupWizard', () => {
       </MemoryRouter>
     );
 
-    expect(getAllByText('generation progress')).toHaveLength(1);
+    expect(getAllByTestId('generation-progress')).toHaveLength(1);
   });
 });
