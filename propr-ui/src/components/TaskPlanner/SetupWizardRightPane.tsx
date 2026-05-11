@@ -46,9 +46,8 @@ interface SetupWizardRightPaneProps {
   isNewMode?: boolean;
   // Preview trace for progress display
   previewTrace?: GenerationTrace;
-  // Generation state props
-  isGenerating?: boolean;
-  generationTrace?: GenerationTrace;
+  // Whether preview progress should be rendered in the right pane
+  showPreviewProgress?: boolean;
   // File exclusion callback
   onExcludeFile?: (filePath: string) => void;
 }
@@ -71,12 +70,14 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   onManualRefresh,
   isNewMode,
   previewTrace,
-  isGenerating,
-  generationTrace,
+  showPreviewProgress,
   onExcludeFile,
 }) => {
   return (
-    <div className="w-full md:w-[35%] h-auto md:h-full flex flex-col bg-white border-t md:border-t-0 md:border-l border-gray-300">
+    <div
+      data-testid="setup-wizard-right-pane"
+      className="w-full md:w-[35%] h-auto md:h-full flex flex-col bg-white border-t md:border-t-0 md:border-l border-gray-300"
+    >
       {/* Context Level Slider - Toolbar aligns with left pane header */}
       <div className="p-3 md:p-5 border-b border-gray-300">
         <ContextLevelSlider
@@ -129,8 +130,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
           onManualRefresh={onManualRefresh}
           isNewMode={isNewMode}
           previewTrace={previewTrace}
-          isGenerating={isGenerating}
-          generationTrace={generationTrace}
+          showPreviewProgress={showPreviewProgress}
         />
       </div>
     </div>

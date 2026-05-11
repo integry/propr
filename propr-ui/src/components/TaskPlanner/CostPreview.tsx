@@ -23,10 +23,8 @@ interface CostPreviewProps {
   isNewMode?: boolean;
   // Preview trace for progress display during context loading (shown in right pane)
   previewTrace?: GenerationTrace;
-  // Generation state props - kept for API compatibility but not displayed here
-  // (generation progress is shown in the left pane to avoid duplication)
-  isGenerating?: boolean;
-  generationTrace?: GenerationTrace;
+  // Whether preview progress should render in the right pane
+  showPreviewProgress?: boolean;
 }
 
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
@@ -219,15 +217,9 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   onTogglePause,
   isNewMode,
   previewTrace,
-  isGenerating
+  showPreviewProgress = true
 }) => {
-  // Note: Generation progress is shown in the left pane when isGenerating is true.
-  // This component (right pane) only shows progress for context/preview updates via LoadingState.
-  // We intentionally do NOT show generationTrace here to avoid duplication.
-  // IMPORTANT: When isGenerating is true, we skip showing preview progress here because
-  // the left pane already shows the full generation progress (including relevance/context steps).
-  // This prevents duplicate progress indicators in both columns.
-  if (preview.isLoading && !isGenerating) return <LoadingState previewTrace={previewTrace} />;
+  if (preview.isLoading && showPreviewProgress) return <LoadingState previewTrace={previewTrace} />;
   if (preview.error) return <ErrorState error={preview.error} />;
   if (!preview.data) return (
     <EmptyState

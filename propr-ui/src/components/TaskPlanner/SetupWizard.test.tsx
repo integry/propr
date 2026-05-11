@@ -79,6 +79,9 @@ vi.mock('../ui/useToast', () => ({
 vi.mock('./ComposerControls', () => ({
   GranularityPills: () => <div>granularity</div>,
 }));
+vi.mock('./ContextLevelSlider', () => ({
+  ContextLevelSlider: () => <div>context level slider</div>,
+}));
 vi.mock('./GenerationProgress', () => ({
   GenerationProgress: () => <div data-testid="generation-progress">generation progress</div>,
 }));
@@ -98,9 +101,6 @@ vi.mock('./SetupWizardLeftPane', () => ({
   },
 }));
 
-vi.mock('./SetupWizardRightPane', () => ({
-  SetupWizardRightPane: () => <div data-testid="setup-wizard-right-pane" />,
-}));
 vi.mock('./ManualFileSelector', () => ({
   ManualFileSelector: () => <div>manual file selector</div>,
 }));
@@ -377,5 +377,6 @@ describe('SetupWizard', () => {
     expect(leftPane.getByTestId('generation-progress')).toBeInTheDocument();
     expect(rightPane.queryByTestId('generation-progress')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('generation-progress')).toHaveLength(1);
+    expect(rightPane.queryByText('Analyzing context...')).not.toBeInTheDocument();
   });
 });

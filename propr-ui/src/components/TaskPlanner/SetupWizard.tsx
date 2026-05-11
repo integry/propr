@@ -129,8 +129,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           onManualRefresh={contextRefresh.handleManualRefresh}
           isNewMode={isNewMode}
           previewTrace={previewTrace}
-          isGenerating={isGenerating}
-          generationTrace={generationPolling.generationTrace}
+          showPreviewProgress={!isGenerating}
           onExcludeFile={handleExcludeFile}
         />
       </div>
