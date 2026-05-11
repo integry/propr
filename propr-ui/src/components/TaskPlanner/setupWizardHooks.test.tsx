@@ -7,13 +7,11 @@ import {
   useRepoInfoLoader,
   useDraftCreation,
   usePlannerSettingsPersistence,
-  useDraftContextConfigSync,
-  usePromptPersistence,
-  useDraftSettingsPersistence,
   type PlannerConfig
 } from './setupWizardHooks';
 import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
+import { baseConfig, createDeferred, makeDraft } from './setupWizardHooks.testUtils';
 
 vi.mock('../../api/proprApi', () => ({
   uploadAttachment: vi.fn(),
@@ -47,36 +45,6 @@ const mockCreateDraft = vi.mocked(createDraft);
 const mockGeneratePlan = vi.mocked(generatePlan);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockSavePlannerSettings = vi.mocked(savePlannerSettings);
-function createDeferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-const baseConfig: PlannerConfig = {
-  prompt: '',
-  baseBranch: '',
-  granularity: 'balanced',
-  contextLevel: 50,
-  compress: false,
-  files: [],
-  contextRepositories: [],
-  generationModel: null,
-  manualFiles: [],
-  excludedFiles: [],
-};
-const makeDraft = (overrides: Record<string, unknown> = {}) => ({
-  draft_id: 'draft-1',
-  repository: 'integry/propr',
-  initial_prompt: 'Test prompt',
-  status: 'draft',
-  attachments: [],
-  created_at: '2026-05-06T00:00:00Z',
-  ...overrides,
-});
 describe('setupWizardHooks branch resolution', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -203,9 +171,39 @@ describe('setupWizardHooks branch resolution', () => {
 
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-1',
-      expect.objectContaining({ context_config: { baseBranch: 'develop' } })
+      expect.objectContaining({
+        context_config: {
+          baseBranch: 'develop',
+          granularity: 'balanced',
+          contextLevel: 50,
+          compress: false,
+          contextRepositories: [],
+          generationModel: undefined,
+          manualFiles: [],
+          excludedFiles: [],
+        }
+      })
     );
     expect(mockGeneratePlan).toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith(
+      '/studio/draft-1',
+      expect.objectContaining({
+        state: expect.objectContaining({
+          initialDraft: expect.objectContaining({
+            context_config: {
+              baseBranch: 'develop',
+              granularity: 'balanced',
+              contextLevel: 50,
+              compress: false,
+              contextRepositories: [],
+              generationModel: undefined,
+              manualFiles: [],
+              excludedFiles: [],
+            }
+          })
+        })
+      })
+    );
   });
   it('continues generation when persisting the resolved baseBranch fails after draft creation', async () => {
     mockCreateDraft.mockResolvedValue(makeDraft());
@@ -236,7 +234,7 @@ describe('setupWizardHooks branch resolution', () => {
         replace: true,
         state: expect.objectContaining({
           initialBaseBranch: 'develop',
-          baseBranchPersistenceWarning: expect.stringContaining('failed to save base branch "develop"')
+          baseBranchPersistenceWarning: expect.stringContaining('failed to save setup settings including base branch "develop"')
         })
       })
     );
@@ -277,169 +275,6 @@ describe('setupWizardHooks branch resolution', () => {
       lastRepository: 'integry/propr',
       lastBaseBranch: 'release',
     });
-  });
-  it('clears stale draft context state when a replacement draft omits optional context config values', async () => {
-    const replacementDraft = makeDraft({
-      draft_id: 'draft-2',
-      initial_prompt: 'Replacement prompt',
-      attachments: [{ id: 'attachment-2', filename: 'new.txt' } as never],
-      context_config: {
-        baseBranch: 'release',
-        contextRepositories: [],
-        generationModel: null,
-        manualFiles: [],
-        excludedFiles: [],
-      },
-    });
-
-    const { result } = renderHook(() => {
-      const [config, setConfig] = useState<PlannerConfig>({
-        ...baseConfig,
-        prompt: 'Stale prompt',
-        baseBranch: 'main',
-        files: [{ id: 'attachment-1', filename: 'old.txt' } as never],
-        contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
-        generationModel: 'gpt-5.4',
-        manualFiles: ['src/a.ts'],
-        excludedFiles: ['src/b.ts']
-      });
-      useDraftContextConfigSync(replacementDraft as never, setConfig);
-      return config;
-    });
-    await waitFor(() => {
-      expect(result.current.prompt).toBe('Replacement prompt');
-      expect(result.current.baseBranch).toBe('release');
-      expect(result.current.files).toEqual([{ id: 'attachment-2', filename: 'new.txt' }]);
-      expect(result.current.contextRepositories).toEqual([]);
-      expect(result.current.generationModel).toBeNull();
-      expect(result.current.manualFiles).toEqual([]);
-      expect(result.current.excludedFiles).toEqual([]);
-    });
-  });
-  it('does not overwrite local edits when the same draft rerenders with stale server values', async () => {
-    const sameDraft = makeDraft({
-      initial_prompt: 'Server prompt',
-      context_config: {
-        baseBranch: 'main',
-        granularity: 'balanced',
-        contextLevel: 50,
-        compress: false,
-        contextRepositories: [],
-        generationModel: null,
-        manualFiles: [],
-        excludedFiles: [],
-      },
-    });
-
-    const { result, rerender } = renderHook(
-      ({ draft }) => {
-        const [config, setConfig] = useState<PlannerConfig>({
-          ...baseConfig,
-          prompt: 'Local edit',
-          baseBranch: 'release',
-          generationModel: 'codex:gpt-5.4',
-        });
-        useDraftContextConfigSync(draft as never, setConfig);
-        return config;
-      },
-      { initialProps: { draft: sameDraft } }
-    );
-
-    rerender({ draft: { ...sameDraft } });
-
-    await waitFor(() => {
-      expect(result.current.prompt).toBe('Local edit');
-      expect(result.current.baseBranch).toBe('release');
-      expect(result.current.generationModel).toBe('codex:gpt-5.4');
-    });
-  });
-  it('persists editable draft settings to context_config after debounce', async () => {
-    vi.useFakeTimers();
-    try {
-      renderHook(() => useDraftSettingsPersistence(
-        'draft-1',
-        {
-          ...baseConfig,
-          baseBranch: 'develop',
-          granularity: 'granular',
-          contextLevel: 80,
-          compress: true,
-          contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
-          generationModel: 'codex:gpt-5.4',
-          manualFiles: ['src/a.ts'],
-          excludedFiles: ['src/b.ts'],
-        },
-        makeDraft({
-          context_config: {
-            baseBranch: 'main',
-            granularity: 'balanced',
-            contextLevel: 50,
-            compress: false,
-            contextRepositories: [],
-            generationModel: null,
-            manualFiles: [],
-            excludedFiles: [],
-          }
-        }) as never
-      ));
-
-      await vi.advanceTimersByTimeAsync(1_100);
-
-      expect(mockUpdateDraft).toHaveBeenCalledWith(
-        'draft-1',
-        expect.objectContaining({
-          context_config: {
-            baseBranch: 'develop',
-            granularity: 'granular',
-            contextLevel: 80,
-            compress: true,
-            contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
-            generationModel: 'codex:gpt-5.4',
-            manualFiles: ['src/a.ts'],
-            excludedFiles: ['src/b.ts'],
-          }
-        })
-      );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-  it('does not persist a stale prompt when the mounted wizard switches to a different draft', async () => {
-    vi.useFakeTimers();
-    try {
-      const { rerender } = renderHook(
-        ({ draftId, prompt, initialPrompt }) => {
-          usePromptPersistence(draftId, prompt, initialPrompt);
-        },
-        {
-          initialProps: {
-            draftId: 'draft-1',
-            prompt: 'Edited prompt',
-            initialPrompt: 'Original prompt',
-          },
-        }
-      );
-
-      rerender({
-        draftId: 'draft-2',
-        prompt: 'Edited prompt',
-        initialPrompt: 'Replacement prompt',
-      });
-
-      await vi.advanceTimersByTimeAsync(1_100);
-      expect(mockUpdateDraft).not.toHaveBeenCalled();
-
-      rerender({
-        draftId: 'draft-2',
-        prompt: 'Replacement prompt',
-        initialPrompt: 'Replacement prompt',
-      });
-
-      await vi.advanceTimersByTimeAsync(1_100);
-      expect(mockUpdateDraft).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });
 describe('computeIsGenerateDisabled', () => {
