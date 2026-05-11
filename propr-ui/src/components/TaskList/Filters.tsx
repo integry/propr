@@ -36,7 +36,7 @@ export const Filters: React.FC<FiltersProps> = ({
   return (
     <div className="flex items-center justify-between gap-2 sm:gap-4">
       {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
-      <div className="flex items-center gap-2 sm:gap-4 flex-1 justify-end">
+      <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
         {!hideFilters && (
           <>
             {/* Search input - hidden on mobile, shown on desktop */}
@@ -60,7 +60,7 @@ export const Filters: React.FC<FiltersProps> = ({
               )}
             </div>
             {/* Filters row - inline on all screen sizes */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-0">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
               <select
                 value={filter}
@@ -83,7 +83,7 @@ export const Filters: React.FC<FiltersProps> = ({
                   isLoading={reposLoading}
                   variant="default"
                   labelLayout="stacked"
-                  className="w-[220px] sm:w-[320px]"
+                  className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[320px] sm:max-w-[320px]"
                 />
               )}
             </div>
