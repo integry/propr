@@ -8,6 +8,15 @@ const mockGetDraft = vi.mocked(getDraft);
 const mockCreateDraft = vi.mocked(createDraft);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockGetRepoBranches = vi.mocked(getRepoBranches);
+const previewTrace = {
+  steps: [
+    { name: 'relevance', status: 'completed' },
+    { name: 'context', status: 'in_progress' },
+  ],
+};
+const generationTrace = {
+  steps: [...previewTrace.steps, { name: 'llm', status: 'pending' }],
+};
 let lastLeftPaneProps: Record<string, unknown> | undefined;
 let mockGenerationPollingState: {
   isGenerating: boolean;
@@ -32,6 +41,9 @@ const createdDraft = { draft_id: 'draft-2', repository: 'integry/other', initial
 const fullContextConfig = { baseBranch: 'main', granularity: 'large', contextLevel: 75, compress: true, contextRepositories: [{ repository: 'integry/shared', branch: 'release' }], generationModel: 'gpt-5.4', manualFiles: ['src/keep.ts'], excludedFiles: ['src/skip.ts'] };
 const renderSetupWizard = (draftOverrides: Record<string, unknown> = {}) => render(<MemoryRouter><SetupWizard draft={{ ...baseDraft, ...draftOverrides }} onGenerateComplete={vi.fn()} /></MemoryRouter>);
 const triggerRepoChange = (repo: string, selection?: Record<string, unknown> & { baseBranch?: string }) => (lastLeftPaneProps?.onRepoChange as ((nextRepo: string, nextSelection?: Record<string, unknown> & { baseBranch?: string }) => Promise<void>))(repo, selection);
+const setGeneratingState = (trace = generationTrace) => {
+  mockGenerationPollingState = { isGenerating: true, generationTrace: trace, generationError: null };
+};
 const setViewportWidth = (width: number) => {
   Object.defineProperty(window, 'innerWidth', {
     configurable: true,
@@ -98,7 +110,6 @@ vi.mock('./SetupWizardComponents', () => ({
   GenerateButtonContent: () => <span>Generate</span>,
   ModelSelector: () => <div>model selector</div>,
 }));
-
 vi.mock('./SetupWizardLeftPane', () => ({
   SetupWizardLeftPane: (props: Record<string, unknown>) => {
     lastLeftPaneProps = props;
@@ -109,7 +120,6 @@ vi.mock('./SetupWizardLeftPane', () => ({
     );
   },
 }));
-
 vi.mock('./ManualFileSelector', () => ({
   ManualFileSelector: () => <div>manual file selector</div>,
 }));
@@ -232,13 +242,10 @@ describe('SetupWizard', () => {
   it('anchors edit-mode selector state to the draft branch and persists the full setup snapshot on repo switch', async () => {
     mockCreateDraft.mockResolvedValue(createdDraft);
     renderSetupWizard({ context_config: fullContextConfig });
-
     expect(lastLeftPaneProps?.selectedBaseBranch).toBe('main');
-
     await act(async () => {
       await triggerRepoChange('integry/other', { repo: 'integry/other', baseBranch: 'develop', option: { name: 'integry/other', enabled: true, baseBranch: 'develop' } });
     });
-
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-2',
       expect.objectContaining({
@@ -307,7 +314,6 @@ describe('SetupWizard', () => {
   it('ignores stale repo switches in edit mode when a newer selection finishes first', async () => {
     let resolveFirstLookup: ((value: { defaultBranch: string; branches: string[] }) => void) | undefined;
     let resolveSecondLookup: ((value: { defaultBranch: string; branches: string[] }) => void) | undefined;
-
     mockGetRepoBranches
       .mockImplementationOnce(() => new Promise(resolve => {
         resolveFirstLookup = resolve;
@@ -349,23 +355,8 @@ describe('SetupWizard', () => {
 
   it('renders generation progress only in the left pane while generating', () => {
     setViewportWidth(767);
-    mockGenerationPollingState = {
-      isGenerating: true,
-      generationTrace: {
-        steps: [
-          { name: 'relevance', status: 'completed' },
-          { name: 'context', status: 'in_progress' },
-          { name: 'llm', status: 'pending' },
-        ],
-      },
-      generationError: null,
-    };
-    mockPreviewTrace = {
-      steps: [
-        { name: 'relevance', status: 'completed' },
-        { name: 'context', status: 'in_progress' },
-      ],
-    };
+    setGeneratingState();
+    mockPreviewTrace = previewTrace;
     mockPreviewState = {
       isLoading: true,
       data: {
@@ -376,29 +367,7 @@ describe('SetupWizard', () => {
       error: null,
       lastSynced: null,
     };
-
-    render(
-      <MemoryRouter>
-        <SetupWizard
-          draft={{
-            draft_id: 'draft-1',
-            repository: 'integry/propr',
-            initial_prompt: 'Test prompt',
-            status: 'generating',
-            attachments: [],
-            created_at: '2026-05-06T00:00:00Z',
-            generation_trace: {
-              steps: [
-                { name: 'relevance', status: 'completed' },
-                { name: 'context', status: 'in_progress' },
-              ],
-            },
-            context_config: {},
-          }}
-          onGenerateComplete={vi.fn()}
-        />
-      </MemoryRouter>
-    );
+    renderSetupWizard({ status: 'generating', generation_trace: previewTrace, context_config: {} });
     const leftPane = within(screen.getByTestId('setup-wizard-left-pane'));
     const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
     expect(leftPane.getByTestId('generation-progress')).toBeInTheDocument();
@@ -412,25 +381,9 @@ describe('SetupWizard', () => {
 
   it('preserves right-pane preview progress on desktop while generating', () => {
     setViewportWidth(1024);
-    mockGenerationPollingState = {
-      isGenerating: true,
-      generationTrace: {
-        steps: [
-          { name: 'relevance', status: 'completed' },
-          { name: 'context', status: 'in_progress' },
-        ],
-      },
-      generationError: null,
-    };
-    mockPreviewTrace = {
-      steps: [
-        { name: 'relevance', status: 'completed' },
-        { name: 'context', status: 'in_progress' },
-      ],
-    };
-
-    renderSetupWizard({ status: 'generating', generation_trace: mockPreviewTrace, context_config: {} });
-
+    setGeneratingState(previewTrace);
+    mockPreviewTrace = previewTrace;
+    renderSetupWizard({ status: 'generating', generation_trace: previewTrace, context_config: {} });
     const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
     expect(rightPane.getByTestId('generation-progress')).toBeInTheDocument();
   });
