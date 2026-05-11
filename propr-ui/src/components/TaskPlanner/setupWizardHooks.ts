@@ -13,7 +13,7 @@ export interface PlannerConfig { prompt: string; baseBranch: string; granularity
 interface RepoInfoState { isLoading: boolean; error: string | null; }
 interface GenerationContextHelpers { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<void>; }
 interface RepositoryResolutionOptions { repo: string; selectedBaseBranch?: string; initialState: RepoInfoState; setConfig: SetPlannerConfig; errorPrefix?: string; skip?: boolean; }
-interface DebouncedDraftUpdateOptions<T> { delay: number; draftId: string | undefined; initialValue: T; nextValue: T; resetOnInitialValueChange?: boolean; save: (draftId: string, value: T) => Promise<void>; }
+interface DebouncedDraftUpdateOptions { delay: number; draftId: string | undefined; initialValue: string; nextValue: string; resetOnInitialValueChange?: boolean; save: (draftId: string, value: string) => Promise<void>; }
 type SetPlannerConfig = Dispatch<SetStateAction<PlannerConfig>>;
 type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
 type DraftConfigSnapshot = Pick<PlannerConfig, 'prompt' | 'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'files' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>;
@@ -81,7 +81,7 @@ function useResolvedBaseBranch({ repo, selectedBaseBranch, initialState, setConf
   return state;
 }
 
-function useDebouncedDraftUpdate<T>({ delay, draftId, initialValue, nextValue, resetOnInitialValueChange = false, save }: DebouncedDraftUpdateOptions<T>) {
+function useDebouncedDraftUpdate({ delay, draftId, initialValue, nextValue, resetOnInitialValueChange = false, save }: DebouncedDraftUpdateOptions) {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null), isMountedRef = useRef(true), previousDraftIdRef = useRef<string | undefined>(draftId), lastSavedValueRef = useRef(initialValue), saveRef = useRef(save);
   useEffect(() => {
     isMountedRef.current = true;

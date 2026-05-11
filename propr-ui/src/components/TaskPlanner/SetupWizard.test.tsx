@@ -1,6 +1,6 @@
 /* eslint-disable max-lines -- Existing regression matrix is intentionally kept in one file to preserve shared SetupWizard mocks. */
 import React from 'react';
-import { render, act, screen } from '@testing-library/react';
+import { render, act, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import SetupWizard from './SetupWizard';
@@ -98,7 +98,11 @@ vi.mock('./SetupWizardLeftPane', async () => {
   return {
     SetupWizardLeftPane: (props: Record<string, unknown>) => {
       lastLeftPaneProps = props;
-      return <actual.SetupWizardLeftPane {...props} />;
+      return (
+        <div data-testid="setup-wizard-left-pane">
+          <actual.SetupWizardLeftPane {...props} />
+        </div>
+      );
     },
   };
 });
@@ -107,7 +111,9 @@ vi.mock('./SetupWizardRightPane', async () => {
   const actual = await vi.importActual<typeof import('./SetupWizardRightPane')>('./SetupWizardRightPane');
   return {
     SetupWizardRightPane: (props: Record<string, unknown>) => (
-      <actual.SetupWizardRightPane {...props} />
+      <div data-testid="setup-wizard-right-pane">
+        <actual.SetupWizardRightPane {...props} />
+      </div>
     ),
   };
 });
@@ -524,7 +530,8 @@ describe('SetupWizard', () => {
       </MemoryRouter>
     );
 
+    expect(within(screen.getByTestId('setup-wizard-left-pane')).getByTestId('generation-progress')).toBeInTheDocument();
+    expect(within(screen.getByTestId('setup-wizard-right-pane')).queryByTestId('generation-progress')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('generation-progress')).toHaveLength(1);
-    expect(screen.queryByText('Analyzing context...')).not.toBeInTheDocument();
   });
 });
