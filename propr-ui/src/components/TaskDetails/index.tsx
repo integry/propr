@@ -128,7 +128,7 @@ const TaskDetails: React.FC = () => {
   };
 
   return (
-    <div className="h-full flex flex-col bg-white">
+    <div className="h-full flex flex-col overflow-y-auto sm:overflow-hidden bg-white">
       {/* Mobile title block scrolls away with the page */}
       <header className="sm:hidden flex-shrink-0 bg-white">
         <div className="px-3 py-2 border-b border-slate-100">

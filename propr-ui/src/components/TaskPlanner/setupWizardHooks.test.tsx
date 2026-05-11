@@ -99,6 +99,23 @@ describe('setupWizardHooks branch resolution', () => {
     await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
   });
 
+  it('resets loading and error state when repo info resolution becomes disabled', async () => {
+    const pendingRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
+    mockGetRepoBranches.mockReturnValueOnce(pendingRequest.promise);
+    const { result, rerender } = renderHook(({ isNewMode, draft }) => {
+      const [config, setConfig] = useState<PlannerConfig>(baseConfig);
+      const state = useRepoInfoLoader(isNewMode, draft as never, setConfig);
+      return { config, state };
+    }, { initialProps: { isNewMode: false, draft: makeDraft() } });
+
+    await waitFor(() => expect(result.current.state.isLoading).toBe(true));
+    rerender({ isNewMode: true, draft: makeDraft() });
+    await waitFor(() => expect(result.current.state).toEqual({ isLoading: false, error: null }));
+
+    pendingRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
+    await waitFor(() => expect(result.current.state).toEqual({ isLoading: false, error: null }));
+  });
+
   it.each([
     ['persists the resolved baseBranch when creating a draft before generation starts', undefined, undefined],
     ['continues generation when persisting the resolved baseBranch fails after draft creation', new Error('Transient update failure'), expect.stringContaining('failed to save base branch "develop"')],

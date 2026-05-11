@@ -57,7 +57,10 @@ function useResolvedBaseBranch({ repository, configuredBaseBranch, shouldResolve
   useEffect(() => {
     requestIdRef.current += 1;
     const requestId = requestIdRef.current;
-    if (!shouldResolve) return;
+    if (!shouldResolve) {
+      setState({ isLoading: false, error: null });
+      return;
+    }
     if (!repository) return void (setState({ isLoading: false, error: null }), clearResolvedBaseBranch(setConfig));
     if (configuredBaseBranch) return void (setState({ isLoading: false, error: null }), setResolvedBaseBranch(setConfig, configuredBaseBranch));
     const [owner, repo] = repository.split('/');
@@ -300,7 +303,7 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
     previousDraftIdRef.current = draftId;
     if (draftChanged || trimmedPrompt === lastSavedValueRef.current) return;
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(async () => {
+    const timeoutId = setTimeout(async () => {
       if (!isMountedRef.current) return;
       try {
         await updateDraft(draftId, { initial_prompt: trimmedPrompt, name: truncateToSentences(trimmedPrompt) });
@@ -309,13 +312,17 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
         console.error('Failed to persist prompt:', err);
       }
     }, PROMPT_SAVE_DEBOUNCE);
-    return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
+    debounceTimerRef.current = timeoutId;
+    return () => {
+      clearTimeout(timeoutId);
+      if (debounceTimerRef.current === timeoutId) debounceTimerRef.current = null;
+    };
   }, [draftId, trimmedPrompt, debounceTimerRef, isMountedRef, lastSavedValueRef, previousDraftIdRef]);
 }
 export function useDraftSettingsPersistence(draftId: string | undefined, config: PlannerConfig, draft: PlannerDraft | undefined) {
+  const { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, manualFiles, excludedFiles } = config;
   const serverSettings = draft ? getPersistedDraftSettings({ ...config, ...(getDraftConfigSnapshot(draft) ?? {}) }) : null;
-  const settings = getPersistedDraftSettings(config);
-  const serializedSettings = serializePersistedDraftSettings(settings);
+  const serializedSettings = serializePersistedDraftSettings({ baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, manualFiles, excludedFiles });
   const { debounceTimerRef, isMountedRef, lastSavedValueRef, previousDraftIdRef } = useDebouncedDraftPersistence(serverSettings ? serializePersistedDraftSettings(serverSettings) : '', draftId);
   useEffect(() => {
     if (!draftId) return;
@@ -323,7 +330,8 @@ export function useDraftSettingsPersistence(draftId: string | undefined, config:
     previousDraftIdRef.current = draftId;
     if (draftChanged || serializedSettings === lastSavedValueRef.current) return;
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(async () => {
+    const settings = { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, manualFiles, excludedFiles };
+    const timeoutId = setTimeout(async () => {
       if (!isMountedRef.current) return;
       try {
         await updateDraft(draftId, { context_config: settings } as PersistDraftUpdate & { context_config: PersistedDraftSettings });
@@ -332,6 +340,10 @@ export function useDraftSettingsPersistence(draftId: string | undefined, config:
         console.error('Failed to persist draft settings:', err);
       }
     }, SETTINGS_SAVE_DEBOUNCE);
-    return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
-  }, [draftId, settings, serializedSettings, debounceTimerRef, isMountedRef, lastSavedValueRef, previousDraftIdRef]);
+    debounceTimerRef.current = timeoutId;
+    return () => {
+      clearTimeout(timeoutId);
+      if (debounceTimerRef.current === timeoutId) debounceTimerRef.current = null;
+    };
+  }, [baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, manualFiles, excludedFiles, draftId, serializedSettings, debounceTimerRef, isMountedRef, lastSavedValueRef, previousDraftIdRef]);
 }
