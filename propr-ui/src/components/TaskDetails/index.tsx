@@ -25,6 +25,9 @@ import { postTaskFollowup } from '../../api/proprApi';
 import { useTotalDuration, useCommitInfo, useConsumedReviewCommentIds, useTokenUsage } from './useDerivedTaskData';
 import { useClickOutsideCollapse } from './useClickOutsideCollapse';
 
+// The page coordinates several mutually exclusive loading/error/content states plus
+// responsive header variants in one container component.
+// eslint-disable-next-line complexity
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
   const navigate = useNavigate();
