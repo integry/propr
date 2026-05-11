@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import React from 'react';
 import { render, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';

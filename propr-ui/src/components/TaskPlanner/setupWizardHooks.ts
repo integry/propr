@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, AgentConfig, DraftContextConfig, GenerationTrace, Granularity } from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
