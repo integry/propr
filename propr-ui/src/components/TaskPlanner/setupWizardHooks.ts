@@ -51,18 +51,22 @@ function matchesDraftConfig(prev: PlannerConfig, next: DraftConfigSnapshot): boo
 }
 function getPersistedDraftSettings(config: PlannerConfig): PersistedDraftSettings { return { baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, contextRepositories: config.contextRepositories, generationModel: config.generationModel, manualFiles: config.manualFiles, excludedFiles: config.excludedFiles }; }
 function serializePersistedDraftSettings(settings: PersistedDraftSettings): string { return JSON.stringify(settings); }
-function useResolvedBaseBranch({ repository, configuredBaseBranch, shouldResolve, initialLoading, setConfig }: { repository: string; configuredBaseBranch?: string; shouldResolve: boolean; initialLoading: boolean; setConfig: PlannerConfigSetter; }) {
+function useResolvedBaseBranch({ repository, configuredBaseBranch, shouldResolve, initialLoading, clearOnSkip = true, clearOnMissingRepository = true, setConfig }: { repository: string; configuredBaseBranch?: string; shouldResolve: boolean; initialLoading: boolean; clearOnSkip?: boolean; clearOnMissingRepository?: boolean; setConfig: PlannerConfigSetter; }) {
   const [state, setState] = useState<RepoInfoState>({ isLoading: initialLoading, error: null });
   const requestIdRef = useRef(0);
   useEffect(() => {
     requestIdRef.current += 1;
     const requestId = requestIdRef.current;
     if (!shouldResolve) {
-      clearResolvedBaseBranch(setConfig);
+      if (clearOnSkip) clearResolvedBaseBranch(setConfig);
       setState({ isLoading: false, error: null });
       return;
     }
-    if (!repository) return void (setState({ isLoading: false, error: null }), clearResolvedBaseBranch(setConfig));
+    if (!repository) {
+      setState({ isLoading: false, error: null });
+      if (clearOnMissingRepository) clearResolvedBaseBranch(setConfig);
+      return;
+    }
     if (configuredBaseBranch) return void (setState({ isLoading: false, error: null }), setResolvedBaseBranch(setConfig, configuredBaseBranch));
     const [owner, repo] = repository.split('/');
     if (!owner || !repo) return void (setState({ isLoading: false, error: 'Invalid repository format' }), clearResolvedBaseBranch(setConfig));
@@ -133,7 +137,7 @@ export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: st
 }
 export function useBranchesLoader(selectedRepo: string, selectedBaseBranch: string, setConfig: PlannerConfigSetter) { return useResolvedBaseBranch({ repository: selectedRepo, configuredBaseBranch: selectedBaseBranch, shouldResolve: true, initialLoading: false, setConfig }); }
 export function useRepoInfoLoader(isNewMode: boolean, draft: PlannerDraft | undefined, setConfig: PlannerConfigSetter) {
-  return useResolvedBaseBranch({ repository: draft?.repository || '', configuredBaseBranch: (draft as DraftWithContextConfig | undefined)?.context_config?.baseBranch, shouldResolve: !isNewMode && !!draft, initialLoading: !isNewMode, setConfig });
+  return useResolvedBaseBranch({ repository: draft?.repository || '', configuredBaseBranch: (draft as DraftWithContextConfig | undefined)?.context_config?.baseBranch, shouldResolve: !isNewMode, initialLoading: !isNewMode, clearOnSkip: true, clearOnMissingRepository: false, setConfig });
 }
 export function useAgentsLoader() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);

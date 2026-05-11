@@ -99,6 +99,24 @@ describe('setupWizardHooks branch resolution', () => {
     await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
   });
 
+  it('preserves the current base branch when an edit-mode draft is temporarily unavailable', async () => {
+    const pendingRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
+    mockGetRepoBranches.mockReturnValueOnce(pendingRequest.promise);
+    const { result, rerender } = renderHook(({ draft }) => {
+      const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig, baseBranch: 'develop' });
+      const state = useRepoInfoLoader(false, draft as never, setConfig);
+      return { config, state };
+    }, { initialProps: { draft: makeDraft() } });
+
+    await waitFor(() => expect(result.current.state.isLoading).toBe(true));
+    rerender({ draft: undefined });
+    await waitFor(() => expect(result.current.state).toEqual({ isLoading: false, error: null }));
+    expect(result.current.config.baseBranch).toBe('develop');
+
+    pendingRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
+    await waitFor(() => expect(result.current.config.baseBranch).toBe('develop'));
+  });
+
   it('resets loading and error state when repo info resolution becomes disabled', async () => {
     const pendingRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
     mockGetRepoBranches.mockReturnValueOnce(pendingRequest.promise);
