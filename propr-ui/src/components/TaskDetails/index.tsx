@@ -25,9 +25,19 @@ import { postTaskFollowup } from '../../api/proprApi';
 import { useTotalDuration, useCommitInfo, useConsumedReviewCommentIds, useTokenUsage } from './useDerivedTaskData';
 import { useClickOutsideCollapse } from './useClickOutsideCollapse';
 
-// The page coordinates several mutually exclusive loading/error/content states plus
-// responsive header variants in one container component.
-// eslint-disable-next-line complexity
+const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
+  <div className="h-full bg-white flex items-center justify-center">
+    <div className={className}>{children}</div>
+  </div>
+);
+
+function getTaskDetailsGuard(taskData: ReturnType<typeof useTaskData>, taskId: string | undefined) {
+  if (taskData.loading) return <CenteredStatus className="text-gray-600">Loading task details...</CenteredStatus>;
+  if (taskData.error) return <CenteredStatus className="text-red-600">Error loading task details: {taskData.error}</CenteredStatus>;
+  if (!taskData.history || taskData.history.length === 0) return <CenteredStatus className="text-gray-600">No history found for task {taskId}</CenteredStatus>;
+  return null;
+}
+
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
   const navigate = useNavigate();
@@ -85,29 +95,8 @@ const TaskDetails: React.FC = () => {
     thinkingLog.collapseEvents,
   );
 
-  if (taskData.loading) {
-    return (
-      <div className="h-full bg-white flex items-center justify-center">
-        <div className="text-gray-600">Loading task details...</div>
-      </div>
-    );
-  }
-
-  if (taskData.error) {
-    return (
-      <div className="h-full bg-white flex items-center justify-center">
-        <div className="text-red-600">Error loading task details: {taskData.error}</div>
-      </div>
-    );
-  }
-
-  if (!taskData.history || taskData.history.length === 0) {
-    return (
-      <div className="h-full bg-white flex items-center justify-center">
-        <div className="text-gray-600">No history found for task {taskId}</div>
-      </div>
-    );
-  }
+  const guard = getTaskDetailsGuard(taskData, taskId);
+  if (guard) return guard;
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const score = parsedAnalysis?.implementation_critique_score;
