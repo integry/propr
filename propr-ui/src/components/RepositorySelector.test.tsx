@@ -300,6 +300,25 @@ describe('RepositorySelector', () => {
     expect(items[2].textContent).not.toContain('7');
   });
 
+  it('hides the collapsed count badge on mobile for stacked labels', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 42 },
+    ];
+    render(
+      <RepositorySelector
+        repos={repos}
+        selectedRepo="org/repo-alpha"
+        onRepoChange={vi.fn()}
+        labelLayout="stacked"
+      />
+    );
+
+    const trigger = screen.getByRole('button');
+    const countBadge = trigger.querySelector('.bg-gray-100');
+
+    expect(countBadge).toHaveClass('hidden', 'sm:inline-flex');
+  });
+
   it('filters by repo name even when displayName differs', () => {
     const repos: RepoOption[] = [
       { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 10 },
@@ -370,6 +389,22 @@ describe('RepositorySelector', () => {
     const trigger = screen.getByRole('button');
     expect(trigger).toBeDisabled();
     expect(trigger.textContent).toContain('Loading repositories...');
+  });
+
+  it('adds shrink-safe classes to the default trigger container', () => {
+    render(
+      <RepositorySelector
+        repos={[{ name: 'integry/propr', enabled: true }]}
+        selectedRepo="integry/propr"
+        onRepoChange={vi.fn()}
+        variant="default"
+        className="w-full"
+      />
+    );
+
+    const trigger = screen.getByRole('button');
+    expect(trigger).toHaveClass('min-w-0');
+    expect(trigger.parentElement).toHaveClass('min-w-0');
   });
 
   it('keeps the full owner/repo in the breadcrumb tooltip for normal repositories', () => {

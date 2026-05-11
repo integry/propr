@@ -44,18 +44,22 @@ async function loadRepositories(savedLastRepository: string | undefined, savedLa
   ]);
   const indexingMap = new Map<string, RepositoryIndexingStatus>();
   for (const status of indexingData.repositories || []) indexingMap.set(status.full_name, status);
-  const enabledRepos = (repoData.repos_to_monitor || []).filter((repo): repo is { name: string; enabled?: boolean; baseBranch?: string } => typeof repo === 'object' && repo !== null && 'name' in repo && typeof (repo as { name: unknown }).name === 'string').map(repo => {
-    const prefs = userPrefs[repo.name];
-    const indexingStatus = indexingMap.get(repo.name);
-    return { name: repo.name, enabled: repo.enabled !== false, baseBranch: repo.baseBranch, starred: prefs?.starred || false, iconPath: indexingStatus?.icon_path || null };
-  }).filter(repo => repo.enabled);
-  const selectedRepoEntry = savedLastRepository ? enabledRepos.find(repo => repo.name === savedLastRepository && (repo.baseBranch || '') === (savedLastBaseBranch || '')) || enabledRepos.find(repo => repo.name === savedLastRepository) : enabledRepos[0];
+  const validRepos = (repoData.repos_to_monitor || [])
+    .filter((r): r is { name: string; enabled?: boolean; baseBranch?: string } => typeof r === 'object' && r !== null && 'name' in r && typeof (r as { name: unknown }).name === 'string')
+    .map(r => {
+      const prefs = userPrefs[r.name];
+      const indexingStatus = indexingMap.get(r.name);
+      return { name: r.name, enabled: r.enabled !== false, baseBranch: r.baseBranch, starred: prefs?.starred || false, iconPath: indexingStatus?.icon_path || null };
+    });
+  const enabledRepos = validRepos.filter(r => r.enabled);
+  const selectedRepoEntry = savedLastRepository
+    ? enabledRepos.find(r => r.name === savedLastRepository && (r.baseBranch || '') === (savedLastBaseBranch || '')) || enabledRepos.find(r => r.name === savedLastRepository)
+    : enabledRepos[0];
   return { repos: enabledRepos, selectedRepo: selectedRepoEntry?.name || '', selectedBaseBranch: selectedRepoEntry?.baseBranch || '' };
 }
-
 async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRepository[]> {
   const data = await getRepositoriesIndexingStatus();
-  return (data.repositories || []).filter(repo => (repo.indexing_status === 'completed' || repo.indexing_status === 'indexing') && repo.full_name !== repoToExclude).map(repo => ({ full_name: repo.full_name, branch: repo.branch, indexing_status: repo.indexing_status }));
+  return (data.repositories || []).filter((r: RepositoryIndexingStatus) => (r.indexing_status === 'completed' || r.indexing_status === 'indexing') && r.full_name !== repoToExclude).map((r: RepositoryIndexingStatus) => ({ full_name: r.full_name, branch: r.branch, indexing_status: r.indexing_status }));
 }
 
 async function processFileForUpload(file: File): Promise<File> { return file.type.startsWith('image/') ? resizeImage(file) : file; }
@@ -156,11 +160,7 @@ export function useIndexedRepositoriesLoader(draftRepository: string | undefined
 
 export function usePlannerSettingsPersistence(config: PlannerConfig, draftRepository: string | undefined, draftBaseBranch: string | undefined, selectedRepo: string, selectedBaseBranch: string) {
   useEffect(() => { savePlannerSettings({ lastGranularity: config.granularity, lastContextLevel: config.contextLevel }); }, [config.granularity, config.contextLevel]);
-  useEffect(() => {
-    const repo = draftRepository || selectedRepo;
-    const baseBranch = draftRepository ? draftBaseBranch : selectedBaseBranch || null;
-    if (repo) savePlannerSettings({ lastRepository: repo, lastBaseBranch: baseBranch || null });
-  }, [draftBaseBranch, draftRepository, selectedRepo, selectedBaseBranch]);
+  useEffect(() => { const repo = draftRepository || selectedRepo; const baseBranch = draftRepository ? draftBaseBranch : selectedBaseBranch || null; if (repo) savePlannerSettings({ lastRepository: repo, lastBaseBranch: baseBranch || null }); }, [draftBaseBranch, draftRepository, selectedRepo, selectedBaseBranch]);
 }
 
 export function useFileHandling(isNewMode: boolean, draft: PlannerDraft | undefined, setConfig: PlannerConfigSetter, setError: React.Dispatch<React.SetStateAction<string | null>>) {
@@ -207,7 +207,6 @@ export function useFileHandling(isNewMode: boolean, draft: PlannerDraft | undefi
   }, [handleUpload, setError]);
   return { localFiles, isUploading, handleUpload, handleRemoveFile, handleRemoveLocalFile, handlePaste };
 }
-
 export function useGenerationHandlers({ draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError }: GenerationHandlersParams) {
   const handleGenerateForExistingDraft = useCallback(async () => {
     if (!draft) return;
@@ -234,7 +233,6 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
   }, [draft, stopPolling, setError]);
   return { handleGenerateForExistingDraft, handleAbortGeneration };
 }
-
 export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds }: DraftCreationParams) {
   return useCallback(async () => {
     if (!selectedRepo || !config.prompt.trim()) return void setError('Please select a repository and enter a prompt');
@@ -326,7 +324,6 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
     };
   }, [draftId, trimmedPrompt, debounceTimerRef, isMountedRef, lastSavedValueRef, previousDraftIdRef]);
 }
-
 export function useDraftSettingsPersistence(draftId: string | undefined, config: PlannerConfig, draft: PlannerDraft | undefined) {
   const { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, manualFiles, excludedFiles } = config;
   const serverSettings = draft ? getPersistedDraftSettings({ ...config, ...(getDraftConfigSnapshot(draft) ?? {}) }) : null;

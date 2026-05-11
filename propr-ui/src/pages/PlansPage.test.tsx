@@ -97,6 +97,43 @@ describe('PlansPage', () => {
     expect(screen.getByRole('button', { name: /agent/ }).textContent).toContain('1');
   });
 
+  it('keeps search and filters rendered together in the responsive header', async () => {
+    mockGetDraftRepositories.mockResolvedValue({
+      repositories: [{ repo: 'integry/propr', count: 3 }],
+      total: 3,
+    });
+    mockGetDrafts.mockResolvedValue({
+      drafts: [{
+        draft_id: 'draft-1',
+        repository: 'integry/propr',
+        initial_prompt: 'Test draft',
+        status: 'draft',
+        updated_at: '2026-04-27T00:00:00Z',
+        created_at: '2026-04-27T00:00:00Z',
+      }],
+      total: 1,
+      page: 1,
+      limit: 20,
+      hasMore: false,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <Routes>
+          <Route path="/plans" element={<PlansPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    const searchInput = await screen.findByPlaceholderText('Search plans...');
+    const statusSelect = screen.getByDisplayValue('All Statuses');
+    const repoTrigger = screen.getByRole('button', { name: /All Repos/i });
+
+    expect(searchInput).toHaveClass('w-full');
+    expect(statusSelect).toHaveClass('w-full');
+    expect(repoTrigger.parentElement).toHaveClass('w-full');
+  });
+
   it('refreshes repository metadata for relevant socket status changes on the current page', async () => {
     socketState.isConnected = true;
     mockGetDraftRepositories

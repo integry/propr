@@ -38,7 +38,6 @@ describe('setupWizardHooks branch resolution', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
-
   it('uses the selected repository entry baseBranch without fetching branch lists', async () => {
     const { result } = renderBranchesLoader('integry/propr', 'develop');
     await waitFor(() => expect(result.current.config.baseBranch).toBe('develop'));
