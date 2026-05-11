@@ -83,9 +83,9 @@ function useDebouncedDraftPersistence(savedValue: string, draftId: string | unde
   const previousDraftIdRef = useRef<string | undefined>(draftId);
   useEffect(() => {
     isMountedRef.current = true;
-    const debounceTimer = debounceTimerRef.current;
     return () => {
       isMountedRef.current = false;
+      const debounceTimer = debounceTimerRef.current;
       if (debounceTimer) clearTimeout(debounceTimer);
     };
   }, []);
