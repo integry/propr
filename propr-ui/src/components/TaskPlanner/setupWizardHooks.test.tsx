@@ -184,6 +184,36 @@ describe('setupWizardHooks branch resolution', () => {
     firstRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
     await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
   });
+  it('clears repo info state when edit mode rerenders into a skipped path', async () => {
+    const pendingRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
+    mockGetRepoBranches.mockReturnValueOnce(pendingRequest.promise);
+
+    const { result, rerender } = renderHook(
+      ({ isNewMode, draft }) => {
+        const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig, baseBranch: 'develop' });
+        const state = useRepoInfoLoader(isNewMode, draft, setConfig);
+        return { config, state };
+      },
+      { initialProps: { isNewMode: false, draft: makeDraft() } }
+    );
+
+    await waitFor(() => {
+      expect(result.current.state.isLoading).toBe(true);
+    });
+
+    rerender({ isNewMode: true, draft: undefined });
+
+    await waitFor(() => {
+      expect(result.current.state).toEqual({ isLoading: false, error: null });
+      expect(result.current.config.baseBranch).toBe('');
+    });
+
+    pendingRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
+    await waitFor(() => {
+      expect(result.current.state).toEqual({ isLoading: false, error: null });
+      expect(result.current.config.baseBranch).toBe('');
+    });
+  });
   it('persists the resolved baseBranch when creating a draft before generation starts', async () => {
     mockCreateDraft.mockResolvedValue(makeDraft());
 

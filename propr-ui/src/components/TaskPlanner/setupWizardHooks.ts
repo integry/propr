@@ -59,7 +59,7 @@ function useResolvedBaseBranch({ repo, selectedBaseBranch, initialState, setConf
   useEffect(() => {
     requestIdRef.current += 1;
     const requestId = requestIdRef.current;
-    if (skip) return;
+    if (skip) return void (setState({ isLoading: false, error: null }), clearResolvedBaseBranch(setConfig));
     if (!repo) return void (setState({ isLoading: false, error: null }), clearResolvedBaseBranch(setConfig));
     if (selectedBaseBranch) return void (setState({ isLoading: false, error: null }), setResolvedBaseBranch(setConfig, selectedBaseBranch));
     const repoParts = getRepoParts(repo);
