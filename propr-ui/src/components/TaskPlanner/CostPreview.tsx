@@ -233,7 +233,7 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   showPreviewProgress = true
 }) => {
   if (preview.isLoading && showPreviewProgress) return <LoadingState previewTrace={previewTrace} />;
-  if (preview.isLoading && !preview.data) return <DeferredLoadingState />;
+  if (preview.isLoading) return <DeferredLoadingState />;
   if (preview.error) return <ErrorState error={preview.error} />;
   if (!preview.data) return (
     <EmptyState

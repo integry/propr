@@ -1,4 +1,3 @@
-/* eslint-disable max-lines */
 import React from 'react';
 import { render, act, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -20,6 +19,12 @@ let mockGenerationPollingState: {
   generationError: null,
 };
 let mockPreviewTrace: Record<string, unknown> | undefined;
+let mockPreviewState: {
+  isLoading: boolean;
+  data: Record<string, unknown> | null;
+  error: string | null;
+  lastSynced: Date | null;
+};
 const mockNavigate = vi.fn();
 let mockLocationState: Record<string, unknown> | undefined;
 const baseDraft = { draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-06T00:00:00Z' };
@@ -65,12 +70,7 @@ vi.mock('../../hooks/useContextExport', () => ({
 }));
 vi.mock('../../hooks/useContextRefresh', () => ({
   useContextRefresh: () => ({
-    preview: {
-      isLoading: true,
-      data: null,
-      error: null,
-      lastSynced: null,
-    },
+    preview: mockPreviewState,
     isContextStale: false,
     timeUntilRefresh: null,
     isPaused: false,
@@ -205,6 +205,12 @@ describe('SetupWizard', () => {
       generationError: null,
     };
     mockPreviewTrace = undefined;
+    mockPreviewState = {
+      isLoading: true,
+      data: null,
+      error: null,
+      lastSynced: null,
+    };
     mockLocationState = undefined;
   });
 
@@ -360,6 +366,16 @@ describe('SetupWizard', () => {
         { name: 'context', status: 'in_progress' },
       ],
     };
+    mockPreviewState = {
+      isLoading: true,
+      data: {
+        stats: { costEstimate: 1.234, totalTokens: 1234 },
+        smartSelection: [],
+        warnings: [],
+      },
+      error: null,
+      lastSynced: null,
+    };
 
     render(
       <MemoryRouter>
@@ -390,6 +406,7 @@ describe('SetupWizard', () => {
     expect(screen.getAllByTestId('generation-progress')).toHaveLength(1);
     expect(rightPane.queryByText('Analyzing context...')).not.toBeInTheDocument();
     expect(rightPane.queryByText('Enter prompt for cost')).not.toBeInTheDocument();
+    expect(rightPane.queryByText('$1.234')).not.toBeInTheDocument();
     expect(rightPane.getByText('Cost after context analysis')).toBeInTheDocument();
   });
 
