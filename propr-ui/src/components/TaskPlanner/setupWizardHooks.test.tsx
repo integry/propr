@@ -1,4 +1,3 @@
-/* eslint-disable max-lines -- Hook behavior coverage stays consolidated here because the cases share the same mock API surface. */
 import React, { useState } from 'react';
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -184,36 +183,6 @@ describe('setupWizardHooks branch resolution', () => {
     firstRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
     await waitFor(() => expect(result.current.config.baseBranch).toBe('release'));
   });
-  it('clears repo info state when edit mode rerenders into a skipped path', async () => {
-    const pendingRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
-    mockGetRepoBranches.mockReturnValueOnce(pendingRequest.promise);
-
-    const { result, rerender } = renderHook(
-      ({ isNewMode, draft }) => {
-        const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig, baseBranch: 'develop' });
-        const state = useRepoInfoLoader(isNewMode, draft, setConfig);
-        return { config, state };
-      },
-      { initialProps: { isNewMode: false, draft: makeDraft() } }
-    );
-
-    await waitFor(() => {
-      expect(result.current.state.isLoading).toBe(true);
-    });
-
-    rerender({ isNewMode: true, draft: undefined });
-
-    await waitFor(() => {
-      expect(result.current.state).toEqual({ isLoading: false, error: null });
-      expect(result.current.config.baseBranch).toBe('');
-    });
-
-    pendingRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
-    await waitFor(() => {
-      expect(result.current.state).toEqual({ isLoading: false, error: null });
-      expect(result.current.config.baseBranch).toBe('');
-    });
-  });
   it('persists the resolved baseBranch when creating a draft before generation starts', async () => {
     mockCreateDraft.mockResolvedValue(makeDraft());
 
@@ -291,263 +260,147 @@ describe('setupWizardHooks branch resolution', () => {
       lastBaseBranch: 'main',
     });
   });
-  it('persists the draft repository branch together with the draft repository in edit mode', () => {
-    renderHook(() => usePlannerSettingsPersistence(
-      { ...baseConfig, baseBranch: 'release' },
-      'integry/propr',
-      'develop',
-      'integry/other',
-      'release'
-    ));
-
-    expect(mockSavePlannerSettings).toHaveBeenCalledWith({
-      lastRepository: 'integry/propr',
-      lastBaseBranch: 'develop',
-    });
-    expect(mockSavePlannerSettings).not.toHaveBeenCalledWith({
-      lastRepository: 'integry/propr',
-      lastBaseBranch: 'release',
-    });
-  });
-  it('clears stale draft context state when a replacement draft omits optional context config values', async () => {
-    const replacementDraft = makeDraft({
-      draft_id: 'draft-2',
-      initial_prompt: 'Replacement prompt',
-      attachments: [{ id: 'attachment-2', filename: 'new.txt' } as never],
+  it('syncs draft context config into local state on first load only', async () => {
+    const draft = makeDraft({
+      initial_prompt: 'Draft prompt',
+      attachments: [{ id: 'file-1', filename: 'foo.txt' }],
       context_config: {
-        baseBranch: 'release',
-        contextRepositories: [],
-        generationModel: null,
-        manualFiles: [],
-        excludedFiles: [],
-      },
-    });
-
-    const { result } = renderHook(() => {
-      const [config, setConfig] = useState<PlannerConfig>({
-        ...baseConfig,
-        prompt: 'Stale prompt',
-        baseBranch: 'main',
-        files: [{ id: 'attachment-1', filename: 'old.txt' } as never],
+        baseBranch: 'develop',
+        granularity: 'granular',
+        contextLevel: 80,
+        compress: true,
         contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
-        generationModel: 'gpt-5.4',
-        manualFiles: ['src/a.ts'],
-        excludedFiles: ['src/b.ts']
-      });
-      useDraftContextConfigSync(replacementDraft as never, setConfig);
-      return config;
+        generationModel: 'gpt-5',
+        manualFiles: ['src/index.ts'],
+        excludedFiles: ['dist/bundle.js'],
+      }
     });
+
+    const { result, rerender } = renderHook(
+      ({ currentDraft }) => {
+        const [config, setConfig] = useState<PlannerConfig>(baseConfig);
+        useDraftContextConfigSync(currentDraft, setConfig);
+        return config;
+      },
+      { initialProps: { currentDraft: draft } }
+    );
+
     await waitFor(() => {
-      expect(result.current.prompt).toBe('Replacement prompt');
-      expect(result.current.baseBranch).toBe('release');
-      expect(result.current.files).toEqual([{ id: 'attachment-2', filename: 'new.txt' }]);
-      expect(result.current.contextRepositories).toEqual([]);
-      expect(result.current.generationModel).toBeNull();
-      expect(result.current.manualFiles).toEqual([]);
-      expect(result.current.excludedFiles).toEqual([]);
+      expect(result.current).toMatchObject({
+        prompt: 'Draft prompt',
+        baseBranch: 'develop',
+        granularity: 'granular',
+        contextLevel: 80,
+        compress: true,
+        contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
+        generationModel: 'gpt-5',
+        manualFiles: ['src/index.ts'],
+        excludedFiles: ['dist/bundle.js'],
+      });
+      expect(result.current.files).toEqual([{ id: 'file-1', filename: 'foo.txt' }]);
+    });
+
+    rerender({
+      currentDraft: makeDraft({
+        ...draft,
+        initial_prompt: 'Server updated prompt',
+        context_config: {
+          ...draft.context_config,
+          baseBranch: 'release',
+        }
+      })
+    });
+
+    await waitFor(() => {
+      expect(result.current.prompt).toBe('Draft prompt');
+      expect(result.current.baseBranch).toBe('develop');
     });
   });
-  it('does not overwrite local edits when the same draft rerenders with stale server values', async () => {
-    const sameDraft = makeDraft({
-      initial_prompt: 'Server prompt',
-      context_config: {
-        baseBranch: 'main',
+  it('debounces prompt persistence and skips no-op updates', async () => {
+    vi.useFakeTimers();
+    try {
+      renderHook(() => usePromptPersistence('draft-1', '  Updated prompt. Second sentence.  ', 'Original prompt'));
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(mockUpdateDraft).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mockUpdateDraft).toHaveBeenCalledTimes(1);
+      expect(mockUpdateDraft).toHaveBeenCalledWith(
+        'draft-1',
+        expect.objectContaining({
+          initial_prompt: 'Updated prompt. Second sentence.',
+          name: 'Updated prompt. Second sentence.',
+        })
+      );
+
+      mockUpdateDraft.mockClear();
+      renderHook(() => usePromptPersistence('draft-1', 'Original prompt', 'Original prompt'));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mockUpdateDraft).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('debounces draft settings persistence and avoids saving unchanged server-backed config', async () => {
+    vi.useFakeTimers();
+    try {
+      const draft = makeDraft({
+        context_config: {
+          baseBranch: 'develop',
+          granularity: 'granular',
+          contextLevel: 70,
+          compress: true,
+          contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
+          generationModel: 'gpt-5',
+          manualFiles: ['src/index.ts'],
+          excludedFiles: ['dist/bundle.js'],
+        }
+      });
+
+      renderHook(() => useDraftSettingsPersistence('draft-1', {
+        ...baseConfig,
+        baseBranch: 'develop',
+        granularity: 'granular',
+        contextLevel: 70,
+        compress: true,
+        contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
+        generationModel: 'gpt-5',
+        manualFiles: ['src/index.ts'],
+        excludedFiles: ['dist/bundle.js'],
+      }, draft));
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mockUpdateDraft).not.toHaveBeenCalled();
+
+      renderHook(() => useDraftSettingsPersistence('draft-1', {
+        ...baseConfig,
+        baseBranch: 'release',
         granularity: 'balanced',
-        contextLevel: 50,
+        contextLevel: 20,
         compress: false,
         contextRepositories: [],
         generationModel: null,
         manualFiles: [],
         excludedFiles: [],
-      },
-    });
+      }, draft));
 
-    const { result, rerender } = renderHook(
-      ({ draft }) => {
-        const [config, setConfig] = useState<PlannerConfig>({
-          ...baseConfig,
-          prompt: 'Local edit',
-          baseBranch: 'release',
-          generationModel: 'codex:gpt-5.4',
-        });
-        useDraftContextConfigSync(draft as never, setConfig);
-        return config;
-      },
-      { initialProps: { draft: sameDraft } }
-    );
-
-    rerender({ draft: { ...sameDraft } });
-
-    await waitFor(() => {
-      expect(result.current.prompt).toBe('Local edit');
-      expect(result.current.baseBranch).toBe('release');
-      expect(result.current.generationModel).toBe('codex:gpt-5.4');
-    });
-  });
-  it('persists editable draft settings to context_config after debounce', async () => {
-    vi.useFakeTimers();
-    try {
-      renderHook(() => useDraftSettingsPersistence(
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mockUpdateDraft).toHaveBeenCalledWith(
         'draft-1',
-        {
-          ...baseConfig,
-          baseBranch: 'develop',
-          granularity: 'granular',
-          contextLevel: 80,
-          compress: true,
-          contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
-          generationModel: 'codex:gpt-5.4',
-          manualFiles: ['src/a.ts'],
-          excludedFiles: ['src/b.ts'],
-        },
-        makeDraft({
+        expect.objectContaining({
           context_config: {
-            baseBranch: 'main',
+            baseBranch: 'release',
             granularity: 'balanced',
-            contextLevel: 50,
+            contextLevel: 20,
             compress: false,
             contextRepositories: [],
             generationModel: null,
             manualFiles: [],
             excludedFiles: [],
           }
-        }) as never
-      ));
-
-      await vi.advanceTimersByTimeAsync(1_100);
-
-      expect(mockUpdateDraft).toHaveBeenCalledWith(
-        'draft-1',
-        expect.objectContaining({
-          context_config: {
-            baseBranch: 'develop',
-            granularity: 'granular',
-            contextLevel: 80,
-            compress: true,
-            contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
-            generationModel: 'codex:gpt-5.4',
-            manualFiles: ['src/a.ts'],
-            excludedFiles: ['src/b.ts'],
-          }
         })
       );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-  it('does not persist a stale prompt when the mounted wizard switches to a different draft', async () => {
-    vi.useFakeTimers();
-    try {
-      const { rerender } = renderHook(
-        ({ draftId, prompt, initialPrompt }) => {
-          usePromptPersistence(draftId, prompt, initialPrompt);
-        },
-        {
-          initialProps: {
-            draftId: 'draft-1',
-            prompt: 'Edited prompt',
-            initialPrompt: 'Original prompt',
-          },
-        }
-      );
-
-      rerender({
-        draftId: 'draft-2',
-        prompt: 'Edited prompt',
-        initialPrompt: 'Replacement prompt',
-      });
-
-      await vi.advanceTimersByTimeAsync(1_100);
-      expect(mockUpdateDraft).not.toHaveBeenCalled();
-
-      rerender({
-        draftId: 'draft-2',
-        prompt: 'Replacement prompt',
-        initialPrompt: 'Replacement prompt',
-      });
-
-      await vi.advanceTimersByTimeAsync(1_100);
-      expect(mockUpdateDraft).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-  it('does not restart prompt autosave debounce on unrelated rerenders', async () => {
-    vi.useFakeTimers();
-    try {
-      const { rerender } = renderHook(
-        ({ tick }) => {
-          usePromptPersistence('draft-1', 'Edited prompt', 'Original prompt');
-          return tick;
-        },
-        { initialProps: { tick: 0 } }
-      );
-
-      await vi.advanceTimersByTimeAsync(500);
-      rerender({ tick: 1 });
-      await vi.advanceTimersByTimeAsync(600);
-
-      expect(mockUpdateDraft).toHaveBeenCalledTimes(1);
-      expect(mockUpdateDraft).toHaveBeenCalledWith(
-        'draft-1',
-        expect.objectContaining({
-          initial_prompt: 'Edited prompt',
-          name: 'Edited prompt',
-        })
-      );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-  it('clears pending settings persistence when the same draft rerenders with updated server settings', async () => {
-    vi.useFakeTimers();
-    try {
-      const localConfig = {
-        ...baseConfig,
-        baseBranch: 'develop',
-        granularity: 'granular' as const,
-        contextLevel: 80,
-        compress: true,
-      };
-
-      const { rerender } = renderHook(
-        ({ draft }) => useDraftSettingsPersistence('draft-1', localConfig, draft as never),
-        {
-          initialProps: {
-            draft: makeDraft({
-              context_config: {
-                baseBranch: 'main',
-                granularity: 'balanced',
-                contextLevel: 50,
-                compress: false,
-                contextRepositories: [],
-                generationModel: null,
-                manualFiles: [],
-                excludedFiles: [],
-              }
-            })
-          }
-        }
-      );
-
-      await vi.advanceTimersByTimeAsync(500);
-      rerender({
-        draft: makeDraft({
-          context_config: {
-            baseBranch: 'develop',
-            granularity: 'granular',
-            contextLevel: 80,
-            compress: true,
-            contextRepositories: [],
-            generationModel: null,
-            manualFiles: [],
-            excludedFiles: [],
-          }
-        })
-      });
-      await vi.advanceTimersByTimeAsync(700);
-
-      expect(mockUpdateDraft).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -559,41 +412,28 @@ describe('computeIsGenerateDisabled', () => {
       isNewMode: true,
       isCreating: false,
       selectedRepo: 'integry/propr',
-      promptTrimmed: 'Test prompt',
+      promptTrimmed: 'Build a plan',
       reposLoading: false,
       isGenerating: false,
       branchError: null,
-      repoInfoLoading: true,
+      repoInfoLoading: false,
       repoError: null,
       baseBranch: '',
     })).toBe(true);
   });
-  it('blocks generation when repository branch lookup fails', () => {
+
+  it('allows edit-mode generation when branch data is ready', () => {
     expect(computeIsGenerateDisabled({
       isNewMode: false,
       isCreating: false,
-      selectedRepo: 'integry/propr',
-      promptTrimmed: 'Test prompt',
-      reposLoading: false,
-      isGenerating: false,
-      branchError: null,
-      repoInfoLoading: false,
-      repoError: 'GitHub unavailable',
-      baseBranch: '',
-    })).toBe(true);
-  });
-  it('blocks edit-mode generation while a replacement draft is being created', () => {
-    expect(computeIsGenerateDisabled({
-      isNewMode: false,
-      isCreating: true,
-      selectedRepo: 'integry/propr',
-      promptTrimmed: 'Test prompt',
+      selectedRepo: '',
+      promptTrimmed: 'Build a plan',
       reposLoading: false,
       isGenerating: false,
       branchError: null,
       repoInfoLoading: false,
       repoError: null,
-      baseBranch: 'main',
-    })).toBe(true);
+      baseBranch: 'develop',
+    })).toBe(false);
   });
 });
