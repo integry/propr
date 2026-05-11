@@ -30,7 +30,6 @@ import {
   getBaseBranchPersistenceWarning,
   usePromptPersistence,
   useDraftSettingsPersistence,
-  getDraftSetupSnapshot,
   computeIsGenerateDisabled,
   computeCanExport,
   useAutoResize,
@@ -38,6 +37,7 @@ import {
   usePreviewTrace,
   useSetupWizardEffects
 } from './setupWizardHooks';
+import { getDraftSetupSnapshot } from './setupWizardPayloads';
 
 interface SetupWizardProps {
   draft?: PlannerDraft;
