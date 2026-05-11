@@ -12,6 +12,7 @@ import { constructDraftWithPlan, getBaseBranchPersistenceWarning, persistDraftSe
 import type { RepoSelection } from '../RepositorySelector';
 export { useAutoDraftCreation, constructDraftWithPlan, getBaseBranchPersistenceWarning, persistDraftSetupSnapshot, persistResolvedBaseBranch } from './useAutoDraftCreation';
 export { usePreviewTrace } from './usePreviewTrace';
+export { getDraftSetupSnapshot } from './setupWizardPayloads';
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[]; contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
 interface RepoInfoState { isLoading: boolean; error: string | null; }
