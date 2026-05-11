@@ -100,46 +100,52 @@ const TaskDetails: React.FC = () => {
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const score = parsedAnalysis?.implementation_critique_score;
-  const mobileSummaryTitle = taskData.taskInfo?.title?.split('\n')[0]?.trim() || 'Loading...';
+  const mobileSummaryTitle = taskData.taskInfo?.title?.split('\n')[0]?.trim() || (taskId ? `Task #${taskId}` : '');
+  const headerProps = {
+    taskInfo: taskData.taskInfo,
+    currentStatus: derivedData.currentStatus,
+  };
+  const contextStripProps = {
+    taskInfo: taskData.taskInfo,
+    modelName: derivedData.modelName,
+    prInfo: derivedData.prInfo,
+    commitInfo,
+    duration: totalDuration,
+    tokenUsage,
+    usageMetricRecords: taskData.usageMetricRecords,
+  };
+  const actionBarProps = {
+    currentStatus: derivedData.currentStatus,
+    historyItemWithPaths: derivedData.historyItemWithPaths,
+    stoppingExecution: taskData.stoppingExecution,
+    stopFailed: taskData.stopFailed,
+    deletingTask: taskData.deletingTask,
+    onStopExecution: taskData.handleStopExecution,
+    onViewPrompt: promptData.fetchPrompt,
+    onViewLogs: logFilesData.fetchLogFilesData,
+    onDeleteTask: handleDeleteTask,
+    onFollowUp: handleOpenFollowup,
+  };
 
   return (
-    <div className="min-h-full lg:h-full flex flex-col bg-white">
+    <div className="h-full flex flex-col bg-white">
       {/* Mobile title block scrolls away with the page */}
       <header className="sm:hidden flex-shrink-0 bg-white">
         <div className="px-3 py-2 border-b border-slate-100">
-          <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
+          <TaskHeader {...headerProps} />
         </div>
       </header>
 
       {/* Desktop sticky header shell */}
       <header className="hidden sm:block flex-shrink-0 sticky top-0 z-20 bg-white">
         <div className="px-6 py-3 border-b border-slate-100">
-          <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
+          <TaskHeader {...headerProps} />
         </div>
 
         <div className="px-6 py-2 bg-slate-50 border-b border-slate-200">
           <div className="flex items-center justify-between gap-4">
-            <ContextStrip
-              taskInfo={taskData.taskInfo}
-              modelName={derivedData.modelName}
-              prInfo={derivedData.prInfo}
-              commitInfo={commitInfo}
-              duration={totalDuration}
-              tokenUsage={tokenUsage}
-              usageMetricRecords={taskData.usageMetricRecords}
-            />
-            <ActionBar
-              currentStatus={derivedData.currentStatus}
-              historyItemWithPaths={derivedData.historyItemWithPaths}
-              stoppingExecution={taskData.stoppingExecution}
-              stopFailed={taskData.stopFailed}
-              deletingTask={taskData.deletingTask}
-              onStopExecution={taskData.handleStopExecution}
-              onViewPrompt={promptData.fetchPrompt}
-              onViewLogs={logFilesData.fetchLogFilesData}
-              onDeleteTask={handleDeleteTask}
-              onFollowUp={handleOpenFollowup}
-            />
+            <ContextStrip {...contextStripProps} />
+            <ActionBar {...actionBarProps} />
           </div>
         </div>
 
@@ -154,46 +160,17 @@ const TaskDetails: React.FC = () => {
               {mobileSummaryTitle}
             </div>
             <div className="flex items-center justify-between gap-2">
-              <ContextStrip
-                taskInfo={taskData.taskInfo}
-                modelName={derivedData.modelName}
-                prInfo={derivedData.prInfo}
-                commitInfo={commitInfo}
-                duration={totalDuration}
-                tokenUsage={tokenUsage}
-                usageMetricRecords={taskData.usageMetricRecords}
-                mobileRepoOnly={true}
-              />
-              <ActionBar
-                currentStatus={derivedData.currentStatus}
-                historyItemWithPaths={derivedData.historyItemWithPaths}
-                stoppingExecution={taskData.stoppingExecution}
-                stopFailed={taskData.stopFailed}
-                deletingTask={taskData.deletingTask}
-                onStopExecution={taskData.handleStopExecution}
-                onViewPrompt={promptData.fetchPrompt}
-                onViewLogs={logFilesData.fetchLogFilesData}
-                onDeleteTask={handleDeleteTask}
-                onFollowUp={handleOpenFollowup}
-              />
+              <ContextStrip {...contextStripProps} mobileRepoOnly={true} />
+              <ActionBar {...actionBarProps} />
             </div>
-            <ContextStrip
-              taskInfo={taskData.taskInfo}
-              modelName={derivedData.modelName}
-              prInfo={derivedData.prInfo}
-              commitInfo={commitInfo}
-              duration={totalDuration}
-              tokenUsage={tokenUsage}
-              usageMetricRecords={taskData.usageMetricRecords}
-              mobileMetadataOnly={true}
-            />
+            <ContextStrip {...contextStripProps} mobileMetadataOnly={true} />
           </div>
         </div>
         <ProgressBar todos={taskData.liveDetails.todos} />
       </div>
 
       {/* Main Content Area - 30/70 Split */}
-      <div className="flex flex-col lg:flex-1 lg:overflow-hidden min-w-0">
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Header Row - TIMELINE and section label */}
         <div className="flex-shrink-0 flex border-b border-slate-200">
           <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center">
@@ -210,7 +187,7 @@ const TaskDetails: React.FC = () => {
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 flex flex-col lg:flex-row lg:overflow-hidden min-w-0">
+        <div className="flex-1 flex flex-col sm:overflow-y-auto lg:flex-row lg:overflow-hidden min-w-0">
           {/* LEFT PANE (30%) */}
           <div className="w-full lg:w-[30%] flex-shrink-0 lg:overflow-y-auto scrollbar-stealth border-b lg:border-b-0 lg:border-r border-gray-200">
             <LeftPaneBody
@@ -239,7 +216,7 @@ const TaskDetails: React.FC = () => {
             />
             {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
             {/* Remains visible when Execution Log is expanded so both logs can share vertical space */}
-            <div className="flex-1 flex flex-col min-h-0 min-w-0 lg:overflow-hidden">
+            <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
               <div className="flex-1 lg:overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
                 {(taskData.analysis || taskData.analysisLoading || thinkingLog.extractedSummary) && (
                   <ResultOverview
