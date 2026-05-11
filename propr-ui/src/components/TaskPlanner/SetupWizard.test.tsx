@@ -530,8 +530,14 @@ describe('SetupWizard', () => {
       </MemoryRouter>
     );
 
-    expect(within(screen.getByTestId('setup-wizard-left-pane')).getByTestId('generation-progress')).toBeInTheDocument();
-    expect(within(screen.getByTestId('setup-wizard-right-pane')).queryByTestId('generation-progress')).not.toBeInTheDocument();
+    const leftPane = within(screen.getByTestId('setup-wizard-left-pane'));
+    const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
+
+    expect(leftPane.getByTestId('generation-progress')).toBeInTheDocument();
+    expect(rightPane.queryByTestId('generation-progress')).not.toBeInTheDocument();
+    expect(rightPane.queryByText('Analyzing source code and gathering context...')).not.toBeInTheDocument();
+    expect(rightPane.queryByText('Analyzing context...')).not.toBeInTheDocument();
+    expect(rightPane.getByText('Enter a prompt to see cost estimate')).toBeInTheDocument();
     expect(screen.getAllByTestId('generation-progress')).toHaveLength(1);
   });
 });
