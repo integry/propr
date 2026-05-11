@@ -81,7 +81,7 @@ function useResolvedBaseBranch({ repository, configuredBaseBranch, shouldResolve
       setState({ isLoading: false, error: (err as Error).message });
       clearResolvedBaseBranch(setConfig);
     });
-  }, [repository, configuredBaseBranch, shouldResolve, setConfig]);
+  }, [repository, configuredBaseBranch, shouldResolve, clearOnSkip, clearOnMissingRepository, setConfig]);
   return state;
 }
 function useDebouncedDraftPersistence(savedValue: string, draftId: string | undefined) {
