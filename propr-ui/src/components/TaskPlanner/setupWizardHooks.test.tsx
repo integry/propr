@@ -442,6 +442,86 @@ describe('setupWizardHooks branch resolution', () => {
       vi.useRealTimers();
     }
   });
+  it('does not restart prompt autosave debounce on unrelated rerenders', async () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = renderHook(
+        ({ tick }) => {
+          usePromptPersistence('draft-1', 'Edited prompt', 'Original prompt');
+          return tick;
+        },
+        { initialProps: { tick: 0 } }
+      );
+
+      await vi.advanceTimersByTimeAsync(500);
+      rerender({ tick: 1 });
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(mockUpdateDraft).toHaveBeenCalledTimes(1);
+      expect(mockUpdateDraft).toHaveBeenCalledWith(
+        'draft-1',
+        expect.objectContaining({
+          initial_prompt: 'Edited prompt',
+          name: 'Edited prompt',
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('clears pending settings persistence when the same draft rerenders with updated server settings', async () => {
+    vi.useFakeTimers();
+    try {
+      const localConfig = {
+        ...baseConfig,
+        baseBranch: 'develop',
+        granularity: 'granular' as const,
+        contextLevel: 80,
+        compress: true,
+      };
+
+      const { rerender } = renderHook(
+        ({ draft }) => useDraftSettingsPersistence('draft-1', localConfig, draft as never),
+        {
+          initialProps: {
+            draft: makeDraft({
+              context_config: {
+                baseBranch: 'main',
+                granularity: 'balanced',
+                contextLevel: 50,
+                compress: false,
+                contextRepositories: [],
+                generationModel: null,
+                manualFiles: [],
+                excludedFiles: [],
+              }
+            })
+          }
+        }
+      );
+
+      await vi.advanceTimersByTimeAsync(500);
+      rerender({
+        draft: makeDraft({
+          context_config: {
+            baseBranch: 'develop',
+            granularity: 'granular',
+            contextLevel: 80,
+            compress: true,
+            contextRepositories: [],
+            generationModel: null,
+            manualFiles: [],
+            excludedFiles: [],
+          }
+        })
+      });
+      await vi.advanceTimersByTimeAsync(700);
+
+      expect(mockUpdateDraft).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 describe('computeIsGenerateDisabled', () => {
   it('blocks new-mode generation until the branch is resolved', () => {

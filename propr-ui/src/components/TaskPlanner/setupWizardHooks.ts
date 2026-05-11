@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ClipboardEvent, type Dispatch, type RefObject, type SetStateAction } from 'react';
-import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, type PlannerDraft, type PlannerAttachment, type AgentConfig, type DraftContextConfig, type GenerationTrace, type Granularity } from '../../api/proprApi';
+import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, createDraft, type PlannerDraft, type PlannerAttachment, type AgentConfig, type DraftContextConfig, type GenerationTrace, type Granularity } from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, type RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getUserRepoPreferences, type UserRepoPreferences } from '../../api/userRepoPreferencesApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
@@ -82,11 +82,14 @@ function useResolvedBaseBranch({ repo, selectedBaseBranch, initialState, setConf
 }
 
 function useDebouncedDraftUpdate<T>({ delay, draftId, initialValue, nextValue, resetOnInitialValueChange = false, save }: DebouncedDraftUpdateOptions<T>) {
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null), isMountedRef = useRef(true), previousDraftIdRef = useRef<string | undefined>(draftId), lastSavedValueRef = useRef(initialValue);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null), isMountedRef = useRef(true), previousDraftIdRef = useRef<string | undefined>(draftId), lastSavedValueRef = useRef(initialValue), saveRef = useRef(save);
   useEffect(() => {
     isMountedRef.current = true;
     return () => { isMountedRef.current = false; clearTimeoutRef(timeoutRef); };
   }, []);
+  useEffect(() => {
+    saveRef.current = save;
+  }, [save]);
   useEffect(() => {
     if (!resetOnInitialValueChange) return;
     lastSavedValueRef.current = initialValue;
@@ -103,14 +106,14 @@ function useDebouncedDraftUpdate<T>({ delay, draftId, initialValue, nextValue, r
     timeoutRef.current = setTimeout(async () => {
       if (!isMountedRef.current) return;
       try {
-        await save(draftId, nextValue);
+        await saveRef.current(draftId, nextValue);
         lastSavedValueRef.current = nextValue;
       } catch (err) {
         console.error('Failed to persist draft update:', err);
       }
     }, delay);
     return () => clearTimeoutRef(timeoutRef);
-  }, [delay, draftId, nextValue, save]);
+  }, [delay, draftId, nextValue]);
 }
 
 function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigSnapshot | null {
@@ -282,7 +285,6 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
     setIsCreating(true);
     setError(null);
     try {
-      const { createDraft } = await import('../../api/proprApi');
       const newDraft = await createDraft(selectedRepo, config.prompt.trim(), { todoIds });
       let baseBranchPersistenceWarning: string | null = null;
       try {
@@ -374,6 +376,7 @@ export function useDraftSettingsPersistence(draftId: string | undefined, config:
     draftId,
     initialValue: initialSettings,
     nextValue: nextSettings,
+    resetOnInitialValueChange: true,
     save: async (currentDraftId, serializedSettings) => {
       await updateDraft(currentDraftId, {
         context_config: JSON.parse(serializedSettings) as PersistedDraftSettings

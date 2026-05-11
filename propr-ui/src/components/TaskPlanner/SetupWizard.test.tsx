@@ -1,6 +1,6 @@
 /* eslint-disable max-lines -- Existing regression matrix is intentionally kept in one file to preserve shared SetupWizard mocks. */
 import React from 'react';
-import { render, act } from '@testing-library/react';
+import { render, act, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import SetupWizard from './SetupWizard';
@@ -481,7 +481,7 @@ describe('SetupWizard', () => {
     );
   });
 
-  it('renders generation progress only once while generating', () => {
+  it('renders generation progress only in the left pane while generating', () => {
     mockGenerationPollingState = {
       isGenerating: true,
       generationTrace: {
@@ -501,7 +501,7 @@ describe('SetupWizard', () => {
       ],
     };
 
-    const { getAllByTestId } = render(
+    render(
       <MemoryRouter>
         <SetupWizard
           draft={{
@@ -524,6 +524,7 @@ describe('SetupWizard', () => {
       </MemoryRouter>
     );
 
-    expect(getAllByTestId('generation-progress')).toHaveLength(1);
+    expect(screen.getAllByTestId('generation-progress')).toHaveLength(1);
+    expect(screen.queryByText('Analyzing context...')).not.toBeInTheDocument();
   });
 });
