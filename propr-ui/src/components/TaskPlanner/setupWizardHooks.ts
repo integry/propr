@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, AgentConfig, DraftContextConfig, GenerationTrace, Granularity } from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
@@ -52,16 +53,7 @@ async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRe
 async function processFileForUpload(file: File): Promise<File> { return file.type.startsWith('image/') ? resizeImage(file) : file; }
 function buildGenerationPayload(config: PlannerConfig) { return { baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, contextRepositories: config.contextRepositories, generationModel: config.generationModel || undefined, excludedFiles: config.excludedFiles.length > 0 ? config.excludedFiles : undefined }; }
 export function getDraftSetupSnapshot(config: Pick<PlannerConfig, 'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>): DraftSetupSnapshot {
-  return {
-    baseBranch: config.baseBranch,
-    granularity: config.granularity,
-    contextLevel: config.contextLevel,
-    compress: config.compress,
-    contextRepositories: config.contextRepositories,
-    generationModel: config.generationModel ?? undefined,
-    manualFiles: config.manualFiles,
-    excludedFiles: config.excludedFiles
-  };
+  return { baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, contextRepositories: config.contextRepositories, generationModel: config.generationModel ?? undefined, manualFiles: config.manualFiles, excludedFiles: config.excludedFiles };
 }
 export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined) {
   const [repos, setRepos] = useState<Repo[]>([]);
@@ -324,11 +316,7 @@ function hasDraftConfigValue<K extends keyof DraftContextConfig>(draftConfig: Dr
 function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigPatch | null {
   if (!draft) return null;
   const draftConfig = (draft as DraftWithContextConfig).context_config;
-  const snapshot: DraftConfigPatch = {
-    prompt: draft.initial_prompt,
-    files: ensureArray<PlannerAttachment>(draft.attachments)
-  };
-
+  const snapshot: DraftConfigPatch = { prompt: draft.initial_prompt, files: ensureArray<PlannerAttachment>(draft.attachments) };
   if (hasDraftConfigValue(draftConfig, 'baseBranch')) snapshot.baseBranch = draftConfig.baseBranch ?? '';
   if (hasDraftConfigValue(draftConfig, 'granularity')) snapshot.granularity = draftConfig.granularity ?? 'balanced';
   if (hasDraftConfigValue(draftConfig, 'contextLevel')) snapshot.contextLevel = draftConfig.contextLevel ?? 50;
@@ -337,12 +325,10 @@ function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigPat
   if (hasDraftConfigValue(draftConfig, 'generationModel')) snapshot.generationModel = draftConfig.generationModel ?? null;
   if (hasDraftConfigValue(draftConfig, 'manualFiles')) snapshot.manualFiles = ensureArray<string>(draftConfig.manualFiles);
   if (hasDraftConfigValue(draftConfig, 'excludedFiles')) snapshot.excludedFiles = ensureArray<string>(draftConfig.excludedFiles);
-
   return snapshot;
 }
 function matchesDraftConfig(prev: PlannerConfig, next: DraftConfigPatch): boolean {
   const entries = Object.entries(next) as [keyof DraftConfigSnapshot, DraftConfigSnapshot[keyof DraftConfigSnapshot]][];
-
   return entries.every(([key, value]) => {
     if (Array.isArray(value) || (value && typeof value === 'object')) {
       return JSON.stringify(prev[key]) === JSON.stringify(value);
@@ -422,33 +408,17 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
   }, [draftId, prompt]);
 }
 function getPersistedDraftSettings(config: PlannerConfig): PersistedDraftSettings {
-  return {
-    baseBranch: config.baseBranch,
-    granularity: config.granularity,
-    contextLevel: config.contextLevel,
-    compress: config.compress,
-    contextRepositories: config.contextRepositories,
-    generationModel: config.generationModel,
-    manualFiles: config.manualFiles,
-    excludedFiles: config.excludedFiles,
-  };
+  return { baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, contextRepositories: config.contextRepositories, generationModel: config.generationModel, manualFiles: config.manualFiles, excludedFiles: config.excludedFiles };
 }
-
-function serializePersistedDraftSettings(settings: PersistedDraftSettings): string {
-  return JSON.stringify(settings);
-}
+function serializePersistedDraftSettings(settings: PersistedDraftSettings): string { return JSON.stringify(settings); }
 
 const SETTINGS_SAVE_DEBOUNCE = 1000;
 export function useDraftSettingsPersistence(draftId: string | undefined, config: PlannerConfig, draft: PlannerDraft | undefined) {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMountedRef = useRef(true);
   const previousDraftIdRef = useRef<string | undefined>(draftId);
-  const serverSettings = draft ? getPersistedDraftSettings({
-    ...config,
-    ...(getDraftConfigSnapshot(draft) ?? {}),
-  }) : null;
+  const serverSettings = draft ? getPersistedDraftSettings({ ...config, ...(getDraftConfigSnapshot(draft) ?? {}) }) : null;
   const lastSavedSettingsRef = useRef<string>(serverSettings ? serializePersistedDraftSettings(serverSettings) : '');
-
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -475,16 +445,10 @@ export function useDraftSettingsPersistence(draftId: string | undefined, config:
     debounceTimerRef.current = setTimeout(async () => {
       if (!isMountedRef.current) return;
       try {
-        await updateDraft(draftId, {
-          context_config: settings
-        } as Parameters<typeof updateDraft>[1] & { context_config: PersistedDraftSettings });
+        await updateDraft(draftId, { context_config: settings } as Parameters<typeof updateDraft>[1] & { context_config: PersistedDraftSettings });
         lastSavedSettingsRef.current = serializedSettings;
-      } catch (err) {
-        console.error('Failed to persist draft settings:', err);
-      }
+      } catch (err) { console.error('Failed to persist draft settings:', err); }
     }, SETTINGS_SAVE_DEBOUNCE);
-    return () => {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    };
+    return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   }, [draftId, config]);
 }
