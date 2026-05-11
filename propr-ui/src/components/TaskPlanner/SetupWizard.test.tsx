@@ -136,9 +136,15 @@ vi.mock('./setupWizardHooks', () => ({
   usePreviewTrace: () => undefined,
   useSetupWizardEffects: vi.fn(),
   getDraftSetupSnapshot: (config: Record<string, unknown>) => config,
-  getBaseBranchPersistenceWarning: (baseBranch?: string) => baseBranch ? `Draft created, but failed to save base branch "${baseBranch}".` : null,
-  persistResolvedBaseBranch: (draftId: string, baseBranch?: string) => updateDraft(draftId, {
-    context_config: { baseBranch }
+  constructDraftWithPlan: (draft: Record<string, unknown>, setupSnapshot?: Record<string, unknown>) => ({
+    ...draft,
+    plan_json: [],
+    chat_history: [],
+    context_config: setupSnapshot,
+  }),
+  getDraftSetupPersistenceWarning: (baseBranch?: string) => baseBranch ? `Draft created, but failed to save setup settings including base branch "${baseBranch}".` : null,
+  persistDraftSetupSnapshot: (draftId: string, setupSnapshot?: Record<string, unknown>) => updateDraft(draftId, {
+    context_config: setupSnapshot
   }),
   usePromptPersistence: vi.fn(),
   computeIsGenerateDisabled: () => false,
@@ -204,7 +210,7 @@ describe('SetupWizard', () => {
     expect(mockGetDraft).not.toHaveBeenCalled();
   });
 
-  it('anchors edit-mode selector state to the draft branch and persists branch on repo switch', async () => {
+  it('anchors edit-mode selector state to the draft branch and persists the full setup snapshot on repo switch', async () => {
     mockCreateDraft.mockResolvedValue({
       draft_id: 'draft-2',
       repository: 'integry/other',
@@ -224,7 +230,16 @@ describe('SetupWizard', () => {
             status: 'draft',
             attachments: [],
             created_at: '2026-05-06T00:00:00Z',
-            context_config: { baseBranch: 'main' },
+            context_config: {
+              baseBranch: 'main',
+              granularity: 'large',
+              contextLevel: 75,
+              compress: true,
+              contextRepositories: [{ repository: 'integry/shared', branch: 'release' }],
+              generationModel: 'gpt-5.4',
+              manualFiles: ['src/keep.ts'],
+              excludedFiles: ['src/skip.ts']
+            },
           }}
           onGenerateComplete={vi.fn()}
         />
@@ -242,7 +257,41 @@ describe('SetupWizard', () => {
 
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-2',
-      expect.objectContaining({ context_config: { baseBranch: 'develop' } })
+      expect.objectContaining({
+        context_config: {
+          baseBranch: 'develop',
+          granularity: 'large',
+          contextLevel: 75,
+          compress: true,
+          contextRepositories: [{ repository: 'integry/shared', branch: 'release' }],
+          generationModel: 'gpt-5.4',
+          manualFiles: ['src/keep.ts'],
+          excludedFiles: ['src/skip.ts']
+        }
+      })
+    );
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/studio/draft-2',
+      expect.objectContaining({
+        replace: true,
+        state: expect.objectContaining({
+          initialDraft: expect.objectContaining({
+            draft_id: 'draft-2',
+            context_config: {
+              baseBranch: 'develop',
+              granularity: 'large',
+              contextLevel: 75,
+              compress: true,
+              contextRepositories: [{ repository: 'integry/shared', branch: 'release' }],
+              generationModel: 'gpt-5.4',
+              manualFiles: ['src/keep.ts'],
+              excludedFiles: ['src/skip.ts']
+            }
+          }),
+          initialRepository: 'integry/other',
+          initialBaseBranch: 'develop'
+        })
+      })
     );
   });
 
@@ -307,7 +356,9 @@ describe('SetupWizard', () => {
     expect(mockGetRepoBranches).toHaveBeenCalledWith('integry', 'other');
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-2',
-      expect.objectContaining({ context_config: { baseBranch: 'release' } })
+      expect.objectContaining({
+        context_config: expect.objectContaining({ baseBranch: 'release' })
+      })
     );
   });
 

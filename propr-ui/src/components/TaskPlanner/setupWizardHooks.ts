@@ -8,9 +8,16 @@ import { IndexedRepository } from './ContextRepositoriesSection';
 import { getDraftConfigSnapshot, getHydratedDraftConfigSnapshot, getPersistedDraftSettings, matchesDraftConfig, type PersistedDraftSettings, serializePersistedDraftSettings } from './setupWizardDraftConfig';
 import { buildGenerationPayload, getDraftSetupSnapshot } from './setupWizardPayloads';
 import { PROMPT_SAVE_DEBOUNCE, truncateToSentences } from './setupWizardPrompt';
-import { constructDraftWithPlan, getBaseBranchPersistenceWarning, persistDraftSetupSnapshot } from './useAutoDraftCreation';
+import { constructDraftWithPlan, getDraftSetupPersistenceWarning, persistDraftSetupSnapshot } from './useAutoDraftCreation';
 import type { RepoSelection } from '../RepositorySelector';
-export { useAutoDraftCreation, constructDraftWithPlan, getBaseBranchPersistenceWarning, persistDraftSetupSnapshot, persistResolvedBaseBranch } from './useAutoDraftCreation';
+export {
+  useAutoDraftCreation,
+  constructDraftWithPlan,
+  getDraftSetupPersistenceWarning,
+  getBaseBranchPersistenceWarning,
+  persistDraftSetupSnapshot,
+  persistResolvedBaseBranch
+} from './useAutoDraftCreation';
 export { usePreviewTrace } from './usePreviewTrace';
 export { getDraftSetupSnapshot } from './setupWizardPayloads';
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
@@ -261,7 +268,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
         await persistDraftSetupSnapshot(newDraft.draft_id, draftSetupSnapshot);
       } catch (err) {
         console.error('Failed to persist draft setup snapshot:', err);
-        baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(config.baseBranch);
+        baseBranchPersistenceWarning = getDraftSetupPersistenceWarning(config.baseBranch);
       }
       for (const file of localFiles) {
         try { await uploadAttachment(newDraft.draft_id, file); }

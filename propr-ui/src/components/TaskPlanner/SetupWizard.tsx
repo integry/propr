@@ -26,8 +26,9 @@ import {
   useGenerationHandlers,
   useDraftCreation,
   useAutoDraftCreation,
-  persistResolvedBaseBranch,
-  getBaseBranchPersistenceWarning,
+  constructDraftWithPlan,
+  persistDraftSetupSnapshot,
+  getDraftSetupPersistenceWarning,
   usePromptPersistence,
   useDraftSettingsPersistence,
   computeIsGenerateDisabled,
@@ -240,13 +241,17 @@ async function resolveRepoBaseBranch(newRepo: string, selection?: RepoSelection)
   return repoInfo.defaultBranch;
 }
 
-async function persistBaseBranchWarning(draftId: string, resolvedBaseBranch: string) {
+async function persistDraftSetupWarning(draftId: string, config: PlannerConfig, resolvedBaseBranch: string) {
+  const draftSetupSnapshot = getDraftSetupSnapshot({ ...config, baseBranch: resolvedBaseBranch });
   try {
-    await persistResolvedBaseBranch(draftId, resolvedBaseBranch);
-    return null;
+    await persistDraftSetupSnapshot(draftId, draftSetupSnapshot);
+    return { draftSetupSnapshot, warning: null };
   } catch (err) {
-    console.error('Failed to persist resolved base branch:', err);
-    return getBaseBranchPersistenceWarning(resolvedBaseBranch);
+    console.error('Failed to persist draft setup snapshot:', err);
+    return {
+      draftSetupSnapshot,
+      warning: getDraftSetupPersistenceWarning(resolvedBaseBranch)
+    };
   }
 }
 
@@ -258,11 +263,12 @@ async function createDraftForRepoChange({ newRepo, resolvedBaseBranch, config, d
   }
 
   const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled', { todoIds: locationTodoIds });
-  const baseBranchPersistenceWarning = await persistBaseBranchWarning(newDraft.draft_id, resolvedBaseBranch);
+  const { draftSetupSnapshot, warning: baseBranchPersistenceWarning } = await persistDraftSetupWarning(newDraft.draft_id, config, resolvedBaseBranch);
   onDraftCreated?.(newDraft.draft_id);
   navigate(`/studio/${newDraft.draft_id}`, {
     replace: true,
     state: {
+      initialDraft: constructDraftWithPlan(newDraft, draftSetupSnapshot),
       initialRepository: newRepo,
       initialBaseBranch: resolvedBaseBranch,
       baseBranchPersistenceWarning,
