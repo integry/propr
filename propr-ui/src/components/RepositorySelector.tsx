@@ -87,7 +87,7 @@ const RepoLabel: React.FC<{ repo: RepoOption; labelLayout: 'inline' | 'stacked' 
     : (repo.displayName ? <>{repo.displayName}</> : <><FormatRepoName name={repo.name} />{repo.baseBranch && <span className="text-gray-500"> ({repo.baseBranch})</span>}</>)
 );
 
-const RepoCountBadge: React.FC<{ count: number }> = ({ count }) => <span className="inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0">{count}</span>;
+const RepoCountBadge: React.FC<{ count: number; className?: string }> = ({ count, className = '' }) => <span className={`inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0 ${className}`}>{count}</span>;
 
 const RepoItem: React.FC<{
   repo: RepoOption;
@@ -247,7 +247,12 @@ const DefaultTrigger: React.FC<{
         <span className={`flex-1 min-w-0 text-left ${labelLayout === 'stacked' ? '' : 'truncate text-sm'}`}>
           <RepoLabel repo={selectedRepoData} labelLayout={labelLayout} />
         </span>
-        {selectedRepoData.count !== undefined && <RepoCountBadge count={selectedRepoData.count} />}
+        {selectedRepoData.count !== undefined && (
+          <RepoCountBadge
+            count={selectedRepoData.count}
+            className={labelLayout === 'stacked' ? 'hidden sm:inline-flex' : ''}
+          />
+        )}
         {selectedRepoData.starred && <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
       </>
     ) : (

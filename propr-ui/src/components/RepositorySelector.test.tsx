@@ -300,6 +300,25 @@ describe('RepositorySelector', () => {
     expect(items[2].textContent).not.toContain('7');
   });
 
+  it('hides the collapsed count badge on mobile for stacked labels', () => {
+    const repos: RepoOption[] = [
+      { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 42 },
+    ];
+    render(
+      <RepositorySelector
+        repos={repos}
+        selectedRepo="org/repo-alpha"
+        onRepoChange={vi.fn()}
+        labelLayout="stacked"
+      />
+    );
+
+    const trigger = screen.getByRole('button');
+    const countBadge = trigger.querySelector('.bg-gray-100');
+
+    expect(countBadge).toHaveClass('hidden', 'sm:inline-flex');
+  });
+
   it('filters by repo name even when displayName differs', () => {
     const repos: RepoOption[] = [
       { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 10 },
