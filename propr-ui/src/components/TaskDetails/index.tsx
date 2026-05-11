@@ -187,7 +187,7 @@ const TaskDetails: React.FC = () => {
   };
 
   return (
-    <div className="h-full flex flex-col overflow-y-auto sm:overflow-hidden bg-white">
+    <div className="min-h-full flex flex-col overflow-x-hidden bg-white sm:h-full sm:overflow-hidden">
       {/* Mobile title block scrolls away with the page */}
       <header className="sm:hidden flex-shrink-0 bg-white">
         <div className="px-3 py-2 border-b border-slate-100">
@@ -219,7 +219,7 @@ const TaskDetails: React.FC = () => {
       />
 
       {/* Main Content Area - 30/70 Split */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      <div className="flex flex-col min-w-0 sm:flex-1 sm:overflow-hidden">
         {/* Header Row - TIMELINE and section label */}
         <div className="flex-shrink-0 flex border-b border-slate-200">
           <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center">
@@ -236,7 +236,7 @@ const TaskDetails: React.FC = () => {
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 flex flex-col sm:overflow-y-auto lg:flex-row lg:overflow-hidden min-w-0">
+        <div className="flex flex-col min-w-0 sm:flex-1 lg:flex-row lg:overflow-hidden">
           {/* LEFT PANE (30%) */}
           <div className="w-full lg:w-[30%] flex-shrink-0 lg:overflow-y-auto scrollbar-stealth border-b lg:border-b-0 lg:border-r border-gray-200">
             <LeftPaneBody
@@ -255,7 +255,7 @@ const TaskDetails: React.FC = () => {
           <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
 
           {/* RIGHT PANE (70%) */}
-          <div className="flex flex-1 flex-col min-h-0 min-w-0 lg:overflow-hidden">
+          <div className="flex flex-col min-w-0 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
             {/* Mobile section header */}
             <SectionLabelHeader
               commandMode={taskData.taskInfo?.commandMode}
@@ -265,8 +265,8 @@ const TaskDetails: React.FC = () => {
             />
             {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
             {/* Remains visible when Execution Log is expanded so both logs can share vertical space */}
-            <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
-              <div className="flex-1 lg:overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
+            <div className="flex flex-col min-w-0 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
+              <div className="min-w-0 overflow-x-hidden scrollbar-stealth lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
                 {(taskData.analysis || taskData.analysisLoading || thinkingLog.extractedSummary) && (
                   <ResultOverview
                     analysis={taskData.analysis}
@@ -294,7 +294,7 @@ const TaskDetails: React.FC = () => {
       {/* Execution Event Log Footer */}
       <div
         ref={executionLogRef}
-        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'flex-1 flex flex-col min-h-0 max-h-[100vh] lg:max-h-[60vh]'}`}
+        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'max-h-[100vh] lg:flex-1 lg:flex lg:flex-col lg:min-h-0 lg:max-h-[60vh]'}`}
       >
         <ExecutionEventLog
           events={taskData.liveDetails.events}
