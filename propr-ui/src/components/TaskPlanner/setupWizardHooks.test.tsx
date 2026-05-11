@@ -1,4 +1,4 @@
-/* eslint-disable max-lines */
+/* eslint-disable max-lines -- Hook behavior coverage stays consolidated here because the cases share the same mock API surface. */
 import React, { useState } from 'react';
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';

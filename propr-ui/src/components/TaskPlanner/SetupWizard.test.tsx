@@ -1,4 +1,4 @@
-/* eslint-disable max-lines */
+/* eslint-disable max-lines -- Existing regression matrix is intentionally kept in one file to preserve shared SetupWizard mocks. */
 import React from 'react';
 import { render, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
