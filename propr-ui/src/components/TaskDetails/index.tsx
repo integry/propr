@@ -108,19 +108,59 @@ const TaskDetails: React.FC = () => {
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const score = parsedAnalysis?.implementation_critique_score;
+  const mobileSummaryTitle = taskData.taskInfo?.title?.split('\n')[0]?.trim() || 'Loading...';
 
   return (
-    <div className="h-full flex flex-col bg-white">
-      {/* Sticky Header Shell */}
-      <header className="flex-shrink-0 sticky top-0 z-20 bg-white">
-        <div className="px-3 sm:px-6 py-2 sm:py-3 border-b border-slate-100">
+    <div className="min-h-full lg:h-full flex flex-col bg-white">
+      {/* Mobile title block scrolls away with the page */}
+      <header className="sm:hidden flex-shrink-0 bg-white">
+        <div className="px-3 py-2 border-b border-slate-100">
+          <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
+        </div>
+      </header>
+
+      {/* Desktop sticky header shell */}
+      <header className="hidden sm:block flex-shrink-0 sticky top-0 z-20 bg-white">
+        <div className="px-6 py-3 border-b border-slate-100">
           <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
         </div>
 
-        {/* Consolidated Context Bar */}
-        <div className="px-3 sm:px-6 py-1.5 sm:py-2 bg-slate-50 border-b border-slate-200">
-          {/* Mobile: Two-row layout */}
-          <div className="flex flex-col gap-2 sm:hidden">
+        <div className="px-6 py-2 bg-slate-50 border-b border-slate-200">
+          <div className="flex items-center justify-between gap-4">
+            <ContextStrip
+              taskInfo={taskData.taskInfo}
+              modelName={derivedData.modelName}
+              prInfo={derivedData.prInfo}
+              commitInfo={commitInfo}
+              duration={totalDuration}
+              tokenUsage={tokenUsage}
+              usageMetricRecords={taskData.usageMetricRecords}
+            />
+            <ActionBar
+              currentStatus={derivedData.currentStatus}
+              historyItemWithPaths={derivedData.historyItemWithPaths}
+              stoppingExecution={taskData.stoppingExecution}
+              stopFailed={taskData.stopFailed}
+              deletingTask={taskData.deletingTask}
+              onStopExecution={taskData.handleStopExecution}
+              onViewPrompt={promptData.fetchPrompt}
+              onViewLogs={logFilesData.fetchLogFilesData}
+              onDeleteTask={handleDeleteTask}
+              onFollowUp={handleOpenFollowup}
+            />
+          </div>
+        </div>
+
+        <ProgressBar todos={taskData.liveDetails.todos} />
+      </header>
+
+      {/* Sticky mobile summary strip */}
+      <div className="sm:hidden sticky top-0 z-20 bg-white">
+        <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
+          <div className="flex flex-col gap-2">
+            <div className="truncate text-xs font-semibold text-slate-700">
+              {mobileSummaryTitle}
+            </div>
             <div className="flex items-center justify-between gap-2">
               <ContextStrip
                 taskInfo={taskData.taskInfo}
@@ -156,38 +196,12 @@ const TaskDetails: React.FC = () => {
               mobileMetadataOnly={true}
             />
           </div>
-
-          {/* Desktop: Single row layout */}
-          <div className="hidden sm:flex items-center justify-between gap-4">
-            <ContextStrip
-              taskInfo={taskData.taskInfo}
-              modelName={derivedData.modelName}
-              prInfo={derivedData.prInfo}
-              commitInfo={commitInfo}
-              duration={totalDuration}
-              tokenUsage={tokenUsage}
-              usageMetricRecords={taskData.usageMetricRecords}
-            />
-            <ActionBar
-              currentStatus={derivedData.currentStatus}
-              historyItemWithPaths={derivedData.historyItemWithPaths}
-              stoppingExecution={taskData.stoppingExecution}
-              stopFailed={taskData.stopFailed}
-              deletingTask={taskData.deletingTask}
-              onStopExecution={taskData.handleStopExecution}
-              onViewPrompt={promptData.fetchPrompt}
-              onViewLogs={logFilesData.fetchLogFilesData}
-              onDeleteTask={handleDeleteTask}
-              onFollowUp={handleOpenFollowup}
-            />
-          </div>
         </div>
-
         <ProgressBar todos={taskData.liveDetails.todos} />
-      </header>
+      </div>
 
       {/* Main Content Area - 30/70 Split */}
-      <div className="flex-1 flex flex-col overflow-y-auto lg:overflow-hidden min-w-0">
+      <div className="flex flex-col lg:flex-1 lg:overflow-hidden min-w-0">
         {/* Header Row - TIMELINE and section label */}
         <div className="flex-shrink-0 flex border-b border-slate-200">
           <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center">
