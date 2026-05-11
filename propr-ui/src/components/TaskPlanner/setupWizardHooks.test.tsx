@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, usePlannerSettingsPersistence, useDraftContextConfigSync, usePromptPersistence, useDraftSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
 import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
+import { baseConfig, createDeferred, makeDraft } from './setupWizardHooks.testUtils';
 
 vi.mock('../../api/proprApi', () => ({ uploadAttachment: vi.fn(), removeAttachment: vi.fn(), abortGeneration: vi.fn(), getAgents: vi.fn(), getRepoConfig: vi.fn(), getRepoBranches: vi.fn(), createDraft: vi.fn(), updateDraft: vi.fn(), generatePlan: vi.fn() }));
 vi.mock('../../api/repoIndexingApi', () => ({ getRepositoriesIndexingStatus: vi.fn() }));
@@ -16,15 +17,6 @@ const mockCreateDraft = vi.mocked(createDraft);
 const mockGeneratePlan = vi.mocked(generatePlan);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockSavePlannerSettings = vi.mocked(savePlannerSettings);
-const baseConfig: PlannerConfig = { prompt: '', baseBranch: '', granularity: 'balanced', contextLevel: 50, compress: false, files: [], contextRepositories: [], generationModel: null, manualFiles: [], excludedFiles: [] };
-const makeDraft = (overrides: Record<string, unknown> = {}) => ({ draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-06T00:00:00Z', ...overrides });
-
-function createDeferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve, reject };
-}
 
 function renderBranchesLoader(repo: string, configuredBaseBranch = '', initialConfig: PlannerConfig = baseConfig) {
   return renderHook(({ currentRepo, currentBaseBranch }) => {
@@ -138,7 +130,7 @@ describe('setupWizardHooks branch resolution', () => {
 
   it.each([
     ['persists the resolved baseBranch when creating a draft before generation starts', undefined, undefined],
-    ['continues generation when persisting the resolved baseBranch fails after draft creation', new Error('Transient update failure'), expect.stringContaining('failed to save base branch "develop"')],
+    ['continues generation when persisting the resolved baseBranch fails after draft creation', new Error('Transient update failure'), expect.stringContaining('failed to save setup settings including base branch "develop"')],
   ])('%s', async (_, updateError, expectedWarning) => {
     mockCreateDraft.mockResolvedValue(makeDraft());
     if (updateError) mockUpdateDraft.mockRejectedValue(updateError);
@@ -146,13 +138,42 @@ describe('setupWizardHooks branch resolution', () => {
     const setError = vi.fn();
     const setIsCreating = vi.fn();
     const { result } = renderHook(() => useDraftCreation({ selectedRepo: 'integry/propr', config: { ...baseConfig, prompt: 'Test prompt', baseBranch: 'develop' }, localFiles: [], navigate, setError, setIsCreating }));
+
     await result.current();
+
+    expect(mockUpdateDraft).toHaveBeenCalledWith('draft-1', expect.objectContaining({
+      context_config: {
+        baseBranch: 'develop',
+        granularity: 'balanced',
+        contextLevel: 50,
+        compress: false,
+        contextRepositories: [],
+        generationModel: undefined,
+        manualFiles: [],
+        excludedFiles: [],
+      }
+    }));
     expect(mockGeneratePlan).toHaveBeenCalledWith('draft-1', expect.objectContaining({ baseBranch: 'develop' }));
-    expect(mockUpdateDraft).toHaveBeenCalledWith('draft-1', expect.objectContaining({ context_config: { baseBranch: 'develop' } }));
-    if (expectedWarning) {
-      expect(navigate).toHaveBeenCalledWith('/studio/draft-1', expect.objectContaining({ replace: true, state: expect.objectContaining({ initialBaseBranch: 'develop', baseBranchPersistenceWarning: expectedWarning }) }));
-      expect(setError).not.toHaveBeenCalledWith('Transient update failure');
-    }
+    expect(navigate).toHaveBeenCalledWith('/studio/draft-1', expect.objectContaining({
+      replace: true,
+      state: expect.objectContaining({
+        initialBaseBranch: 'develop',
+        initialDraft: expect.objectContaining({
+          context_config: {
+            baseBranch: 'develop',
+            granularity: 'balanced',
+            contextLevel: 50,
+            compress: false,
+            contextRepositories: [],
+            generationModel: undefined,
+            manualFiles: [],
+            excludedFiles: [],
+          }
+        }),
+        baseBranchPersistenceWarning: expectedWarning ?? null,
+      })
+    }));
+    if (expectedWarning) expect(setError).not.toHaveBeenCalledWith('Transient update failure');
   });
 
   it.each([
