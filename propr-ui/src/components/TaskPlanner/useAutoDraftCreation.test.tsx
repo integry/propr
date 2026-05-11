@@ -154,11 +154,22 @@ describe('useAutoDraftCreation', () => {
   it('clears the auto-creating state after successful in-place draft creation', async () => {
     const navigate = vi.fn();
     const onDraftCreatedInPlace = vi.fn();
+    const setupSnapshot = {
+      baseBranch: 'develop',
+      granularity: 'granular' as const,
+      contextLevel: 80,
+      compress: true,
+      contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
+      generationModel: 'codex:gpt-5.4',
+      manualFiles: ['src/a.ts'],
+      excludedFiles: ['src/b.ts']
+    };
 
     const { result } = renderHook(() => useAutoDraftCreation({
       isNewMode: true,
       selectedRepo: 'integry/propr',
       resolvedBaseBranch: 'develop',
+      setupSnapshot,
       prompt: 'Test prompt',
       localFiles: [],
       onDraftCreatedInPlace,
@@ -171,11 +182,49 @@ describe('useAutoDraftCreation', () => {
 
     expect(onDraftCreatedInPlace).toHaveBeenCalledWith(expect.objectContaining({
       draft_id: 'draft-1',
-      context_config: { baseBranch: 'develop' }
+      context_config: setupSnapshot
     }));
 
     expect(result.current.isAutoCreating).toBe(false);
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('hydrates navigated drafts with the full setup snapshot in router state', async () => {
+    const navigate = vi.fn();
+    const setupSnapshot = {
+      baseBranch: 'develop',
+      granularity: 'granular' as const,
+      contextLevel: 80,
+      compress: true,
+      contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
+      generationModel: 'codex:gpt-5.4',
+      manualFiles: ['src/a.ts'],
+      excludedFiles: ['src/b.ts']
+    };
+
+    renderHook(() => useAutoDraftCreation({
+      isNewMode: true,
+      selectedRepo: 'integry/propr',
+      resolvedBaseBranch: 'develop',
+      setupSnapshot,
+      prompt: 'Test prompt',
+      localFiles: [],
+      navigate,
+    }));
+
+    await flushAutoCreate();
+
+    expect(navigate).toHaveBeenCalledWith(
+      '/studio/draft-1',
+      expect.objectContaining({
+        replace: true,
+        state: expect.objectContaining({
+          initialDraft: expect.objectContaining({
+            context_config: setupSnapshot
+          })
+        })
+      })
+    );
   });
 
   it('surfaces the persistence warning only for in-place auto-created drafts', async () => {

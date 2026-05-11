@@ -30,6 +30,7 @@ import {
   getBaseBranchPersistenceWarning,
   usePromptPersistence,
   useDraftSettingsPersistence,
+  getDraftSetupSnapshot,
   computeIsGenerateDisabled,
   computeCanExport,
   useAutoResize,
@@ -379,6 +380,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const contextExport = useContextExport(setError);
   const contextRefresh = useContextRefresh({ draftId, config, onBranchError: setBranchError });
   const previewTrace = usePreviewTrace(draft, draftId, contextRefresh.preview.isLoading);
+  const setupSnapshot = useMemo(() => getDraftSetupSnapshot(config), [config]);
   const generationHandlers = useGenerationHandlers({ draft, config, branchError, contextHelpers: { isContextStale: contextRefresh.isContextStale, clearCountdown: contextRefresh.clearCountdown, fetchPreview: contextRefresh.fetchPreview },
     startPolling: generationPolling.startPolling, stopPolling: generationPolling.stopPolling, setError, setGenerationError: generationPolling.setGenerationError });
   const todoIds = locationState?.todoIds;
@@ -386,7 +388,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     selectedRepo: repoLoader.selectedRepo, config, localFiles: fileHandling.localFiles,
     onDraftCreated, navigate, setError, setIsCreating, todoIds
   });
-  const { isAutoCreating, autoCreateError, autoCreateWarning } = useAutoDraftCreation({ isNewMode, selectedRepo: repoLoader.selectedRepo, resolvedBaseBranch: config.baseBranch, prompt: config.prompt, localFiles: fileHandling.localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds });
+  const { isAutoCreating, autoCreateError, autoCreateWarning } = useAutoDraftCreation({ isNewMode, selectedRepo: repoLoader.selectedRepo, resolvedBaseBranch: config.baseBranch, setupSnapshot, prompt: config.prompt, localFiles: fileHandling.localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds });
   const autoResize = useAutoResize(textareaRef);
   const handleRepoChangeInEditMode = useRepoChangeInEditMode({ draft, config, locationTodoIds: locationState?.todoIds, navigate, onDraftCreated, setError, setIsCreating });
   const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {

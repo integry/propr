@@ -5,7 +5,7 @@ import { getUserRepoPreferences, UserRepoPreferences } from '../../api/userRepoP
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { resizeImage } from './imageUtils';
 import { IndexedRepository } from './ContextRepositoriesSection';
-import { constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
+import { constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch, type DraftSetupSnapshot } from './useAutoDraftCreation';
 import type { RepoSelection } from '../RepositorySelector';
 export { useAutoDraftCreation, constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
@@ -51,6 +51,18 @@ async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRe
 }
 async function processFileForUpload(file: File): Promise<File> { return file.type.startsWith('image/') ? resizeImage(file) : file; }
 function buildGenerationPayload(config: PlannerConfig) { return { baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, contextRepositories: config.contextRepositories, generationModel: config.generationModel || undefined, excludedFiles: config.excludedFiles.length > 0 ? config.excludedFiles : undefined }; }
+export function getDraftSetupSnapshot(config: Pick<PlannerConfig, 'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>): DraftSetupSnapshot {
+  return {
+    baseBranch: config.baseBranch,
+    granularity: config.granularity,
+    contextLevel: config.contextLevel,
+    compress: config.compress,
+    contextRepositories: config.contextRepositories,
+    generationModel: config.generationModel ?? undefined,
+    manualFiles: config.manualFiles,
+    excludedFiles: config.excludedFiles
+  };
+}
 export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('');
@@ -266,7 +278,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
       }
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
       await generatePlan(newDraft.draft_id, buildGenerationPayload(config));
-      const draftWithPlan = constructDraftWithPlan(newDraft, config.baseBranch);
+      const draftWithPlan = constructDraftWithPlan(newDraft, getDraftSetupSnapshot(config));
       draftWithPlan.status = 'generating';
       navigate(`/studio/${newDraft.draft_id}`, {
         replace: true,
@@ -303,33 +315,41 @@ export function useAutoResize(textareaRef: React.RefObject<HTMLTextAreaElement |
 type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
 type DraftConfigSnapshot = Pick<PlannerConfig, 'prompt' | 'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'files' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>;
 type PersistedDraftSettings = Pick<PlannerConfig, 'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>;
-function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigSnapshot | null {
+type DraftConfigPatch = Partial<DraftConfigSnapshot>;
+
+function hasDraftConfigValue<K extends keyof DraftContextConfig>(draftConfig: DraftContextConfig | undefined, key: K): draftConfig is DraftContextConfig & Required<Pick<DraftContextConfig, K>> {
+  return !!draftConfig && Object.prototype.hasOwnProperty.call(draftConfig, key);
+}
+
+function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigPatch | null {
   if (!draft) return null;
   const draftConfig = (draft as DraftWithContextConfig).context_config;
-  return {
+  const snapshot: DraftConfigPatch = {
     prompt: draft.initial_prompt,
-    baseBranch: draftConfig?.baseBranch ?? '',
-    granularity: draftConfig?.granularity ?? 'balanced',
-    contextLevel: draftConfig?.contextLevel ?? 50,
-    compress: draftConfig?.compress ?? false,
-    files: ensureArray<PlannerAttachment>(draft.attachments),
-    contextRepositories: ensureArray<{ repository: string; branch?: string }>(draftConfig?.contextRepositories),
-    generationModel: draftConfig?.generationModel ?? null,
-    manualFiles: ensureArray<string>(draftConfig?.manualFiles),
-    excludedFiles: ensureArray<string>(draftConfig?.excludedFiles)
+    files: ensureArray<PlannerAttachment>(draft.attachments)
   };
+
+  if (hasDraftConfigValue(draftConfig, 'baseBranch')) snapshot.baseBranch = draftConfig.baseBranch ?? '';
+  if (hasDraftConfigValue(draftConfig, 'granularity')) snapshot.granularity = draftConfig.granularity ?? 'balanced';
+  if (hasDraftConfigValue(draftConfig, 'contextLevel')) snapshot.contextLevel = draftConfig.contextLevel ?? 50;
+  if (hasDraftConfigValue(draftConfig, 'compress')) snapshot.compress = draftConfig.compress ?? false;
+  if (hasDraftConfigValue(draftConfig, 'contextRepositories')) snapshot.contextRepositories = ensureArray<{ repository: string; branch?: string }>(draftConfig.contextRepositories);
+  if (hasDraftConfigValue(draftConfig, 'generationModel')) snapshot.generationModel = draftConfig.generationModel ?? null;
+  if (hasDraftConfigValue(draftConfig, 'manualFiles')) snapshot.manualFiles = ensureArray<string>(draftConfig.manualFiles);
+  if (hasDraftConfigValue(draftConfig, 'excludedFiles')) snapshot.excludedFiles = ensureArray<string>(draftConfig.excludedFiles);
+
+  return snapshot;
 }
-function matchesDraftConfig(prev: PlannerConfig, next: DraftConfigSnapshot): boolean {
-  return prev.prompt === next.prompt &&
-    prev.baseBranch === next.baseBranch &&
-    prev.granularity === next.granularity &&
-    prev.contextLevel === next.contextLevel &&
-    prev.compress === next.compress &&
-    JSON.stringify(prev.files) === JSON.stringify(next.files) &&
-    JSON.stringify(prev.contextRepositories) === JSON.stringify(next.contextRepositories) &&
-    prev.generationModel === next.generationModel &&
-    JSON.stringify(prev.manualFiles) === JSON.stringify(next.manualFiles) &&
-    JSON.stringify(prev.excludedFiles) === JSON.stringify(next.excludedFiles);
+function matchesDraftConfig(prev: PlannerConfig, next: DraftConfigPatch): boolean {
+  const entries = Object.entries(next) as [keyof DraftConfigSnapshot, DraftConfigSnapshot[keyof DraftConfigSnapshot]][];
+
+  return entries.every(([key, value]) => {
+    if (Array.isArray(value) || (value && typeof value === 'object')) {
+      return JSON.stringify(prev[key]) === JSON.stringify(value);
+    }
+
+    return prev[key] === value;
+  });
 }
 export function useDraftContextConfigSync(draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
   const draftSnapshot = getDraftConfigSnapshot(draft);

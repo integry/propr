@@ -206,6 +206,25 @@ describe('setupWizardHooks branch resolution', () => {
       expect.objectContaining({ context_config: { baseBranch: 'develop' } })
     );
     expect(mockGeneratePlan).toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith(
+      '/studio/draft-1',
+      expect.objectContaining({
+        state: expect.objectContaining({
+          initialDraft: expect.objectContaining({
+            context_config: {
+              baseBranch: 'develop',
+              granularity: 'balanced',
+              contextLevel: 50,
+              compress: false,
+              contextRepositories: [],
+              generationModel: undefined,
+              manualFiles: [],
+              excludedFiles: [],
+            }
+          })
+        })
+      })
+    );
   });
   it('continues generation when persisting the resolved baseBranch fails after draft creation', async () => {
     mockCreateDraft.mockResolvedValue(makeDraft());
@@ -278,17 +297,13 @@ describe('setupWizardHooks branch resolution', () => {
       lastBaseBranch: 'release',
     });
   });
-  it('clears stale draft context state when a replacement draft omits optional context config values', async () => {
+  it('updates only the fields present in sparse draft context data', async () => {
     const replacementDraft = makeDraft({
       draft_id: 'draft-2',
       initial_prompt: 'Replacement prompt',
       attachments: [{ id: 'attachment-2', filename: 'new.txt' } as never],
       context_config: {
         baseBranch: 'release',
-        contextRepositories: [],
-        generationModel: null,
-        manualFiles: [],
-        excludedFiles: [],
       },
     });
 
@@ -297,6 +312,9 @@ describe('setupWizardHooks branch resolution', () => {
         ...baseConfig,
         prompt: 'Stale prompt',
         baseBranch: 'main',
+        granularity: 'granular',
+        contextLevel: 80,
+        compress: true,
         files: [{ id: 'attachment-1', filename: 'old.txt' } as never],
         contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
         generationModel: 'gpt-5.4',
@@ -309,11 +327,14 @@ describe('setupWizardHooks branch resolution', () => {
     await waitFor(() => {
       expect(result.current.prompt).toBe('Replacement prompt');
       expect(result.current.baseBranch).toBe('release');
+      expect(result.current.granularity).toBe('granular');
+      expect(result.current.contextLevel).toBe(80);
+      expect(result.current.compress).toBe(true);
       expect(result.current.files).toEqual([{ id: 'attachment-2', filename: 'new.txt' }]);
-      expect(result.current.contextRepositories).toEqual([]);
-      expect(result.current.generationModel).toBeNull();
-      expect(result.current.manualFiles).toEqual([]);
-      expect(result.current.excludedFiles).toEqual([]);
+      expect(result.current.contextRepositories).toEqual([{ repository: 'integry/other', branch: 'main' }]);
+      expect(result.current.generationModel).toBe('gpt-5.4');
+      expect(result.current.manualFiles).toEqual(['src/a.ts']);
+      expect(result.current.excludedFiles).toEqual(['src/b.ts']);
     });
   });
   it('does not overwrite local edits when the same draft rerenders with stale server values', async () => {
