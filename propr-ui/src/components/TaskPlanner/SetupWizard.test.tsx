@@ -10,6 +10,15 @@ const mockCreateDraft = vi.mocked(createDraft);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockGetRepoBranches = vi.mocked(getRepoBranches);
 let lastLeftPaneProps: Record<string, unknown> | undefined;
+let mockGenerationPollingState: {
+  isGenerating: boolean;
+  generationTrace: Record<string, unknown> | undefined;
+  generationError: string | null;
+} = {
+  isGenerating: false,
+  generationTrace: undefined,
+  generationError: null,
+};
 const mockNavigate = vi.fn();
 let mockLocationState: Record<string, unknown> | undefined;
 
@@ -85,7 +94,12 @@ vi.mock('./SetupWizardComponents', () => ({
 vi.mock('./SetupWizardLeftPane', () => ({
   SetupWizardLeftPane: (props: Record<string, unknown>) => {
     lastLeftPaneProps = props;
-    return <div>left pane</div>;
+    return (
+      <div>
+        left pane
+        {props.isGenerating ? <div>generation progress</div> : null}
+      </div>
+    );
   },
 }));
 
@@ -147,9 +161,9 @@ vi.mock('./setupWizardHooks', () => ({
 
 vi.mock('../../hooks/useGenerationPolling', () => ({
   useGenerationPolling: () => ({
-    isGenerating: false,
-    generationTrace: undefined,
-    generationError: null,
+    isGenerating: mockGenerationPollingState.isGenerating,
+    generationTrace: mockGenerationPollingState.generationTrace,
+    generationError: mockGenerationPollingState.generationError,
     startPolling: vi.fn(),
     stopPolling: vi.fn(),
     setGenerationError: vi.fn(),
@@ -161,6 +175,11 @@ describe('SetupWizard', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     lastLeftPaneProps = undefined;
+    mockGenerationPollingState = {
+      isGenerating: false,
+      generationTrace: undefined,
+      generationError: null,
+    };
     mockLocationState = undefined;
   });
 
@@ -434,5 +453,44 @@ describe('SetupWizard', () => {
         })
       })
     );
+  });
+
+  it('renders generation progress only once while generating', () => {
+    mockGenerationPollingState = {
+      isGenerating: true,
+      generationTrace: {
+        steps: [
+          { name: 'relevance', status: 'completed' },
+          { name: 'context', status: 'in_progress' },
+          { name: 'llm', status: 'pending' },
+        ],
+      },
+      generationError: null,
+    };
+
+    const { getAllByText } = render(
+      <MemoryRouter>
+        <SetupWizard
+          draft={{
+            draft_id: 'draft-1',
+            repository: 'integry/propr',
+            initial_prompt: 'Test prompt',
+            status: 'generating',
+            attachments: [],
+            created_at: '2026-05-06T00:00:00Z',
+            generation_trace: {
+              steps: [
+                { name: 'relevance', status: 'completed' },
+                { name: 'context', status: 'in_progress' },
+              ],
+            },
+            context_config: {},
+          }}
+          onGenerateComplete={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(getAllByText('generation progress')).toHaveLength(1);
   });
 });
