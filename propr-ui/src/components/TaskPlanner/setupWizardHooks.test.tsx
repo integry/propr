@@ -9,12 +9,13 @@ import {
   useDraftCreation,
   usePlannerSettingsPersistence,
   useDraftContextConfigSync,
-  usePromptPersistence,
   useDraftSettingsPersistence,
+  usePromptPersistence,
   type PlannerConfig
 } from './setupWizardHooks';
 import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
+import { baseConfig, createDeferred, makeDraft } from './setupWizardHooks.testUtils';
 
 vi.mock('../../api/proprApi', () => ({
   uploadAttachment: vi.fn(),
@@ -48,36 +49,6 @@ const mockCreateDraft = vi.mocked(createDraft);
 const mockGeneratePlan = vi.mocked(generatePlan);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockSavePlannerSettings = vi.mocked(savePlannerSettings);
-function createDeferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-const baseConfig: PlannerConfig = {
-  prompt: '',
-  baseBranch: '',
-  granularity: 'balanced',
-  contextLevel: 50,
-  compress: false,
-  files: [],
-  contextRepositories: [],
-  generationModel: null,
-  manualFiles: [],
-  excludedFiles: [],
-};
-const makeDraft = (overrides: Record<string, unknown> = {}) => ({
-  draft_id: 'draft-1',
-  repository: 'integry/propr',
-  initial_prompt: 'Test prompt',
-  status: 'draft',
-  attachments: [],
-  created_at: '2026-05-06T00:00:00Z',
-  ...overrides,
-});
 describe('setupWizardHooks branch resolution', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -204,9 +175,39 @@ describe('setupWizardHooks branch resolution', () => {
 
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-1',
-      expect.objectContaining({ context_config: { baseBranch: 'develop' } })
+      expect.objectContaining({
+        context_config: {
+          baseBranch: 'develop',
+          granularity: 'balanced',
+          contextLevel: 50,
+          compress: false,
+          contextRepositories: [],
+          generationModel: undefined,
+          manualFiles: [],
+          excludedFiles: [],
+        }
+      })
     );
     expect(mockGeneratePlan).toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith(
+      '/studio/draft-1',
+      expect.objectContaining({
+        state: expect.objectContaining({
+          initialDraft: expect.objectContaining({
+            context_config: {
+              baseBranch: 'develop',
+              granularity: 'balanced',
+              contextLevel: 50,
+              compress: false,
+              contextRepositories: [],
+              generationModel: undefined,
+              manualFiles: [],
+              excludedFiles: [],
+            }
+          })
+        })
+      })
+    );
   });
   it('continues generation when persisting the resolved baseBranch fails after draft creation', async () => {
     mockCreateDraft.mockResolvedValue(makeDraft());
@@ -237,7 +238,7 @@ describe('setupWizardHooks branch resolution', () => {
         replace: true,
         state: expect.objectContaining({
           initialBaseBranch: 'develop',
-          baseBranchPersistenceWarning: expect.stringContaining('failed to save base branch "develop"')
+          baseBranchPersistenceWarning: expect.stringContaining('failed to save setup settings including base branch "develop"')
         })
       })
     );

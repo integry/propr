@@ -25,8 +25,9 @@ import {
   useGenerationHandlers,
   useDraftCreation,
   useAutoDraftCreation,
-  persistResolvedBaseBranch,
-  getBaseBranchPersistenceWarning,
+  constructDraftWithPlan,
+  persistDraftSetupSnapshot,
+  getDraftSetupPersistenceWarning,
   usePromptPersistence,
   useDraftSettingsPersistence,
   computeIsGenerateDisabled,
@@ -36,6 +37,7 @@ import {
   usePreviewTrace,
   useSetupWizardEffects
 } from './setupWizardHooks';
+import { getDraftSetupSnapshot } from './setupWizardPayloads';
 
 interface SetupWizardProps {
   draft?: PlannerDraft;
@@ -44,34 +46,7 @@ interface SetupWizardProps {
   onDraftCreatedInPlace?: (draft: PlannerDraft) => void;
 }
 
-type SetupWizardContentProps = {
-  isNewMode: boolean;
-  draft: PlannerDraft | undefined;
-  config: PlannerConfig;
-  setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>;
-  repoLoader: ReturnType<typeof useRepositoryLoader>;
-  newModeBranches: ReturnType<typeof useBranchesLoader>;
-  repoInfo: ReturnType<typeof useRepoInfoLoader>;
-  fileHandling: ReturnType<typeof useFileHandling>;
-  generationPolling: ReturnType<typeof useGenerationPolling>;
-  contextExport: ReturnType<typeof useContextExport>;
-  contextRefresh: ReturnType<typeof useContextRefresh>;
-  generationHandlers: ReturnType<typeof useGenerationHandlers>;
-  autoResize: () => void;
-  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  fileInputRef: React.RefObject<HTMLInputElement | null>;
-  error: string | null;
-  branchError: string | null;
-  isCreating: boolean;
-  initialConfiguredBaseBranch: string;
-  handleRepoChangeInEditMode: (repo: string, selection?: RepoSelection) => Promise<void>;
-  handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
-  handleExportContext: () => void;
-  handleGenerate: () => Promise<void>;
-  agents: ReturnType<typeof useAgentsLoader>;
-  availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>;
-  previewTrace?: GenerationTrace;
-};
+type SetupWizardContentProps = { isNewMode: boolean; draft: PlannerDraft | undefined; config: PlannerConfig; setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>; repoLoader: ReturnType<typeof useRepositoryLoader>; newModeBranches: ReturnType<typeof useBranchesLoader>; repoInfo: ReturnType<typeof useRepoInfoLoader>; fileHandling: ReturnType<typeof useFileHandling>; generationPolling: ReturnType<typeof useGenerationPolling>; contextExport: ReturnType<typeof useContextExport>; contextRefresh: ReturnType<typeof useContextRefresh>; generationHandlers: ReturnType<typeof useGenerationHandlers>; autoResize: () => void; textareaRef: React.RefObject<HTMLTextAreaElement | null>; fileInputRef: React.RefObject<HTMLInputElement | null>; error: string | null; branchError: string | null; isCreating: boolean; initialConfiguredBaseBranch: string; handleRepoChangeInEditMode: (repo: string, selection?: RepoSelection) => Promise<void>; handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>; handleExportContext: () => void; handleGenerate: () => Promise<void>; agents: ReturnType<typeof useAgentsLoader>; availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>; previewTrace?: GenerationTrace };
 
 const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const { isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo, fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers, autoResize, textareaRef, fileInputRef, error, branchError, isCreating, initialConfiguredBaseBranch, handleRepoChangeInEditMode, handleFileInputChange, handleExportContext, handleGenerate, agents, availableRepos, previewTrace } = props;
@@ -80,18 +55,21 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const repoError = isNewMode ? newModeBranches.error : repoInfo.error;
   const onRepoChange = isNewMode ? repoLoader.setSelectedRepository : handleRepoChangeInEditMode;
   const promptTrimmed = config.prompt.trim();
+  const setPrompt = updateConfigField(setConfig, 'prompt');
+  const setContextLevel = updateConfigField(setConfig, 'contextLevel');
+  const setGranularity = updateConfigField(setConfig, 'granularity');
   const isGenerateDisabled = computeIsGenerateDisabled({
     isNewMode, isCreating, selectedRepo: repoLoader.selectedRepo, promptTrimmed,
     reposLoading: repoLoader.reposLoading, isGenerating: generationPolling.isGenerating,
     branchError, repoInfoLoading: isRepoLoading, repoError, baseBranch: config.baseBranch
   });
   const canExport = computeCanExport(isNewMode, promptTrimmed, config.baseBranch);
-  const handleModelChange = (value: string | null) => setConfig(prev => ({ ...prev, generationModel: value }));
-  const handleAddContextRepo = (repo: { repository: string; branch: string }) => setConfig(prev => ({ ...prev, contextRepositories: [...prev.contextRepositories, repo] }));
-  const handleRemoveContextRepo = (repository: string) => setConfig(prev => ({ ...prev, contextRepositories: prev.contextRepositories.filter(r => r.repository !== repository) }));
-  const handleAddManualFile = (filePath: string) => setConfig(prev => ({ ...prev, manualFiles: [...prev.manualFiles, filePath] }));
-  const handleRemoveManualFile = (filePath: string) => setConfig(prev => ({ ...prev, manualFiles: prev.manualFiles.filter(f => f !== filePath) }));
-  const handleExcludeFile = (filePath: string) => setConfig(prev => ({ ...prev, excludedFiles: [...prev.excludedFiles, filePath] }));
+  const handleModelChange = updateConfigField(setConfig, 'generationModel');
+  const handleAddContextRepo = appendConfigArrayValue(setConfig, 'contextRepositories');
+  const handleRemoveContextRepo = removeConfigArrayValue(setConfig, 'contextRepositories', (value, repository) => value.repository === repository);
+  const handleAddManualFile = appendConfigArrayValue(setConfig, 'manualFiles');
+  const handleRemoveManualFile = removeConfigArrayValue(setConfig, 'manualFiles', (value, filePath) => value === filePath);
+  const handleExcludeFile = appendConfigArrayValue(setConfig, 'excludedFiles');
   const isGenerating = generationPolling.isGenerating;
   const stats = contextRefresh.preview.data?.stats;
   const configuredBaseBranch = (draft as DraftWithContextConfig | undefined)?.context_config?.baseBranch;
@@ -112,7 +90,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           branchError={branchError}
           repoError={repoError}
           prompt={config.prompt}
-          onPromptChange={(prompt) => setConfig(prev => ({ ...prev, prompt }))}
+          onPromptChange={setPrompt}
           textareaRef={textareaRef}
           autoResize={autoResize}
           onPaste={fileHandling.handlePaste}
@@ -135,7 +113,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
         />
         <SetupWizardRightPane
           contextLevel={config.contextLevel}
-          onContextLevelChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
+          onContextLevelChange={setContextLevel}
           smartSelection={contextRefresh.preview.data?.smartSelection}
           isPreviewLoading={contextRefresh.preview.isLoading}
           stats={stats}
@@ -162,7 +140,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
             <span className="text-xs sm:text-sm text-gray-500 whitespace-nowrap">Break plan:</span>
             <GranularityPills
               value={config.granularity}
-              onChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
+              onChange={setGranularity}
               hideEstimate
             />
           </div>
@@ -203,19 +181,13 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   );
 };
 
-interface LocationState {
-  initialPrompt?: string;
-  initialRepository?: string;
-  initialBaseBranch?: string;
-  baseBranchPersistenceWarning?: string | null;
-  todoIds?: string[];
-}
-
+interface LocationState { initialPrompt?: string; initialRepository?: string; initialBaseBranch?: string; baseBranchPersistenceWarning?: string | null; todoIds?: string[]; }
 type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
 const ensureArray = <T,>(value: T[] | unknown): T[] => Array.isArray(value) ? value : [];
-
-interface RepoChangeHandlerParams { draft: PlannerDraft | undefined; config: PlannerConfig; locationTodoIds?: string[]; navigate: ReturnType<typeof useNavigate>; onDraftCreated?: (draftId: string) => void;
-  setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; }
+const updateConfigField = <K extends keyof PlannerConfig>(setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, key: K) => (value: PlannerConfig[K]) => setConfig(prev => ({ ...prev, [key]: value }));
+const appendConfigArrayValue = <K extends 'contextRepositories' | 'manualFiles' | 'excludedFiles'>(setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, key: K) => (value: PlannerConfig[K][number]) => setConfig(prev => ({ ...prev, [key]: [...prev[key], value] }));
+const removeConfigArrayValue = <K extends 'contextRepositories' | 'manualFiles' | 'excludedFiles'>(setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, key: K, predicate: (value: PlannerConfig[K][number], target: PlannerConfig[K][number]) => boolean) => (target: PlannerConfig[K][number]) => setConfig(prev => ({ ...prev, [key]: prev[key].filter(value => !predicate(value, target)) }));
+interface RepoChangeHandlerParams { draft: PlannerDraft | undefined; config: PlannerConfig; locationTodoIds?: string[]; navigate: ReturnType<typeof useNavigate>; onDraftCreated?: (draftId: string) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; }
 
 function isLatestRepoChange(requestId: number, requestIdRef: React.MutableRefObject<number>) {
   return requestId === requestIdRef.current;
@@ -233,29 +205,31 @@ async function resolveRepoBaseBranch(newRepo: string, selection?: RepoSelection)
   return repoInfo.defaultBranch;
 }
 
-async function persistBaseBranchWarning(draftId: string, resolvedBaseBranch: string) {
+async function persistDraftSetupWarning(draftId: string, config: PlannerConfig, resolvedBaseBranch: string) {
+  const draftSetupSnapshot = getDraftSetupSnapshot({ ...config, baseBranch: resolvedBaseBranch });
   try {
-    await persistResolvedBaseBranch(draftId, resolvedBaseBranch);
-    return null;
+    await persistDraftSetupSnapshot(draftId, draftSetupSnapshot);
+    return { draftSetupSnapshot, warning: null };
   } catch (err) {
-    console.error('Failed to persist resolved base branch:', err);
-    return getBaseBranchPersistenceWarning(resolvedBaseBranch);
+    console.error('Failed to persist draft setup snapshot:', err);
+    return {
+      draftSetupSnapshot,
+      warning: getDraftSetupPersistenceWarning(resolvedBaseBranch)
+    };
   }
 }
 
 interface RepoChangeExecutionParams { newRepo: string; resolvedBaseBranch: string; config: PlannerConfig; draft: PlannerDraft | undefined; locationTodoIds?: string[]; navigate: ReturnType<typeof useNavigate>; onDraftCreated?: (draftId: string) => void; }
 
 async function createDraftForRepoChange({ newRepo, resolvedBaseBranch, config, draft, locationTodoIds, navigate, onDraftCreated }: RepoChangeExecutionParams) {
-  if (shouldSkipRepoDraftCreation(newRepo, resolvedBaseBranch, draft, config)) {
-    return false;
-  }
-
+  if (shouldSkipRepoDraftCreation(newRepo, resolvedBaseBranch, draft, config)) return false;
   const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled', { todoIds: locationTodoIds });
-  const baseBranchPersistenceWarning = await persistBaseBranchWarning(newDraft.draft_id, resolvedBaseBranch);
+  const { draftSetupSnapshot, warning: baseBranchPersistenceWarning } = await persistDraftSetupWarning(newDraft.draft_id, config, resolvedBaseBranch);
   onDraftCreated?.(newDraft.draft_id);
   navigate(`/studio/${newDraft.draft_id}`, {
     replace: true,
     state: {
+      initialDraft: constructDraftWithPlan(newDraft, draftSetupSnapshot),
       initialRepository: newRepo,
       initialBaseBranch: resolvedBaseBranch,
       baseBranchPersistenceWarning,
@@ -373,6 +347,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const contextExport = useContextExport(setError);
   const contextRefresh = useContextRefresh({ draftId, config, onBranchError: setBranchError });
   const previewTrace = usePreviewTrace(draft, draftId, contextRefresh.preview.isLoading);
+  const setupSnapshot = useMemo(() => getDraftSetupSnapshot(config), [config]);
   const generationHandlers = useGenerationHandlers({ draft, config, branchError, contextHelpers: { isContextStale: contextRefresh.isContextStale, clearCountdown: contextRefresh.clearCountdown, fetchPreview: contextRefresh.fetchPreview },
     startPolling: generationPolling.startPolling, stopPolling: generationPolling.stopPolling, setError, setGenerationError: generationPolling.setGenerationError });
   const todoIds = locationState?.todoIds;
@@ -380,7 +355,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     selectedRepo: repoLoader.selectedRepo, config, localFiles: fileHandling.localFiles,
     onDraftCreated, navigate, setError, setIsCreating, todoIds
   });
-  const { isAutoCreating, autoCreateError, autoCreateWarning } = useAutoDraftCreation({ isNewMode, selectedRepo: repoLoader.selectedRepo, resolvedBaseBranch: config.baseBranch, prompt: config.prompt, localFiles: fileHandling.localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds });
+  const { isAutoCreating, autoCreateError, autoCreateWarning } = useAutoDraftCreation({ isNewMode, selectedRepo: repoLoader.selectedRepo, resolvedBaseBranch: config.baseBranch, setupSnapshot, prompt: config.prompt, localFiles: fileHandling.localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds });
   const autoResize = useAutoResize(textareaRef);
   const handleRepoChangeInEditMode = useRepoChangeInEditMode({ draft, config, locationTodoIds: locationState?.todoIds, navigate, onDraftCreated, setError, setIsCreating });
   const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {

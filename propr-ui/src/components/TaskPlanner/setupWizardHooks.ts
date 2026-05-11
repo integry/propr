@@ -1,19 +1,29 @@
 /* eslint-disable max-lines -- Setup wizard hook behavior is still consolidated in one module; this follow-up avoids reintroducing the broader refactor just to satisfy the line cap. */
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, AgentConfig, DraftContextConfig, GenerationTrace, Granularity } from '../../api/proprApi';
+import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, AgentConfig, Granularity } from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getUserRepoPreferences, UserRepoPreferences } from '../../api/userRepoPreferencesApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { resizeImage } from './imageUtils';
 import { IndexedRepository } from './ContextRepositoriesSection';
-import { constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
+import { getDraftConfigSnapshot, getHydratedDraftConfigSnapshot, getPersistedDraftSettings, matchesDraftConfig, type PersistedDraftSettings, serializePersistedDraftSettings } from './setupWizardDraftConfig';
+import { buildGenerationPayload, getDraftSetupSnapshot } from './setupWizardPayloads';
+import { PROMPT_SAVE_DEBOUNCE, truncateToSentences } from './setupWizardPrompt';
+import { constructDraftWithPlan, getDraftSetupPersistenceWarning, persistDraftSetupSnapshot } from './useAutoDraftCreation';
 import type { RepoSelection } from '../RepositorySelector';
-export { useAutoDraftCreation, constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
+export {
+  useAutoDraftCreation,
+  constructDraftWithPlan,
+  getDraftSetupPersistenceWarning,
+  getBaseBranchPersistenceWarning,
+  persistDraftSetupSnapshot,
+  persistResolvedBaseBranch
+} from './useAutoDraftCreation';
+export { usePreviewTrace } from './usePreviewTrace';
+export { getDraftSetupSnapshot } from './setupWizardPayloads';
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
-export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[];
-  contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
+export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[]; contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
 interface RepoInfoState { isLoading: boolean; error: string | null; }
-const ensureArray = <T,>(value: T[] | unknown): T[] => Array.isArray(value) ? value : [];
 const clearResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) => setConfig(prev => prev.baseBranch ? { ...prev, baseBranch: '' } : prev);
 const setResolvedBaseBranch = (setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, baseBranch: string) => setConfig(prev => prev.baseBranch === baseBranch ? prev : { ...prev, baseBranch });
 async function loadRepositories(savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined): Promise<{ repos: Repo[]; selectedRepo: string; selectedBaseBranch: string }> {
@@ -51,7 +61,6 @@ async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRe
     .map((r: RepositoryIndexingStatus) => ({ full_name: r.full_name, branch: r.branch, indexing_status: r.indexing_status }));
 }
 async function processFileForUpload(file: File): Promise<File> { return file.type.startsWith('image/') ? resizeImage(file) : file; }
-function buildGenerationPayload(config: PlannerConfig) { return { baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, contextRepositories: config.contextRepositories, generationModel: config.generationModel || undefined, excludedFiles: config.excludedFiles.length > 0 ? config.excludedFiles : undefined }; }
 export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('');
@@ -255,11 +264,12 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
       const { createDraft } = await import('../../api/proprApi');
       const newDraft = await createDraft(selectedRepo, config.prompt.trim(), { todoIds });
       let baseBranchPersistenceWarning: string | null = null;
+      const draftSetupSnapshot = getDraftSetupSnapshot(config);
       try {
-        await persistResolvedBaseBranch(newDraft.draft_id, config.baseBranch);
+        await persistDraftSetupSnapshot(newDraft.draft_id, draftSetupSnapshot);
       } catch (err) {
-        console.error('Failed to persist resolved base branch:', err);
-        baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(config.baseBranch);
+        console.error('Failed to persist draft setup snapshot:', err);
+        baseBranchPersistenceWarning = getDraftSetupPersistenceWarning(config.baseBranch);
       }
       for (const file of localFiles) {
         try { await uploadAttachment(newDraft.draft_id, file); }
@@ -267,7 +277,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
       }
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
       await generatePlan(newDraft.draft_id, buildGenerationPayload(config));
-      const draftWithPlan = constructDraftWithPlan(newDraft, config.baseBranch);
+      const draftWithPlan = constructDraftWithPlan(newDraft, draftSetupSnapshot);
       draftWithPlan.status = 'generating';
       navigate(`/studio/${newDraft.draft_id}`, {
         replace: true,
@@ -301,56 +311,16 @@ export function useAutoResize(textareaRef: React.RefObject<HTMLTextAreaElement |
     if (el) { el.style.height = 'auto'; el.style.height = `${Math.max(el.scrollHeight, 160)}px`; }
   }, [textareaRef]);
 }
-type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
-type DraftConfigSnapshot = Pick<PlannerConfig, 'prompt' | 'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'files' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>;
-type PersistedDraftSettings = Pick<PlannerConfig, 'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'>;
-function getDraftConfigSnapshot(draft: PlannerDraft | undefined): DraftConfigSnapshot | null {
-  if (!draft) return null;
-  const draftConfig = (draft as DraftWithContextConfig).context_config;
-  return {
-    prompt: draft.initial_prompt,
-    baseBranch: draftConfig?.baseBranch ?? '',
-    granularity: draftConfig?.granularity ?? 'balanced',
-    contextLevel: draftConfig?.contextLevel ?? 50,
-    compress: draftConfig?.compress ?? false,
-    files: ensureArray<PlannerAttachment>(draft.attachments),
-    contextRepositories: ensureArray<{ repository: string; branch?: string }>(draftConfig?.contextRepositories),
-    generationModel: draftConfig?.generationModel ?? null,
-    manualFiles: ensureArray<string>(draftConfig?.manualFiles),
-    excludedFiles: ensureArray<string>(draftConfig?.excludedFiles)
-  };
-}
-function matchesDraftConfig(prev: PlannerConfig, next: DraftConfigSnapshot): boolean {
-  return prev.prompt === next.prompt &&
-    prev.baseBranch === next.baseBranch &&
-    prev.granularity === next.granularity &&
-    prev.contextLevel === next.contextLevel &&
-    prev.compress === next.compress &&
-    JSON.stringify(prev.files) === JSON.stringify(next.files) &&
-    JSON.stringify(prev.contextRepositories) === JSON.stringify(next.contextRepositories) &&
-    prev.generationModel === next.generationModel &&
-    JSON.stringify(prev.manualFiles) === JSON.stringify(next.manualFiles) &&
-    JSON.stringify(prev.excludedFiles) === JSON.stringify(next.excludedFiles);
-}
 export function useDraftContextConfigSync(draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
-  const draftSnapshot = getDraftConfigSnapshot(draft);
+  const draftSnapshot = getHydratedDraftConfigSnapshot(draft);
   const previousDraftIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!draftSnapshot) return;
     const draftChanged = previousDraftIdRef.current !== draft?.draft_id;
     previousDraftIdRef.current = draft?.draft_id;
     if (!draftChanged) return;
-    setConfig(prev => matchesDraftConfig(prev, draftSnapshot) ? prev : { ...prev, ...draftSnapshot });
+    setConfig(prev => matchesDraftConfig(prev, draftSnapshot) ? prev : draftSnapshot);
   }, [draft?.draft_id, draftSnapshot, setConfig]);
-}
-export function usePreviewTrace(draft: PlannerDraft | undefined, draftId: string, isPreviewLoading: boolean) {
-  const [previewTrace, setPreviewTrace] = useState<GenerationTrace | undefined>();
-  useEffect(() => {
-    if (!draftId || !isPreviewLoading) return void (!isPreviewLoading && setPreviewTrace(undefined));
-    if (draft?.generation_trace?.steps?.length) return void setPreviewTrace(draft.generation_trace);
-    setPreviewTrace({ steps: [{ name: 'relevance', status: 'in_progress' }, { name: 'context', status: 'pending' }] });
-  }, [draftId, draft?.generation_trace, isPreviewLoading]);
-  return previewTrace;
 }
 export function useSetupWizardEffects({ autoResize, prompt, generationError, repoLoadError, autoCreateError, autoCreateWarning, baseBranchPersistenceWarning, addToast, setError }: { autoResize: () => void; prompt: string; generationError: string | null; repoLoadError: string | null; autoCreateError?: string | null; autoCreateWarning?: string | null; baseBranchPersistenceWarning?: string | null; addToast: ({ type, message }: { type: 'error' | 'warning'; message: string }) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; }) {
   useEffect(() => { autoResize(); }, [prompt, autoResize]);
@@ -360,19 +330,6 @@ export function useSetupWizardEffects({ autoResize, prompt, generationError, rep
   useEffect(() => { if (autoCreateWarning) addToast({ type: 'warning', message: autoCreateWarning }); }, [autoCreateWarning, addToast]);
   useEffect(() => { if (baseBranchPersistenceWarning) addToast({ type: 'warning', message: baseBranchPersistenceWarning }); }, [baseBranchPersistenceWarning, addToast]);
 }
-function truncateToSentences(text: string): string {
-  const trimmed = text.trim();
-  const sentencePattern = /[^.!?]+[.!?]+/g;
-  const sentences: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < 2) sentences.push(match[0].trim());
-  if (sentences.length > 0) return sentences.join(' ');
-  if (trimmed.length <= 100) return trimmed;
-  const truncated = trimmed.slice(0, 100);
-  const lastSpace = truncated.lastIndexOf(' ');
-  return lastSpace > 0 ? truncated.slice(0, lastSpace) + '...' : truncated + '...';
-}
-const PROMPT_SAVE_DEBOUNCE = 1000;
 export function usePromptPersistence(draftId: string | undefined, prompt: string, initialPrompt: string | undefined) {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedPromptRef = useRef<string>((initialPrompt || '').trim());
@@ -402,34 +359,14 @@ export function usePromptPersistence(draftId: string | undefined, prompt: string
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   }, [draftId, prompt]);
 }
-function getPersistedDraftSettings(config: PlannerConfig): PersistedDraftSettings {
-  return {
-    baseBranch: config.baseBranch,
-    granularity: config.granularity,
-    contextLevel: config.contextLevel,
-    compress: config.compress,
-    contextRepositories: config.contextRepositories,
-    generationModel: config.generationModel,
-    manualFiles: config.manualFiles,
-    excludedFiles: config.excludedFiles,
-  };
-}
-
-function serializePersistedDraftSettings(settings: PersistedDraftSettings): string {
-  return JSON.stringify(settings);
-}
 
 const SETTINGS_SAVE_DEBOUNCE = 1000;
 export function useDraftSettingsPersistence(draftId: string | undefined, config: PlannerConfig, draft: PlannerDraft | undefined) {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMountedRef = useRef(true);
   const previousDraftIdRef = useRef<string | undefined>(draftId);
-  const serverSettings = draft ? getPersistedDraftSettings({
-    ...config,
-    ...(getDraftConfigSnapshot(draft) ?? {}),
-  }) : null;
+  const serverSettings = draft ? getPersistedDraftSettings({ ...config, ...(getDraftConfigSnapshot(draft) ?? {}) }) : null;
   const lastSavedSettingsRef = useRef<string>(serverSettings ? serializePersistedDraftSettings(serverSettings) : '');
-
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -456,16 +393,10 @@ export function useDraftSettingsPersistence(draftId: string | undefined, config:
     debounceTimerRef.current = setTimeout(async () => {
       if (!isMountedRef.current) return;
       try {
-        await updateDraft(draftId, {
-          context_config: settings
-        } as Parameters<typeof updateDraft>[1] & { context_config: PersistedDraftSettings });
+        await updateDraft(draftId, { context_config: settings } as Parameters<typeof updateDraft>[1] & { context_config: PersistedDraftSettings });
         lastSavedSettingsRef.current = serializedSettings;
-      } catch (err) {
-        console.error('Failed to persist draft settings:', err);
-      }
+      } catch (err) { console.error('Failed to persist draft settings:', err); }
     }, SETTINGS_SAVE_DEBOUNCE);
-    return () => {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    };
+    return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   }, [draftId, config]);
 }

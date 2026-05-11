@@ -5,48 +5,71 @@ import {
   createDraft as apiCreateDraft,
   updateDraft,
   PlannerDraft,
-  DraftWithPlan
+  DraftWithPlan,
+  DraftContextConfig
 } from '../../api/proprApi';
 
+export type DraftSetupSnapshot = Pick<
+  DraftContextConfig,
+  'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'
+>;
+
+function mergeDraftSetupSnapshot(baseBranch?: string, setupSnapshot?: DraftSetupSnapshot): DraftSetupSnapshot | undefined {
+  if (!baseBranch && !setupSnapshot) {
+    return undefined;
+  }
+
+  return {
+    ...setupSnapshot,
+    ...(baseBranch ? { baseBranch } : {})
+  };
+}
+
 // Helper to construct a DraftWithPlan from a PlannerDraft for router state
-export function constructDraftWithPlan(draft: PlannerDraft, baseBranch?: string): DraftWithPlan {
+export function constructDraftWithPlan(draft: PlannerDraft, setupSnapshot?: DraftSetupSnapshot): DraftWithPlan {
   return {
     ...draft,
     plan_json: [],
     chat_history: [],
-    context_config: baseBranch ? { baseBranch } : undefined,
+    context_config: setupSnapshot ? { ...draft.context_config, ...setupSnapshot } : draft.context_config,
     refinement_result: undefined
   };
 }
 
-export function attachResolvedBaseBranch<T extends PlannerDraft>(draft: T, baseBranch?: string): T & { context_config?: { baseBranch?: string } } {
-  if (!baseBranch) {
+export function attachResolvedBaseBranch<T extends PlannerDraft>(draft: T, setupSnapshot?: DraftSetupSnapshot): T & { context_config?: DraftContextConfig } {
+  if (!setupSnapshot) {
     return draft;
   }
 
   return {
     ...draft,
-    context_config: { baseBranch }
+    context_config: { ...draft.context_config, ...setupSnapshot }
   };
 }
 
-export async function persistResolvedBaseBranch(draftId: string, baseBranch?: string): Promise<void> {
-  if (!baseBranch) {
+export async function persistDraftSetupSnapshot(draftId: string, setupSnapshot?: DraftSetupSnapshot): Promise<void> {
+  if (!setupSnapshot) {
     return;
   }
 
   await updateDraft(draftId, {
-    context_config: { baseBranch }
-  } as Parameters<typeof updateDraft>[1] & { context_config: { baseBranch: string } });
+    context_config: setupSnapshot
+  } as Parameters<typeof updateDraft>[1] & { context_config: DraftSetupSnapshot });
 }
 
-export function getBaseBranchPersistenceWarning(baseBranch?: string): string | null {
+export async function persistResolvedBaseBranch(draftId: string, baseBranch?: string): Promise<void> {
+  return persistDraftSetupSnapshot(draftId, mergeDraftSetupSnapshot(baseBranch));
+}
+
+export function getDraftSetupPersistenceWarning(baseBranch?: string): string | null {
   if (!baseBranch) {
     return null;
   }
 
-  return `Draft created, but failed to save base branch "${baseBranch}". Reloading may require fetching the default branch again.`;
+  return `Draft created, but failed to save setup settings including base branch "${baseBranch}". Reloading may lose recent selections.`;
 }
+
+export const getBaseBranchPersistenceWarning = getDraftSetupPersistenceWarning;
 
 // Debounce delay before auto-creating draft after user starts typing
 const AUTO_DRAFT_DEBOUNCE_DELAY = 1000;
@@ -56,6 +79,7 @@ interface AutoDraftCreationParams {
   isNewMode: boolean;
   selectedRepo: string;
   resolvedBaseBranch: string;
+  setupSnapshot?: DraftSetupSnapshot;
   prompt: string;
   localFiles: File[];
   onDraftCreated?: (draftId: string) => void;
@@ -70,6 +94,7 @@ export function useAutoDraftCreation({
   isNewMode,
   selectedRepo,
   resolvedBaseBranch,
+  setupSnapshot,
   prompt,
   localFiles,
   onDraftCreated,
@@ -103,12 +128,13 @@ export function useAutoDraftCreation({
     try {
       const newDraft = await apiCreateDraft(repo, currentPrompt.trim(), { todoIds });
       let baseBranchPersistenceWarning: string | null = null;
+      const hydratedSetupSnapshot = mergeDraftSetupSnapshot(resolvedBaseBranch, setupSnapshot);
 
       try {
-        await persistResolvedBaseBranch(newDraft.draft_id, resolvedBaseBranch);
+        await persistDraftSetupSnapshot(newDraft.draft_id, hydratedSetupSnapshot);
       } catch (err) {
-        console.error('Failed to persist resolved base branch:', err);
-        baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(resolvedBaseBranch);
+        console.error('Failed to persist draft setup snapshot:', err);
+        baseBranchPersistenceWarning = getDraftSetupPersistenceWarning(resolvedBaseBranch);
         if (onDraftCreatedInPlace) {
           setAutoCreateWarning(baseBranchPersistenceWarning);
         }
@@ -128,13 +154,13 @@ export function useAutoDraftCreation({
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
       // Use in-place update if callback provided (preserves focus, no navigation)
       // Otherwise fall back to navigation with router state
-      const draftWithResolvedBranch = attachResolvedBaseBranch(newDraft, resolvedBaseBranch);
+      const draftWithResolvedBranch = attachResolvedBaseBranch(newDraft, hydratedSetupSnapshot);
       if (onDraftCreatedInPlace) {
         onDraftCreatedInPlace(draftWithResolvedBranch);
         setIsAutoCreating(false);
       } else {
         setIsAutoCreating(false);
-        const draftWithPlan = constructDraftWithPlan(newDraft, resolvedBaseBranch);
+        const draftWithPlan = constructDraftWithPlan(newDraft, hydratedSetupSnapshot);
         navigate(`/studio/${newDraft.draft_id}`, {
           replace: true,
           state: {
@@ -148,7 +174,7 @@ export function useAutoDraftCreation({
       setAutoCreateError((err as Error).message || 'Failed to auto-save draft');
       setIsAutoCreating(false);
     }
-  }, [localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, resolvedBaseBranch, todoIds]);
+  }, [localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, resolvedBaseBranch, setupSnapshot, todoIds]);
 
   // Debounced create draft
   const debouncedCreateDraft = useMemo(
