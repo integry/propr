@@ -52,6 +52,45 @@ const MobileStickySummary: React.FC<{
   </div>
 );
 
+const getTaskDocumentTitle = (taskInfo: React.ComponentProps<typeof TaskHeader>['taskInfo'], taskId?: string) => {
+  if (taskInfo?.title) {
+    return getCleanDocumentTitle(taskInfo.title, taskInfo.issueNumber);
+  }
+
+  return taskId ? `Task #${taskId}` : undefined;
+};
+
+const renderTaskDetailsStatus = (
+  loading: boolean,
+  error: string | null | undefined,
+  history: ReturnType<typeof useTaskData>['history'],
+  taskId?: string,
+) => {
+  if (loading) {
+    return <CenteredStatus className="text-gray-600">Loading task details...</CenteredStatus>;
+  }
+
+  if (error) {
+    return <CenteredStatus className="text-red-600">Error loading task details: {error}</CenteredStatus>;
+  }
+
+  if (!history || history.length === 0) {
+    return <CenteredStatus className="text-gray-600">No history found for task {taskId}</CenteredStatus>;
+  }
+
+  return null;
+};
+
+const getMobileSummaryTitle = (title: string | undefined, taskId?: string) => {
+  const firstLineTitle = title?.split('\n')[0]?.trim();
+
+  if (firstLineTitle) {
+    return firstLineTitle;
+  }
+
+  return taskId ? `Task #${taskId}` : '';
+};
+
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
   const navigate = useNavigate();
@@ -73,9 +112,7 @@ const TaskDetails: React.FC = () => {
   }, [taskData, navigate, addToast]);
 
   // Set document title with task info
-  const documentTitle = taskData.taskInfo?.title
-    ? getCleanDocumentTitle(taskData.taskInfo.title, taskData.taskInfo.issueNumber)
-    : taskId ? `Task #${taskId}` : undefined;
+  const documentTitle = getTaskDocumentTitle(taskData.taskInfo, taskId);
   useDocumentTitle(documentTitle);
 
   const [highlightedTodoId, setHighlightedTodoId] = useState<string | null>(null);
@@ -109,19 +146,20 @@ const TaskDetails: React.FC = () => {
     thinkingLog.collapseEvents,
   );
 
-  if (taskData.loading) {
-    return <CenteredStatus className="text-gray-600">Loading task details...</CenteredStatus>;
-  }
-  if (taskData.error) {
-    return <CenteredStatus className="text-red-600">Error loading task details: {taskData.error}</CenteredStatus>;
-  }
-  if (!taskData.history || taskData.history.length === 0) {
-    return <CenteredStatus className="text-gray-600">No history found for task {taskId}</CenteredStatus>;
+  const statusView = renderTaskDetailsStatus(
+    taskData.loading,
+    taskData.error,
+    taskData.history,
+    taskId,
+  );
+
+  if (statusView) {
+    return statusView;
   }
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const score = parsedAnalysis?.implementation_critique_score;
-  const mobileSummaryTitle = taskData.taskInfo?.title?.split('\n')[0]?.trim() || (taskId ? `Task #${taskId}` : '');
+  const mobileSummaryTitle = getMobileSummaryTitle(taskData.taskInfo?.title, taskId);
   const headerProps = {
     taskInfo: taskData.taskInfo,
     currentStatus: derivedData.currentStatus,
