@@ -58,6 +58,7 @@ function useResolvedBaseBranch({ repository, configuredBaseBranch, shouldResolve
     requestIdRef.current += 1;
     const requestId = requestIdRef.current;
     if (!shouldResolve) {
+      clearResolvedBaseBranch(setConfig);
       setState({ isLoading: false, error: null });
       return;
     }

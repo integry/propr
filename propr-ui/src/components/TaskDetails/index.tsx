@@ -31,12 +31,26 @@ const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }>
   </div>
 );
 
-function getTaskDetailsGuard(taskData: ReturnType<typeof useTaskData>, taskId: string | undefined) {
-  if (taskData.loading) return <CenteredStatus className="text-gray-600">Loading task details...</CenteredStatus>;
-  if (taskData.error) return <CenteredStatus className="text-red-600">Error loading task details: {taskData.error}</CenteredStatus>;
-  if (!taskData.history || taskData.history.length === 0) return <CenteredStatus className="text-gray-600">No history found for task {taskId}</CenteredStatus>;
-  return null;
-}
+const MobileStickySummary: React.FC<{
+  title: string;
+  contextStripProps: React.ComponentProps<typeof ContextStrip>;
+  actionBarProps: React.ComponentProps<typeof ActionBar>;
+  todos: React.ComponentProps<typeof ProgressBar>['todos'];
+}> = ({ title, contextStripProps, actionBarProps, todos }) => (
+  <div className="sm:hidden sticky top-0 z-20 bg-white">
+    <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
+      <div className="flex flex-col gap-2">
+        <div className="truncate text-xs font-semibold text-slate-700">{title}</div>
+        <div className="flex items-center justify-between gap-2">
+          <ContextStrip {...contextStripProps} mobileRepoOnly={true} />
+          <ActionBar {...actionBarProps} />
+        </div>
+        <ContextStrip {...contextStripProps} mobileMetadataOnly={true} />
+      </div>
+    </div>
+    <ProgressBar todos={todos} />
+  </div>
+);
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
@@ -95,8 +109,15 @@ const TaskDetails: React.FC = () => {
     thinkingLog.collapseEvents,
   );
 
-  const guard = getTaskDetailsGuard(taskData, taskId);
-  if (guard) return guard;
+  if (taskData.loading) {
+    return <CenteredStatus className="text-gray-600">Loading task details...</CenteredStatus>;
+  }
+  if (taskData.error) {
+    return <CenteredStatus className="text-red-600">Error loading task details: {taskData.error}</CenteredStatus>;
+  }
+  if (!taskData.history || taskData.history.length === 0) {
+    return <CenteredStatus className="text-gray-600">No history found for task {taskId}</CenteredStatus>;
+  }
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const score = parsedAnalysis?.implementation_critique_score;
@@ -152,22 +173,12 @@ const TaskDetails: React.FC = () => {
         <ProgressBar todos={taskData.liveDetails.todos} />
       </header>
 
-      {/* Sticky mobile summary strip */}
-      <div className="sm:hidden sticky top-0 z-20 bg-white">
-        <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
-          <div className="flex flex-col gap-2">
-            <div className="truncate text-xs font-semibold text-slate-700">
-              {mobileSummaryTitle}
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <ContextStrip {...contextStripProps} mobileRepoOnly={true} />
-              <ActionBar {...actionBarProps} />
-            </div>
-            <ContextStrip {...contextStripProps} mobileMetadataOnly={true} />
-          </div>
-        </div>
-        <ProgressBar todos={taskData.liveDetails.todos} />
-      </div>
+      <MobileStickySummary
+        title={mobileSummaryTitle}
+        contextStripProps={contextStripProps}
+        actionBarProps={actionBarProps}
+        todos={taskData.liveDetails.todos}
+      />
 
       {/* Main Content Area - 30/70 Split */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">

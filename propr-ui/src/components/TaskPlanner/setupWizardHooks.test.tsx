@@ -103,7 +103,7 @@ describe('setupWizardHooks branch resolution', () => {
     const pendingRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
     mockGetRepoBranches.mockReturnValueOnce(pendingRequest.promise);
     const { result, rerender } = renderHook(({ isNewMode, draft }) => {
-      const [config, setConfig] = useState<PlannerConfig>(baseConfig);
+      const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig, baseBranch: 'develop' });
       const state = useRepoInfoLoader(isNewMode, draft as never, setConfig);
       return { config, state };
     }, { initialProps: { isNewMode: false, draft: makeDraft() } });
@@ -111,9 +111,11 @@ describe('setupWizardHooks branch resolution', () => {
     await waitFor(() => expect(result.current.state.isLoading).toBe(true));
     rerender({ isNewMode: true, draft: makeDraft() });
     await waitFor(() => expect(result.current.state).toEqual({ isLoading: false, error: null }));
+    expect(result.current.config.baseBranch).toBe('');
 
     pendingRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
     await waitFor(() => expect(result.current.state).toEqual({ isLoading: false, error: null }));
+    expect(result.current.config.baseBranch).toBe('');
   });
 
   it.each([
