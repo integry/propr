@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   useDraftContextConfigSync,
@@ -45,15 +45,30 @@ describe('setupWizardHooks persistence', () => {
     vi.clearAllMocks();
   });
 
-  it('updates only the fields present in sparse draft context data', async () => {
-    const replacementDraft = makeDraft({
+  it('preserves same-draft setup after a full replacement snapshot rerenders as sparse server data', async () => {
+    const initialDraft = makeDraft({
+      draft_id: 'draft-2',
+      initial_prompt: 'Replacement prompt',
+      attachments: [{ id: 'attachment-2', filename: 'new.txt' } as never],
+      context_config: {
+        baseBranch: 'release',
+        granularity: 'granular',
+        contextLevel: 80,
+        compress: true,
+        contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
+        generationModel: 'gpt-5.4',
+        manualFiles: ['src/a.ts'],
+        excludedFiles: ['src/b.ts'],
+      },
+    });
+    const sparseServerDraft = makeDraft({
       draft_id: 'draft-2',
       initial_prompt: 'Replacement prompt',
       attachments: [{ id: 'attachment-2', filename: 'new.txt' } as never],
       context_config: { baseBranch: 'release' },
     });
 
-    const { result } = renderHook(() => {
+    const { result, rerender } = renderHook(({ draft }) => {
       const [config, setConfig] = useState<PlannerConfig>({
         ...baseConfig,
         prompt: 'Stale prompt',
@@ -68,9 +83,11 @@ describe('setupWizardHooks persistence', () => {
         excludedFiles: ['src/b.ts'],
       });
 
-      useDraftContextConfigSync(replacementDraft as never, setConfig);
+      useDraftContextConfigSync(draft as never, setConfig);
       return config;
-    });
+    }, { initialProps: { draft: initialDraft } });
+
+    rerender({ draft: sparseServerDraft });
 
     await waitFor(() => {
       expect(result.current.prompt).toBe('Replacement prompt');
@@ -83,6 +100,47 @@ describe('setupWizardHooks persistence', () => {
       expect(result.current.generationModel).toBe('gpt-5.4');
       expect(result.current.manualFiles).toEqual(['src/a.ts']);
       expect(result.current.excludedFiles).toEqual(['src/b.ts']);
+    });
+  });
+
+  it('resets missing settings when switching to an unrelated sparse draft', async () => {
+    const draft = makeDraft({
+      draft_id: 'draft-2',
+      initial_prompt: 'Existing prompt',
+      attachments: [{ id: 'attachment-2', filename: 'existing.txt' } as never],
+      context_config: { baseBranch: 'release' },
+    });
+
+    const { result } = renderHook(() => {
+      const [config, setConfig] = useState<PlannerConfig>({
+        ...baseConfig,
+        prompt: 'Leaked prompt',
+        baseBranch: 'main',
+        granularity: 'granular',
+        contextLevel: 80,
+        compress: true,
+        files: [{ id: 'attachment-1', filename: 'old.txt' } as never],
+        contextRepositories: [{ repository: 'integry/other', branch: 'main' }],
+        generationModel: 'gpt-5.4',
+        manualFiles: ['src/a.ts'],
+        excludedFiles: ['src/b.ts'],
+      });
+
+      useDraftContextConfigSync(draft as never, setConfig);
+      return config;
+    });
+
+    await waitFor(() => {
+      expect(result.current.prompt).toBe('Existing prompt');
+      expect(result.current.baseBranch).toBe('release');
+      expect(result.current.granularity).toBe('balanced');
+      expect(result.current.contextLevel).toBe(50);
+      expect(result.current.compress).toBe(false);
+      expect(result.current.files).toEqual([{ id: 'attachment-2', filename: 'existing.txt' }]);
+      expect(result.current.contextRepositories).toEqual([]);
+      expect(result.current.generationModel).toBe(null);
+      expect(result.current.manualFiles).toEqual([]);
+      expect(result.current.excludedFiles).toEqual([]);
     });
   });
 
@@ -105,22 +163,33 @@ describe('setupWizardHooks persistence', () => {
       ({ draft }) => {
         const [config, setConfig] = useState<PlannerConfig>({
           ...baseConfig,
-          prompt: 'Local edit',
-          baseBranch: 'release',
-          generationModel: 'codex:gpt-5.4',
         });
         useDraftContextConfigSync(draft as never, setConfig);
-        return config;
+        return { config, setConfig };
       },
       { initialProps: { draft: sameDraft } }
     );
 
+    await waitFor(() => {
+      expect(result.current.config.prompt).toBe('Server prompt');
+      expect(result.current.config.baseBranch).toBe('main');
+    });
+
+    act(() => {
+      result.current.setConfig(prev => ({
+        ...prev,
+        prompt: 'Local edit',
+        baseBranch: 'release',
+        generationModel: 'codex:gpt-5.4',
+      }));
+    });
+
     rerender({ draft: { ...sameDraft } });
 
     await waitFor(() => {
-      expect(result.current.prompt).toBe('Local edit');
-      expect(result.current.baseBranch).toBe('release');
-      expect(result.current.generationModel).toBe('codex:gpt-5.4');
+      expect(result.current.config.prompt).toBe('Local edit');
+      expect(result.current.config.baseBranch).toBe('release');
+      expect(result.current.config.generationModel).toBe('codex:gpt-5.4');
     });
   });
 

@@ -86,6 +86,29 @@ export function getDraftConfigSnapshot(
   return snapshot;
 }
 
+export function getHydratedDraftConfigSnapshot(
+  draft: PlannerDraft | undefined
+): DraftConfigSnapshot | null {
+  if (!draft) return null;
+
+  const draftConfig = (draft as DraftWithContextConfig).context_config;
+
+  return {
+    prompt: draft.initial_prompt,
+    baseBranch: draftConfig?.baseBranch ?? '',
+    granularity: draftConfig?.granularity ?? 'balanced',
+    contextLevel: draftConfig?.contextLevel ?? 50,
+    compress: draftConfig?.compress ?? false,
+    files: ensureArray<PlannerAttachment>(draft.attachments),
+    contextRepositories: ensureArray<{ repository: string; branch?: string }>(
+      draftConfig?.contextRepositories
+    ),
+    generationModel: draftConfig?.generationModel ?? null,
+    manualFiles: ensureArray<string>(draftConfig?.manualFiles),
+    excludedFiles: ensureArray<string>(draftConfig?.excludedFiles),
+  };
+}
+
 export function matchesDraftConfig(
   prev: PlannerConfig,
   next: DraftConfigPatch

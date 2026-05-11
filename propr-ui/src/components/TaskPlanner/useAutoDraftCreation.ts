@@ -14,7 +14,7 @@ export type DraftSetupSnapshot = Pick<
   'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'
 >;
 
-function getDraftSetupSnapshot(baseBranch?: string, setupSnapshot?: DraftSetupSnapshot): DraftSetupSnapshot | undefined {
+function mergeDraftSetupSnapshot(baseBranch?: string, setupSnapshot?: DraftSetupSnapshot): DraftSetupSnapshot | undefined {
   if (!baseBranch && !setupSnapshot) {
     return undefined;
   }
@@ -47,23 +47,29 @@ export function attachResolvedBaseBranch<T extends PlannerDraft>(draft: T, setup
   };
 }
 
-export async function persistResolvedBaseBranch(draftId: string, baseBranch?: string): Promise<void> {
-  if (!baseBranch) {
+export async function persistDraftSetupSnapshot(draftId: string, setupSnapshot?: DraftSetupSnapshot): Promise<void> {
+  if (!setupSnapshot) {
     return;
   }
 
   await updateDraft(draftId, {
-    context_config: { baseBranch }
-  } as Parameters<typeof updateDraft>[1] & { context_config: { baseBranch: string } });
+    context_config: setupSnapshot
+  } as Parameters<typeof updateDraft>[1] & { context_config: DraftSetupSnapshot });
 }
 
-export function getBaseBranchPersistenceWarning(baseBranch?: string): string | null {
+export async function persistResolvedBaseBranch(draftId: string, baseBranch?: string): Promise<void> {
+  return persistDraftSetupSnapshot(draftId, mergeDraftSetupSnapshot(baseBranch));
+}
+
+export function getDraftSetupPersistenceWarning(baseBranch?: string): string | null {
   if (!baseBranch) {
     return null;
   }
 
-  return `Draft created, but failed to save base branch "${baseBranch}". Reloading may require fetching the default branch again.`;
+  return `Draft created, but failed to save setup settings including base branch "${baseBranch}". Reloading may lose recent selections.`;
 }
+
+export const getBaseBranchPersistenceWarning = getDraftSetupPersistenceWarning;
 
 // Debounce delay before auto-creating draft after user starts typing
 const AUTO_DRAFT_DEBOUNCE_DELAY = 1000;
@@ -122,12 +128,13 @@ export function useAutoDraftCreation({
     try {
       const newDraft = await apiCreateDraft(repo, currentPrompt.trim(), { todoIds });
       let baseBranchPersistenceWarning: string | null = null;
+      const hydratedSetupSnapshot = mergeDraftSetupSnapshot(resolvedBaseBranch, setupSnapshot);
 
       try {
-        await persistResolvedBaseBranch(newDraft.draft_id, resolvedBaseBranch);
+        await persistDraftSetupSnapshot(newDraft.draft_id, hydratedSetupSnapshot);
       } catch (err) {
-        console.error('Failed to persist resolved base branch:', err);
-        baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(resolvedBaseBranch);
+        console.error('Failed to persist draft setup snapshot:', err);
+        baseBranchPersistenceWarning = getDraftSetupPersistenceWarning(resolvedBaseBranch);
         if (onDraftCreatedInPlace) {
           setAutoCreateWarning(baseBranchPersistenceWarning);
         }
@@ -147,7 +154,6 @@ export function useAutoDraftCreation({
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
       // Use in-place update if callback provided (preserves focus, no navigation)
       // Otherwise fall back to navigation with router state
-      const hydratedSetupSnapshot = getDraftSetupSnapshot(resolvedBaseBranch, setupSnapshot);
       const draftWithResolvedBranch = attachResolvedBaseBranch(newDraft, hydratedSetupSnapshot);
       if (onDraftCreatedInPlace) {
         onDraftCreatedInPlace(draftWithResolvedBranch);

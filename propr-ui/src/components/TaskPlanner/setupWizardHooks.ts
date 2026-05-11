@@ -5,12 +5,12 @@ import { getUserRepoPreferences, UserRepoPreferences } from '../../api/userRepoP
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { resizeImage } from './imageUtils';
 import { IndexedRepository } from './ContextRepositoriesSection';
-import { getDraftConfigSnapshot, getPersistedDraftSettings, matchesDraftConfig, type PersistedDraftSettings, serializePersistedDraftSettings } from './setupWizardDraftConfig';
+import { getDraftConfigSnapshot, getHydratedDraftConfigSnapshot, getPersistedDraftSettings, matchesDraftConfig, type PersistedDraftSettings, serializePersistedDraftSettings } from './setupWizardDraftConfig';
 import { buildGenerationPayload, getDraftSetupSnapshot } from './setupWizardPayloads';
 import { PROMPT_SAVE_DEBOUNCE, truncateToSentences } from './setupWizardPrompt';
-import { constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
+import { constructDraftWithPlan, getBaseBranchPersistenceWarning, persistDraftSetupSnapshot } from './useAutoDraftCreation';
 import type { RepoSelection } from '../RepositorySelector';
-export { useAutoDraftCreation, constructDraftWithPlan, getBaseBranchPersistenceWarning, persistResolvedBaseBranch } from './useAutoDraftCreation';
+export { useAutoDraftCreation, constructDraftWithPlan, getBaseBranchPersistenceWarning, persistDraftSetupSnapshot, persistResolvedBaseBranch } from './useAutoDraftCreation';
 export { usePreviewTrace } from './usePreviewTrace';
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[]; contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
@@ -255,10 +255,11 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
       const { createDraft } = await import('../../api/proprApi');
       const newDraft = await createDraft(selectedRepo, config.prompt.trim(), { todoIds });
       let baseBranchPersistenceWarning: string | null = null;
+      const draftSetupSnapshot = getDraftSetupSnapshot(config);
       try {
-        await persistResolvedBaseBranch(newDraft.draft_id, config.baseBranch);
+        await persistDraftSetupSnapshot(newDraft.draft_id, draftSetupSnapshot);
       } catch (err) {
-        console.error('Failed to persist resolved base branch:', err);
+        console.error('Failed to persist draft setup snapshot:', err);
         baseBranchPersistenceWarning = getBaseBranchPersistenceWarning(config.baseBranch);
       }
       for (const file of localFiles) {
@@ -267,7 +268,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
       }
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
       await generatePlan(newDraft.draft_id, buildGenerationPayload(config));
-      const draftWithPlan = constructDraftWithPlan(newDraft, getDraftSetupSnapshot(config));
+      const draftWithPlan = constructDraftWithPlan(newDraft, draftSetupSnapshot);
       draftWithPlan.status = 'generating';
       navigate(`/studio/${newDraft.draft_id}`, {
         replace: true,
@@ -302,14 +303,14 @@ export function useAutoResize(textareaRef: React.RefObject<HTMLTextAreaElement |
   }, [textareaRef]);
 }
 export function useDraftContextConfigSync(draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
-  const draftSnapshot = getDraftConfigSnapshot(draft);
+  const draftSnapshot = getHydratedDraftConfigSnapshot(draft);
   const previousDraftIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!draftSnapshot) return;
     const draftChanged = previousDraftIdRef.current !== draft?.draft_id;
     previousDraftIdRef.current = draft?.draft_id;
     if (!draftChanged) return;
-    setConfig(prev => matchesDraftConfig(prev, draftSnapshot) ? prev : { ...prev, ...draftSnapshot });
+    setConfig(prev => matchesDraftConfig(prev, draftSnapshot) ? prev : draftSnapshot);
   }, [draft?.draft_id, draftSnapshot, setConfig]);
 }
 export function useSetupWizardEffects({ autoResize, prompt, generationError, repoLoadError, autoCreateError, autoCreateWarning, baseBranchPersistenceWarning, addToast, setError }: { autoResize: () => void; prompt: string; generationError: string | null; repoLoadError: string | null; autoCreateError?: string | null; autoCreateWarning?: string | null; baseBranchPersistenceWarning?: string | null; addToast: ({ type, message }: { type: 'error' | 'warning'; message: string }) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; }) {

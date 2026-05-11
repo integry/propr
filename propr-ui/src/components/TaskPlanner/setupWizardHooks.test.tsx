@@ -171,7 +171,18 @@ describe('setupWizardHooks branch resolution', () => {
 
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-1',
-      expect.objectContaining({ context_config: { baseBranch: 'develop' } })
+      expect.objectContaining({
+        context_config: {
+          baseBranch: 'develop',
+          granularity: 'balanced',
+          contextLevel: 50,
+          compress: false,
+          contextRepositories: [],
+          generationModel: undefined,
+          manualFiles: [],
+          excludedFiles: [],
+        }
+      })
     );
     expect(mockGeneratePlan).toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith(
@@ -223,7 +234,7 @@ describe('setupWizardHooks branch resolution', () => {
         replace: true,
         state: expect.objectContaining({
           initialBaseBranch: 'develop',
-          baseBranchPersistenceWarning: expect.stringContaining('failed to save base branch "develop"')
+          baseBranchPersistenceWarning: expect.stringContaining('failed to save setup settings including base branch "develop"')
         })
       })
     );
