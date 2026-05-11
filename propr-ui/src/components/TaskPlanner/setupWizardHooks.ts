@@ -1,4 +1,3 @@
-/* eslint-disable max-lines -- Setup wizard hook behavior is still consolidated in one module; this follow-up avoids reintroducing the broader refactor just to satisfy the line cap. */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, AgentConfig, Granularity } from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
