@@ -377,6 +377,7 @@ export interface PRAutoMergeInfo {
 }
 
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
+const ULTRAFIX_DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 let ultrafixStateRedis: Redis | null = null;
 
 export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions } {
@@ -463,9 +464,29 @@ function getUltrafixStateKey(owner: string, repoName: string, prNumber: number):
     return `${ULTRAFIX_STATE_KEY_PREFIX}:${owner}:${repoName}:${prNumber}`;
 }
 
+function getUltrafixDeferredKey(owner: string, repoName: string, prNumber: number): string {
+    return `${ULTRAFIX_DEFERRED_KEY_PREFIX}:${owner}:${repoName}:${prNumber}`;
+}
+
 export async function hasActiveUltrafixLoop(owner: string, repoName: string, prNumber: number): Promise<boolean> {
     const state = await getUltrafixLoopState(owner, repoName, prNumber);
     return state?.unavailable === true ? true : state?.active === true;
+}
+
+export async function clearUltrafixLoopState(owner: string, repoName: string, prNumber: number): Promise<void> {
+    try {
+        await getUltrafixStateRedis().del(
+            getUltrafixStateKey(owner, repoName, prNumber),
+            getUltrafixDeferredKey(owner, repoName, prNumber),
+        );
+    } catch (error) {
+        logger.warn({
+            owner,
+            repoName,
+            prNumber,
+            error: (error as Error).message,
+        }, 'Failed to clear ultrafix loop state');
+    }
 }
 
 export async function getUltrafixLoopState(
@@ -515,7 +536,11 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const labels = prResponse.data.labels as Array<{ name: string }>;
         const hasLabel = labels.some(label => label.name === 'auto-merge');
         const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
-        const ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
+        let ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
+        if (!hasUltrafixLabel && ultrafixState) {
+            await clearUltrafixLoopState(owner, repoName, prNumber);
+            ultrafixState = null;
+        }
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;

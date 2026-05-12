@@ -280,6 +280,9 @@ export async function findPlanIssueByRepoAndNumber(
     try {
         const issue = await db('plan_issues')
             .where({ repository, issue_number: issueNumber })
+            // Issue numbers can appear in multiple historical drafts; prefer the newest plan issue.
+            .orderBy('created_at', 'desc')
+            .orderBy('id', 'desc')
             .first();
         return issue || null;
     } catch (error) {
@@ -299,6 +302,9 @@ export async function findPlanIssueByRepoAndPR(
     try {
         const issue = await db('plan_issues')
             .where({ repository, pr_number: prNumber })
+            // PR numbers can be reused across separate drafts via stale links; prefer the newest plan issue.
+            .orderBy('created_at', 'desc')
+            .orderBy('id', 'desc')
             .first();
         return issue || null;
     } catch (error) {

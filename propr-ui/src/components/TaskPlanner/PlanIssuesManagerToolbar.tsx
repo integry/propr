@@ -69,6 +69,7 @@ interface ExecutionOptionsToolbarProps {
   ultrafixMaxCycles?: number | null; onUltrafixMaxCyclesChange?: (value: number | null) => void;
   tasks: PlanTask[]; pendingCount: number;
   implementingAll: boolean; handleImplementAll: () => void;
+  disableImplementation?: boolean;
 }
 
 export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = ({
@@ -77,7 +78,7 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
   handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
   autoMerge, onAutoMergeChange, useEpic, onUseEpicChange,
   runUltrafix, onRunUltrafixChange, ultrafixGoal, onUltrafixGoalChange, ultrafixMaxCycles, onUltrafixMaxCyclesChange,
-  tasks, pendingCount, implementingAll, handleImplementAll,
+  tasks, pendingCount, implementingAll, handleImplementAll, disableImplementation = false,
 }) => {
   const ultrafixEnabled = runUltrafix || false;
 
@@ -97,7 +98,7 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
           {!globalIsMulti && (
             <button
               onClick={handleApplyToAll}
-              disabled={!globalAgent || applyingGlobal}
+              disabled={!globalAgent || applyingGlobal || disableImplementation}
               className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
             >
               {applyingGlobal ? (
@@ -150,7 +151,7 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
         <div className="flex items-center justify-end pt-1 border-t border-slate-200/50">
           <button
             onClick={handleImplementAll}
-            disabled={implementingAll || !globalAgent}
+            disabled={implementingAll || !globalAgent || disableImplementation}
             className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md bg-green-600 text-white shadow-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             title={!globalAgent ? 'Select an agent first' : 'Start sequential implementation: each issue will be processed and merged before the next one starts'}
           >

@@ -28,6 +28,7 @@ interface PlanIssuesManagerProps {
   onUltrafixMaxCyclesChange?: (value: number | null) => void;
   draftStatus?: string;
   onCreationComplete?: (createdCount: number, failedCount: number) => void;
+  isSavingExecutionSettings?: boolean;
 }
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
@@ -48,7 +49,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   onUltrafixGoalChange,
   onUltrafixMaxCyclesChange,
   draftStatus,
-  onCreationComplete
+  onCreationComplete,
+  isSavingExecutionSettings = false
 }) => {
   const [showMerged, setShowMerged] = useState(false);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
@@ -99,7 +101,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   }, [pendingImplementIssue, getUnmergedIssuesBefore]);
 
   const handleImplementAll = useCallback(async () => {
-    if (pendingCount === 0) return;
+    if (pendingCount === 0 || isSavingExecutionSettings) return;
     setImplementingAll(true);
     try {
       await implementAllIssues(draftId, { useEpic, autoMerge });
@@ -109,7 +111,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     } finally {
       setImplementingAll(false);
     }
-  }, [draftId, pendingCount, useEpic, autoMerge, handleRefresh]);
+  }, [draftId, pendingCount, useEpic, autoMerge, handleRefresh, isSavingExecutionSettings]);
+
+  const showIssueUltrafixControls = issues.length >= 2;
 
   useEffect(() => { onIssuesChange?.(issues); }, [issues, onIssuesChange]);
 
@@ -199,6 +203,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           pendingCount={pendingCount}
           implementingAll={implementingAll}
           handleImplementAll={handleImplementAll}
+          disableImplementation={isSavingExecutionSettings}
         />
       )}
       <div className="space-y-1.5">
@@ -218,7 +223,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             plannerUltrafixGoal={ultrafixGoal}
             plannerUltrafixMaxCycles={ultrafixMaxCycles}
             implementing={implementingIssue === issue.issue_number}
+            disableImplementation={isSavingExecutionSettings}
             isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
+            showUltrafixControls={showIssueUltrafixControls}
             onImplementWithWarning={handleImplementWithWarning}
             inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
             inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
@@ -265,6 +272,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     plannerUltrafixGoal={ultrafixGoal}
                     plannerUltrafixMaxCycles={ultrafixMaxCycles}
                     implementing={false}
+                    disableImplementation={isSavingExecutionSettings}
+                    showUltrafixControls={showIssueUltrafixControls}
                     task={issueTaskMap[issue.issue_number]}
                     draftId={draftId}
                   />

@@ -9,6 +9,8 @@ import {
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import { isDraftPaused } from '../services/taskPlanning/draftPauseResume.js';
+import { db } from '../db/connection.js';
+import { parseExistingContextConfig } from '../services/planning/previewUtils.js';
 
 /**
  * Gets all labels from an issue.
@@ -38,6 +40,15 @@ async function getIssueLabels(
         }, 'Failed to get issue labels');
         return [];
     }
+}
+
+async function isDraftAutoMergeEnabled(draftId: string): Promise<boolean> {
+    const draft = await db('task_drafts')
+        .where({ draft_id: draftId })
+        .select('context_config')
+        .first();
+    const contextConfig = parseExistingContextConfig(draft?.context_config) as Record<string, unknown> | null;
+    return contextConfig?.autoMerge === true;
 }
 
 /**
@@ -204,15 +215,15 @@ export async function handleMergedPRNextIssueTrigger(
 ): Promise<void> {
     const issueLabels = await getIssueLabels(repository, issueNumber, log);
     const hasAutoMerge = issueLabels.includes('auto-merge');
-    log.info({ repository, issueNumber, issueLabels, hasAutoMerge }, 'Checking auto-merge for next issue trigger');
+    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
+    const draftAutoMergeEnabled = epicLabel ? await isDraftAutoMergeEnabled(draftId) : false;
+    const isEpicSequentialMerge = !!epicLabel && draftAutoMergeEnabled;
+    log.info({ repository, issueNumber, issueLabels, hasAutoMerge, epicLabel, draftAutoMergeEnabled, isEpicSequentialMerge }, 'Checking auto-merge for next issue trigger');
 
-    if (!hasAutoMerge) {
-        log.info({ repository, issueNumber }, 'Skipping next issue trigger - no auto-merge label');
+    if (!hasAutoMerge && !isEpicSequentialMerge) {
+        log.info({ repository, issueNumber }, 'Skipping next issue trigger - no auto-merge or epic label');
         return;
     }
-
-    // Find epic label to pass to next issue (format: base-{epicBranchName})
-    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
 
     // Trigger next issue immediately - no need to wait for Epic PR checks since:
     // 1. Child issues can start processing independently

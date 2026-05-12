@@ -243,9 +243,9 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       taskIndex: i,
       draftId,
       repository: draft.repository,
-      runUltrafix: contextConfig.runUltrafix === true,
-      ultrafixGoal: contextConfig.runUltrafix === true ? contextConfig.ultrafixGoal ?? null : null,
-      ultrafixMaxCycles: contextConfig.runUltrafix === true ? contextConfig.ultrafixMaxCycles ?? null : null,
+      runUltrafix: contextConfig.runUltrafix === true ? true : undefined,
+      ultrafixGoal: contextConfig.runUltrafix === true ? contextConfig.ultrafixGoal ?? null : undefined,
+      ultrafixMaxCycles: contextConfig.runUltrafix === true ? contextConfig.ultrafixMaxCycles ?? null : undefined,
       correlatedLogger,
       correlationId
     });

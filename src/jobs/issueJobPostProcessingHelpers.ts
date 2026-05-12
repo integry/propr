@@ -10,6 +10,7 @@ import {
     updatePlanIssueStatus,
     PlanIssueStatus,
     getPlanIssuesByDraft,
+    db,
     type CommentEventConfig,
     type ClaudeCodeResponse,
     type IssueJobData,
@@ -36,6 +37,58 @@ function sanitizeUltrafixMaxCycles(value: number | null | undefined): number | n
     return Number.isInteger(value) && (value as number) >= ULTRAFIX_MAX_CYCLES_MIN
         ? (value as number)
         : null;
+}
+
+function parseDraftContextConfig(contextConfig: unknown): Record<string, unknown> | null {
+    if (!contextConfig) return null;
+    if (typeof contextConfig !== 'string') {
+        return typeof contextConfig === 'object' && !Array.isArray(contextConfig)
+            ? contextConfig as Record<string, unknown>
+            : null;
+    }
+    try {
+        const parsed = JSON.parse(contextConfig) as unknown;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+async function resolveEffectiveUltrafixSettings(planIssue: {
+    draft_id: string;
+    issue_number: number;
+    run_ultrafix: number | boolean | null;
+    ultrafix_goal: number | null;
+    ultrafix_max_cycles: number | null;
+}): Promise<{ runUltrafix: boolean; goal: number | null; maxCycles: number | null }> {
+    const issueRunUltrafix = planIssue.run_ultrafix === true || planIssue.run_ultrafix === 1
+        ? true
+        : planIssue.run_ultrafix === false || planIssue.run_ultrafix === 0
+            ? false
+            : null;
+
+    if (issueRunUltrafix !== null) {
+        return {
+            runUltrafix: issueRunUltrafix,
+            goal: issueRunUltrafix ? sanitizeUltrafixGoal(planIssue.ultrafix_goal) : null,
+            maxCycles: issueRunUltrafix ? sanitizeUltrafixMaxCycles(planIssue.ultrafix_max_cycles) : null,
+        };
+    }
+
+    const draft = await db('task_drafts')
+        .where({ draft_id: planIssue.draft_id })
+        .select('context_config')
+        .first();
+    const contextConfig = parseDraftContextConfig(draft?.context_config);
+    const plannerRunUltrafix = contextConfig?.runUltrafix === true;
+
+    return {
+        runUltrafix: plannerRunUltrafix,
+        goal: plannerRunUltrafix ? sanitizeUltrafixGoal((contextConfig?.ultrafixGoal as number | null | undefined) ?? null) : null,
+        maxCycles: plannerRunUltrafix ? sanitizeUltrafixMaxCycles((contextConfig?.ultrafixMaxCycles as number | null | undefined) ?? null) : null,
+    };
 }
 
 function buildSystemUltrafixComment(goal: number | null, maxCycles: number | null): string {
@@ -228,16 +281,18 @@ export async function handleCreatedPlanIssuePR(options: {
 
     const hasAutoMergeLabel = currentIssueData.data.labels.some((label) => label.name === 'auto-merge');
     const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
-    const runUltrafix = planIssue?.run_ultrafix === true || planIssue?.run_ultrafix === 1;
+    const effectiveUltrafix = planIssue
+        ? await resolveEffectiveUltrafixSettings(planIssue)
+        : { runUltrafix: false, goal: null, maxCycles: null };
 
-    if (runUltrafix) {
+    if (effectiveUltrafix.runUltrafix) {
         try {
             await triggerSystemUltrafix({
                 owner: issueRef.repoOwner,
                 repo: issueRef.repoName,
                 prNumber,
-                goal: planIssue?.ultrafix_goal ?? null,
-                maxCycles: planIssue?.ultrafix_max_cycles ?? null,
+                goal: effectiveUltrafix.goal,
+                maxCycles: effectiveUltrafix.maxCycles,
                 correlatedLogger,
             });
         } catch (error) {

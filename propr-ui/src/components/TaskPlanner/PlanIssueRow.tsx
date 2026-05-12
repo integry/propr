@@ -26,7 +26,9 @@ interface PlanIssueRowProps {
   plannerUltrafixGoal?: number | null;
   plannerUltrafixMaxCycles?: number | null;
   implementing?: boolean;
+  disableImplementation?: boolean;
   isFirstPending?: boolean;
+  showUltrafixControls?: boolean;
   onImplementWithWarning?: (issueNumber: number, models?: AgentModelPair[]) => void;
   /** Inherited multi-mode state from parent (e.g., applied from global selection) */
   inheritedIsMulti?: boolean;
@@ -56,7 +58,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   plannerUltrafixGoal,
   plannerUltrafixMaxCycles,
   implementing = false,
+  disableImplementation = false,
   isFirstPending = true,
+  showUltrafixControls = true,
   onImplementWithWarning,
   inheritedIsMulti,
   inheritedSelectedModels,
@@ -169,6 +173,8 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               plannerRunUltrafix={plannerRunUltrafix}
               plannerUltrafixGoal={plannerUltrafixGoal}
               plannerUltrafixMaxCycles={plannerUltrafixMaxCycles}
+              disableImplementation={disableImplementation}
+              showUltrafixControls={showUltrafixControls}
               handleMultiToggle={handleMultiToggle}
               handleMultiModelChange={handleMultiModelChange}
               handleImplementClick={handleImplementClick}
