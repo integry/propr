@@ -229,6 +229,23 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void
     await performMergeAndPostActions(mergeCtx);
 }
 
+export async function reevaluatePRAutoMerge(
+    owner: string,
+    repoName: string,
+    prNumber: number,
+    correlationId: string,
+): Promise<void> {
+    const log = logger.withCorrelation(correlationId);
+    const headSha = await getCurrentPRHead(owner, repoName, prNumber);
+    if (!headSha) {
+        log.debug({ owner, repoName, prNumber }, 'Auto-merge re-evaluation skipped: PR head SHA unavailable');
+        return;
+    }
+
+    const ctx: PRContext = { owner, repoName, prNumber, log };
+    await processPRAutoMerge(ctx, headSha);
+}
+
 /**
  * Handles check_run webhook events.
  * When a check run completes successfully, checks if the PR should be auto-merged.

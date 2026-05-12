@@ -10,7 +10,7 @@ import {
     handlePlanPRCommentTracking,
     type CommentEventType
 } from './planIssueTracking.js';
-import { handleCheckRunEvent, handleStatusEvent, type StatusEventPayload } from './checkRunHandler.js';
+import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
 import { clearUltrafixLoopState } from './checkRunHelpers.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
@@ -353,6 +353,7 @@ async function handleUltrafixLabelRemoval(
         const repo = payload.repository.name;
         const prNumber = payload.pull_request.number;
         await clearUltrafixLoopState(owner, repo, prNumber);
+        await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
         log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after PR ultrafix label removal');
         return;
     }
@@ -365,6 +366,7 @@ async function handleUltrafixLabelRemoval(
         const repo = payload.repository.name;
         const prNumber = payload.issue.number;
         await clearUltrafixLoopState(owner, repo, prNumber);
+        await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
         log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after issue ultrafix label removal');
     }
 }
