@@ -214,14 +214,15 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void
 
     // Check for active tasks (e.g., followup processing) before merging
     const repository = `${owner}/${repoName}`;
-    const { hasActive, activeTasks } = await hasActiveTasksForPR(repository, prNumber);
+    const { hasActive, activeTasks, queuedJobs } = await hasActiveTasksForPR(repository, prNumber);
     if (hasActive) {
         log.info({
             owner,
             repoName,
             prNumber,
-            activeTasks
-        }, 'Skipping auto-merge - active tasks in progress for this PR');
+            activeTasks,
+            queuedJobs,
+        }, 'Skipping auto-merge - active or queued work in progress for this PR');
         return;
     }
 

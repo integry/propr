@@ -3,6 +3,7 @@ import { Redis, RedisOptions } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
+import { getIssueQueue } from '../queue/taskQueue.js';
 
 export interface MergePROptions {
     owner: string;
@@ -645,8 +646,30 @@ const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'];
 export async function hasActiveTasksForPR(
     repository: string,
     prNumber: number
-): Promise<{ hasActive: boolean; activeTasks: Array<{ taskId: string; state: string }> }> {
+): Promise<{
+    hasActive: boolean;
+    activeTasks: Array<{ taskId: string; state: string }>;
+    queuedJobs: Array<{ jobId: string; state: string }>;
+}> {
     try {
+        const queue = await getIssueQueue();
+        const queueStates = ['waiting', 'active', 'delayed'] as const;
+        const queuedJobs: Array<{ jobId: string; state: string }> = [];
+        for (const queueState of queueStates) {
+            const jobs = await queue.getJobs([queueState]);
+            for (const job of jobs) {
+                const jobRepository = job.data.repository || (
+                    job.data.repoOwner &&
+                    job.data.repoName &&
+                    `${job.data.repoOwner}/${job.data.repoName}`
+                );
+                const jobPrNumber = job.data.prNumber ?? job.data.pullRequestNumber ?? null;
+                if (jobRepository === repository && jobPrNumber === prNumber) {
+                    queuedJobs.push({ jobId: String(job.id), state: queueState });
+                }
+            }
+        }
+
         // Find tasks associated with this PR that are not in a terminal state
         // A task is active if its latest state is not terminal
         const activeTasks = await db('tasks')
@@ -663,16 +686,18 @@ export async function hasActiveTasksForPR(
             .whereNotIn('task_history.state', TERMINAL_TASK_STATES);
 
         const result = {
-            hasActive: activeTasks.length > 0,
-            activeTasks: activeTasks.map(t => ({ taskId: t.task_id, state: t.state }))
+            hasActive: activeTasks.length > 0 || queuedJobs.length > 0,
+            activeTasks: activeTasks.map(t => ({ taskId: t.task_id, state: t.state })),
+            queuedJobs,
         };
 
         if (result.hasActive) {
             logger.info({
                 repository,
                 prNumber,
-                activeTasks: result.activeTasks
-            }, 'Found active tasks for PR');
+                activeTasks: result.activeTasks,
+                queuedJobs: result.queuedJobs,
+            }, 'Found active or queued work for PR');
         }
 
         return result;
@@ -683,7 +708,7 @@ export async function hasActiveTasksForPR(
             error: (error as Error).message
         }, 'Failed to check for active tasks');
         // On error, assume no active tasks to avoid blocking legitimate merges
-        return { hasActive: false, activeTasks: [] };
+        return { hasActive: false, activeTasks: [], queuedJobs: [] };
     }
 }
 
