@@ -1,5 +1,5 @@
 import type { Job } from 'bullmq';
-import { buildIssueRefFromQueueJob, db, getIssueQueue, getPrNumberFromJobData, getStateManager, getTaskIdFromQueueJob, logger } from '@propr/core';
+import { buildIssueRefFromQueueJob, db, getIssueQueue, getPrNumberFromJobData, getStateManager, getTaskIdFromQueueJob, logger, normalizeTaskId as normalizeCoreTaskId } from '@propr/core';
 
 export type QueueJobData = Record<string, unknown>;
 
@@ -51,12 +51,7 @@ type RedisClientLike = {
 };
 
 export function normalizeTaskId(jobId: string): string {
-  if (jobId.startsWith('issue-')) {
-    const parts = jobId.replace(/^issue-/, '').split('-');
-    parts.pop();
-    return parts.join('-');
-  }
-  return jobId;
+  return normalizeCoreTaskId(jobId);
 }
 
 export async function loadStopTaskContext(

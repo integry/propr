@@ -14,7 +14,7 @@ import {
     TRACKED_PR_QUEUE_STATE_SET,
     trackPrQueueJob
 } from './prQueueJobIndex.js';
-import { getPrNumberFromJobData, getRepositoryFromJobData, getTaskIdFromQueueJob } from './prTaskIdentity.js';
+import { getPrNumberFromJobData, getRepositoryFromJobData, getTaskIdFromQueueJob, normalizeTaskId } from './prTaskIdentity.js';
 
 export interface MergePROptions {
     owner: string;
@@ -725,20 +725,16 @@ export async function getActiveTasksForPR(
             );
         }
 
-        if (shouldFallbackToQueueScan({
-            forceQueueScan: deps.forceQueueScan === true,
-            indexedTrackedQueueJobs,
-            indexedPendingQueueJobs,
-        })) {
-            await addQueuedPrJobsFromFallbackScan({
-                queue,
-                repository,
-                prNumber,
-                taskMap,
-                taskAliases,
-                log,
-            });
-        }
+        // Queue index updates are best-effort in several enqueue paths. Always scan the live
+        // queue states so a partially-indexed PR cannot hide active work after merge.
+        await addQueuedPrJobsFromFallbackScan({
+            queue,
+            repository,
+            prNumber,
+            taskMap,
+            taskAliases,
+            log,
+        });
 
         const activeTasksQuery = database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -780,18 +776,6 @@ export async function getActiveTasksForPR(
         }, 'Failed to load active tasks for PR');
         throw error;
     }
-}
-
-function shouldFallbackToQueueScan(params: {
-    forceQueueScan: boolean;
-    indexedTrackedQueueJobs: IndexedQueueTaskActivity[];
-    indexedPendingQueueJobs: IndexedQueueTaskActivity[];
-}): boolean {
-    if (params.forceQueueScan) {
-        return true;
-    }
-
-    return params.indexedTrackedQueueJobs.length === 0 && params.indexedPendingQueueJobs.length === 0;
 }
 
 async function addQueuedPrJobsFromFallbackScan(params: {
@@ -962,13 +946,8 @@ function resolveActiveTaskKey(
 }
 
 function getQueueTaskAlias(jobId: string): string | null {
-    if (!jobId.startsWith('issue-')) {
-        return null;
-    }
-
-    const parts = jobId.replace(/^issue-/, '').split('-');
-    parts.pop();
-    return parts.join('-');
+    const normalizedTaskId = normalizeTaskId(jobId);
+    return normalizedTaskId === jobId ? null : normalizedTaskId;
 }
 
 /**
@@ -993,9 +972,14 @@ export async function hasActiveTasksForPR(
                 .filter(task => PR_QUEUE_STATE_SET.has(task.state))
                 .map(task => ({ jobId: task.taskId, state: task.state })),
         };
-    } catch {
+    } catch (error) {
+        (deps.log ?? logger).warn({
+            repository,
+            prNumber,
+            error: (error as Error).message,
+        }, 'Failed to determine active tasks for PR; failing closed');
         return {
-            hasActive: false,
+            hasActive: true,
             activeTasks: [],
             queuedJobs: [],
         };

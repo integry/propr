@@ -126,10 +126,6 @@ export async function stopTaskExecution(
   const { jobRemoved, queueStateAfterFailure } = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
   const effectiveQueueState = queueStateAfterFailure ?? context.queueState;
   if (jobRemoved) await clearPrQueueJobIndexEntriesIfNeeded(context.queueJob, deps);
-  const shouldPersistCancelledState = shouldMarkTaskCancelled({
-    containerStopped,
-    jobRemoved,
-  });
   assertStopApplied({
     activity,
     currentState: context.currentState,
@@ -139,6 +135,11 @@ export async function stopTaskExecution(
     jobRemoved,
     shouldAbort,
     queueStateAfterFailure,
+  });
+  const shouldPersistCancelledState = shouldMarkTaskCancelled({
+    containerStopped,
+    jobRemoved,
+    shouldAbort,
   });
   if (shouldClearAbortSignals({
     shouldAbort,
@@ -316,8 +317,9 @@ function shouldClearAbortSignals(params: {
 function shouldMarkTaskCancelled(params: {
   containerStopped: boolean;
   jobRemoved: boolean;
+  shouldAbort: boolean;
 }): boolean {
-  return params.containerStopped || params.jobRemoved;
+  return params.containerStopped || params.jobRemoved || params.shouldAbort;
 }
 
 function assertStopApplied(params: {

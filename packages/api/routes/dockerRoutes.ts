@@ -112,7 +112,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         res.status(400).json({ error: taskIdValidation.error });
         return;
       }
-      const taskId = req.params.taskId;
+      const taskId = normalizeTaskId(req.params.taskId);
 
       const requestedBy = typeof req.user === 'object' && req.user !== null && 'username' in req.user && typeof req.user.username === 'string'
         ? req.user.username
