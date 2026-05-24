@@ -105,28 +105,33 @@ export async function stopTaskExecution(
   });
 
   const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueueRemovable);
+  const shouldPersistCancelledState = shouldMarkTaskCancelled(containerStopped, jobRemoved);
 
   if (shouldClearAbortSignals(shouldAbort, containerStopped, jobRemoved)) {
     await clearAbortSignals(redisClient, context.abortTaskIds);
   }
 
-  await markTaskCancelled({
-    taskId: context.taskId,
-    requestedBy,
-    cancellation,
-    queueState: context.queueState,
-    containerId,
-    containerStopped,
-    deps,
-  });
+  if (shouldPersistCancelledState) {
+    await markTaskCancelled({
+      taskId: context.taskId,
+      requestedBy,
+      cancellation,
+      queueState: context.queueState,
+      containerId,
+      containerStopped,
+      deps,
+    });
+  }
 
-  await pushConversationMessage(redisClient, context.taskId, {
-    type: 'system',
-    timestamp: new Date().toISOString(),
-    content: 'Task cancelled successfully.',
-    level: 'info',
-    metadata: { reasonCode: cancellation.code, requestedBy },
-  });
+  if (shouldPersistCancelledState) {
+    await pushConversationMessage(redisClient, context.taskId, {
+      type: 'system',
+      timestamp: new Date().toISOString(),
+      content: 'Task cancelled successfully.',
+      level: 'info',
+      metadata: { reasonCode: cancellation.code, requestedBy },
+    });
+  }
 
   return {
     success: true,
@@ -236,6 +241,10 @@ async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]
 
 function shouldClearAbortSignals(shouldAbort: boolean, containerStopped: boolean, jobRemoved: boolean): boolean {
   return shouldAbort && (containerStopped || jobRemoved);
+}
+
+function shouldMarkTaskCancelled(containerStopped: boolean, jobRemoved: boolean): boolean {
+  return containerStopped || jobRemoved;
 }
 
 async function stopTaskContainer(params: {

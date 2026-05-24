@@ -71,6 +71,7 @@ describe('cancelMergedPullRequestTasks', () => {
     info: mock.fn(),
     warn: mock.fn(),
   };
+  const mockMarkPullRequestMerged = mock.fn(async () => undefined);
   const mockGetActiveTasksForPR = mock.fn(async () => []);
   const mockStopTaskExecution = mock.fn(async () => ({
     success: true,
@@ -86,6 +87,7 @@ describe('cancelMergedPullRequestTasks', () => {
   beforeEach(() => {
     mockLogger.info.mock.resetCalls();
     mockLogger.warn.mock.resetCalls();
+    mockMarkPullRequestMerged.mock.resetCalls();
     mockGetActiveTasksForPR.mock.resetCalls();
     mockStopTaskExecution.mock.resetCalls();
 
@@ -111,13 +113,15 @@ describe('cancelMergedPullRequestTasks', () => {
 
     await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
       redisClient,
+      markPullRequestMerged: mockMarkPullRequestMerged,
       getActiveTasksForPR: mockGetActiveTasksForPR,
       stopTaskExecution: mockStopTaskExecution,
       log: mockLogger,
     });
 
     assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 1);
-    assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0].arguments, ['integry/propr', 1463]);
+    assert.deepStrictEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
+    assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0].arguments, ['integry/propr', 1463, { forceQueueScan: true }]);
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 2);
     assert.strictEqual(mockStopTaskExecution.mock.calls[0].arguments[0], 'task-running');
     assert.strictEqual(mockStopTaskExecution.mock.calls[1].arguments[0], 'job-queued');
@@ -138,6 +142,7 @@ describe('cancelMergedPullRequestTasks', () => {
       pull_request: { number: 1463, merged: false },
     }), 'test-correlation-id', {
       redisClient,
+      markPullRequestMerged: mockMarkPullRequestMerged,
       getActiveTasksForPR: mockGetActiveTasksForPR,
       stopTaskExecution: mockStopTaskExecution,
       log: mockLogger,
@@ -152,6 +157,7 @@ describe('cancelMergedPullRequestTasks', () => {
 
     await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
       redisClient,
+      markPullRequestMerged: mockMarkPullRequestMerged,
       getActiveTasksForPR: mockGetActiveTasksForPR,
       stopTaskExecution: mockStopTaskExecution,
       log: mockLogger,
@@ -185,10 +191,11 @@ describe('cancelMergedPullRequestTasks', () => {
 
     await assert.rejects(async () => {
       await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-        redisClient,
-        getActiveTasksForPR: mockGetActiveTasksForPR,
-        stopTaskExecution: mockStopTaskExecution,
-        log: mockLogger,
+      redisClient,
+      markPullRequestMerged: mockMarkPullRequestMerged,
+      getActiveTasksForPR: mockGetActiveTasksForPR,
+      stopTaskExecution: mockStopTaskExecution,
+      log: mockLogger,
       });
     }, /Failed to cancel 1 merged PR task/);
 
@@ -225,10 +232,11 @@ describe('cancelMergedPullRequestTasks', () => {
 
     await assert.doesNotReject(async () => {
       await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-        redisClient,
-        getActiveTasksForPR: mockGetActiveTasksForPR,
-        stopTaskExecution: mockStopTaskExecution,
-        log: mockLogger,
+      redisClient,
+      markPullRequestMerged: mockMarkPullRequestMerged,
+      getActiveTasksForPR: mockGetActiveTasksForPR,
+      stopTaskExecution: mockStopTaskExecution,
+      log: mockLogger,
       });
     });
 
@@ -244,10 +252,11 @@ describe('cancelMergedPullRequestTasks', () => {
 
     await assert.rejects(async () => {
       await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-        redisClient,
-        getActiveTasksForPR: mockGetActiveTasksForPR,
-        stopTaskExecution: mockStopTaskExecution,
-        log: mockLogger,
+      redisClient,
+      markPullRequestMerged: mockMarkPullRequestMerged,
+      getActiveTasksForPR: mockGetActiveTasksForPR,
+      stopTaskExecution: mockStopTaskExecution,
+      log: mockLogger,
       });
     }, /lookup failed/);
 
@@ -296,6 +305,7 @@ describe('cancelMergedPullRequestTasks', () => {
       correlationId: 'test-correlation-id',
       mergeTaskCancellation: {
         redisClient,
+        markPullRequestMerged: mockMarkPullRequestMerged,
         getActiveTasksForPR: mockGetActiveTasksForPR,
         stopTaskExecution: mockStopTaskExecution,
         log: mockLogger,
@@ -345,10 +355,11 @@ describe('cancelMergedPullRequestTasks', () => {
       processor,
       correlationId: 'test-correlation-id',
         mergeTaskCancellation: {
-          redisClient,
-          getActiveTasksForPR: mockGetActiveTasksForPR,
-          stopTaskExecution: mockStopTaskExecution,
-          log: mockLogger,
+        redisClient,
+        markPullRequestMerged: mockMarkPullRequestMerged,
+        getActiveTasksForPR: mockGetActiveTasksForPR,
+        stopTaskExecution: mockStopTaskExecution,
+        log: mockLogger,
         },
       });
     });

@@ -5,6 +5,7 @@ import { getIssueQueue } from '../queue/taskQueue.js';
 import { getMergeConflictIdempotencyKey } from '../utils/constants.js';
 import { generateCorrelationId } from '../utils/logger.js';
 import { trackPrQueueJob } from './prQueueJobIndex.js';
+import { hasPullRequestMerged } from './prMergeState.js';
 import type { MergeConflictJobData } from '../queue/taskQueue.types.js';
 import type { PullRequestEvent, PushEvent } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
@@ -13,6 +14,7 @@ export type ConflictDetectionOutcome =
     | 'skipped_disabled'
     | 'skipped_clean'
     | 'skipped_draft'
+    | 'skipped_merged'
     | 'skipped_duplicate'
     | 'skipped_not_conflicted'
     | 'queued';
@@ -86,8 +88,23 @@ async function detectAndEnqueueForPR(
 
     const jobId = `merge-conflict-${owner}-${repoName}-${prNumber}-${Date.now()}`;
     const queue = await getIssueQueue();
-    await queue.add('processMergeConflict', jobData, { jobId });
-    await trackPrQueueJob(queue as never, repository, prNumber, jobId);
+    if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
+        log.info({ repository, prNumber }, 'Merge conflict detection: skipping enqueue because PR is already merged');
+        return { outcome: 'skipped_merged', prNumber, repository };
+    }
+
+    const queuedJob = await queue.add('processMergeConflict', jobData, { jobId });
+    if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
+        await queuedJob.remove();
+        log.info({ repository, prNumber, jobId }, 'Merge conflict detection: removed freshly-queued job because PR merged during enqueue');
+        return { outcome: 'skipped_merged', prNumber, repository };
+    }
+
+    try {
+        await trackPrQueueJob(queue as never, repository, prNumber, jobId);
+    } catch (error) {
+        log.warn({ repository, prNumber, jobId, error: (error as Error).message }, 'Merge conflict detection: failed to update PR queue-job index');
+    }
 
     // Mark as queued in Redis
     await redisClient.setex(idempotencyKey, IDEMPOTENCY_TTL_SECONDS, Date.now().toString());
@@ -218,8 +235,23 @@ export async function handleMergeCommand(
 
     const jobId = `merge-conflict-${owner}-${repoName}-${prNumber}-${Date.now()}`;
     const queue = await getIssueQueue();
-    await queue.add('processMergeConflict', jobData, { jobId });
-    await trackPrQueueJob(queue as never, repository, prNumber, jobId);
+    if (await hasPullRequestMerged(options.redisClient as never, repository, prNumber)) {
+        log.info({ repository, prNumber }, '/merge command: PR already merged, skipping');
+        return null;
+    }
+
+    const queuedJob = await queue.add('processMergeConflict', jobData, { jobId });
+    if (await hasPullRequestMerged(options.redisClient as never, repository, prNumber)) {
+        await queuedJob.remove();
+        log.info({ repository, prNumber, jobId }, '/merge command: removed freshly-queued job because the PR merged during enqueue');
+        return null;
+    }
+
+    try {
+        await trackPrQueueJob(queue as never, repository, prNumber, jobId);
+    } catch (error) {
+        log.warn({ repository, prNumber, jobId, error: (error as Error).message }, '/merge command: failed to update PR queue-job index');
+    }
 
     log.info({
         repository,

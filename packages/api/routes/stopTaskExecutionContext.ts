@@ -177,7 +177,7 @@ async function createTaskStateFromQueueJob(
   queueJob: Job<QueueJobData>,
   deps: StopTaskStateDeps = {},
 ): Promise<void> {
-  const issueRef = buildIssueRefFromJobData(queueJob.data);
+  const issueRef = buildIssueRefFromQueueJob(queueJob);
   if (!issueRef) {
     return;
   }
@@ -197,7 +197,8 @@ async function createTaskStateFromQueueJob(
     });
 }
 
-function buildIssueRefFromJobData(jobData: QueueJobData): IssueRef | null {
+function buildIssueRefFromQueueJob(queueJob: Job<QueueJobData>): IssueRef | null {
+  const jobData = queueJob.data;
   const repoOwner = getRepoOwner(jobData);
   const repoName = getRepoName(jobData);
   const number = extractTaskNumber(jobData);
@@ -214,8 +215,42 @@ function buildIssueRefFromJobData(jobData: QueueJobData): IssueRef | null {
     ...(typeof jobData.modelName === 'string' ? { modelName: jobData.modelName } : {}),
     ...(typeof jobData.title === 'string' ? { title: jobData.title } : {}),
     ...(typeof jobData.subtitle === 'string' ? { subtitle: jobData.subtitle } : {}),
-    ...(prNumber !== null ? { pullRequestNumber: prNumber, type: 'pr_followup' } : {}),
+    ...(prNumber !== null ? { pullRequestNumber: prNumber, type: getQueueJobIssueType(queueJob) } : {}),
   };
+}
+
+function getQueueJobIssueType(queueJob: Job<QueueJobData>): string {
+  const jobData = queueJob.data;
+  const commandMode = typeof jobData.commandMode === 'string' ? jobData.commandMode : null;
+
+  if (queueJob.name === 'processMergeConflict' || String(queueJob.id).startsWith('merge-conflict-')) {
+    return 'merge-conflict';
+  }
+
+  if (
+    queueJob.name === 'processPullRequestComment'
+    || String(queueJob.id).startsWith('pr-comments-batch-')
+    || Array.isArray(jobData.comments)
+  ) {
+    if (commandMode === 'review') {
+      return 'pr-review';
+    }
+    if (commandMode === 'fix') {
+      return 'pr-fix';
+    }
+    if (commandMode === 'switch') {
+      return 'pr-switch';
+    }
+    if (commandMode === 'use') {
+      return 'pr-use';
+    }
+    if (commandMode === 'ultrafix') {
+      return 'pr-ultrafix';
+    }
+    return 'pr-comment';
+  }
+
+  return 'pr_followup';
 }
 
 function extractTaskNumber(jobData: QueueJobData): number | null {

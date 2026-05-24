@@ -316,6 +316,30 @@ describe('mergeConflictDetector - pull_request events', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
     });
 
+    test('removes a freshly queued merge-conflict job if the PR merges during enqueue', async () => {
+        mockLoadAutoResolve.mock.mockImplementation(async () => true);
+        const redis = createMockRedis();
+        const payload = createMockPREvent({ action: 'synchronize' });
+        const remove = mock.fn(async () => undefined);
+
+        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({
+            mergeable: false,
+            mergeableState: 'dirty',
+            headSha: 'head-sha-123',
+            baseSha: 'base-sha-456',
+        }));
+        mockQueueAdd.mock.mockImplementationOnce(async () => {
+            redis._store.set('pr-merged:test-owner/test-repo:42', new Date().toISOString());
+            return { remove };
+        });
+
+        const result = await handlePullRequestConflictDetection(payload, redis as never, 'corr-merged-race');
+
+        assert.strictEqual(result?.outcome, 'skipped_merged');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(remove.mock.calls.length, 1);
+    });
+
     test('logs clearly distinguish outcomes', async () => {
         mockLoadAutoResolve.mock.mockImplementation(async () => false);
         const redis = createMockRedis();

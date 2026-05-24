@@ -19,6 +19,7 @@ import { resolveModelAlias } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { trackPrQueueJob } from './prQueueJobIndex.js';
+import { hasPullRequestMerged } from './prMergeState.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -209,6 +210,12 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     const { prNumber, owner, repo } = eventContext;
     const { redisClient } = config;
     const commandMeta = buildCommandMeta(parsedCommand);
+    const repository = `${owner}/${repo}`;
+
+    if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
+        correlatedLogger.info({ repository, pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, 'Skipping slash-command follow-up because PR is already merged');
+        return;
+    }
 
     if ('warning' in commandMeta && commandMeta.warning) {
         correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, commandMeta.warning);
@@ -255,6 +262,10 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
+        if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
+            correlatedLogger.info({ repository, pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, 'Skipping slash-command batch update because PR merged while the request was being processed');
+            return;
+        }
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
         return;
@@ -499,6 +510,10 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     if (!eventDetails) return;
 
     const { prNumber, comment } = eventDetails;
+    if (await hasPullRequestMerged(redisClient as never, repoFullName, prNumber)) {
+        correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id }, 'Skipping PR comment follow-up because PR is already merged');
+        return;
+    }
 
     const commentAuthor = comment.user.login;
     const parsedCommand = parseSlashCommand(comment.body);
@@ -557,6 +572,10 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
+        if (await hasPullRequestMerged(redisClient as never, repoFullName, prNumber)) {
+            correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id }, 'Skipping PR comment batching because PR merged while the request was being processed');
+            return;
+        }
         await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, config as StoreCommentConfig);
         correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId: comment.id }, 'A job for this PR is already active or waiting, stored comment for batch processing');
         return;
@@ -685,6 +704,7 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
     const { eventType, prNumber, owner, repo } = eventContext;
     const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
+    const repository = `${owner}/${repo}`;
 
     const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, PR_FOLLOWUP_TRIGGER_KEYWORDS);
     const { branchName, prLabels } = prefetchedPRData || await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
@@ -701,13 +721,29 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
 
     try {
         const queue = await getIssueQueue();
-        await queue.add('processPullRequestComment', jobData, {
+        if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
+            correlatedLogger.info({ repository, pullRequestNumber: prNumber, commentId: comment.id }, 'Skipping PR comment enqueue because PR is already merged');
+            return;
+        }
+
+        const queuedJob = await queue.add('processPullRequestComment', jobData, {
             jobId,
             delay: COMMENT_BATCH_DELAY_MS,
             attempts: 3,
             backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
         });
-        await trackPrQueueJob(queue as never, `${owner}/${repo}`, prNumber, jobId);
+
+        if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
+            await queuedJob.remove();
+            correlatedLogger.info({ repository, pullRequestNumber: prNumber, jobId }, 'Removed freshly-queued PR comment job because the PR merged during enqueue');
+            return;
+        }
+
+        try {
+            await trackPrQueueJob(queue as never, repository, prNumber, jobId);
+        } catch (error) {
+            correlatedLogger.warn({ repository, pullRequestNumber: prNumber, jobId, error: (error as Error).message }, 'Failed to update PR queue-job index after comment enqueue');
+        }
         await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
         correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {

@@ -26,9 +26,19 @@ function createRedisClient() {
   };
 }
 
-function createQueueJob(id: string, data: Record<string, unknown>, state: string) {
+function createQueueJob(
+  id: string,
+  data: Record<string, unknown>,
+  state: string,
+  name = id.startsWith('pr-comments-batch-')
+    ? 'processPullRequestComment'
+    : id.startsWith('merge-conflict-')
+      ? 'processMergeConflict'
+      : 'processGitHubIssue',
+) {
   return {
     id,
+    name,
     data,
     remove: mock.fn(async () => undefined),
     getState: mock.fn(async () => state),
@@ -153,7 +163,7 @@ describe('merged PR queue follow-up fixes', () => {
         repoOwner: 'integry',
         repoName: 'propr',
         pullRequestNumber: 1463,
-        type: 'pr_followup',
+        type: 'pr-comment',
       },
       'corr-123',
     ]);
@@ -201,7 +211,7 @@ describe('merged PR queue follow-up fixes', () => {
         repoOwner: 'integry',
         repoName: 'propr',
         pullRequestNumber: 1463,
-        type: 'pr_followup',
+        type: 'pr-comment',
       },
       'corr-123',
     ]);
@@ -247,7 +257,7 @@ describe('merged PR queue follow-up fixes', () => {
       },
       'corr-99',
     ]);
-    assert.strictEqual(mockMarkTaskCancelled.mock.calls[0].arguments[0], 'owner-repo-99');
+    assert.strictEqual(mockMarkTaskCancelled.mock.calls.length, 0);
     const abortKeys = redisClient.set.mock.calls.map(call => call.arguments[0]).sort();
     assert.deepStrictEqual(abortKeys, [
       'worker:abort:issue-owner-repo-99-12345',
@@ -337,9 +347,10 @@ describe('merged PR queue follow-up fixes', () => {
       'worker:abort:owner-repo-99',
     ]);
     assert.strictEqual(redisClient.del.mock.calls.length, 0);
+    assert.strictEqual(mockMarkTaskCancelled.mock.calls.length, 0);
   });
 
-  test('stopTaskExecution preserves pr_followup type for queue payloads that use prNumber', async () => {
+  test('stopTaskExecution preserves command-specific task type for queued PR comment jobs', async () => {
     const queueJobId = 'pr-comments-batch-integry-propr-99-456';
     const redisClient = createRedisClient();
 
@@ -356,6 +367,7 @@ describe('merged PR queue follow-up fixes', () => {
           repository: 'integry/propr',
           prNumber: 99,
           correlationId: 'corr-99',
+          commandMode: 'review',
         }, 'waiting') : null,
       }) as never,
       getStateManager: () => ({
@@ -373,7 +385,47 @@ describe('merged PR queue follow-up fixes', () => {
         repoOwner: 'integry',
         repoName: 'propr',
         pullRequestNumber: 99,
-        type: 'pr_followup',
+        type: 'pr-review',
+      },
+      'corr-99',
+    ]);
+  });
+
+  test('stopTaskExecution tags merge-conflict queue jobs with a merge-conflict task type', async () => {
+    const queueJobId = 'merge-conflict-integry-propr-99-456';
+    const redisClient = createRedisClient();
+
+    await stopTaskExecution(queueJobId, {
+      redisClient,
+      requestedBy: 'system',
+      cancellation: {
+        code: 'pull_request_merged',
+        message: 'Task cancelled because pull request #99 was merged.',
+      },
+    }, {
+      getIssueQueue: async () => ({
+        getJob: async (id: string) => id === queueJobId ? createQueueJob(queueJobId, {
+          repository: 'integry/propr',
+          pullRequestNumber: 99,
+          correlationId: 'corr-99',
+        }, 'waiting', 'processMergeConflict') : null,
+      }) as never,
+      getStateManager: () => ({
+        createTaskState: mockCreateTaskState,
+        markTaskCancelled: mockMarkTaskCancelled,
+      }) as never,
+      db: createTaskUpdateDb() as never,
+      stopDockerContainer: mockStopDockerContainer as never,
+    });
+
+    assert.deepStrictEqual(mockCreateTaskState.mock.calls[0].arguments, [
+      queueJobId,
+      {
+        number: 99,
+        repoOwner: 'integry',
+        repoName: 'propr',
+        pullRequestNumber: 99,
+        type: 'merge-conflict',
       },
       'corr-99',
     ]);
@@ -507,6 +559,7 @@ describe('merged PR queue follow-up fixes', () => {
         ),
       }) as never,
       db: createActiveTasksDb([]) as never,
+      forceQueueScan: true,
       log: {
         info: mock.fn(),
         warn: mock.fn(),
@@ -516,6 +569,33 @@ describe('merged PR queue follow-up fixes', () => {
     assert.deepStrictEqual(activeTasks, [
       { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
       { taskId: 'merge-conflict-integry-propr-1463-456', state: 'waiting' },
+    ]);
+  });
+
+  test('getActiveTasksForPR uses the tracked queue-job index as a fast path when scans are not forced', async () => {
+    const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
+      getIssueQueue: async () => ({
+        client: Promise.resolve({
+          sMembers: async () => ['pr-comments-batch-integry-propr-1463-123'],
+          sRem: async () => 1,
+          expire: async () => 1,
+        }),
+        getJob: async (jobId: string) => jobId === 'pr-comments-batch-integry-propr-1463-123'
+          ? createQueueJob(jobId, { repository: 'integry/propr', pullRequestNumber: 1463 }, 'active')
+          : null,
+        getJobs: async () => {
+          throw new Error('queue scan should not run');
+        },
+      }) as never,
+      db: createActiveTasksDb([]) as never,
+      log: {
+        info: mock.fn(),
+        warn: mock.fn(),
+      },
+    });
+
+    assert.deepStrictEqual(activeTasks, [
+      { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
     ]);
   });
 

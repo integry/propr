@@ -1,4 +1,4 @@
-import { getActiveTasksForPR, logger } from '@propr/core';
+import { getActiveTasksForPR, logger, markPullRequestMerged } from '@propr/core';
 import {
   StopTaskExecutionError,
   stopTaskExecution,
@@ -14,6 +14,7 @@ interface MergedPullRequestPayload {
 export interface MergeTaskCancellationDeps {
   redisClient: StopTaskExecutionOptions['redisClient'];
   getActiveTasksForPR?: typeof getActiveTasksForPR;
+  markPullRequestMerged?: typeof markPullRequestMerged;
   stopTaskExecution?: typeof stopTaskExecution;
   log?: Pick<typeof logger, 'info' | 'warn'>;
 }
@@ -31,13 +32,15 @@ export async function cancelMergedPullRequestTasks(
   const prNumber = payload.pull_request.number;
   const log = deps.log ?? logger;
   const loadActiveTasks = deps.getActiveTasksForPR ?? getActiveTasksForPR;
+  const persistMergedState = deps.markPullRequestMerged ?? markPullRequestMerged;
   const stopTask = deps.stopTaskExecution ?? stopTaskExecution;
   const cancellation = {
     code: 'pull_request_merged',
     message: `Task cancelled because pull request #${prNumber} was merged.`,
   };
 
-  const activeTasks = await loadActiveTasks(repository, prNumber);
+  await persistMergedState(deps.redisClient, repository, prNumber);
+  const activeTasks = await loadActiveTasks(repository, prNumber, { forceQueueScan: true });
   if (activeTasks.length === 0) {
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;

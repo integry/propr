@@ -911,6 +911,58 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
     });
 });
 
+describe('commentEventHandler — merged PR enqueue guard', () => {
+    beforeEach(() => {
+        mockQueueAdd.mock.resetCalls();
+        mockOctokit.request.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [],
+            },
+        }));
+    });
+
+    test('skips PR comment follow-up enqueue when the PR is already marked merged', async () => {
+        const config = createTestConfig();
+        config.redisClient._store.set('pr-merged:testowner/testrepo:42', new Date().toISOString());
+
+        await processCommentEvent(
+            createPRCommentEvent('propr please handle this'),
+            'issue_comment',
+            'corr-merged-skip',
+            config as never,
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.calls.length, 0);
+        assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
+    });
+
+    test('removes a freshly queued PR comment job if the merge marker appears during enqueue', async () => {
+        const config = createTestConfig();
+        const remove = mock.fn(async () => undefined);
+
+        mockQueueAdd.mock.mockImplementationOnce(async () => {
+            config.redisClient._store.set('pr-merged:testowner/testrepo:42', new Date().toISOString());
+            return { remove };
+        });
+
+        await processCommentEvent(
+            createPRCommentEvent('propr please handle this'),
+            'issue_comment',
+            'corr-merged-race',
+            config as never,
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.calls.length, 1);
+        assert.strictEqual(remove.mock.calls.length, 1);
+    });
+});
+
 describe('applyPendingCommentCommandContext', () => {
     test('keeps an earlier /use llm override when a later pending /fix becomes the active command', () => {
         const jobData = {

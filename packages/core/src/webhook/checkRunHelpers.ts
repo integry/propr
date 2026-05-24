@@ -657,6 +657,7 @@ export interface GetActiveTasksForPRDeps {
     getIssueQueue?: typeof getIssueQueue;
     db?: typeof db;
     log?: Pick<typeof logger, 'info' | 'warn'>;
+    forceQueueScan?: boolean;
 }
 
 function getRepositoryFromJobData(jobData: Record<string, unknown>): string | null {
@@ -701,7 +702,15 @@ export async function getActiveTasksForPR(
             taskMap.set(job.jobId, { taskId: job.jobId, state: job.state });
         }
 
-        await addQueuedPrJobsFromFallbackScan(queue, repository, prNumber, taskMap);
+        if (deps.forceQueueScan || trackedQueueJobs.length === 0) {
+            await addQueuedPrJobsFromFallbackScan({
+                queue,
+                repository,
+                prNumber,
+                taskMap,
+                log,
+            });
+        }
 
         const activeTasks = await database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -737,12 +746,14 @@ export async function getActiveTasksForPR(
     }
 }
 
-async function addQueuedPrJobsFromFallbackScan(
-    queue: Awaited<ReturnType<typeof getIssueQueue>>,
-    repository: string,
-    prNumber: number,
-    taskMap: Map<string, PRTaskActivity>,
-): Promise<void> {
+async function addQueuedPrJobsFromFallbackScan(params: {
+    queue: Awaited<ReturnType<typeof getIssueQueue>>;
+    repository: string;
+    prNumber: number;
+    taskMap: Map<string, PRTaskActivity>;
+    log: Pick<typeof logger, 'info' | 'warn'>;
+}): Promise<void> {
+    const { queue, repository, prNumber, taskMap, log } = params;
     for (const queueState of PR_QUEUE_STATES) {
         const jobs = await queue.getJobs([queueState]);
         for (const job of jobs) {
@@ -753,7 +764,16 @@ async function addQueuedPrJobsFromFallbackScan(
 
             const queueJobId = String(job.id);
             taskMap.set(queueJobId, { taskId: queueJobId, state: queueState });
-            await trackPrQueueJob(queue as never, repository, prNumber, queueJobId);
+            try {
+                await trackPrQueueJob(queue as never, repository, prNumber, queueJobId);
+            } catch (error) {
+                log.warn({
+                    repository,
+                    prNumber,
+                    jobId: queueJobId,
+                    error: (error as Error).message,
+                }, 'Failed to backfill PR queue-job index entry');
+            }
         }
     }
 }
