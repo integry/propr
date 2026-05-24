@@ -8,6 +8,7 @@ process.env.NODE_ENV ??= 'test';
 
 const { stopTaskExecution } = await import('../packages/api/routes/dockerRoutes.ts');
 const { getActiveTasksForPR, hasActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
+const { discardFreshQueueJobAfterMerge } = await import('../packages/core/src/webhook/mergedPrQueueHelpers.ts');
 const { hasPullRequestMerged } = await import('../packages/core/src/webhook/prMergeState.ts');
 const { closeConnection } = await import('../packages/core/src/db/connection.ts');
 const { closeStateManager } = await import('../packages/core/src/utils/workerStateManager.ts');
@@ -580,6 +581,34 @@ describe('merged PR queue follow-up fixes', () => {
     ]);
   });
 
+  test('getActiveTasksForPR keeps non-terminal persisted task states even when they are not worker-running states', async () => {
+    const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
+      getIssueQueue: async () => ({
+        client: Promise.resolve({
+          sMembers: async () => [],
+          expire: async () => 1,
+        }),
+        getJob: async () => null,
+        getJobs: async () => [],
+      }) as never,
+      db: createActiveTasksDb([
+        {
+          task_id: 'task-pending-1',
+          job_id: null,
+          state: 'pending',
+        },
+      ]) as never,
+      log: {
+        info: mock.fn(),
+        warn: mock.fn(),
+      },
+    });
+
+    assert.deepStrictEqual(activeTasks, [
+      { taskId: 'task-pending-1', state: 'pending' },
+    ]);
+  });
+
   test('hasPullRequestMerged falls back to GitHub when the Redis marker is missing and refreshes the cache', async () => {
     const redisClient = {
       get: mock.fn(async () => null),
@@ -599,22 +628,25 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.strictEqual(merged, true);
     assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
-    assert.strictEqual(redisClient.get.mock.calls.length, 2);
+    assert.strictEqual(redisClient.get.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls[0].arguments[0], 'pr-merged:integry/propr:1463');
     assert.match(String(redisClient.set.mock.calls[0].arguments[1]), /^\d{4}-\d{2}-\d{2}T/);
     assert.deepStrictEqual(redisClient.set.mock.calls[0].arguments[2], { EX: 2592000 });
   });
 
-  test('hasPullRequestMerged skips GitHub lookups when a cached open-state marker exists', async () => {
+  test('hasPullRequestMerged rechecks GitHub even when a cached open-state marker exists', async () => {
     const redisClient = {
       get: mock.fn(async (key: string) => key.startsWith('pr-open:') ? 'cached-open' : null),
       set: mock.fn(async () => 'OK'),
     };
     const getAuthenticatedOctokit = mock.fn(async () => ({
-      request: async () => {
-        throw new Error('should not be called');
-      },
+      request: async () => ({
+        data: {
+          merged: false,
+          merged_at: null,
+        },
+      }),
     }));
 
     const merged = await hasPullRequestMerged(redisClient as never, 'integry/propr', 1463, {
@@ -622,9 +654,9 @@ describe('merged PR queue follow-up fixes', () => {
     });
 
     assert.strictEqual(merged, false);
-    assert.strictEqual(redisClient.get.mock.calls.length, 2);
-    assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 0);
-    assert.strictEqual(redisClient.set.mock.calls.length, 0);
+    assert.strictEqual(redisClient.get.mock.calls.length, 1);
+    assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
+    assert.strictEqual(redisClient.set.mock.calls.length, 1);
   });
 
   test('hasPullRequestMerged negative-caches open PRs after a GitHub lookup', async () => {
@@ -647,14 +679,15 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.strictEqual(merged, false);
     assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
-    assert.strictEqual(redisClient.get.mock.calls.length, 2);
+    assert.strictEqual(redisClient.get.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls[0].arguments[0], 'pr-open:integry/propr:1463');
     assert.match(String(redisClient.set.mock.calls[0].arguments[1]), /^\d{4}-\d{2}-\d{2}T/);
     assert.deepStrictEqual(redisClient.set.mock.calls[0].arguments[2], { EX: 60 });
   });
 
-  test('getActiveTasksForPR uses the tracked queue-job index as a fast path when scans are not forced', async () => {
+  test('getActiveTasksForPR verifies the tracked queue-job index with a queue scan when scans are not forced', async () => {
+    const getJobs = mock.fn(async () => []);
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
         client: Promise.resolve({
@@ -665,9 +698,7 @@ describe('merged PR queue follow-up fixes', () => {
         getJob: async (jobId: string) => jobId === 'pr-comments-batch-integry-propr-1463-123'
           ? createQueueJob(jobId, { repository: 'integry/propr', pullRequestNumber: 1463 }, 'active')
           : null,
-        getJobs: async () => {
-          throw new Error('queue scan should not run');
-        },
+        getJobs,
       }) as never,
       db: createActiveTasksDb([]) as never,
       log: {
@@ -679,6 +710,7 @@ describe('merged PR queue follow-up fixes', () => {
     assert.deepStrictEqual(activeTasks, [
       { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
     ]);
+    assert.strictEqual(getJobs.mock.calls.length > 0, true);
   });
 
   test('getActiveTasksForPR falls back to queue scans when no tracked PR jobs exist yet', async () => {
@@ -724,5 +756,53 @@ describe('merged PR queue follow-up fixes', () => {
       activeTasks: [],
       queuedJobs: [],
     });
+  });
+
+  test('discardFreshQueueJobAfterMerge fails when a merged PR job is still waiting after removal fails', async () => {
+    const queuedJob = {
+      id: 'pr-comments-batch-integry-propr-1463-123',
+      name: 'processPullRequestComment',
+      data: {
+        repository: 'integry/propr',
+        pullRequestNumber: 1463,
+      },
+      remove: mock.fn(async () => {
+        throw new Error('lock lost');
+      }),
+      getState: mock.fn(async () => 'waiting'),
+    };
+    const queue = {
+      client: Promise.resolve({
+        expire: async () => 1,
+        sAdd: mock.fn(async () => 1),
+        sRem: mock.fn(async () => 1),
+      }),
+    };
+    const redisClient = {
+      set: mock.fn(async () => 'OK'),
+    };
+    const log = {
+      info: mock.fn(),
+      warn: mock.fn(),
+    };
+
+    await assert.rejects(async () => {
+      await discardFreshQueueJobAfterMerge({
+        queuedJob,
+        queue: queue as never,
+        redisClient: redisClient as never,
+        repository: 'integry/propr',
+        prNumber: 1463,
+        jobId: 'pr-comments-batch-integry-propr-1463-123',
+        taskIds: ['pr-comments-batch-integry-propr-1463-123', 'integry-propr-1463'],
+        log,
+        removedMessage: 'removed',
+        removalFailureMessage: 'failed to remove',
+        pendingIndexClearFailureMessage: 'failed to clear pending index',
+        trackFailureMessage: 'failed to track',
+      });
+    }, /queue job remained waiting after removal failure/);
+
+    assert.strictEqual(redisClient.set.mock.calls.length, 2);
   });
 });

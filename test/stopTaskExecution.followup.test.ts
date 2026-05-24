@@ -120,6 +120,47 @@ test('stopTaskExecution treats queue removal races into terminal states as benig
     assert.strictEqual(redisClient.set.mock.calls.length, 2);
 });
 
+test('stopTaskExecution rejects container-backed tasks when the container stop fails', async () => {
+    const redisClient = createRedisClient();
+
+    await assert.rejects(async () => {
+        await stopTaskExecution(
+            'task-2',
+            {
+                redisClient,
+                requestedBy: 'system',
+                cancellation: {
+                    code: 'pull_request_merged',
+                    message: 'Task cancelled because pull request #42 was merged.',
+                },
+            },
+            {
+                loadStopTaskContext: async () => ({
+                    normalizedTaskId: 'task-2',
+                    state: { history: [{ state: 'claude_execution', metadata: { containerId: 'container-1' } }] },
+                    currentState: 'claude_execution',
+                    queueJob: null,
+                    queueState: null,
+                    taskId: 'task-2',
+                    abortTaskIds: ['task-2'],
+                }),
+                ensureTaskStateForCancellation: async () => {},
+                getStateManager: () => ({ markTaskCancelled }) as never,
+                stopDockerContainer: mock.fn(async () => ({ success: false, error: 'timeout' })),
+            },
+        );
+    }, (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.strictEqual(error.name, 'StopTaskExecutionError');
+        assert.strictEqual((error as { status?: number }).status, 409);
+        assert.match(error.message, /could not be stopped/);
+        return true;
+    });
+
+    assert.strictEqual(redisClient.set.mock.calls.length, 1);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+});
+
 test('isBenignQueueRemovalRace accepts active, terminal, unknown, and missing queue states', () => {
     assert.strictEqual(isBenignQueueRemovalRace('active'), true);
     assert.strictEqual(isBenignQueueRemovalRace('completed'), true);

@@ -45,13 +45,9 @@ export async function hasPullRequestMerged(
   deps: PullRequestMergeStateDeps = {},
 ): Promise<boolean> {
   const mergedKey = getPullRequestMergedKey(repository, prNumber);
-  const openKey = getPullRequestOpenKey(repository, prNumber);
 
   if ((await redisClient.get(mergedKey)) !== null) {
     return true;
-  }
-  if ((await redisClient.get(openKey)) !== null) {
-    return false;
   }
 
   const [owner, repoName] = repository.split('/');

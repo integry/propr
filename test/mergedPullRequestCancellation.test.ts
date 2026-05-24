@@ -70,6 +70,7 @@ describe('cancelMergedPullRequestTasks', () => {
   const mockLogger = {
     info: mock.fn(),
     warn: mock.fn(),
+    error: mock.fn(),
   };
   const mockMarkPullRequestMerged = mock.fn(async () => undefined);
   const mockGetActiveTasksForPR = mock.fn(async () => []);
@@ -87,6 +88,7 @@ describe('cancelMergedPullRequestTasks', () => {
   beforeEach(() => {
     mockLogger.info.mock.resetCalls();
     mockLogger.warn.mock.resetCalls();
+    mockLogger.error.mock.resetCalls();
     mockMarkPullRequestMerged.mock.resetCalls();
     mockGetActiveTasksForPR.mock.resetCalls();
     mockStopTaskExecution.mock.resetCalls();
@@ -134,6 +136,7 @@ describe('cancelMergedPullRequestTasks', () => {
       cancellation: {
         code: 'pull_request_merged',
         message: 'Task cancelled because pull request #1463 was merged.',
+        source: 'pull_request_merged',
       },
       containerStopTimeoutSeconds: 1,
     });
@@ -342,7 +345,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(processor.mock.calls.length, 1);
   });
 
-  test('handleWebhookRequest continues processing when merge-task cancellation fails', async () => {
+  test('handleWebhookRequest returns 500 and skips downstream processing when merge-task cancellation fails', async () => {
     const redisClient = createRedisClient();
     const payload = createMergedPrPayload();
     const req = createWebhookRequest(payload, 'test-secret');
@@ -376,10 +379,10 @@ describe('cancelMergedPullRequestTasks', () => {
     });
 
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 1);
-    assert.strictEqual(processor.mock.calls.length, 1);
+    assert.strictEqual(processor.mock.calls.length, 0);
     assert.strictEqual(reserveDelivery.mock.calls.length, 1);
-    assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(res.body, 'Webhook processed.');
+    assert.strictEqual(res.statusCode, 500);
+    assert.strictEqual(res.body, 'Merged pull request task cancellation failed.');
     assert.strictEqual(mockLogger.warn.mock.calls.length > 0, true);
   });
 });

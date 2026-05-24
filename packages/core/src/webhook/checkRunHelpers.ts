@@ -640,7 +640,6 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
  * Terminal task states - tasks in these states are considered complete
  */
 const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'];
-const RUNNING_TASK_STATES = new Set(['processing', 'claude_execution', 'post_processing']);
 const PR_QUEUE_STATE_SET = TRACKED_PR_QUEUE_STATE_SET;
 
 export interface PRTaskActivity {
@@ -695,16 +694,14 @@ export async function getActiveTasksForPR(
             }
         }
 
-        if (deps.forceQueueScan === true || taskMap.size === 0) {
-            await addQueuedPrJobsFromFallbackScan({
-                queue,
-                repository,
-                prNumber,
-                taskMap,
-                taskAliases,
-                log,
-            });
-        }
+        await addQueuedPrJobsFromFallbackScan({
+            queue,
+            repository,
+            prNumber,
+            taskMap,
+            taskAliases,
+            log,
+        });
 
         const activeTasks = await database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -722,15 +719,11 @@ export async function getActiveTasksForPR(
         for (const task of activeTasks) {
             const dedupeKey = resolveActiveTaskKey(taskMap, taskAliases, [task.job_id, task.task_id]);
             if (taskMap.has(dedupeKey)) {
-                if (RUNNING_TASK_STATES.has(task.state)) {
-                    registerActiveTask(taskMap, taskAliases, { taskId: task.task_id, state: task.state }, [task.job_id]);
-                }
+                registerActiveTask(taskMap, taskAliases, { taskId: task.task_id, state: task.state }, [task.job_id]);
                 continue;
             }
 
-            if (RUNNING_TASK_STATES.has(task.state)) {
-                registerActiveTask(taskMap, taskAliases, { taskId: task.task_id, state: task.state }, [task.job_id]);
-            }
+            registerActiveTask(taskMap, taskAliases, { taskId: task.task_id, state: task.state }, [task.job_id]);
         }
 
         const taskList = [...taskMap.values()];

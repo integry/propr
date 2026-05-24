@@ -6,6 +6,8 @@ import { clearPendingPrQueueJob, trackPrQueueJob, TRACKED_PR_QUEUE_STATE_SET, ty
 import { hasPullRequestMerged } from './prMergeState.js';
 import { buildIssueRefFromQueueJob, type PrTaskJobData } from './prTaskIdentity.js';
 
+const BENIGN_QUEUE_REMOVAL_FAILURE_STATES = new Set(['active', 'completed', 'failed', 'unknown']);
+
 type QueueJobLike = {
   id?: string | number | null;
   name?: string;
@@ -82,6 +84,7 @@ export async function discardFreshQueueJobAfterMerge(params: {
     pendingIndexClearFailureMessage,
     trackFailureMessage,
   } = params;
+  let removalFailure: Error | null = null;
 
   try {
     await queuedJob.remove();
@@ -105,6 +108,10 @@ export async function discardFreshQueueJobAfterMerge(params: {
       }
     }
 
+    if (!isBenignRemovalFailureState(queueState)) {
+      removalFailure = new Error(`${removalFailureMessage}: queue job remained ${queueState ?? 'unknown'} after removal failure`);
+    }
+
     log.warn({
       repository,
       prNumber,
@@ -124,6 +131,10 @@ export async function discardFreshQueueJobAfterMerge(params: {
       }, pendingIndexClearFailureMessage);
     }
   }
+
+  if (removalFailure) {
+    throw removalFailure;
+  }
 }
 
 async function reloadQueueStateAfterRemovalFailure(queueJob: QueueJobLike): Promise<string | null> {
@@ -132,6 +143,10 @@ async function reloadQueueStateAfterRemovalFailure(queueJob: QueueJobLike): Prom
   } catch {
     return null;
   }
+}
+
+function isBenignRemovalFailureState(queueState: string | null): boolean {
+  return queueState !== null && BENIGN_QUEUE_REMOVAL_FAILURE_STATES.has(queueState);
 }
 
 async function setMergedPrAbortSignals(redisClient: Redis, taskIds: string[], prNumber: number): Promise<void> {

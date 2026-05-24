@@ -34,6 +34,10 @@ export async function cancelMergedPullRequestTasks(
   correlationId: string,
   deps: MergeTaskCancellationDeps,
 ): Promise<void> {
+  if (!deps?.redisClient) {
+    throw new Error('Merge task cancellation dependencies are required');
+  }
+
   if (!isMergedPullRequestClose(payload)) {
     return;
   }
@@ -48,6 +52,7 @@ export async function cancelMergedPullRequestTasks(
   const cancellation = {
     code: 'pull_request_merged',
     message: `Task cancelled because pull request #${prNumber} was merged.`,
+    source: 'pull_request_merged',
   };
 
   await persistMergedState(deps.redisClient, repository, prNumber);

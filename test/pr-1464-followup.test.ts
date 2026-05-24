@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getActiveTasksForPR } from '../packages/core/src/webhook/checkRunHelpers.ts';
-import { closeConnection } from '../packages/core/src/db/connection.ts';
-import { stopTaskExecution } from '../packages/api/routes/stopTaskExecution.ts';
-import { ensureTaskStateForCancellation } from '../packages/api/routes/stopTaskExecutionContext.ts';
+
+process.env.GH_APP_ID ??= '1';
+process.env.GH_PRIVATE_KEY_PATH ??= '.propr/test-private-key.pem';
+process.env.GH_INSTALLATION_ID ??= '1';
+process.env.NODE_ENV ??= 'test';
+
+const { getActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
+const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+const { stopTaskExecution } = await import('../packages/api/routes/stopTaskExecution.ts');
+const { ensureTaskStateForCancellation } = await import('../packages/api/routes/stopTaskExecutionContext.ts');
 
 type QueueState = 'waiting' | 'active' | 'delayed' | 'paused' | 'prioritized' | 'waiting-children';
 
@@ -239,7 +245,7 @@ test('stopTaskExecution persists merged-PR cancellation metadata for abort-only 
     code: 'pull_request_merged',
     message: 'Task cancelled because pull request #1464 was merged.',
     cancelledBy: 'system',
-    source: 'task_stop',
+    source: 'pull_request_merged',
     containerStopped: false,
   });
   assert.deepEqual(
