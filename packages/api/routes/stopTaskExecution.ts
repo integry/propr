@@ -103,6 +103,8 @@ export async function stopTaskExecution(
     activity,
   });
   await (deps.ensureTaskStateForCancellation ?? ensureTaskStateForCancellation)(context.taskId, context.state, context.queueJob, deps);
+  const stateCreatedForCancellation = context.state === null && context.queueJob !== null;
+  const taskStateExistsForCancellation = context.state !== null || stateCreatedForCancellation;
 
   const timestamp = new Date().toISOString();
   await setAbortSignalIfNeeded({
@@ -129,6 +131,8 @@ export async function stopTaskExecution(
     shouldAbort,
     containerStopped,
     jobRemoved,
+    taskStateExistsForCancellation,
+    effectiveQueueState: queueStateAfterFailure ?? context.queueState,
   });
   assertStopApplied({
     activity,
@@ -309,12 +313,14 @@ function shouldMarkTaskCancelled(params: {
   shouldAbort: boolean;
   containerStopped: boolean;
   jobRemoved: boolean;
+  taskStateExistsForCancellation: boolean;
+  effectiveQueueState: string | null;
 }): boolean {
   if (params.containerStopped || params.jobRemoved) {
     return true;
   }
 
-  if (!params.shouldAbort) {
+  if (!params.shouldAbort || !params.taskStateExistsForCancellation) {
     return false;
   }
 
@@ -322,7 +328,9 @@ function shouldMarkTaskCancelled(params: {
     return false;
   }
 
-  return params.activity.isRunningTaskState;
+  return params.activity.isRunningTaskState
+    || params.activity.isQueueActive
+    || params.effectiveQueueState === 'active';
 }
 
 function assertStopApplied(params: {

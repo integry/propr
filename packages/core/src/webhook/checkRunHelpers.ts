@@ -644,10 +644,6 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
     }
 }
 
-/**
- * Terminal task states - tasks in these states are considered complete
- */
-const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'];
 const PR_QUEUE_STATE_SET = TRACKED_PR_QUEUE_STATE_SET;
 
 export interface PRTaskActivity {
@@ -666,6 +662,8 @@ interface IndexedQueueTaskActivity {
     state: string;
     aliases: string[];
 }
+
+const ACTIVE_TASK_HISTORY_STATES = ['processing', 'claude_execution', 'post_processing'] as const;
 
 export interface GetActiveTasksForPRDeps {
     getIssueQueue?: typeof getIssueQueue;
@@ -747,7 +745,7 @@ export async function getActiveTasksForPR(
             })
             .where('tasks.repository', repository)
             .where('tasks.pr_number', prNumber)
-            .whereNotIn('task_history.state', TERMINAL_TASK_STATES) as ActiveTaskRow[];
+            .whereIn('task_history.state', ACTIVE_TASK_HISTORY_STATES) as ActiveTaskRow[];
 
         for (const task of activeTasks) {
             const dedupeKey = resolveActiveTaskKey(taskMap, taskAliases, [task.job_id, task.task_id]);

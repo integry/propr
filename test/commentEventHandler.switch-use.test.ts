@@ -221,6 +221,21 @@ describe('commentEventHandler — /switch command', () => {
         }));
     });
 
+    test('fails so GitHub can retry when merged-state verification fails before slash-command processing', async () => {
+        const config = createTestConfig();
+        config.redisClient.get.mock.mockImplementationOnce(async () => {
+            throw new Error('redis unavailable');
+        });
+        const event = createPRCommentEvent('/fix');
+
+        await assert.rejects(
+            () => processCommentEvent(event, 'issue_comment', 'corr-merged-lookup-failure', config),
+            /redis unavailable/,
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.calls.length, 0);
+    });
+
     test('/switch with alias canonicalizes label via resolveModelAlias', async () => {
         const event = createPRCommentEvent('/switch opus');
         const config = createTestConfig();

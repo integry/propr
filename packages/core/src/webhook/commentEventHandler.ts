@@ -218,8 +218,7 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         prNumber,
         log: correlatedLogger,
         mergedMessage: 'Skipping slash-command follow-up because PR is already merged',
-        lookupFailureMessage: 'Failed to verify PR merge state before processing slash-command follow-up; skipping to avoid enqueueing work after merge',
-        lookupFailureBehavior: 'skip',
+        lookupFailureMessage: 'Failed to verify PR merge state before processing slash-command follow-up; failing so GitHub can retry',
     })) {
         return;
     }
@@ -275,8 +274,7 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
             prNumber,
             log: correlatedLogger,
             mergedMessage: 'Skipping slash-command batch update because PR merged while the request was being processed',
-            lookupFailureMessage: 'Failed to verify PR merge state before batching slash-command follow-up; skipping to avoid enqueueing work after merge',
-            lookupFailureBehavior: 'skip',
+            lookupFailureMessage: 'Failed to verify PR merge state before batching slash-command follow-up; failing so GitHub can retry',
         })) {
             return;
         }
@@ -530,8 +528,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
         prNumber,
         log: correlatedLogger,
         mergedMessage: 'Skipping PR comment follow-up because PR is already merged',
-        lookupFailureMessage: 'Failed to verify PR merge state before processing comment follow-up; skipping to avoid enqueueing work after merge',
-        lookupFailureBehavior: 'skip',
+        lookupFailureMessage: 'Failed to verify PR merge state before processing comment follow-up; failing so GitHub can retry',
     })) {
         return;
     }
@@ -599,8 +596,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
             prNumber,
             log: correlatedLogger,
             mergedMessage: 'Skipping PR comment batching because PR merged while the request was being processed',
-            lookupFailureMessage: 'Failed to verify PR merge state before batching comment follow-up; skipping to avoid enqueueing work after merge',
-            lookupFailureBehavior: 'skip',
+            lookupFailureMessage: 'Failed to verify PR merge state before batching comment follow-up; failing so GitHub can retry',
         })) {
             return;
         }
@@ -755,8 +751,7 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
             prNumber,
             log: correlatedLogger,
             mergedMessage: 'Skipping PR comment enqueue because PR is already merged',
-            lookupFailureMessage: 'Failed to verify PR merge state before enqueuing comment follow-up; skipping to avoid enqueueing work after merge',
-            lookupFailureBehavior: 'skip',
+            lookupFailureMessage: 'Failed to verify PR merge state before enqueuing comment follow-up; failing so GitHub can retry',
         })) {
             return;
         }
@@ -782,8 +777,7 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
             prNumber,
             log: correlatedLogger,
             mergedMessage: 'PR merged during comment enqueue; discarding freshly-queued job',
-            lookupFailureMessage: 'Failed to verify PR merge state after enqueuing comment follow-up; discarding freshly-queued job to fail closed',
-            lookupFailureBehavior: 'skip',
+            lookupFailureMessage: 'Failed to verify PR merge state after enqueuing comment follow-up; failing so GitHub can retry',
         })) {
             await discardFreshQueueJobAfterMerge({
                 queuedJob,

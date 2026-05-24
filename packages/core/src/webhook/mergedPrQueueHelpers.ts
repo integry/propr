@@ -91,60 +91,60 @@ export async function discardFreshQueueJobAfterMerge(params: {
   let removalFailure: Error | null = null;
   let persistenceFailure: Error | null = null;
   let queueRemoved = false;
+  let shouldClearPendingIndex = false;
 
   try {
     try {
-      await queuedJob.remove();
-      queueRemoved = true;
+      await persistCancelledTaskRecordForMergedQueueJob({ queuedJob, repository, prNumber, jobId, log });
     } catch (error) {
-      const queueState = await reloadQueueStateAfterRemovalFailure(queuedJob);
+      persistenceFailure = error as Error;
       await setMergedPrAbortSignals(redisClient, taskIds, prNumber);
-
-      if (queueState && TRACKED_PR_QUEUE_STATE_SET.has(queueState)) {
-        try {
-          await trackPrQueueJob(queue, repository, prNumber, jobId);
-        } catch (trackError) {
-          log.warn({
-            repository,
-            prNumber,
-            jobId,
-            error: (trackError as Error).message,
-          }, trackFailureMessage);
-        }
-      }
-
-      if (!isBenignRemovalFailureState(queueState)) {
-        removalFailure = new Error(`${removalFailureMessage}: queue job remained ${queueState ?? 'unknown'} after removal failure`);
-      }
-
-      log.warn({
-        repository,
-        prNumber,
-        jobId,
-        queueState,
-        error: (error as Error).message,
-      }, removalFailureMessage);
     }
 
-    if (queueRemoved) {
+    if (!persistenceFailure) {
       try {
-        await persistCancelledTaskRecordForMergedQueueJob({ queuedJob, repository, prNumber, jobId, log });
+        await queuedJob.remove();
+        queueRemoved = true;
+        shouldClearPendingIndex = true;
         log.info({ repository, prNumber, jobId }, removedMessage);
       } catch (error) {
-        persistenceFailure = error as Error;
+        const queueState = await reloadQueueStateAfterRemovalFailure(queuedJob);
         await setMergedPrAbortSignals(redisClient, taskIds, prNumber);
+        await trackQueueJobIfStillIndexed({
+          queue,
+          repository,
+          prNumber,
+          jobId,
+          queueState,
+          log,
+          trackFailureMessage,
+        });
+
+        if (!isBenignRemovalFailureState(queueState)) {
+          removalFailure = new Error(`${removalFailureMessage}: queue job remained ${queueState ?? 'unknown'} after removal failure`);
+        }
+
+        log.warn({
+          repository,
+          prNumber,
+          jobId,
+          queueState,
+          error: (error as Error).message,
+        }, removalFailureMessage);
       }
     }
   } finally {
-    try {
-      await clearPendingPrQueueJob(queue, repository, prNumber, jobId);
-    } catch (error) {
-      log.warn({
-        repository,
-        prNumber,
-        jobId,
-        error: (error as Error).message,
-      }, pendingIndexClearFailureMessage);
+    if (shouldClearPendingIndex) {
+      try {
+        await clearPendingPrQueueJob(queue, repository, prNumber, jobId);
+      } catch (error) {
+        log.warn({
+          repository,
+          prNumber,
+          jobId,
+          error: (error as Error).message,
+        }, pendingIndexClearFailureMessage);
+      }
     }
   }
 
@@ -171,6 +171,32 @@ async function reloadQueueStateAfterRemovalFailure(queueJob: QueueJobLike): Prom
 
 function isBenignRemovalFailureState(queueState: string | null): boolean {
   return queueState !== null && BENIGN_QUEUE_REMOVAL_FAILURE_STATES.has(queueState);
+}
+
+async function trackQueueJobIfStillIndexed(params: {
+  queue: PrQueueIndexableQueue;
+  repository: string;
+  prNumber: number;
+  jobId: string;
+  queueState: string | null;
+  log: LogLike;
+  trackFailureMessage: string;
+}): Promise<void> {
+  const { queue, repository, prNumber, jobId, queueState, log, trackFailureMessage } = params;
+  if (!queueState || !TRACKED_PR_QUEUE_STATE_SET.has(queueState)) {
+    return;
+  }
+
+  try {
+    await trackPrQueueJob(queue, repository, prNumber, jobId);
+  } catch (error) {
+    log.warn({
+      repository,
+      prNumber,
+      jobId,
+      error: (error as Error).message,
+    }, trackFailureMessage);
+  }
 }
 
 async function setMergedPrAbortSignals(redisClient: Redis, taskIds: string[], prNumber: number): Promise<void> {

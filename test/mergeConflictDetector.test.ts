@@ -340,26 +340,26 @@ describe('mergeConflictDetector - pull_request events', () => {
         assert.strictEqual(remove.mock.calls.length, 1);
     });
 
-    test('queues conflicted PRs when merged-state verification fails before enqueue', async () => {
+    test('fails so GitHub can retry when merged-state verification fails before enqueue', async () => {
         mockLoadAutoResolve.mock.mockImplementation(async () => true);
         const redis = createMockRedis();
         const payload = createMockPREvent({ action: 'synchronize' });
+        redis.get.mock.mockImplementationOnce(async () => {
+            throw new Error('redis unavailable');
+        });
+        mockOctokit.request.mock.mockImplementationOnce(async () => mockPRResponse({
+            mergeable: false,
+            mergeableState: 'dirty',
+            headSha: 'head-sha-123',
+            baseSha: 'base-sha-456',
+        }));
 
-        mockOctokit.request.mock
-            .mockImplementationOnce(async () => mockPRResponse({
-                mergeable: false,
-                mergeableState: 'dirty',
-                headSha: 'head-sha-123',
-                baseSha: 'base-sha-456',
-            }))
-            .mockImplementationOnce(async () => {
-                throw new Error('github unavailable');
-            });
+        await assert.rejects(
+            () => handlePullRequestConflictDetection(payload, redis as never, 'corr-merged-lookup-failure'),
+            /redis unavailable/,
+        );
 
-        const result = await handlePullRequestConflictDetection(payload, redis as never, 'corr-merged-lookup-failure');
-
-        assert.strictEqual(result?.outcome, 'queued');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
     test('logs clearly distinguish outcomes', async () => {
