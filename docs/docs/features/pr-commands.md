@@ -12,10 +12,10 @@ These commands are model-aware across ProPR's configured agents. If your environ
 
 Canonical naming in this guide:
 
-- Command arguments use full model IDs such as `claude-sonnet-4-6`, `gpt-5.4`, and `gemini-2.5-pro`
-- GitHub labels use their `llm-...` form such as `llm-claude-sonnet46`, `llm-codex-gpt54`, and `llm-gemini-pro`
+- Command arguments use the exact model IDs configured in your ProPR UI or agent settings, written below as placeholders like `<model-id>`
+- GitHub labels use their `llm-...` form such as `llm-<model-id>`
 
-Legacy aliases like `claude-sonnet`, `sonnet`, or older `llm-claude-sonnet` labels may still resolve for backward compatibility, but the docs use the explicit current forms above.
+If you are not sure which IDs are valid in your environment, check the configured agents in the Web UI. Legacy aliases may still resolve for backward compatibility, but the docs use the configured model ID form for durability.
 
 ## `/review` — Request an AI Code Review
 
@@ -29,8 +29,8 @@ Posts one AI review comment per requested model. Reviews are read-only — they 
 
 Request a review using the default review model.
 
-```
-/review claude-sonnet-4-6 gpt-5.4 gemini-2.5-pro
+```text
+/review <model-id-a> <model-id-b> <model-id-c>
 ```
 
 Request reviews from specific models, even across different configured agent providers. Each model posts its own review comment.
@@ -105,14 +105,14 @@ Updates the PR's model label so that all subsequent AI commands use the specifie
 
 ### Usage
 
-```
-/switch gpt-5.4
+```text
+/switch <model-id>
 ```
 
-Switch the PR to use GPT-5.4 for all future commands.
+Switch the PR to use that model for all future commands.
 
-```
-/switch gemini-2.5-pro
+```text
+/switch <model-id>
 Please re-review after switching
 ```
 
@@ -127,29 +127,31 @@ Switch models and include follow-up instructions. If instructions are provided, 
 
 ## `/use` — One-Time Model Override
 
-Overrides the model for a single follow-up run without changing the PR's labels.
+Runs one follow-up task immediately with a temporary model override, without changing the PR's labels. `/use` is self-contained: the same PR comment both selects the model and starts the run.
 
 ### Usage
 
-```
-/use gemini-2.5-pro
+```text
+/use <model-id>
+Please investigate the flaky test failure and update the PR if needed
 ```
 
-Run the next command with Gemini 2.5 Pro.
+Run one follow-up pass with a temporary model override. Put any instructions for that run below the first line in the same comment.
 
-```
-/use gpt-5.4
+```text
+/use <model-id>
 Focus on performance optimizations
 ```
 
-Override the model and provide instructions for the run.
+If you want a read-only analysis instead of a change-producing follow-up run, use `/review <model-id>` instead.
 
 ### Behavior
 
-1. The specified model is used for a single review/fix job without modifying the PR's model labels.
-2. Trailing instructions are passed to the AI as context for the run.
-3. Only one model argument is accepted; extra arguments are ignored with a warning.
-4. After the run completes, subsequent commands revert to the PR's configured model.
+1. Posting `/use` immediately queues one follow-up run with the specified model.
+2. Any text after the first line is passed to that run as instructions. `/use` does not store temporary state for a later comment.
+3. The PR's model labels are not changed.
+4. Only one model argument is accepted; extra arguments are ignored with a warning.
+5. After that run completes, later commands revert to the PR's configured model unless you use `/switch` or another `/use`.
 
 ## `/ultrafix` — Automated Review→Fix Loop
 
@@ -169,8 +171,8 @@ Run with system defaults (goal=7, max=5, pause=60 unless changed by an admin in 
 
 Set the target score goal to 8 (positional argument).
 
-```
-/ultrafix goal=8 max=10 pause=60 model=gpt-5.4
+```text
+/ultrafix goal=8 max=10 pause=60 model=<model-id>
 ```
 
 Use named arguments for full control:
@@ -229,5 +231,5 @@ A common workflow combining these commands:
 - `/review` and `/fix` are independent commands. You can run `/fix` without a prior `/review` if you post your own instructions.
 - Multiple `/review` calls accumulate review comments; `/fix` processes all unprocessed ones at once.
 - `/switch` and `/use` each accept exactly one model argument. The `llm-` prefix is optional when you reference a supported model label or model ID.
-- `/switch` changes the PR labels permanently; `/use` only affects the immediately following run.
+- `/switch` changes the PR labels permanently; `/use` triggers one immediate follow-up run with a temporary override and then reverts to the PR model.
 - Each command must be the first line of the PR comment. Any text after the first line is treated as extra instructions.
