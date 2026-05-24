@@ -8,6 +8,13 @@ ProPR supports six slash commands that you can use in pull request comments to t
 
 These commands are model-aware across ProPR's configured agents. If your environment has Claude, Codex, and Gemini agents enabled, you can target any supported model for review or follow-up work by using that model's ID or `llm-...` label.
 
+Canonical naming in this guide:
+
+- Command arguments use full model IDs such as `claude-sonnet-4-6`, `gpt-5.4`, and `gemini-2.5-pro`
+- GitHub labels use their `llm-...` form such as `llm-claude-sonnet46`, `llm-codex-gpt54`, and `llm-gemini-pro`
+
+Legacy aliases like `claude-sonnet`, `sonnet`, or older `llm-claude-sonnet` labels may still resolve for backward compatibility, but the docs use the explicit current forms above.
+
 ## `/review` — Request an AI Code Review
 
 Posts one AI review comment per requested model. Reviews are read-only — they do **not** apply any code changes.
@@ -21,7 +28,7 @@ Posts one AI review comment per requested model. Reviews are read-only — they 
 Request a review using the default review model.
 
 ```
-/review claude-opus-4-6 gpt-5.4 gemini-2.5-pro
+/review claude-sonnet-4-6 gpt-5.4 gemini-2.5-pro
 ```
 
 Request reviews from specific models, even across different configured agent providers. Each model posts its own review comment.

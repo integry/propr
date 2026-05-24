@@ -16,7 +16,7 @@ This guide covers deploying ProPR with the Web UI dashboard in a production envi
 ```bash
 cp .env.example .env
 cp packages/api/.env.example packages/api/.env
-cp packages/api/client/.env.example packages/api/client/.env
+cp propr-ui/.env.example propr-ui/.env
 ```
 
 2. Update the `.env` file with production values.
@@ -24,9 +24,9 @@ cp packages/api/client/.env.example packages/api/client/.env
 Important:
 
 - The production compose example in this repository is a minimal Claude-first deployment and wires `ANTHROPIC_API_KEY` by default.
-- If you enable Codex or Gemini agents in the AI Agents UI, extend your production compose setup with the corresponding credentials, config mounts, and agent images before routing production work to those agents.
+- If you enable Codex or Gemini agents in the AI Agents UI, you must also mount their credential directories into the `api` and `worker` containers and make sure the enabled agent configs point at those mounted paths.
 
-### Required Environment Variables
+### Core Environment Variables
 
 ```bash
 # GitHub App Configuration
@@ -60,6 +60,36 @@ REDIS_PORT=6379
 # Logging
 LOG_LEVEL=info
 ```
+
+### Additional Agent Setup For Codex And Gemini
+
+The core `.env` file is not enough for a multi-agent production deployment. If you enable Codex or Gemini, complete all of the following before you send production work to those agents:
+
+1. Add enabled agent entries in the AI Agents UI with the correct `dockerImage`, `configPath`, supported models, and default model.
+2. Make the agent credential directories available inside both the `api` and `worker` containers at the same absolute path the agent configuration uses.
+3. Ensure the corresponding agent images are available on the Docker host, such as `codex-cli:latest` and `gemini-cli:latest`.
+
+Typical host-mounted config paths:
+
+- Claude: `~/.claude`
+- Codex: `~/.codex`
+- Gemini: `~/.gemini`
+
+Example compose override for Codex and Gemini credentials:
+
+```yaml
+services:
+  api:
+    volumes:
+      - /srv/propr/agent-creds/codex:/root/.codex
+      - /srv/propr/agent-creds/gemini:/root/.gemini
+  worker:
+    volumes:
+      - /srv/propr/agent-creds/codex:/root/.codex
+      - /srv/propr/agent-creds/gemini:/root/.gemini
+```
+
+Then configure the corresponding agents in the UI to use `/root/.codex` and `/root/.gemini` as their `configPath` values, or keep the defaults if you mount them at the default paths. If you use the launcher-based deployment flow instead of Compose, pass `HOST_CODEX_DIR` and `HOST_GEMINI_DIR` so those credential directories are mounted through the launcher automatically.
 
 ## Deployment Steps
 

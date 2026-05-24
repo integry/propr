@@ -1,95 +1,84 @@
 # ProPR Web UI Integration Guide
 
-This document outlines how to integrate the React-based web UI with the ProPR backend.
+This guide explains how ProPR's browser UI fits together with the dashboard API, workers, and GitHub automation services.
 
 ## Overview
 
-The ProPR Web Management UI is located in the `propr-ui/` directory. It's a React application built with Vite that provides a dashboard for monitoring and managing the ProPR system.
+ProPR's Web UI is a live operational surface, not a placeholder project. In this repository:
 
-## Current Status
+- The frontend lives in `propr-ui/`
+- The dashboard API lives in `packages/api/`
+- The daemon and workers handle repository polling, task execution, and PR automation
 
-### Completed (Issue #46)
-- ✅ React application initialized with Vite
-- ✅ Project structure created with api/ and components/ directories
-- ✅ Dashboard component with layout for status and stats
-- ✅ SystemStatus component showing daemon, workers, Redis, and GitHub auth status
-- ✅ TaskQueueStats component displaying queue metrics
-- ✅ Mock API layer for development
-- ✅ Basic styling and responsive design
-- ✅ Auto-refresh functionality (5-second intervals)
+The frontend talks to the dashboard API over HTTP, and the API reads shared state from Redis and the application database. That gives the UI access to task activity, repository configuration, agent settings, planner workflows, and operational metrics.
 
-## Backend API Requirements
+## Current Integration Model
 
-To connect the frontend with the ProPR backend, the following API endpoints need to be implemented:
+The Web UI is responsible for:
 
-### 1. System Status Endpoint
+- Showing dashboard status, queue health, task history, and execution details
+- Managing monitored repositories, settings, and AI agent configuration
+- Driving Planner Studio and other browser-based workflows
+- Sending authenticated requests to the API for follow-up actions
+
+The backend is responsible for:
+
+- GitHub App authentication, webhooks, and issue or PR automation
+- Queue coordination and worker orchestration
+- Running Claude, Codex, and Gemini agents in isolated execution environments
+- Persisting operational data and exposing it through API endpoints
+
+## Key API Surfaces
+
+The frontend uses the dashboard API rather than a mock layer. Common integration points include:
+
+- `GET /api/status` for daemon, worker, Redis, and auth health
+- `GET /api/queue/stats` for queue depth and throughput
+- `GET /api/tasks` and related task detail endpoints for execution history
+- `GET /api/config/*` routes for repositories, settings, and follow-up configuration
+- Auth routes such as `/api/auth/github/*` for GitHub login flows
+
+When you extend the UI, prefer adding or reusing API routes in `packages/api/` and keeping browser calls centralized in `propr-ui/src/api/`.
+
+## Running The UI In Development
+
+1. Start the ProPR backend services you need for local development.
+2. Create a frontend env file:
+
+```bash
+cp propr-ui/.env.example propr-ui/.env
 ```
-GET /api/system/status
-Response:
-{
-  "daemon": "Running" | "Stopped",
-  "workers": [
-    { "id": 1, "status": "active" | "idle" | "error" }
-  ],
-  "redis": "Connected" | "Disconnected", 
-  "githubAuth": "Authenticated" | "Failed"
-}
-```
 
-### 2. Queue Statistics Endpoint
-```
-GET /api/queue/stats
-Response:
-{
-  "active": number,
-  "waiting": number,
-  "completed": number,  // last 24 hours
-  "failed": number
-}
-```
+3. Start the frontend:
 
-## Running the UI
-
-### Development Mode
 ```bash
 cd propr-ui
 npm install
 npm run dev
 ```
-Access at: http://localhost:5173
 
-### Production Build
-```bash
-cd propr-ui
-npm run build
-```
-Static files will be in `propr-ui/dist/`
+The Vite dev server runs on `http://localhost:5173` by default. Point `VITE_API_BASE_URL` or `VITE_API_URL` at your local dashboard API if it is running on a different origin.
 
-## Integration Steps
+## Production Integration
 
-1. **Add Express Server**: Create an Express server in the main ProPR application to serve the API endpoints and the built React app.
+In production, the UI and API can be deployed separately behind the same domain or different subdomains.
 
-2. **Implement API Endpoints**: Add routes to expose system status and queue statistics from the existing services.
+Important integration points:
 
-3. **CORS Configuration**: Configure CORS if running the UI and backend on different ports during development.
+- Set the frontend API base URL so browser requests reach the dashboard API
+- Configure GitHub OAuth callback URLs to match the public API origin
+- Allow credentials and cookies to flow correctly if the UI and API are on different origins
+- Route `/api/*` traffic to the dashboard API if you serve both behind one reverse proxy
 
-4. **Update API Functions**: Replace mock functions in `propr-ui/src/api/proprApi.js` with actual HTTP requests.
+If you build your own frontend around ProPR, treat the dashboard API as the system contract and reuse the existing route structure instead of re-implementing worker or daemon logic in the browser.
 
-5. **Authentication**: Add authentication middleware to protect the API endpoints and UI access.
+## Extending The Integration
 
-## Future Enhancements
+When adding new UI features:
 
-The following features are planned for future issues:
-- Real-time updates via WebSocket
-- Activity feed showing recent operations
-- Manual job submission interface
-- Configuration management UI
-- Detailed worker and job views
-- Authentication and role-based access control
+1. Add or update the API route in `packages/api/`
+2. Add a typed client function under `propr-ui/src/api/`
+3. Connect the UI component or page to that client
+4. Verify auth, repository scoping, and task visibility behavior in the browser
 
-## Technical Notes
-
-- The UI uses polling (5-second intervals) for updates. This can be replaced with WebSocket for real-time updates.
-- Mock data includes randomization to simulate live changes during development.
-- The UI is built as a static SPA and can be served from any web server or CDN.
-- All API calls are centralized in `proprApi.js` for easy maintenance.
+This keeps the browser layer thin and ensures operational behavior continues to live in the backend services that already own task execution.

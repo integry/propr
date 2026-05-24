@@ -120,14 +120,14 @@ logger.info({
 
 ## Cost Metrics
 
-### 5. Claude API Usage per Issue
+### 5. AI Agent Usage per Issue
 
-**Definition:** Track Claude API/token usage per successfully resolved issue for cost optimization.
+**Definition:** Track model usage and cost per successfully resolved issue for cost optimization across all enabled agents.
 
 **Metrics to Track:**
 - **Cost per Issue:** Total USD cost per resolved issue
 - **Token Usage:** Input and output tokens per issue
-- **Model Efficiency:** Compare costs across different Claude models
+- **Provider/Model Efficiency:** Compare costs across models and agent providers
 - **Turn Efficiency:** Number of conversation turns per issue
 
 **Success Criteria:**
@@ -137,15 +137,16 @@ logger.info({
 
 **Data Collection:**
 ```javascript
-// Extract from Claude result
-if (claudeResult?.finalResult) {
+// Extract from normalized agent result
+if (agentResult?.finalResult) {
   logger.info({
     issueNumber: issueRef.number,
-    costUsd: claudeResult.finalResult.cost_usd,
-    numTurns: claudeResult.finalResult.num_turns,
-    sessionId: claudeResult.sessionId,
-    model: claudeResult.model
-  }, 'Claude cost metrics recorded');
+    provider: agentConfig.type,
+    costUsd: agentResult.finalResult.cost_usd,
+    numTurns: agentResult.finalResult.num_turns,
+    sessionId: agentResult.sessionId,
+    model: agentResult.model
+  }, 'Agent cost metrics recorded');
 }
 ```
 
@@ -166,7 +167,7 @@ if (claudeResult?.finalResult) {
 **Definition:** Categorize and track different types of failures to identify improvement opportunities.
 
 **Failure Categories:**
-- **Claude Comprehension Error:** AI misunderstood the issue requirements
+- **AI Requirements Interpretation Error:** The selected agent misunderstood the issue requirements
 - **Implementation Error:** AI understood but implemented incorrectly
 - **Test Failure:** Generated code failed existing or new tests
 - **Git/Integration Error:** Issues with git operations or PR creation
@@ -179,9 +180,11 @@ if (claudeResult?.finalResult) {
 // Enhanced failure logging
 logger.error({
   issueNumber: issueRef.number,
-  failureCategory: 'claude_comprehension_error', // use standardized categories
+  failureCategory: 'ai_requirements_interpretation_error', // use standardized categories
   failureDetails: errorDetails,
-  claudeOutput: claudeResult?.summary,
+  agentOutput: agentResult?.summary,
+  agentType: agentConfig.type,
+  model: agentResult?.model,
   retryAttempted: false
 }, 'Issue processing failed');
 ```
@@ -194,7 +197,7 @@ logger.error({
 - **Issue Types:** Which types of issues have higher/lower success rates
 - **Repository Characteristics:** Success rates by language, size, complexity
 - **Time Patterns:** Performance variations by time of day, load
-- **Model Performance:** Compare different Claude models and configurations
+- **Agent/Model Performance:** Compare different providers, models, and configurations
 
 ## Feedback Loop Process
 
@@ -227,8 +230,8 @@ logger.error({
 **Based on analysis findings, implement improvements in priority order:**
 
 #### High Priority Actions
-- **Prompt Refinement:** Update Claude prompts based on comprehension failures
-- **Context Enhancement:** Improve CLAUDE.md files with missing project context
+- **Prompt And Instruction Refinement:** Update prompts or agent instructions based on interpretation failures
+- **Context Enhancement:** Improve repository guidance files and missing project context
 - **Security Hardening:** Add security guidelines and checks
 - **Error Handling:** Improve system robustness for common failure modes
 
@@ -267,7 +270,7 @@ The worker already includes some metrics collection in the completion logging. E
 
 1. **Worker Success/Failure Callbacks:** Enhanced logging with standardized metrics
 2. **State Manager Updates:** Track state transitions and timing
-3. **Claude Service Integration:** Capture Claude-specific metrics
+3. **Agent Execution Integration:** Capture provider, model, cost, and token metrics in a normalized format
 4. **GitHub API Monitoring:** Track API usage and rate limiting
 
 ### Recommended Tracking Tools
