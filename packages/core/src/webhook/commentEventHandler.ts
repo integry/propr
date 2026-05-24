@@ -18,6 +18,7 @@ import { safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
+import { trackPrQueueJob } from './prQueueJobIndex.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -706,6 +707,7 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
             attempts: 3,
             backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
         });
+        await trackPrQueueJob(queue as never, `${owner}/${repo}`, prNumber, jobId);
         await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
         correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {

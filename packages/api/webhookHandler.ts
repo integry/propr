@@ -1,11 +1,11 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
-import { SUPPORTED_WEBHOOK_EVENTS, getActiveTasksForPR, logger } from '@propr/core';
+import { SUPPORTED_WEBHOOK_EVENTS, logger } from '@propr/core';
 import {
-  StopTaskExecutionError,
-  stopTaskExecution,
-  type StopTaskExecutionOptions,
-} from './routes/dockerRoutes.js';
+  cancelMergedPullRequestTasks,
+  isMergedPullRequestClose,
+  type MergeTaskCancellationDeps,
+} from './mergedPullRequestCancellation.js';
 
 /**
  * Default TTL for webhook delivery deduplication keys in Redis (seconds).
@@ -76,19 +76,6 @@ export interface WebhookHandlerDeps {
   mergeTaskCancellation?: MergeTaskCancellationDeps;
 }
 
-interface MergedPullRequestPayload {
-  action: 'closed';
-  repository: { full_name: string };
-  pull_request: { number: number; merged: true };
-}
-
-export interface MergeTaskCancellationDeps {
-  redisClient: StopTaskExecutionOptions['redisClient'];
-  getActiveTasksForPR?: typeof getActiveTasksForPR;
-  stopTaskExecution?: typeof stopTaskExecution;
-  log?: Pick<typeof logger, 'info' | 'warn'>;
-}
-
 /**
  * Core webhook request handler extracted for testability.
  *
@@ -98,10 +85,13 @@ export interface MergeTaskCancellationDeps {
  * 2. Redis-based delivery-ID deduplication (NX + TTL) — rejects duplicate
  *    deliveries within the TTL window.
  *
- * Failure semantics: once a delivery ID is reserved in Redis, it is NOT
- * removed on downstream processing errors. This prevents a partially-
- * processed webhook from being re-accepted on a GitHub retry, which could
- * re-trigger side effects. Downstream consumers must be idempotent.
+ * Failure semantics:
+ * 1. Merge-time PR task cancellation runs before delivery-ID reservation so a
+ *    transient cancellation failure can return a retryable non-2xx response.
+ * 2. Once a delivery ID is reserved in Redis, it is NOT removed on downstream
+ *    processing errors. This prevents a partially-processed webhook from being
+ *    re-accepted on a GitHub retry, which could re-trigger side effects.
+ *    Downstream consumers must be idempotent.
  */
 export async function handleWebhookRequest(
   req: Request,
@@ -167,6 +157,35 @@ export async function handleWebhookRequest(
     return;
   }
 
+  let payload: { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
+  try {
+    payload = JSON.parse(req.body.toString());
+  } catch {
+    console.error(`[webhook] Failed to parse JSON body for delivery ${rawDeliveryId}`);
+    res.status(400).send('Invalid JSON payload.');
+    return;
+  }
+
+  console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
+
+  if (mergeTaskCancellation && isMergedPullRequestClose(payload)) {
+    try {
+      await cancelMergedPullRequestTasks(payload, correlationId, mergeTaskCancellation);
+    } catch (error) {
+      const log = mergeTaskCancellation.log ?? logger;
+      log.warn({
+        correlationId,
+        deliveryId: rawDeliveryId,
+        event: rawEvent,
+        repository: payload.repository.full_name,
+        prNumber: payload.pull_request.number,
+        error: (error as Error).message,
+      }, 'Merged PR task cancellation failed; returning retryable webhook response');
+      res.status(503).send('Merged PR task cancellation failed.');
+      return;
+    }
+  }
+
   // --- Replay protection: reject duplicate delivery IDs via Redis NX ---
   const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
   const isNew = await redis.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
@@ -178,134 +197,9 @@ export async function handleWebhookRequest(
 
   // The delivery ID remains reserved in Redis regardless of processing outcome.
   // This is intentional — see the JSDoc above for rationale.
-  let payload: { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
-  try {
-    payload = JSON.parse(req.body.toString());
-  } catch {
-    console.error(`[webhook] Failed to parse JSON body for delivery ${rawDeliveryId}`);
-    res.status(400).send('Invalid JSON payload.');
-    return;
-  }
-
-  console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
-  await cancelMergedPullRequestTasksSafely({
-    payload,
-    event: rawEvent,
-    deliveryId: rawDeliveryId,
-    correlationId,
-    deps: mergeTaskCancellation,
-  });
   await processor(payload, rawEvent, correlationId, rawDeliveryId);
 
   res.status(200).send('Webhook processed.');
 }
 
-export async function cancelMergedPullRequestTasks(
-  payload: Record<string, unknown>,
-  correlationId: string,
-  deps?: MergeTaskCancellationDeps,
-): Promise<void> {
-  if (!deps || !isMergedPullRequestClose(payload)) {
-    return;
-  }
-
-  const repository = payload.repository.full_name;
-  const prNumber = payload.pull_request.number;
-  const log = deps.log ?? logger;
-  const loadActiveTasks = deps.getActiveTasksForPR ?? getActiveTasksForPR;
-  const stopTask = deps.stopTaskExecution ?? stopTaskExecution;
-  const cancellation = {
-    code: 'pull_request_merged',
-    message: `Task cancelled because pull request #${prNumber} was merged.`,
-  };
-
-  const activeTasks = await loadActiveTasks(repository, prNumber);
-  if (activeTasks.length === 0) {
-    log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
-    return;
-  }
-
-  log.info({ correlationId, repository, prNumber, activeTaskCount: activeTasks.length }, 'Cancelling active PR tasks after merge');
-
-  const failures = (await Promise.all(activeTasks.map(async (task) => {
-    try {
-      await stopTask(task.taskId, {
-        redisClient: deps.redisClient,
-        requestedBy: 'system',
-        cancellation,
-      });
-      return null;
-    } catch (error) {
-      if (isAlreadyInactiveStopError(error)) {
-        log.info({
-          correlationId,
-          repository,
-          prNumber,
-          taskId: task.taskId,
-          error: (error as Error).message,
-        }, 'Merged PR task was already inactive during cancellation');
-        return null;
-      }
-
-      log.warn({
-        correlationId,
-        repository,
-        prNumber,
-        taskId: task.taskId,
-        error: (error as Error).message,
-      }, 'Failed to cancel merged PR task');
-      return task.taskId;
-    }
-  }))).filter((taskId): taskId is string => taskId !== null);
-
-  if (failures.length > 0) {
-    throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.join(', ')}`);
-  }
-}
-
-async function cancelMergedPullRequestTasksSafely(
-  params: {
-    payload: Record<string, unknown>;
-    event: string;
-    deliveryId: string;
-    correlationId: string;
-    deps?: MergeTaskCancellationDeps;
-  },
-): Promise<void> {
-  const { payload, event, deliveryId, correlationId, deps } = params;
-  if (!deps) {
-    return;
-  }
-
-  try {
-    await cancelMergedPullRequestTasks(payload, correlationId, deps);
-  } catch (error) {
-    const log = deps.log ?? logger;
-    log.warn({
-      correlationId,
-      deliveryId,
-      event,
-      error: (error as Error).message,
-      ...(isMergedPullRequestClose(payload) ? {
-        repository: payload.repository.full_name,
-        prNumber: payload.pull_request.number,
-      } : {}),
-    }, 'Merged PR task cancellation failed; continuing webhook processing');
-  }
-}
-
-function isAlreadyInactiveStopError(error: unknown): boolean {
-  return error instanceof StopTaskExecutionError
-    && (error.status === 400 || error.status === 404);
-}
-
-function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {
-  const prPayload = payload as Partial<MergedPullRequestPayload> & {
-    repository?: { full_name?: string };
-    pull_request?: { number?: number; merged?: boolean };
-  };
-  return prPayload.action === 'closed'
-    && typeof prPayload.repository?.full_name === 'string'
-    && typeof prPayload.pull_request?.number === 'number'
-    && prPayload.pull_request?.merged === true;
-}
+export { cancelMergedPullRequestTasks };

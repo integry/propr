@@ -4,6 +4,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
+import { getTrackedPrQueueJobs, trackPrQueueJob } from './prQueueJobIndex.js';
 
 export interface MergePROptions {
     owner: string;
@@ -695,18 +696,13 @@ export async function getActiveTasksForPR(
         const queue = await (deps.getIssueQueue ?? getIssueQueue)();
         const database = deps.db ?? db;
         const log = deps.log ?? logger;
+        const trackedQueueJobs = await getTrackedPrQueueJobs(queue as never, repository, prNumber);
+        for (const job of trackedQueueJobs) {
+            taskMap.set(job.jobId, { taskId: job.jobId, state: job.state });
+        }
 
-        for (const queueState of PR_QUEUE_STATES) {
-            const jobs = await queue.getJobs([queueState]);
-            for (const job of jobs) {
-                const jobData = job.data as unknown as Record<string, unknown>;
-                if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
-                    continue;
-                }
-
-                const queueJobId = String(job.id);
-                taskMap.set(queueJobId, { taskId: queueJobId, state: queueState });
-            }
+        if (trackedQueueJobs.length === 0) {
+            await addQueuedPrJobsFromFallbackScan(queue, repository, prNumber, taskMap);
         }
 
         const activeTasks = await database('tasks')
@@ -740,6 +736,27 @@ export async function getActiveTasksForPR(
             error: (error as Error).message
         }, 'Failed to load active tasks for PR');
         throw error;
+    }
+}
+
+async function addQueuedPrJobsFromFallbackScan(
+    queue: Awaited<ReturnType<typeof getIssueQueue>>,
+    repository: string,
+    prNumber: number,
+    taskMap: Map<string, PRTaskActivity>,
+): Promise<void> {
+    for (const queueState of PR_QUEUE_STATES) {
+        const jobs = await queue.getJobs([queueState]);
+        for (const job of jobs) {
+            const jobData = job.data as unknown as Record<string, unknown>;
+            if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
+                continue;
+            }
+
+            const queueJobId = String(job.id);
+            taskMap.set(queueJobId, { taskId: queueJobId, state: queueState });
+            await trackPrQueueJob(queue as never, repository, prNumber, queueJobId);
+        }
     }
 }
 

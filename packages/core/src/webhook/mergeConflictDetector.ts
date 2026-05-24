@@ -4,6 +4,7 @@ import { loadAutoResolveMergeConflicts } from '../config/configManager.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getMergeConflictIdempotencyKey } from '../utils/constants.js';
 import { generateCorrelationId } from '../utils/logger.js';
+import { trackPrQueueJob } from './prQueueJobIndex.js';
 import type { MergeConflictJobData } from '../queue/taskQueue.types.js';
 import type { PullRequestEvent, PushEvent } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
@@ -86,6 +87,7 @@ async function detectAndEnqueueForPR(
     const jobId = `merge-conflict-${owner}-${repoName}-${prNumber}-${Date.now()}`;
     const queue = await getIssueQueue();
     await queue.add('processMergeConflict', jobData, { jobId });
+    await trackPrQueueJob(queue as never, repository, prNumber, jobId);
 
     // Mark as queued in Redis
     await redisClient.setex(idempotencyKey, IDEMPOTENCY_TTL_SECONDS, Date.now().toString());
@@ -217,6 +219,7 @@ export async function handleMergeCommand(
     const jobId = `merge-conflict-${owner}-${repoName}-${prNumber}-${Date.now()}`;
     const queue = await getIssueQueue();
     await queue.add('processMergeConflict', jobData, { jobId });
+    await trackPrQueueJob(queue as never, repository, prNumber, jobId);
 
     log.info({
         repository,

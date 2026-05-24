@@ -260,6 +260,7 @@ describe('cancelMergedPullRequestTasks', () => {
     const req = createWebhookRequest(payload, 'test-secret');
     const res = createWebhookResponse();
     const processor = mock.fn(async () => {});
+    const reserveDelivery = mock.fn(async () => 'OK');
     let releaseStopTask: (() => void) | null = null;
     let stopTaskResolved = false;
 
@@ -289,7 +290,7 @@ describe('cancelMergedPullRequestTasks', () => {
     const requestPromise = handleWebhookRequest(req as never, res as never, {
       webhookSecret: 'test-secret',
       redis: {
-        set: mock.fn(async () => 'OK'),
+        set: reserveDelivery,
       },
       processor,
       correlationId: 'test-correlation-id',
@@ -309,21 +310,24 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(processor.mock.calls.length, 0);
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 1);
     assert.strictEqual(stopTaskResolved, false);
+    assert.strictEqual(reserveDelivery.mock.calls.length, 0);
 
     releaseStopTask?.();
     await requestPromise;
     assert.strictEqual(stopTaskResolved, true);
+    assert.strictEqual(reserveDelivery.mock.calls.length, 1);
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.body, 'Webhook processed.');
     assert.strictEqual(processor.mock.calls.length, 1);
   });
 
-  test('handleWebhookRequest continues webhook processing when merge-task cancellation fails', async () => {
+  test('handleWebhookRequest returns a retryable response when merge-task cancellation fails', async () => {
     const redisClient = createRedisClient();
     const payload = createMergedPrPayload();
     const req = createWebhookRequest(payload, 'test-secret');
     const res = createWebhookResponse();
     const processor = mock.fn(async () => {});
+    const reserveDelivery = mock.fn(async () => 'OK');
 
     mockGetActiveTasksForPR.mock.mockImplementation(async () => ([
       { taskId: 'task-running', state: 'processing' },
@@ -334,12 +338,12 @@ describe('cancelMergedPullRequestTasks', () => {
 
     await assert.doesNotReject(async () => {
       await handleWebhookRequest(req as never, res as never, {
-        webhookSecret: 'test-secret',
-        redis: {
-          set: mock.fn(async () => 'OK'),
-        },
-        processor,
-        correlationId: 'test-correlation-id',
+      webhookSecret: 'test-secret',
+      redis: {
+        set: reserveDelivery,
+      },
+      processor,
+      correlationId: 'test-correlation-id',
         mergeTaskCancellation: {
           redisClient,
           getActiveTasksForPR: mockGetActiveTasksForPR,
@@ -350,9 +354,10 @@ describe('cancelMergedPullRequestTasks', () => {
     });
 
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 1);
-    assert.strictEqual(processor.mock.calls.length, 1);
-    assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(res.body, 'Webhook processed.');
+    assert.strictEqual(processor.mock.calls.length, 0);
+    assert.strictEqual(reserveDelivery.mock.calls.length, 0);
+    assert.strictEqual(res.statusCode, 503);
+    assert.strictEqual(res.body, 'Merged PR task cancellation failed.');
     assert.strictEqual(mockLogger.warn.mock.calls.length > 0, true);
   });
 });
