@@ -5,6 +5,7 @@ import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
 import { executeDockerCommand, ExecutionResult } from './docker/dockerExecutor.js';
+import { wrapDockerRunArgsWithRepoSetup } from './docker/repoSetupWrapper.js';
 import { parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes } from '../utils/scheduling.js';
 
 export class UsageLimitError extends Error {
@@ -285,7 +286,7 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
 
     logger.info({ issueNumber, hasSystemPrompt: systemPrompt !== undefined, hasTools: tools !== undefined }, 'Docker args built');
 
-    return dockerArgs;
+    return wrapDockerRunArgsWithRepoSetup(dockerArgs, CLAUDE_DOCKER_IMAGE, 'claude');
 }
 
 export function parseStreamJsonOutput(result: ExecutionResult): ClaudeOutput {

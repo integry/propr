@@ -13,3 +13,4 @@ export { createSettingCommand } from "./settingCommands.js";
 export { createLogCommand } from "./logCommands.js";
 export { createTodoCommand } from "./todoCommands.js";
 export { createStatusCommand, createQueueCommand } from "./systemCommands.js";
+export { createInitCommand } from "./initCommands.js";
