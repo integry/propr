@@ -55,6 +55,11 @@ export interface StopTaskExecutionOptions {
   cancellation?: StopTaskCancellationReason;
 }
 
+interface PersistedTaskRecord {
+  taskId: string;
+  jobId: string | null;
+}
+
 export interface StopTaskExecutionDeps {
   stopDockerContainer?: typeof stopDockerContainer;
   getStateManager?: typeof getStateManager;
@@ -217,6 +222,7 @@ export async function stopTaskExecution(
   const shouldAbort = shouldAbortTask(activity);
 
   assertTaskCanBeStopped(context, activity);
+  await ensureTaskStateForCancellation(context.taskId, context.state, context.queueJob, deps);
 
   const timestamp = new Date().toISOString();
   await setAbortSignalIfNeeded({
@@ -247,8 +253,6 @@ export async function stopTaskExecution(
     taskId: context.taskId,
     requestedBy,
     cancellation,
-    state: context.state,
-    queueJob: context.queueJob,
     queueState: context.queueState,
     containerId,
     containerStopped,
@@ -285,17 +289,23 @@ async function loadStopTaskContext(
   deps: StopTaskExecutionDeps,
 ): Promise<StopTaskContext> {
   const normalizedTaskId = normalizeTaskId(taskReference);
-  const candidateTaskIds = [...new Set([taskReference, normalizedTaskId])];
+  const persistedTask = await findPersistedTaskRecord(taskReference, normalizedTaskId, deps.db ?? db);
+  const stateLookup = await loadTaskState(redisClient, [persistedTask?.taskId, normalizedTaskId, taskReference]);
+  const candidateTaskIds = [...new Set([
+    taskReference,
+    normalizedTaskId,
+    persistedTask?.taskId,
+    persistedTask?.jobId,
+  ].filter((value): value is string => Boolean(value)))];
 
   console.log(`[stop-execution] Attempting to stop task: ${taskReference} (taskId: ${normalizedTaskId})`);
 
-  const stateData = await redisClient.get(`worker:state:${normalizedTaskId}`);
-  const state = stateData ? JSON.parse(stateData) as TaskState : null;
+  const state = stateLookup.state;
   const currentState = state?.history[state.history.length - 1]?.state ?? null;
   const queueJob = await getQueueJob(candidateTaskIds, deps.getIssueQueue);
   const queueState = queueJob ? await queueJob.getState() : null;
-  const taskId = resolveStopTaskId(normalizedTaskId, queueJob);
-  const abortTaskIds = buildAbortTaskIds(taskId, normalizedTaskId, queueJob);
+  const taskId = resolveStopTaskId(normalizedTaskId, queueJob, persistedTask?.taskId ?? stateLookup.taskId);
+  const abortTaskIds = buildAbortTaskIds(taskId, normalizedTaskId, queueJob, persistedTask?.jobId);
 
   return {
     normalizedTaskId,
@@ -303,9 +313,67 @@ async function loadStopTaskContext(
     currentState,
     queueJob,
     queueState,
-    taskId: state ? normalizedTaskId : taskId,
+    taskId: stateLookup.taskId ?? taskId,
     abortTaskIds,
   };
+}
+
+async function findPersistedTaskRecord(
+  taskReference: string,
+  normalizedTaskId: string,
+  database: typeof db,
+): Promise<PersistedTaskRecord | null> {
+  const lookupCandidates = [
+    { column: 'task_id', value: taskReference },
+    { column: 'task_id', value: normalizedTaskId },
+    { column: 'job_id', value: taskReference },
+    { column: 'job_id', value: normalizedTaskId },
+  ];
+  const seen = new Set<string>();
+
+  for (const candidate of lookupCandidates) {
+    const key = `${candidate.column}:${candidate.value}`;
+    if (!candidate.value || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    const record = await database('tasks')
+      .where({ [candidate.column]: candidate.value })
+      .select('task_id', 'job_id')
+      .first() as { task_id: string; job_id: string | null } | undefined;
+    if (record) {
+      return {
+        taskId: record.task_id,
+        jobId: record.job_id,
+      };
+    }
+  }
+
+  return null;
+}
+
+async function loadTaskState(
+  redisClient: RedisClientLike,
+  candidateTaskIds: Array<string | null | undefined>,
+): Promise<{ state: TaskState | null; taskId: string | null }> {
+  for (const candidateTaskId of candidateTaskIds) {
+    if (!candidateTaskId) {
+      continue;
+    }
+
+    const stateData = await redisClient.get(`worker:state:${candidateTaskId}`);
+    if (!stateData) {
+      continue;
+    }
+
+    return {
+      state: JSON.parse(stateData) as TaskState,
+      taskId: candidateTaskId,
+    };
+  }
+
+  return { state: null, taskId: null };
 }
 
 function getStopTaskActivity(currentState: string | null, queueState: string | null): StopTaskActivity {
@@ -427,6 +495,17 @@ async function removeQueueJobIfNeeded(queueJob: Job<QueueJobData> | null, isQueu
   return true;
 }
 
+async function ensureTaskStateForCancellation(
+  taskId: string,
+  state: TaskState | null,
+  queueJob: Job<QueueJobData> | null,
+  deps: Pick<StopTaskExecutionDeps, 'db' | 'getStateManager'>,
+): Promise<void> {
+  if (!state && queueJob) {
+    await createTaskStateFromQueueJob(taskId, queueJob, deps);
+  }
+}
+
 function getStopTaskSuccessMessage(params: {
   jobRemoved: boolean;
   shouldAbort: boolean;
@@ -470,46 +549,36 @@ async function markTaskCancelled(params: {
   taskId: string;
   requestedBy: string;
   cancellation: StopTaskCancellationReason;
-  state: TaskState | null;
-  queueJob: Job<QueueJobData> | null;
   queueState: string | null;
   containerId?: string;
   containerStopped: boolean;
   deps: StopTaskExecutionDeps;
 }): Promise<void> {
-  const { taskId, requestedBy, cancellation, state, queueJob, queueState, containerId, containerStopped, deps } = params;
+  const { taskId, requestedBy, cancellation, queueState, containerId, containerStopped, deps } = params;
   const stateManager = (deps.getStateManager ?? getStateManager)();
 
-  try {
-    if (!state && queueJob) {
-      await createTaskStateFromQueueJob(taskId, queueJob, deps);
-    }
-
-    await stateManager.markTaskCancelled(taskId, requestedBy, {
-      reason: cancellation.message,
+  await stateManager.markTaskCancelled(taskId, requestedBy, {
+    reason: cancellation.message,
+    cancellation: {
+      code: cancellation.code,
+      message: cancellation.message,
+      cancelledBy: requestedBy === 'system' ? 'system' : 'user',
+      source: 'task_stop',
+      containerStopped,
+      ...(containerId ? { containerId } : {}),
+    },
+    historyMetadata: {
       cancellation: {
         code: cancellation.code,
         message: cancellation.message,
-        cancelledBy: requestedBy === 'system' ? 'system' : 'user',
-        source: 'task_stop',
-        containerStopped,
-        ...(containerId ? { containerId } : {}),
       },
-      historyMetadata: {
-        cancellation: {
-          code: cancellation.code,
-          message: cancellation.message,
-        },
-        requestedBy,
-        containerStopped,
-        ...(containerId ? { containerId } : {}),
-        ...(queueState ? { queueState } : {}),
-      },
-    });
-    console.log(`[stop-execution] Task ${taskId} marked as cancelled`);
-  } catch (stateError) {
-    console.warn(`[stop-execution] Failed to mark task as cancelled: ${(stateError as Error).message}`);
-  }
+      requestedBy,
+      containerStopped,
+      ...(containerId ? { containerId } : {}),
+      ...(queueState ? { queueState } : {}),
+    },
+  });
+  console.log(`[stop-execution] Task ${taskId} marked as cancelled`);
 }
 
 async function createTaskStateFromQueueJob(
@@ -541,6 +610,7 @@ function buildIssueRefFromJobData(jobData: QueueJobData): IssueRef | null {
   const repoOwner = getRepoOwner(jobData);
   const repoName = getRepoName(jobData);
   const number = extractTaskNumber(jobData);
+  const prNumber = extractPrNumber(jobData);
 
   if (!repoOwner || !repoName || number === null) {
     return null;
@@ -553,7 +623,7 @@ function buildIssueRefFromJobData(jobData: QueueJobData): IssueRef | null {
     ...(typeof jobData.modelName === 'string' ? { modelName: jobData.modelName } : {}),
     ...(typeof jobData.title === 'string' ? { title: jobData.title } : {}),
     ...(typeof jobData.subtitle === 'string' ? { subtitle: jobData.subtitle } : {}),
-    ...(typeof jobData.pullRequestNumber === 'number' ? { pullRequestNumber: jobData.pullRequestNumber, type: 'pr_followup' } : {}),
+    ...(prNumber !== null ? { pullRequestNumber: prNumber, type: 'pr_followup' } : {}),
   };
 }
 
@@ -609,7 +679,15 @@ function getRepositoryValue(jobData: QueueJobData): string | null {
   return typeof jobData.repository === 'string' ? jobData.repository : null;
 }
 
-function resolveStopTaskId(normalizedTaskId: string, queueJob: Job<QueueJobData> | null): string {
+function resolveStopTaskId(
+  normalizedTaskId: string,
+  queueJob: Job<QueueJobData> | null,
+  persistedTaskId: string | null,
+): string {
+  if (persistedTaskId) {
+    return persistedTaskId;
+  }
+
   if (!queueJob) {
     return normalizedTaskId;
   }
@@ -618,9 +696,14 @@ function resolveStopTaskId(normalizedTaskId: string, queueJob: Job<QueueJobData>
   return queueTaskId ?? normalizedTaskId;
 }
 
-function buildAbortTaskIds(taskId: string, normalizedTaskId: string, queueJob: Job<QueueJobData> | null): string[] {
+function buildAbortTaskIds(
+  taskId: string,
+  normalizedTaskId: string,
+  queueJob: Job<QueueJobData> | null,
+  persistedJobId: string | null,
+): string[] {
   const queueJobId = queueJob?.id ? String(queueJob.id) : null;
-  return [...new Set([taskId, normalizedTaskId, queueJobId].filter((value): value is string => Boolean(value)))];
+  return [...new Set([taskId, normalizedTaskId, queueJobId, persistedJobId].filter((value): value is string => Boolean(value)))];
 }
 
 function buildTaskIdFromQueueJob(queueJob: Job<QueueJobData>): string | null {

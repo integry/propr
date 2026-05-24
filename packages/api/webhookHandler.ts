@@ -1,7 +1,11 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { SUPPORTED_WEBHOOK_EVENTS, getActiveTasksForPR, logger } from '@propr/core';
-import { stopTaskExecution, type StopTaskExecutionOptions } from './routes/dockerRoutes.js';
+import {
+  StopTaskExecutionError,
+  stopTaskExecution,
+  type StopTaskExecutionOptions,
+} from './routes/dockerRoutes.js';
 
 /**
  * Default TTL for webhook delivery deduplication keys in Redis (seconds).
@@ -184,9 +188,7 @@ export async function handleWebhookRequest(
   }
 
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
-  void cancelMergedPullRequestTasks(payload, correlationId, mergeTaskCancellation).catch((error) => {
-    console.warn(`[webhook] Failed to cancel merged PR tasks: ${(error as Error).message}`);
-  });
+  await cancelMergedPullRequestTasks(payload, correlationId, mergeTaskCancellation);
   await processor(payload, rawEvent, correlationId, rawDeliveryId);
 
   res.status(200).send('Webhook processed.');
@@ -219,14 +221,26 @@ export async function cancelMergedPullRequestTasks(
 
   log.info({ correlationId, repository, prNumber, activeTaskCount: activeTasks.length }, 'Cancelling active PR tasks after merge');
 
-  await Promise.allSettled(activeTasks.map(async (task) => {
+  const failures = (await Promise.all(activeTasks.map(async (task) => {
     try {
       await stopTask(task.taskId, {
         redisClient: deps.redisClient,
         requestedBy: 'system',
         cancellation,
       });
+      return null;
     } catch (error) {
+      if (isAlreadyInactiveStopError(error)) {
+        log.info({
+          correlationId,
+          repository,
+          prNumber,
+          taskId: task.taskId,
+          error: (error as Error).message,
+        }, 'Merged PR task was already inactive during cancellation');
+        return null;
+      }
+
       log.warn({
         correlationId,
         repository,
@@ -234,8 +248,18 @@ export async function cancelMergedPullRequestTasks(
         taskId: task.taskId,
         error: (error as Error).message,
       }, 'Failed to cancel merged PR task');
+      return task.taskId;
     }
-  }));
+  }))).filter((taskId): taskId is string => taskId !== null);
+
+  if (failures.length > 0) {
+    throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.join(', ')}`);
+  }
+}
+
+function isAlreadyInactiveStopError(error: unknown): boolean {
+  return error instanceof StopTaskExecutionError
+    && (error.status === 400 || error.status === 404);
 }
 
 function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {

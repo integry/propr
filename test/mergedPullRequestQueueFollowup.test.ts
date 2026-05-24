@@ -40,6 +40,30 @@ function createTaskUpdateDb() {
     () => ({
       where() {
         return {
+          select() {
+            return this;
+          },
+          first: async () => undefined,
+          update: mockTasksUpdate,
+        };
+      },
+    }),
+    {
+      raw: mock.fn(() => 'mock-raw'),
+    },
+  );
+}
+
+function createPersistedTaskLookupDb(record: { task_id: string; job_id: string | null } | undefined) {
+  return Object.assign(
+    () => ({
+      where(filter: Record<string, unknown>) {
+        const matches = record && Object.entries(filter).every(([key, value]) => record[key as keyof typeof record] === value);
+        return {
+          select() {
+            return this;
+          },
+          first: async () => matches ? record : undefined,
           update: mockTasksUpdate,
         };
       },
@@ -137,6 +161,53 @@ describe('merged PR queue follow-up fixes', () => {
     assert.strictEqual(mockTasksUpdate.mock.calls.length, 1);
   });
 
+  test('stopTaskExecution removes queued jobs by persisted job_id when task_id differs', async () => {
+    const redisClient = createRedisClient();
+    const queueJob = createQueueJob('pr-comments-batch-integry-propr-1463-123', {
+      repository: 'integry/propr',
+      pullRequestNumber: 1463,
+      correlationId: 'corr-123',
+    }, 'waiting');
+
+    const result = await stopTaskExecution('task-running-1', {
+      redisClient,
+      requestedBy: 'system',
+      cancellation: {
+        code: 'pull_request_merged',
+        message: 'Task cancelled because pull request #1463 was merged.',
+      },
+    }, {
+      getIssueQueue: async () => ({
+        getJob: async (id: string) => id === 'pr-comments-batch-integry-propr-1463-123' ? queueJob : null,
+      }) as never,
+      getStateManager: () => ({
+        createTaskState: mockCreateTaskState,
+        markTaskCancelled: mockMarkTaskCancelled,
+      }) as never,
+      db: createPersistedTaskLookupDb({
+        task_id: 'task-running-1',
+        job_id: 'pr-comments-batch-integry-propr-1463-123',
+      }) as never,
+      stopDockerContainer: mockStopDockerContainer as never,
+    });
+
+    assert.strictEqual(result.taskId, 'task-running-1');
+    assert.strictEqual(result.jobRemoved, true);
+    assert.strictEqual(queueJob.remove.mock.calls.length, 1);
+    assert.deepStrictEqual(mockCreateTaskState.mock.calls[0].arguments, [
+      'task-running-1',
+      {
+        number: 1463,
+        repoOwner: 'integry',
+        repoName: 'propr',
+        pullRequestNumber: 1463,
+        type: 'pr_followup',
+      },
+      'corr-123',
+    ]);
+    assert.strictEqual(mockMarkTaskCancelled.mock.calls[0].arguments[0], 'task-running-1');
+  });
+
   test('stopTaskExecution sets abort markers for both queue and normalized task ids during active startup windows', async () => {
     const queueJobId = 'issue-owner-repo-99-12345';
     const redisClient = createRedisClient();
@@ -169,6 +240,78 @@ describe('merged PR queue follow-up fixes', () => {
       'worker:abort:issue-owner-repo-99-12345',
       'worker:abort:owner-repo-99',
     ]);
+  });
+
+  test('stopTaskExecution preserves pr_followup type for queue payloads that use prNumber', async () => {
+    const queueJobId = 'pr-comments-batch-integry-propr-99-456';
+    const redisClient = createRedisClient();
+
+    await stopTaskExecution(queueJobId, {
+      redisClient,
+      requestedBy: 'system',
+      cancellation: {
+        code: 'pull_request_merged',
+        message: 'Task cancelled because pull request #99 was merged.',
+      },
+    }, {
+      getIssueQueue: async () => ({
+        getJob: async (id: string) => id === queueJobId ? createQueueJob(queueJobId, {
+          repository: 'integry/propr',
+          prNumber: 99,
+          correlationId: 'corr-99',
+        }, 'waiting') : null,
+      }) as never,
+      getStateManager: () => ({
+        createTaskState: mockCreateTaskState,
+        markTaskCancelled: mockMarkTaskCancelled,
+      }) as never,
+      db: createTaskUpdateDb() as never,
+      stopDockerContainer: mockStopDockerContainer as never,
+    });
+
+    assert.deepStrictEqual(mockCreateTaskState.mock.calls[0].arguments, [
+      queueJobId,
+      {
+        number: 99,
+        repoOwner: 'integry',
+        repoName: 'propr',
+        pullRequestNumber: 99,
+        type: 'pr_followup',
+      },
+      'corr-99',
+    ]);
+  });
+
+  test('stopTaskExecution rejects when cancellation state persistence fails', async () => {
+    const queueJobId = 'pr-comments-batch-integry-propr-1463-123';
+    const redisClient = createRedisClient();
+
+    await assert.rejects(async () => {
+      await stopTaskExecution(queueJobId, {
+        redisClient,
+        requestedBy: 'system',
+        cancellation: {
+          code: 'pull_request_merged',
+          message: 'Task cancelled because pull request #1463 was merged.',
+        },
+      }, {
+        getIssueQueue: async () => ({
+          getJob: async (id: string) => id === queueJobId ? createQueueJob(queueJobId, {
+            repository: 'integry/propr',
+            pullRequestNumber: 1463,
+            correlationId: 'corr-123',
+          }, 'waiting') : null,
+        }) as never,
+        getStateManager: () => ({
+          createTaskState: mockCreateTaskState,
+          markTaskCancelled: mock.fn(async () => {
+            throw new Error('persist failed');
+          }),
+        }) as never,
+        db: createTaskUpdateDb() as never,
+        stopDockerContainer: mockStopDockerContainer as never,
+      });
+    }, /persist failed/);
   });
 
   test('getActiveTasksForPR dedupes queue jobs against persisted tasks via job_id', async () => {

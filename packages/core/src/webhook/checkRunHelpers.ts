@@ -739,7 +739,7 @@ export async function getActiveTasksForPR(
             prNumber,
             error: (error as Error).message
         }, 'Failed to load active tasks for PR');
-        return [];
+        throw error;
     }
 }
 
