@@ -3,6 +3,7 @@ import { Redis, RedisOptions } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
+import { STOPPABLE_TASK_STATES, TERMINAL_TASK_STATES } from '../utils/workerStateManager.types.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import {
     clearPendingPrQueueJob,
@@ -645,8 +646,6 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
 }
 
 const PR_QUEUE_STATE_SET = TRACKED_PR_QUEUE_STATE_SET;
-const TERMINAL_TASK_HISTORY_STATES = ['completed', 'failed', 'cancelled'] as const;
-const STOPPABLE_TASK_HISTORY_STATES = ['processing', 'claude_execution', 'post_processing'] as const;
 
 export interface PRTaskActivity {
     taskId: string;
@@ -676,6 +675,8 @@ export interface GetActiveTasksForPRDeps {
 /**
  * Returns active or queued task references for a PR.
  * Queue-backed entries use the BullMQ job id as their task id when no worker state exists yet.
+ * This helper also maintains the PR queue-job index by backfilling missing entries, promoting
+ * pending entries, and clearing stale ones while it resolves the active task set.
  */
 export async function getActiveTasksForPR(
     repository: string,
@@ -752,8 +753,8 @@ export async function getActiveTasksForPR(
             .where('tasks.pr_number', prNumber)
             .whereNotNull('task_history.state');
         const activeTasks = (deps.stoppableOnly === true
-            ? await activeTasksQuery.whereIn('task_history.state', STOPPABLE_TASK_HISTORY_STATES)
-            : await activeTasksQuery.whereNotIn('task_history.state', TERMINAL_TASK_HISTORY_STATES)) as ActiveTaskRow[];
+            ? await activeTasksQuery.whereIn('task_history.state', STOPPABLE_TASK_STATES)
+            : await activeTasksQuery.whereNotIn('task_history.state', TERMINAL_TASK_STATES)) as ActiveTaskRow[];
 
         for (const task of activeTasks) {
             const dedupeKey = resolveActiveTaskKey(taskMap, taskAliases, [task.job_id, task.task_id]);

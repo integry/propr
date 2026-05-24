@@ -8,6 +8,9 @@ npm ci
 npm --workspace @propr/shared run build
 
 if [ ! -f "$ROOT_DIR/.propr/test-private-key.pem" ]; then
+  # Non-production fixture used for local/test GitHub App auth in the ProPR agent environment.
+  # Keep it out of broader circulation and ensure the generated file is owner-readable only.
+  umask 077
   cat <<'EOF' > "$ROOT_DIR/.propr/test-private-key.pem"
 -----BEGIN PRIVATE KEY-----
 MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGBAMMLBZpHHwe78bJm
@@ -26,4 +29,5 @@ jkZATKyUK9nz066TUaR0YobvwTEsVsNtclvrqblasYDrHs5wrljs6Mf5o6nWfPYb
 ETHrpXmywORLDQ==
 -----END PRIVATE KEY-----
 EOF
+  chmod 600 "$ROOT_DIR/.propr/test-private-key.pem"
 fi

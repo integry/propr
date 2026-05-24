@@ -10,6 +10,18 @@ export const TaskStates = {
 
 export type TaskState = typeof TaskStates[keyof typeof TaskStates];
 
+export const STOPPABLE_TASK_STATES = [
+    TaskStates.PROCESSING,
+    TaskStates.CLAUDE_EXECUTION,
+    TaskStates.POST_PROCESSING
+] as const;
+
+export const TERMINAL_TASK_STATES = [
+    TaskStates.COMPLETED,
+    TaskStates.FAILED,
+    TaskStates.CANCELLED
+] as const;
+
 export interface IssueRef {
     number: number;
     repoOwner: string;

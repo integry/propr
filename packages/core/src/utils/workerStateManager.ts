@@ -3,12 +3,12 @@ import logger, { generateCorrelationId } from './logger.js';
 import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
-    TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
+    STOPPABLE_TASK_STATES, TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
 
-export { TaskStates, type TaskState, type IssueRef };
+export { STOPPABLE_TASK_STATES, TaskStates, type TaskState, type IssueRef };
 
 /**
  * Worker state manager for persistent task state tracking
@@ -183,7 +183,7 @@ export class WorkerStateManager {
         const state = await this.getTaskState(taskId);
         if (!state) return null;
 
-        const resumableStates: TaskState[] = [TaskStates.PROCESSING, TaskStates.CLAUDE_EXECUTION, TaskStates.POST_PROCESSING];
+        const resumableStates: TaskState[] = [...STOPPABLE_TASK_STATES];
         if (!resumableStates.includes(state.state)) return null;
 
         const staleThreshold = 30 * 60 * 1000;

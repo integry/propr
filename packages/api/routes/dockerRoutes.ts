@@ -113,10 +113,6 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
       const taskId = req.params.taskId;
-      if (typeof taskId !== 'string') {
-        res.status(400).json({ error: 'Task ID is required' });
-        return;
-      }
 
       const requestedBy = typeof req.user === 'object' && req.user !== null && 'username' in req.user && typeof req.user.username === 'string'
         ? req.user.username

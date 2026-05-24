@@ -8,8 +8,9 @@ export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } 
 export { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
 export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
-export { WorkerStateManager, getStateManager, closeStateManager, TaskStates } from './utils/workerStateManager.js';
+export { WorkerStateManager, getStateManager, closeStateManager, STOPPABLE_TASK_STATES, TaskStates } from './utils/workerStateManager.js';
 export { getEventPublisher, closeEventPublisher, EventPublisher } from './utils/eventPublisher.js';
+export { TERMINAL_TASK_STATES } from './utils/workerStateManager.types.js';
 export type { TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary, PRResult, TaskStateData, UpdateMetadata, TaskResult, ResumableTaskInfo, WorkerStateManagerOptions } from './utils/workerStateManager.types.js';
 export { validatePRCreation, generateEnhancedClaudePrompt, validateRepositoryInfo } from './utils/prValidation.js';
 export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssueData, GenerateEnhancedClaudePromptOptions, RepoData, RepoValidationResult } from './utils/prValidation.js';

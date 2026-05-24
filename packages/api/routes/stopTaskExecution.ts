@@ -1,6 +1,6 @@
 import type { Job } from 'bullmq';
 import { RedisClientType } from 'redis';
-import { logger, stopDockerContainer } from '@propr/core';
+import { logger, STOPPABLE_TASK_STATES, stopDockerContainer, TERMINAL_TASK_STATES } from '@propr/core';
 import {
   ensureTaskStateForCancellation,
   loadStopTaskContext,
@@ -71,8 +71,8 @@ interface StopTaskActivity {
   hasContainerToStop: boolean;
 }
 
-const RUNNING_TASK_STATES = new Set(['processing', 'claude_execution', 'post_processing']);
-const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'cancelled']);
+const RUNNING_TASK_STATES = new Set<string>(STOPPABLE_TASK_STATES);
+const TERMINAL_TASK_STATE_SET = new Set<string>(TERMINAL_TASK_STATES);
 const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed']);
 const PRE_START_QUEUE_STATES = new Set(['waiting', 'delayed', 'paused', 'prioritized', 'waiting-children']);
 const DEFAULT_STOP_REASON: StopTaskCancellationReason = {
@@ -93,7 +93,7 @@ export async function stopTaskExecution(
     containerStopTimeoutSeconds,
   } = options;
   const context = await (deps.loadStopTaskContext ?? loadStopTaskContext)(taskReference, redisClient, deps);
-  const trackedContainerId = getTaskContainerId(context.state);
+  const trackedContainerId = getTaskContainerId(context.state, context.currentState);
   const activity = getStopTaskActivity(context.currentState, context.queueState, trackedContainerId !== null);
   const shouldAbort = shouldAbortTask(activity);
   assertTaskCanBeStopped({
@@ -190,7 +190,7 @@ function getStopTaskActivity(
 ): StopTaskActivity {
   return {
     isRunningTaskState: currentState !== null && RUNNING_TASK_STATES.has(currentState),
-    isNonTerminalTaskState: currentState !== null && !TERMINAL_TASK_STATES.has(currentState),
+    isNonTerminalTaskState: currentState !== null && !TERMINAL_TASK_STATE_SET.has(currentState),
     isQueueActive: queueState === 'active',
     isQueuePreStart: queueState !== null && PRE_START_QUEUE_STATES.has(queueState),
     hasContainerToStop,
@@ -241,9 +241,23 @@ function assertTaskCanBeStopped(params: {
   });
 }
 
-function getTaskContainerId(state: TaskState | null): string | null {
-  const entry = state?.history.find((historyEntry) => historyEntry.state === 'claude_execution' && historyEntry.metadata?.containerId);
-  return typeof entry?.metadata?.containerId === 'string' ? entry.metadata.containerId : null;
+function getTaskContainerId(state: TaskState | null, currentState: string | null): string | null {
+  if (currentState !== 'claude_execution') {
+    return null;
+  }
+
+  if (!state) {
+    return null;
+  }
+
+  for (let index = state.history.length - 1; index >= 0; index -= 1) {
+    const entry = state.history[index];
+    if (entry.state === 'claude_execution' && typeof entry.metadata?.containerId === 'string') {
+      return entry.metadata.containerId;
+    }
+  }
+
+  return null;
 }
 
 async function setAbortSignalIfNeeded(params: {
