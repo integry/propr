@@ -6,6 +6,7 @@ const MERGED_PR_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
 const OPEN_PR_KEY_TTL_SECONDS = 60;
 
 type PullRequestMergeStateRedisLike = {
+  del?: (key: string) => Promise<unknown>;
   get: (key: string) => Promise<string | null>;
   set?: (key: string, value: string, options?: { EX?: number }) => Promise<unknown>;
   setex?: (key: string, seconds: number, value: string) => Promise<unknown>;
@@ -21,19 +22,20 @@ export async function markPullRequestMerged(
   prNumber: number,
 ): Promise<void> {
   const key = getPullRequestMergedKey(repository, prNumber);
+  const openKey = getPullRequestOpenKey(repository, prNumber);
   const value = new Date().toISOString();
 
   if (typeof redisClient.setex === 'function') {
     await redisClient.setex(key, MERGED_PR_KEY_TTL_SECONDS, value);
-    return;
-  }
-
-  if (typeof redisClient.set === 'function') {
+  } else if (typeof redisClient.set === 'function') {
     await redisClient.set(key, value, { EX: MERGED_PR_KEY_TTL_SECONDS });
-    return;
+  } else {
+    throw new Error('Redis client does not support merged PR state writes');
   }
 
-  throw new Error('Redis client does not support merged PR state writes');
+  if (typeof redisClient.del === 'function') {
+    await redisClient.del(openKey);
+  }
 }
 
 export async function hasPullRequestMerged(
@@ -44,10 +46,6 @@ export async function hasPullRequestMerged(
 ): Promise<boolean> {
   if ((await redisClient.get(getPullRequestMergedKey(repository, prNumber))) !== null) {
     return true;
-  }
-
-  if ((await redisClient.get(getPullRequestOpenKey(repository, prNumber))) !== null) {
-    return false;
   }
 
   const [owner, repoName] = repository.split('/');

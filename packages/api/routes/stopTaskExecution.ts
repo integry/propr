@@ -259,8 +259,8 @@ function shouldMarkTaskCancelled(params: {
   containerStopped: boolean;
   jobRemoved: boolean;
 }): boolean {
-  const { shouldAbort, containerStopped, jobRemoved } = params;
-  return shouldAbort || containerStopped || jobRemoved;
+  const { containerStopped, jobRemoved } = params;
+  return containerStopped || jobRemoved;
 }
 
 async function stopTaskContainer(params: {
@@ -319,7 +319,9 @@ async function removeQueueJobIfNeeded(queueJob: Job<QueueJobData> | null, isQueu
 }
 
 export function isBenignQueueRemovalRace(queueState: string | null): boolean {
-  return queueState === null || queueState === 'active' || queueState === 'unknown' || TERMINAL_QUEUE_STATES.has(queueState);
+  return queueState === 'active'
+    || queueState === 'unknown'
+    || (queueState !== null && TERMINAL_QUEUE_STATES.has(queueState));
 }
 
 async function reloadQueueStateAfterRemovalFailure(queueJob: Job<QueueJobData>): Promise<string | null> {

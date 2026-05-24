@@ -19,6 +19,14 @@ export interface MergeTaskCancellationDeps {
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
+interface MergeTaskCancellationFailure {
+  taskId: string;
+  status: number | null;
+  message: string;
+  currentState: string | null;
+  queueState: string | null;
+}
+
 export async function cancelMergedPullRequestTasks(
   payload: Record<string, unknown>,
   correlationId: string,
@@ -63,24 +71,31 @@ export async function cancelMergedPullRequestTasks(
           repository,
           prNumber,
           taskId: task.taskId,
+          status: error.status,
+          currentState: getStopErrorState(error.body, 'currentState'),
+          queueState: getStopErrorState(error.body, 'queueState'),
           error: (error as Error).message,
         }, 'Merged PR task was already inactive during cancellation');
         return null;
       }
 
+      const failure = buildMergeTaskCancellationFailure(task.taskId, error);
       log.warn({
         correlationId,
         repository,
         prNumber,
         taskId: task.taskId,
-        error: (error as Error).message,
+        status: failure.status,
+        currentState: failure.currentState,
+        queueState: failure.queueState,
+        error: failure.message,
       }, 'Failed to cancel merged PR task');
-      return task.taskId;
+      return failure;
     }
-  }))).filter((taskId): taskId is string => taskId !== null);
+  }))).filter((failure): failure is MergeTaskCancellationFailure => failure !== null);
 
   if (failures.length > 0) {
-    throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.join(', ')}`);
+    throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.map(formatMergeTaskCancellationFailure).join('; ')}`);
   }
 }
 
@@ -95,7 +110,45 @@ export function isMergedPullRequestClose(payload: unknown): payload is MergedPul
     && prPayload.pull_request?.merged === true;
 }
 
-function isAlreadyInactiveStopError(error: unknown): boolean {
+function isAlreadyInactiveStopError(error: unknown): error is StopTaskExecutionError {
   return error instanceof StopTaskExecutionError
-    && (error.status === 400 || error.status === 404);
+    && (error.status === 400 || error.status === 404 || error.status === 409);
+}
+
+function buildMergeTaskCancellationFailure(taskId: string, error: unknown): MergeTaskCancellationFailure {
+  if (error instanceof StopTaskExecutionError) {
+    return {
+      taskId,
+      status: error.status,
+      message: error.message,
+      currentState: getStopErrorState(error.body, 'currentState'),
+      queueState: getStopErrorState(error.body, 'queueState'),
+    };
+  }
+
+  return {
+    taskId,
+    status: null,
+    message: error instanceof Error ? error.message : String(error),
+    currentState: null,
+    queueState: null,
+  };
+}
+
+function formatMergeTaskCancellationFailure(failure: MergeTaskCancellationFailure): string {
+  const status = failure.status === null ? 'unknown' : String(failure.status);
+  const stateDetails = [
+    failure.currentState ? `currentState=${failure.currentState}` : null,
+    failure.queueState ? `queueState=${failure.queueState}` : null,
+  ].filter((detail): detail is string => detail !== null);
+
+  if (stateDetails.length > 0) {
+    return `${failure.taskId} (status ${status}, ${stateDetails.join(', ')}: ${failure.message})`;
+  }
+
+  return `${failure.taskId} (status ${status}: ${failure.message})`;
+}
+
+function getStopErrorState(body: Record<string, unknown>, key: 'currentState' | 'queueState'): string | null {
+  return typeof body[key] === 'string' ? body[key] : null;
 }
