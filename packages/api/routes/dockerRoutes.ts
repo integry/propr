@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import type { Job } from 'bullmq';
@@ -25,6 +26,22 @@ interface TaskState {
 type RedisClientLike = Pick<RedisClientType, 'get' | 'set' | 'del' | 'rPush'>;
 
 type QueueJobData = Record<string, unknown>;
+
+interface StopTaskContext {
+  normalizedTaskId: string;
+  state: TaskState | null;
+  currentState: string | null;
+  queueJob: Job<QueueJobData> | null;
+  queueState: string | null;
+  stateTaskId: string;
+}
+
+interface StopTaskActivity {
+  isRunningTaskState: boolean;
+  isNonTerminalTaskState: boolean;
+  isQueueActive: boolean;
+  isQueueRemovable: boolean;
+}
 
 export interface StopTaskCancellationReason {
   code: string;
@@ -183,6 +200,70 @@ function normalizeTaskId(jobId: string): string {
 
 export async function stopTaskExecution(taskReference: string, options: StopTaskExecutionOptions): Promise<StopTaskExecutionResult> {
   const { redisClient, requestedBy = 'user', cancellation = DEFAULT_STOP_REASON } = options;
+  const context = await loadStopTaskContext(taskReference, redisClient);
+  const activity = getStopTaskActivity(context.currentState, context.queueState);
+
+  assertTaskCanBeStopped(context, activity);
+
+  const timestamp = new Date().toISOString();
+  await setAbortSignalIfNeeded({
+    redisClient,
+    taskId: context.stateTaskId,
+    requestedBy,
+    cancellation,
+    timestamp,
+    shouldAbort: activity.isRunningTaskState || activity.isQueueActive,
+  });
+
+  const { containerId, containerStopped } = await stopTaskContainer({
+    redisClient,
+    taskId: context.stateTaskId,
+    state: context.state,
+    shouldAbort: activity.isRunningTaskState || activity.isQueueActive,
+  });
+
+  const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueueRemovable);
+
+  if (containerStopped) {
+    await redisClient.del(`worker:abort:${context.stateTaskId}`);
+  }
+
+  await markTaskCancelled({
+    taskId: context.stateTaskId,
+    requestedBy,
+    cancellation,
+    state: context.state,
+    queueJob: context.queueJob,
+    queueState: context.queueState,
+    containerId,
+    containerStopped,
+  });
+
+  await pushConversationMessage(redisClient, context.stateTaskId, {
+    type: 'system',
+    timestamp: new Date().toISOString(),
+    content: 'Task cancelled successfully.',
+    level: 'info',
+    metadata: { reasonCode: cancellation.code, requestedBy },
+  });
+
+  return {
+    success: true,
+    message: getStopTaskSuccessMessage({
+      jobRemoved,
+      shouldAbort: activity.isRunningTaskState || activity.isQueueActive,
+      containerStopped,
+    }),
+    taskId: context.stateTaskId,
+    containerStopped,
+    jobRemoved,
+    currentState: context.currentState,
+    queueState: context.queueState,
+    cancellation,
+  };
+}
+
+async function loadStopTaskContext(taskReference: string, redisClient: RedisClientLike): Promise<StopTaskContext> {
   const normalizedTaskId = normalizeTaskId(taskReference);
   const candidateTaskIds = [...new Set([taskReference, normalizedTaskId])];
 
@@ -194,29 +275,58 @@ export async function stopTaskExecution(taskReference: string, options: StopTask
   const queueJob = await getQueueJob(candidateTaskIds);
   const queueState = queueJob ? await queueJob.getState() : null;
 
-  if (!state && !queueJob) {
+  return {
+    normalizedTaskId,
+    state,
+    currentState,
+    queueJob,
+    queueState,
+    stateTaskId: state ? normalizedTaskId : String(queueJob?.id ?? normalizedTaskId),
+  };
+}
+
+function getStopTaskActivity(currentState: string | null, queueState: string | null): StopTaskActivity {
+  return {
+    isRunningTaskState: currentState !== null && RUNNING_TASK_STATES.has(currentState),
+    isNonTerminalTaskState: currentState !== null && !TERMINAL_TASK_STATES.has(currentState),
+    isQueueActive: queueState === 'active',
+    isQueueRemovable: queueState !== null && REMOVABLE_QUEUE_STATES.has(queueState),
+  };
+}
+
+function assertTaskCanBeStopped(context: StopTaskContext, activity: StopTaskActivity): void {
+  if (!context.state && !context.queueJob) {
     throw new StopTaskExecutionError(404, {
       error: 'Task not found',
       message: 'The task may have already completed or does not exist.',
     });
   }
 
-  const isRunningTaskState = currentState !== null && RUNNING_TASK_STATES.has(currentState);
-  const isNonTerminalTaskState = currentState !== null && !TERMINAL_TASK_STATES.has(currentState);
-  const isQueueActive = queueState === 'active';
-  const isQueueRemovable = queueState !== null && REMOVABLE_QUEUE_STATES.has(queueState);
-
-  if (!isRunningTaskState && !isNonTerminalTaskState && !isQueueActive && !isQueueRemovable) {
-    throw new StopTaskExecutionError(400, {
-      error: 'Task is not running',
-      message: 'The task has already completed or is not in an active state.',
-      currentState,
-      queueState,
-    });
+  if (activity.isRunningTaskState || activity.isNonTerminalTaskState || activity.isQueueActive || activity.isQueueRemovable) {
+    return;
   }
 
-  const stateTaskId = state ? normalizedTaskId : String(queueJob?.id ?? normalizedTaskId);
-  const timestamp = new Date().toISOString();
+  throw new StopTaskExecutionError(400, {
+    error: 'Task is not running',
+    message: 'The task has already completed or is not in an active state.',
+    currentState: context.currentState,
+    queueState: context.queueState,
+  });
+}
+
+async function setAbortSignalIfNeeded(params: {
+  redisClient: RedisClientLike;
+  taskId: string;
+  requestedBy: string;
+  cancellation: StopTaskCancellationReason;
+  timestamp: string;
+  shouldAbort: boolean;
+}): Promise<void> {
+  const { redisClient, taskId, requestedBy, cancellation, timestamp, shouldAbort } = params;
+  if (!shouldAbort) {
+    return;
+  }
+
   const abortPayload = JSON.stringify({
     timestamp,
     requestedBy,
@@ -224,85 +334,85 @@ export async function stopTaskExecution(taskReference: string, options: StopTask
     reason: cancellation.message,
   });
 
-  if (isRunningTaskState || isQueueActive) {
-    await redisClient.set(`worker:abort:${stateTaskId}`, abortPayload, { EX: 3600 });
-    await redisClient.rPush(`conversation:${stateTaskId}`, JSON.stringify({
-      type: 'system',
-      timestamp,
-      content: cancellation.message,
-      level: 'warning',
-      metadata: { reasonCode: cancellation.code, requestedBy },
-    }));
-    console.log(`[stop-execution] Abort signal set for task: ${stateTaskId}`);
-  }
-
-  let containerStopped = false;
-  const entry = state?.history.find(h => h.state === 'claude_execution' && h.metadata?.containerId);
-  if (entry?.metadata?.containerId) {
-    console.log(`[stop-execution] Found container ID: ${entry.metadata.containerId}, attempting to stop...`);
-    const stopResult = await stopDockerContainer(entry.metadata.containerId, 10);
-    containerStopped = stopResult.success;
-    if (stopResult.success) {
-      console.log(`[stop-execution] Container ${entry.metadata.containerId} stopped successfully`);
-      await redisClient.rPush(`conversation:${stateTaskId}`, JSON.stringify({
-        type: 'system',
-        timestamp: new Date().toISOString(),
-        content: 'Docker container terminated.',
-        level: 'info',
-      }));
-    } else {
-      console.warn(`[stop-execution] Failed to stop container ${entry.metadata.containerId}: ${stopResult.error}`);
-    }
-  } else if (isRunningTaskState || isQueueActive) {
-    console.log(`[stop-execution] No container ID found for task ${stateTaskId}, relying on abort signal`);
-  }
-
-  let jobRemoved = false;
-  if (queueJob && isQueueRemovable) {
-    await queueJob.remove();
-    jobRemoved = true;
-    console.log(`[stop-execution] Removed queued job ${String(queueJob.id)} before it started`);
-  }
-
-  if (containerStopped) {
-    await redisClient.del(`worker:abort:${stateTaskId}`);
-  }
-
-  await markTaskCancelled({
-    taskId: stateTaskId,
-    requestedBy,
-    cancellation,
-    state,
-    queueJob,
-    queueState,
-    containerId: entry?.metadata?.containerId,
-    containerStopped,
+  await redisClient.set(`worker:abort:${taskId}`, abortPayload, { EX: 3600 });
+  await pushConversationMessage(redisClient, taskId, {
+    type: 'system',
+    timestamp,
+    content: cancellation.message,
+    level: 'warning',
+    metadata: { reasonCode: cancellation.code, requestedBy },
   });
+  console.log(`[stop-execution] Abort signal set for task: ${taskId}`);
+}
 
-  await redisClient.rPush(`conversation:${stateTaskId}`, JSON.stringify({
+async function stopTaskContainer(params: {
+  redisClient: RedisClientLike;
+  taskId: string;
+  state: TaskState | null;
+  shouldAbort: boolean;
+}): Promise<{ containerId?: string; containerStopped: boolean }> {
+  const { redisClient, taskId, state, shouldAbort } = params;
+  const entry = state?.history.find(h => h.state === 'claude_execution' && h.metadata?.containerId);
+  const containerId = entry?.metadata?.containerId;
+
+  if (!containerId) {
+    if (shouldAbort) {
+      console.log(`[stop-execution] No container ID found for task ${taskId}, relying on abort signal`);
+    }
+    return { containerStopped: false };
+  }
+
+  console.log(`[stop-execution] Found container ID: ${containerId}, attempting to stop...`);
+  const stopResult = await stopDockerContainer(containerId, 10);
+
+  if (!stopResult.success) {
+    console.warn(`[stop-execution] Failed to stop container ${containerId}: ${stopResult.error}`);
+    return { containerId, containerStopped: false };
+  }
+
+  console.log(`[stop-execution] Container ${containerId} stopped successfully`);
+  await pushConversationMessage(redisClient, taskId, {
     type: 'system',
     timestamp: new Date().toISOString(),
-    content: 'Task cancelled successfully.',
+    content: 'Docker container terminated.',
     level: 'info',
-    metadata: { reasonCode: cancellation.code, requestedBy },
-  }));
+  });
+  return { containerId, containerStopped: true };
+}
 
-  return {
-    success: true,
-    message: jobRemoved
-      ? 'Queued task cancelled before execution started.'
-      : (isRunningTaskState || isQueueActive)
-        ? (containerStopped
-          ? 'Execution stopped. The Docker container has been terminated.'
-          : 'Stop request sent to worker. The execution will be terminated shortly.')
-        : 'Task cancelled.',
-    taskId: stateTaskId,
-    containerStopped,
-    jobRemoved,
-    currentState,
-    queueState,
-    cancellation,
-  };
+async function removeQueueJobIfNeeded(queueJob: Job<QueueJobData> | null, isQueueRemovable: boolean): Promise<boolean> {
+  if (!queueJob || !isQueueRemovable) {
+    return false;
+  }
+
+  await queueJob.remove();
+  console.log(`[stop-execution] Removed queued job ${String(queueJob.id)} before it started`);
+  return true;
+}
+
+function getStopTaskSuccessMessage(params: {
+  jobRemoved: boolean;
+  shouldAbort: boolean;
+  containerStopped: boolean;
+}): string {
+  const { jobRemoved, shouldAbort, containerStopped } = params;
+  if (jobRemoved) {
+    return 'Queued task cancelled before execution started.';
+  }
+  if (shouldAbort) {
+    return containerStopped
+      ? 'Execution stopped. The Docker container has been terminated.'
+      : 'Stop request sent to worker. The execution will be terminated shortly.';
+  }
+  return 'Task cancelled.';
+}
+
+async function pushConversationMessage(
+  redisClient: RedisClientLike,
+  taskId: string,
+  message: Record<string, unknown>,
+): Promise<void> {
+  await redisClient.rPush(`conversation:${taskId}`, JSON.stringify(message));
 }
 
 async function getQueueJob(candidateTaskIds: string[]): Promise<Job<QueueJobData> | null> {
