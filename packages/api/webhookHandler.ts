@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
-import { SUPPORTED_WEBHOOK_EVENTS } from '@propr/core';
+import { SUPPORTED_WEBHOOK_EVENTS, getActiveTasksForPR, logger } from '@propr/core';
+import { stopTaskExecution, type StopTaskExecutionOptions } from './routes/dockerRoutes.js';
 
 /**
  * Default TTL for webhook delivery deduplication keys in Redis (seconds).
@@ -68,6 +69,20 @@ export interface WebhookHandlerDeps {
   };
   processor: (payload: Record<string, unknown>, event: string, correlationId: string, deliveryId: string) => Promise<void>;
   correlationId: string;
+  mergeTaskCancellation?: MergeTaskCancellationDeps;
+}
+
+interface MergedPullRequestPayload {
+  action: 'closed';
+  repository: { full_name: string };
+  pull_request: { number: number; merged: true };
+}
+
+export interface MergeTaskCancellationDeps {
+  redisClient: StopTaskExecutionOptions['redisClient'];
+  getActiveTasksForPR?: typeof getActiveTasksForPR;
+  stopTaskExecution?: typeof stopTaskExecution;
+  log?: Pick<typeof logger, 'info' | 'warn'>;
 }
 
 /**
@@ -89,7 +104,7 @@ export async function handleWebhookRequest(
   res: Response,
   deps: WebhookHandlerDeps,
 ): Promise<void> {
-  const { webhookSecret, redis, processor, correlationId } = deps;
+  const { webhookSecret, redis, processor, correlationId, mergeTaskCancellation } = deps;
 
   // --- Fail closed if req.body is not a Buffer (middleware misconfiguration) ---
   if (!Buffer.isBuffer(req.body)) {
@@ -169,7 +184,65 @@ export async function handleWebhookRequest(
   }
 
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
+  await cancelMergedPullRequestTasks(payload, correlationId, mergeTaskCancellation);
   await processor(payload, rawEvent, correlationId, rawDeliveryId);
 
   res.status(200).send('Webhook processed.');
+}
+
+export async function cancelMergedPullRequestTasks(
+  payload: Record<string, unknown>,
+  correlationId: string,
+  deps?: MergeTaskCancellationDeps,
+): Promise<void> {
+  if (!deps || !isMergedPullRequestClose(payload)) {
+    return;
+  }
+
+  const repository = payload.repository.full_name;
+  const prNumber = payload.pull_request.number;
+  const log = deps.log ?? logger;
+  const loadActiveTasks = deps.getActiveTasksForPR ?? getActiveTasksForPR;
+  const stopTask = deps.stopTaskExecution ?? stopTaskExecution;
+  const cancellation = {
+    code: 'pull_request_merged',
+    message: `Task cancelled because pull request #${prNumber} was merged.`,
+  };
+
+  const activeTasks = await loadActiveTasks(repository, prNumber);
+  if (activeTasks.length === 0) {
+    log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
+    return;
+  }
+
+  log.info({ correlationId, repository, prNumber, activeTaskCount: activeTasks.length }, 'Cancelling active PR tasks after merge');
+
+  for (const task of activeTasks) {
+    try {
+      await stopTask(task.taskId, {
+        redisClient: deps.redisClient,
+        requestedBy: 'system',
+        cancellation,
+      });
+    } catch (error) {
+      log.warn({
+        correlationId,
+        repository,
+        prNumber,
+        taskId: task.taskId,
+        error: (error as Error).message,
+      }, 'Failed to cancel merged PR task');
+    }
+  }
+}
+
+function isMergedPullRequestClose(payload: Record<string, unknown>): payload is MergedPullRequestPayload {
+  const prPayload = payload as Partial<MergedPullRequestPayload> & {
+    repository?: { full_name?: string };
+    pull_request?: { number?: number; merged?: boolean };
+  };
+  return prPayload.action === 'closed'
+    && typeof prPayload.repository?.full_name === 'string'
+    && typeof prPayload.pull_request?.number === 'number'
+    && prPayload.pull_request?.merged === true;
 }

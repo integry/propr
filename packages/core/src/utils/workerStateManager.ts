@@ -270,7 +270,7 @@ export class WorkerStateManager {
     async markTaskCancelled(taskId: string, cancelledBy: string = 'user', metadata: UpdateMetadata = {}): Promise<TaskStateData> {
         const cancelMetadata: UpdateMetadata = {
             ...metadata,
-            reason: `Task cancelled by ${cancelledBy}`,
+            reason: metadata.reason ?? `Task cancelled by ${cancelledBy}`,
             historyMetadata: {
                 ...(metadata.historyMetadata ?? {}),
                 cancelledBy,

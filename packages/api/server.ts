@@ -288,6 +288,7 @@ function setupWebhookRoute(): void {
           : redisClient.set(key, value) as Promise<string | null> },
         processor: (payload, event, cid, deliveryId) => processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId),
         correlationId,
+        mergeTaskCancellation: { redisClient },
       });
     } catch (error) {
       console.error('[webhook] Error processing webhook:', error);

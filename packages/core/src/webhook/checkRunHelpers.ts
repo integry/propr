@@ -638,45 +638,62 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
  * Terminal task states - tasks in these states are considered complete
  */
 const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'];
+const PR_QUEUE_STATES = ['waiting', 'active', 'delayed'] as const;
+const PR_QUEUE_STATE_SET = new Set<string>(PR_QUEUE_STATES);
+
+export interface PRTaskActivity {
+    taskId: string;
+    state: string;
+}
+
+function getRepositoryFromJobData(jobData: Record<string, unknown>): string | null {
+    if (typeof jobData.repository === 'string') {
+        return jobData.repository;
+    }
+    if (typeof jobData.repoOwner === 'string' && typeof jobData.repoName === 'string') {
+        return `${jobData.repoOwner}/${jobData.repoName}`;
+    }
+    if (typeof jobData.owner === 'string' && typeof jobData.repoName === 'string') {
+        return `${jobData.owner}/${jobData.repoName}`;
+    }
+    return null;
+}
+
+function getPrNumberFromJobData(jobData: Record<string, unknown>): number | null {
+    if (typeof jobData.prNumber === 'number') {
+        return jobData.prNumber;
+    }
+    if (typeof jobData.pullRequestNumber === 'number') {
+        return jobData.pullRequestNumber;
+    }
+    return null;
+}
 
 /**
- * Checks if there are any active (non-terminal) tasks for a given PR.
- * This is used to prevent auto-merge while a followup task is still running.
+ * Returns active or queued task references for a PR.
+ * Queue-backed entries use the BullMQ job id as their task id when no worker state exists yet.
  */
-export async function hasActiveTasksForPR(
+export async function getActiveTasksForPR(
     repository: string,
     prNumber: number
-): Promise<{
-    hasActive: boolean;
-    activeTasks: Array<{ taskId: string; state: string }>;
-    queuedJobs: Array<{ jobId: string; state: string }>;
-}> {
+): Promise<PRTaskActivity[]> {
     try {
+        const taskMap = new Map<string, PRTaskActivity>();
         const queue = await getIssueQueue();
-        const queueStates = ['waiting', 'active', 'delayed'] as const;
-        const queuedJobs: Array<{ jobId: string; state: string }> = [];
-        for (const queueState of queueStates) {
+
+        for (const queueState of PR_QUEUE_STATES) {
             const jobs = await queue.getJobs([queueState]);
             for (const job of jobs) {
                 const jobData = job.data as unknown as Record<string, unknown>;
-                const jobRepository = typeof jobData.repository === 'string'
-                    ? jobData.repository
-                    : (
-                        typeof jobData.repoOwner === 'string' &&
-                        typeof jobData.repoName === 'string' &&
-                        `${jobData.repoOwner}/${jobData.repoName}`
-                    );
-                const jobPrNumber = typeof jobData.prNumber === 'number'
-                    ? jobData.prNumber
-                    : (typeof jobData.pullRequestNumber === 'number' ? jobData.pullRequestNumber : null);
-                if (jobRepository === repository && jobPrNumber === prNumber) {
-                    queuedJobs.push({ jobId: String(job.id), state: queueState });
+                if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
+                    continue;
                 }
+
+                const taskId = String(job.id);
+                taskMap.set(taskId, { taskId, state: queueState });
             }
         }
 
-        // Find tasks associated with this PR that are not in a terminal state
-        // A task is active if its latest state is not terminal
         const activeTasks = await db('tasks')
             .select('tasks.task_id', 'task_history.state')
             .leftJoin('task_history', function() {
@@ -690,31 +707,46 @@ export async function hasActiveTasksForPR(
             .where('tasks.pr_number', prNumber)
             .whereNotIn('task_history.state', TERMINAL_TASK_STATES);
 
-        const result = {
-            hasActive: activeTasks.length > 0 || queuedJobs.length > 0,
-            activeTasks: activeTasks.map(t => ({ taskId: t.task_id, state: t.state })),
-            queuedJobs,
-        };
-
-        if (result.hasActive) {
-            logger.info({
-                repository,
-                prNumber,
-                activeTasks: result.activeTasks,
-                queuedJobs: result.queuedJobs,
-            }, 'Found active or queued work for PR');
+        for (const task of activeTasks) {
+            taskMap.set(task.task_id, { taskId: task.task_id, state: task.state });
         }
 
-        return result;
+        const taskList = [...taskMap.values()];
+        if (taskList.length > 0) {
+            logger.info({ repository, prNumber, activeTasks: taskList }, 'Found active or queued work for PR');
+        }
+
+        return taskList;
     } catch (error) {
         logger.warn({
             repository,
             prNumber,
             error: (error as Error).message
-        }, 'Failed to check for active tasks');
-        // On error, assume no active tasks to avoid blocking legitimate merges
-        return { hasActive: false, activeTasks: [], queuedJobs: [] };
+        }, 'Failed to load active tasks for PR');
+        return [];
     }
+}
+
+/**
+ * Checks if there are any active (non-terminal) tasks for a given PR.
+ * This is used to prevent auto-merge while a followup task is still running.
+ */
+export async function hasActiveTasksForPR(
+    repository: string,
+    prNumber: number
+): Promise<{
+    hasActive: boolean;
+    activeTasks: Array<{ taskId: string; state: string }>;
+    queuedJobs: Array<{ jobId: string; state: string }>;
+}> {
+    const taskList = await getActiveTasksForPR(repository, prNumber);
+    return {
+        hasActive: taskList.length > 0,
+        activeTasks: taskList.filter(task => !PR_QUEUE_STATE_SET.has(task.state)),
+        queuedJobs: taskList
+            .filter(task => PR_QUEUE_STATE_SET.has(task.state))
+            .map(task => ({ jobId: task.taskId, state: task.state })),
+    };
 }
 
 /**
