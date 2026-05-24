@@ -3,6 +3,7 @@ import { RedisClientType } from 'redis';
 import type { Job } from 'bullmq';
 import { execSync } from 'child_process';
 import { stopDockerContainer, getStateManager, getIssueQueue, db } from '@propr/core';
+import type { IssueRef } from '@propr/core';
 import { validateTaskId, validateTailParam } from './validation.js';
 
 interface DockerRoutesDeps {
@@ -381,7 +382,7 @@ async function createTaskStateFromQueueJob(taskId: string, queueJob: Job<QueueJo
     });
 }
 
-function buildIssueRefFromJobData(jobData: QueueJobData): Record<string, unknown> | null {
+function buildIssueRefFromJobData(jobData: QueueJobData): IssueRef | null {
   const repoOwner = getRepoOwner(jobData);
   const repoName = typeof jobData.repoName === 'string' ? jobData.repoName : null;
   const number = extractTaskNumber(jobData);

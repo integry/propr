@@ -236,7 +236,7 @@ export async function cancelMergedPullRequestTasks(
   }
 }
 
-function isMergedPullRequestClose(payload: Record<string, unknown>): payload is MergedPullRequestPayload {
+function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {
   const prPayload = payload as Partial<MergedPullRequestPayload> & {
     repository?: { full_name?: string };
     pull_request?: { number?: number; merged?: boolean };

@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import logger from '../utils/logger.js';
 import crypto from 'crypto';
 import { fetch } from 'undici';
