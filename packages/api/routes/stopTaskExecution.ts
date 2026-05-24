@@ -104,8 +104,6 @@ export async function stopTaskExecution(
     activity,
   });
   await (deps.ensureTaskStateForCancellation ?? ensureTaskStateForCancellation)(context.taskId, context.state, context.queueJob, deps);
-  const stateCreatedForCancellation = context.state === null && context.queueJob !== null;
-  const taskStateExistsForCancellation = context.state !== null || stateCreatedForCancellation;
 
   const timestamp = new Date().toISOString();
   await setAbortSignalIfNeeded({
@@ -129,12 +127,8 @@ export async function stopTaskExecution(
   const effectiveQueueState = queueStateAfterFailure ?? context.queueState;
   if (jobRemoved) await clearPrQueueJobIndexEntriesIfNeeded(context.queueJob, deps);
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
-    activity,
-    shouldAbort,
     containerStopped,
     jobRemoved,
-    taskStateExistsForCancellation,
-    effectiveQueueState,
   });
   assertStopApplied({
     activity,
@@ -306,22 +300,10 @@ function shouldClearAbortSignals(params: {
 }
 
 function shouldMarkTaskCancelled(params: {
-  activity: StopTaskActivity;
-  shouldAbort: boolean;
   containerStopped: boolean;
   jobRemoved: boolean;
-  taskStateExistsForCancellation: boolean;
-  effectiveQueueState: string | null;
 }): boolean {
-  if (params.containerStopped || params.jobRemoved) {
-    return true;
-  }
-
-  if (!params.shouldAbort || !params.taskStateExistsForCancellation) {
-    return false;
-  }
-
-  return params.effectiveQueueState === null || !TERMINAL_QUEUE_STATES.has(params.effectiveQueueState);
+  return params.containerStopped || params.jobRemoved;
 }
 
 function assertStopApplied(params: {

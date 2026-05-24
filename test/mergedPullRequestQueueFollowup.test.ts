@@ -640,6 +640,40 @@ describe('merged PR queue follow-up fixes', () => {
     ]);
   });
 
+  test('getActiveTasksForPR filters persisted tasks to stoppable states when requested', async () => {
+    const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
+      getIssueQueue: async () => ({
+        client: Promise.resolve({
+          sMembers: async () => [],
+          expire: async () => 1,
+        }),
+        getJob: async () => null,
+        getJobs: async () => [],
+      }) as never,
+      db: createActiveTasksDb([
+        {
+          task_id: 'task-pending-1',
+          job_id: null,
+          state: 'pending',
+        },
+        {
+          task_id: 'task-processing-1',
+          job_id: null,
+          state: 'processing',
+        },
+      ]) as never,
+      log: {
+        info: mock.fn(),
+        warn: mock.fn(),
+      },
+      stoppableOnly: true,
+    });
+
+    assert.deepStrictEqual(activeTasks, [
+      { taskId: 'task-processing-1', state: 'processing' },
+    ]);
+  });
+
   test('hasPullRequestMerged falls back to GitHub when the Redis marker is missing and refreshes the cache', async () => {
     const redisClient = {
       get: mock.fn(async () => null),
@@ -716,7 +750,7 @@ describe('merged PR queue follow-up fixes', () => {
     assert.strictEqual(redisClient.set.mock.calls.length, 0);
   });
 
-  test('getActiveTasksForPR always performs a fallback queue scan to recover partially indexed PR jobs', async () => {
+  test('getActiveTasksForPR skips the fallback queue scan when indexed PR jobs are already present', async () => {
     const getJobs = mock.fn(async () => []);
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
@@ -740,7 +774,7 @@ describe('merged PR queue follow-up fixes', () => {
     assert.deepStrictEqual(activeTasks, [
       { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
     ]);
-    assert.strictEqual(getJobs.mock.calls.length, 6);
+    assert.strictEqual(getJobs.mock.calls.length, 0);
   });
 
   test('getActiveTasksForPR falls back to queue scans when no tracked PR jobs exist yet', async () => {

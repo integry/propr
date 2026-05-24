@@ -172,7 +172,7 @@ test('getActiveTasksForPR promotes pending queue jobs into the tracked PR index'
   );
 });
 
-test('stopTaskExecution persists merged-PR cancellation metadata for abort-only active jobs', async () => {
+test('stopTaskExecution does not persist merged-PR cancellation metadata for abort-only active jobs', async () => {
   const setCalls: Array<{ key: string; value: Record<string, unknown> }> = [];
   const delCalls: string[] = [];
   const conversationMessages: Array<{ key: string; message: Record<string, unknown> }> = [];
@@ -239,22 +239,11 @@ test('stopTaskExecution persists merged-PR cancellation metadata for abort-only 
     setCalls.map((call) => call.key).sort(),
     ['worker:abort:job-1464', 'worker:abort:task-1464'],
   );
-  assert.equal(markTaskCancelledCalls.length, 1);
-  assert.equal(markTaskCancelledCalls[0]?.taskId, 'task-1464');
-  assert.equal(markTaskCancelledCalls[0]?.requestedBy, 'system');
-  assert.equal(markTaskCancelledCalls[0]?.metadata.reason, 'Task cancelled because pull request #1464 was merged.');
-  assert.deepEqual(markTaskCancelledCalls[0]?.metadata.cancellation, {
-    code: 'pull_request_merged',
-    message: 'Task cancelled because pull request #1464 was merged.',
-    cancelledBy: 'system',
-    source: 'pull_request_merged',
-    containerStopped: false,
-  });
+  assert.equal(markTaskCancelledCalls.length, 0);
   assert.deepEqual(
     conversationMessages.map((entry) => entry.message.content),
     [
       'Task cancelled because pull request #1464 was merged.',
-      'Task cancelled successfully.',
     ],
   );
 });

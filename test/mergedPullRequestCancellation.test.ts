@@ -142,11 +142,13 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.deepStrictEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
     assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0].arguments, ['integry/propr', 1463, {
       log: mockLogger,
+      stoppableOnly: true,
     }]);
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 2);
     assert.strictEqual(mockStopTaskExecution.mock.calls[0].arguments[0], 'task-running');
     assert.strictEqual(mockStopTaskExecution.mock.calls[1].arguments[0], 'job-queued');
-    assert.deepStrictEqual(callOrder, ['stop:task-running', 'stop:job-queued', 'mark-merged']);
+    assert.strictEqual(callOrder[0], 'mark-merged');
+    assert.deepStrictEqual(callOrder.slice(1), ['stop:task-running', 'stop:job-queued']);
     assert.deepStrictEqual(mockStopTaskExecution.mock.calls[0].arguments[1], {
       redisClient,
       requestedBy: 'system',
@@ -234,7 +236,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockStopTaskExecution.mock.calls[0].arguments[0], 'task-fails');
     assert.strictEqual(mockStopTaskExecution.mock.calls[1].arguments[0], 'task-succeeds');
     assert.strictEqual(mockLogger.warn.mock.calls.length, 1);
-    assert.strictEqual(mockMarkPullRequestMerged.mock.calls.length, 0);
+    assert.strictEqual(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 
   test('dedupes duplicate active-task references before stopping merged PR work', async () => {
@@ -316,7 +318,7 @@ describe('cancelMergedPullRequestTasks', () => {
     }, /lookup failed/);
 
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 0);
-    assert.strictEqual(mockMarkPullRequestMerged.mock.calls.length, 0);
+    assert.strictEqual(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 
   test('handleWebhookRequest waits for merge-task cancellation before responding', async () => {

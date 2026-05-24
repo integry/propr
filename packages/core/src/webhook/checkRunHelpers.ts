@@ -646,6 +646,7 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
 
 const PR_QUEUE_STATE_SET = TRACKED_PR_QUEUE_STATE_SET;
 const TERMINAL_TASK_HISTORY_STATES = ['completed', 'failed', 'cancelled'] as const;
+const STOPPABLE_TASK_HISTORY_STATES = ['processing', 'claude_execution', 'post_processing'] as const;
 
 export interface PRTaskActivity {
     taskId: string;
@@ -669,6 +670,7 @@ export interface GetActiveTasksForPRDeps {
     db?: typeof db;
     log?: Pick<typeof logger, 'info' | 'warn'>;
     forceQueueScan?: boolean;
+    stoppableOnly?: boolean;
 }
 
 /**
@@ -722,16 +724,22 @@ export async function getActiveTasksForPR(
             );
         }
 
-        await addQueuedPrJobsFromFallbackScan({
-            queue,
-            repository,
-            prNumber,
-            taskMap,
-            taskAliases,
-            log,
-        });
+        if (shouldFallbackToQueueScan({
+            forceQueueScan: deps.forceQueueScan === true,
+            indexedTrackedQueueJobs,
+            indexedPendingQueueJobs,
+        })) {
+            await addQueuedPrJobsFromFallbackScan({
+                queue,
+                repository,
+                prNumber,
+                taskMap,
+                taskAliases,
+                log,
+            });
+        }
 
-        const activeTasks = await database('tasks')
+        const activeTasksQuery = database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
             .leftJoin('task_history', function() {
                 this.on('tasks.task_id', '=', 'task_history.task_id')
@@ -742,8 +750,10 @@ export async function getActiveTasksForPR(
             })
             .where('tasks.repository', repository)
             .where('tasks.pr_number', prNumber)
-            .whereNotNull('task_history.state')
-            .whereNotIn('task_history.state', TERMINAL_TASK_HISTORY_STATES) as ActiveTaskRow[];
+            .whereNotNull('task_history.state');
+        const activeTasks = (deps.stoppableOnly === true
+            ? await activeTasksQuery.whereIn('task_history.state', STOPPABLE_TASK_HISTORY_STATES)
+            : await activeTasksQuery.whereNotIn('task_history.state', TERMINAL_TASK_HISTORY_STATES)) as ActiveTaskRow[];
 
         for (const task of activeTasks) {
             const dedupeKey = resolveActiveTaskKey(taskMap, taskAliases, [task.job_id, task.task_id]);
@@ -769,6 +779,18 @@ export async function getActiveTasksForPR(
         }, 'Failed to load active tasks for PR');
         throw error;
     }
+}
+
+function shouldFallbackToQueueScan(params: {
+    forceQueueScan: boolean;
+    indexedTrackedQueueJobs: IndexedQueueTaskActivity[];
+    indexedPendingQueueJobs: IndexedQueueTaskActivity[];
+}): boolean {
+    if (params.forceQueueScan) {
+        return true;
+    }
+
+    return params.indexedTrackedQueueJobs.length === 0 && params.indexedPendingQueueJobs.length === 0;
 }
 
 async function addQueuedPrJobsFromFallbackScan(params: {

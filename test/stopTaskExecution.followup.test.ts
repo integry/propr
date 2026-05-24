@@ -127,7 +127,7 @@ test('stopTaskExecution rejects queued cancellation when removal loses the race 
     assert.strictEqual(redisClient.del.mock.calls.length, 0);
 });
 
-test('stopTaskExecution keeps abort-armed container-backed tasks cancellable when the container stop fails', async () => {
+test('stopTaskExecution leaves abort-armed container-backed tasks non-terminal when the container stop fails', async () => {
     const redisClient = createRedisClient();
     const result = await stopTaskExecution(
         'task-2',
@@ -160,7 +160,7 @@ test('stopTaskExecution keeps abort-armed container-backed tasks cancellable whe
     assert.strictEqual(result.jobRemoved, false);
     assert.strictEqual(result.message, 'Stop request sent to worker. The execution will be terminated shortly.');
     assert.strictEqual(redisClient.set.mock.calls.length, 1);
-    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
 });
 
 test('isBenignQueueRemovalRace only accepts active or unknown removal races', () => {
@@ -197,6 +197,7 @@ test('cancelMergedPullRequestTasks uses indexed lookup before falling back to a 
     assert.strictEqual(getActiveTasksForPR.mock.calls.length, 1);
     assert.deepStrictEqual(getActiveTasksForPR.mock.calls[0]?.arguments, ['owner/repo', 42, {
         log,
+        stoppableOnly: true,
     }]);
     assert.strictEqual(markPullRequestMerged.mock.calls.length, 1);
 });
