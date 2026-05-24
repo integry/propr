@@ -1,6 +1,11 @@
 import { beforeEach, mock, test } from 'node:test';
 import assert from 'node:assert';
 
+process.env.GH_APP_ID ??= '1';
+process.env.GH_PRIVATE_KEY_PATH ??= '.propr/test-private-key.pem';
+process.env.GH_INSTALLATION_ID ??= '1';
+process.env.NODE_ENV ??= 'test';
+
 const { stopTaskExecution, isBenignQueueRemovalRace } = await import('../packages/api/routes/stopTaskExecution.js');
 const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.js');
 
@@ -32,45 +37,45 @@ beforeEach(() => {
     log.warn.mock.resetCalls();
 });
 
-test('stopTaskExecution cancels pending non-terminal tasks without a queue-backed worker', async () => {
+test('stopTaskExecution rejects pending non-terminal tasks without a queue-backed worker', async () => {
     const redisClient = createRedisClient();
-    const result = await stopTaskExecution(
-        'task-1',
-        {
-            redisClient,
-            requestedBy: 'system',
-            cancellation: {
-                code: 'pull_request_merged',
-                message: 'Task cancelled because pull request #42 was merged.',
+    await assert.rejects(async () => {
+        await stopTaskExecution(
+            'task-1',
+            {
+                redisClient,
+                requestedBy: 'system',
+                cancellation: {
+                    code: 'pull_request_merged',
+                    message: 'Task cancelled because pull request #42 was merged.',
+                },
             },
-        },
-        {
-            loadStopTaskContext: async () => ({
-                normalizedTaskId: 'task-1',
-                state: { history: [{ state: 'pending' }] },
-                currentState: 'pending',
-                queueJob: null,
-                queueState: null,
-                taskId: 'task-1',
-                abortTaskIds: ['task-1'],
-            }),
-            ensureTaskStateForCancellation: async () => {},
-            getStateManager: () => ({ markTaskCancelled }) as never,
-            stopDockerContainer,
-        },
-    );
+            {
+                loadStopTaskContext: async () => ({
+                    normalizedTaskId: 'task-1',
+                    state: { history: [{ state: 'pending' }] },
+                    currentState: 'pending',
+                    queueJob: null,
+                    queueState: null,
+                    taskId: 'task-1',
+                    abortTaskIds: ['task-1'],
+                }),
+                ensureTaskStateForCancellation: async () => {},
+                getStateManager: () => ({ markTaskCancelled }) as never,
+                stopDockerContainer,
+            },
+        );
+    }, (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.strictEqual(error.name, 'StopTaskExecutionError');
+        assert.strictEqual((error as { status?: number }).status, 409);
+        assert.match(error.message, /not in a stoppable worker or queue state/);
+        return true;
+    });
 
-    assert.strictEqual(result.success, true);
-    assert.strictEqual(result.currentState, 'pending');
-    assert.strictEqual(result.queueState, null);
-    assert.strictEqual(result.jobRemoved, false);
-    assert.strictEqual(result.containerStopped, false);
     assert.strictEqual(redisClient.set.mock.calls.length, 0);
-    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
-    assert.deepStrictEqual(
-        redisClient.messages.map((message) => message.content),
-        ['Task cancelled successfully.'],
-    );
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+    assert.deepStrictEqual(redisClient.messages, []);
 });
 
 test('stopTaskExecution treats queue removal races into terminal states as benign', async () => {

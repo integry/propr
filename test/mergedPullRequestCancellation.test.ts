@@ -121,7 +121,7 @@ describe('cancelMergedPullRequestTasks', () => {
 
     assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 1);
     assert.deepStrictEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
-    assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0].arguments, ['integry/propr', 1463, { forceQueueScan: true }]);
+    assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0].arguments, ['integry/propr', 1463]);
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 2);
     assert.strictEqual(mockStopTaskExecution.mock.calls[0].arguments[0], 'task-running');
     assert.strictEqual(mockStopTaskExecution.mock.calls[1].arguments[0], 'job-queued');
@@ -320,7 +320,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(processor.mock.calls.length, 0);
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 1);
     assert.strictEqual(stopTaskResolved, false);
-    assert.strictEqual(reserveDelivery.mock.calls.length, 0);
+    assert.strictEqual(reserveDelivery.mock.calls.length, 1);
 
     releaseStopTask?.();
     await requestPromise;
@@ -366,7 +366,7 @@ describe('cancelMergedPullRequestTasks', () => {
 
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 1);
     assert.strictEqual(processor.mock.calls.length, 0);
-    assert.strictEqual(reserveDelivery.mock.calls.length, 0);
+    assert.strictEqual(reserveDelivery.mock.calls.length, 1);
     assert.strictEqual(res.statusCode, 503);
     assert.strictEqual(res.body, 'Merged PR task cancellation failed.');
     assert.strictEqual(mockLogger.warn.mock.calls.length > 0, true);

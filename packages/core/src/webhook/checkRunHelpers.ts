@@ -4,7 +4,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
-import { getTrackedPrQueueJobs, trackPrQueueJob } from './prQueueJobIndex.js';
+import { getPendingPrQueueJobs, getTrackedPrQueueJobs, trackPrQueueJob } from './prQueueJobIndex.js';
 
 export interface MergePROptions {
     owner: string;
@@ -698,11 +698,25 @@ export async function getActiveTasksForPR(
         const database = deps.db ?? db;
         const log = deps.log ?? logger;
         const trackedQueueJobs = await getTrackedPrQueueJobs(queue as never, repository, prNumber);
+        const pendingQueueJobs = await getPendingPrQueueJobs(queue as never, repository, prNumber);
         for (const job of trackedQueueJobs) {
             taskMap.set(job.jobId, { taskId: job.jobId, state: job.state });
         }
+        for (const job of pendingQueueJobs) {
+            taskMap.set(job.jobId, { taskId: job.jobId, state: job.state });
+            try {
+                await trackPrQueueJob(queue as never, repository, prNumber, job.jobId);
+            } catch (error) {
+                log.warn({
+                    repository,
+                    prNumber,
+                    jobId: job.jobId,
+                    error: (error as Error).message,
+                }, 'Failed to promote pending PR queue-job index entry');
+            }
+        }
 
-        if (deps.forceQueueScan || trackedQueueJobs.length === 0) {
+        if (deps.forceQueueScan || (trackedQueueJobs.length === 0 && pendingQueueJobs.length === 0)) {
             await addQueuedPrJobsFromFallbackScan({
                 queue,
                 repository,

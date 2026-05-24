@@ -79,6 +79,10 @@ export interface WebhookHandlerDeps {
   cancelMergedPullRequestTasks?: typeof cancelMergedPullRequestTasks;
 }
 
+function toSupportedEventSet(supportedEvents: Iterable<string>): ReadonlySet<string> {
+  return supportedEvents instanceof Set ? supportedEvents : new Set(supportedEvents);
+}
+
 /**
  * Core webhook request handler extracted for testability.
  *
@@ -112,6 +116,7 @@ export async function handleWebhookRequest(
     isMergedPullRequestClose: isMergedPullRequestCloseFn = isMergedPullRequestClose,
     cancelMergedPullRequestTasks: cancelMergedPullRequestTasksFn = cancelMergedPullRequestTasks,
   } = deps;
+  const supportedEventSet = toSupportedEventSet(supportedEvents);
 
   // --- Fail closed if req.body is not a Buffer (middleware misconfiguration) ---
   if (!Buffer.isBuffer(req.body)) {
@@ -164,7 +169,7 @@ export async function handleWebhookRequest(
   // avoids marking those deliveries as failed in GitHub's UI while still
   // preventing any downstream processing. Checked before Redis dedup to avoid
   // consuming dedupe keys for events that will never be processed.
-  if (!new Set(supportedEvents).has(rawEvent)) {
+  if (!supportedEventSet.has(rawEvent)) {
     console.log(`[webhook] Ignoring unsupported event type: ${rawEvent}`);
     res.status(200).send('Unsupported event type — ignored.');
     return;

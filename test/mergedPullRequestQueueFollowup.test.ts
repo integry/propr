@@ -8,6 +8,7 @@ process.env.NODE_ENV ??= 'test';
 
 const { stopTaskExecution } = await import('../packages/api/routes/dockerRoutes.ts');
 const { getActiveTasksForPR, hasActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
+const { hasPullRequestMerged } = await import('../packages/core/src/webhook/prMergeState.ts');
 const { closeConnection } = await import('../packages/core/src/db/connection.ts');
 const { closeStateManager } = await import('../packages/core/src/utils/workerStateManager.ts');
 const { closeUltrafixStateRedis } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
@@ -544,14 +545,22 @@ describe('merged PR queue follow-up fixes', () => {
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
         client: Promise.resolve({
-          sMembers: async () => ['pr-comments-batch-integry-propr-1463-123'],
+          sMembers: async (key: string) => key.startsWith('pr-pending-queue-jobs:')
+            ? ['merge-conflict-integry-propr-1463-456']
+            : ['pr-comments-batch-integry-propr-1463-123'],
           sAdd: async () => 1,
           expire: async () => 1,
           sRem: async () => 1,
         }),
-        getJob: async (jobId: string) => jobId === 'pr-comments-batch-integry-propr-1463-123'
-          ? createQueueJob(jobId, { repository: 'integry/propr', pullRequestNumber: 1463 }, 'active')
-          : null,
+        getJob: async (jobId: string) => {
+          if (jobId === 'pr-comments-batch-integry-propr-1463-123') {
+            return createQueueJob(jobId, { repository: 'integry/propr', pullRequestNumber: 1463 }, 'active');
+          }
+          if (jobId === 'merge-conflict-integry-propr-1463-456') {
+            return createQueueJob(jobId, { repository: 'integry/propr', pullRequestNumber: 1463 }, 'waiting');
+          }
+          return null;
+        },
         getJobs: async ([queueState]: string[]) => (
           queueState === 'waiting'
             ? [{ id: 'merge-conflict-integry-propr-1463-456', data: { repository: 'integry/propr', pullRequestNumber: 1463 } }]
@@ -559,7 +568,6 @@ describe('merged PR queue follow-up fixes', () => {
         ),
       }) as never,
       db: createActiveTasksDb([]) as never,
-      forceQueueScan: true,
       log: {
         info: mock.fn(),
         warn: mock.fn(),
@@ -570,6 +578,32 @@ describe('merged PR queue follow-up fixes', () => {
       { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
       { taskId: 'merge-conflict-integry-propr-1463-456', state: 'waiting' },
     ]);
+  });
+
+  test('hasPullRequestMerged falls back to GitHub when the Redis marker is missing and refreshes the cache', async () => {
+    const redisClient = {
+      get: mock.fn(async () => null),
+      set: mock.fn(async () => 'OK'),
+    };
+    const getAuthenticatedOctokit = mock.fn(async () => ({
+      request: async () => ({
+        data: {
+          merged: true,
+          merged_at: '2026-05-24T00:00:00.000Z',
+        },
+      }),
+    }));
+    const merged = await hasPullRequestMerged(redisClient as never, 'integry/propr', 1463, {
+      getAuthenticatedOctokit: getAuthenticatedOctokit as never,
+    });
+
+    assert.strictEqual(merged, true);
+    assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
+    assert.strictEqual(redisClient.get.mock.calls.length, 1);
+    assert.strictEqual(redisClient.set.mock.calls.length, 1);
+    assert.strictEqual(redisClient.set.mock.calls[0].arguments[0], 'pr-merged:integry/propr:1463');
+    assert.match(String(redisClient.set.mock.calls[0].arguments[1]), /^\d{4}-\d{2}-\d{2}T/);
+    assert.deepStrictEqual(redisClient.set.mock.calls[0].arguments[2], { EX: 2592000 });
   });
 
   test('getActiveTasksForPR uses the tracked queue-job index as a fast path when scans are not forced', async () => {

@@ -109,8 +109,6 @@ export async function stopTaskExecution(
 
   const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueueRemovable);
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
-    activity,
-    shouldAbort,
     containerStopped,
     jobRemoved,
   });
@@ -185,12 +183,21 @@ function assertTaskCanBeStopped(params: {
     });
   }
 
-  if (activity.isNonTerminalTaskState) {
+  if (activity.isRunningTaskState) {
     return;
   }
 
   if (activity.isQueueActive || activity.isQueueRemovable) {
     return;
+  }
+
+  if (activity.isNonTerminalTaskState) {
+    throw new StopTaskExecutionError(409, {
+      error: 'Task is not stoppable',
+      message: 'The task is not in a stoppable worker or queue state.',
+      currentState,
+      queueState,
+    });
   }
 
   throw new StopTaskExecutionError(400, {
@@ -247,15 +254,10 @@ function shouldClearAbortSignals(shouldAbort: boolean, containerStopped: boolean
 }
 
 function shouldMarkTaskCancelled(params: {
-  activity: StopTaskActivity;
-  shouldAbort: boolean;
   containerStopped: boolean;
   jobRemoved: boolean;
 }): boolean {
-  const { activity, shouldAbort, containerStopped, jobRemoved } = params;
-  if (!shouldAbort && activity.isNonTerminalTaskState) {
-    return true;
-  }
+  const { containerStopped, jobRemoved } = params;
   return containerStopped || jobRemoved;
 }
 

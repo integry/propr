@@ -113,9 +113,12 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
 
+      const requestedBy = typeof req.user === 'object' && req.user !== null && 'username' in req.user && typeof req.user.username === 'string'
+        ? req.user.username
+        : 'user';
       const result = await stopTaskExecution(req.params.taskId, {
         redisClient,
-        requestedBy: req.user?.username || 'user',
+        requestedBy,
       });
       res.json(result);
     } catch (error) {

@@ -4,7 +4,7 @@ import { loadAutoResolveMergeConflicts } from '../config/configManager.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getMergeConflictIdempotencyKey } from '../utils/constants.js';
 import { generateCorrelationId } from '../utils/logger.js';
-import { trackPrQueueJob } from './prQueueJobIndex.js';
+import { clearPendingPrQueueJob, markPrQueueJobPending, trackPrQueueJob } from './prQueueJobIndex.js';
 import { hasPullRequestMerged } from './prMergeState.js';
 import type { MergeConflictJobData } from '../queue/taskQueue.types.js';
 import type { PullRequestEvent, PushEvent } from '@octokit/webhooks-types';
@@ -93,9 +93,17 @@ async function detectAndEnqueueForPR(
         return { outcome: 'skipped_merged', prNumber, repository };
     }
 
-    const queuedJob = await queue.add('processMergeConflict', jobData, { jobId });
+    await markPrQueueJobPending(queue as never, repository, prNumber, jobId);
+    let queuedJob;
+    try {
+        queuedJob = await queue.add('processMergeConflict', jobData, { jobId });
+    } catch (error) {
+        await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
+        throw error;
+    }
     if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
         await queuedJob.remove();
+        await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
         log.info({ repository, prNumber, jobId }, 'Merge conflict detection: removed freshly-queued job because PR merged during enqueue');
         return { outcome: 'skipped_merged', prNumber, repository };
     }
@@ -240,9 +248,17 @@ export async function handleMergeCommand(
         return null;
     }
 
-    const queuedJob = await queue.add('processMergeConflict', jobData, { jobId });
+    await markPrQueueJobPending(queue as never, repository, prNumber, jobId);
+    let queuedJob;
+    try {
+        queuedJob = await queue.add('processMergeConflict', jobData, { jobId });
+    } catch (error) {
+        await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
+        throw error;
+    }
     if (await hasPullRequestMerged(options.redisClient as never, repository, prNumber)) {
         await queuedJob.remove();
+        await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
         log.info({ repository, prNumber, jobId }, '/merge command: removed freshly-queued job because the PR merged during enqueue');
         return null;
     }

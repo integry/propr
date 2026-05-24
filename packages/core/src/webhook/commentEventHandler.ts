@@ -18,7 +18,7 @@ import { safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
-import { trackPrQueueJob } from './prQueueJobIndex.js';
+import { clearPendingPrQueueJob, markPrQueueJobPending, trackPrQueueJob } from './prQueueJobIndex.js';
 import { hasPullRequestMerged } from './prMergeState.js';
 
 export interface UltrafixDeps {
@@ -726,15 +726,24 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
             return;
         }
 
-        const queuedJob = await queue.add('processPullRequestComment', jobData, {
-            jobId,
-            delay: COMMENT_BATCH_DELAY_MS,
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
-        });
+        await markPrQueueJobPending(queue as never, repository, prNumber, jobId);
+
+        let queuedJob;
+        try {
+            queuedJob = await queue.add('processPullRequestComment', jobData, {
+                jobId,
+                delay: COMMENT_BATCH_DELAY_MS,
+                attempts: 3,
+                backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
+            });
+        } catch (error) {
+            await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
+            throw error;
+        }
 
         if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
             await queuedJob.remove();
+            await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
             correlatedLogger.info({ repository, pullRequestNumber: prNumber, jobId }, 'Removed freshly-queued PR comment job because the PR merged during enqueue');
             return;
         }

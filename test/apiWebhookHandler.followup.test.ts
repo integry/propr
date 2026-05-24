@@ -2,6 +2,11 @@ import crypto from 'crypto';
 import { mock, test } from 'node:test';
 import assert from 'node:assert';
 
+process.env.GH_APP_ID ??= '1';
+process.env.GH_PRIVATE_KEY_PATH ??= '.propr/test-private-key.pem';
+process.env.GH_INSTALLATION_ID ??= '1';
+process.env.NODE_ENV ??= 'test';
+
 const { handleWebhookRequest } = await import('../packages/api/webhookHandler.js');
 
 function createSignedRequest(payload: Record<string, unknown>, secret: string) {

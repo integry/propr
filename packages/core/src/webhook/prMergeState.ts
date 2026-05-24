@@ -1,3 +1,5 @@
+import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+
 const MERGED_PR_KEY_PREFIX = 'pr-merged';
 const MERGED_PR_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -6,6 +8,10 @@ type PullRequestMergeStateRedisLike = {
   set?: (key: string, value: string, options?: { EX?: number }) => Promise<unknown>;
   setex?: (key: string, seconds: number, value: string) => Promise<unknown>;
 };
+
+interface PullRequestMergeStateDeps {
+  getAuthenticatedOctokit?: typeof getAuthenticatedOctokit;
+}
 
 export async function markPullRequestMerged(
   redisClient: PullRequestMergeStateRedisLike,
@@ -29,11 +35,33 @@ export async function markPullRequestMerged(
 }
 
 export async function hasPullRequestMerged(
-  redisClient: Pick<PullRequestMergeStateRedisLike, 'get'>,
+  redisClient: PullRequestMergeStateRedisLike,
   repository: string,
   prNumber: number,
+  deps: PullRequestMergeStateDeps = {},
 ): Promise<boolean> {
-  return (await redisClient.get(getPullRequestMergedKey(repository, prNumber))) !== null;
+  if ((await redisClient.get(getPullRequestMergedKey(repository, prNumber))) !== null) {
+    return true;
+  }
+
+  const [owner, repoName] = repository.split('/');
+  if (!owner || !repoName) {
+    throw new Error(`Invalid repository name for merge-state lookup: ${repository}`);
+  }
+
+  const octokit = await (deps.getAuthenticatedOctokit ?? getAuthenticatedOctokit)();
+  const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner,
+    repo: repoName,
+    pull_number: prNumber,
+  });
+  const merged = response.data.merged === true || response.data.merged_at !== null;
+
+  if (merged) {
+    await markPullRequestMerged(redisClient, repository, prNumber);
+  }
+
+  return merged;
 }
 
 function getPullRequestMergedKey(repository: string, prNumber: number): string {
