@@ -202,7 +202,7 @@ Important data to backup:
 
 Run backups during a maintenance window. The example below records which of the stateful services were already running, stops the application writers, forces Redis to persist its in-memory state, and uses a subshell `trap` so only that original running set is started again when the backup subshell exits.
 
-The example assumes the default `docker-compose.prod.yml` from this repository, which defines the `propr-sqlite-data` and `propr-redis-data` named volumes plus `./repos` and `./logs` bind mounts. If your deployment uses different volume names or host paths, adjust those values before you run the commands.
+The default `docker-compose.prod.yml` in this repository declares logical volumes named `propr-sqlite-data` and `propr-redis-data` plus `./repos` and `./logs` bind mounts. In real Compose deployments, Docker often prefixes the actual volume names with the Compose project name. Resolve the real volume names first, or set `SQLITE_VOLUME_NAME` and `REDIS_VOLUME_NAME` explicitly if your stack uses different names.
 
 ```bash
 (
@@ -210,6 +210,35 @@ The example assumes the default `docker-compose.prod.yml` from this repository, 
 
   backup_date="$(date +%Y%m%d)"
   compose_file="docker-compose.prod.yml"
+
+  resolve_volume_name() {
+    local mount_point="$1"
+    shift
+    local service
+    local container_id
+    local volume_name
+
+    for service in "$@"; do
+      container_id="$(docker-compose -f "$compose_file" ps -q "$service")"
+      [ -n "$container_id" ] || continue
+
+      volume_name="$(docker inspect --format "{{range .Mounts}}{{if and (eq .Type \"volume\") (eq .Destination \"$mount_point\")}}{{.Name}}{{end}}{{end}}" "$container_id")"
+      if [ -n "$volume_name" ]; then
+        printf '%s\n' "$volume_name"
+        return 0
+      fi
+    done
+
+    return 1
+  }
+
+  sqlite_volume="${SQLITE_VOLUME_NAME:-$(resolve_volume_name /app/data api daemon worker || true)}"
+  redis_volume="${REDIS_VOLUME_NAME:-$(resolve_volume_name /data redis || true)}"
+
+  if [ -z "$sqlite_volume" ] || [ -z "$redis_volume" ]; then
+    echo "Unable to resolve the Docker volume names. Set SQLITE_VOLUME_NAME and REDIS_VOLUME_NAME before rerunning the backup." >&2
+    exit 1
+  fi
 
   mapfile -t running_services < <(
     docker-compose -f "$compose_file" ps --status running --services | grep -E '^(api|daemon|worker|redis)$' || true
@@ -241,13 +270,13 @@ The example assumes the default `docker-compose.prod.yml` from this repository, 
 
   # Back up the shared SQLite volume
   docker run --rm \
-    -v propr-sqlite-data:/from \
+    -v "$sqlite_volume":/from \
     -v "$PWD/backups":/to \
     alpine sh -c "cd /from && tar -czf /to/propr-sqlite-data-${backup_date}.tar.gz ."
 
   # Back up the Redis volume
   docker run --rm \
-    -v propr-redis-data:/from \
+    -v "$redis_volume":/from \
     -v "$PWD/backups":/to \
     alpine sh -c "cd /from && tar -czf /to/propr-redis-data-${backup_date}.tar.gz ."
 
@@ -298,18 +327,26 @@ docker-compose -f docker-compose.prod.yml up -d --scale worker=3
 
 ### Debug Commands
 
-```bash
-# Check Redis keys
-docker-compose -f docker-compose.prod.yml exec redis redis-cli KEYS '*'
+Use scan-based queries on production Redis instances. Avoid `KEYS '*'` because it blocks Redis while it walks the full keyspace. `MONITOR` is also expensive and noisy, so only use it briefly on low-traffic systems when lighter inspection commands are not enough.
 
-# Monitor Redis activity
-docker-compose -f docker-compose.prod.yml exec redis redis-cli MONITOR
+```bash
+# Sample Redis keys without blocking the server
+docker-compose -f docker-compose.prod.yml exec redis redis-cli --scan --pattern '*'
+
+# Sample queue-related keys
+docker-compose -f docker-compose.prod.yml exec redis redis-cli --scan --pattern 'bull:*'
 
 # Check queue status
 docker-compose -f docker-compose.prod.yml exec redis redis-cli LLEN github-issue-processor
 
 # View recent activities
 docker-compose -f docker-compose.prod.yml exec redis redis-cli LRANGE system:activity:log 0 10
+
+# Inspect recently slow Redis commands
+docker-compose -f docker-compose.prod.yml exec redis redis-cli SLOWLOG GET 32
+
+# Use only for short-lived debugging on low-traffic environments
+docker-compose -f docker-compose.prod.yml exec redis redis-cli MONITOR
 ```
 
 ## Security Recommendations

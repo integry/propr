@@ -161,14 +161,16 @@ After merge:
 
 If a run fails or produces the wrong scope:
 
-1. Update the issue description with clearer requirements
-2. Keep the original primary processing label on the issue, or add it back if someone removed it
-3. Remove the blocking state labels that stop the daemon from picking the issue up again
-4. Let the daemon queue the issue again
+1. Confirm the previous run is no longer active in the dashboard or queue, and that no worker is still processing the issue
+2. Update the issue description with clearer requirements
+3. Keep the original primary processing label on the issue, or add it back if someone removed it
+4. Remove the blocking state labels that stop the daemon from picking the issue up again
+5. Let the daemon queue the issue again
 
 Actionable advice:
 
 - Prefer improving the issue description before retrying
+- Clear blocking labels only after you confirm the previous attempt is fully stopped or failed; removing them too early can trigger duplicate processing or duplicate PR attempts
 - The daemon polls for issues that still have the primary label but no longer have `{primary}-processing`, `{primary}-done`, or `{primary}-waiting`, so you usually do not need to remove and re-add the primary label just to retry
 - Failure labels usually follow the `{primary}-failed-*` pattern; clear those too if your workflow treats them as part of a manual reset
 - Use smaller issues instead of asking one run to make unrelated changes
