@@ -184,7 +184,7 @@ async function createTaskStateFromQueueJob(
 ): Promise<void> {
   const issueRef = buildIssueRefFromQueueJob(queueJob);
   if (!issueRef) {
-    return;
+    throw new Error(`Cannot reconstruct IssueRef for queued task cancellation: ${String(queueJob.id ?? taskId)}`);
   }
 
   const stateManager = (deps.getStateManager ?? getStateManager)();

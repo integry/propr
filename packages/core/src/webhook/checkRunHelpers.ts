@@ -716,7 +716,7 @@ export async function getActiveTasksForPR(
             }
         }
 
-        if (deps.forceQueueScan || taskMap.size === 0) {
+        if (deps.forceQueueScan !== false) {
             await addQueuedPrJobsFromFallbackScan({
                 queue,
                 repository,

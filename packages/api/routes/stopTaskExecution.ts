@@ -109,6 +109,7 @@ export async function stopTaskExecution(
 
   const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
+    shouldAbort,
     containerStopped,
     jobRemoved,
   });
@@ -254,11 +255,12 @@ function shouldClearAbortSignals(shouldAbort: boolean, containerStopped: boolean
 }
 
 function shouldMarkTaskCancelled(params: {
+  shouldAbort: boolean;
   containerStopped: boolean;
   jobRemoved: boolean;
 }): boolean {
-  const { containerStopped, jobRemoved } = params;
-  return containerStopped || jobRemoved;
+  const { shouldAbort, containerStopped, jobRemoved } = params;
+  return shouldAbort || containerStopped || jobRemoved;
 }
 
 async function stopTaskContainer(params: {
