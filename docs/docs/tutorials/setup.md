@@ -18,7 +18,7 @@ Before you begin, ensure you have the following installed:
 
 You'll also need:
 - **GitHub App** - Created with appropriate permissions (see below)
-- **Claude Subscription** - Anthropic Claude account with API access
+- **Agent credentials** - Credentials for at least one agent you plan to enable, such as Claude, Codex, or Gemini
 
 ## 1. GitHub App Configuration
 
@@ -81,10 +81,6 @@ Define bootstrap label defaults. Most teams can review and adjust these later fr
 ```bash
 # Issue Detection Configuration
 PRIMARY_PROCESSING_LABELS=AI,propr
-
-# Model-Specific Configuration
-MODEL_LABELS_SONNET=llm-claude-sonnet
-MODEL_LABELS_OPUS=llm-claude-opus
 ```
 
 **Note**: State labels (`-processing`, `-done`, `-failed-*`) are automatically generated based on the primary label that triggered processing.
@@ -128,7 +124,17 @@ git --version
 git worktree --help
 ```
 
-## 4. Claude Code Setup
+## 4. Agent Credential Setup
+
+Configure at least one coding agent before sending real work through the system. The Web UI is the normal place to add enabled agent entries, supported models, default models, Docker images, and credential paths.
+
+The default credential paths are:
+
+- Claude: `~/.claude`
+- Codex: `~/.codex`
+- Gemini: `~/.gemini`
+
+The sections below show Claude as a concrete first-agent example. Use equivalent login and credential setup for Codex or Gemini if those are the agents you plan to enable.
 
 ### Install Claude Code CLI
 
@@ -146,11 +152,11 @@ Run the authentication command:
 claude login
 ```
 
-This generates `~/.config/claude-code/auth.json` needed for non-interactive execution.
+This prepares the host Claude configuration directory used by ProPR's default Claude agent configuration.
 
 ### Install Docker
 
-The worker uses Docker to run Claude Code in a secure, isolated environment.
+The worker uses Docker to run enabled agents in secure, isolated environments.
 
 #### Ubuntu/Debian
 
@@ -172,14 +178,14 @@ brew install docker
 docker --version
 ```
 
-### Configure Claude Settings
+### Configure Agent Runtime Defaults
 
-Add Claude configuration to your `.env` file:
+Add runtime defaults to your `.env` file. For Claude, the default configuration path is `~/.claude`, matching the built-in Claude agent default.
 
 ```bash
 # Claude Code Configuration
 CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
-CLAUDE_CONFIG_PATH=~/.config/claude-code
+CLAUDE_CONFIG_PATH=~/.claude
 CLAUDE_MAX_TURNS=1000
 CLAUDE_TIMEOUT_MS=300000
 

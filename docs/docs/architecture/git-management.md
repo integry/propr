@@ -193,7 +193,7 @@ await repoManager.pushBranch({
 });
 ```
 
-This establishes the branch on GitHub before Claude runs, preventing timing issues with PR creation.
+This establishes the branch on GitHub before the selected agent runs, preventing timing issues with PR creation.
 
 ## Repository-Specific Configuration
 

@@ -12,7 +12,7 @@ The daemon (`src/daemon.js`) is a long-running service that:
 
 1. Polls configured GitHub repositories at regular intervals
 2. Searches for issues with configured primary labels
-3. Detects model-specific labels to determine which Claude models to use
+3. Detects model-specific labels and custom agent labels to determine which enabled agent/model pairs to use
 4. Creates jobs in the Redis queue for worker processing
 5. Tracks issue state through GitHub labels
 
@@ -56,30 +56,35 @@ State labels are dynamically generated based on the triggering primary label:
 - Issue with `AI` label → Uses `AI-processing`, `AI-done`, `AI-failed-*`
 - Issue with `propr` label → Uses `propr-processing`, `propr-done`, `propr-failed-*`
 
-#### Model Labels
+#### Model And Agent Labels
 
-Model-specific labels determine which Claude models process the issue:
+Model-specific labels determine which enabled agent/model pairs process the issue. ProPR recognizes labels matching the `llm-...` model label pattern, plus custom per-model labels configured in AI Agents.
 
 ```bash
-MODEL_LABELS_SONNET=llm-claude-sonnet
-MODEL_LABELS_OPUS=llm-claude-opus
+MODEL_LABEL_PATTERN=^llm-(.+)$
 ```
 
 An issue can have:
-- No model labels → Processed by default model
-- One model label → Processed by that model only
-- Multiple model labels → Processed by each model independently
+- No model labels → Processed by the configured default agent/model
+- One model or custom label → Processed by that resolved agent/model only
+- Multiple model or custom labels → Processed by each resolved agent/model independently
+
+Examples include `llm-claude-sonnet46`, `llm-codex-gpt54`, and `llm-gemini-pro`, depending on the agents enabled in the deployment.
+
+#### Base Branch Labels
+
+Direct labeled issue execution can target a non-default branch with `base-<branch>` labels. If no base label is present, the dispatcher uses the repository default branch detected by the worker.
 
 ### Job Creation
 
 For each eligible issue, the daemon:
 
-1. Determines which models should process it
-2. Creates a separate job in Redis for each model
+1. Determines which agent/model pairs should process it
+2. Creates a separate job in Redis for each agent/model and base-branch combination
 3. Includes complete issue context in the job data:
    - Issue number, title, body
    - Repository owner and name
-   - Model to use
+   - Agent and model to use
    - Primary label that triggered processing
    - Correlation ID for tracking
 
@@ -105,8 +110,8 @@ The daemon prevents duplicate job creation by:
    - Must NOT have any state labels
    ↓
 5. For each eligible issue:
-   a. Detect model labels
-   b. Create job(s) for each model
+   a. Detect model labels, custom agent labels, and base branch labels
+   b. Create job(s) for each resolved agent/model and base branch
    c. Add job(s) to Redis queue
    ↓
 6. Wait for polling interval
@@ -125,8 +130,7 @@ POLLING_INTERVAL_MS=60000
 
 # Label configuration
 PRIMARY_PROCESSING_LABELS=AI,propr
-MODEL_LABELS_SONNET=llm-claude-sonnet
-MODEL_LABELS_OPUS=llm-claude-opus
+MODEL_LABEL_PATTERN=^llm-(.+)$
 
 # GitHub authentication
 GH_APP_ID=your_app_id
@@ -172,24 +176,24 @@ Use this when:
 
 ## Multi-Model Job Creation
 
-When an issue has multiple model labels, the daemon creates independent jobs:
+When an issue has multiple model labels, the dispatcher creates independent jobs:
 
 **Example Issue:**
 ```
 Issue #123
-Labels: AI, llm-claude-sonnet, llm-claude-opus
+Labels: AI, llm-claude-sonnet46, llm-codex-gpt54
 ```
 
 **Jobs Created:**
-1. Job for Sonnet model
-   - Branch: `ai-fix/123-title-timestamp-sonnet-random`
+1. Job for the Claude model resolved from `llm-claude-sonnet46`
+   - Branch: `ai-fix/123-title-timestamp-sonnet46-random`
    - Queue: `propr-issues`
-   - Model: `claude-sonnet-4-5-20250929`
+   - Model: `claude-sonnet-4-6`
 
-2. Job for Opus model
-   - Branch: `ai-fix/123-title-timestamp-opus-random`
+2. Job for the Codex model resolved from `llm-codex-gpt54`
+   - Branch: `ai-fix/123-title-timestamp-gpt54-random`
    - Queue: `propr-issues`
-   - Model: `claude-opus-4-20250514`
+   - Model: `gpt-5.4`
 
 Each job is completely independent and can be processed concurrently.
 

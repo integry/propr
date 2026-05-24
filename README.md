@@ -1,22 +1,22 @@
 # ProPR - Automated GitHub Issue Processor
 
-A production-ready automated system that monitors GitHub issues, uses Anthropic's Claude Code to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
+A production-ready automated system that monitors GitHub issues, runs configured AI coding agents to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
 
 ## Features
 
 ### ✅ Complete End-to-End Automation
 - **Issue Detection**: Automatic monitoring of GitHub repositories for AI-eligible issues
 - **Multiple Primary Labels**: Support for multiple trigger labels (e.g., 'AI', 'propr') with dynamic state label generation
-- **Model-Specific Processing**: Support for multiple Claude models (sonnet, opus) with dedicated job queues
+- **Model-Specific Processing**: Support for multiple Claude, Codex, and Gemini models through configured agents
 - **Deterministic Git Workflow**: Reliable 3-phase workflow separating AI implementation from git operations
 - **Automatic PR Creation**: Direct GitHub API integration with proper issue linking
 - **Quality Assurance**: Comprehensive validation and retry mechanisms
 
 ### ✅ Advanced Multi-Model Support
-- **Model-Specific Enqueueing**: Separate job queues for different Claude models based on issue labels
+- **Model-Specific Enqueueing**: Separate jobs for different agent/model labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels (`llm-claude-sonnet`, `llm-claude-opus`)
+- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, and `llm-gemini-pro`
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -24,14 +24,14 @@ A production-ready automated system that monitors GitHub issues, uses Anthropic'
 - **Authentication Handling**: Seamless private repository access with token-based authentication
 - **Branch Management**: Automatic creation, pushing, and cleanup of feature branches
 
-### ✅ Intelligent Claude Integration
-- **Implementation-Focused Prompts**: Claude focuses solely on code implementation, not git operations
+### ✅ Intelligent Agent Integration
+- **Implementation-Focused Prompts**: Agents focus on code implementation, not git operations
 - **Context-Aware Processing**: Reads both issue descriptions and all comments for complete context
 - **Docker Isolation**: Secure containerized execution environment with network restrictions
 - **Output Parsing**: Intelligent extraction of implementation details and commit messages
 
 ### ✅ Production-Ready Reliability
-- **Deterministic 3-Phase Workflow**: Pre-Claude setup → AI implementation → Post-Claude finalization
+- **Deterministic 3-Phase Workflow**: Pre-agent setup → AI implementation → post-agent finalization
 - **Error Recovery**: Comprehensive retry mechanisms with exponential backoff
 - **GitHub API Integration**: Direct API calls with timing fixes and proper error handling
 - **State Management**: Redis-based job state tracking with correlation IDs for debugging
@@ -46,12 +46,12 @@ A production-ready automated system that monitors GitHub issues, uses Anthropic'
 
 ## Prerequisites
 
-- **Node.js 18+** - Runtime environment
+- **Node.js 20+** - Runtime environment
 - **GitHub App** - Created with appropriate permissions (see setup below)
-- **Claude Subscription** - Anthropic Claude account with API access
+- **Agent credentials** - Credentials for at least one enabled agent, such as Claude, Codex, or Gemini
 - **Redis Server** - For task queue management (v6.0+ recommended)
 - **Git 2.25+** - For worktree support and modern git operations
-- **Docker** - For secure Claude Code execution environment
+- **Docker** - For secure agent execution environments
 - **Disk Space** - Sufficient space for repository clones and worktrees (minimum 10GB recommended)
 
 ## Setup
@@ -96,10 +96,6 @@ Create a GitHub App with the following permissions:
    # Note: State labels (-processing, -done, -failed-*) are now automatically 
    # generated based on the specific primary label that triggered processing
    
-   # Model-Specific Configuration
-   MODEL_LABELS_SONNET=llm-claude-sonnet
-   MODEL_LABELS_OPUS=llm-claude-opus
-   
    # PR Comment Monitoring Configuration
    GITHUB_BOT_USERNAME=your_bot_username
    GITHUB_USER_WHITELIST=
@@ -132,7 +128,9 @@ git --version
 git worktree --help
 ```
 
-### 4. Claude Code Setup
+### 4. Agent Credential Setup
+
+Configure at least one coding agent before sending real work through the system. The Web UI is the normal place to add enabled agent entries, supported models, default models, Docker images, and credential paths.
 
 For Claude Code CLI integration:
 
@@ -145,10 +143,10 @@ For Claude Code CLI integration:
    ```bash
    claude login
    ```
-   This generates `~/.config/claude-code/auth.json` needed for non-interactive execution.
+   This prepares the host Claude configuration directory used by ProPR's default Claude agent configuration.
 
 3. **Install Docker:**
-   The worker uses Docker to run Claude Code in a secure, isolated environment.
+   The worker uses Docker to run enabled agents in secure, isolated environments.
    ```bash
    # Ubuntu/Debian
    sudo apt-get update
@@ -166,7 +164,7 @@ For Claude Code CLI integration:
    ```bash
    # Claude Code Configuration
    CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
-   CLAUDE_CONFIG_PATH=~/.config/claude-code
+   CLAUDE_CONFIG_PATH=~/.claude
    CLAUDE_MAX_TURNS=1000
    CLAUDE_TIMEOUT_MS=300000
    
@@ -282,9 +280,9 @@ npm run worker & npm run worker
 ```
 
 The worker will:
-- **Phase 1 (Pre-Claude Setup)**: Pull jobs from queue, update base branch, create isolated git worktree, push initial branch to GitHub
-- **Phase 2 (AI Implementation)**: Execute Claude Code with implementation-focused prompts in secure Docker environment
-- **Phase 3 (Post-Claude Finalization)**: Commit any changes, push to GitHub, create pull request with automatic issue linking
+- **Phase 1 (Pre-Agent Setup)**: Pull jobs from queue, update base branch, create isolated git worktree, push initial branch to GitHub
+- **Phase 2 (AI Implementation)**: Execute the selected agent with implementation-focused prompts in a secure Docker environment
+- **Phase 3 (Post-Agent Finalization)**: Commit any changes, push to GitHub, create pull request with automatic issue linking
 - Handle multiple models concurrently with model-specific delays to prevent conflicts
 - Provide comprehensive error handling and retry mechanisms
 
@@ -431,9 +429,12 @@ These commands use the `scripts/compose.sh` script which wraps Docker Compose op
 
 ### Docker Compose Services
 
-- **propr**: Main application (daemon and worker)
+- **daemon**: Polls GitHub and enqueues issue work
+- **worker**: Runs issue, PR comment, and merge-conflict jobs
+- **api**: Serves the dashboard API, auth, and webhooks
+- **web-ui**: Web UI for monitoring and management (port 5173)
 - **redis**: Redis server for task queue management
-- **propr-ui**: Web UI for monitoring and management (port 5173)
+- **indexing-worker** and **analysis-worker**: Optional support workers in the development Compose stack
 
 All services are configured in `docker-compose.yml` with proper networking and volume management.
 
@@ -483,24 +484,27 @@ npm test
 ## Workflow Overview
 
 ### Issue Labels for Model Selection
-Add labels to GitHub issues to specify which Claude model(s) should process them:
-- `llm-claude-sonnet` - Use Claude Sonnet model
-- `llm-claude-opus` - Use Claude Opus model
-- Both labels can be used together for multi-model processing
+Add labels to GitHub issues to specify which enabled agent/model pair should process them:
+- `llm-claude-sonnet46` - Use the configured Claude Sonnet 4.6 model
+- `llm-codex-gpt54` - Use the configured Codex GPT-5.4 model
+- `llm-gemini-pro` - Use the configured Gemini Pro model
+- Multiple model labels can be used together for multi-model processing
+
+To target a non-default branch for direct labeled issue execution, add a `base-<branch>` label before processing starts.
 
 ### Deterministic 3-Phase Processing
-1. **Pre-Claude Setup** (Deterministic)
+1. **Pre-Agent Setup** (Deterministic)
    - Repository cloning/updating with latest changes
    - Isolated git worktree creation with unique model-specific branch names
    - Initial branch push to GitHub (eliminates timing issues)
 
-2. **AI Implementation** (Claude Focus)
+2. **AI Implementation** (Agent Focus)
    - Implementation-only prompts (no git operations)
    - Complete issue and comment context analysis
    - Code implementation in isolated environment
 
-3. **Post-Claude Finalization** (Deterministic)
-   - Automatic commit of any changes Claude made
+3. **Post-Agent Finalization** (Deterministic)
+   - Automatic commit of any changes the agent made
    - Branch push and PR creation via GitHub API
    - Proper issue linking with keywords (`Closes #123` or `Addresses #123`)
    - Label management and cleanup

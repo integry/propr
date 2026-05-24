@@ -24,13 +24,14 @@ Before you touch GitHub, open the Web UI and verify the repository-level setup.
 Check:
 
 1. The repository is enabled in the Repositories page
-2. The base branch is correct for that repository
+2. The default branch behavior is correct for this run
 3. At least one coding agent is available in AI Agents
 4. The primary processing label you plan to use is present in Settings
 
 Actionable advice:
 
-- Treat the Web UI as the source of truth for repository and label configuration
+- Treat the Web UI as the source of truth for repository, agent, and label configuration
+- For direct labeled issues, add a `base-<branch>` label if you need to target a branch other than the detected repository default
 - Use environment variables mainly to bootstrap the deployment, not for routine tuning
 
 ## 2. Create Or Choose A GitHub Issue
@@ -63,6 +64,7 @@ What happens next:
 Actionable advice:
 
 - Use the exact label configured in the Web UI Settings page
+- Add a `base-<branch>` label before processing starts if the issue should run against a non-default branch
 - Remove stale processing labels before retrying a previously failed issue
 
 ## 4. Optionally Select A Model

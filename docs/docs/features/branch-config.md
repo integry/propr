@@ -1,18 +1,18 @@
 # Repository-Specific Default Branch Configuration
 
-For most teams, branch behavior should be configured in the Web UI. Each monitored repository entry can define its own `baseBranch`, and that UI configuration is what Planner Studio and branch-aware execution flows use first.
+For most teams, branch behavior should be configured in the Web UI for Planner Studio, indexing, repository exploration, and other UI-driven workflows. Each monitored repository entry can define its own `baseBranch`, and Planner Studio uses that selected repository entry when it builds context and generates plans.
 
-Environment variables provide an operator-focused fallback for default branch detection.
+Normal labeled GitHub issue execution has one extra rule: it currently uses the repository default branch unless the issue has a `base-<branch>` label. Environment variables provide an operator-focused fallback for default branch detection.
 
 ## Configure Branches In The Web UI
 
-Use the Repositories section of the Web UI when you want ProPR to work against a branch other than the repository's GitHub default branch:
+Use the Repositories section of the Web UI when you want Planner Studio and branch-aware repository tooling to work against a branch other than the repository's GitHub default branch:
 
 1. Open the monitored repository entry in the Web UI
 2. Set `baseBranch` to the branch you want ProPR to target
 3. Save the repository entry
 
-If you need the same `owner/repo` to be planned or executed against multiple long-lived branches, add separate monitored repository entries with different `baseBranch` values.
+If you need the same `owner/repo` to be planned against multiple long-lived branches, add separate monitored repository entries with different `baseBranch` values.
 
 ## Planner Studio Behavior
 
@@ -22,19 +22,34 @@ Planner Studio does not support ad hoc branch input. It resolves the planning br
 - If the repository entry has no `baseBranch`, Planner Studio falls back to the repository default branch
 - If you need planning against a different branch of the same `owner/repo`, add that repository again as a separate monitored entry with its own `baseBranch`
 
+## Labeled Issue Execution Behavior
+
+When ProPR processes a labeled GitHub issue directly, branch selection comes from issue labels and default-branch detection:
+
+- If the issue has one or more labels named `base-<branch>`, ProPR creates one execution job per base label
+- If there is no `base-<branch>` label, ProPR uses the repository default branch detected by the worker
+- The Web UI repository entry's `baseBranch` is not currently copied into direct labeled issue jobs
+
+Example:
+
+```text
+Labels: AI, base-release/2026
+```
+
+This targets `release/2026` for that issue run.
+
 ## Branch Resolution Order
 
-When ProPR needs to determine a branch for a monitored repository, the effective order is:
+When ProPR needs to detect a repository default branch, the effective order is:
 
-1. The monitored repository entry's `baseBranch` from the Web UI
-2. A repository-specific `GIT_DEFAULT_BRANCH_<OWNER>_<REPO>` environment override, if default branch detection is needed
-3. GitHub API default branch metadata
-4. Git remote `HEAD` detection
-5. Git symbolic-ref detection
-6. Common fallback branches: `GIT_FALLBACK_BRANCH`, `main`, `master`, `develop`, `dev`, `trunk`
-7. The first available remote branch
+1. A repository-specific `GIT_DEFAULT_BRANCH_<OWNER>_<REPO>` environment override, if configured and the branch exists
+2. GitHub API default branch metadata
+3. Git remote `HEAD` detection
+4. Git symbolic-ref detection
+5. Common fallback branches: `GIT_FALLBACK_BRANCH`, `main`, `master`, `develop`, `dev`, `trunk`
+6. The first available remote branch
 
-In practice, that means the UI controls the branch when you set `baseBranch`, and environment variables mainly matter when you leave `baseBranch` empty and want to override default-branch detection.
+In practice, the Web UI controls the branch for Planner Studio through the selected monitored repository entry. Direct labeled issue execution uses `base-<branch>` labels for explicit branch targeting, then falls back to default-branch detection.
 
 ## Optional Environment Overrides
 

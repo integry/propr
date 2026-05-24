@@ -31,7 +31,7 @@ The daemon continuously:
 - Polls configured repositories at the specified interval
 - Searches for open issues with configured primary labels (e.g., 'AI', 'propr')
 - Excludes issues already being processed or completed
-- Detects model-specific labels to determine which Claude models to use
+- Detects model-specific labels and custom agent labels to determine which enabled agent/model pairs to use
 - Adds detected issues to the appropriate task queue(s)
 
 ### Resetting Queue State
@@ -84,19 +84,19 @@ npm run worker & npm run worker
 
 Each worker executes a deterministic 3-phase workflow:
 
-#### Phase 1: Pre-Claude Setup
+#### Phase 1: Pre-Agent Setup
 - Pull job from Redis queue
 - Update base branch with latest changes
 - Create isolated git worktree
 - Push initial branch to GitHub (prevents timing issues)
 
 #### Phase 2: AI Implementation
-- Execute Claude Code in secure Docker environment
-- Claude analyzes issue and comments
+- Execute the selected Claude, Codex, or Gemini agent in a secure Docker environment
+- The selected agent analyzes the issue and comments
 - Implements solution with focus on code, not git operations
 
-#### Phase 3: Post-Claude Finalization
-- Commit any changes Claude made
+#### Phase 3: Post-Agent Finalization
+- Commit any changes the agent made
 - Push changes to GitHub
 - Create pull request via GitHub API
 - Link PR to original issue with proper keywords
@@ -104,24 +104,36 @@ Each worker executes a deterministic 3-phase workflow:
 
 ## Issue Labels for Model Selection
 
-Add labels to GitHub issues to specify which Claude model(s) should process them:
+Add labels to GitHub issues to specify which enabled agent/model pair should process them.
 
-- `llm-claude-sonnet` - Use Claude Sonnet model
-- `llm-claude-opus` - Use Claude Opus model
-- Both labels can be added for multi-model processing
+Current label forms come from the model IDs and GitHub labels configured for your agents. See [PR Slash Commands](../features/pr-commands.md#model-naming) for the canonical naming rule and check AI Agents in the Web UI for the exact IDs available in your deployment.
+
+Examples:
+
+- `llm-claude-sonnet46`
+- `llm-codex-gpt54`
+- `llm-gemini-pro`
+
+Multiple model labels can be added for multi-model processing.
 
 ### Example: Multi-Model Processing
 
 ```
 Issue #123
-Labels: AI, llm-claude-sonnet, llm-claude-opus
+Labels: AI, llm-claude-sonnet46, llm-codex-gpt54
 ```
 
 This issue will be processed twice:
-1. Once by Claude Sonnet (creates branch `ai-fix/123-...-sonnet-...`)
-2. Once by Claude Opus (creates branch `ai-fix/123-...-opus-...`)
+1. Once by the Claude model resolved from `llm-claude-sonnet46`
+2. Once by the Codex model resolved from `llm-codex-gpt54`
 
 Each model creates its own branch and pull request.
+
+To target a non-default branch for direct labeled issue execution, add a `base-<branch>` label before processing starts:
+
+```text
+Labels: AI, base-release/2026, llm-claude-sonnet46
+```
 
 ## Docker Compose Usage
 
@@ -143,9 +155,12 @@ npm run compose:build
 
 ### Docker Compose Services
 
-- **propr**: Main application (daemon and worker)
+- **daemon**: Polls GitHub and enqueues issue work
+- **worker**: Runs issue, PR comment, and merge-conflict jobs
+- **api**: Serves the dashboard API, auth, and webhooks
+- **web-ui**: Web UI for monitoring and management (port 5173)
 - **redis**: Redis server for task queue management
-- **propr-ui**: Web UI for monitoring and management (port 5173)
+- **indexing-worker** and **analysis-worker**: Optional support workers in the development Compose stack
 
 ## GitHub Authentication
 

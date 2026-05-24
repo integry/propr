@@ -46,7 +46,7 @@ Authentication is required before use:
 claude login
 ```
 
-This generates `~/.config/claude-code/auth.json` with authentication credentials.
+This prepares the host Claude configuration directory used by ProPR. The default Claude agent config path is `~/.claude`.
 
 ### Non-Interactive Execution
 
@@ -87,8 +87,8 @@ Containers are configured with:
 {
   // Mount worktree as workspace
   volumes: [
-    `${worktreePath}:/workspace:rw`,
-    `${claudeConfigPath}:/root/.config/claude-code:ro`
+    `${worktreePath}:/home/node/workspace:rw`,
+    `${claudeConfigPath}:/home/node/.claude:rw`
   ],
   
   // Network restrictions
@@ -194,8 +194,8 @@ const execution = await claudeService.execute({
 docker run \
   --rm \
   --network none \
-  -v /path/to/worktree:/workspace:rw \
-  -v ~/.config/claude-code:/root/.config/claude-code:ro \
+  -v /path/to/worktree:/home/node/workspace:rw \
+  -v ~/.claude:/home/node/.claude:rw \
   claude-code-processor:latest \
   claude chat --no-tui --max-turns 1000 "Your prompt here"
 ```
@@ -230,20 +230,24 @@ Parse Claude's output to extract:
 
 ### Available Models
 
-ProPR supports multiple Claude models:
+ProPR's shared model definitions include the Claude models available to the Claude agent. The active list is managed in code and surfaced through AI Agents in the Web UI.
 
 ```javascript
 const MODELS = {
-  sonnet: 'claude-sonnet-4-5-20250929',
-  opus: 'claude-opus-4-20250514'
+  sonnet46: 'claude-sonnet-4-6',
+  opus46: 'claude-opus-4-6',
+  sonnet45: 'claude-sonnet-4-5-20250929',
+  opus45: 'claude-opus-4-5-20251101'
 };
 ```
 
 ### Model Configuration
 
 Models are specified via issue labels:
-- `llm-claude-sonnet` → Sonnet model
-- `llm-claude-opus` → Opus model
+- `llm-claude-sonnet46` → Claude Sonnet 4.6
+- `llm-claude-opus46` → Claude Opus 4.6
+
+Older aliases such as `llm-claude-sonnet` and `llm-claude-opus` may resolve for backward compatibility, but new documentation and labels should use the canonical labels exposed by model definitions and agent settings.
 
 ### Model Characteristics
 
@@ -325,13 +329,13 @@ Containers have restricted filesystem access:
 
 ### Authentication Security
 
-Claude authentication is mounted read-only:
+Claude authentication is mounted into the agent container:
 
 ```bash
--v ~/.config/claude-code:/root/.config/claude-code:ro
+-v ~/.claude:/home/node/.claude:rw
 ```
 
-Prevents Claude from modifying authentication.
+This gives Claude Code access to the host login state expected by the configured agent.
 
 ### Resource Limits
 
@@ -347,13 +351,9 @@ Containers have resource limits:
 ```bash
 # Claude Code Configuration
 CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
-CLAUDE_CONFIG_PATH=~/.config/claude-code
+CLAUDE_CONFIG_PATH=~/.claude
 CLAUDE_MAX_TURNS=1000
 CLAUDE_TIMEOUT_MS=300000
-
-# Model configuration
-MODEL_LABELS_SONNET=llm-claude-sonnet
-MODEL_LABELS_OPUS=llm-claude-opus
 ```
 
 ### Docker Configuration
@@ -459,7 +459,7 @@ docker inspect <container-id>
 Error: Not authenticated with Claude
 ```
 
-**Solution**: Run `claude login` and verify `~/.config/claude-code/auth.json` exists.
+**Solution**: Run `claude login` and verify the configured Claude directory, usually `~/.claude`, exists and is mounted into the worker.
 
 ### Docker Permission Issues
 

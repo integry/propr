@@ -73,7 +73,7 @@ The daemon continuously monitors configured GitHub repositories:
 
 1. Polls repositories at configured intervals (default: 60 seconds)
 2. Searches for open issues with configured primary labels (e.g., 'AI', 'propr')
-3. Checks for model-specific labels (e.g., 'llm-claude-sonnet', 'llm-claude-opus')
+3. Checks for model-specific and custom agent labels (for example `llm-claude-sonnet46`, `llm-codex-gpt54`, or configured custom labels)
 4. Excludes issues with state labels (processing, done, failed)
 5. Creates job(s) in Redis queue for each detected issue/model combination
 
@@ -81,22 +81,22 @@ The daemon continuously monitors configured GitHub repositories:
 
 Workers pull jobs from the queue and execute a deterministic 3-phase workflow:
 
-#### Phase 1: Pre-Claude Setup (Deterministic)
+#### Phase 1: Pre-Agent Setup (Deterministic)
 - Clone or update repository with latest changes
 - Create isolated git worktree for the issue
 - Generate unique branch name with model identifier
 - Push initial branch to GitHub (prevents timing issues)
 - Add processing label to issue
 
-#### Phase 2: AI Implementation (Claude Focus)
+#### Phase 2: AI Implementation (Agent Focus)
 - Prepare implementation-focused prompt
 - Include complete issue context (description + all comments)
-- Execute Claude Code in secure Docker container
-- Claude analyzes and implements solution
-- Parse Claude's output for implementation details
+- Execute the selected Claude, Codex, or Gemini agent in a secure Docker container
+- The selected agent analyzes and implements the solution
+- Parse agent output for implementation details
 
-#### Phase 3: Post-Claude Finalization (Deterministic)
-- Commit any changes Claude made
+#### Phase 3: Post-Agent Finalization (Deterministic)
+- Commit any changes the agent made
 - Push changes to GitHub
 - Create pull request via GitHub API
 - Link PR to issue with proper keywords (`Closes #123`)
@@ -184,7 +184,7 @@ Git worktree created
     ↓
 Branch pushed to GitHub
     ↓
-Claude analyzes and codes
+Selected agent analyzes and codes
     ↓
 Changes committed
     ↓
@@ -208,7 +208,7 @@ ProPR scales horizontally:
 
 Security is built into every layer:
 
-- **Docker isolation** for Claude Code execution
+- **Docker isolation** for agent execution
 - **Network restrictions** in Docker containers
 - **GitHub App permissions** limit access scope
 - **Token-based authentication** with automatic refresh
