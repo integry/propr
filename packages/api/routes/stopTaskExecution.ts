@@ -172,8 +172,17 @@ function assertTaskCanBeStopped(params: {
     });
   }
 
-  if (activity.isRunningTaskState || activity.isNonTerminalTaskState || activity.isQueueActive || activity.isQueueRemovable) {
+  if (activity.isRunningTaskState || activity.isQueueActive || activity.isQueueRemovable) {
     return;
+  }
+
+  if (activity.isNonTerminalTaskState) {
+    throw new StopTaskExecutionError(409, {
+      error: 'Task stop unavailable',
+      message: 'The task is not in a stoppable worker or queue state.',
+      currentState,
+      queueState,
+    });
   }
 
   throw new StopTaskExecutionError(400, {

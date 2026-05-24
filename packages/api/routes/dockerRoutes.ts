@@ -140,14 +140,20 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
     if (statusOutput) {
       return {
         id: containerId,
-        name: containerName,
+        name: containerName ?? null,
         status: statusOutput.includes('Up') ? 'running' : 'stopped',
         logsAvailable: true,
       };
     }
-    return { id: containerId, name: containerName, status: 'removed', logsAvailable: false };
+    return { id: containerId, name: containerName ?? null, status: 'removed', logsAvailable: false };
   } catch (error) {
     console.error('Error getting container info:', error);
-    throw new Error(`Failed to get container info: ${(error as Error).message}`);
+    return {
+      id: containerId,
+      name: containerName ?? null,
+      status: 'error',
+      logsAvailable: false,
+      error: `Failed to get container info: ${(error as Error).message}`,
+    };
   }
 }

@@ -411,6 +411,46 @@ describe('merged PR queue follow-up fixes', () => {
     }, /persist failed/);
   });
 
+  test('stopTaskExecution rejects when task state is non-terminal but no stoppable work is found', async () => {
+    const redisClient = createRedisClient();
+    redisClient.get.mock.mockImplementation(async (key: string) => (
+      key === 'worker:state:task-pending'
+        ? JSON.stringify({ history: [{ state: 'pending', metadata: {} }] })
+        : null
+    ));
+
+    await assert.rejects(async () => {
+      await stopTaskExecution('task-pending', {
+        redisClient,
+        requestedBy: 'system',
+        cancellation: {
+          code: 'pull_request_merged',
+          message: 'Task cancelled because pull request #99 was merged.',
+        },
+      }, {
+        getIssueQueue: async () => ({
+          getJob: async () => null,
+        }) as never,
+        getStateManager: () => ({
+          createTaskState: mockCreateTaskState,
+          markTaskCancelled: mockMarkTaskCancelled,
+        }) as never,
+        db: createPersistedTaskLookupDb(undefined) as never,
+        stopDockerContainer: mockStopDockerContainer as never,
+      });
+    }, (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.strictEqual(error.name, 'StopTaskExecutionError');
+      assert.strictEqual((error as { status?: number }).status, 409);
+      assert.match(error.message, /not in a stoppable worker or queue state/);
+      return true;
+    });
+
+    assert.strictEqual(redisClient.set.mock.calls.length, 0);
+    assert.strictEqual(redisClient.del.mock.calls.length, 0);
+    assert.strictEqual(mockMarkTaskCancelled.mock.calls.length, 0);
+  });
+
   test('getActiveTasksForPR dedupes queue jobs against persisted tasks via job_id', async () => {
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
@@ -445,6 +485,37 @@ describe('merged PR queue follow-up fixes', () => {
     assert.deepStrictEqual(activeTasks, [
       { taskId: 'task-running-1', state: 'processing' },
       { taskId: 'task-running-2', state: 'processing' },
+    ]);
+  });
+
+  test('getActiveTasksForPR backfills untracked PR jobs when the Redis index is only partially populated', async () => {
+    const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
+      getIssueQueue: async () => ({
+        client: Promise.resolve({
+          sMembers: async () => ['pr-comments-batch-integry-propr-1463-123'],
+          sAdd: async () => 1,
+          expire: async () => 1,
+          sRem: async () => 1,
+        }),
+        getJob: async (jobId: string) => jobId === 'pr-comments-batch-integry-propr-1463-123'
+          ? createQueueJob(jobId, { repository: 'integry/propr', pullRequestNumber: 1463 }, 'active')
+          : null,
+        getJobs: async ([queueState]: string[]) => (
+          queueState === 'waiting'
+            ? [{ id: 'merge-conflict-integry-propr-1463-456', data: { repository: 'integry/propr', pullRequestNumber: 1463 } }]
+            : []
+        ),
+      }) as never,
+      db: createActiveTasksDb([]) as never,
+      log: {
+        info: mock.fn(),
+        warn: mock.fn(),
+      },
+    });
+
+    assert.deepStrictEqual(activeTasks, [
+      { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
+      { taskId: 'merge-conflict-integry-propr-1463-456', state: 'waiting' },
     ]);
   });
 

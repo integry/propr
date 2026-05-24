@@ -701,9 +701,7 @@ export async function getActiveTasksForPR(
             taskMap.set(job.jobId, { taskId: job.jobId, state: job.state });
         }
 
-        if (trackedQueueJobs.length === 0) {
-            await addQueuedPrJobsFromFallbackScan(queue, repository, prNumber, taskMap);
-        }
+        await addQueuedPrJobsFromFallbackScan(queue, repository, prNumber, taskMap);
 
         const activeTasks = await database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
