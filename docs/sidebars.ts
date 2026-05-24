@@ -17,8 +17,13 @@ const sidebars: SidebarsConfig = {
     'intro',
     {
       type: 'category',
-      label: 'Concepts',
-      items: ['concepts/pr-review-guidelines'],
+      label: 'Tutorials',
+      items: [
+        'tutorials/setup',
+        'tutorials/usage',
+        'tutorials/end-to-end-workflow',
+        'tutorials/planner-studio',
+      ],
     },
     {
       type: 'category',
@@ -31,13 +36,8 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Tutorials',
-      items: [
-        'tutorials/setup',
-        'tutorials/usage',
-        'tutorials/end-to-end-workflow',
-        'tutorials/planner-studio',
-      ],
+      label: 'Concepts',
+      items: ['concepts/pr-review-guidelines'],
     },
     {
       type: 'category',

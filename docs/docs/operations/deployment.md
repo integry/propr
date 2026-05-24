@@ -201,13 +201,34 @@ Important data to backup:
 - The environment or secret-management source that provides your production `.env` values
 
 ```bash
-# Create backup archive for bind-mounted files
-tar -czf propr-files-backup-$(date +%Y%m%d).tar.gz \
+# Create a backup directory
+mkdir -p ./backups
+
+# Stop services first so Redis and SQLite are not being written during the backup
+docker-compose -f docker-compose.prod.yml stop api daemon worker redis
+
+# Back up the shared SQLite volume
+docker run --rm \
+  -v propr-sqlite-data:/from \
+  -v "$PWD/backups":/to \
+  alpine sh -c 'cd /from && tar -czf /to/propr-sqlite-data-$(date +%Y%m%d).tar.gz .'
+
+# Back up the Redis volume
+docker run --rm \
+  -v propr-redis-data:/from \
+  -v "$PWD/backups":/to \
+  alpine sh -c 'cd /from && tar -czf /to/propr-redis-data-$(date +%Y%m%d).tar.gz .'
+
+# Back up bind-mounted repository and log data
+tar -czf ./backups/propr-files-backup-$(date +%Y%m%d).tar.gz \
   ./repos \
   ./logs
+
+# Start the services again
+docker-compose -f docker-compose.prod.yml start redis daemon worker api
 ```
 
-Back up the Redis and SQLite Docker volumes with the snapshot or volume-backup process used by your platform before upgrades or other maintenance that could modify state.
+Do not rely on the `./repos` and `./logs` archive by itself. That file backup is only partial and does not preserve the shared SQLite application database or Redis queue state. If you use a managed Docker platform, replace the example above with the equivalent named-volume snapshot process for `propr-sqlite-data` and `propr-redis-data`.
 
 ### Scaling
 

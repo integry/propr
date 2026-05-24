@@ -53,7 +53,7 @@ cp propr-ui/.env.example propr-ui/.env
 
 ```bash
 cd propr-ui
-npm install
+npm ci
 npm run dev
 ```
 

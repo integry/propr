@@ -1,115 +1,106 @@
 # Repository-Specific Default Branch Configuration
 
-The ProPR system supports repository-specific default branch configuration through environment variables. This allows you to override the automatic branch detection for specific repositories.
+For most teams, branch behavior should be configured in the Web UI. Each monitored repository entry can define its own `baseBranch`, and that UI configuration is what Planner Studio and branch-aware execution flows use first.
+
+Environment variables still exist as an operator-focused fallback for default branch detection, but they are no longer the primary day-to-day configuration path.
+
+## Configure Branches In The Web UI
+
+Use the Repositories section of the Web UI when you want ProPR to work against a branch other than the repository's GitHub default branch:
+
+1. Open the monitored repository entry in the Web UI
+2. Set `baseBranch` to the branch you want ProPR to target
+3. Save the repository entry
+
+If you need the same `owner/repo` to be planned or executed against multiple long-lived branches, add separate monitored repository entries with different `baseBranch` values.
 
 ## Planner Studio Behavior
 
-Planner Studio does not support ad hoc branch selection. It resolves the planning branch from the monitored repository entry you selected:
+Planner Studio does not support ad hoc branch input. It resolves the planning branch from the monitored repository entry you selected:
 
-- If the repository entry has `baseBranch`, Planner Studio uses that branch.
-- If the repository entry has no `baseBranch`, Planner Studio falls back to the repository default branch.
-- If you need planning against a different branch of the same `owner/repo`, add that repository again as a separate monitored entry with its own `baseBranch`.
+- If the repository entry has `baseBranch`, Planner Studio uses that branch
+- If the repository entry has no `baseBranch`, Planner Studio falls back to the repository default branch
+- If you need planning against a different branch of the same `owner/repo`, add that repository again as a separate monitored entry with its own `baseBranch`
 
-## Configuration Format
+## Branch Resolution Order
 
-Set environment variables using the pattern:
+When ProPR needs to determine a branch for a monitored repository, the effective order is:
+
+1. The monitored repository entry's `baseBranch` from the Web UI
+2. A repository-specific `GIT_DEFAULT_BRANCH_<OWNER>_<REPO>` environment override, if default branch detection is needed
+3. GitHub API default branch metadata
+4. Git remote `HEAD` detection
+5. Git symbolic-ref detection
+6. Common fallback branches: `GIT_FALLBACK_BRANCH`, `main`, `master`, `develop`, `dev`, `trunk`
+7. The first available remote branch
+
+In practice, that means the UI controls the branch when you set `baseBranch`, and environment variables mainly matter when you leave `baseBranch` empty and want to override default-branch detection.
+
+## Optional Environment Overrides
+
+Use environment overrides when you want a deployment-wide, operator-managed default branch override for a specific repository.
+
+Set environment variables using this pattern:
+
 ```bash
 GIT_DEFAULT_BRANCH_<OWNER>_<REPO>=<branch_name>
 ```
 
 Where:
-- `<OWNER>` is the repository owner (converted to uppercase, special chars become underscores)
-- `<REPO>` is the repository name (converted to uppercase, special chars become underscores)  
-- `<branch_name>` is the desired default branch
 
-## Examples
+- `<OWNER>` is the repository owner in uppercase with non-alphanumeric characters replaced by underscores
+- `<REPO>` is the repository name in uppercase with non-alphanumeric characters replaced by underscores
+- `<branch_name>` is the branch ProPR should treat as that repository's default
 
-### Basic Configuration
+Examples:
+
 ```bash
-# For repository integry/forex, use 'dev' as default branch
+# For repository integry/forex, use dev as the detected default branch
 GIT_DEFAULT_BRANCH_INTEGRY_FOREX=dev
 
-# For repository myorg/myrepo, use 'develop' as default branch  
-GIT_DEFAULT_BRANCH_MYORG_MYREPO=develop
+# For repository my-org/my-repo.com, use release/2026
+GIT_DEFAULT_BRANCH_MY_ORG_MY_REPO_COM=release/2026
 ```
 
-### Repositories with Special Characters
-```bash
-# For repository my-org/my-repo.com, use 'main' as default branch
-GIT_DEFAULT_BRANCH_MY_ORG_MY_REPO_COM=main
-
-# For repository user123/project-v2, use 'master' as default branch
-GIT_DEFAULT_BRANCH_USER123_PROJECT_V2=master
-```
-
-### Multiple Repository Configuration
-```bash
-# Configure multiple repositories
-GIT_DEFAULT_BRANCH_INTEGRY_FOREX=dev
-GIT_DEFAULT_BRANCH_INTEGRY_SNAKE_GAME=main
-GIT_DEFAULT_BRANCH_COMPANY_BACKEND_API=develop
-GIT_DEFAULT_BRANCH_COMPANY_FRONTEND_APP=staging
-```
-
-## Priority Order
-
-The system uses the following priority order for determining default branches:
-
-1. **Repository-specific configuration** (highest priority) - `.env` file configuration
-2. **GitHub API detection** - Uses repository metadata from GitHub
-3. **Git remote HEAD detection** - Automatic detection from Git remote
-4. **Git symbolic-ref detection** - Git's symbolic reference resolution  
-5. **Common branch fallback** - Searches: [GIT_FALLBACK_BRANCH, main, master, develop, dev, trunk]
-6. **Available branch fallback** - Uses any available remote branch
+If you change `.env`, container environment variables, or another deployment-time secret source, restart or redeploy the relevant ProPR services so the new values are loaded.
 
 ## Environment File Setup
 
-Add these configurations to your `.env` file:
+Add optional fallback configuration to your `.env` file:
 
 ```bash
-# Global fallback branch (optional)
+# Global fallback branch if no stronger detection succeeds
 GIT_FALLBACK_BRANCH=main
 
-# Repository-specific configurations (optional)
+# Optional repository-specific default branch overrides
 GIT_DEFAULT_BRANCH_INTEGRY_FOREX=dev
 GIT_DEFAULT_BRANCH_INTEGRY_BACKEND=develop
 GIT_DEFAULT_BRANCH_MYORG_FRONTEND=staging
-
-# Other ProPR configuration...
-GITHUB_REPOS_TO_MONITOR=integry/forex,integry/backend,myorg/frontend
 ```
 
 ## Verification
 
-You can verify your configuration by checking the logs when the system processes issues. Look for messages like:
+You can verify an environment override in the logs when ProPR processes work for that repository:
 
-```
+```text
 [INFO] Using repository-specific default branch from environment configuration
   repo: "integry/forex"
   defaultBranch: "dev"
   configKey: "GIT_DEFAULT_BRANCH_INTEGRY_FOREX"
 ```
 
-## Benefits
-
-- **Fine-grained control**: Configure each repository individually
-- **Override GitHub settings**: Use different branches than GitHub's default
-- **Development workflow support**: Use development branches instead of main/master
-- **Legacy repository support**: Handle repositories with non-standard branch names
-- **Zero downtime changes**: Update configurations without restarting the system
-
 ## Troubleshooting
 
 ### Branch Not Found
-If a configured branch doesn't exist in the repository, the system will:
-1. Log a warning about the missing branch
-2. Fall back to automatic detection methods
-3. Continue processing with the detected branch
+
+If a configured branch does not exist in the repository, ProPR logs a warning and falls back to automatic detection.
 
 ### Invalid Configuration
+
 - Environment variable names are case-sensitive
-- Special characters in owner/repo names are converted to underscores
-- Branch names are used exactly as configured (case-sensitive)
+- Special characters in owner or repo names are converted to underscores
+- Branch names are used exactly as configured, including case
 
 ### Debug Configuration
-To see all configured repository branches, you can use the `listRepositoryBranchConfigurations()` function in the code or check the logs during startup.
+
+To inspect configured environment-based overrides, check startup logs or use the `listRepositoryBranchConfigurations()` helper in the codebase.
