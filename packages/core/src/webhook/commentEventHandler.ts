@@ -218,7 +218,8 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         prNumber,
         log: correlatedLogger,
         mergedMessage: 'Skipping slash-command follow-up because PR is already merged',
-        lookupFailureMessage: 'Failed to verify PR merge state before processing slash-command follow-up; aborting so the webhook can retry',
+        lookupFailureMessage: 'Failed to verify PR merge state before processing slash-command follow-up; continuing without merged-state verification',
+        lookupFailureBehavior: 'continue',
     })) {
         return;
     }
@@ -274,7 +275,8 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
             prNumber,
             log: correlatedLogger,
             mergedMessage: 'Skipping slash-command batch update because PR merged while the request was being processed',
-            lookupFailureMessage: 'Failed to verify PR merge state before batching slash-command follow-up; aborting so the webhook can retry',
+            lookupFailureMessage: 'Failed to verify PR merge state before batching slash-command follow-up; continuing without merged-state verification',
+            lookupFailureBehavior: 'continue',
         })) {
             return;
         }
@@ -528,7 +530,8 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
         prNumber,
         log: correlatedLogger,
         mergedMessage: 'Skipping PR comment follow-up because PR is already merged',
-        lookupFailureMessage: 'Failed to verify PR merge state before processing comment follow-up; aborting so the webhook can retry',
+        lookupFailureMessage: 'Failed to verify PR merge state before processing comment follow-up; continuing without merged-state verification',
+        lookupFailureBehavior: 'continue',
     })) {
         return;
     }
@@ -596,7 +599,8 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
             prNumber,
             log: correlatedLogger,
             mergedMessage: 'Skipping PR comment batching because PR merged while the request was being processed',
-            lookupFailureMessage: 'Failed to verify PR merge state before batching comment follow-up; aborting so the webhook can retry',
+            lookupFailureMessage: 'Failed to verify PR merge state before batching comment follow-up; continuing without merged-state verification',
+            lookupFailureBehavior: 'continue',
         })) {
             return;
         }
@@ -751,7 +755,8 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
             prNumber,
             log: correlatedLogger,
             mergedMessage: 'Skipping PR comment enqueue because PR is already merged',
-            lookupFailureMessage: 'Failed to verify PR merge state before enqueuing comment follow-up; aborting so the webhook can retry',
+            lookupFailureMessage: 'Failed to verify PR merge state before enqueuing comment follow-up; continuing without merged-state verification',
+            lookupFailureBehavior: 'continue',
         })) {
             return;
         }

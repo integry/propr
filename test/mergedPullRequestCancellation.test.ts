@@ -121,7 +121,10 @@ describe('cancelMergedPullRequestTasks', () => {
 
     assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 1);
     assert.deepStrictEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
-    assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0].arguments, ['integry/propr', 1463]);
+    assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0].arguments, ['integry/propr', 1463, {
+      log: mockLogger,
+      forceQueueScan: true,
+    }]);
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 2);
     assert.strictEqual(mockStopTaskExecution.mock.calls[0].arguments[0], 'task-running');
     assert.strictEqual(mockStopTaskExecution.mock.calls[1].arguments[0], 'job-queued');
@@ -132,6 +135,7 @@ describe('cancelMergedPullRequestTasks', () => {
         code: 'pull_request_merged',
         message: 'Task cancelled because pull request #1463 was merged.',
       },
+      containerStopTimeoutSeconds: 1,
     });
   });
 

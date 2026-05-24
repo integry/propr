@@ -27,6 +27,7 @@ export interface StopTaskExecutionOptions {
   redisClient: RedisClientLike;
   requestedBy?: string;
   cancellation?: StopTaskCancellationReason;
+  containerStopTimeoutSeconds?: number;
 }
 
 export interface StopTaskExecutionDeps {
@@ -82,7 +83,12 @@ export async function stopTaskExecution(
   options: StopTaskExecutionOptions,
   deps: StopTaskExecutionDeps = {},
 ): Promise<StopTaskExecutionResult> {
-  const { redisClient, requestedBy = 'user', cancellation = DEFAULT_STOP_REASON } = options;
+  const {
+    redisClient,
+    requestedBy = 'user',
+    cancellation = DEFAULT_STOP_REASON,
+    containerStopTimeoutSeconds,
+  } = options;
   const context = await (deps.loadStopTaskContext ?? loadStopTaskContext)(taskReference, redisClient, deps);
   const activity = getStopTaskActivity(context.currentState, context.queueState);
   const shouldAbort = shouldAbortTask(activity);
@@ -112,6 +118,7 @@ export async function stopTaskExecution(
     taskId: context.taskId,
     state: context.state,
     shouldAbort,
+    containerStopTimeoutSeconds,
     stopContainer: deps.stopDockerContainer,
   });
 
@@ -271,9 +278,17 @@ async function stopTaskContainer(params: {
   taskId: string;
   state: TaskState | null;
   shouldAbort: boolean;
+  containerStopTimeoutSeconds?: number;
   stopContainer?: typeof stopDockerContainer;
 }): Promise<{ containerId?: string; containerStopped: boolean }> {
-  const { redisClient, taskId, state, shouldAbort, stopContainer = stopDockerContainer } = params;
+  const {
+    redisClient,
+    taskId,
+    state,
+    shouldAbort,
+    containerStopTimeoutSeconds = 10,
+    stopContainer = stopDockerContainer,
+  } = params;
   const entry = state?.history.find((historyEntry) => historyEntry.state === 'claude_execution' && historyEntry.metadata?.containerId);
   const containerId = entry?.metadata?.containerId;
 
@@ -285,7 +300,7 @@ async function stopTaskContainer(params: {
   }
 
   logger.info({ taskId, containerId }, 'Stopping task container');
-  const stopResult = await stopContainer(containerId, 10);
+  const stopResult = await stopContainer(containerId, containerStopTimeoutSeconds);
 
   if (!stopResult.success) {
     logger.warn({ taskId, containerId, error: stopResult.error }, 'Failed to stop task container');

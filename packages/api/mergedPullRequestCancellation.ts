@@ -3,7 +3,7 @@ import {
   StopTaskExecutionError,
   stopTaskExecution,
   type StopTaskExecutionOptions,
-} from './routes/dockerRoutes.js';
+} from './routes/stopTaskExecution.js';
 
 interface MergedPullRequestPayload {
   action: 'closed';
@@ -27,6 +27,8 @@ interface MergeTaskCancellationFailure {
   queueState: string | null;
 }
 
+const MERGED_PR_CONTAINER_STOP_TIMEOUT_SECONDS = 1;
+
 export async function cancelMergedPullRequestTasks(
   payload: Record<string, unknown>,
   correlationId: string,
@@ -42,6 +44,7 @@ export async function cancelMergedPullRequestTasks(
   const loadActiveTasks = deps.getActiveTasksForPR ?? getActiveTasksForPR;
   const persistMergedState = deps.markPullRequestMerged ?? markPullRequestMerged;
   const stopTask = deps.stopTaskExecution ?? stopTaskExecution;
+  type ActiveTask = Awaited<ReturnType<typeof loadActiveTasks>>[number];
   const cancellation = {
     code: 'pull_request_merged',
     message: `Task cancelled because pull request #${prNumber} was merged.`,
@@ -50,6 +53,7 @@ export async function cancelMergedPullRequestTasks(
   await persistMergedState(deps.redisClient, repository, prNumber);
   const activeTasks = await loadActiveTasks(repository, prNumber, {
     log,
+    forceQueueScan: true,
   });
   if (activeTasks.length === 0) {
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
@@ -58,12 +62,13 @@ export async function cancelMergedPullRequestTasks(
 
   log.info({ correlationId, repository, prNumber, activeTaskCount: activeTasks.length }, 'Cancelling active PR tasks after merge');
 
-  const failures = (await Promise.all(activeTasks.map(async (task) => {
+  const failures = (await Promise.all(activeTasks.map(async (task: ActiveTask) => {
     try {
       await stopTask(task.taskId, {
         redisClient: deps.redisClient,
         requestedBy: 'system',
         cancellation,
+        containerStopTimeoutSeconds: MERGED_PR_CONTAINER_STOP_TIMEOUT_SECONDS,
       });
       return null;
     } catch (error) {
@@ -94,7 +99,7 @@ export async function cancelMergedPullRequestTasks(
       }, 'Failed to cancel merged PR task');
       return failure;
     }
-  }))).filter((failure): failure is MergeTaskCancellationFailure => failure !== null);
+  }))).filter((failure: MergeTaskCancellationFailure | null): failure is MergeTaskCancellationFailure => failure !== null);
 
   if (failures.length > 0) {
     throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.map(formatMergeTaskCancellationFailure).join('; ')}`);

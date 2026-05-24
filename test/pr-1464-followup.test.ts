@@ -106,7 +106,7 @@ test.after(async () => {
   await closeConnection();
 });
 
-test('getActiveTasksForPR backfills unindexed queue jobs when the PR index is partial', async () => {
+test('getActiveTasksForPR backfills unindexed queue jobs when a partial PR index is force-scanned', async () => {
   const indexedJob = createMockJob('indexed-job', 'active', {
     repository: 'integry/propr',
     prNumber: 1464,
@@ -124,6 +124,7 @@ test('getActiveTasksForPR backfills unindexed queue jobs when the PR index is pa
     getIssueQueue: async () => queue as never,
     db: createTaskQueryDbMock([]),
     log: silentLog,
+    forceQueueScan: true,
   });
 
   assert.deepEqual(

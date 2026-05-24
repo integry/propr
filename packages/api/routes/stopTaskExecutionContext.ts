@@ -1,5 +1,5 @@
 import type { Job } from 'bullmq';
-import { buildIssueRefFromQueueJob, db, getIssueQueue, getPrNumberFromJobData, getStateManager, isPullRequestQueueJob, logger } from '@propr/core';
+import { buildIssueRefFromQueueJob, db, getIssueQueue, getPrNumberFromJobData, getStateManager, getTaskIdFromQueueJob, logger } from '@propr/core';
 
 export type QueueJobData = Record<string, unknown>;
 
@@ -40,6 +40,12 @@ interface StopTaskStateDeps {
   getStateManager?: typeof getStateManager;
 }
 
+interface ResolvedPersistedTaskContext {
+  persistedTask: PersistedTaskRecord | null;
+  queueJob: Job<QueueJobData> | null;
+  queueTaskId: string | null;
+}
+
 type RedisClientLike = {
   get: (key: string) => Promise<string | null>;
 };
@@ -59,28 +65,38 @@ export async function loadStopTaskContext(
   deps: StopTaskContextDeps,
 ): Promise<StopTaskContext> {
   const normalizedTaskId = normalizeTaskId(taskReference);
-  const persistedTask = await findPersistedTaskRecord(taskReference, normalizedTaskId, deps.db ?? db);
-  const stateLookup = await loadTaskState(redisClient, [persistedTask?.taskId, normalizedTaskId, taskReference]);
-  const candidateTaskIds = [...new Set([
+  const { persistedTask, queueJob, queueTaskId } = await resolvePersistedTaskContext(
     taskReference,
     normalizedTaskId,
+    deps,
+  );
+  const stateLookup = await loadTaskState(redisClient, [
     persistedTask?.taskId,
+    queueTaskId,
+    normalizedTaskId,
+    taskReference,
     persistedTask?.jobId,
-  ].filter((value): value is string => Boolean(value)))];
+  ]);
 
   logger.info({
     taskReference,
     normalizedTaskId,
     persistedTaskId: persistedTask?.taskId ?? null,
     persistedJobId: persistedTask?.jobId ?? null,
+    queueTaskId,
   }, 'Loading task stop context');
 
   const state = stateLookup.state;
   const currentState = state?.history[state.history.length - 1]?.state ?? null;
-  const queueJob = await getQueueJob(candidateTaskIds, deps.getIssueQueue);
   const queueState = queueJob ? await queueJob.getState() : null;
-  const taskId = resolveStopTaskId(normalizedTaskId, queueJob, persistedTask?.taskId ?? stateLookup.taskId);
-  const abortTaskIds = buildAbortTaskIds(taskId, normalizedTaskId, queueJob, persistedTask?.jobId ?? null);
+  const taskId = resolveStopTaskId(normalizedTaskId, queueTaskId, persistedTask?.taskId ?? stateLookup.taskId);
+  const abortTaskIds = buildAbortTaskIds({
+    taskId,
+    normalizedTaskId,
+    queueTaskId,
+    queueJob,
+    persistedJobId: persistedTask?.jobId ?? null,
+  });
 
   return {
     normalizedTaskId,
@@ -108,12 +124,17 @@ async function findPersistedTaskRecord(
   taskReference: string,
   normalizedTaskId: string,
   database: typeof db,
+  extraCandidates: string[] = [],
 ): Promise<PersistedTaskRecord | null> {
   const lookupCandidates = [
     { column: 'task_id', value: taskReference },
     { column: 'task_id', value: normalizedTaskId },
     { column: 'job_id', value: taskReference },
     { column: 'job_id', value: normalizedTaskId },
+    ...extraCandidates.flatMap((value) => [
+      { column: 'task_id', value },
+      { column: 'job_id', value },
+    ]),
   ];
   const seen = new Set<string>();
 
@@ -137,6 +158,32 @@ async function findPersistedTaskRecord(
   }
 
   return null;
+}
+
+async function resolvePersistedTaskContext(
+  taskReference: string,
+  normalizedTaskId: string,
+  deps: StopTaskContextDeps,
+): Promise<ResolvedPersistedTaskContext> {
+  const database = deps.db ?? db;
+  let persistedTask = await findPersistedTaskRecord(taskReference, normalizedTaskId, database);
+  const queueJob = await getQueueJob([
+    taskReference,
+    normalizedTaskId,
+    persistedTask?.jobId,
+    persistedTask?.taskId,
+  ].filter((value): value is string => Boolean(value)), deps.getIssueQueue);
+  const queueTaskId = queueJob ? getTaskIdFromQueueJob(queueJob) : null;
+
+  if (!persistedTask && queueTaskId) {
+    persistedTask = await findPersistedTaskRecord(taskReference, normalizedTaskId, database, [queueTaskId]);
+  }
+
+  return {
+    persistedTask,
+    queueJob,
+    queueTaskId,
+  };
 }
 
 async function loadTaskState(
@@ -203,46 +250,28 @@ async function createTaskStateFromQueueJob(
 
 function resolveStopTaskId(
   normalizedTaskId: string,
-  queueJob: Job<QueueJobData> | null,
+  queueTaskId: string | null,
   persistedTaskId: string | null,
 ): string {
   if (persistedTaskId) {
     return persistedTaskId;
   }
 
-  if (!queueJob) {
+  if (!queueTaskId) {
     return normalizedTaskId;
   }
 
-  const queueTaskId = buildTaskIdFromQueueJob(queueJob);
   return queueTaskId ?? normalizedTaskId;
 }
 
-function buildAbortTaskIds(
-  taskId: string,
-  normalizedTaskId: string,
-  queueJob: Job<QueueJobData> | null,
-  persistedJobId: string | null,
-): string[] {
+function buildAbortTaskIds(params: {
+  taskId: string;
+  normalizedTaskId: string;
+  queueTaskId: string | null;
+  queueJob: Job<QueueJobData> | null;
+  persistedJobId: string | null;
+}): string[] {
+  const { taskId, normalizedTaskId, queueTaskId, queueJob, persistedJobId } = params;
   const queueJobId = queueJob?.id ? String(queueJob.id) : null;
-  return [...new Set([taskId, normalizedTaskId, queueJobId, persistedJobId].filter((value): value is string => Boolean(value)))];
-}
-
-function buildTaskIdFromQueueJob(queueJob: Job<QueueJobData>): string | null {
-  if (typeof queueJob.id === 'string' && isPullRequestQueueJob(queueJob.data)) {
-    return normalizeTaskId(queueJob.id);
-  }
-
-  if (
-    typeof queueJob.data.repoOwner === 'string'
-    && typeof queueJob.data.repoName === 'string'
-    && typeof queueJob.data.number === 'number'
-    && typeof queueJob.data.agentAlias === 'string'
-    && typeof queueJob.data.modelName === 'string'
-    && typeof queueJob.data.correlationId === 'string'
-  ) {
-    return `${queueJob.data.repoOwner}-${queueJob.data.repoName}-${queueJob.data.number}-${queueJob.data.agentAlias}-${queueJob.data.modelName}-${queueJob.data.correlationId}`;
-  }
-
-  return null;
+  return [...new Set([taskId, normalizedTaskId, queueTaskId, queueJobId, persistedJobId].filter((value): value is string => Boolean(value)))];
 }

@@ -5,7 +5,7 @@ import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getPendingPrQueueJobs, getTrackedPrQueueJobs, TRACKED_PR_QUEUE_STATES, TRACKED_PR_QUEUE_STATE_SET, trackPrQueueJob } from './prQueueJobIndex.js';
-import { getPrNumberFromJobData, getRepositoryFromJobData } from './prTaskIdentity.js';
+import { getPrNumberFromJobData, getRepositoryFromJobData, getTaskIdFromQueueJob } from './prTaskIdentity.js';
 
 export interface MergePROptions {
     owner: string;
@@ -672,16 +672,17 @@ export async function getActiveTasksForPR(
 ): Promise<PRTaskActivity[]> {
     try {
         const taskMap = new Map<string, PRTaskActivity>();
+        const taskAliases = new Map<string, string>();
         const queue = await (deps.getIssueQueue ?? getIssueQueue)();
         const database = deps.db ?? db;
         const log = deps.log ?? logger;
         const trackedQueueJobs = await getTrackedPrQueueJobs(queue as never, repository, prNumber);
         const pendingQueueJobs = await getPendingPrQueueJobs(queue as never, repository, prNumber);
         for (const job of trackedQueueJobs) {
-            taskMap.set(job.jobId, { taskId: job.jobId, state: job.state });
+            registerActiveTask(taskMap, taskAliases, { taskId: job.jobId, state: job.state }, [getQueueTaskAlias(job.jobId)]);
         }
         for (const job of pendingQueueJobs) {
-            taskMap.set(job.jobId, { taskId: job.jobId, state: job.state });
+            registerActiveTask(taskMap, taskAliases, { taskId: job.jobId, state: job.state }, [getQueueTaskAlias(job.jobId)]);
             try {
                 await trackPrQueueJob(queue as never, repository, prNumber, job.jobId);
             } catch (error) {
@@ -694,12 +695,13 @@ export async function getActiveTasksForPR(
             }
         }
 
-        if (deps.forceQueueScan === true && taskMap.size === 0) {
+        if (deps.forceQueueScan === true || taskMap.size === 0) {
             await addQueuedPrJobsFromFallbackScan({
                 queue,
                 repository,
                 prNumber,
                 taskMap,
+                taskAliases,
                 log,
             });
         }
@@ -718,16 +720,16 @@ export async function getActiveTasksForPR(
             .whereNotIn('task_history.state', TERMINAL_TASK_STATES) as ActiveTaskRow[];
 
         for (const task of activeTasks) {
-            const dedupeKey = task.job_id || task.task_id;
+            const dedupeKey = resolveActiveTaskKey(taskMap, taskAliases, [task.job_id, task.task_id]);
             if (taskMap.has(dedupeKey)) {
                 if (RUNNING_TASK_STATES.has(task.state)) {
-                    taskMap.set(dedupeKey, { taskId: task.task_id, state: task.state });
+                    registerActiveTask(taskMap, taskAliases, { taskId: task.task_id, state: task.state }, [task.job_id]);
                 }
                 continue;
             }
 
             if (RUNNING_TASK_STATES.has(task.state)) {
-                taskMap.set(dedupeKey, { taskId: task.task_id, state: task.state });
+                registerActiveTask(taskMap, taskAliases, { taskId: task.task_id, state: task.state }, [task.job_id]);
             }
         }
 
@@ -752,9 +754,10 @@ async function addQueuedPrJobsFromFallbackScan(params: {
     repository: string;
     prNumber: number;
     taskMap: Map<string, PRTaskActivity>;
+    taskAliases: Map<string, string>;
     log: Pick<typeof logger, 'info' | 'warn'>;
 }): Promise<void> {
-    const { queue, repository, prNumber, taskMap, log } = params;
+    const { queue, repository, prNumber, taskMap, taskAliases, log } = params;
     for (const queueState of TRACKED_PR_QUEUE_STATES) {
         const jobs = await queue.getJobs([queueState]);
         for (const job of jobs) {
@@ -764,7 +767,10 @@ async function addQueuedPrJobsFromFallbackScan(params: {
             }
 
             const queueJobId = String(job.id);
-            taskMap.set(queueJobId, { taskId: queueJobId, state: queueState });
+            registerActiveTask(taskMap, taskAliases, { taskId: queueJobId, state: queueState }, [
+                getQueueTaskAlias(queueJobId),
+                getTaskIdFromQueueJob(job),
+            ]);
             try {
                 await trackPrQueueJob(queue as never, repository, prNumber, queueJobId);
             } catch (error) {
@@ -777,6 +783,62 @@ async function addQueuedPrJobsFromFallbackScan(params: {
             }
         }
     }
+}
+
+function registerActiveTask(
+    taskMap: Map<string, PRTaskActivity>,
+    taskAliases: Map<string, string>,
+    task: PRTaskActivity,
+    aliases: Array<string | null | undefined> = [],
+): void {
+    const dedupeKey = resolveActiveTaskKey(taskMap, taskAliases, [task.taskId, ...aliases]);
+    taskMap.set(dedupeKey, task);
+
+    for (const alias of [dedupeKey, task.taskId, ...aliases]) {
+        if (!alias) {
+            continue;
+        }
+        taskAliases.set(alias, dedupeKey);
+    }
+}
+
+function resolveActiveTaskKey(
+    taskMap: Map<string, PRTaskActivity>,
+    taskAliases: Map<string, string>,
+    candidates: Array<string | null | undefined>,
+): string {
+    for (const candidate of candidates) {
+        if (!candidate) {
+            continue;
+        }
+
+        const aliasedKey = taskAliases.get(candidate);
+        if (aliasedKey) {
+            return aliasedKey;
+        }
+
+        if (taskMap.has(candidate)) {
+            return candidate;
+        }
+    }
+
+    for (const candidate of candidates) {
+        if (candidate) {
+            return candidate;
+        }
+    }
+
+    return '';
+}
+
+function getQueueTaskAlias(jobId: string): string | null {
+    if (!jobId.startsWith('issue-')) {
+        return null;
+    }
+
+    const parts = jobId.replace(/^issue-/, '').split('-');
+    parts.pop();
+    return parts.join('-');
 }
 
 /**

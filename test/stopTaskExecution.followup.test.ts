@@ -152,5 +152,8 @@ test('cancelMergedPullRequestTasks uses indexed lookup before falling back to a 
     );
 
     assert.strictEqual(getActiveTasksForPR.mock.calls.length, 1);
-    assert.deepStrictEqual(getActiveTasksForPR.mock.calls[0]?.arguments, ['owner/repo', 42]);
+    assert.deepStrictEqual(getActiveTasksForPR.mock.calls[0]?.arguments, ['owner/repo', 42, {
+        log,
+        forceQueueScan: true,
+    }]);
 });

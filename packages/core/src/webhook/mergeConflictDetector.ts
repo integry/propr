@@ -94,7 +94,8 @@ async function detectAndEnqueueForPR(
         prNumber,
         log,
         mergedMessage: 'Merge conflict detection: skipping enqueue because PR is already merged',
-        lookupFailureMessage: 'Merge conflict detection: failed to verify PR merge state before enqueue; aborting so the webhook can retry',
+        lookupFailureMessage: 'Merge conflict detection: failed to verify PR merge state before enqueue; continuing without merged-state verification',
+        lookupFailureBehavior: 'continue',
     })) {
         return { outcome: 'skipped_merged', prNumber, repository };
     }
@@ -274,7 +275,8 @@ export async function handleMergeCommand(
         prNumber,
         log,
         mergedMessage: '/merge command: PR already merged, skipping',
-        lookupFailureMessage: '/merge command: failed to verify PR merge state before enqueue; aborting so the webhook can retry',
+        lookupFailureMessage: '/merge command: failed to verify PR merge state before enqueue; continuing without merged-state verification',
+        lookupFailureBehavior: 'continue',
     })) {
         return null;
     }

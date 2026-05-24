@@ -127,7 +127,7 @@ export type { CommentPayload, CommentEventConfig, CommentEventType, UltrafixDeps
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
 export { hasPullRequestMerged, markPullRequestMerged } from './webhook/prMergeState.js';
 export { clearPendingPrQueueJob, clearTrackedPrQueueJob, markPrQueueJobPending, trackPrQueueJob } from './webhook/prQueueJobIndex.js';
-export { buildIssueRefFromQueueJob, buildPrQueueJobContext, getPrNumberFromJobData, getRepositoryFromJobData, isPullRequestQueueJob } from './webhook/prTaskIdentity.js';
+export { buildIssueRefFromQueueJob, buildPrQueueJobContext, getPrNumberFromJobData, getRepositoryFromJobData, getTaskIdFromQueueJob, isPullRequestQueueJob } from './webhook/prTaskIdentity.js';
 export { parseSlashCommand, buildCommandMeta } from './webhook/slashCommandParser.js';
 export type { ParsedSlashCommand, SlashCommandName, CommandMeta, ReviewCommandMeta, FixCommandMeta, MergeCommandMeta, UltrafixCommandMeta } from './webhook/slashCommandParser.js';
 export { handlePullRequestConflictDetection, handlePushConflictDetection, handleMergeCommand } from './webhook/mergeConflictDetector.js';

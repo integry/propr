@@ -60,6 +60,25 @@ export function buildPrQueueJobContext(queueJob: QueueJobIdentityLike): { reposi
   };
 }
 
+export function getTaskIdFromQueueJob(queueJob: QueueJobIdentityLike): string | null {
+  if (typeof queueJob.id === 'string') {
+    return normalizeQueueTaskId(queueJob.id);
+  }
+
+  if (
+    typeof queueJob.data.repoOwner === 'string'
+    && typeof queueJob.data.repoName === 'string'
+    && typeof queueJob.data.number === 'number'
+    && typeof queueJob.data.agentAlias === 'string'
+    && typeof queueJob.data.modelName === 'string'
+    && typeof queueJob.data.correlationId === 'string'
+  ) {
+    return `${queueJob.data.repoOwner}-${queueJob.data.repoName}-${queueJob.data.number}-${queueJob.data.agentAlias}-${queueJob.data.modelName}-${queueJob.data.correlationId}`;
+  }
+
+  return null;
+}
+
 export function buildIssueRefFromQueueJob(queueJob: QueueJobIdentityLike): IssueRef | null {
   const jobData = queueJob.data;
   const repoOwner = getRepoOwner(jobData);
@@ -84,6 +103,16 @@ export function buildIssueRefFromQueueJob(queueJob: QueueJobIdentityLike): Issue
 
 export function isPullRequestQueueJob(jobData: PrTaskJobData): boolean {
   return getPrNumberFromJobData(jobData) !== null;
+}
+
+function normalizeQueueTaskId(taskId: string): string {
+  if (taskId.startsWith('issue-')) {
+    const parts = taskId.replace(/^issue-/, '').split('-');
+    parts.pop();
+    return parts.join('-');
+  }
+
+  return taskId;
 }
 
 function getTaskNumber(jobData: PrTaskJobData): number | null {
