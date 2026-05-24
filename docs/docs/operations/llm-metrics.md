@@ -1,10 +1,10 @@
 # LLM Metrics Documentation
 
-This document describes the LLM metrics collection and monitoring functionality implemented in ProPR.
+This document describes the shared LLM metrics collection and monitoring functionality implemented in ProPR.
 
 ## Overview
 
-The LLM metrics system tracks and stores detailed metrics about Claude API usage, including:
+The LLM metrics system tracks and stores detailed metrics about agent execution across ProPR, including:
 - Success/failure rates
 - Cost tracking (per request and aggregated)
 - Execution time
@@ -12,18 +12,20 @@ The LLM metrics system tracks and stores detailed metrics about Claude API usage
 - Model-specific performance
 - High-cost alerts
 
+The current implementation normalizes execution results into a shared metrics payload and stores them under generic `llm:*` keys. Some code-level type names and detailed conversation fields still use Claude-oriented naming because the metrics pipeline originated from Claude execution logs, but the dashboard aggregates any recorded model ID.
+
 ## Architecture
 
 ### Components
 
-1. **`src/utils/llmMetrics.js`** - Core metrics recording and retrieval functions
-2. **`packages/api/llmMetricsAdapter.js`** - CommonJS adapter for dashboard integration
+1. **`packages/core/src/utils/llmMetrics.ts`** - Core metrics recording and retrieval functions
+2. **`packages/api/llmMetricsAdapter.ts`** - Dashboard adapter for summary endpoints
 3. **`packages/api/client/src/components/LLMMetricsPanel.tsx`** - React component for displaying metrics
 4. **Redis Storage** - All metrics are stored in Redis with appropriate TTLs
 
 ### Data Flow
 
-1. When Claude is executed in `worker.js`, the result is passed to `recordLLMMetrics()`
+1. When an agent execution completes, the normalized result is passed to `recordLLMMetrics()`
 2. Metrics are extracted and stored in Redis with various aggregation levels
 3. The dashboard API exposes endpoints to retrieve metric summaries
 4. The React dashboard displays real-time LLM performance data
@@ -34,12 +36,12 @@ The LLM metrics system tracks and stores detailed metrics about Claude API usage
 - **Correlation ID** - Unique identifier for tracking
 - **Issue/PR Number** - Associated GitHub issue or PR
 - **Repository** - Repository being processed
-- **Model** - Claude model used (e.g., claude-3-opus-20240229)
+- **Model** - Model ID used for the execution
 - **Success/Failure** - Whether the request succeeded
 - **Execution Time** - Time taken in milliseconds
 - **Number of Turns** - Conversation turns used
 - **Cost** - USD cost of the request
-- **Session ID** - Claude session identifier
+- **Session ID** - Session or provider-specific execution identifier when available
 - **Error Details** - If failed, the error message
 
 ### Aggregated Metrics
@@ -119,20 +121,19 @@ The LLM metrics are displayed in the ProPR dashboard with:
 
 ### Recording Metrics
 ```javascript
-import { recordLLMMetrics } from './utils/llmMetrics.js';
+import { recordLLMMetrics } from '@propr/core';
 
-// After Claude execution
+// After an agent execution has been normalized to the shared metrics payload
 await recordLLMMetrics(
-    claudeResult,
+    executionResult,
     { number: 123, repoOwner: 'owner', repoName: 'repo' },
-    'issue', // or 'pr_comment'
-    correlationId
+    { jobType: 'issue', correlationId }
 );
 ```
 
 ### Retrieving Metrics
 ```javascript
-import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './utils/llmMetrics.js';
+import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from '@propr/core';
 
 // Get overall summary
 const summary = await getLLMMetricsSummary();
@@ -146,7 +147,7 @@ const metrics = await getLLMMetricsByCorrelationId('corr-123');
 The metrics system enables:
 1. **Cost Optimization** - Track spending and identify expensive operations
 2. **Performance Monitoring** - Monitor execution times and turn counts
-3. **Model Comparison** - Compare different Claude models' performance
+3. **Model Comparison** - Compare configured model performance across agents
 4. **Failure Analysis** - Identify patterns in failed requests
 5. **Usage Trends** - Track daily usage patterns and costs
 

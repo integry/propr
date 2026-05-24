@@ -8,7 +8,7 @@ This guide covers deploying ProPR with the Web UI dashboard in a production envi
 - A domain name for your deployment
 - SSL/TLS certificates (recommended)
 - GitHub App configured with proper permissions
-- Anthropic API key for Claude
+- Provider credentials for the agents you plan to enable
 
 ## Environment Configuration
 
@@ -19,7 +19,12 @@ cp packages/api/.env.example packages/api/.env
 cp packages/api/client/.env.example packages/api/client/.env
 ```
 
-2. Update the `.env` file with production values:
+2. Update the `.env` file with production values.
+
+Important:
+
+- The production compose example in this repository is a minimal Claude-first deployment and wires `ANTHROPIC_API_KEY` by default.
+- If you enable Codex or Gemini agents in the AI Agents UI, extend your production compose setup with the corresponding credentials, config mounts, and agent images before routing production work to those agents.
 
 ### Required Environment Variables
 
@@ -36,7 +41,7 @@ GH_OAUTH_CLIENT_ID=your-oauth-client-id
 GH_OAUTH_CLIENT_SECRET=your-oauth-client-secret
 GH_OAUTH_CALLBACK_URL=https://yourdomain.com/api/auth/github/callback
 
-# Claude API
+# Claude API for the default compose example
 ANTHROPIC_API_KEY=your-anthropic-api-key
 
 # Security

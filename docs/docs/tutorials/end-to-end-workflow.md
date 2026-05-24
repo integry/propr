@@ -12,7 +12,7 @@ Make sure:
 
 - ProPR is already configured for your repository
 - The daemon and at least one worker are running
-- Your repository is listed in `GITHUB_REPOS_TO_MONITOR`
+- Your repository appears in ProPR's monitored repository list, whether that list was seeded with `GITHUB_REPOS_TO_MONITOR` or managed in the Web UI
 - You know which primary processing label your team uses, such as `AI` or `propr`
 
 If you have not completed setup yet, start with the [Setup](./setup.md) and [Usage](./usage.md) guides.

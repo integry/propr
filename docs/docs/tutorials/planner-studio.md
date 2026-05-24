@@ -148,7 +148,7 @@ Trigger execution from the draft's issue list.
 
 What happens when you implement an issue:
 
-1. Planner Studio triggers the issue by adding the AI processing label
+1. Planner Studio triggers the issue by adding your configured primary processing label, such as `AI` or `propr`
 2. The normal ProPR worker pipeline takes over
 3. A branch, implementation run, and PR are created automatically
 

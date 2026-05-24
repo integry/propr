@@ -21,7 +21,7 @@ ProPR combines a Web UI dashboard, Planner Studio, and multi-agent execution wor
 
 ## How It Works
 
-1. **Connect repositories and agents**: Add monitored repositories, configure coding agents, and set default models in the Web UI.
+1. **Connect repositories and agents**: Make sure the repository is present in ProPR's monitored repository list, either by seeding `GITHUB_REPOS_TO_MONITOR` in env-driven deployments or by managing repositories in the Web UI, then configure coding agents and default models.
 2. **Choose the entry point**: Let ProPR process labeled GitHub issues automatically, or create a guided plan in Planner Studio.
 3. **Generate and execute work**: ProPR prepares repository context, runs the selected agent in an isolated environment, and records the task in the dashboard.
 4. **Review and iterate**: Use PR slash commands for AI review, fixes, model switching, merge assistance, or the Ultrafix review-fix loop.
@@ -35,7 +35,7 @@ Ready to get started? Check out our [Setup Guide](./tutorials/setup.md) to confi
 
 - **[Features](./features/overview.md)**: Current product overview, including the dashboard, Planner Studio, multi-agent execution, and Ultrafix
 - **[PR Commands](./features/pr-commands.md)**: Detailed reference for review, fix, merge, model switching, and Ultrafix workflows
-- **Tutorials**: Setup and usage guides for getting the platform running
+- **Tutorials**: Setup, issue-to-PR, and Planner Studio guides for getting the platform running and using it day to day
 - **Architecture**: Deep dives into agents, workers, GitHub integration, and execution internals
 - **Operations**: Deployment, Web UI integration, metrics, and production guidance
 - **[Concepts](./concepts/pr-review-guidelines.md)**: Human review expectations for AI-generated changes

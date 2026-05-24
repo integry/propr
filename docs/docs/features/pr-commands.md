@@ -6,6 +6,8 @@ sidebar_position: 3
 
 ProPR supports six slash commands that you can use in pull request comments to trigger automated actions: `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix`. Each command serves a distinct purpose in the PR workflow.
 
+These commands are model-aware across ProPR's configured agents. If your environment has Claude, Codex, and Gemini agents enabled, you can target any supported model for review or follow-up work by using that model's ID or `llm-...` label.
+
 ## `/review` — Request an AI Code Review
 
 Posts one AI review comment per requested model. Reviews are read-only — they do **not** apply any code changes.
@@ -16,13 +18,13 @@ Posts one AI review comment per requested model. Reviews are read-only — they 
 /review
 ```
 
-Request a review using the default model.
+Request a review using the default review model.
 
 ```
-/review claude-opus claude-sonnet
+/review claude-opus-4-6 gpt-5.4 gemini-2.5-pro
 ```
 
-Request reviews from specific models. Each model posts its own review comment.
+Request reviews from specific models, even across different configured agent providers. Each model posts its own review comment.
 
 ```
 /review
@@ -95,13 +97,13 @@ Updates the PR's model label so that all subsequent AI commands use the specifie
 ### Usage
 
 ```
-/switch claude-opus
+/switch gpt-5.4
 ```
 
-Switch the PR to use Claude Opus for all future commands.
+Switch the PR to use GPT-5.4 for all future commands.
 
 ```
-/switch claude-sonnet
+/switch gemini-2.5-pro
 Please re-review after switching
 ```
 
@@ -109,8 +111,8 @@ Switch models and include follow-up instructions. If instructions are provided, 
 
 ### Behavior
 
-1. ProPR removes existing model labels (e.g. `llm-claude-sonnet`) from the PR.
-2. A new model label is added (e.g. `llm-claude-opus`).
+1. ProPR removes existing model labels (for example `llm-claude-sonnet46` or `llm-gemini-pro`) from the PR.
+2. A new model label is added for the requested model.
 3. If trailing instructions are provided, a follow-up review job is dispatched with the new model.
 4. Only one model argument is accepted; extra arguments are ignored with a warning.
 
@@ -121,13 +123,13 @@ Overrides the model for a single follow-up run without changing the PR's labels.
 ### Usage
 
 ```
-/use claude-opus
+/use gemini-2.5-pro
 ```
 
-Run the next command with Claude Opus.
+Run the next command with Gemini 2.5 Pro.
 
 ```
-/use claude-sonnet
+/use gpt-5.4
 Focus on performance optimizations
 ```
 
@@ -159,7 +161,7 @@ Run with system defaults (goal=7, max=5, pause=60 unless changed by an admin in 
 Set the target score goal to 8 (positional argument).
 
 ```
-/ultrafix goal=8 max=10 pause=60 model=claude-sonnet-4-6
+/ultrafix goal=8 max=10 pause=60 model=gpt-5.4
 ```
 
 Use named arguments for full control:
@@ -217,6 +219,6 @@ A common workflow combining these commands:
 
 - `/review` and `/fix` are independent commands. You can run `/fix` without a prior `/review` if you post your own instructions.
 - Multiple `/review` calls accumulate review comments; `/fix` processes all unprocessed ones at once.
-- `/switch` and `/use` each accept exactly one model argument. The `llm-` prefix is optional — `/switch claude-opus` and `/switch llm-claude-opus` are equivalent.
+- `/switch` and `/use` each accept exactly one model argument. The `llm-` prefix is optional when you reference a supported model label or model ID.
 - `/switch` changes the PR labels permanently; `/use` only affects the immediately following run.
 - Each command must be the first line of the PR comment. Any text after the first line is treated as extra instructions.

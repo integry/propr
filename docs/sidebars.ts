@@ -32,7 +32,12 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Tutorials',
-      items: ['tutorials/setup', 'tutorials/usage'],
+      items: [
+        'tutorials/setup',
+        'tutorials/usage',
+        'tutorials/end-to-end-workflow',
+        'tutorials/planner-studio',
+      ],
     },
     {
       type: 'category',
