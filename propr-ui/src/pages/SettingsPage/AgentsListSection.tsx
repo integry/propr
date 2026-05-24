@@ -96,6 +96,16 @@ const CodeChip: React.FC<{ children: React.ReactNode; className?: string }> = ({
   </code>
 );
 
+function getModelDisplayName(modelId: string, modelInfo: typeof MODEL_INFO_MAP[string] | undefined): string {
+  if (modelInfo?.name) return modelInfo.name;
+  const gptMatch = modelId.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
+  if (!gptMatch) return modelId;
+  const suffix = gptMatch[2]
+    ? ` ${gptMatch[2].split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ')}`
+    : '';
+  return `GPT-${gptMatch[1]}${suffix}`;
+}
+
 // High-density model row component - tighter padding for density
 const ModelRow: React.FC<{
   modelId: string;
@@ -107,7 +117,7 @@ const ModelRow: React.FC<{
     {/* Name + Badge column */}
     <div className="flex items-center gap-1.5 flex-1 min-w-0">
       <span className={`truncate text-[13px] ${isDefault ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
-        {modelInfo?.name || modelId}
+        {getModelDisplayName(modelId, modelInfo)}
       </span>
       {customLabel && (
         <span className="px-1 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] rounded font-medium flex-shrink-0">

@@ -29,9 +29,18 @@ const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude'];
 // Models recommended for PR review (high capability options)
 const RECOMMENDED_PR_REVIEW_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro'];
 
+function formatFallbackModelName(modelId: string): string {
+  const gptMatch = modelId.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
+  if (!gptMatch) return modelId;
+  const suffix = gptMatch[2]
+    ? ` ${gptMatch[2].split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ')}`
+    : '';
+  return `GPT-${gptMatch[1]}${suffix}`;
+}
+
 export function getModelLabel(agentAlias: string, modelId: string): string {
   const info = MODEL_INFO_MAP[modelId];
-  return info ? `${agentAlias} - ${info.name}` : `${agentAlias} - ${modelId}`;
+  return `${agentAlias} - ${info?.name || formatFallbackModelName(modelId)}`;
 }
 
 function isRecommendedFor(modelId: string, aliases: string[]): boolean {
