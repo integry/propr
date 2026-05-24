@@ -160,12 +160,12 @@ test('stopTaskExecution keeps abort-armed container-backed tasks cancellable whe
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
 });
 
-test('isBenignQueueRemovalRace accepts active, terminal, unknown, and missing queue states', () => {
+test('isBenignQueueRemovalRace only accepts known active or terminal removal races', () => {
     assert.strictEqual(isBenignQueueRemovalRace('active'), true);
     assert.strictEqual(isBenignQueueRemovalRace('completed'), true);
     assert.strictEqual(isBenignQueueRemovalRace('failed'), true);
     assert.strictEqual(isBenignQueueRemovalRace('unknown'), true);
-    assert.strictEqual(isBenignQueueRemovalRace(null), true);
+    assert.strictEqual(isBenignQueueRemovalRace(null), false);
     assert.strictEqual(isBenignQueueRemovalRace('waiting'), false);
 });
 
@@ -195,4 +195,49 @@ test('cancelMergedPullRequestTasks uses indexed lookup before falling back to a 
     assert.deepStrictEqual(getActiveTasksForPR.mock.calls[0]?.arguments, ['owner/repo', 42, {
         log,
     }]);
+    assert.strictEqual(markPullRequestMerged.mock.calls.length, 1);
+});
+
+test('stopTaskExecution rejects queued cancellation when queue state cannot be reloaded after removal failure', async () => {
+    const redisClient = createRedisClient();
+    const queueJob = {
+        id: 'queue-job-2',
+        remove: mock.fn(async () => {
+            throw new Error('job lock missing');
+        }),
+        getState: mock.fn(async () => {
+            throw new Error('redis unavailable');
+        }),
+    };
+
+    await assert.rejects(async () => {
+        await stopTaskExecution(
+            'queue-job-2',
+            {
+                redisClient,
+                requestedBy: 'system',
+                cancellation: {
+                    code: 'pull_request_merged',
+                    message: 'Task cancelled because pull request #42 was merged.',
+                },
+            },
+            {
+                loadStopTaskContext: async () => ({
+                    normalizedTaskId: 'queue-job-2',
+                    state: null,
+                    currentState: null,
+                    queueJob: queueJob as never,
+                    queueState: 'waiting',
+                    taskId: 'task-queue-2',
+                    abortTaskIds: ['task-queue-2', 'queue-job-2'],
+                }),
+                ensureTaskStateForCancellation: async () => {},
+                getStateManager: () => ({ markTaskCancelled }) as never,
+                stopDockerContainer,
+            },
+        );
+    }, /job lock missing/);
+
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+    assert.strictEqual(redisClient.del.mock.calls.length, 0);
 });

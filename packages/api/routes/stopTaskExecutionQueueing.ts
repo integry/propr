@@ -104,8 +104,7 @@ export async function clearPrQueueJobIndexEntriesIfNeeded(
 }
 
 export function isBenignQueueRemovalRace(queueState: string | null): boolean {
-  return queueState === null
-    || queueState === 'active'
+  return queueState === 'active'
     || queueState === 'unknown'
     || (queueState !== null && TERMINAL_QUEUE_STATES.has(queueState));
 }

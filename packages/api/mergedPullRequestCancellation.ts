@@ -53,12 +53,12 @@ export async function cancelMergedPullRequestTasks(
     source: 'pull_request_merged',
   };
 
-  await persistMergedState(deps.redisClient, repository, prNumber);
   const activeTasks = await loadActiveTasks(repository, prNumber, {
     log,
   });
   const dedupedActiveTasks = dedupeActiveTasks(activeTasks);
   if (dedupedActiveTasks.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
   }
@@ -68,7 +68,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     activeTaskCount: dedupedActiveTasks.length,
-    dedupedTaskCount: activeTasks.length - dedupedActiveTasks.length,
+    duplicatesRemoved: activeTasks.length - dedupedActiveTasks.length,
   }, 'Cancelling active PR tasks after merge');
 
   const failures = (await Promise.all(dedupedActiveTasks.map(async (task: ActiveTask) => {
@@ -112,6 +112,8 @@ export async function cancelMergedPullRequestTasks(
   if (failures.length > 0) {
     throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.map(formatMergeTaskCancellationFailure).join('; ')}`);
   }
+
+  await persistMergedState(deps.redisClient, repository, prNumber);
 }
 
 function dedupeActiveTasks<T extends { taskId: string }>(tasks: T[]): T[] {

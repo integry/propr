@@ -786,7 +786,6 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
                 repository,
                 prNumber,
                 jobId,
-                taskIds: [jobId, `${owner}-${repo}-${prNumber}`],
                 log: correlatedLogger,
                 removedMessage: 'Removed freshly-queued PR comment job because the PR merged during enqueue',
                 removalFailureMessage: 'Failed to remove freshly-queued PR comment job after merge; set abort signals instead',

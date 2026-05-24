@@ -67,7 +67,6 @@ export async function discardFreshQueueJobAfterMerge(params: {
   repository: string;
   prNumber: number;
   jobId: string;
-  taskIds: string[];
   log: LogLike;
   removedMessage: string;
   removalFailureMessage: string;
@@ -81,13 +80,13 @@ export async function discardFreshQueueJobAfterMerge(params: {
     repository,
     prNumber,
     jobId,
-    taskIds,
     log,
     removedMessage,
     removalFailureMessage,
     pendingIndexClearFailureMessage,
     trackFailureMessage,
   } = params;
+  const taskIds = resolveMergedPrAbortTaskIds(queuedJob, jobId);
   let removalFailure: Error | null = null;
   let persistenceFailure: Error | null = null;
   let queueRemoved = false;
@@ -209,6 +208,14 @@ async function setMergedPrAbortSignals(redisClient: Redis, taskIds: string[], pr
   for (const taskId of new Set(taskIds)) {
     await redisClient.set(`worker:abort:${taskId}`, payload, 'EX', 3600);
   }
+}
+
+function resolveMergedPrAbortTaskIds(queueJob: QueueJobLike, jobId: string): string[] {
+  return [...new Set([
+    jobId,
+    queueJob.id === null || queueJob.id === undefined ? null : String(queueJob.id),
+    getTaskIdFromQueueJob(queueJob),
+  ].filter((taskId): taskId is string => Boolean(taskId)))];
 }
 
 async function persistCancelledTaskRecordForMergedQueueJob(params: {

@@ -50,6 +50,16 @@ function createQueueJob(
 function createTaskUpdateDb() {
   return Object.assign(
     () => ({
+      select() {
+        return this;
+      },
+      whereIn() {
+        return {
+          orWhereIn() {
+            return Promise.resolve([]);
+          },
+        };
+      },
       where() {
         return {
           select() {
@@ -72,11 +82,19 @@ function createPersistedTaskLookupDb(record: { task_id: string; job_id: string |
       where(filter: Record<string, unknown>) {
         const matches = record && Object.entries(filter).every(([key, value]) => record[key as keyof typeof record] === value);
         return {
-          select() {
-            return this;
+          update: matches ? mockTasksUpdate : mock.fn(async () => 0),
+        };
+      },
+      select() {
+        return this;
+      },
+      whereIn(column: 'task_id' | 'job_id', values: string[]) {
+        const matches = record && values.includes(String(record[column]));
+        return {
+          orWhereIn(orColumn: 'task_id' | 'job_id', orValues: string[]) {
+            const orMatches = record && orValues.includes(String(record[orColumn]));
+            return Promise.resolve(matches || orMatches ? [record] : []);
           },
-          first: async () => matches ? record : undefined,
-          update: mockTasksUpdate,
         };
       },
     }),
@@ -108,8 +126,16 @@ function createActiveTasksDb(result: Array<{ task_id: string; job_id: string | n
       where() {
         return this;
       },
+      whereNotNull(_column: string) {
+        filteredResult = filteredResult.filter((row) => row.state !== null);
+        return this;
+      },
       whereIn(_column: string, states: readonly string[]) {
         filteredResult = result.filter((row) => states.includes(row.state));
+        return Promise.resolve(filteredResult);
+      },
+      whereNotIn(_column: string, states: readonly string[]) {
+        filteredResult = result.filter((row) => !states.includes(row.state));
         return Promise.resolve(filteredResult);
       },
     }),
@@ -586,7 +612,7 @@ describe('merged PR queue follow-up fixes', () => {
     ]);
   });
 
-  test('getActiveTasksForPR ignores persisted states that are not actively running worker states', async () => {
+  test('getActiveTasksForPR includes persisted PR tasks in any non-terminal state', async () => {
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
         client: Promise.resolve({
@@ -609,7 +635,9 @@ describe('merged PR queue follow-up fixes', () => {
       },
     });
 
-    assert.deepStrictEqual(activeTasks, []);
+    assert.deepStrictEqual(activeTasks, [
+      { taskId: 'task-pending-1', state: 'pending' },
+    ]);
   });
 
   test('hasPullRequestMerged falls back to GitHub when the Redis marker is missing and refreshes the cache', async () => {
@@ -688,7 +716,7 @@ describe('merged PR queue follow-up fixes', () => {
     assert.strictEqual(redisClient.set.mock.calls.length, 0);
   });
 
-  test('getActiveTasksForPR skips BullMQ fallback scans when the PR queue indexes already returned work', async () => {
+  test('getActiveTasksForPR always performs a fallback queue scan to recover partially indexed PR jobs', async () => {
     const getJobs = mock.fn(async () => []);
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
@@ -712,7 +740,7 @@ describe('merged PR queue follow-up fixes', () => {
     assert.deepStrictEqual(activeTasks, [
       { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
     ]);
-    assert.strictEqual(getJobs.mock.calls.length, 0);
+    assert.strictEqual(getJobs.mock.calls.length, 6);
   });
 
   test('getActiveTasksForPR falls back to queue scans when no tracked PR jobs exist yet', async () => {
@@ -742,7 +770,7 @@ describe('merged PR queue follow-up fixes', () => {
     ]);
   });
 
-  test('getActiveTasksForPR relies on the populated PR queue index unless an explicit force scan is requested', async () => {
+  test('getActiveTasksForPR dedupes fallback queue scans against indexed PR jobs', async () => {
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
         client: Promise.resolve({
@@ -771,6 +799,7 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.deepStrictEqual(activeTasks, [
       { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
+      { taskId: 'merge-conflict-integry-propr-1463-456', state: 'waiting' },
     ]);
   });
 
@@ -824,7 +853,6 @@ describe('merged PR queue follow-up fixes', () => {
         repository: 'integry/propr',
         prNumber: 1463,
         jobId: 'pr-comments-batch-integry-propr-1463-123',
-        taskIds: ['pr-comments-batch-integry-propr-1463-123', 'integry-propr-1463'],
         log,
         removedMessage: 'removed',
         removalFailureMessage: 'failed to remove',
@@ -835,6 +863,7 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.strictEqual(queuedJob.remove.mock.calls.length, 0);
     assert.strictEqual(clearPending.mock.calls.length, 0);
-    assert.strictEqual(redisClient.set.mock.calls.length, 2);
+    assert.strictEqual(redisClient.set.mock.calls.length, 1);
+    assert.strictEqual(redisClient.set.mock.calls[0]?.arguments[0], 'worker:abort:pr-comments-batch-integry-propr-1463-123');
   });
 });

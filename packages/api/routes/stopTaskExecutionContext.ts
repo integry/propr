@@ -136,19 +136,25 @@ async function findPersistedTaskRecord(
       { column: 'job_id', value },
     ]),
   ];
-  const seen = new Set<string>();
+  const lookupValues = [...new Set(lookupCandidates
+    .map((candidate) => candidate.value)
+    .filter((value): value is string => Boolean(value)))];
+
+  if (lookupValues.length === 0) {
+    return null;
+  }
+
+  const records = await database('tasks')
+    .select('task_id', 'job_id')
+    .whereIn('task_id', lookupValues)
+    .orWhereIn('job_id', lookupValues) as Array<{ task_id: string; job_id: string | null }>;
 
   for (const candidate of lookupCandidates) {
-    const key = `${candidate.column}:${candidate.value}`;
-    if (!candidate.value || seen.has(key)) {
+    if (!candidate.value) {
       continue;
     }
-    seen.add(key);
 
-    const record = await database('tasks')
-      .where({ [candidate.column]: candidate.value })
-      .select('task_id', 'job_id')
-      .first() as { task_id: string; job_id: string | null } | undefined;
+    const record = records.find((row) => row[candidate.column as 'task_id' | 'job_id'] === candidate.value);
     if (record) {
       return {
         taskId: record.task_id,
