@@ -138,7 +138,6 @@ describe('cancelMergedPullRequestTasks', () => {
         message: 'Task cancelled because pull request #1463 was merged.',
         source: 'pull_request_merged',
       },
-      containerStopTimeoutSeconds: 1,
     });
   });
 

@@ -118,6 +118,10 @@ test('stopTaskExecution treats queue removal races into terminal states as benig
     assert.strictEqual(result.jobRemoved, false);
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
     assert.strictEqual(redisClient.set.mock.calls.length, 2);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map(call => call.arguments[0]).sort(), [
+        'worker:abort:queue-job-1',
+        'worker:abort:task-queue-1',
+    ]);
 });
 
 test('stopTaskExecution rejects container-backed tasks when the container stop fails', async () => {

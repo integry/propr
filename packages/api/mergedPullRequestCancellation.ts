@@ -27,8 +27,6 @@ interface MergeTaskCancellationFailure {
   queueState: string | null;
 }
 
-const MERGED_PR_CONTAINER_STOP_TIMEOUT_SECONDS = 1;
-
 export async function cancelMergedPullRequestTasks(
   payload: Record<string, unknown>,
   correlationId: string,
@@ -73,7 +71,6 @@ export async function cancelMergedPullRequestTasks(
         redisClient: deps.redisClient,
         requestedBy: 'system',
         cancellation,
-        containerStopTimeoutSeconds: MERGED_PR_CONTAINER_STOP_TIMEOUT_SECONDS,
       });
       return null;
     } catch (error) {

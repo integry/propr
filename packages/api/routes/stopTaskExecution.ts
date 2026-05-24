@@ -122,7 +122,7 @@ export async function stopTaskExecution(
     containerStopTimeoutSeconds,
     stopContainer: deps.stopDockerContainer,
   });
-  const { jobRemoved } = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
+  const { jobRemoved, queueStateAfterFailure } = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
   if (jobRemoved) await clearPrQueueJobIndexEntriesIfNeeded(context.queueJob, deps);
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
     activity,
@@ -138,7 +138,12 @@ export async function stopTaskExecution(
     containerStopped,
     jobRemoved,
   });
-  if (shouldClearAbortSignals(shouldAbort, containerStopped, jobRemoved)) {
+  if (shouldClearAbortSignals({
+    shouldAbort,
+    containerStopped,
+    jobRemoved,
+    queueStateAfterFailure,
+  })) {
     await clearAbortSignals(redisClient, context.abortTaskIds);
   }
   if (shouldPersistCancelledState) {
@@ -281,8 +286,21 @@ async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]
   }
 }
 
-function shouldClearAbortSignals(shouldAbort: boolean, containerStopped: boolean, jobRemoved: boolean): boolean {
-  return shouldAbort && (containerStopped || jobRemoved);
+function shouldClearAbortSignals(params: {
+  shouldAbort: boolean;
+  containerStopped: boolean;
+  jobRemoved: boolean;
+  queueStateAfterFailure: string | null;
+}): boolean {
+  if (!params.shouldAbort) {
+    return false;
+  }
+
+  if (params.containerStopped || params.jobRemoved) {
+    return true;
+  }
+
+  return params.queueStateAfterFailure === 'completed' || params.queueStateAfterFailure === 'failed';
 }
 
 function shouldMarkTaskCancelled(params: {

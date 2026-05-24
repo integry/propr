@@ -694,14 +694,16 @@ export async function getActiveTasksForPR(
             }
         }
 
-        await addQueuedPrJobsFromFallbackScan({
-            queue,
-            repository,
-            prNumber,
-            taskMap,
-            taskAliases,
-            log,
-        });
+        if (deps.forceQueueScan || (trackedQueueJobs.length === 0 && pendingQueueJobs.length === 0)) {
+            await addQueuedPrJobsFromFallbackScan({
+                queue,
+                repository,
+                prNumber,
+                taskMap,
+                taskAliases,
+                log,
+            });
+        }
 
         const activeTasks = await database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')

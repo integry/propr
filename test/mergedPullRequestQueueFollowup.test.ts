@@ -542,7 +542,7 @@ describe('merged PR queue follow-up fixes', () => {
     ]);
   });
 
-  test('getActiveTasksForPR backfills untracked PR jobs when the Redis index is only partially populated', async () => {
+  test('getActiveTasksForPR backfills untracked PR jobs when forceQueueScan is enabled for a partial PR index', async () => {
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
         client: Promise.resolve({
@@ -573,6 +573,7 @@ describe('merged PR queue follow-up fixes', () => {
         info: mock.fn(),
         warn: mock.fn(),
       },
+      forceQueueScan: true,
     });
 
     assert.deepStrictEqual(activeTasks, [
@@ -628,14 +629,14 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.strictEqual(merged, true);
     assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
-    assert.strictEqual(redisClient.get.mock.calls.length, 1);
+    assert.strictEqual(redisClient.get.mock.calls.length, 2);
     assert.strictEqual(redisClient.set.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls[0].arguments[0], 'pr-merged:integry/propr:1463');
     assert.match(String(redisClient.set.mock.calls[0].arguments[1]), /^\d{4}-\d{2}-\d{2}T/);
     assert.deepStrictEqual(redisClient.set.mock.calls[0].arguments[2], { EX: 2592000 });
   });
 
-  test('hasPullRequestMerged rechecks GitHub even when a cached open-state marker exists', async () => {
+  test('hasPullRequestMerged returns cached open-state markers without rechecking GitHub', async () => {
     const redisClient = {
       get: mock.fn(async (key: string) => key.startsWith('pr-open:') ? 'cached-open' : null),
       set: mock.fn(async () => 'OK'),
@@ -654,9 +655,9 @@ describe('merged PR queue follow-up fixes', () => {
     });
 
     assert.strictEqual(merged, false);
-    assert.strictEqual(redisClient.get.mock.calls.length, 1);
-    assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
-    assert.strictEqual(redisClient.set.mock.calls.length, 1);
+    assert.strictEqual(redisClient.get.mock.calls.length, 2);
+    assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 0);
+    assert.strictEqual(redisClient.set.mock.calls.length, 0);
   });
 
   test('hasPullRequestMerged negative-caches open PRs after a GitHub lookup', async () => {
@@ -679,14 +680,14 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.strictEqual(merged, false);
     assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
-    assert.strictEqual(redisClient.get.mock.calls.length, 1);
+    assert.strictEqual(redisClient.get.mock.calls.length, 2);
     assert.strictEqual(redisClient.set.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls[0].arguments[0], 'pr-open:integry/propr:1463');
     assert.match(String(redisClient.set.mock.calls[0].arguments[1]), /^\d{4}-\d{2}-\d{2}T/);
     assert.deepStrictEqual(redisClient.set.mock.calls[0].arguments[2], { EX: 60 });
   });
 
-  test('getActiveTasksForPR verifies the tracked queue-job index with a queue scan when scans are not forced', async () => {
+  test('getActiveTasksForPR skips full queue scans when tracked PR queue-job indexes already resolve the work', async () => {
     const getJobs = mock.fn(async () => []);
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
@@ -710,7 +711,7 @@ describe('merged PR queue follow-up fixes', () => {
     assert.deepStrictEqual(activeTasks, [
       { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
     ]);
-    assert.strictEqual(getJobs.mock.calls.length > 0, true);
+    assert.strictEqual(getJobs.mock.calls.length, 0);
   });
 
   test('getActiveTasksForPR falls back to queue scans when no tracked PR jobs exist yet', async () => {
