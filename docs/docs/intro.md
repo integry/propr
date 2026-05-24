@@ -30,10 +30,12 @@ ProPR is a production-ready automated system that monitors GitHub issues, uses A
 
 ## Quick Start
 
-Ready to get started? Check out our [Setup Guide](./getting-started/setup.md) to configure ProPR for your repositories.
+Ready to get started? Check out our [Setup Guide](./tutorials/setup.md) to configure ProPR for your repositories.
 
 ## Documentation Structure
 
-- **[Features](./features.md)**: Complete feature overview
-- **Getting Started**: Setup and usage guides
+- **[Concepts](./concepts/pr-review-guidelines.md)**: Core review and operating principles
+- **[Features](./features/overview.md)**: Complete feature overview and command references
+- **Tutorials**: Setup and usage guides
 - **Architecture**: Deep dive into system components and design
+- **Operations**: Deployment, metrics, and integration guidance
