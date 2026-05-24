@@ -150,10 +150,10 @@ export async function fetchLinkedIssueContext(
     const { repoOwner, repoName, pullRequestNumber } = repoContext;
     const { correlationId, correlatedLogger } = options;
     let originalTaskSpec = '';
-    let bodyHtml: string | undefined;
+    const bodyHtmlParts: string[] = [];
 
     // Use GraphQL to get linked issues (cleaner than regex parsing)
-    let linkedIssueNumber: number | null = null;
+    let linkedIssueNumbers: number[] = [];
     try {
         const graphqlResponse = await octokit.graphql<{
             repository: {
@@ -167,7 +167,7 @@ export async function fetchLinkedIssueContext(
             query($owner: String!, $repo: String!, $prNumber: Int!) {
                 repository(owner: $owner, name: $repo) {
                     pullRequest(number: $prNumber) {
-                        closingIssuesReferences(first: 1) {
+                        closingIssuesReferences(first: 20) {
                             nodes {
                                 number
                             }
@@ -179,60 +179,68 @@ export async function fetchLinkedIssueContext(
 
         const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
         if (linkedIssues.length > 0) {
-            linkedIssueNumber = linkedIssues[0].number;
-            correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue via GraphQL');
+            linkedIssueNumbers = linkedIssues
+                .map(issue => issue.number)
+                .filter((issueNumber, index, all) => all.indexOf(issueNumber) === index);
+            correlatedLogger.info({ pullRequestNumber, linkedIssueNumbers }, 'Found linked issues via GraphQL');
         }
     } catch (graphqlError) {
         correlatedLogger.warn({ pullRequestNumber, error: (graphqlError as Error).message }, 'GraphQL query for linked issues failed, falling back to regex');
         // Fallback to regex parsing
-        const linkedIssueMatch = prData.data.body?.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
-        if (linkedIssueMatch) {
-            linkedIssueNumber = parseInt(linkedIssueMatch[1], 10);
-            correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue via regex fallback');
+        const linkedIssueMatches = Array.from(prData.data.body?.matchAll(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/gi) ?? []);
+        if (linkedIssueMatches.length > 0) {
+            linkedIssueNumbers = linkedIssueMatches
+                .map(match => parseInt(match[1], 10))
+                .filter((issueNumber, index, all) => Number.isFinite(issueNumber) && all.indexOf(issueNumber) === index);
+            correlatedLogger.info({ pullRequestNumber, linkedIssueNumbers }, 'Found linked issues via regex fallback');
         }
     }
 
-    if (!linkedIssueNumber) return { context: originalTaskSpec, linkedIssueNumber: null };
+    const linkedIssueNumber = linkedIssueNumbers[0] ?? null;
+    if (linkedIssueNumbers.length === 0) return { context: originalTaskSpec, linkedIssueNumber: null };
 
-    try {
-        const linkedIssueData = await octokit.request<{ data: { title: string; body: string; body_html?: string; user: { login: string } } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-            owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber,
-            mediaType: { format: 'full' }  // Get body_html with signed image URLs
-        });
-        bodyHtml = linkedIssueData.data.body_html;
+    originalTaskSpec += linkedIssueNumbers.length > 1
+        ? `Here are the linked issue specifications for this pull request:\n\n`
+        : `Here is the linked issue specification for this pull request:\n\n`;
 
-        // Use request for mediaType support - paginate doesn't support it well
-        const linkedIssueCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber, per_page: 100,
-            mediaType: { format: 'full' }  // Get body_html with signed image URLs
-        }) as { data: Array<{ user: { login: string; type?: string }; body: string; body_html?: string }> };
-        const linkedIssueComments = linkedIssueCommentsResp.data;
-        // Combine HTML from comments for signed image URLs
-        const commentHtmlParts = linkedIssueComments.filter(c => c.body_html).map(c => c.body_html);
-        if (commentHtmlParts.length > 0) {
-            bodyHtml = bodyHtml ? bodyHtml + '\n' + commentHtmlParts.join('\n') : commentHtmlParts.join('\n');
-        }
-
-        const clarifyingComments = linkedIssueComments.filter(comment => {
-            const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type, correlationId);
-            return !filterResult.shouldFilter;
-        });
-
-        originalTaskSpec += `Here is the original task specification (GitHub Issue #${linkedIssueNumber}):\n\n`;
-        originalTaskSpec += `---\n**Issue Title:** ${linkedIssueData.data.title}\n**Author:** @${linkedIssueData.data.user.login}\n**Body:**\n${formatCommentForPrompt(linkedIssueData.data.body)}\n---\n`;
-
-        if (clarifyingComments.length > 0) {
-            originalTaskSpec += `\n**Clarifying Comments on Issue #${linkedIssueNumber}:**\n\n`;
-            for (const comment of clarifyingComments) {
-                originalTaskSpec += `---\n**Author:** @${comment.user.login}\n**Comment:**\n${formatCommentForPrompt(comment.body)}\n---\n`;
+    for (const issueNumber of linkedIssueNumbers) {
+        try {
+            const linkedIssueData = await octokit.request<{ data: { title: string; body: string; body_html?: string; user: { login: string } } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner: repoOwner, repo: repoName, issue_number: issueNumber,
+                mediaType: { format: 'full' }  // Get body_html with signed image URLs
+            });
+            if (linkedIssueData.data.body_html) {
+                bodyHtmlParts.push(linkedIssueData.data.body_html);
             }
-        }
-        originalTaskSpec += '\n';
 
-    } catch (issueError) {
-        correlatedLogger.warn({ pullRequestNumber, linkedIssueNumber, error: (issueError as Error).message }, 'Failed to fetch linked issue data, continuing without it');
+            // Use request for mediaType support - paginate doesn't support it well
+            const linkedIssueCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner: repoOwner, repo: repoName, issue_number: issueNumber, per_page: 100,
+                mediaType: { format: 'full' }  // Get body_html with signed image URLs
+            }) as { data: Array<{ user: { login: string; type?: string }; body: string; body_html?: string }> };
+            const linkedIssueComments = linkedIssueCommentsResp.data;
+            bodyHtmlParts.push(...linkedIssueComments.filter(c => c.body_html).map(c => c.body_html as string));
+
+            const clarifyingComments = linkedIssueComments.filter(comment => {
+                const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type, correlationId);
+                return !filterResult.shouldFilter;
+            });
+
+            originalTaskSpec += `---\n**Issue #${issueNumber}:** ${linkedIssueData.data.title}\n**Author:** @${linkedIssueData.data.user.login}\n**Body:**\n${formatCommentForPrompt(linkedIssueData.data.body)}\n---\n`;
+
+            if (clarifyingComments.length > 0) {
+                originalTaskSpec += `\n**Clarifying Comments on Issue #${issueNumber}:**\n\n`;
+                for (const comment of clarifyingComments) {
+                    originalTaskSpec += `---\n**Author:** @${comment.user.login}\n**Comment:**\n${formatCommentForPrompt(comment.body)}\n---\n`;
+                }
+            }
+            originalTaskSpec += '\n';
+        } catch (issueError) {
+            correlatedLogger.warn({ pullRequestNumber, linkedIssueNumber: issueNumber, error: (issueError as Error).message }, 'Failed to fetch linked issue data, continuing without it');
+        }
     }
 
+    const bodyHtml = bodyHtmlParts.length > 0 ? bodyHtmlParts.join('\n') : undefined;
     return { context: originalTaskSpec, linkedIssueNumber, bodyHtml };
 }
 

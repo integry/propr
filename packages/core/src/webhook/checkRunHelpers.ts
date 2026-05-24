@@ -658,12 +658,17 @@ export async function hasActiveTasksForPR(
         for (const queueState of queueStates) {
             const jobs = await queue.getJobs([queueState]);
             for (const job of jobs) {
-                const jobRepository = job.data.repository || (
-                    job.data.repoOwner &&
-                    job.data.repoName &&
-                    `${job.data.repoOwner}/${job.data.repoName}`
-                );
-                const jobPrNumber = job.data.prNumber ?? job.data.pullRequestNumber ?? null;
+                const jobData = job.data as unknown as Record<string, unknown>;
+                const jobRepository = typeof jobData.repository === 'string'
+                    ? jobData.repository
+                    : (
+                        typeof jobData.repoOwner === 'string' &&
+                        typeof jobData.repoName === 'string' &&
+                        `${jobData.repoOwner}/${jobData.repoName}`
+                    );
+                const jobPrNumber = typeof jobData.prNumber === 'number'
+                    ? jobData.prNumber
+                    : (typeof jobData.pullRequestNumber === 'number' ? jobData.pullRequestNumber : null);
                 if (jobRepository === repository && jobPrNumber === prNumber) {
                     queuedJobs.push({ jobId: String(job.id), state: queueState });
                 }
