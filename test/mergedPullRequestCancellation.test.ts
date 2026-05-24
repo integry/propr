@@ -218,6 +218,29 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockLogger.warn.mock.calls.length, 1);
   });
 
+  test('dedupes duplicate active-task references before stopping merged PR work', async () => {
+    const redisClient = createRedisClient();
+    mockGetActiveTasksForPR.mock.mockImplementation(async () => ([
+      { taskId: 'task-duplicate', state: 'processing' },
+      { taskId: 'task-duplicate', state: 'waiting' },
+      { taskId: 'task-unique', state: 'waiting' },
+    ]));
+
+    await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
+      redisClient,
+      markPullRequestMerged: mockMarkPullRequestMerged,
+      getActiveTasksForPR: mockGetActiveTasksForPR,
+      stopTaskExecution: mockStopTaskExecution,
+      log: mockLogger,
+    });
+
+    assert.strictEqual(mockStopTaskExecution.mock.calls.length, 2);
+    assert.deepStrictEqual(
+      mockStopTaskExecution.mock.calls.map((call) => call.arguments[0]),
+      ['task-duplicate', 'task-unique'],
+    );
+  });
+
   test('ignores already-inactive stop races during merge cancellation', async () => {
     const redisClient = createRedisClient();
     mockGetActiveTasksForPR.mock.mockImplementation(async () => ([

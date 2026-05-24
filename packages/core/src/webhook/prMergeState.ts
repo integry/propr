@@ -1,9 +1,7 @@
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 
 const MERGED_PR_KEY_PREFIX = 'pr-merged';
-const OPEN_PR_KEY_PREFIX = 'pr-open';
 const MERGED_PR_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
-const OPEN_PR_KEY_TTL_SECONDS = 60;
 
 type PullRequestMergeStateRedisLike = {
   del?: (key: string) => Promise<unknown>;
@@ -45,14 +43,9 @@ export async function hasPullRequestMerged(
   deps: PullRequestMergeStateDeps = {},
 ): Promise<boolean> {
   const mergedKey = getPullRequestMergedKey(repository, prNumber);
-  const openKey = getPullRequestOpenKey(repository, prNumber);
 
   if ((await redisClient.get(mergedKey)) !== null) {
     return true;
-  }
-
-  if ((await redisClient.get(openKey)) !== null) {
-    return false;
   }
 
   const [owner, repoName] = repository.split('/');
@@ -70,8 +63,6 @@ export async function hasPullRequestMerged(
 
   if (merged) {
     await markPullRequestMerged(redisClient, repository, prNumber);
-  } else {
-    await markPullRequestOpen(redisClient, repository, prNumber);
   }
 
   return merged;
@@ -82,26 +73,5 @@ function getPullRequestMergedKey(repository: string, prNumber: number): string {
 }
 
 function getPullRequestOpenKey(repository: string, prNumber: number): string {
-  return `${OPEN_PR_KEY_PREFIX}:${repository}:${prNumber}`;
-}
-
-async function markPullRequestOpen(
-  redisClient: PullRequestMergeStateRedisLike,
-  repository: string,
-  prNumber: number,
-): Promise<void> {
-  const key = getPullRequestOpenKey(repository, prNumber);
-  const value = new Date().toISOString();
-
-  if (typeof redisClient.setex === 'function') {
-    await redisClient.setex(key, OPEN_PR_KEY_TTL_SECONDS, value);
-    return;
-  }
-
-  if (typeof redisClient.set === 'function') {
-    await redisClient.set(key, value, { EX: OPEN_PR_KEY_TTL_SECONDS });
-    return;
-  }
-
-  throw new Error('Redis client does not support PR open-state writes');
+  return `pr-open:${repository}:${prNumber}`;
 }

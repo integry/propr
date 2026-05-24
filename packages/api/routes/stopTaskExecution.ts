@@ -137,6 +137,7 @@ export async function stopTaskExecution(
     containerId,
     containerStopped,
     jobRemoved,
+    shouldAbort,
   });
   if (shouldClearAbortSignals({
     shouldAbort,
@@ -331,9 +332,20 @@ function assertStopApplied(params: {
   containerId: string | null;
   containerStopped: boolean;
   jobRemoved: boolean;
+  shouldAbort: boolean;
 }): void {
-  const { activity, currentState, queueState, containerId, containerStopped, jobRemoved } = params;
+  const { activity, currentState, queueState, containerId, containerStopped, jobRemoved, shouldAbort } = params;
   if (jobRemoved || containerStopped) {
+    return;
+  }
+
+  if (shouldAbort) {
+    logger.info({
+      currentState,
+      queueState,
+      containerId,
+      hasContainerToStop: activity.hasContainerToStop,
+    }, 'Stop request armed via worker abort signal; treating container stop failure as best-effort');
     return;
   }
 

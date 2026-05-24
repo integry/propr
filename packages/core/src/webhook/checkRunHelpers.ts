@@ -678,10 +678,20 @@ export async function getActiveTasksForPR(
         const trackedQueueJobs = await getTrackedPrQueueJobs(queue as never, repository, prNumber);
         const pendingQueueJobs = await getPendingPrQueueJobs(queue as never, repository, prNumber);
         for (const job of trackedQueueJobs) {
-            registerActiveTask(taskMap, taskAliases, { taskId: job.jobId, state: job.state }, [getQueueTaskAlias(job.jobId)]);
+            registerActiveTask(
+                taskMap,
+                taskAliases,
+                { taskId: job.jobId, state: job.state },
+                await loadIndexedQueueJobAliases(queue as never, job.jobId),
+            );
         }
         for (const job of pendingQueueJobs) {
-            registerActiveTask(taskMap, taskAliases, { taskId: job.jobId, state: job.state }, [getQueueTaskAlias(job.jobId)]);
+            registerActiveTask(
+                taskMap,
+                taskAliases,
+                { taskId: job.jobId, state: job.state },
+                await loadIndexedQueueJobAliases(queue as never, job.jobId),
+            );
             try {
                 await trackPrQueueJob(queue as never, repository, prNumber, job.jobId);
             } catch (error) {
@@ -694,16 +704,14 @@ export async function getActiveTasksForPR(
             }
         }
 
-        if (deps.forceQueueScan || (trackedQueueJobs.length === 0 && pendingQueueJobs.length === 0)) {
-            await addQueuedPrJobsFromFallbackScan({
-                queue,
-                repository,
-                prNumber,
-                taskMap,
-                taskAliases,
-                log,
-            });
-        }
+        await addQueuedPrJobsFromFallbackScan({
+            queue,
+            repository,
+            prNumber,
+            taskMap,
+            taskAliases,
+            log,
+        });
 
         const activeTasks = await database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -834,6 +842,19 @@ function getQueueTaskAlias(jobId: string): string | null {
     const parts = jobId.replace(/^issue-/, '').split('-');
     parts.pop();
     return parts.join('-');
+}
+
+async function loadIndexedQueueJobAliases(
+    queue: Awaited<ReturnType<typeof getIssueQueue>>,
+    jobId: string,
+): Promise<string[]> {
+    try {
+        const queueJob = await queue.getJob(jobId);
+        const queueTaskId = queueJob ? getTaskIdFromQueueJob(queueJob) : null;
+        return [queueTaskId, getQueueTaskAlias(jobId)].filter((alias): alias is string => Boolean(alias));
+    } catch {
+        return [getQueueTaskAlias(jobId)].filter((alias): alias is string => Boolean(alias));
+    }
 }
 
 /**

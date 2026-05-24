@@ -629,17 +629,18 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.strictEqual(merged, true);
     assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
-    assert.strictEqual(redisClient.get.mock.calls.length, 2);
+    assert.strictEqual(redisClient.get.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls[0].arguments[0], 'pr-merged:integry/propr:1463');
     assert.match(String(redisClient.set.mock.calls[0].arguments[1]), /^\d{4}-\d{2}-\d{2}T/);
     assert.deepStrictEqual(redisClient.set.mock.calls[0].arguments[2], { EX: 2592000 });
   });
 
-  test('hasPullRequestMerged returns cached open-state markers without rechecking GitHub', async () => {
+  test('hasPullRequestMerged rechecks GitHub even when a legacy open-state marker exists', async () => {
     const redisClient = {
       get: mock.fn(async (key: string) => key.startsWith('pr-open:') ? 'cached-open' : null),
       set: mock.fn(async () => 'OK'),
+      del: mock.fn(async () => 1),
     };
     const getAuthenticatedOctokit = mock.fn(async () => ({
       request: async () => ({
@@ -655,15 +656,16 @@ describe('merged PR queue follow-up fixes', () => {
     });
 
     assert.strictEqual(merged, false);
-    assert.strictEqual(redisClient.get.mock.calls.length, 2);
-    assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 0);
+    assert.strictEqual(redisClient.get.mock.calls.length, 1);
+    assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls.length, 0);
   });
 
-  test('hasPullRequestMerged negative-caches open PRs after a GitHub lookup', async () => {
+  test('hasPullRequestMerged does not negative-cache open PRs after a GitHub lookup', async () => {
     const redisClient = {
       get: mock.fn(async () => null),
       set: mock.fn(async () => 'OK'),
+      del: mock.fn(async () => 1),
     };
     const getAuthenticatedOctokit = mock.fn(async () => ({
       request: async () => ({
@@ -680,14 +682,11 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.strictEqual(merged, false);
     assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
-    assert.strictEqual(redisClient.get.mock.calls.length, 2);
-    assert.strictEqual(redisClient.set.mock.calls.length, 1);
-    assert.strictEqual(redisClient.set.mock.calls[0].arguments[0], 'pr-open:integry/propr:1463');
-    assert.match(String(redisClient.set.mock.calls[0].arguments[1]), /^\d{4}-\d{2}-\d{2}T/);
-    assert.deepStrictEqual(redisClient.set.mock.calls[0].arguments[2], { EX: 60 });
+    assert.strictEqual(redisClient.get.mock.calls.length, 1);
+    assert.strictEqual(redisClient.set.mock.calls.length, 0);
   });
 
-  test('getActiveTasksForPR skips full queue scans when tracked PR queue-job indexes already resolve the work', async () => {
+  test('getActiveTasksForPR still scans BullMQ states when PR queue indexes return active work', async () => {
     const getJobs = mock.fn(async () => []);
     const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
       getIssueQueue: async () => ({
@@ -711,7 +710,7 @@ describe('merged PR queue follow-up fixes', () => {
     assert.deepStrictEqual(activeTasks, [
       { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
     ]);
-    assert.strictEqual(getJobs.mock.calls.length, 0);
+    assert.strictEqual(getJobs.mock.calls.length, 6);
   });
 
   test('getActiveTasksForPR falls back to queue scans when no tracked PR jobs exist yet', async () => {
@@ -738,6 +737,39 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.deepStrictEqual(activeTasks, [
       { taskId: 'merge-conflict-integry-propr-1463-123', state: 'waiting' },
+    ]);
+  });
+
+  test('getActiveTasksForPR backfills missing queue work when the PR queue index is only partially populated', async () => {
+    const activeTasks = await getActiveTasksForPR('integry/propr', 1463, {
+      getIssueQueue: async () => ({
+        client: Promise.resolve({
+          sMembers: async (key: string) => key.startsWith('pr-pending-queue-jobs:')
+            ? []
+            : ['pr-comments-batch-integry-propr-1463-123'],
+          sAdd: async () => 1,
+          sRem: async () => 1,
+          expire: async () => 1,
+        }),
+        getJob: async (jobId: string) => jobId === 'pr-comments-batch-integry-propr-1463-123'
+          ? createQueueJob(jobId, { repository: 'integry/propr', pullRequestNumber: 1463 }, 'active')
+          : null,
+        getJobs: async ([queueState]: string[]) => (
+          queueState === 'waiting'
+            ? [{ id: 'merge-conflict-integry-propr-1463-456', data: { repository: 'integry/propr', pullRequestNumber: 1463 } }]
+            : []
+        ),
+      }) as never,
+      db: createActiveTasksDb([]) as never,
+      log: {
+        info: mock.fn(),
+        warn: mock.fn(),
+      },
+    });
+
+    assert.deepStrictEqual(activeTasks, [
+      { taskId: 'pr-comments-batch-integry-propr-1463-123', state: 'active' },
+      { taskId: 'merge-conflict-integry-propr-1463-456', state: 'waiting' },
     ]);
   });
 

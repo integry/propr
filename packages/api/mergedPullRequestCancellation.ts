@@ -58,14 +58,21 @@ export async function cancelMergedPullRequestTasks(
     log,
     forceQueueScan: true,
   });
-  if (activeTasks.length === 0) {
+  const dedupedActiveTasks = dedupeActiveTasks(activeTasks);
+  if (dedupedActiveTasks.length === 0) {
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
   }
 
-  log.info({ correlationId, repository, prNumber, activeTaskCount: activeTasks.length }, 'Cancelling active PR tasks after merge');
+  log.info({
+    correlationId,
+    repository,
+    prNumber,
+    activeTaskCount: dedupedActiveTasks.length,
+    dedupedTaskCount: activeTasks.length - dedupedActiveTasks.length,
+  }, 'Cancelling active PR tasks after merge');
 
-  const failures = (await Promise.all(activeTasks.map(async (task: ActiveTask) => {
+  const failures = (await Promise.all(dedupedActiveTasks.map(async (task: ActiveTask) => {
     try {
       await stopTask(task.taskId, {
         redisClient: deps.redisClient,
@@ -106,6 +113,18 @@ export async function cancelMergedPullRequestTasks(
   if (failures.length > 0) {
     throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.map(formatMergeTaskCancellationFailure).join('; ')}`);
   }
+}
+
+function dedupeActiveTasks<T extends { taskId: string }>(tasks: T[]): T[] {
+  const dedupedTasks = new Map<string, T>();
+
+  for (const task of tasks) {
+    if (!dedupedTasks.has(task.taskId)) {
+      dedupedTasks.set(task.taskId, task);
+    }
+  }
+
+  return [...dedupedTasks.values()];
 }
 
 export function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {
