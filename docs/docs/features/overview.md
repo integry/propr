@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Features
 
-ProPR is no longer just an issue-to-PR bot. It is a full GitHub automation platform with a Web UI control plane, guided planning workflow, multi-agent execution, and PR refinement loops.
+ProPR is a GitHub automation platform with a Web UI control plane, guided planning workflow, multi-agent execution, and PR refinement loops.
 
 ## Web UI Control Plane
 

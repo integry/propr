@@ -8,7 +8,7 @@ Welcome to ProPR, an AI engineering platform for planning, implementing, reviewi
 
 ## What is ProPR?
 
-ProPR combines a Web UI dashboard, Planner Studio, and multi-agent execution workers so teams can move from issue intake to merged pull request with more control than a simple bot workflow. You can monitor active work in the dashboard, create and refine implementation plans in the browser, and run coding or review jobs with Claude, Codex, and Gemini agents.
+ProPR combines a Web UI dashboard, Planner Studio, and multi-agent execution workers so teams can move from issue intake to merged pull request in one system. You can monitor active work in the dashboard, create and refine implementation plans in the browser, and run coding or review jobs with Claude, Codex, and Gemini agents.
 
 ## Key Capabilities
 
