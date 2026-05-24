@@ -10,7 +10,7 @@ ProPR's Web UI is a live operational surface, not a placeholder project. In this
 - The dashboard API lives in `packages/api/`
 - The daemon and workers handle repository polling, task execution, and PR automation
 
-The frontend talks to the dashboard API over HTTP, and the API reads shared state from Redis and the application database. That gives the UI access to task activity, repository configuration, agent settings, planner workflows, and operational metrics.
+The frontend talks to the dashboard API over HTTP, and the API reads shared state from Redis plus the shared SQLite application database used by the default deployment. That gives the UI access to task activity, repository configuration, agent settings, planner workflows, and operational metrics.
 
 ## Current Integration Model
 
@@ -26,7 +26,7 @@ The backend is responsible for:
 - GitHub App authentication, webhooks, and issue or PR automation
 - Queue coordination and worker orchestration
 - Running Claude, Codex, and Gemini agents in isolated execution environments
-- Persisting operational data and exposing it through API endpoints
+- Persisting operational data in Redis and the shared application database, then exposing it through API endpoints
 
 ## Key API Surfaces
 
@@ -61,7 +61,7 @@ The Vite dev server runs on `http://localhost:5173` by default. Point `VITE_API_
 
 ## Production Integration
 
-In production, the UI and API can be deployed separately behind the same domain or different subdomains.
+In production, the UI and API can be deployed separately behind the same domain or different subdomains. In the repository's default Compose deployment, the UI is built from `propr-ui/`, served by the `api` container, and that container shares the same SQLite database volume as `daemon` and `worker` while Redis handles queue and cache state.
 
 Important integration points:
 

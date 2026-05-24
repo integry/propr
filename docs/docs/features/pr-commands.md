@@ -8,6 +8,8 @@ ProPR supports six slash commands that you can use in pull request comments to t
 
 These commands are model-aware across ProPR's configured agents. If your environment has Claude, Codex, and Gemini agents enabled, you can target any supported model for review or follow-up work by using that model's ID or `llm-...` label.
 
+## Model Naming
+
 Canonical naming in this guide:
 
 - Command arguments use full model IDs such as `claude-sonnet-4-6`, `gpt-5.4`, and `gemini-2.5-pro`

@@ -20,7 +20,7 @@ The current implementation normalizes execution results into a shared metrics pa
 
 1. **`packages/core/src/utils/llmMetrics.ts`** - Core metrics recording and retrieval functions
 2. **`packages/api/llmMetricsAdapter.ts`** - Dashboard adapter for summary endpoints
-3. **`packages/api/client/src/components/LLMMetricsPanel.tsx`** - React component for displaying metrics
+3. **`propr-ui/src/components/Dashboard.tsx`**, **`propr-ui/src/components/TopModels.tsx`**, and **`propr-ui/src/pages/LlmLogsPage.tsx`** - Current frontend surfaces for summary cards, model usage views, and execution drill-downs
 4. **Redis Storage** - All metrics are stored in Redis with appropriate TTLs
 
 ### Data Flow
@@ -28,7 +28,7 @@ The current implementation normalizes execution results into a shared metrics pa
 1. When an agent execution completes, the normalized result is passed to `recordLLMMetrics()`
 2. Metrics are extracted and stored in Redis with various aggregation levels
 3. The dashboard API exposes endpoints to retrieve metric summaries
-4. The React dashboard displays real-time LLM performance data
+4. The Web UI in `propr-ui/` displays summary cards, model breakdowns, and drill-down views from those API responses
 
 ## Metrics Collected
 
@@ -110,12 +110,13 @@ When a request exceeds the cost threshold (default: $10.00, configurable via `LL
 
 ## Dashboard Integration
 
-The LLM metrics are displayed in the ProPR dashboard with:
-- Summary cards showing key metrics
-- Model performance comparison table
-- Daily cost trend chart
-- High-cost alert notifications
-- Success rate visualization
+The current Web UI surfaces LLM usage through:
+
+- Dashboard summary cards and top-model views
+- Repository-level usage and cost breakdowns
+- The LLM Log page for request-by-request drill-downs
+
+Additional dashboard pages can consume the same API endpoints if you want a dedicated metrics screen in your deployment.
 
 ## Usage Examples
 

@@ -9,6 +9,7 @@ This guide covers deploying ProPR with the Web UI dashboard in a production envi
 - SSL/TLS certificates (recommended)
 - GitHub App configured with proper permissions
 - Provider credentials for the agents you plan to enable
+- Persistent storage for Redis and the shared SQLite application database used by the default Compose deployment
 
 ## Environment Configuration
 
@@ -25,6 +26,7 @@ Important:
 
 - The production compose example in this repository is a minimal Claude-first deployment and wires `ANTHROPIC_API_KEY` by default.
 - If you enable Codex or Gemini agents in the AI Agents UI, you must also mount their credential directories into the `api` and `worker` containers and make sure the enabled agent configs point at those mounted paths.
+- The default production deployment stores application state in Redis plus a shared SQLite database file mounted into the `api`, `daemon`, and `worker` containers.
 
 ### Core Environment Variables
 
@@ -57,9 +59,21 @@ FRONTEND_APP_URL=https://yourdomain.com
 REDIS_HOST=redis
 REDIS_PORT=6379
 
+# Shared SQLite database file used by api, daemon, and worker
+DB_FILENAME=/app/data/propr.sqlite
+
 # Logging
 LOG_LEVEL=info
 ```
+
+## Stateful Services
+
+The default `docker-compose.prod.yml` deployment has two stateful stores:
+
+- Redis for queues, transient state, and cached metrics
+- A shared SQLite database file at `/app/data/propr.sqlite` for persistent application data such as repository settings, planner data, task state, and historical metrics
+
+The `api`, `daemon`, and `worker` services all mount the same `propr-sqlite-data` volume so they see the same application database. If you replace the default deployment topology, preserve that shared persistent storage behavior.
 
 ### Additional Agent Setup For Codex And Gemini
 
@@ -180,20 +194,20 @@ docker-compose -f docker-compose.prod.yml up -d
 ### Backup
 
 Important data to backup:
-- Redis data: `redis-data` volume
+- SQLite application data: the `propr-sqlite-data` volume
+- Redis data: the `propr-redis-data` volume
 - Repository data: `./repos` directory
 - Logs: `./logs` directory
+- The environment or secret-management source that provides your production `.env` values
 
 ```bash
-# Backup Redis data
-docker-compose -f docker-compose.prod.yml exec redis redis-cli BGSAVE
-
-# Create backup archive
-tar -czf propr-backup-$(date +%Y%m%d).tar.gz \
+# Create backup archive for bind-mounted files
+tar -czf propr-files-backup-$(date +%Y%m%d).tar.gz \
   ./repos \
-  ./logs \
-  docker-volume-backup-redis-data
+  ./logs
 ```
+
+Back up the Redis and SQLite Docker volumes with the snapshot or volume-backup process used by your platform before upgrades or other maintenance that could modify state.
 
 ### Scaling
 

@@ -53,20 +53,15 @@ Actionable advice:
 
 If your team routes work by model, add the relevant model label before the worker starts.
 
-Canonical naming in these docs:
+Use the current canonical model IDs and `llm-...` label forms documented in [PR Slash Commands](../features/pr-commands.md#model-naming). That keeps the model catalog in one place as the supported names evolve.
 
-- Use full model IDs in command examples, such as `claude-sonnet-4-6`, `gpt-5.4`, or `gemini-2.5-pro`
-- Use the matching GitHub label when you are applying labels to issues or PRs, such as `llm-claude-sonnet46`, `llm-codex-gpt54`, or `llm-gemini-pro`
-
-Examples:
+Example:
 
 ```text
-Labels: AI, llm-claude-sonnet46
-Labels: AI, llm-codex-gpt54
-Labels: AI, llm-gemini-pro
+Labels: AI, llm-your-selected-model
 ```
 
-Older aliases such as `llm-claude-sonnet` may still resolve for backward compatibility, but the current docs use the explicit labels generated from the supported model catalog.
+Older aliases may still resolve for backward compatibility, but the current docs use the canonical names from that reference page.
 
 If you add more than one model label, ProPR can process the same issue in separate runs, each with its own branch and PR.
 
