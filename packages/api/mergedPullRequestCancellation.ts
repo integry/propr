@@ -48,7 +48,10 @@ export async function cancelMergedPullRequestTasks(
   };
 
   await persistMergedState(deps.redisClient, repository, prNumber);
-  const activeTasks = await loadActiveTasks(repository, prNumber);
+  const activeTasks = await loadActiveTasks(repository, prNumber, {
+    forceQueueScan: true,
+    log,
+  });
   if (activeTasks.length === 0) {
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
@@ -112,7 +115,7 @@ export function isMergedPullRequestClose(payload: unknown): payload is MergedPul
 
 function isAlreadyInactiveStopError(error: unknown): error is StopTaskExecutionError {
   return error instanceof StopTaskExecutionError
-    && (error.status === 400 || error.status === 404 || error.status === 409);
+    && (error.status === 400 || error.status === 404);
 }
 
 function buildMergeTaskCancellationFailure(taskId: string, error: unknown): MergeTaskCancellationFailure {

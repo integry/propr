@@ -68,6 +68,16 @@ export async function clearPendingPrQueueJob(
   await removeSetMembers(client, getPendingPrQueueJobIndexKey(repository, prNumber), [jobId]);
 }
 
+export async function clearTrackedPrQueueJob(
+  queue: PrQueueIndexableQueue,
+  repository: string,
+  prNumber: number,
+  jobId: string,
+): Promise<void> {
+  const client = await queue.client;
+  await removeSetMembers(client, getPrQueueJobIndexKey(repository, prNumber), [jobId]);
+}
+
 export async function getTrackedPrQueueJobs(
   queue: PrQueueIndexableQueue,
   repository: string,

@@ -1,6 +1,13 @@
 import type { Job } from 'bullmq';
 import { RedisClientType } from 'redis';
-import { stopDockerContainer, getStateManager, logger } from '@propr/core';
+import {
+  clearPendingPrQueueJob,
+  clearTrackedPrQueueJob,
+  getIssueQueue,
+  getStateManager,
+  logger,
+  stopDockerContainer,
+} from '@propr/core';
 import {
   ensureTaskStateForCancellation,
   loadStopTaskContext,
@@ -108,6 +115,7 @@ export async function stopTaskExecution(
   });
 
   const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
+  if (jobRemoved) await clearPrQueueJobIndexEntriesIfNeeded(context.queueJob, deps);
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
     shouldAbort,
     containerStopped,
@@ -254,13 +262,8 @@ function shouldClearAbortSignals(shouldAbort: boolean, containerStopped: boolean
   return shouldAbort && (containerStopped || jobRemoved);
 }
 
-function shouldMarkTaskCancelled(params: {
-  shouldAbort: boolean;
-  containerStopped: boolean;
-  jobRemoved: boolean;
-}): boolean {
-  const { containerStopped, jobRemoved } = params;
-  return containerStopped || jobRemoved;
+function shouldMarkTaskCancelled(params: { shouldAbort: boolean; containerStopped: boolean; jobRemoved: boolean }): boolean {
+  return params.containerStopped || params.jobRemoved;
 }
 
 async function stopTaskContainer(params: {
@@ -318,6 +321,48 @@ async function removeQueueJobIfNeeded(queueJob: Job<QueueJobData> | null, isQueu
   }
 }
 
+async function clearPrQueueJobIndexEntriesIfNeeded(
+  queueJob: Job<QueueJobData> | null,
+  deps: StopTaskExecutionDeps,
+): Promise<void> {
+  const prJobContext = queueJob ? getPrQueueJobContext(queueJob) : null;
+  if (!prJobContext) {
+    return;
+  }
+
+  try {
+    const queue = await (deps.getIssueQueue ?? getIssueQueue)();
+    await Promise.all([
+      clearTrackedPrQueueJob(queue as never, prJobContext.repository, prJobContext.prNumber, prJobContext.jobId),
+      clearPendingPrQueueJob(queue as never, prJobContext.repository, prJobContext.prNumber, prJobContext.jobId),
+    ]);
+  } catch (error) {
+    logger.warn({
+      repository: prJobContext.repository,
+      prNumber: prJobContext.prNumber,
+      jobId: prJobContext.jobId,
+      error: (error as Error).message,
+    }, 'Failed to clear PR queue-job index entries after queued task cancellation');
+  }
+}
+
+function getPrQueueJobContext(queueJob: Job<QueueJobData>): { repository: string; prNumber: number; jobId: string } | null {
+  const { data } = queueJob;
+  const repository = typeof data.repository === 'string'
+    ? data.repository
+    : typeof data.repoOwner === 'string' && typeof data.repoName === 'string'
+      ? `${data.repoOwner}/${data.repoName}`
+      : typeof data.owner === 'string' && typeof data.repoName === 'string'
+        ? `${data.owner}/${data.repoName}`
+        : null;
+  const prNumber = typeof data.prNumber === 'number'
+    ? data.prNumber
+    : typeof data.pullRequestNumber === 'number'
+      ? data.pullRequestNumber
+      : null;
+  return repository && prNumber !== null ? { repository, prNumber, jobId: String(queueJob.id) } : null;
+}
+
 export function isBenignQueueRemovalRace(queueState: string | null): boolean {
   return queueState === 'active'
     || queueState === 'unknown'
@@ -339,9 +384,7 @@ function getStopTaskSuccessMessage(params: {
   containerStopped: boolean;
 }): string {
   const { jobRemoved, shouldAbort, containerStopped } = params;
-  if (jobRemoved) {
-    return 'Queued task cancelled before execution started.';
-  }
+  if (jobRemoved) return 'Queued task cancelled before execution started.';
   if (shouldAbort) {
     return containerStopped
       ? 'Execution stopped. The Docker container has been terminated.'

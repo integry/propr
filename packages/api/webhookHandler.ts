@@ -271,7 +271,7 @@ export async function handleWebhookRequest(
     return;
   }
 
-  if (mergeTaskCancellation && isMergedPullRequestCloseFn(payload)) {
+  if (mergeTaskCancellation && rawEvent === 'pull_request' && isMergedPullRequestCloseFn(payload)) {
     try {
       await cancelMergedPullRequestTasksOrRetry({
         payload,
