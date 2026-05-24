@@ -19,7 +19,7 @@ import { resolveModelAlias } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { clearPendingPrQueueJob, markPrQueueJobPending, trackPrQueueJob } from './prQueueJobIndex.js';
-import { hasPullRequestMerged } from './prMergeState.js';
+import { discardFreshQueueJobAfterMerge, shouldSkipEnqueueForMergedPullRequest } from './mergedPrQueueHelpers.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -70,7 +70,6 @@ interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
 type PRComment = { id: number; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
-const TRACKABLE_QUEUE_STATES = new Set(['waiting', 'active', 'delayed']);
 
 async function prHasProcessingLabel(prLabels: Label[]): Promise<boolean> {
     const processingLabels = await loadPrimaryProcessingLabels();
@@ -213,8 +212,14 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     const commandMeta = buildCommandMeta(parsedCommand);
     const repository = `${owner}/${repo}`;
 
-    if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
-        correlatedLogger.info({ repository, pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, 'Skipping slash-command follow-up because PR is already merged');
+    if (await shouldSkipEnqueueForMergedPullRequest({
+        redisClient,
+        repository,
+        prNumber,
+        log: correlatedLogger,
+        mergedMessage: 'Skipping slash-command follow-up because PR is already merged',
+        lookupFailureMessage: 'Failed to verify PR merge state before processing slash-command follow-up; continuing',
+    })) {
         return;
     }
 
@@ -263,8 +268,14 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
-        if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
-            correlatedLogger.info({ repository, pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, 'Skipping slash-command batch update because PR merged while the request was being processed');
+        if (await shouldSkipEnqueueForMergedPullRequest({
+            redisClient,
+            repository,
+            prNumber,
+            log: correlatedLogger,
+            mergedMessage: 'Skipping slash-command batch update because PR merged while the request was being processed',
+            lookupFailureMessage: 'Failed to verify PR merge state before batching slash-command follow-up; continuing',
+        })) {
             return;
         }
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
@@ -511,8 +522,14 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     if (!eventDetails) return;
 
     const { prNumber, comment } = eventDetails;
-    if (await hasPullRequestMerged(redisClient as never, repoFullName, prNumber)) {
-        correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id }, 'Skipping PR comment follow-up because PR is already merged');
+    if (await shouldSkipEnqueueForMergedPullRequest({
+        redisClient,
+        repository: repoFullName,
+        prNumber,
+        log: correlatedLogger,
+        mergedMessage: 'Skipping PR comment follow-up because PR is already merged',
+        lookupFailureMessage: 'Failed to verify PR merge state before processing comment follow-up; continuing',
+    })) {
         return;
     }
 
@@ -573,8 +590,14 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
-        if (await hasPullRequestMerged(redisClient as never, repoFullName, prNumber)) {
-            correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id }, 'Skipping PR comment batching because PR merged while the request was being processed');
+        if (await shouldSkipEnqueueForMergedPullRequest({
+            redisClient,
+            repository: repoFullName,
+            prNumber,
+            log: correlatedLogger,
+            mergedMessage: 'Skipping PR comment batching because PR merged while the request was being processed',
+            lookupFailureMessage: 'Failed to verify PR merge state before batching comment follow-up; continuing',
+        })) {
             return;
         }
         await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, config as StoreCommentConfig);
@@ -722,8 +745,14 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
 
     try {
         const queue = await getIssueQueue();
-        if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
-            correlatedLogger.info({ repository, pullRequestNumber: prNumber, commentId: comment.id }, 'Skipping PR comment enqueue because PR is already merged');
+        if (await shouldSkipEnqueueForMergedPullRequest({
+            redisClient,
+            repository,
+            prNumber,
+            log: correlatedLogger,
+            mergedMessage: 'Skipping PR comment enqueue because PR is already merged',
+            lookupFailureMessage: 'Failed to verify PR merge state before enqueuing comment follow-up; continuing',
+        })) {
             return;
         }
 
@@ -742,17 +771,27 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
             throw error;
         }
 
-        if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
-            await discardFreshPrCommentJobAfterMerge({
+        if (await shouldSkipEnqueueForMergedPullRequest({
+            redisClient,
+            repository,
+            prNumber,
+            log: correlatedLogger,
+            mergedMessage: 'PR merged during comment enqueue; discarding freshly-queued job',
+            lookupFailureMessage: 'Failed to verify PR merge state after enqueuing comment follow-up; leaving queued job in place',
+        })) {
+            await discardFreshQueueJobAfterMerge({
                 queuedJob,
                 queue: queue as never,
                 redisClient,
                 repository,
                 prNumber,
-                owner,
-                repo,
                 jobId,
-                correlatedLogger,
+                taskIds: [jobId, `${owner}-${repo}-${prNumber}`],
+                log: correlatedLogger,
+                removedMessage: 'Removed freshly-queued PR comment job because the PR merged during enqueue',
+                removalFailureMessage: 'Failed to remove freshly-queued PR comment job after merge; set abort signals instead',
+                pendingIndexClearFailureMessage: 'Failed to clear pending PR queue-job index entry after merge',
+                trackFailureMessage: 'Failed to move merged PR comment job into the tracked queue-job index',
             });
             return;
         }
@@ -768,70 +807,5 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
         const err = error as Error;
         if (err.message?.includes('Job already exists')) correlatedLogger.debug({ pullRequestNumber: prNumber }, 'PR comment job already in queue, skipping');
         else handleError(error, `Failed to add PR comment to queue`, { correlationId });
-    }
-}
-
-async function discardFreshPrCommentJobAfterMerge(params: {
-    queuedJob: { remove: () => Promise<unknown>; getState: () => Promise<string> };
-    queue: Awaited<ReturnType<typeof getIssueQueue>>;
-    redisClient: Redis;
-    repository: string;
-    prNumber: number;
-    owner: string;
-    repo: string;
-    jobId: string;
-    correlatedLogger: ReturnType<typeof logger.withCorrelation>;
-}): Promise<void> {
-    const { queuedJob, queue, redisClient, repository, prNumber, owner, repo, jobId, correlatedLogger } = params;
-
-    try {
-        await queuedJob.remove();
-        correlatedLogger.info({ repository, pullRequestNumber: prNumber, jobId }, 'Removed freshly-queued PR comment job because the PR merged during enqueue');
-        return;
-    } catch (error) {
-        const queueState = await reloadQueueStateAfterRemovalFailure(queuedJob);
-        await setMergedPrAbortSignals(redisClient, [jobId, `${owner}-${repo}-${prNumber}`], prNumber);
-
-        if (queueState && TRACKABLE_QUEUE_STATES.has(queueState)) {
-            try {
-                await trackPrQueueJob(queue as never, repository, prNumber, jobId);
-            } catch (trackError) {
-                correlatedLogger.warn({ repository, pullRequestNumber: prNumber, jobId, error: (trackError as Error).message }, 'Failed to move merged PR comment job into the tracked queue-job index');
-            }
-        }
-
-        correlatedLogger.warn({
-            repository,
-            pullRequestNumber: prNumber,
-            jobId,
-            queueState,
-            error: (error as Error).message,
-        }, 'Failed to remove freshly-queued PR comment job after merge; set abort signals instead');
-    } finally {
-        try {
-            await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
-        } catch (error) {
-            correlatedLogger.warn({ repository, pullRequestNumber: prNumber, jobId, error: (error as Error).message }, 'Failed to clear pending PR queue-job index entry after merge');
-        }
-    }
-}
-
-async function reloadQueueStateAfterRemovalFailure(queueJob: { getState: () => Promise<string> }): Promise<string | null> {
-    try {
-        return await queueJob.getState();
-    } catch {
-        return null;
-    }
-}
-
-async function setMergedPrAbortSignals(redisClient: Redis, taskIds: string[], prNumber: number): Promise<void> {
-    const payload = JSON.stringify({
-        timestamp: new Date().toISOString(),
-        reasonCode: 'pull_request_merged',
-        reason: `Task cancelled because pull request #${prNumber} was merged.`,
-    });
-
-    for (const taskId of new Set(taskIds)) {
-        await redisClient.set(`worker:abort:${taskId}`, payload, 'EX', 3600);
     }
 }

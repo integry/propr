@@ -22,14 +22,10 @@ export interface MergeTaskCancellationDeps {
 export async function cancelMergedPullRequestTasks(
   payload: Record<string, unknown>,
   correlationId: string,
-  deps?: MergeTaskCancellationDeps,
+  deps: MergeTaskCancellationDeps,
 ): Promise<void> {
   if (!isMergedPullRequestClose(payload)) {
     return;
-  }
-
-  if (!deps) {
-    throw new Error('Merged PR task cancellation dependencies are required');
   }
 
   const repository = payload.repository.full_name;

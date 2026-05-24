@@ -4,7 +4,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
-import { getPendingPrQueueJobs, getTrackedPrQueueJobs, trackPrQueueJob } from './prQueueJobIndex.js';
+import { getPendingPrQueueJobs, getTrackedPrQueueJobs, TRACKED_PR_QUEUE_STATES, TRACKED_PR_QUEUE_STATE_SET, trackPrQueueJob } from './prQueueJobIndex.js';
 
 export interface MergePROptions {
     owner: string;
@@ -639,8 +639,8 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
  * Terminal task states - tasks in these states are considered complete
  */
 const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'];
-const PR_QUEUE_STATES = ['waiting', 'active', 'delayed'] as const;
-const PR_QUEUE_STATE_SET = new Set<string>(PR_QUEUE_STATES);
+const RUNNING_TASK_STATES = new Set(['processing', 'claude_execution', 'post_processing']);
+const PR_QUEUE_STATE_SET = TRACKED_PR_QUEUE_STATE_SET;
 
 export interface PRTaskActivity {
     taskId: string;
@@ -716,13 +716,15 @@ export async function getActiveTasksForPR(
             }
         }
 
-        await addQueuedPrJobsFromFallbackScan({
-            queue,
-            repository,
-            prNumber,
-            taskMap,
-            log,
-        });
+        if (deps.forceQueueScan || taskMap.size === 0) {
+            await addQueuedPrJobsFromFallbackScan({
+                queue,
+                repository,
+                prNumber,
+                taskMap,
+                log,
+            });
+        }
 
         const activeTasks = await database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -739,7 +741,16 @@ export async function getActiveTasksForPR(
 
         for (const task of activeTasks) {
             const dedupeKey = task.job_id || task.task_id;
-            taskMap.set(dedupeKey, { taskId: task.task_id, state: task.state });
+            if (taskMap.has(dedupeKey)) {
+                if (RUNNING_TASK_STATES.has(task.state)) {
+                    taskMap.set(dedupeKey, { taskId: task.task_id, state: task.state });
+                }
+                continue;
+            }
+
+            if (RUNNING_TASK_STATES.has(task.state)) {
+                taskMap.set(dedupeKey, { taskId: task.task_id, state: task.state });
+            }
         }
 
         const taskList = [...taskMap.values()];
@@ -766,7 +777,7 @@ async function addQueuedPrJobsFromFallbackScan(params: {
     log: Pick<typeof logger, 'info' | 'warn'>;
 }): Promise<void> {
     const { queue, repository, prNumber, taskMap, log } = params;
-    for (const queueState of PR_QUEUE_STATES) {
+    for (const queueState of TRACKED_PR_QUEUE_STATES) {
         const jobs = await queue.getJobs([queueState]);
         for (const job of jobs) {
             const jobData = job.data as unknown as Record<string, unknown>;

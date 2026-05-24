@@ -1,11 +1,12 @@
 import type { Job } from 'bullmq';
 
-const TRACKED_PR_QUEUE_STATES = new Set(['waiting', 'active', 'delayed']);
+export const TRACKED_PR_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
+export const TRACKED_PR_QUEUE_STATE_SET = new Set<string>(TRACKED_PR_QUEUE_STATES);
 const PR_QUEUE_JOB_INDEX_TTL_SECONDS = 24 * 60 * 60;
 const PR_QUEUE_JOB_PENDING_INDEX_KEY_PREFIX = 'pr-pending-queue-jobs';
 const PR_QUEUE_JOB_INDEX_KEY_PREFIX = 'pr-queue-jobs';
 
-type QueueLike = {
+export type PrQueueIndexableQueue = {
   getJob: (jobId: string) => Promise<Job | undefined | null>;
   client: Promise<PrQueueIndexRedisLike>;
 };
@@ -21,7 +22,7 @@ type PrQueueIndexRedisLike = {
 };
 
 export async function trackPrQueueJob(
-  queue: QueueLike,
+  queue: PrQueueIndexableQueue,
   repository: string,
   prNumber: number,
   jobId: string,
@@ -40,7 +41,7 @@ export async function trackPrQueueJob(
 }
 
 export async function markPrQueueJobPending(
-  queue: QueueLike,
+  queue: PrQueueIndexableQueue,
   repository: string,
   prNumber: number,
   jobId: string,
@@ -58,7 +59,7 @@ export async function markPrQueueJobPending(
 }
 
 export async function clearPendingPrQueueJob(
-  queue: QueueLike,
+  queue: PrQueueIndexableQueue,
   repository: string,
   prNumber: number,
   jobId: string,
@@ -68,7 +69,7 @@ export async function clearPendingPrQueueJob(
 }
 
 export async function getTrackedPrQueueJobs(
-  queue: QueueLike,
+  queue: PrQueueIndexableQueue,
   repository: string,
   prNumber: number,
 ): Promise<Array<{ jobId: string; state: string }>> {
@@ -91,7 +92,7 @@ export async function getTrackedPrQueueJobs(
     }
 
     const state = await job.getState();
-    if (TRACKED_PR_QUEUE_STATES.has(state)) {
+    if (TRACKED_PR_QUEUE_STATE_SET.has(state)) {
       trackedJobs.push({ jobId, state });
       continue;
     }
@@ -105,7 +106,7 @@ export async function getTrackedPrQueueJobs(
 }
 
 export async function getPendingPrQueueJobs(
-  queue: QueueLike,
+  queue: PrQueueIndexableQueue,
   repository: string,
   prNumber: number,
 ): Promise<Array<{ jobId: string; state: string }>> {
@@ -128,7 +129,7 @@ export async function getPendingPrQueueJobs(
     }
 
     const state = await job.getState();
-    if (TRACKED_PR_QUEUE_STATES.has(state)) {
+    if (TRACKED_PR_QUEUE_STATE_SET.has(state)) {
       pendingJobs.push({ jobId, state });
       continue;
     }
