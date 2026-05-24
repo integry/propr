@@ -6,11 +6,11 @@ import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
 import { useContextRefresh } from '../../hooks/useContextRefresh';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { useToast } from '../ui/useToast';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
 import { GranularityPills } from './ComposerControls';
-import { GenerationProgress } from './GenerationProgress';
 import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
 import { getEstimatedIssueText } from './setupWizardUtils';
 import type { RepoSelection } from '../RepositorySelector';
@@ -72,6 +72,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const handleRemoveManualFile = removeConfigArrayValue(setConfig, 'manualFiles', (value, filePath) => value === filePath);
   const handleExcludeFile = appendConfigArrayValue(setConfig, 'excludedFiles');
   const isGenerating = generationPolling.isGenerating;
+  const isMobile = useIsMobile(768);
   const stats = contextRefresh.preview.data?.stats;
   const configuredBaseBranch = (draft as DraftWithContextConfig | undefined)?.context_config?.baseBranch;
   return (
@@ -130,16 +131,10 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           onManualRefresh={contextRefresh.handleManualRefresh}
           isNewMode={isNewMode}
           previewTrace={previewTrace}
-          isGenerating={isGenerating}
-          generationTrace={generationPolling.generationTrace}
+          showPreviewProgress={!isGenerating || !isMobile}
           onExcludeFile={handleExcludeFile}
         />
       </div>
-      {isGenerating && (
-        <div className="md:hidden px-3 py-2 border-t border-gray-200 bg-white">
-          <GenerationProgress trace={generationPolling.generationTrace} onAbort={generationHandlers.handleAbortGeneration} />
-        </div>
-      )}
       <div className="flex-shrink-0 px-3 md:px-6 py-2 md:py-4 bg-gray-100 border-t border-gray-300">
         <div className="flex flex-col gap-2 md:gap-4">
           <div className="flex items-center gap-2 overflow-x-auto">

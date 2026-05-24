@@ -23,10 +23,8 @@ interface CostPreviewProps {
   isNewMode?: boolean;
   // Preview trace for progress display during context loading (shown in right pane)
   previewTrace?: GenerationTrace;
-  // Generation state props - kept for API compatibility but not displayed here
-  // (generation progress is shown in the left pane to avoid duplication)
-  isGenerating?: boolean;
-  generationTrace?: GenerationTrace;
+  // Whether preview progress should render in the right pane
+  showPreviewProgress?: boolean;
 }
 
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
@@ -74,6 +72,19 @@ const LoadingState: React.FC<LoadingStateProps> = ({ previewTrace }) => {
     </div>
   );
 };
+
+const DeferredLoadingState: React.FC = () => (
+  <div className="pt-3 sm:pt-4 border-t border-gray-200">
+    <div className="flex items-center justify-between">
+      <span className="hidden sm:inline text-gray-500">
+        Cost estimate will be available after context analysis
+      </span>
+      <span className="sm:hidden text-gray-500 text-xs">
+        Cost after context analysis
+      </span>
+    </div>
+  </div>
+);
 
 const ErrorState: React.FC<{ error: string }> = ({ error }) => (
   <div className="pt-4 border-t border-gray-200">
@@ -219,15 +230,10 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   onTogglePause,
   isNewMode,
   previewTrace,
-  isGenerating
+  showPreviewProgress = true
 }) => {
-  // Note: Generation progress is shown in the left pane when isGenerating is true.
-  // This component (right pane) only shows progress for context/preview updates via LoadingState.
-  // We intentionally do NOT show generationTrace here to avoid duplication.
-  // IMPORTANT: When isGenerating is true, we skip showing preview progress here because
-  // the left pane already shows the full generation progress (including relevance/context steps).
-  // This prevents duplicate progress indicators in both columns.
-  if (preview.isLoading && !isGenerating) return <LoadingState previewTrace={previewTrace} />;
+  if (preview.isLoading && showPreviewProgress) return <LoadingState previewTrace={previewTrace} />;
+  if (preview.isLoading) return <DeferredLoadingState />;
   if (preview.error) return <ErrorState error={preview.error} />;
   if (!preview.data) return (
     <EmptyState

@@ -1,15 +1,39 @@
 import React from 'react';
-import { render, act } from '@testing-library/react';
+import { render, act, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import SetupWizard from './SetupWizard';
 import { getDraft, createDraft, updateDraft, getRepoBranches } from '../../api/proprApi';
-
 const mockGetDraft = vi.mocked(getDraft);
 const mockCreateDraft = vi.mocked(createDraft);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockGetRepoBranches = vi.mocked(getRepoBranches);
+const previewTrace = {
+  steps: [
+    { name: 'relevance', status: 'completed' },
+    { name: 'context', status: 'in_progress' },
+  ],
+};
+const generationTrace = {
+  steps: [...previewTrace.steps, { name: 'llm', status: 'pending' }],
+};
 let lastLeftPaneProps: Record<string, unknown> | undefined;
+let mockGenerationPollingState: {
+  isGenerating: boolean;
+  generationTrace: Record<string, unknown> | undefined;
+  generationError: string | null;
+} = {
+  isGenerating: false,
+  generationTrace: undefined,
+  generationError: null,
+};
+let mockPreviewTrace: Record<string, unknown> | undefined;
+let mockPreviewState: {
+  isLoading: boolean;
+  data: Record<string, unknown> | null;
+  error: string | null;
+  lastSynced: Date | null;
+};
 const mockNavigate = vi.fn();
 let mockLocationState: Record<string, unknown> | undefined;
 const baseDraft = { draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-06T00:00:00Z' };
@@ -17,7 +41,17 @@ const createdDraft = { draft_id: 'draft-2', repository: 'integry/other', initial
 const fullContextConfig = { baseBranch: 'main', granularity: 'large', contextLevel: 75, compress: true, contextRepositories: [{ repository: 'integry/shared', branch: 'release' }], generationModel: 'gpt-5.4', manualFiles: ['src/keep.ts'], excludedFiles: ['src/skip.ts'] };
 const renderSetupWizard = (draftOverrides: Record<string, unknown> = {}) => render(<MemoryRouter><SetupWizard draft={{ ...baseDraft, ...draftOverrides }} onGenerateComplete={vi.fn()} /></MemoryRouter>);
 const triggerRepoChange = (repo: string, selection?: Record<string, unknown> & { baseBranch?: string }) => (lastLeftPaneProps?.onRepoChange as ((nextRepo: string, nextSelection?: Record<string, unknown> & { baseBranch?: string }) => Promise<void>))(repo, selection);
-
+const setGeneratingState = (trace = generationTrace) => {
+  mockGenerationPollingState = { isGenerating: true, generationTrace: trace, generationError: null };
+};
+const setViewportWidth = (width: number) => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: width,
+  });
+  window.dispatchEvent(new Event('resize'));
+};
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return {
@@ -26,14 +60,12 @@ vi.mock('react-router-dom', async () => {
     useLocation: () => ({ state: mockLocationState }),
   };
 });
-
 vi.mock('../../api/proprApi', () => ({
   getDraft: vi.fn(),
   createDraft: vi.fn(),
   updateDraft: vi.fn(),
   getRepoBranches: vi.fn(),
 }));
-
 vi.mock('../../hooks/usePlannerSettings', () => ({
   getPlannerSettings: () => ({
     lastGranularity: 'medium',
@@ -42,22 +74,15 @@ vi.mock('../../hooks/usePlannerSettings', () => ({
   }),
   savePlannerSettings: vi.fn(),
 }));
-
 vi.mock('../../hooks/useContextExport', () => ({
   useContextExport: () => ({
     isExporting: false,
     exportContext: vi.fn(),
   }),
 }));
-
 vi.mock('../../hooks/useContextRefresh', () => ({
   useContextRefresh: () => ({
-    preview: {
-      isLoading: true,
-      data: null,
-      error: null,
-      lastSynced: null,
-    },
+    preview: mockPreviewState,
     isContextStale: false,
     timeUntilRefresh: null,
     isPaused: false,
@@ -67,37 +92,49 @@ vi.mock('../../hooks/useContextRefresh', () => ({
     fetchPreview: vi.fn(),
   }),
 }));
-
 vi.mock('../ui/useToast', () => ({
   useToast: () => ({
     addToast: vi.fn(),
   }),
 }));
-
 vi.mock('./ComposerControls', () => ({
   GranularityPills: () => <div>granularity</div>,
 }));
-
-vi.mock('./GenerationProgress', () => ({
-  GenerationProgress: () => <div>generation progress</div>,
+vi.mock('./ContextLevelSlider', () => ({
+  ContextLevelSlider: () => <div>context level slider</div>,
 }));
-
+vi.mock('./GenerationProgress', () => ({
+  GenerationProgress: () => <div data-testid="generation-progress">generation progress</div>,
+}));
 vi.mock('./SetupWizardComponents', () => ({
   GenerateButtonContent: () => <span>Generate</span>,
   ModelSelector: () => <div>model selector</div>,
 }));
-
 vi.mock('./SetupWizardLeftPane', () => ({
   SetupWizardLeftPane: (props: Record<string, unknown>) => {
     lastLeftPaneProps = props;
-    return <div>left pane</div>;
+    return (
+      <div data-testid="setup-wizard-left-pane">
+        {props.isGenerating ? <div data-testid="generation-progress">generation progress</div> : null}
+      </div>
+    );
   },
 }));
-
-vi.mock('./SetupWizardRightPane', () => ({
-  SetupWizardRightPane: () => <div>right pane</div>,
+vi.mock('./ManualFileSelector', () => ({
+  ManualFileSelector: () => <div>manual file selector</div>,
 }));
-
+vi.mock('../RepositorySelector', () => ({
+  RepositorySelector: () => <div>repository selector</div>,
+}));
+vi.mock('./SmartFileSelection', () => ({
+  SmartFileSelection: () => <div>smart file selection</div>,
+}));
+vi.mock('./SkeletonLoader', () => ({
+  FileSelectionSkeleton: () => <div>file selection skeleton</div>,
+}));
+vi.mock('./ContextRepositoriesSection', () => ({
+  ContextRepositoriesSection: () => <div>context repositories</div>,
+}));
 vi.mock('./setupWizardHooks', () => ({
   useRepositoryLoader: () => ({
     repos: [{ name: 'integry/propr', enabled: true }],
@@ -138,7 +175,7 @@ vi.mock('./setupWizardHooks', () => ({
   }),
   useDraftContextConfigSync: vi.fn(),
   useDraftSettingsPersistence: vi.fn(),
-  usePreviewTrace: () => undefined,
+  usePreviewTrace: () => mockPreviewTrace,
   useSetupWizardEffects: vi.fn(),
   getDraftSetupSnapshot: (config: Record<string, unknown>) => config,
   constructDraftWithPlan: (draft: Record<string, unknown>, setupSnapshot?: Record<string, unknown>) => ({
@@ -156,23 +193,34 @@ vi.mock('./setupWizardHooks', () => ({
   computeCanExport: () => false,
   useAutoResize: () => vi.fn(),
 }));
-
 vi.mock('../../hooks/useGenerationPolling', () => ({
   useGenerationPolling: () => ({
-    isGenerating: false,
-    generationTrace: undefined,
-    generationError: null,
+    isGenerating: mockGenerationPollingState.isGenerating,
+    generationTrace: mockGenerationPollingState.generationTrace,
+    generationError: mockGenerationPollingState.generationError,
     startPolling: vi.fn(),
     stopPolling: vi.fn(),
     setGenerationError: vi.fn(),
   }),
 }));
-
 describe('SetupWizard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    setViewportWidth(1024);
     lastLeftPaneProps = undefined;
+    mockGenerationPollingState = {
+      isGenerating: false,
+      generationTrace: undefined,
+      generationError: null,
+    };
+    mockPreviewTrace = undefined;
+    mockPreviewState = {
+      isLoading: true,
+      data: null,
+      error: null,
+      lastSynced: null,
+    };
     mockLocationState = undefined;
   });
 
@@ -182,28 +230,22 @@ describe('SetupWizard', () => {
 
   it('does not poll the draft while gathering context preview', async () => {
     renderSetupWizard({ generation_trace: { steps: [{ name: 'relevance', status: 'completed' }, { name: 'context', status: 'in_progress' }] }, context_config: {} });
-
     act(() => {
       vi.advanceTimersByTime(20_000);
     });
-
     await act(async () => {
       await Promise.resolve();
     });
-
     expect(mockGetDraft).not.toHaveBeenCalled();
   });
 
   it('anchors edit-mode selector state to the draft branch and persists the full setup snapshot on repo switch', async () => {
     mockCreateDraft.mockResolvedValue(createdDraft);
     renderSetupWizard({ context_config: fullContextConfig });
-
     expect(lastLeftPaneProps?.selectedBaseBranch).toBe('main');
-
     await act(async () => {
       await triggerRepoChange('integry/other', { repo: 'integry/other', baseBranch: 'develop', option: { name: 'integry/other', enabled: true, baseBranch: 'develop' } });
     });
-
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-2',
       expect.objectContaining({
@@ -229,7 +271,6 @@ describe('SetupWizard', () => {
   it('preserves edit-mode selector state from router state before the draft branch reloads', () => {
     mockLocationState = { initialBaseBranch: 'release' };
     renderSetupWizard({ context_config: {} });
-
     expect(lastLeftPaneProps?.selectedBaseBranch).toBe('release');
   });
 
@@ -237,11 +278,9 @@ describe('SetupWizard', () => {
     mockCreateDraft.mockResolvedValue(createdDraft);
     mockGetRepoBranches.mockResolvedValue({ defaultBranch: 'release', branches: ['release', 'main'] });
     renderSetupWizard({ context_config: { baseBranch: 'main' } });
-
     await act(async () => {
       await triggerRepoChange('integry/other', { repo: 'integry/other', option: { name: 'integry/other', enabled: true } });
     });
-
     expect(mockGetRepoBranches).toHaveBeenCalledWith('integry', 'other');
     expect(mockUpdateDraft).toHaveBeenCalledWith(
       'draft-2',
@@ -255,11 +294,9 @@ describe('SetupWizard', () => {
     mockLocationState = { todoIds: ['todo-1', 'todo-2'] };
     mockCreateDraft.mockResolvedValue(createdDraft);
     renderSetupWizard({ context_config: { baseBranch: 'main' } });
-
     await act(async () => {
       await triggerRepoChange('integry/other', { repo: 'integry/other', baseBranch: 'develop', option: { name: 'integry/other', enabled: true, baseBranch: 'develop' } });
     });
-
     expect(mockCreateDraft).toHaveBeenCalledWith(
       'integry/other',
       'Test prompt',
@@ -277,7 +314,6 @@ describe('SetupWizard', () => {
   it('ignores stale repo switches in edit mode when a newer selection finishes first', async () => {
     let resolveFirstLookup: ((value: { defaultBranch: string; branches: string[] }) => void) | undefined;
     let resolveSecondLookup: ((value: { defaultBranch: string; branches: string[] }) => void) | undefined;
-
     mockGetRepoBranches
       .mockImplementationOnce(() => new Promise(resolve => {
         resolveFirstLookup = resolve;
@@ -287,10 +323,8 @@ describe('SetupWizard', () => {
       }));
     mockCreateDraft.mockResolvedValue({ ...createdDraft, repository: 'integry/newer' });
     renderSetupWizard({ context_config: { baseBranch: 'main' } });
-
     const firstChange = triggerRepoChange('integry/older', { repo: 'integry/older', option: { name: 'integry/older', enabled: true } });
     const secondChange = triggerRepoChange('integry/newer', { repo: 'integry/newer', option: { name: 'integry/newer', enabled: true } });
-
     await act(async () => {
       resolveSecondLookup?.({ defaultBranch: 'develop', branches: ['develop'] });
       await Promise.resolve();
@@ -305,7 +339,6 @@ describe('SetupWizard', () => {
     await act(async () => {
       await firstChange;
     });
-
     expect(mockCreateDraft).toHaveBeenCalledTimes(1);
     expect(mockCreateDraft).toHaveBeenCalledWith('integry/newer', 'Test prompt', { todoIds: undefined });
     expect(mockNavigate).toHaveBeenCalledTimes(1);
@@ -318,5 +351,40 @@ describe('SetupWizard', () => {
         })
       })
     );
+  });
+
+  it('renders generation progress only in the left pane while generating', () => {
+    setViewportWidth(767);
+    setGeneratingState();
+    mockPreviewTrace = previewTrace;
+    mockPreviewState = {
+      isLoading: true,
+      data: {
+        stats: { costEstimate: 1.234, totalTokens: 1234 },
+        smartSelection: [],
+        warnings: [],
+      },
+      error: null,
+      lastSynced: null,
+    };
+    renderSetupWizard({ status: 'generating', generation_trace: previewTrace, context_config: {} });
+    const leftPane = within(screen.getByTestId('setup-wizard-left-pane'));
+    const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
+    expect(leftPane.getByTestId('generation-progress')).toBeInTheDocument();
+    expect(rightPane.queryByTestId('generation-progress')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('generation-progress')).toHaveLength(1);
+    expect(rightPane.queryByText('Analyzing context...')).not.toBeInTheDocument();
+    expect(rightPane.queryByText('Enter prompt for cost')).not.toBeInTheDocument();
+    expect(rightPane.queryByText('$1.234')).not.toBeInTheDocument();
+    expect(rightPane.getByText('Cost after context analysis')).toBeInTheDocument();
+  });
+
+  it('preserves right-pane preview progress on desktop while generating', () => {
+    setViewportWidth(1024);
+    setGeneratingState(previewTrace);
+    mockPreviewTrace = previewTrace;
+    renderSetupWizard({ status: 'generating', generation_trace: previewTrace, context_config: {} });
+    const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
+    expect(rightPane.getByTestId('generation-progress')).toBeInTheDocument();
   });
 });
