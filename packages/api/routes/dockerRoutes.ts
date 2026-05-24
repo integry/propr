@@ -305,7 +305,7 @@ async function loadStopTaskContext(
   const queueJob = await getQueueJob(candidateTaskIds, deps.getIssueQueue);
   const queueState = queueJob ? await queueJob.getState() : null;
   const taskId = resolveStopTaskId(normalizedTaskId, queueJob, persistedTask?.taskId ?? stateLookup.taskId);
-  const abortTaskIds = buildAbortTaskIds(taskId, normalizedTaskId, queueJob, persistedTask?.jobId);
+  const abortTaskIds = buildAbortTaskIds(taskId, normalizedTaskId, queueJob, persistedTask?.jobId ?? null);
 
   return {
     normalizedTaskId,
