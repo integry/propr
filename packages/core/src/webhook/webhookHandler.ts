@@ -10,7 +10,8 @@ import {
     handlePlanPRCommentTracking,
     type CommentEventType
 } from './planIssueTracking.js';
-import { handleCheckRunEvent, handleStatusEvent, type StatusEventPayload } from './checkRunHandler.js';
+import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
+import { clearUltrafixLoopState } from './checkRunHelpers.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import type {
@@ -339,6 +340,37 @@ async function handleIssuesEvent(
     }
 }
 
+async function handleUltrafixLabelRemoval(
+    payload: unknown,
+    eventType: WebhookEventType,
+    correlationId: string,
+): Promise<void> {
+    const log = logger.withCorrelation(correlationId);
+
+    if (eventType === 'pull_request' && isPullRequestEvent(payload) && isPullRequestUnlabeledEvent(payload)) {
+        if (payload.label?.name !== 'ultrafix') return;
+        const owner = payload.repository.owner.login;
+        const repo = payload.repository.name;
+        const prNumber = payload.pull_request.number;
+        await clearUltrafixLoopState(owner, repo, prNumber);
+        await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
+        log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after PR ultrafix label removal');
+        return;
+    }
+
+    if (eventType === 'issues' && isIssuesEvent(payload)) {
+        const labelName = 'label' in payload ? payload.label?.name : undefined;
+        const isPrIssue = 'pull_request' in payload.issue && !!payload.issue.pull_request;
+        if (payload.action !== 'unlabeled' || labelName !== 'ultrafix' || !isPrIssue) return;
+        const owner = payload.repository.owner.login;
+        const repo = payload.repository.name;
+        const prNumber = payload.issue.number;
+        await clearUltrafixLoopState(owner, repo, prNumber);
+        await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
+        log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after issue ultrafix label removal');
+    }
+}
+
 async function handleIssueCommentEvent(
     payload: IssueCommentEvent,
     correlationId: string
@@ -460,6 +492,8 @@ export async function processWebhookEvent(
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     if (await handlePreviewRouting(payload, eventType, correlationId, deliveryId)) return;
+
+    await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 
     // Plan Issue Tracking (runs before standard processing to update status)
     await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);

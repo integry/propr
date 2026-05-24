@@ -3,6 +3,7 @@ import { Redis, RedisOptions } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
+import { getIssueQueue } from '../queue/taskQueue.js';
 
 export interface MergePROptions {
     owner: string;
@@ -377,6 +378,7 @@ export interface PRAutoMergeInfo {
 }
 
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
+const ULTRAFIX_DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 let ultrafixStateRedis: Redis | null = null;
 
 export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions } {
@@ -463,9 +465,29 @@ function getUltrafixStateKey(owner: string, repoName: string, prNumber: number):
     return `${ULTRAFIX_STATE_KEY_PREFIX}:${owner}:${repoName}:${prNumber}`;
 }
 
+function getUltrafixDeferredKey(owner: string, repoName: string, prNumber: number): string {
+    return `${ULTRAFIX_DEFERRED_KEY_PREFIX}:${owner}:${repoName}:${prNumber}`;
+}
+
 export async function hasActiveUltrafixLoop(owner: string, repoName: string, prNumber: number): Promise<boolean> {
     const state = await getUltrafixLoopState(owner, repoName, prNumber);
     return state?.unavailable === true ? true : state?.active === true;
+}
+
+export async function clearUltrafixLoopState(owner: string, repoName: string, prNumber: number): Promise<void> {
+    try {
+        await getUltrafixStateRedis().del(
+            getUltrafixStateKey(owner, repoName, prNumber),
+            getUltrafixDeferredKey(owner, repoName, prNumber),
+        );
+    } catch (error) {
+        logger.warn({
+            owner,
+            repoName,
+            prNumber,
+            error: (error as Error).message,
+        }, 'Failed to clear ultrafix loop state');
+    }
 }
 
 export async function getUltrafixLoopState(
@@ -515,7 +537,11 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const labels = prResponse.data.labels as Array<{ name: string }>;
         const hasLabel = labels.some(label => label.name === 'auto-merge');
         const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
-        const ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
+        let ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
+        if (!hasUltrafixLabel && ultrafixState) {
+            await clearUltrafixLoopState(owner, repoName, prNumber);
+            ultrafixState = null;
+        }
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;
@@ -620,8 +646,35 @@ const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'];
 export async function hasActiveTasksForPR(
     repository: string,
     prNumber: number
-): Promise<{ hasActive: boolean; activeTasks: Array<{ taskId: string; state: string }> }> {
+): Promise<{
+    hasActive: boolean;
+    activeTasks: Array<{ taskId: string; state: string }>;
+    queuedJobs: Array<{ jobId: string; state: string }>;
+}> {
     try {
+        const queue = await getIssueQueue();
+        const queueStates = ['waiting', 'active', 'delayed'] as const;
+        const queuedJobs: Array<{ jobId: string; state: string }> = [];
+        for (const queueState of queueStates) {
+            const jobs = await queue.getJobs([queueState]);
+            for (const job of jobs) {
+                const jobData = job.data as unknown as Record<string, unknown>;
+                const jobRepository = typeof jobData.repository === 'string'
+                    ? jobData.repository
+                    : (
+                        typeof jobData.repoOwner === 'string' &&
+                        typeof jobData.repoName === 'string' &&
+                        `${jobData.repoOwner}/${jobData.repoName}`
+                    );
+                const jobPrNumber = typeof jobData.prNumber === 'number'
+                    ? jobData.prNumber
+                    : (typeof jobData.pullRequestNumber === 'number' ? jobData.pullRequestNumber : null);
+                if (jobRepository === repository && jobPrNumber === prNumber) {
+                    queuedJobs.push({ jobId: String(job.id), state: queueState });
+                }
+            }
+        }
+
         // Find tasks associated with this PR that are not in a terminal state
         // A task is active if its latest state is not terminal
         const activeTasks = await db('tasks')
@@ -638,16 +691,18 @@ export async function hasActiveTasksForPR(
             .whereNotIn('task_history.state', TERMINAL_TASK_STATES);
 
         const result = {
-            hasActive: activeTasks.length > 0,
-            activeTasks: activeTasks.map(t => ({ taskId: t.task_id, state: t.state }))
+            hasActive: activeTasks.length > 0 || queuedJobs.length > 0,
+            activeTasks: activeTasks.map(t => ({ taskId: t.task_id, state: t.state })),
+            queuedJobs,
         };
 
         if (result.hasActive) {
             logger.info({
                 repository,
                 prNumber,
-                activeTasks: result.activeTasks
-            }, 'Found active tasks for PR');
+                activeTasks: result.activeTasks,
+                queuedJobs: result.queuedJobs,
+            }, 'Found active or queued work for PR');
         }
 
         return result;
@@ -658,7 +713,7 @@ export async function hasActiveTasksForPR(
             error: (error as Error).message
         }, 'Failed to check for active tasks');
         // On error, assume no active tasks to avoid blocking legitimate merges
-        return { hasActive: false, activeTasks: [] };
+        return { hasActive: false, activeTasks: [], queuedJobs: [] };
     }
 }
 

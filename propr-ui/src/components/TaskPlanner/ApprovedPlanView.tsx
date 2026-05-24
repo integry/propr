@@ -250,6 +250,8 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const [runUltrafix, setRunUltrafix] = useState(draft.context_config?.runUltrafix ?? false);
   const [ultrafixGoal, setUltrafixGoal] = useState<number | null>(draft.context_config?.ultrafixGoal ?? null);
   const [ultrafixMaxCycles, setUltrafixMaxCycles] = useState<number | null>(draft.context_config?.ultrafixMaxCycles ?? null);
+  const [pendingExecutionSettingsSaves, setPendingExecutionSettingsSaves] = useState(0);
+  const isSavingExecutionSettings = pendingExecutionSettingsSaves > 0;
 
   const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
   const repository = draft.repository || '';
@@ -308,48 +310,58 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const handleUseEpicChange = useCallback(async (value: boolean) => {
     const previousValue = useEpic;
     setUseEpic(value);
+    setPendingExecutionSettingsSaves((count) => count + 1);
     try {
       const saved = await persistExecutionSetting(draft.draft_id, { useEpic: value });
       setUseEpic(saved.useEpic);
     } catch (err) { setUseEpic(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save Epic PR setting', duration: 5000 }); }
+    finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
   }, [addToast, draft.draft_id, useEpic]);
 
   const handleAutoMergeChange = useCallback(async (value: boolean) => {
     const previousValue = autoMerge;
     setAutoMerge(value);
+    setPendingExecutionSettingsSaves((count) => count + 1);
     try {
       const saved = await persistExecutionSetting(draft.draft_id, { autoMerge: value });
       setAutoMerge(saved.autoMerge);
     } catch (err) { setAutoMerge(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save auto-merge setting', duration: 5000 }); }
+    finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
   }, [addToast, autoMerge, draft.draft_id]);
 
   const handleRunUltrafixChange = useCallback(async (value: boolean) => {
     const previousValue = runUltrafix;
     setRunUltrafix(value);
+    setPendingExecutionSettingsSaves((count) => count + 1);
     try {
       const saved = await persistExecutionSetting(draft.draft_id, { runUltrafix: value });
       setRunUltrafix(saved.runUltrafix);
       setUltrafixGoal(saved.ultrafixGoal);
       setUltrafixMaxCycles(saved.ultrafixMaxCycles);
     } catch (err) { setRunUltrafix(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix setting', duration: 5000 }); }
+    finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
   }, [addToast, draft.draft_id, runUltrafix]);
 
   const handleUltrafixGoalChange = useCallback(async (value: number | null) => {
     const previousValue = ultrafixGoal;
     setUltrafixGoal(value);
+    setPendingExecutionSettingsSaves((count) => count + 1);
     try {
       const saved = await persistExecutionSetting(draft.draft_id, { ultrafixGoal: value });
       setUltrafixGoal(saved.ultrafixGoal);
     } catch (err) { setUltrafixGoal(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix goal', duration: 5000 }); }
+    finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
   }, [addToast, draft.draft_id, ultrafixGoal]);
 
   const handleUltrafixMaxCyclesChange = useCallback(async (value: number | null) => {
     const previousValue = ultrafixMaxCycles;
     setUltrafixMaxCycles(value);
+    setPendingExecutionSettingsSaves((count) => count + 1);
     try {
       const saved = await persistExecutionSetting(draft.draft_id, { ultrafixMaxCycles: value });
       setUltrafixMaxCycles(saved.ultrafixMaxCycles);
     } catch (err) { setUltrafixMaxCycles(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix max cycles', duration: 5000 }); }
+    finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
   }, [addToast, draft.draft_id, ultrafixMaxCycles]);
 
   return (
@@ -359,7 +371,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => setShowReviseDialog(true)} onDelete={() => setShowDeleteDialog(true)} />
       </div>
       <div className="flex-1 overflow-auto p-4">
-        <PlanIssuesManager draftId={draft.draft_id} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} />
+        <PlanIssuesManager draftId={draft.draft_id} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} isSavingExecutionSettings={isSavingExecutionSettings} />
       </div>
       <PlanFooterStats stats={footerStats} onRefresh={handleRefresh} />
       <DeletePlanDialog isOpen={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} onConfirm={handleDeletePlanConfirm} isLoading={isDeleting} />

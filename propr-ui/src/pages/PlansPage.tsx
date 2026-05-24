@@ -319,7 +319,7 @@ const PlansPage: React.FC = () => {
       <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
         <div className="flex items-center justify-between gap-2 sm:gap-4">
           <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Plans</h1>
-          <div className="flex items-center gap-2 sm:gap-4 flex-1 justify-end">
+          <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
             {/* Search input - hidden on mobile, shown on desktop */}
             <div className="relative hidden sm:block">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -341,12 +341,12 @@ const PlansPage: React.FC = () => {
               )}
             </div>
             {/* Filters row - inline on all screen sizes */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-0">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
               <select
                 value={statusFilter}
                 onChange={(e) => handleStatusFilterChange(e.target.value)}
-                className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="w-[120px] sm:w-auto px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               >
                 <option value="all">All Statuses</option>
                 <option value="draft">Draft</option>
@@ -364,7 +364,7 @@ const PlansPage: React.FC = () => {
                   onRepoChange={handleFilterChange}
                   variant="default"
                   labelLayout="stacked"
-                  className="w-[220px] sm:w-[320px]"
+                  className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[320px] sm:max-w-[320px]"
                 />
               )}
             </div>

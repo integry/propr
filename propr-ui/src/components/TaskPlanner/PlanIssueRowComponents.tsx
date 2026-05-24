@@ -116,11 +116,11 @@ export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) =
   );
 };
 
-export interface ImplementButtonProps { implementing: boolean; hasAgent: boolean; isFirstPending: boolean; onClick: () => void; }
-export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, hasAgent, isFirstPending, onClick }) => (
+export interface ImplementButtonProps { implementing: boolean; disabled?: boolean; hasAgent: boolean; isFirstPending: boolean; onClick: () => void; }
+export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, disabled = false, hasAgent, isFirstPending, onClick }) => (
   <button
     onClick={onClick}
-    disabled={implementing || !hasAgent}
+    disabled={implementing || disabled || !hasAgent}
     className={`
       flex items-center gap-1 sm:gap-1.5
       px-2 sm:px-3 py-1.5
@@ -187,6 +187,8 @@ export interface RowActionsProps {
   plannerRunUltrafix?: boolean;
   plannerUltrafixGoal?: number | null;
   plannerUltrafixMaxCycles?: number | null;
+  disableImplementation?: boolean;
+  showUltrafixControls?: boolean;
   handleMultiToggle: (multi: boolean) => void;
   handleMultiModelChange: (models: AgentModelPair[]) => void;
   handleImplementClick: () => void;
@@ -212,6 +214,8 @@ export const RowActions: React.FC<RowActionsProps> = ({
   plannerRunUltrafix,
   plannerUltrafixGoal,
   plannerUltrafixMaxCycles,
+  disableImplementation = false,
+  showUltrafixControls = true,
   handleMultiToggle,
   handleMultiModelChange,
   handleImplementClick,
@@ -242,7 +246,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
           onMultiConfirm={handleImplementClick}
         />
       )}
-      {isPending && (
+      {isPending && showUltrafixControls && (
         <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 max-w-full">
           <label className="flex items-center gap-1 text-xs text-slate-600">
             <span>UF</span>
@@ -282,6 +286,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
       {isPending && (
         <ImplementButton
           implementing={implementing}
+          disabled={disableImplementation}
           hasAgent={hasAgent}
           isFirstPending={isFirstPending}
           onClick={handleImplementClick}

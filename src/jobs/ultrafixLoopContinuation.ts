@@ -119,6 +119,7 @@ export async function continueUltrafixLoop(
     const labelPresent = await hasUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
     if (!labelPresent) {
         correlatedLogger.info({ pullRequestNumber }, 'Ultrafix loop: label removed, stopping loop');
+        await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
         await clearState(redisClient, owner, repo, pullRequestNumber);
         return { continued: false, reason: 'label_removed', cycleCount: updatedState.cycleCount };
     }
@@ -169,6 +170,8 @@ export async function continueUltrafixLoop(
         });
         if (goalReached) {
             await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+            await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
+            await clearState(redisClient, owner, repo, pullRequestNumber);
             await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
         } else {
             await postPrComment({

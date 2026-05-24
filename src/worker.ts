@@ -9,7 +9,9 @@ import { db } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
 import { loadSettingsFromConfig } from '@propr/core';
+import { setUltrafixDeps } from '@propr/core';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
+import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
 import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
 import { processTaskImportJob } from './jobs/processTaskImportJob.js';
@@ -216,6 +218,9 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         const err = error as Error;
         logger.error({ error: err.message }, 'Failed to initialize agent registry. Worker may not function properly.');
     }
+
+    setUltrafixDeps(createUltrafixDeps());
+    logger.info('Ultrafix dependencies initialized for worker');
 
     // Wire up check_run dependencies for ultrafix readiness gating
     setCheckRunDeps({

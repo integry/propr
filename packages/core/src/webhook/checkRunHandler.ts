@@ -214,19 +214,37 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void
 
     // Check for active tasks (e.g., followup processing) before merging
     const repository = `${owner}/${repoName}`;
-    const { hasActive, activeTasks } = await hasActiveTasksForPR(repository, prNumber);
+    const { hasActive, activeTasks, queuedJobs } = await hasActiveTasksForPR(repository, prNumber);
     if (hasActive) {
         log.info({
             owner,
             repoName,
             prNumber,
-            activeTasks
-        }, 'Skipping auto-merge - active tasks in progress for this PR');
+            activeTasks,
+            queuedJobs,
+        }, 'Skipping auto-merge - active or queued work in progress for this PR');
         return;
     }
 
     log.info({ owner, repoName, prNumber, headSha }, 'All checks passing for auto-merge PR, attempting to merge');
     await performMergeAndPostActions(mergeCtx);
+}
+
+export async function reevaluatePRAutoMerge(
+    owner: string,
+    repoName: string,
+    prNumber: number,
+    correlationId: string,
+): Promise<void> {
+    const log = logger.withCorrelation(correlationId);
+    const headSha = await getCurrentPRHead(owner, repoName, prNumber);
+    if (!headSha) {
+        log.debug({ owner, repoName, prNumber }, 'Auto-merge re-evaluation skipped: PR head SHA unavailable');
+        return;
+    }
+
+    const ctx: PRContext = { owner, repoName, prNumber, log };
+    await processPRAutoMerge(ctx, headSha);
 }
 
 /**
