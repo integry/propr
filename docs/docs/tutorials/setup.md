@@ -13,7 +13,7 @@ Before you begin, ensure you have the following installed:
 - **Node.js 20+** - Runtime environment for the application and docs validation
 - **Redis Server** - For task queue management (v6.0+ recommended)
 - **Git 2.25+** - For worktree support and modern git operations
-- **Docker** - For secure Claude Code execution environment
+- **Docker** - For secure agent execution environments
 - **Disk Space** - Sufficient space for repository clones and worktrees (minimum 10GB recommended)
 
 You'll also need:

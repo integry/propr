@@ -162,13 +162,14 @@ After merge:
 If a run fails or produces the wrong scope:
 
 1. Update the issue description with clearer requirements
-2. Remove stale processing or done labels if your workflow requires a clean retry
+2. Remove stale processing, done, or failure labels if your workflow requires a clean retry
 3. Reapply the processing label
 4. Let the daemon queue the issue again
 
 Actionable advice:
 
 - Prefer improving the issue description before retrying
+- Failure labels usually follow the `{primary}-failed-*` pattern, so clear those alongside `{primary}-processing` or `{primary}-done` when you need a clean retry
 - Use smaller issues instead of asking one run to make unrelated changes
 - Reset queue state only when you are cleaning up stuck jobs across the system
 

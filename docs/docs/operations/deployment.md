@@ -200,7 +200,7 @@ Important data to backup:
 - Logs: `./logs` directory
 - The environment or secret-management source that provides your production `.env` values
 
-Run backups during a maintenance window. The example below stops the services that write application state and uses a subshell `trap` so they are started again even if a backup command fails.
+Run backups during a maintenance window. The example below stops the services that write application state, records which of them were already running, and uses a subshell `trap` so only that original running set is started again if a backup command fails.
 
 ```bash
 (
@@ -209,8 +209,14 @@ Run backups during a maintenance window. The example below stops the services th
   backup_date="$(date +%Y%m%d)"
   compose_file="docker-compose.prod.yml"
 
+  mapfile -t running_services < <(
+    docker-compose -f "$compose_file" ps --status running --services | grep -E '^(api|daemon|worker|redis)$' || true
+  )
+
   restart_services() {
-    docker-compose -f "$compose_file" start redis daemon worker api
+    if [ "${#running_services[@]}" -gt 0 ]; then
+      docker-compose -f "$compose_file" start "${running_services[@]}"
+    fi
   }
 
   trap restart_services EXIT

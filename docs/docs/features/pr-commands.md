@@ -51,7 +51,7 @@ Add multiline instructions after the command to guide the review focus.
 
 ## `/fix` — Apply AI Review Suggestions
 
-Gathers all **unprocessed** AI review comments on the PR and applies the suggested changes in a single pass.
+Applies all **unprocessed** AI review comments on the PR in a single pass. If there are no unprocessed AI review comments, `/fix` can still run as a standalone follow-up task using the instructions in your PR comment.
 
 ### Usage
 
@@ -62,17 +62,26 @@ Gathers all **unprocessed** AI review comments on the PR and applies the suggest
 Apply all unprocessed AI review suggestions.
 
 ```
-/fix only address the critical findings
+/fix
+Only address the critical findings
 ```
 
 Add instructions to narrow the scope of changes.
 
+```text
+/fix
+Please update the tests and improve the retry handling
+```
+
+Run a standalone `/fix` pass from your own instructions when you do not need a preceding `/review`.
+
 ### Behavior
 
 1. ProPR collects all AI review comments that have not yet been processed by a prior `/fix` run.
-2. The gathered review feedback is sent to the AI along with any extra instructions you provided.
-3. The AI implements the requested fixes and the system commits the changes to the PR branch.
-4. Processed review comments are marked so they are not picked up by subsequent `/fix` runs.
+2. If review comments exist, the gathered review feedback is sent to the AI along with any extra instructions you provided.
+3. If no unprocessed AI review comments exist, `/fix` uses only the instructions from your PR comment as a standalone follow-up task.
+4. The AI implements the requested fixes and the system commits the changes to the PR branch.
+5. Processed review comments are marked so they are not picked up by subsequent `/fix` runs.
 
 ### Editing Reviews Before `/fix`
 

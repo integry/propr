@@ -10,9 +10,9 @@ The ProPR system's performance is measured across multiple dimensions to ensure 
 
 ### 1. Issue Resolution Rate
 
-**Definition:** Percentage of "AI"-tagged issues successfully implemented, tested, and merged without significant human rework.
+**Definition:** Percentage of issues triggered by a configured primary processing label successfully implemented, tested, and merged without significant human rework.
 
-**Calculation:** `(Successfully Merged PRs / Total AI-Tagged Issues Processed) × 100`
+**Calculation:** `(Successfully Merged PRs / Total Primary-Label Issues Processed) × 100`
 
 **Success Criteria:**
 - **Target:** ≥ 70% resolution rate for straightforward issues
@@ -20,7 +20,8 @@ The ProPR system's performance is measured across multiple dimensions to ensure 
 - **Excellence:** ≥ 85% resolution rate
 
 **Tracking Method:**
-- Monitor issue labels: `AI` → `AI-processing` → `AI-done` vs `AI-failed-*`
+- Monitor label transitions such as `<primary>` → `<primary>-processing` → `<primary>-done` vs `<primary>-failed-*`
+- If you support multiple primary labels, track the triggered label per issue before aggregating totals
 - Track PR merge status for AI-generated PRs
 - Record manual logging in worker completion callbacks
 
@@ -41,7 +42,7 @@ logger.info({
 **Definition:** Average time from an issue being picked up by the daemon to a PR being created.
 
 **Measurement Points:**
-- Start: Issue receives `AI-processing` tag
+- Start: Issue receives its generated processing state label, such as `AI-processing` or `propr-processing`
 - End: PR is successfully created and visible on GitHub
 
 **Success Criteria:**
