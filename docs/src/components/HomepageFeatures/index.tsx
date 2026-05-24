@@ -10,29 +10,32 @@ type FeatureItem = {
 
 const FeatureList: FeatureItem[] = [
   {
-    title: 'AI-Powered Resolution',
+    title: 'Multi-Agent Execution',
     description: (
       <>
-        ProPR uses Claude AI to automatically analyze and resolve GitHub issues,
-        providing intelligent solutions to your repository's problems.
+        Run repository work through Claude, Codex, and Gemini agents with
+        model-aware routing, isolated execution, and PR workflows that can
+        switch reviewers or implementers as needed.
       </>
     ),
   },
   {
-    title: 'Automated Workflows',
+    title: 'Planner Studio',
     description: (
       <>
-        Seamlessly integrates with GitHub to monitor issues, create branches,
-        and submit pull requests automatically.
+        Use the Web UI to build implementation plans, attach context, refine
+        tasks, and approve execution before ProPR opens the branches, runs the
+        work, and tracks progress live.
       </>
     ),
   },
   {
-    title: 'Scalable Architecture',
+    title: 'Ultrafix Loop',
     description: (
       <>
-        Built with Docker, Redis, and PostgreSQL for reliable, distributed
-        processing of multiple repositories and tasks.
+        Automate review-fix cycles on pull requests with configurable score
+        goals, CI gating, cooldown windows, and a simple label-based circuit
+        breaker for human control.
       </>
     ),
   },
