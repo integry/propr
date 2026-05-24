@@ -73,6 +73,7 @@ interface StopTaskActivity {
 
 const RUNNING_TASK_STATES = new Set(['processing', 'claude_execution', 'post_processing']);
 const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed']);
 const PRE_START_QUEUE_STATES = new Set(['waiting', 'delayed', 'paused', 'prioritized', 'waiting-children']);
 const DEFAULT_STOP_REASON: StopTaskCancellationReason = {
   code: 'user_requested_stop',
@@ -125,6 +126,7 @@ export async function stopTaskExecution(
     stopContainer: deps.stopDockerContainer,
   });
   const { jobRemoved, queueStateAfterFailure } = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
+  const effectiveQueueState = queueStateAfterFailure ?? context.queueState;
   if (jobRemoved) await clearPrQueueJobIndexEntriesIfNeeded(context.queueJob, deps);
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
     activity,
@@ -132,22 +134,22 @@ export async function stopTaskExecution(
     containerStopped,
     jobRemoved,
     taskStateExistsForCancellation,
-    effectiveQueueState: queueStateAfterFailure ?? context.queueState,
+    effectiveQueueState,
   });
   assertStopApplied({
     activity,
     currentState: context.currentState,
-    queueState: context.queueState,
+    queueState: effectiveQueueState,
     containerId,
     containerStopped,
     jobRemoved,
     shouldAbort,
+    queueStateAfterFailure,
   });
   if (shouldClearAbortSignals({
     shouldAbort,
     containerStopped,
     jobRemoved,
-    queueStateAfterFailure,
   })) {
     await clearAbortSignals(redisClient, context.abortTaskIds);
   }
@@ -156,7 +158,7 @@ export async function stopTaskExecution(
       taskId: context.taskId,
       requestedBy,
       cancellation,
-      queueState: context.queueState,
+      queueState: effectiveQueueState,
       containerId,
       containerStopped,
       deps,
@@ -182,7 +184,7 @@ export async function stopTaskExecution(
     containerStopped,
     jobRemoved,
     currentState: context.currentState,
-    queueState: context.queueState,
+    queueState: effectiveQueueState,
     cancellation,
   };
 }
@@ -295,17 +297,12 @@ function shouldClearAbortSignals(params: {
   shouldAbort: boolean;
   containerStopped: boolean;
   jobRemoved: boolean;
-  queueStateAfterFailure: string | null;
 }): boolean {
   if (!params.shouldAbort) {
     return false;
   }
 
-  if (params.containerStopped || params.jobRemoved) {
-    return true;
-  }
-
-  return params.queueStateAfterFailure === 'completed' || params.queueStateAfterFailure === 'failed';
+  return params.containerStopped || params.jobRemoved;
 }
 
 function shouldMarkTaskCancelled(params: {
@@ -324,7 +321,7 @@ function shouldMarkTaskCancelled(params: {
     return false;
   }
 
-  return false;
+  return params.effectiveQueueState === null || !TERMINAL_QUEUE_STATES.has(params.effectiveQueueState);
 }
 
 function assertStopApplied(params: {
@@ -335,10 +332,29 @@ function assertStopApplied(params: {
   containerStopped: boolean;
   jobRemoved: boolean;
   shouldAbort: boolean;
+  queueStateAfterFailure: string | null;
 }): void {
-  const { activity, currentState, queueState, containerId, containerStopped, jobRemoved, shouldAbort } = params;
+  const {
+    activity,
+    currentState,
+    queueState,
+    containerId,
+    containerStopped,
+    jobRemoved,
+    shouldAbort,
+    queueStateAfterFailure,
+  } = params;
   if (jobRemoved || containerStopped) {
     return;
+  }
+
+  if (queueStateAfterFailure !== null && TERMINAL_QUEUE_STATES.has(queueStateAfterFailure)) {
+    throw new StopTaskExecutionError(409, {
+      error: 'Task stop missed queued execution',
+      message: 'The queued task reached a terminal state before cancellation was applied.',
+      currentState,
+      queueState: queueStateAfterFailure,
+    });
   }
 
   if (shouldAbort) {

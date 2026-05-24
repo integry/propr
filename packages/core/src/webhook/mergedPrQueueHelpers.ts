@@ -19,6 +19,18 @@ type QueueJobLike = {
 
 type LogLike = Pick<Logger, 'info' | 'warn'>;
 
+interface PreparedMergedQueueJobCancellation {
+  taskId: string;
+  queueJobId: string;
+  issueRef: NonNullable<ReturnType<typeof buildIssueRefFromQueueJob>>;
+  correlationId: string | null;
+  initialJobData: string;
+  cancellation: {
+    code: 'pull_request_merged';
+    message: string;
+  };
+}
+
 export async function shouldSkipEnqueueForMergedPullRequest(params: {
   redisClient: Redis;
   repository: string;
@@ -91,13 +103,14 @@ export async function discardFreshQueueJobAfterMerge(params: {
   let persistenceFailure: Error | null = null;
   let queueRemoved = false;
   let shouldClearPendingIndex = false;
+  let preparedCancellation: PreparedMergedQueueJobCancellation | null = null;
 
   try {
     try {
-      await persistCancelledTaskRecordForMergedQueueJob({ queuedJob, repository, prNumber, jobId, log });
+      preparedCancellation = prepareMergedQueueJobCancellation({ queuedJob, repository, prNumber, jobId, log });
     } catch (error) {
-      persistenceFailure = error as Error;
       await setMergedPrAbortSignals(redisClient, taskIds, prNumber);
+      throw error;
     }
 
     try {
@@ -129,6 +142,21 @@ export async function discardFreshQueueJobAfterMerge(params: {
         queueState,
         error: (error as Error).message,
       }, removalFailureMessage);
+    }
+
+    if (queueRemoved && preparedCancellation) {
+      try {
+        await persistCancelledTaskRecordForMergedQueueJob(preparedCancellation);
+      } catch (error) {
+        persistenceFailure = error as Error;
+        log.warn({
+          repository,
+          prNumber,
+          jobId,
+          taskId: preparedCancellation.taskId,
+          error: (error as Error).message,
+        }, 'Failed to persist merged PR cancellation state for removed queue job');
+      }
     }
   } finally {
     if (shouldClearPendingIndex) {
@@ -216,13 +244,13 @@ function resolveMergedPrAbortTaskIds(queueJob: QueueJobLike, jobId: string): str
   ].filter((taskId): taskId is string => Boolean(taskId)))];
 }
 
-async function persistCancelledTaskRecordForMergedQueueJob(params: {
+function prepareMergedQueueJobCancellation(params: {
   queuedJob: QueueJobLike;
   repository: string;
   prNumber: number;
   jobId: string;
   log: LogLike;
-}): Promise<void> {
+}): PreparedMergedQueueJobCancellation {
   const { queuedJob, repository, prNumber, jobId, log } = params;
   const issueRef = buildIssueRefFromQueueJob(queuedJob);
   if (!issueRef) {
@@ -230,56 +258,53 @@ async function persistCancelledTaskRecordForMergedQueueJob(params: {
     throw new Error(`Failed to reconstruct merged PR queue job into a task record: ${jobId}`);
   }
 
-  const taskId = getTaskIdFromQueueJob(queuedJob) ?? (queuedJob.id === null || queuedJob.id === undefined ? jobId : String(queuedJob.id));
-  const queueJobId = queuedJob.id === null || queuedJob.id === undefined ? jobId : String(queuedJob.id);
-  const stateManager = getStateManager();
-  const cancellation = {
-    code: 'pull_request_merged',
-    message: `Task cancelled because pull request #${prNumber} was merged.`,
+  return {
+    issueRef,
+    taskId: getTaskIdFromQueueJob(queuedJob) ?? (queuedJob.id === null || queuedJob.id === undefined ? jobId : String(queuedJob.id)),
+    queueJobId: queuedJob.id === null || queuedJob.id === undefined ? jobId : String(queuedJob.id),
+    correlationId: typeof queuedJob.data.correlationId === 'string' ? queuedJob.data.correlationId : null,
+    initialJobData: JSON.stringify(queuedJob.data),
+    cancellation: {
+      code: 'pull_request_merged',
+      message: `Task cancelled because pull request #${prNumber} was merged.`,
+    },
   };
+}
 
-  try {
-    const existingState = await stateManager.getTaskState(taskId);
-    if (!existingState) {
-      const correlationId = typeof queuedJob.data.correlationId === 'string' ? queuedJob.data.correlationId : null;
-      await stateManager.createTaskState(taskId, issueRef, correlationId);
-    }
+async function persistCancelledTaskRecordForMergedQueueJob(params: PreparedMergedQueueJobCancellation): Promise<void> {
+  const { issueRef, taskId, queueJobId, correlationId, initialJobData, cancellation } = params;
+  const stateManager = getStateManager();
 
-    await db('tasks')
-      .where({ task_id: taskId })
-      .update({
-        job_id: queueJobId,
-        pr_number: prNumber,
-        initial_job_data: JSON.stringify(queuedJob.data),
-      });
+  const existingState = await stateManager.getTaskState(taskId);
+  if (!existingState) {
+    await stateManager.createTaskState(taskId, issueRef, correlationId);
+  }
 
-    await stateManager.markTaskCancelled(taskId, 'system', {
-      reason: cancellation.message,
+  await db('tasks')
+    .where({ task_id: taskId })
+    .update({
+      job_id: queueJobId,
+      pr_number: issueRef.pullRequestNumber,
+      initial_job_data: initialJobData,
+    });
+
+  await stateManager.markTaskCancelled(taskId, 'system', {
+    reason: cancellation.message,
+    cancellation: {
+      code: cancellation.code,
+      message: cancellation.message,
+      cancelledBy: 'system',
+      source: 'pull_request_merged',
+      containerStopped: false,
+    },
+    historyMetadata: {
       cancellation: {
         code: cancellation.code,
         message: cancellation.message,
-        cancelledBy: 'system',
-        source: 'pull_request_merged',
-        containerStopped: false,
       },
-      historyMetadata: {
-        cancellation: {
-          code: cancellation.code,
-          message: cancellation.message,
-        },
-        requestedBy: 'system',
-        queueState: 'removed_before_start',
-        jobId: queueJobId,
-      },
-    });
-  } catch (error) {
-    log.warn({
-      repository,
-      prNumber,
-      jobId,
-      taskId,
-      error: (error as Error).message,
-    }, 'Failed to persist merged PR cancellation state for removed queue job');
-    throw error;
-  }
+      requestedBy: 'system',
+      queueState: 'removed_before_start',
+      jobId: queueJobId,
+    },
+  });
 }

@@ -70,6 +70,14 @@ export async function removeQueueJobIfNeeded(
     return { jobRemoved: true, queueStateAfterFailure: null };
   } catch (error) {
     const queueState = await reloadQueueStateAfterRemovalFailure(queueJob);
+    if (isTerminalQueueRemovalRace(queueState)) {
+      logger.warn({
+        jobId: String(queueJob.id),
+        queueState,
+      }, 'Queue job reached a terminal state before queued cancellation was applied');
+      return { jobRemoved: false, queueStateAfterFailure: queueState };
+    }
+
     if (isBenignQueueRemovalRace(queueState)) {
       logger.warn({ jobId: String(queueJob.id), queueState }, 'Queue job changed state during removal; relying on abort signal');
       return { jobRemoved: false, queueStateAfterFailure: queueState };
@@ -104,9 +112,11 @@ export async function clearPrQueueJobIndexEntriesIfNeeded(
 }
 
 export function isBenignQueueRemovalRace(queueState: string | null): boolean {
-  return queueState === 'active'
-    || queueState === 'unknown'
-    || (queueState !== null && TERMINAL_QUEUE_STATES.has(queueState));
+  return queueState === 'active' || queueState === 'unknown';
+}
+
+function isTerminalQueueRemovalRace(queueState: string | null): boolean {
+  return queueState !== null && TERMINAL_QUEUE_STATES.has(queueState);
 }
 
 export function getStopTaskSuccessMessage(params: {

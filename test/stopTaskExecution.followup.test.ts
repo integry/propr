@@ -78,7 +78,7 @@ test('stopTaskExecution rejects pending non-terminal tasks without a queue-backe
     assert.deepStrictEqual(redisClient.messages, []);
 });
 
-test('stopTaskExecution treats queue removal races into terminal states as benign', async () => {
+test('stopTaskExecution rejects queued cancellation when removal loses the race to a terminal state', async () => {
     const redisClient = createRedisClient();
     const queueJob = {
         id: 'queue-job-1',
@@ -88,40 +88,43 @@ test('stopTaskExecution treats queue removal races into terminal states as benig
         getState: mock.fn(async () => 'completed'),
     };
 
-    const result = await stopTaskExecution(
-        'queue-job-1',
-        {
-            redisClient,
-            requestedBy: 'system',
-            cancellation: {
-                code: 'pull_request_merged',
-                message: 'Task cancelled because pull request #42 was merged.',
+    await assert.rejects(async () => {
+        await stopTaskExecution(
+            'queue-job-1',
+            {
+                redisClient,
+                requestedBy: 'system',
+                cancellation: {
+                    code: 'pull_request_merged',
+                    message: 'Task cancelled because pull request #42 was merged.',
+                },
             },
-        },
-        {
-            loadStopTaskContext: async () => ({
-                normalizedTaskId: 'queue-job-1',
-                state: null,
-                currentState: null,
-                queueJob: queueJob as never,
-                queueState: 'waiting',
-                taskId: 'task-queue-1',
-                abortTaskIds: ['task-queue-1', 'queue-job-1'],
-            }),
-            ensureTaskStateForCancellation: async () => {},
-            getStateManager: () => ({ markTaskCancelled }) as never,
-            stopDockerContainer,
-        },
-    );
+            {
+                loadStopTaskContext: async () => ({
+                    normalizedTaskId: 'queue-job-1',
+                    state: null,
+                    currentState: null,
+                    queueJob: queueJob as never,
+                    queueState: 'waiting',
+                    taskId: 'task-queue-1',
+                    abortTaskIds: ['task-queue-1', 'queue-job-1'],
+                }),
+                ensureTaskStateForCancellation: async () => {},
+                getStateManager: () => ({ markTaskCancelled }) as never,
+                stopDockerContainer,
+            },
+        );
+    }, (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.strictEqual(error.name, 'StopTaskExecutionError');
+        assert.strictEqual((error as { status?: number }).status, 409);
+        assert.match(error.message, /reached a terminal state before cancellation was applied/);
+        return true;
+    });
 
-    assert.strictEqual(result.success, true);
-    assert.strictEqual(result.jobRemoved, false);
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
     assert.strictEqual(redisClient.set.mock.calls.length, 2);
-    assert.deepStrictEqual(redisClient.del.mock.calls.map(call => call.arguments[0]).sort(), [
-        'worker:abort:queue-job-1',
-        'worker:abort:task-queue-1',
-    ]);
+    assert.strictEqual(redisClient.del.mock.calls.length, 0);
 });
 
 test('stopTaskExecution keeps abort-armed container-backed tasks cancellable when the container stop fails', async () => {
@@ -157,13 +160,13 @@ test('stopTaskExecution keeps abort-armed container-backed tasks cancellable whe
     assert.strictEqual(result.jobRemoved, false);
     assert.strictEqual(result.message, 'Stop request sent to worker. The execution will be terminated shortly.');
     assert.strictEqual(redisClient.set.mock.calls.length, 1);
-    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
 });
 
-test('isBenignQueueRemovalRace only accepts known active or terminal removal races', () => {
+test('isBenignQueueRemovalRace only accepts active or unknown removal races', () => {
     assert.strictEqual(isBenignQueueRemovalRace('active'), true);
-    assert.strictEqual(isBenignQueueRemovalRace('completed'), true);
-    assert.strictEqual(isBenignQueueRemovalRace('failed'), true);
+    assert.strictEqual(isBenignQueueRemovalRace('completed'), false);
+    assert.strictEqual(isBenignQueueRemovalRace('failed'), false);
     assert.strictEqual(isBenignQueueRemovalRace('unknown'), true);
     assert.strictEqual(isBenignQueueRemovalRace(null), false);
     assert.strictEqual(isBenignQueueRemovalRace('waiting'), false);

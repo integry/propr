@@ -97,7 +97,9 @@ function createTaskQueryDbMock(rows: Array<{ task_id: string; job_id: string | n
     select: () => chain,
     leftJoin: () => chain,
     where: () => chain,
+    whereNotNull: () => chain,
     whereIn: async () => rows,
+    whereNotIn: async (_column: string, states: readonly string[]) => rows.filter((row) => !states.includes(row.state)),
   };
 
   return (() => chain) as unknown as typeof import('@propr/core').db;
