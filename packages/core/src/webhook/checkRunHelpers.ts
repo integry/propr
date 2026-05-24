@@ -5,6 +5,7 @@ import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getPendingPrQueueJobs, getTrackedPrQueueJobs, TRACKED_PR_QUEUE_STATES, TRACKED_PR_QUEUE_STATE_SET, trackPrQueueJob } from './prQueueJobIndex.js';
+import { getPrNumberFromJobData, getRepositoryFromJobData } from './prTaskIdentity.js';
 
 export interface MergePROptions {
     owner: string;
@@ -660,29 +661,6 @@ export interface GetActiveTasksForPRDeps {
     forceQueueScan?: boolean;
 }
 
-function getRepositoryFromJobData(jobData: Record<string, unknown>): string | null {
-    if (typeof jobData.repository === 'string') {
-        return jobData.repository;
-    }
-    if (typeof jobData.repoOwner === 'string' && typeof jobData.repoName === 'string') {
-        return `${jobData.repoOwner}/${jobData.repoName}`;
-    }
-    if (typeof jobData.owner === 'string' && typeof jobData.repoName === 'string') {
-        return `${jobData.owner}/${jobData.repoName}`;
-    }
-    return null;
-}
-
-function getPrNumberFromJobData(jobData: Record<string, unknown>): number | null {
-    if (typeof jobData.prNumber === 'number') {
-        return jobData.prNumber;
-    }
-    if (typeof jobData.pullRequestNumber === 'number') {
-        return jobData.pullRequestNumber;
-    }
-    return null;
-}
-
 /**
  * Returns active or queued task references for a PR.
  * Queue-backed entries use the BullMQ job id as their task id when no worker state exists yet.
@@ -716,7 +694,7 @@ export async function getActiveTasksForPR(
             }
         }
 
-        if (deps.forceQueueScan === true) {
+        if (deps.forceQueueScan === true && taskMap.size === 0) {
             await addQueuedPrJobsFromFallbackScan({
                 queue,
                 repository,

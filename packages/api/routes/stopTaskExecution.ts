@@ -1,6 +1,7 @@
 import type { Job } from 'bullmq';
 import { RedisClientType } from 'redis';
 import {
+  buildPrQueueJobContext,
   clearPendingPrQueueJob,
   clearTrackedPrQueueJob,
   getIssueQueue,
@@ -117,7 +118,7 @@ export async function stopTaskExecution(
   const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
   if (jobRemoved) await clearPrQueueJobIndexEntriesIfNeeded(context.queueJob, deps);
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
-    shouldAbort,
+    activity,
     containerStopped,
     jobRemoved,
   });
@@ -201,12 +202,7 @@ function assertTaskCanBeStopped(params: {
   }
 
   if (activity.isNonTerminalTaskState) {
-    throw new StopTaskExecutionError(409, {
-      error: 'Task is not stoppable',
-      message: 'The task is not in a stoppable worker or queue state.',
-      currentState,
-      queueState,
-    });
+    return;
   }
 
   throw new StopTaskExecutionError(400, {
@@ -262,8 +258,12 @@ function shouldClearAbortSignals(shouldAbort: boolean, containerStopped: boolean
   return shouldAbort && (containerStopped || jobRemoved);
 }
 
-function shouldMarkTaskCancelled(params: { shouldAbort: boolean; containerStopped: boolean; jobRemoved: boolean }): boolean {
-  return params.containerStopped || params.jobRemoved;
+function shouldMarkTaskCancelled(params: {
+  activity: StopTaskActivity;
+  containerStopped: boolean;
+  jobRemoved: boolean;
+}): boolean {
+  return params.activity.isNonTerminalTaskState || params.containerStopped || params.jobRemoved;
 }
 
 async function stopTaskContainer(params: {
@@ -325,7 +325,7 @@ async function clearPrQueueJobIndexEntriesIfNeeded(
   queueJob: Job<QueueJobData> | null,
   deps: StopTaskExecutionDeps,
 ): Promise<void> {
-  const prJobContext = queueJob ? getPrQueueJobContext(queueJob) : null;
+  const prJobContext = queueJob ? buildPrQueueJobContext(queueJob) : null;
   if (!prJobContext) {
     return;
   }
@@ -344,23 +344,6 @@ async function clearPrQueueJobIndexEntriesIfNeeded(
       error: (error as Error).message,
     }, 'Failed to clear PR queue-job index entries after queued task cancellation');
   }
-}
-
-function getPrQueueJobContext(queueJob: Job<QueueJobData>): { repository: string; prNumber: number; jobId: string } | null {
-  const { data } = queueJob;
-  const repository = typeof data.repository === 'string'
-    ? data.repository
-    : typeof data.repoOwner === 'string' && typeof data.repoName === 'string'
-      ? `${data.repoOwner}/${data.repoName}`
-      : typeof data.owner === 'string' && typeof data.repoName === 'string'
-        ? `${data.owner}/${data.repoName}`
-        : null;
-  const prNumber = typeof data.prNumber === 'number'
-    ? data.prNumber
-    : typeof data.pullRequestNumber === 'number'
-      ? data.pullRequestNumber
-      : null;
-  return repository && prNumber !== null ? { repository, prNumber, jobId: String(queueJob.id) } : null;
 }
 
 export function isBenignQueueRemovalRace(queueState: string | null): boolean {

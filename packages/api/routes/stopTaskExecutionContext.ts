@@ -1,6 +1,5 @@
 import type { Job } from 'bullmq';
-import { db, getIssueQueue, getStateManager, logger } from '@propr/core';
-import type { IssueRef } from '@propr/core';
+import { buildIssueRefFromQueueJob, db, getIssueQueue, getPrNumberFromJobData, getStateManager, isPullRequestQueueJob, logger } from '@propr/core';
 
 export type QueueJobData = Record<string, unknown>;
 
@@ -191,7 +190,7 @@ async function createTaskStateFromQueueJob(
   const correlationId = typeof queueJob.data.correlationId === 'string' ? queueJob.data.correlationId : null;
   await stateManager.createTaskState(taskId, issueRef, correlationId);
 
-  const prNumber = extractPrNumber(queueJob.data);
+  const prNumber = getPrNumberFromJobData(queueJob.data);
   const initialJobData = JSON.stringify(queueJob.data);
   await (deps.db ?? db)('tasks')
     .where({ task_id: taskId })
@@ -200,114 +199,6 @@ async function createTaskStateFromQueueJob(
       ...(prNumber !== null ? { pr_number: prNumber } : {}),
       initial_job_data: initialJobData,
     });
-}
-
-function buildIssueRefFromQueueJob(queueJob: Job<QueueJobData>): IssueRef | null {
-  const jobData = queueJob.data;
-  const repoOwner = getRepoOwner(jobData);
-  const repoName = getRepoName(jobData);
-  const number = extractTaskNumber(jobData);
-  const prNumber = extractPrNumber(jobData);
-
-  if (!repoOwner || !repoName || number === null) {
-    return null;
-  }
-
-  return {
-    number,
-    repoOwner,
-    repoName,
-    ...(typeof jobData.modelName === 'string' ? { modelName: jobData.modelName } : {}),
-    ...(typeof jobData.title === 'string' ? { title: jobData.title } : {}),
-    ...(typeof jobData.subtitle === 'string' ? { subtitle: jobData.subtitle } : {}),
-    ...(prNumber !== null ? { pullRequestNumber: prNumber, type: getQueueJobIssueType(queueJob) } : {}),
-  };
-}
-
-function getQueueJobIssueType(queueJob: Job<QueueJobData>): string {
-  const jobData = queueJob.data;
-  const commandMode = typeof jobData.commandMode === 'string' ? jobData.commandMode : null;
-
-  if (queueJob.name === 'processMergeConflict' || String(queueJob.id).startsWith('merge-conflict-')) {
-    return 'merge-conflict';
-  }
-
-  if (
-    queueJob.name === 'processPullRequestComment'
-    || String(queueJob.id).startsWith('pr-comments-batch-')
-    || Array.isArray(jobData.comments)
-  ) {
-    if (commandMode === 'review') {
-      return 'pr-review';
-    }
-    if (commandMode === 'fix') {
-      return 'pr-fix';
-    }
-    if (commandMode === 'switch') {
-      return 'pr-switch';
-    }
-    if (commandMode === 'use') {
-      return 'pr-use';
-    }
-    if (commandMode === 'ultrafix') {
-      return 'pr-ultrafix';
-    }
-    return 'pr-comment';
-  }
-
-  return 'pr-followup';
-}
-
-function extractTaskNumber(jobData: QueueJobData): number | null {
-  if (typeof jobData.pullRequestNumber === 'number') {
-    return jobData.pullRequestNumber;
-  }
-  if (typeof jobData.prNumber === 'number') {
-    return jobData.prNumber;
-  }
-  if (typeof jobData.number === 'number') {
-    return jobData.number;
-  }
-  return null;
-}
-
-function extractPrNumber(jobData: QueueJobData): number | null {
-  if (typeof jobData.pullRequestNumber === 'number') {
-    return jobData.pullRequestNumber;
-  }
-  if (typeof jobData.prNumber === 'number') {
-    return jobData.prNumber;
-  }
-  return null;
-}
-
-function getRepoOwner(jobData: QueueJobData): string | null {
-  if (typeof jobData.repoOwner === 'string') {
-    return jobData.repoOwner;
-  }
-  if (typeof jobData.owner === 'string') {
-    return jobData.owner;
-  }
-  const repository = getRepositoryValue(jobData);
-  if (!repository) {
-    return null;
-  }
-  return repository.split('/')[0] || null;
-}
-
-function getRepoName(jobData: QueueJobData): string | null {
-  if (typeof jobData.repoName === 'string') {
-    return jobData.repoName;
-  }
-  const repository = getRepositoryValue(jobData);
-  if (!repository) {
-    return null;
-  }
-  return repository.split('/')[1] || null;
-}
-
-function getRepositoryValue(jobData: QueueJobData): string | null {
-  return typeof jobData.repository === 'string' ? jobData.repository : null;
 }
 
 function resolveStopTaskId(
@@ -354,8 +245,4 @@ function buildTaskIdFromQueueJob(queueJob: Job<QueueJobData>): string | null {
   }
 
   return null;
-}
-
-function isPullRequestQueueJob(jobData: QueueJobData): boolean {
-  return typeof jobData.pullRequestNumber === 'number' || typeof jobData.prNumber === 'number';
 }

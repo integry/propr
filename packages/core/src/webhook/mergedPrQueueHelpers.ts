@@ -1,9 +1,15 @@
 import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
+import { db } from '../db/connection.js';
+import { getStateManager } from '../utils/workerStateManager.js';
 import { clearPendingPrQueueJob, trackPrQueueJob, TRACKED_PR_QUEUE_STATE_SET, type PrQueueIndexableQueue } from './prQueueJobIndex.js';
 import { hasPullRequestMerged } from './prMergeState.js';
+import { buildIssueRefFromQueueJob, type PrTaskJobData } from './prTaskIdentity.js';
 
 type QueueJobLike = {
+  id?: string | number | null;
+  name?: string;
+  data: PrTaskJobData;
   remove: () => Promise<unknown>;
   getState: () => Promise<string>;
 };
@@ -17,8 +23,17 @@ export async function shouldSkipEnqueueForMergedPullRequest(params: {
   log: LogLike;
   mergedMessage: string;
   lookupFailureMessage: string;
+  lookupFailureBehavior?: 'continue' | 'throw';
 }): Promise<boolean> {
-  const { redisClient, repository, prNumber, log, mergedMessage, lookupFailureMessage } = params;
+  const {
+    redisClient,
+    repository,
+    prNumber,
+    log,
+    mergedMessage,
+    lookupFailureMessage,
+    lookupFailureBehavior = 'throw',
+  } = params;
 
   try {
     const merged = await hasPullRequestMerged(redisClient as never, repository, prNumber);
@@ -32,7 +47,10 @@ export async function shouldSkipEnqueueForMergedPullRequest(params: {
       prNumber,
       error: (error as Error).message,
     }, lookupFailureMessage);
-    return false;
+    if (lookupFailureBehavior === 'continue') {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -67,6 +85,7 @@ export async function discardFreshQueueJobAfterMerge(params: {
 
   try {
     await queuedJob.remove();
+    await persistCancelledTaskRecordForMergedQueueJob({ queuedJob, repository, prNumber, jobId, log });
     log.info({ repository, prNumber, jobId }, removedMessage);
     return;
   } catch (error) {
@@ -124,5 +143,71 @@ async function setMergedPrAbortSignals(redisClient: Redis, taskIds: string[], pr
 
   for (const taskId of new Set(taskIds)) {
     await redisClient.set(`worker:abort:${taskId}`, payload, 'EX', 3600);
+  }
+}
+
+async function persistCancelledTaskRecordForMergedQueueJob(params: {
+  queuedJob: QueueJobLike;
+  repository: string;
+  prNumber: number;
+  jobId: string;
+  log: LogLike;
+}): Promise<void> {
+  const { queuedJob, repository, prNumber, jobId, log } = params;
+  const issueRef = buildIssueRefFromQueueJob(queuedJob);
+  if (!issueRef) {
+    log.warn({ repository, prNumber, jobId }, 'Failed to reconstruct merged PR queue job into a task record');
+    return;
+  }
+
+  const taskId = queuedJob.id === null || queuedJob.id === undefined ? jobId : String(queuedJob.id);
+  const stateManager = getStateManager();
+  const cancellation = {
+    code: 'pull_request_merged',
+    message: `Task cancelled because pull request #${prNumber} was merged.`,
+  };
+
+  try {
+    const existingState = await stateManager.getTaskState(taskId);
+    if (!existingState) {
+      const correlationId = typeof queuedJob.data.correlationId === 'string' ? queuedJob.data.correlationId : null;
+      await stateManager.createTaskState(taskId, issueRef, correlationId);
+    }
+
+    await db('tasks')
+      .where({ task_id: taskId })
+      .update({
+        job_id: taskId,
+        pr_number: prNumber,
+        initial_job_data: JSON.stringify(queuedJob.data),
+      });
+
+    await stateManager.markTaskCancelled(taskId, 'system', {
+      reason: cancellation.message,
+      cancellation: {
+        code: cancellation.code,
+        message: cancellation.message,
+        cancelledBy: 'system',
+        source: 'pull_request_merged',
+        containerStopped: false,
+      },
+      historyMetadata: {
+        cancellation: {
+          code: cancellation.code,
+          message: cancellation.message,
+        },
+        requestedBy: 'system',
+        queueState: 'removed_before_start',
+        jobId: taskId,
+      },
+    });
+  } catch (error) {
+    log.warn({
+      repository,
+      prNumber,
+      jobId,
+      taskId,
+      error: (error as Error).message,
+    }, 'Failed to persist merged PR cancellation state for removed queue job');
   }
 }
