@@ -16,7 +16,7 @@ export interface MergeTaskCancellationDeps {
   getActiveTasksForPR?: typeof getActiveTasksForPR;
   markPullRequestMerged?: typeof markPullRequestMerged;
   stopTaskExecution?: typeof stopTaskExecution;
-  log?: Pick<typeof logger, 'info' | 'warn'>;
+  log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
 export async function cancelMergedPullRequestTasks(

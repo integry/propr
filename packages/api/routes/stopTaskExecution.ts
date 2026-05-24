@@ -1,6 +1,6 @@
 import type { Job } from 'bullmq';
 import { RedisClientType } from 'redis';
-import { stopDockerContainer, getStateManager } from '@propr/core';
+import { stopDockerContainer, getStateManager, logger } from '@propr/core';
 import {
   ensureTaskStateForCancellation,
   loadStopTaskContext,
@@ -57,13 +57,13 @@ interface StopTaskActivity {
   isRunningTaskState: boolean;
   isNonTerminalTaskState: boolean;
   isQueueActive: boolean;
-  isQueueRemovable: boolean;
+  isQueuePreStart: boolean;
 }
 
 const RUNNING_TASK_STATES = new Set(['processing', 'claude_execution', 'post_processing']);
 const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'cancelled']);
 const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed']);
-const REMOVABLE_QUEUE_STATES = new Set(['waiting', 'delayed']);
+const PRE_START_QUEUE_STATES = new Set(['waiting', 'delayed', 'paused', 'prioritized', 'waiting-children']);
 const DEFAULT_STOP_REASON: StopTaskCancellationReason = {
   code: 'user_requested_stop',
   message: 'Task cancelled by user request.',
@@ -107,8 +107,9 @@ export async function stopTaskExecution(
     stopContainer: deps.stopDockerContainer,
   });
 
-  const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueueRemovable);
+  const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
+    shouldAbort,
     containerStopped,
     jobRemoved,
   });
@@ -160,12 +161,12 @@ function getStopTaskActivity(currentState: string | null, queueState: string | n
     isRunningTaskState: currentState !== null && RUNNING_TASK_STATES.has(currentState),
     isNonTerminalTaskState: currentState !== null && !TERMINAL_TASK_STATES.has(currentState),
     isQueueActive: queueState === 'active',
-    isQueueRemovable: queueState !== null && REMOVABLE_QUEUE_STATES.has(queueState),
+    isQueuePreStart: queueState !== null && PRE_START_QUEUE_STATES.has(queueState),
   };
 }
 
 function shouldAbortTask(activity: StopTaskActivity): boolean {
-  return activity.isRunningTaskState || activity.isQueueActive || activity.isQueueRemovable;
+  return activity.isRunningTaskState || activity.isQueueActive || activity.isQueuePreStart;
 }
 
 function assertTaskCanBeStopped(params: {
@@ -187,7 +188,7 @@ function assertTaskCanBeStopped(params: {
     return;
   }
 
-  if (activity.isQueueActive || activity.isQueueRemovable) {
+  if (activity.isQueueActive || activity.isQueuePreStart) {
     return;
   }
 
@@ -240,7 +241,7 @@ async function setAbortSignalIfNeeded(params: {
     level: 'warning',
     metadata: { reasonCode: cancellation.code, requestedBy },
   });
-  console.log(`[stop-execution] Abort signal set for task IDs: ${taskIds.join(', ')}`);
+  logger.info({ taskIds, conversationTaskId, requestedBy, reasonCode: cancellation.code }, 'Abort signal set for task execution');
 }
 
 async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]): Promise<void> {
@@ -254,11 +255,12 @@ function shouldClearAbortSignals(shouldAbort: boolean, containerStopped: boolean
 }
 
 function shouldMarkTaskCancelled(params: {
+  shouldAbort: boolean;
   containerStopped: boolean;
   jobRemoved: boolean;
 }): boolean {
-  const { containerStopped, jobRemoved } = params;
-  return containerStopped || jobRemoved;
+  const { shouldAbort, containerStopped, jobRemoved } = params;
+  return shouldAbort || containerStopped || jobRemoved;
 }
 
 async function stopTaskContainer(params: {
@@ -274,20 +276,20 @@ async function stopTaskContainer(params: {
 
   if (!containerId) {
     if (shouldAbort) {
-      console.log(`[stop-execution] No container ID found for task ${taskId}, relying on abort signal`);
+      logger.info({ taskId }, 'No container ID found for task stop; relying on abort signal');
     }
     return { containerStopped: false };
   }
 
-  console.log(`[stop-execution] Found container ID: ${containerId}, attempting to stop...`);
+  logger.info({ taskId, containerId }, 'Stopping task container');
   const stopResult = await stopContainer(containerId, 10);
 
   if (!stopResult.success) {
-    console.warn(`[stop-execution] Failed to stop container ${containerId}: ${stopResult.error}`);
+    logger.warn({ taskId, containerId, error: stopResult.error }, 'Failed to stop task container');
     return { containerId, containerStopped: false };
   }
 
-  console.log(`[stop-execution] Container ${containerId} stopped successfully`);
+  logger.info({ taskId, containerId }, 'Task container stopped successfully');
   await pushConversationMessage(redisClient, taskId, {
     type: 'system',
     timestamp: new Date().toISOString(),
@@ -297,19 +299,19 @@ async function stopTaskContainer(params: {
   return { containerId, containerStopped: true };
 }
 
-async function removeQueueJobIfNeeded(queueJob: Job<QueueJobData> | null, isQueueRemovable: boolean): Promise<boolean> {
-  if (!queueJob || !isQueueRemovable) {
+async function removeQueueJobIfNeeded(queueJob: Job<QueueJobData> | null, isQueuePreStart: boolean): Promise<boolean> {
+  if (!queueJob || !isQueuePreStart) {
     return false;
   }
 
   try {
     await queueJob.remove();
-    console.log(`[stop-execution] Removed queued job ${String(queueJob.id)} before it started`);
+    logger.info({ jobId: String(queueJob.id) }, 'Removed queued job before execution started');
     return true;
   } catch (error) {
     const queueState = await reloadQueueStateAfterRemovalFailure(queueJob);
     if (isBenignQueueRemovalRace(queueState)) {
-      console.warn(`[stop-execution] Queue job ${String(queueJob.id)} changed state to ${queueState ?? 'unknown'} during removal, relying on abort signal`);
+      logger.warn({ jobId: String(queueJob.id), queueState }, 'Queue job changed state during removal; relying on abort signal');
       return false;
     }
     throw error;
@@ -324,7 +326,7 @@ async function reloadQueueStateAfterRemovalFailure(queueJob: Job<QueueJobData>):
   try {
     return await queueJob.getState();
   } catch (error) {
-    console.warn(`[stop-execution] Failed to reload queue state for job ${String(queueJob.id)}: ${(error as Error).message}`);
+    logger.warn({ jobId: String(queueJob.id), error: (error as Error).message }, 'Failed to reload queue state after removal failure');
     return null;
   }
 }
@@ -387,5 +389,12 @@ async function markTaskCancelled(params: {
       ...(queueState ? { queueState } : {}),
     },
   });
-  console.log(`[stop-execution] Task ${taskId} marked as cancelled`);
+  logger.info({
+    taskId,
+    requestedBy,
+    reasonCode: cancellation.code,
+    queueState,
+    containerId: containerId ?? null,
+    containerStopped,
+  }, 'Task marked as cancelled');
 }

@@ -1,5 +1,5 @@
 import type { Job } from 'bullmq';
-import { db, getIssueQueue, getStateManager } from '@propr/core';
+import { db, getIssueQueue, getStateManager, logger } from '@propr/core';
 import type { IssueRef } from '@propr/core';
 
 export type QueueJobData = Record<string, unknown>;
@@ -69,7 +69,12 @@ export async function loadStopTaskContext(
     persistedTask?.jobId,
   ].filter((value): value is string => Boolean(value)))];
 
-  console.log(`[stop-execution] Attempting to stop task: ${taskReference} (taskId: ${normalizedTaskId})`);
+  logger.info({
+    taskReference,
+    normalizedTaskId,
+    persistedTaskId: persistedTask?.taskId ?? null,
+    persistedJobId: persistedTask?.jobId ?? null,
+  }, 'Loading task stop context');
 
   const state = stateLookup.state;
   const currentState = state?.history[state.history.length - 1]?.state ?? null;

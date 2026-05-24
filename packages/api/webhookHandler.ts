@@ -70,6 +70,7 @@ export interface WebhookHandlerDeps {
   webhookSecret: string | undefined;
   redis: {
     set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => Promise<string | null>;
+    del: (key: string) => Promise<number>;
   };
   processor: (payload: Record<string, unknown>, event: string, correlationId: string, deliveryId: string) => Promise<void>;
   correlationId: string;
@@ -79,8 +80,116 @@ export interface WebhookHandlerDeps {
   cancelMergedPullRequestTasks?: typeof cancelMergedPullRequestTasks;
 }
 
+type ParsedWebhookPayload = {
+  action?: string;
+  repository?: { full_name?: string };
+  pull_request?: { number?: number };
+  [key: string]: unknown;
+};
+
 function toSupportedEventSet(supportedEvents: Iterable<string>): ReadonlySet<string> {
   return supportedEvents instanceof Set ? supportedEvents : new Set(supportedEvents);
+}
+
+async function verifyWebhookSignature(
+  req: Request,
+  res: Response,
+  webhookSecret: string | undefined,
+): Promise<boolean> {
+  if (!Buffer.isBuffer(req.body)) {
+    console.error('[webhook] req.body is not a Buffer — expected express.raw() middleware');
+    res.status(500).send('Webhook middleware misconfiguration.');
+    return false;
+  }
+
+  const rawSignature = req.headers['x-hub-signature-256'];
+  if (Array.isArray(rawSignature)) {
+    console.error('[webhook] Rejecting multi-valued x-hub-signature-256 header');
+    res.status(401).send('Invalid webhook signature header.');
+    return false;
+  }
+
+  if (!webhookSecret) {
+    console.error('[webhook] GH_WEBHOOK_SECRET is not configured — rejecting request. Set GH_WEBHOOK_SECRET in the environment to accept webhooks. This is a security requirement: all webhook deliveries are rejected until a secret is provisioned.');
+    res.status(500).send('Webhook secret not configured.');
+    return false;
+  }
+
+  if (!rawSignature) {
+    console.error('[webhook] No signature provided');
+    res.status(401).send('No webhook signature provided.');
+    return false;
+  }
+
+  const hmac = crypto.createHmac('sha256', webhookSecret);
+  hmac.update(req.body);
+  const computedSignature = `sha256=${hmac.digest('hex')}`;
+  const sigBuf = Buffer.from(rawSignature);
+  const expectedBuf = Buffer.from(computedSignature);
+
+  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+    console.error('[webhook] Signature mismatch');
+    res.status(401).send('Webhook signature mismatch.');
+    return false;
+  }
+
+  return true;
+}
+
+async function cancelMergedPullRequestTasksOrRetry(params: {
+  payload: ParsedWebhookPayload;
+  rawDeliveryId: string;
+  rawEvent: string;
+  correlationId: string;
+  deliveryKey: string;
+  redis: WebhookHandlerDeps['redis'];
+  mergeTaskCancellation: MergeTaskCancellationDeps;
+  cancelMergedPullRequestTasksFn: typeof cancelMergedPullRequestTasks;
+}): Promise<void> {
+  const {
+    payload,
+    rawDeliveryId,
+    rawEvent,
+    correlationId,
+    deliveryKey,
+    redis,
+    mergeTaskCancellation,
+    cancelMergedPullRequestTasksFn,
+  } = params;
+  const log = mergeTaskCancellation.log ?? logger;
+
+  try {
+    await cancelMergedPullRequestTasksFn(payload, correlationId, mergeTaskCancellation);
+  } catch (error) {
+    let deliveryReservationReleased = false;
+    try {
+      await redis.del(deliveryKey);
+      deliveryReservationReleased = true;
+    } catch (releaseError) {
+      log.error({
+        correlationId,
+        deliveryId: rawDeliveryId,
+        event: rawEvent,
+        repository: payload.repository?.full_name,
+        prNumber: payload.pull_request?.number,
+        error: (releaseError as Error).message,
+      }, 'Failed to release webhook delivery reservation after merged PR cancellation failure');
+    }
+
+    log.error({
+      correlationId,
+      deliveryId: rawDeliveryId,
+      event: rawEvent,
+      repository: payload.repository?.full_name,
+      prNumber: payload.pull_request?.number,
+      deliveryReservationReleased,
+      error: (error as Error).message,
+    }, deliveryReservationReleased
+      ? 'Merged PR task cancellation failed; released webhook delivery reservation for retry'
+      : 'Merged PR task cancellation failed; returning 500 but delivery reservation release also failed');
+
+    throw error;
+  }
 }
 
 /**
@@ -96,13 +205,12 @@ function toSupportedEventSet(supportedEvents: Iterable<string>): ReadonlySet<str
  * 1. Delivery IDs are reserved before any merge-time cancellation side effects,
  *    so duplicate GitHub deliveries are rejected before they can cancel the
  *    same task twice.
- * 2. Merge-time task cancellation is best-effort inside this handler. A
- *    transient cancellation failure must not prevent downstream webhook
- *    processing because the reserved delivery ID intentionally blocks retries.
- * 3. Once a delivery ID is reserved in Redis, it is NOT removed on downstream
- *    processing errors. This prevents a partially-processed webhook from being
- *    re-accepted on a GitHub retry, which could re-trigger side effects.
- *    Downstream consumers must be idempotent.
+ * 2. If merge-time task cancellation fails, the reservation is released and
+ *    the request returns 500 so GitHub can retry the cancellation attempt.
+ * 3. Once merge-time cancellation succeeds, the delivery ID is NOT removed on
+ *    downstream processing errors. This prevents a partially-processed webhook
+ *    from being re-accepted on a GitHub retry, which could re-trigger side
+ *    effects. Downstream consumers must be idempotent.
  */
 export async function handleWebhookRequest(
   req: Request,
@@ -121,42 +229,7 @@ export async function handleWebhookRequest(
   } = deps;
   const supportedEventSet = toSupportedEventSet(supportedEvents);
 
-  // --- Fail closed if req.body is not a Buffer (middleware misconfiguration) ---
-  if (!Buffer.isBuffer(req.body)) {
-    console.error('[webhook] req.body is not a Buffer — expected express.raw() middleware');
-    res.status(500).send('Webhook middleware misconfiguration.');
-    return;
-  }
-
-  // --- Signature verification ---
-  const rawSignature = req.headers['x-hub-signature-256'];
-  if (Array.isArray(rawSignature)) {
-    console.error('[webhook] Rejecting multi-valued x-hub-signature-256 header');
-    res.status(401).send('Invalid webhook signature header.');
-    return;
-  }
-  const signature: string | undefined = rawSignature;
-  if (webhookSecret) {
-    if (!signature) {
-      console.error('[webhook] No signature provided');
-      res.status(401).send('No webhook signature provided.');
-      return;
-    }
-    const hmac = crypto.createHmac('sha256', webhookSecret);
-    hmac.update(req.body);
-    const computedSignature = `sha256=${hmac.digest('hex')}`;
-
-    // Guard against length mismatch — timingSafeEqual throws if buffers differ in length
-    const sigBuf = Buffer.from(signature);
-    const expectedBuf = Buffer.from(computedSignature);
-    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-      console.error('[webhook] Signature mismatch');
-      res.status(401).send('Webhook signature mismatch.');
-      return;
-    }
-  } else {
-    console.error('[webhook] GH_WEBHOOK_SECRET is not configured — rejecting request. Set GH_WEBHOOK_SECRET in the environment to accept webhooks. This is a security requirement: all webhook deliveries are rejected until a secret is provisioned.');
-    res.status(500).send('Webhook secret not configured.');
+  if (!await verifyWebhookSignature(req, res, webhookSecret)) {
     return;
   }
 
@@ -178,7 +251,7 @@ export async function handleWebhookRequest(
     return;
   }
 
-  let payload: { action?: string; repository?: { full_name?: string }; [key: string]: unknown };
+  let payload: ParsedWebhookPayload;
   try {
     payload = JSON.parse(req.body.toString());
   } catch {
@@ -198,21 +271,21 @@ export async function handleWebhookRequest(
     return;
   }
 
-  // The delivery ID remains reserved in Redis regardless of processing outcome.
-  // This is intentional — see the JSDoc above for rationale.
   if (mergeTaskCancellation && isMergedPullRequestCloseFn(payload)) {
     try {
-      await cancelMergedPullRequestTasksFn(payload, correlationId, mergeTaskCancellation);
-    } catch (error) {
-      const log = mergeTaskCancellation.log ?? logger;
-      log.warn({
+      await cancelMergedPullRequestTasksOrRetry({
+        payload,
+        rawDeliveryId,
+        rawEvent,
         correlationId,
-        deliveryId: rawDeliveryId,
-        event: rawEvent,
-        repository: payload.repository.full_name,
-        prNumber: payload.pull_request.number,
-        error: (error as Error).message,
-      }, 'Merged PR task cancellation failed; continuing with webhook processing');
+        deliveryKey,
+        redis,
+        mergeTaskCancellation,
+        cancelMergedPullRequestTasksFn,
+      });
+    } catch {
+      res.status(500).send('Merged pull request task cancellation failed.');
+      return;
     }
   }
 

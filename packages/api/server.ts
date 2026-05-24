@@ -285,7 +285,8 @@ function setupWebhookRoute(): void {
         webhookSecret: process.env.GH_WEBHOOK_SECRET,
         redis: { set: (key, value, opts) => opts
           ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
-          : redisClient.set(key, value) as Promise<string | null> },
+          : redisClient.set(key, value) as Promise<string | null>,
+        del: (key) => redisClient.del(key) },
         processor: (payload, event, cid, deliveryId) => processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId),
         correlationId,
         mergeTaskCancellation: { redisClient },
