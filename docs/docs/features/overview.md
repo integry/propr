@@ -39,7 +39,7 @@ The Web UI includes an AI Agents area for configuring coding agents, choosing mo
 
 ### Settings and Ops Controls
 
-Administrative settings cover primary processing labels, PR behavior, worker behavior, planner defaults, and model defaults. Combined with the dashboard, this gives teams a browser-based control surface instead of relying only on environment variables and logs.
+Administrative settings cover primary processing labels, PR behavior, worker behavior, planner defaults, and model defaults. Combined with the dashboard, this gives teams a browser-based control surface for configuration and operations.
 
 ## Planner Studio
 
@@ -130,7 +130,7 @@ When ProPR creates or updates work, it handles the GitHub plumbing around it:
 
 ### Automated Review-Fix Cycling
 
-Ultrafix is ProPR's closed-loop PR refinement workflow. Instead of running one review and one fix manually, you can ask ProPR to keep iterating until the PR reaches a target score or a maximum cycle count.
+Ultrafix is ProPR's closed-loop PR refinement workflow. It keeps iterating until the PR reaches a target score or a maximum cycle count.
 
 ### CI-Aware Continuation Rules
 

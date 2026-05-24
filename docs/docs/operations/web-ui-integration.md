@@ -4,7 +4,7 @@ This guide explains how ProPR's browser UI fits together with the dashboard API,
 
 ## Overview
 
-ProPR's Web UI is a live operational surface, not a placeholder project. In this repository:
+ProPR's Web UI is the platform's live operational surface. In this repository:
 
 - The frontend lives in `propr-ui/`
 - The dashboard API lives in `packages/api/`

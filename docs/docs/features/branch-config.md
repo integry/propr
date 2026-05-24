@@ -2,7 +2,7 @@
 
 For most teams, branch behavior should be configured in the Web UI. Each monitored repository entry can define its own `baseBranch`, and that UI configuration is what Planner Studio and branch-aware execution flows use first.
 
-Environment variables still exist as an operator-focused fallback for default branch detection, but they are no longer the primary day-to-day configuration path.
+Environment variables provide an operator-focused fallback for default branch detection.
 
 ## Configure Branches In The Web UI
 

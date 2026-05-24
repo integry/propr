@@ -200,32 +200,44 @@ Important data to backup:
 - Logs: `./logs` directory
 - The environment or secret-management source that provides your production `.env` values
 
+Run backups during a maintenance window. The example below stops the services that write application state and uses a subshell `trap` so they are started again even if a backup command fails.
+
 ```bash
-# Create a backup directory
-mkdir -p ./backups
+(
+  set -euo pipefail
 
-# Stop services first so Redis and SQLite are not being written during the backup
-docker-compose -f docker-compose.prod.yml stop api daemon worker redis
+  backup_date="$(date +%Y%m%d)"
+  compose_file="docker-compose.prod.yml"
 
-# Back up the shared SQLite volume
-docker run --rm \
-  -v propr-sqlite-data:/from \
-  -v "$PWD/backups":/to \
-  alpine sh -c 'cd /from && tar -czf /to/propr-sqlite-data-$(date +%Y%m%d).tar.gz .'
+  restart_services() {
+    docker-compose -f "$compose_file" start redis daemon worker api
+  }
 
-# Back up the Redis volume
-docker run --rm \
-  -v propr-redis-data:/from \
-  -v "$PWD/backups":/to \
-  alpine sh -c 'cd /from && tar -czf /to/propr-redis-data-$(date +%Y%m%d).tar.gz .'
+  trap restart_services EXIT
 
-# Back up bind-mounted repository and log data
-tar -czf ./backups/propr-files-backup-$(date +%Y%m%d).tar.gz \
-  ./repos \
-  ./logs
+  # Create a backup directory
+  mkdir -p ./backups
 
-# Start the services again
-docker-compose -f docker-compose.prod.yml start redis daemon worker api
+  # Stop services first so Redis and SQLite are not being written during the backup
+  docker-compose -f "$compose_file" stop api daemon worker redis
+
+  # Back up the shared SQLite volume
+  docker run --rm \
+    -v propr-sqlite-data:/from \
+    -v "$PWD/backups":/to \
+    alpine sh -c "cd /from && tar -czf /to/propr-sqlite-data-${backup_date}.tar.gz ."
+
+  # Back up the Redis volume
+  docker run --rm \
+    -v propr-redis-data:/from \
+    -v "$PWD/backups":/to \
+    alpine sh -c "cd /from && tar -czf /to/propr-redis-data-${backup_date}.tar.gz ."
+
+  # Back up bind-mounted repository and log data
+  tar -czf "./backups/propr-files-backup-${backup_date}.tar.gz" \
+    ./repos \
+    ./logs
+)
 ```
 
 Do not rely on the `./repos` and `./logs` archive by itself. That file backup is only partial and does not preserve the shared SQLite application database or Redis queue state. If you use a managed Docker platform, replace the example above with the equivalent named-volume snapshot process for `propr-sqlite-data` and `propr-redis-data`.

@@ -10,7 +10,7 @@ This guide walks you through bringing ProPR online, then finishing the day-to-da
 
 Before you begin, ensure you have the following installed:
 
-- **Node.js 18+** - Runtime environment
+- **Node.js 20+** - Runtime environment for the application and docs validation
 - **Redis Server** - For task queue management (v6.0+ recommended)
 - **Git 2.25+** - For worktree support and modern git operations
 - **Docker** - For secure Claude Code execution environment
@@ -198,6 +198,8 @@ Install the Node.js dependencies:
 ```bash
 npm install
 ```
+
+If you plan to build or validate the Docusaurus docs site in this repository, use Node.js 20 or newer for the `docs/` workspace as well.
 
 ## 6. Redis Setup
 
