@@ -4,7 +4,15 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
-import { getPendingPrQueueJobs, getTrackedPrQueueJobs, TRACKED_PR_QUEUE_STATES, TRACKED_PR_QUEUE_STATE_SET, trackPrQueueJob } from './prQueueJobIndex.js';
+import {
+    clearPendingPrQueueJob,
+    clearTrackedPrQueueJob,
+    getPendingPrQueueJobs,
+    getTrackedPrQueueJobs,
+    TRACKED_PR_QUEUE_STATES,
+    TRACKED_PR_QUEUE_STATE_SET,
+    trackPrQueueJob
+} from './prQueueJobIndex.js';
 import { getPrNumberFromJobData, getRepositoryFromJobData, getTaskIdFromQueueJob } from './prTaskIdentity.js';
 
 export interface MergePROptions {
@@ -653,6 +661,12 @@ interface ActiveTaskRow {
     state: string;
 }
 
+interface IndexedQueueTaskActivity {
+    taskId: string;
+    state: string;
+    aliases: string[];
+}
+
 export interface GetActiveTasksForPRDeps {
     getIssueQueue?: typeof getIssueQueue;
     db?: typeof db;
@@ -677,41 +691,50 @@ export async function getActiveTasksForPR(
         const log = deps.log ?? logger;
         const trackedQueueJobs = await getTrackedPrQueueJobs(queue as never, repository, prNumber);
         const pendingQueueJobs = await getPendingPrQueueJobs(queue as never, repository, prNumber);
-        for (const job of trackedQueueJobs) {
-            registerActiveTask(
-                taskMap,
-                taskAliases,
-                { taskId: job.jobId, state: job.state },
-                await loadIndexedQueueJobAliases(queue as never, job.jobId),
-            );
-        }
-        for (const job of pendingQueueJobs) {
-            registerActiveTask(
-                taskMap,
-                taskAliases,
-                { taskId: job.jobId, state: job.state },
-                await loadIndexedQueueJobAliases(queue as never, job.jobId),
-            );
-            try {
-                await trackPrQueueJob(queue as never, repository, prNumber, job.jobId);
-            } catch (error) {
-                log.warn({
-                    repository,
-                    prNumber,
-                    jobId: job.jobId,
-                    error: (error as Error).message,
-                }, 'Failed to promote pending PR queue-job index entry');
-            }
-        }
-
-        await addQueuedPrJobsFromFallbackScan({
+        const indexedTrackedQueueJobs = await loadIndexedQueueTaskActivities({
             queue,
             repository,
             prNumber,
-            taskMap,
-            taskAliases,
+            queueJobs: trackedQueueJobs,
             log,
+            promotePendingEntry: false,
         });
+        const indexedPendingQueueJobs = await loadIndexedQueueTaskActivities({
+            queue,
+            repository,
+            prNumber,
+            queueJobs: pendingQueueJobs,
+            log,
+            promotePendingEntry: true,
+        });
+
+        for (const job of indexedTrackedQueueJobs) {
+            registerActiveTask(
+                taskMap,
+                taskAliases,
+                { taskId: job.taskId, state: job.state },
+                job.aliases,
+            );
+        }
+        for (const job of indexedPendingQueueJobs) {
+            registerActiveTask(
+                taskMap,
+                taskAliases,
+                { taskId: job.taskId, state: job.state },
+                job.aliases,
+            );
+        }
+
+        if (deps.forceQueueScan === true || (indexedTrackedQueueJobs.length === 0 && indexedPendingQueueJobs.length === 0)) {
+            await addQueuedPrJobsFromFallbackScan({
+                queue,
+                repository,
+                prNumber,
+                taskMap,
+                taskAliases,
+                log,
+            });
+        }
 
         const activeTasks = await database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -788,6 +811,91 @@ async function addQueuedPrJobsFromFallbackScan(params: {
     }
 }
 
+async function loadIndexedQueueTaskActivities(params: {
+    queue: Awaited<ReturnType<typeof getIssueQueue>>;
+    repository: string;
+    prNumber: number;
+    queueJobs: Array<{ jobId: string; state: string }>;
+    log: Pick<typeof logger, 'info' | 'warn'>;
+    promotePendingEntry: boolean;
+}): Promise<IndexedQueueTaskActivity[]> {
+    const { queueJobs } = params;
+    const resolvedQueueJobs = await Promise.all(queueJobs.map((queueJob) => loadIndexedQueueTaskActivity({
+        ...params,
+        queueJob,
+    })));
+
+    return resolvedQueueJobs.filter((queueJob): queueJob is IndexedQueueTaskActivity => queueJob !== null);
+}
+
+async function loadIndexedQueueTaskActivity(params: {
+    queue: Awaited<ReturnType<typeof getIssueQueue>>;
+    repository: string;
+    prNumber: number;
+    queueJob: { jobId: string; state: string };
+    log: Pick<typeof logger, 'info' | 'warn'>;
+    promotePendingEntry: boolean;
+}): Promise<IndexedQueueTaskActivity | null> {
+    const { queue, repository, prNumber, queueJob, log, promotePendingEntry } = params;
+    const resolvedQueueJob = await queue.getJob(queueJob.jobId);
+    if (!resolvedQueueJob) {
+        await clearStalePrQueueJobIndexEntries({ queue, repository, prNumber, jobId: queueJob.jobId, log });
+        return null;
+    }
+
+    const queueState = await resolvedQueueJob.getState();
+    if (!TRACKED_PR_QUEUE_STATE_SET.has(queueState)) {
+        await clearStalePrQueueJobIndexEntries({ queue, repository, prNumber, jobId: queueJob.jobId, log });
+        return null;
+    }
+
+    if (promotePendingEntry) {
+        try {
+            await trackPrQueueJob(queue as never, repository, prNumber, queueJob.jobId);
+        } catch (error) {
+            log.warn({
+                repository,
+                prNumber,
+                jobId: queueJob.jobId,
+                error: (error as Error).message,
+            }, 'Failed to promote pending PR queue-job index entry');
+        }
+    }
+
+    return {
+        taskId: queueJob.jobId,
+        state: queueState,
+        aliases: [
+            getQueueTaskAlias(queueJob.jobId),
+            getTaskIdFromQueueJob(resolvedQueueJob),
+        ].filter((alias): alias is string => Boolean(alias)),
+    };
+}
+
+async function clearStalePrQueueJobIndexEntries(params: {
+    queue: Awaited<ReturnType<typeof getIssueQueue>>;
+    repository: string;
+    prNumber: number;
+    jobId: string;
+    log: Pick<typeof logger, 'info' | 'warn'>;
+}): Promise<void> {
+    const { queue, repository, prNumber, jobId, log } = params;
+
+    try {
+        await Promise.all([
+            clearTrackedPrQueueJob(queue as never, repository, prNumber, jobId),
+            clearPendingPrQueueJob(queue as never, repository, prNumber, jobId),
+        ]);
+    } catch (error) {
+        log.warn({
+            repository,
+            prNumber,
+            jobId,
+            error: (error as Error).message,
+        }, 'Failed to clear stale PR queue-job index entry');
+    }
+}
+
 function registerActiveTask(
     taskMap: Map<string, PRTaskActivity>,
     taskAliases: Map<string, string>,
@@ -842,19 +950,6 @@ function getQueueTaskAlias(jobId: string): string | null {
     const parts = jobId.replace(/^issue-/, '').split('-');
     parts.pop();
     return parts.join('-');
-}
-
-async function loadIndexedQueueJobAliases(
-    queue: Awaited<ReturnType<typeof getIssueQueue>>,
-    jobId: string,
-): Promise<string[]> {
-    try {
-        const queueJob = await queue.getJob(jobId);
-        const queueTaskId = queueJob ? getTaskIdFromQueueJob(queueJob) : null;
-        return [queueTaskId, getQueueTaskAlias(jobId)].filter((alias): alias is string => Boolean(alias));
-    } catch {
-        return [getQueueTaskAlias(jobId)].filter((alias): alias is string => Boolean(alias));
-    }
 }
 
 /**

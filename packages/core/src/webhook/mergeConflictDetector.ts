@@ -94,8 +94,8 @@ async function detectAndEnqueueForPR(
         prNumber,
         log,
         mergedMessage: 'Merge conflict detection: skipping enqueue because PR is already merged',
-        lookupFailureMessage: 'Merge conflict detection: failed to verify PR merge state before enqueue; continuing without merged-state verification',
-        lookupFailureBehavior: 'continue',
+        lookupFailureMessage: 'Merge conflict detection: failed to verify PR merge state before enqueue; skipping to avoid enqueueing work after merge',
+        lookupFailureBehavior: 'skip',
     })) {
         return { outcome: 'skipped_merged', prNumber, repository };
     }
@@ -114,8 +114,8 @@ async function detectAndEnqueueForPR(
         prNumber,
         log,
         mergedMessage: 'Merge conflict detection: PR merged during enqueue; discarding freshly-queued job',
-        lookupFailureMessage: 'Merge conflict detection: failed to verify PR merge state after enqueue; leaving queued job in place',
-        lookupFailureBehavior: 'continue',
+        lookupFailureMessage: 'Merge conflict detection: failed to verify PR merge state after enqueue; discarding freshly-queued job to fail closed',
+        lookupFailureBehavior: 'skip',
     })) {
         await discardFreshQueueJobAfterMerge({
             queuedJob,
@@ -275,8 +275,8 @@ export async function handleMergeCommand(
         prNumber,
         log,
         mergedMessage: '/merge command: PR already merged, skipping',
-        lookupFailureMessage: '/merge command: failed to verify PR merge state before enqueue; continuing without merged-state verification',
-        lookupFailureBehavior: 'continue',
+        lookupFailureMessage: '/merge command: failed to verify PR merge state before enqueue; skipping to avoid enqueueing work after merge',
+        lookupFailureBehavior: 'skip',
     })) {
         return null;
     }
@@ -295,8 +295,8 @@ export async function handleMergeCommand(
         prNumber,
         log,
         mergedMessage: '/merge command: PR merged during enqueue; discarding freshly-queued job',
-        lookupFailureMessage: '/merge command: failed to verify PR merge state after enqueue; leaving queued job in place',
-        lookupFailureBehavior: 'continue',
+        lookupFailureMessage: '/merge command: failed to verify PR merge state after enqueue; discarding freshly-queued job to fail closed',
+        lookupFailureBehavior: 'skip',
     })) {
         await discardFreshQueueJobAfterMerge({
             queuedJob,

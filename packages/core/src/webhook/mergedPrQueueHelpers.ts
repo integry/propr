@@ -4,9 +4,10 @@ import { db } from '../db/connection.js';
 import { getStateManager } from '../utils/workerStateManager.js';
 import { clearPendingPrQueueJob, trackPrQueueJob, TRACKED_PR_QUEUE_STATE_SET, type PrQueueIndexableQueue } from './prQueueJobIndex.js';
 import { hasPullRequestMerged } from './prMergeState.js';
-import { buildIssueRefFromQueueJob, type PrTaskJobData } from './prTaskIdentity.js';
+import { buildIssueRefFromQueueJob, getTaskIdFromQueueJob, type PrTaskJobData } from './prTaskIdentity.js';
 
 const BENIGN_QUEUE_REMOVAL_FAILURE_STATES = new Set(['active', 'completed', 'failed', 'unknown']);
+type LookupFailureBehavior = 'continue' | 'skip' | 'throw';
 
 type QueueJobLike = {
   id?: string | number | null;
@@ -25,7 +26,7 @@ export async function shouldSkipEnqueueForMergedPullRequest(params: {
   log: LogLike;
   mergedMessage: string;
   lookupFailureMessage: string;
-  lookupFailureBehavior?: 'continue' | 'throw';
+  lookupFailureBehavior?: LookupFailureBehavior;
 }): Promise<boolean> {
   const {
     redisClient,
@@ -51,6 +52,9 @@ export async function shouldSkipEnqueueForMergedPullRequest(params: {
     }, lookupFailureMessage);
     if (lookupFailureBehavior === 'continue') {
       return false;
+    }
+    if (lookupFailureBehavior === 'skip') {
+      return true;
     }
     throw error;
   }
@@ -85,40 +89,52 @@ export async function discardFreshQueueJobAfterMerge(params: {
     trackFailureMessage,
   } = params;
   let removalFailure: Error | null = null;
+  let persistenceFailure: Error | null = null;
+  let queueRemoved = false;
 
   try {
-    await queuedJob.remove();
-    await persistCancelledTaskRecordForMergedQueueJob({ queuedJob, repository, prNumber, jobId, log });
-    log.info({ repository, prNumber, jobId }, removedMessage);
-    return;
-  } catch (error) {
-    const queueState = await reloadQueueStateAfterRemovalFailure(queuedJob);
-    await setMergedPrAbortSignals(redisClient, taskIds, prNumber);
+    try {
+      await queuedJob.remove();
+      queueRemoved = true;
+    } catch (error) {
+      const queueState = await reloadQueueStateAfterRemovalFailure(queuedJob);
+      await setMergedPrAbortSignals(redisClient, taskIds, prNumber);
 
-    if (queueState && TRACKED_PR_QUEUE_STATE_SET.has(queueState)) {
+      if (queueState && TRACKED_PR_QUEUE_STATE_SET.has(queueState)) {
+        try {
+          await trackPrQueueJob(queue, repository, prNumber, jobId);
+        } catch (trackError) {
+          log.warn({
+            repository,
+            prNumber,
+            jobId,
+            error: (trackError as Error).message,
+          }, trackFailureMessage);
+        }
+      }
+
+      if (!isBenignRemovalFailureState(queueState)) {
+        removalFailure = new Error(`${removalFailureMessage}: queue job remained ${queueState ?? 'unknown'} after removal failure`);
+      }
+
+      log.warn({
+        repository,
+        prNumber,
+        jobId,
+        queueState,
+        error: (error as Error).message,
+      }, removalFailureMessage);
+    }
+
+    if (queueRemoved) {
       try {
-        await trackPrQueueJob(queue, repository, prNumber, jobId);
-      } catch (trackError) {
-        log.warn({
-          repository,
-          prNumber,
-          jobId,
-          error: (trackError as Error).message,
-        }, trackFailureMessage);
+        await persistCancelledTaskRecordForMergedQueueJob({ queuedJob, repository, prNumber, jobId, log });
+        log.info({ repository, prNumber, jobId }, removedMessage);
+      } catch (error) {
+        persistenceFailure = error as Error;
+        await setMergedPrAbortSignals(redisClient, taskIds, prNumber);
       }
     }
-
-    if (!isBenignRemovalFailureState(queueState)) {
-      removalFailure = new Error(`${removalFailureMessage}: queue job remained ${queueState ?? 'unknown'} after removal failure`);
-    }
-
-    log.warn({
-      repository,
-      prNumber,
-      jobId,
-      queueState,
-      error: (error as Error).message,
-    }, removalFailureMessage);
   } finally {
     try {
       await clearPendingPrQueueJob(queue, repository, prNumber, jobId);
@@ -134,6 +150,14 @@ export async function discardFreshQueueJobAfterMerge(params: {
 
   if (removalFailure) {
     throw removalFailure;
+  }
+
+  if (persistenceFailure) {
+    throw persistenceFailure;
+  }
+
+  if (queueRemoved) {
+    return;
   }
 }
 
@@ -172,10 +196,11 @@ async function persistCancelledTaskRecordForMergedQueueJob(params: {
   const issueRef = buildIssueRefFromQueueJob(queuedJob);
   if (!issueRef) {
     log.warn({ repository, prNumber, jobId }, 'Failed to reconstruct merged PR queue job into a task record');
-    return;
+    throw new Error(`Failed to reconstruct merged PR queue job into a task record: ${jobId}`);
   }
 
-  const taskId = queuedJob.id === null || queuedJob.id === undefined ? jobId : String(queuedJob.id);
+  const taskId = getTaskIdFromQueueJob(queuedJob) ?? (queuedJob.id === null || queuedJob.id === undefined ? jobId : String(queuedJob.id));
+  const queueJobId = queuedJob.id === null || queuedJob.id === undefined ? jobId : String(queuedJob.id);
   const stateManager = getStateManager();
   const cancellation = {
     code: 'pull_request_merged',
@@ -192,7 +217,7 @@ async function persistCancelledTaskRecordForMergedQueueJob(params: {
     await db('tasks')
       .where({ task_id: taskId })
       .update({
-        job_id: taskId,
+        job_id: queueJobId,
         pr_number: prNumber,
         initial_job_data: JSON.stringify(queuedJob.data),
       });
@@ -213,7 +238,7 @@ async function persistCancelledTaskRecordForMergedQueueJob(params: {
         },
         requestedBy: 'system',
         queueState: 'removed_before_start',
-        jobId: taskId,
+        jobId: queueJobId,
       },
     });
   } catch (error) {
@@ -224,5 +249,6 @@ async function persistCancelledTaskRecordForMergedQueueJob(params: {
       taskId,
       error: (error as Error).message,
     }, 'Failed to persist merged PR cancellation state for removed queue job');
+    throw error;
   }
 }
