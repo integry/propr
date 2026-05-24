@@ -202,6 +202,8 @@ Important data to backup:
 
 Run backups during a maintenance window. The example below records which of the stateful services were already running, stops the application writers, forces Redis to persist its in-memory state, and uses a subshell `trap` so only that original running set is started again when the backup subshell exits.
 
+The example assumes the default `docker-compose.prod.yml` from this repository, which defines the `propr-sqlite-data` and `propr-redis-data` named volumes plus `./repos` and `./logs` bind mounts. If your deployment uses different volume names or host paths, adjust those values before you run the commands.
+
 ```bash
 (
   set -euo pipefail
@@ -227,11 +229,15 @@ Run backups during a maintenance window. The example below records which of the 
   # Stop application writers first so Redis and SQLite are quiescent during the backup
   docker-compose -f "$compose_file" stop api daemon worker
 
-  # Force Redis to flush in-memory queue and cache state to disk before snapshotting its volume
-  docker-compose -f "$compose_file" exec -T redis redis-cli SAVE
+  if printf '%s\n' "${running_services[@]}" | grep -qx redis; then
+    # Force Redis to flush in-memory queue and cache state to disk before snapshotting its volume
+    docker-compose -f "$compose_file" exec -T redis redis-cli SAVE
 
-  # Stop Redis after its on-disk snapshot has been updated
-  docker-compose -f "$compose_file" stop redis
+    # Stop Redis after its on-disk snapshot has been updated
+    docker-compose -f "$compose_file" stop redis
+  else
+    echo "Redis was not running; skipping redis-cli SAVE and snapshotting the Redis volume as-is." >&2
+  fi
 
   # Back up the shared SQLite volume
   docker run --rm \
@@ -245,10 +251,19 @@ Run backups during a maintenance window. The example below records which of the 
     -v "$PWD/backups":/to \
     alpine sh -c "cd /from && tar -czf /to/propr-redis-data-${backup_date}.tar.gz ."
 
-  # Back up bind-mounted repository and log data
-  tar -czf "./backups/propr-files-backup-${backup_date}.tar.gz" \
-    ./repos \
-    ./logs
+  # Back up bind-mounted repository and log data when those default paths exist
+  bind_paths=()
+  for path in ./repos ./logs; do
+    if [ -e "$path" ]; then
+      bind_paths+=("$path")
+    fi
+  done
+
+  if [ "${#bind_paths[@]}" -gt 0 ]; then
+    tar -czf "./backups/propr-files-backup-${backup_date}.tar.gz" "${bind_paths[@]}"
+  else
+    echo "Skipping bind-mounted file backup because ./repos and ./logs are not present on this host." >&2
+  fi
 )
 ```
 

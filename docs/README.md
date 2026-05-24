@@ -10,14 +10,16 @@ This website is built using [Docusaurus](https://docusaurus.io/), a modern stati
 ## Installation
 
 ```bash
+cd docs
 npm ci
 ```
 
-The docs site uses its own lockfile inside `docs/`. From the repository root, use the repo-level `npm ci` first for the application workspace, then run `npm ci` inside `docs/` when you need to build or validate the Docusaurus site.
+Run the docs commands from the `docs/` directory. The Docusaurus site has its own lockfile there, so docs-only work does not require the repository-root install.
 
 ## Local Development
 
 ```bash
+cd docs
 npm run start
 ```
 
@@ -26,6 +28,7 @@ This command starts a local development server and opens up a browser window. Mo
 ## Build
 
 ```bash
+cd docs
 npm run build
 ```
 
@@ -36,12 +39,14 @@ This command generates static content into the `build` directory and can be serv
 Using SSH:
 
 ```bash
+cd docs
 USE_SSH=true npm run deploy
 ```
 
 Not using SSH:
 
 ```bash
+cd docs
 GIT_USER=<Your GitHub username> npm run deploy
 ```
 
