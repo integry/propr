@@ -188,7 +188,13 @@ export async function handleWebhookRequest(
   }
 
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
-  await cancelMergedPullRequestTasks(payload, correlationId, mergeTaskCancellation);
+  await cancelMergedPullRequestTasksSafely({
+    payload,
+    event: rawEvent,
+    deliveryId: rawDeliveryId,
+    correlationId,
+    deps: mergeTaskCancellation,
+  });
   await processor(payload, rawEvent, correlationId, rawDeliveryId);
 
   res.status(200).send('Webhook processed.');
@@ -254,6 +260,37 @@ export async function cancelMergedPullRequestTasks(
 
   if (failures.length > 0) {
     throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.join(', ')}`);
+  }
+}
+
+async function cancelMergedPullRequestTasksSafely(
+  params: {
+    payload: Record<string, unknown>;
+    event: string;
+    deliveryId: string;
+    correlationId: string;
+    deps?: MergeTaskCancellationDeps;
+  },
+): Promise<void> {
+  const { payload, event, deliveryId, correlationId, deps } = params;
+  if (!deps) {
+    return;
+  }
+
+  try {
+    await cancelMergedPullRequestTasks(payload, correlationId, deps);
+  } catch (error) {
+    const log = deps.log ?? logger;
+    log.warn({
+      correlationId,
+      deliveryId,
+      event,
+      error: (error as Error).message,
+      ...(isMergedPullRequestClose(payload) ? {
+        repository: payload.repository.full_name,
+        prNumber: payload.pull_request.number,
+      } : {}),
+    }, 'Merged PR task cancellation failed; continuing webhook processing');
   }
 }
 

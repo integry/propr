@@ -245,7 +245,7 @@ export async function stopTaskExecution(
 
   const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueueRemovable);
 
-  if (containerStopped) {
+  if (shouldClearAbortSignals(shouldAbort, containerStopped, jobRemoved)) {
     await clearAbortSignals(redisClient, context.abortTaskIds);
   }
 
@@ -386,7 +386,7 @@ function getStopTaskActivity(currentState: string | null, queueState: string | n
 }
 
 function shouldAbortTask(activity: StopTaskActivity): boolean {
-  return activity.isRunningTaskState || activity.isQueueActive;
+  return activity.isRunningTaskState || activity.isQueueActive || activity.isQueueRemovable;
 }
 
 function assertTaskCanBeStopped(context: StopTaskContext, activity: StopTaskActivity): void {
@@ -449,6 +449,10 @@ async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]
   }
 }
 
+function shouldClearAbortSignals(shouldAbort: boolean, containerStopped: boolean, jobRemoved: boolean): boolean {
+  return shouldAbort && (containerStopped || jobRemoved);
+}
+
 async function stopTaskContainer(params: {
   redisClient: RedisClientLike;
   taskId: string;
@@ -490,9 +494,27 @@ async function removeQueueJobIfNeeded(queueJob: Job<QueueJobData> | null, isQueu
     return false;
   }
 
-  await queueJob.remove();
-  console.log(`[stop-execution] Removed queued job ${String(queueJob.id)} before it started`);
-  return true;
+  try {
+    await queueJob.remove();
+    console.log(`[stop-execution] Removed queued job ${String(queueJob.id)} before it started`);
+    return true;
+  } catch (error) {
+    const queueState = await reloadQueueStateAfterRemovalFailure(queueJob);
+    if (queueState === 'active') {
+      console.warn(`[stop-execution] Queue job ${String(queueJob.id)} became active during removal, relying on abort signal`);
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function reloadQueueStateAfterRemovalFailure(queueJob: Job<QueueJobData>): Promise<string | null> {
+  try {
+    return await queueJob.getState();
+  } catch (error) {
+    console.warn(`[stop-execution] Failed to reload queue state for job ${String(queueJob.id)}: ${(error as Error).message}`);
+    return null;
+  }
 }
 
 async function ensureTaskStateForCancellation(

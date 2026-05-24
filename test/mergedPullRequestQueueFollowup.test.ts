@@ -7,7 +7,7 @@ process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
 const { stopTaskExecution } = await import('../packages/api/routes/dockerRoutes.ts');
-const { getActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
+const { getActiveTasksForPR, hasActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
 const { closeConnection } = await import('../packages/core/src/db/connection.ts');
 const { closeStateManager } = await import('../packages/core/src/utils/workerStateManager.ts');
 const { closeUltrafixStateRedis } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
@@ -242,6 +242,90 @@ describe('merged PR queue follow-up fixes', () => {
     ]);
   });
 
+  test('stopTaskExecution clears queued-job abort markers after successful removal', async () => {
+    const queueJobId = 'issue-owner-repo-99-12345';
+    const redisClient = createRedisClient();
+
+    const result = await stopTaskExecution(queueJobId, {
+      redisClient,
+      requestedBy: 'system',
+      cancellation: {
+        code: 'pull_request_merged',
+        message: 'Task cancelled because pull request #99 was merged.',
+      },
+    }, {
+      getIssueQueue: async () => ({
+        getJob: async (id: string) => id === queueJobId ? createQueueJob(queueJobId, {
+          repository: 'owner/repo',
+          prNumber: 99,
+          correlationId: 'corr-99',
+        }, 'waiting') : null,
+      }) as never,
+      getStateManager: () => ({
+        createTaskState: mockCreateTaskState,
+        markTaskCancelled: mockMarkTaskCancelled,
+      }) as never,
+      db: createTaskUpdateDb() as never,
+      stopDockerContainer: mockStopDockerContainer as never,
+    });
+
+    assert.strictEqual(result.jobRemoved, true);
+    assert.deepStrictEqual(redisClient.set.mock.calls.map(call => call.arguments[0]).sort(), [
+      'worker:abort:issue-owner-repo-99-12345',
+      'worker:abort:owner-repo-99',
+    ]);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map(call => call.arguments[0]).sort(), [
+      'worker:abort:issue-owner-repo-99-12345',
+      'worker:abort:owner-repo-99',
+    ]);
+  });
+
+  test('stopTaskExecution keeps abort markers when a waiting job becomes active during removal', async () => {
+    const queueJobId = 'issue-owner-repo-99-12345';
+    const redisClient = createRedisClient();
+    const queueStates = ['waiting', 'active'];
+    const queueJob = {
+      id: queueJobId,
+      data: {
+        repository: 'owner/repo',
+        prNumber: 99,
+        correlationId: 'corr-99',
+      },
+      remove: mock.fn(async () => {
+        throw new Error('job lock changed');
+      }),
+      getState: mock.fn(async () => queueStates.shift() ?? 'active'),
+    };
+
+    const result = await stopTaskExecution(queueJobId, {
+      redisClient,
+      requestedBy: 'system',
+      cancellation: {
+        code: 'pull_request_merged',
+        message: 'Task cancelled because pull request #99 was merged.',
+      },
+    }, {
+      getIssueQueue: async () => ({
+        getJob: async (id: string) => id === queueJobId ? queueJob : null,
+      }) as never,
+      getStateManager: () => ({
+        createTaskState: mockCreateTaskState,
+        markTaskCancelled: mockMarkTaskCancelled,
+      }) as never,
+      db: createTaskUpdateDb() as never,
+      stopDockerContainer: mockStopDockerContainer as never,
+    });
+
+    assert.strictEqual(result.jobRemoved, false);
+    assert.strictEqual(queueJob.remove.mock.calls.length, 1);
+    assert.strictEqual(queueJob.getState.mock.calls.length, 2);
+    assert.deepStrictEqual(redisClient.set.mock.calls.map(call => call.arguments[0]).sort(), [
+      'worker:abort:issue-owner-repo-99-12345',
+      'worker:abort:owner-repo-99',
+    ]);
+    assert.strictEqual(redisClient.del.mock.calls.length, 0);
+  });
+
   test('stopTaskExecution preserves pr_followup type for queue payloads that use prNumber', async () => {
     const queueJobId = 'pr-comments-batch-integry-propr-99-456';
     const redisClient = createRedisClient();
@@ -345,5 +429,23 @@ describe('merged PR queue follow-up fixes', () => {
       { taskId: 'task-running-1', state: 'processing' },
       { taskId: 'task-running-2', state: 'processing' },
     ]);
+  });
+
+  test('hasActiveTasksForPR preserves fail-open compatibility on lookup errors', async () => {
+    const result = await hasActiveTasksForPR('integry/propr', 1463, {
+      getIssueQueue: async () => {
+        throw new Error('lookup failed');
+      },
+      log: {
+        info: mock.fn(),
+        warn: mock.fn(),
+      },
+    });
+
+    assert.deepStrictEqual(result, {
+      hasActive: false,
+      activeTasks: [],
+      queuedJobs: [],
+    });
   });
 });

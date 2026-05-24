@@ -317,4 +317,42 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(res.body, 'Webhook processed.');
     assert.strictEqual(processor.mock.calls.length, 1);
   });
+
+  test('handleWebhookRequest continues webhook processing when merge-task cancellation fails', async () => {
+    const redisClient = createRedisClient();
+    const payload = createMergedPrPayload();
+    const req = createWebhookRequest(payload, 'test-secret');
+    const res = createWebhookResponse();
+    const processor = mock.fn(async () => {});
+
+    mockGetActiveTasksForPR.mock.mockImplementation(async () => ([
+      { taskId: 'task-running', state: 'processing' },
+    ]));
+    mockStopTaskExecution.mock.mockImplementation(async () => {
+      throw new Error('simulated cancellation failure');
+    });
+
+    await assert.doesNotReject(async () => {
+      await handleWebhookRequest(req as never, res as never, {
+        webhookSecret: 'test-secret',
+        redis: {
+          set: mock.fn(async () => 'OK'),
+        },
+        processor,
+        correlationId: 'test-correlation-id',
+        mergeTaskCancellation: {
+          redisClient,
+          getActiveTasksForPR: mockGetActiveTasksForPR,
+          stopTaskExecution: mockStopTaskExecution,
+          log: mockLogger,
+        },
+      });
+    });
+
+    assert.strictEqual(mockStopTaskExecution.mock.calls.length, 1);
+    assert.strictEqual(processor.mock.calls.length, 1);
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body, 'Webhook processed.');
+    assert.strictEqual(mockLogger.warn.mock.calls.length > 0, true);
+  });
 });

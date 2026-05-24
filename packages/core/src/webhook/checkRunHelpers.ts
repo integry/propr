@@ -749,20 +749,29 @@ export async function getActiveTasksForPR(
  */
 export async function hasActiveTasksForPR(
     repository: string,
-    prNumber: number
+    prNumber: number,
+    deps: GetActiveTasksForPRDeps = {}
 ): Promise<{
     hasActive: boolean;
     activeTasks: Array<{ taskId: string; state: string }>;
     queuedJobs: Array<{ jobId: string; state: string }>;
 }> {
-    const taskList = await getActiveTasksForPR(repository, prNumber);
-    return {
-        hasActive: taskList.length > 0,
-        activeTasks: taskList.filter(task => !PR_QUEUE_STATE_SET.has(task.state)),
-        queuedJobs: taskList
-            .filter(task => PR_QUEUE_STATE_SET.has(task.state))
-            .map(task => ({ jobId: task.taskId, state: task.state })),
-    };
+    try {
+        const taskList = await getActiveTasksForPR(repository, prNumber, deps);
+        return {
+            hasActive: taskList.length > 0,
+            activeTasks: taskList.filter(task => !PR_QUEUE_STATE_SET.has(task.state)),
+            queuedJobs: taskList
+                .filter(task => PR_QUEUE_STATE_SET.has(task.state))
+                .map(task => ({ jobId: task.taskId, state: task.state })),
+        };
+    } catch {
+        return {
+            hasActive: false,
+            activeTasks: [],
+            queuedJobs: [],
+        };
+    }
 }
 
 /**
