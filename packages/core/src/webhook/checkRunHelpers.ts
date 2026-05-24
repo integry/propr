@@ -646,6 +646,18 @@ export interface PRTaskActivity {
     state: string;
 }
 
+interface ActiveTaskRow {
+    task_id: string;
+    job_id: string | null;
+    state: string;
+}
+
+export interface GetActiveTasksForPRDeps {
+    getIssueQueue?: typeof getIssueQueue;
+    db?: typeof db;
+    log?: Pick<typeof logger, 'info' | 'warn'>;
+}
+
 function getRepositoryFromJobData(jobData: Record<string, unknown>): string | null {
     if (typeof jobData.repository === 'string') {
         return jobData.repository;
@@ -675,11 +687,14 @@ function getPrNumberFromJobData(jobData: Record<string, unknown>): number | null
  */
 export async function getActiveTasksForPR(
     repository: string,
-    prNumber: number
+    prNumber: number,
+    deps: GetActiveTasksForPRDeps = {}
 ): Promise<PRTaskActivity[]> {
     try {
         const taskMap = new Map<string, PRTaskActivity>();
-        const queue = await getIssueQueue();
+        const queue = await (deps.getIssueQueue ?? getIssueQueue)();
+        const database = deps.db ?? db;
+        const log = deps.log ?? logger;
 
         for (const queueState of PR_QUEUE_STATES) {
             const jobs = await queue.getJobs([queueState]);
@@ -689,36 +704,37 @@ export async function getActiveTasksForPR(
                     continue;
                 }
 
-                const taskId = String(job.id);
-                taskMap.set(taskId, { taskId, state: queueState });
+                const queueJobId = String(job.id);
+                taskMap.set(queueJobId, { taskId: queueJobId, state: queueState });
             }
         }
 
-        const activeTasks = await db('tasks')
-            .select('tasks.task_id', 'task_history.state')
+        const activeTasks = await database('tasks')
+            .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
             .leftJoin('task_history', function() {
                 this.on('tasks.task_id', '=', 'task_history.task_id')
-                    .andOn('task_history.history_id', '=', db.raw(`(
+                    .andOn('task_history.history_id', '=', database.raw(`(
                         SELECT MAX(history_id) FROM task_history th2
                         WHERE th2.task_id = tasks.task_id
                     )`));
             })
             .where('tasks.repository', repository)
             .where('tasks.pr_number', prNumber)
-            .whereNotIn('task_history.state', TERMINAL_TASK_STATES);
+            .whereNotIn('task_history.state', TERMINAL_TASK_STATES) as ActiveTaskRow[];
 
         for (const task of activeTasks) {
-            taskMap.set(task.task_id, { taskId: task.task_id, state: task.state });
+            const dedupeKey = task.job_id || task.task_id;
+            taskMap.set(dedupeKey, { taskId: task.task_id, state: task.state });
         }
 
         const taskList = [...taskMap.values()];
         if (taskList.length > 0) {
-            logger.info({ repository, prNumber, activeTasks: taskList }, 'Found active or queued work for PR');
+            log.info({ repository, prNumber, activeTasks: taskList }, 'Found active or queued work for PR');
         }
 
         return taskList;
     } catch (error) {
-        logger.warn({
+        (deps.log ?? logger).warn({
             repository,
             prNumber,
             error: (error as Error).message

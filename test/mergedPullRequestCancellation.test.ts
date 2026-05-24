@@ -1,6 +1,16 @@
-import { test, describe, beforeEach, mock } from 'node:test';
+import { after, test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
-import { cancelMergedPullRequestTasks } from '../packages/api/webhookHandler.js';
+import crypto from 'node:crypto';
+
+process.env.GH_APP_ID ??= '1';
+process.env.GH_PRIVATE_KEY_PATH ??= '.propr/test-private-key.pem';
+process.env.GH_INSTALLATION_ID ??= '1';
+process.env.NODE_ENV ??= 'test';
+
+const { cancelMergedPullRequestTasks, handleWebhookRequest } = await import('../packages/api/webhookHandler.js');
+const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+const { closeStateManager } = await import('../packages/core/src/utils/workerStateManager.ts');
+const { closeUltrafixStateRedis } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
 
 function createRedisClient() {
   return {
@@ -19,6 +29,41 @@ function createMergedPrPayload(overrides: Record<string, unknown> = {}): Record<
     ...overrides,
   };
 }
+
+function createWebhookRequest(payload: Record<string, unknown>, secret: string) {
+  const body = Buffer.from(JSON.stringify(payload));
+  const signature = `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
+
+  return {
+    body,
+    headers: {
+      'x-hub-signature-256': signature,
+      'x-github-delivery': 'delivery-123',
+      'x-github-event': 'pull_request',
+    },
+  };
+}
+
+function createWebhookResponse() {
+  return {
+    statusCode: 200,
+    body: '',
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    send(payload: string) {
+      this.body = payload;
+      return this;
+    },
+  };
+}
+
+after(async () => {
+  await closeUltrafixStateRedis();
+  await closeStateManager();
+  await closeConnection();
+});
 
 describe('cancelMergedPullRequestTasks', () => {
   const mockLogger = {
@@ -150,5 +195,62 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockStopTaskExecution.mock.calls[0].arguments[0], 'task-fails');
     assert.strictEqual(mockStopTaskExecution.mock.calls[1].arguments[0], 'task-succeeds');
     assert.strictEqual(mockLogger.warn.mock.calls.length, 1);
+  });
+
+  test('handleWebhookRequest does not block the response on merge-task cancellation', async () => {
+    const redisClient = createRedisClient();
+    const payload = createMergedPrPayload();
+    const req = createWebhookRequest(payload, 'test-secret');
+    const res = createWebhookResponse();
+    const processor = mock.fn(async () => {});
+    let releaseStopTask: (() => void) | null = null;
+    let stopTaskResolved = false;
+
+    mockGetActiveTasksForPR.mock.mockImplementation(async () => ([
+      { taskId: 'task-running', state: 'processing' },
+    ]));
+    mockStopTaskExecution.mock.mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        releaseStopTask = () => {
+          stopTaskResolved = true;
+          resolve();
+        };
+      });
+      return {
+        success: true,
+        message: 'cancelled',
+        taskId: 'task-running',
+        containerStopped: false,
+        jobRemoved: false,
+        currentState: 'processing',
+        queueState: null,
+        cancellation: { code: 'pull_request_merged', message: 'Task cancelled because pull request #1463 was merged.' },
+      };
+    });
+
+    await handleWebhookRequest(req as never, res as never, {
+      webhookSecret: 'test-secret',
+      redis: {
+        set: mock.fn(async () => 'OK'),
+      },
+      processor,
+      correlationId: 'test-correlation-id',
+      mergeTaskCancellation: {
+        redisClient,
+        getActiveTasksForPR: mockGetActiveTasksForPR,
+        stopTaskExecution: mockStopTaskExecution,
+        log: mockLogger,
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body, 'Webhook processed.');
+    assert.strictEqual(processor.mock.calls.length, 1);
+    assert.strictEqual(mockStopTaskExecution.mock.calls.length, 1);
+    assert.strictEqual(stopTaskResolved, false);
+
+    releaseStopTask?.();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.strictEqual(stopTaskResolved, true);
   });
 });

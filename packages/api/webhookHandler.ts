@@ -184,7 +184,9 @@ export async function handleWebhookRequest(
   }
 
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
-  await cancelMergedPullRequestTasks(payload, correlationId, mergeTaskCancellation);
+  void cancelMergedPullRequestTasks(payload, correlationId, mergeTaskCancellation).catch((error) => {
+    console.warn(`[webhook] Failed to cancel merged PR tasks: ${(error as Error).message}`);
+  });
   await processor(payload, rawEvent, correlationId, rawDeliveryId);
 
   res.status(200).send('Webhook processed.');
@@ -217,7 +219,7 @@ export async function cancelMergedPullRequestTasks(
 
   log.info({ correlationId, repository, prNumber, activeTaskCount: activeTasks.length }, 'Cancelling active PR tasks after merge');
 
-  for (const task of activeTasks) {
+  await Promise.allSettled(activeTasks.map(async (task) => {
     try {
       await stopTask(task.taskId, {
         redisClient: deps.redisClient,
@@ -233,7 +235,7 @@ export async function cancelMergedPullRequestTasks(
         error: (error as Error).message,
       }, 'Failed to cancel merged PR task');
     }
-  }
+  }));
 }
 
 function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {
