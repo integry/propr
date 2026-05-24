@@ -152,6 +152,13 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 0);
   });
 
+  test('rejects merged PR cancellation when required dependencies are missing', async () => {
+    await assert.rejects(
+      async () => cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id'),
+      /dependencies are required/,
+    );
+  });
+
   test('does nothing when there are no active PR tasks', async () => {
     const redisClient = createRedisClient();
 
@@ -331,7 +338,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(processor.mock.calls.length, 1);
   });
 
-  test('handleWebhookRequest returns a retryable response when merge-task cancellation fails', async () => {
+  test('handleWebhookRequest continues processing when merge-task cancellation fails', async () => {
     const redisClient = createRedisClient();
     const payload = createMergedPrPayload();
     const req = createWebhookRequest(payload, 'test-secret');
@@ -365,10 +372,10 @@ describe('cancelMergedPullRequestTasks', () => {
     });
 
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 1);
-    assert.strictEqual(processor.mock.calls.length, 0);
+    assert.strictEqual(processor.mock.calls.length, 1);
     assert.strictEqual(reserveDelivery.mock.calls.length, 1);
-    assert.strictEqual(res.statusCode, 503);
-    assert.strictEqual(res.body, 'Merged PR task cancellation failed.');
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body, 'Webhook processed.');
     assert.strictEqual(mockLogger.warn.mock.calls.length > 0, true);
   });
 });

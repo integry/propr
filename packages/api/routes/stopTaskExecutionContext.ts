@@ -250,7 +250,7 @@ function getQueueJobIssueType(queueJob: Job<QueueJobData>): string {
     return 'pr-comment';
   }
 
-  return 'pr_followup';
+  return 'pr-followup';
 }
 
 function extractTaskNumber(jobData: QueueJobData): number | null {

@@ -254,7 +254,7 @@ describe('merged PR queue follow-up fixes', () => {
         repoOwner: 'owner',
         repoName: 'repo',
         pullRequestNumber: 99,
-        type: 'pr_followup',
+        type: 'pr-followup',
       },
       'corr-99',
     ]);
@@ -599,11 +599,59 @@ describe('merged PR queue follow-up fixes', () => {
 
     assert.strictEqual(merged, true);
     assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
-    assert.strictEqual(redisClient.get.mock.calls.length, 1);
+    assert.strictEqual(redisClient.get.mock.calls.length, 2);
     assert.strictEqual(redisClient.set.mock.calls.length, 1);
     assert.strictEqual(redisClient.set.mock.calls[0].arguments[0], 'pr-merged:integry/propr:1463');
     assert.match(String(redisClient.set.mock.calls[0].arguments[1]), /^\d{4}-\d{2}-\d{2}T/);
     assert.deepStrictEqual(redisClient.set.mock.calls[0].arguments[2], { EX: 2592000 });
+  });
+
+  test('hasPullRequestMerged skips GitHub lookups when a cached open-state marker exists', async () => {
+    const redisClient = {
+      get: mock.fn(async (key: string) => key.startsWith('pr-open:') ? 'cached-open' : null),
+      set: mock.fn(async () => 'OK'),
+    };
+    const getAuthenticatedOctokit = mock.fn(async () => ({
+      request: async () => {
+        throw new Error('should not be called');
+      },
+    }));
+
+    const merged = await hasPullRequestMerged(redisClient as never, 'integry/propr', 1463, {
+      getAuthenticatedOctokit: getAuthenticatedOctokit as never,
+    });
+
+    assert.strictEqual(merged, false);
+    assert.strictEqual(redisClient.get.mock.calls.length, 2);
+    assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 0);
+    assert.strictEqual(redisClient.set.mock.calls.length, 0);
+  });
+
+  test('hasPullRequestMerged negative-caches open PRs after a GitHub lookup', async () => {
+    const redisClient = {
+      get: mock.fn(async () => null),
+      set: mock.fn(async () => 'OK'),
+    };
+    const getAuthenticatedOctokit = mock.fn(async () => ({
+      request: async () => ({
+        data: {
+          merged: false,
+          merged_at: null,
+        },
+      }),
+    }));
+
+    const merged = await hasPullRequestMerged(redisClient as never, 'integry/propr', 1463, {
+      getAuthenticatedOctokit: getAuthenticatedOctokit as never,
+    });
+
+    assert.strictEqual(merged, false);
+    assert.strictEqual(getAuthenticatedOctokit.mock.calls.length, 1);
+    assert.strictEqual(redisClient.get.mock.calls.length, 2);
+    assert.strictEqual(redisClient.set.mock.calls.length, 1);
+    assert.strictEqual(redisClient.set.mock.calls[0].arguments[0], 'pr-open:integry/propr:1463');
+    assert.match(String(redisClient.set.mock.calls[0].arguments[1]), /^\d{4}-\d{2}-\d{2}T/);
+    assert.deepStrictEqual(redisClient.set.mock.calls[0].arguments[2], { EX: 60 });
   });
 
   test('getActiveTasksForPR uses the tracked queue-job index as a fast path when scans are not forced', async () => {

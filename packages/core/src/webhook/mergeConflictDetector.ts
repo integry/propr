@@ -37,6 +37,7 @@ interface PRConflictInfo {
 }
 
 const IDEMPOTENCY_TTL_SECONDS = 24 * 3600; // 24 hours
+const TRACKABLE_QUEUE_STATES = new Set(['waiting', 'active', 'delayed']);
 
 /**
  * Checks a single PR for merge conflicts and enqueues a resolution job if needed.
@@ -102,9 +103,19 @@ async function detectAndEnqueueForPR(
         throw error;
     }
     if (await hasPullRequestMerged(redisClient as never, repository, prNumber)) {
-        await queuedJob.remove();
-        await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
-        log.info({ repository, prNumber, jobId }, 'Merge conflict detection: removed freshly-queued job because PR merged during enqueue');
+        await discardFreshMergeConflictJobAfterMerge({
+            queuedJob,
+            queue: queue as never,
+            redisClient,
+            repository,
+            prNumber,
+            owner,
+            repoName,
+            jobId,
+            log,
+            logMessage: 'Merge conflict detection: removed freshly-queued job because PR merged during enqueue',
+            warnMessage: 'Merge conflict detection: failed to remove freshly-queued job after merge; set abort signals instead',
+        });
         return { outcome: 'skipped_merged', prNumber, repository };
     }
 
@@ -257,9 +268,19 @@ export async function handleMergeCommand(
         throw error;
     }
     if (await hasPullRequestMerged(options.redisClient as never, repository, prNumber)) {
-        await queuedJob.remove();
-        await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
-        log.info({ repository, prNumber, jobId }, '/merge command: removed freshly-queued job because the PR merged during enqueue');
+        await discardFreshMergeConflictJobAfterMerge({
+            queuedJob,
+            queue: queue as never,
+            redisClient: options.redisClient,
+            repository,
+            prNumber,
+            owner,
+            repoName,
+            jobId,
+            log,
+            logMessage: '/merge command: removed freshly-queued job because the PR merged during enqueue',
+            warnMessage: '/merge command: failed to remove freshly-queued job after merge; set abort signals instead',
+        });
         return null;
     }
 
@@ -374,4 +395,65 @@ export async function handlePushConflictDetection(
     }
 
     return results;
+}
+
+async function discardFreshMergeConflictJobAfterMerge(params: {
+    queuedJob: { remove: () => Promise<unknown>; getState: () => Promise<string> };
+    queue: Awaited<ReturnType<typeof getIssueQueue>>;
+    redisClient: Redis;
+    repository: string;
+    prNumber: number;
+    owner: string;
+    repoName: string;
+    jobId: string;
+    log: ReturnType<typeof logger.withCorrelation>;
+    logMessage: string;
+    warnMessage: string;
+}): Promise<void> {
+    const { queuedJob, queue, redisClient, repository, prNumber, owner, repoName, jobId, log, logMessage, warnMessage } = params;
+
+    try {
+        await queuedJob.remove();
+        log.info({ repository, prNumber, jobId }, logMessage);
+        return;
+    } catch (error) {
+        const queueState = await reloadQueueStateAfterRemovalFailure(queuedJob);
+        await setMergedPrAbortSignals(redisClient, [jobId, `${owner}-${repoName}-${prNumber}`], prNumber);
+
+        if (queueState && TRACKABLE_QUEUE_STATES.has(queueState)) {
+            try {
+                await trackPrQueueJob(queue as never, repository, prNumber, jobId);
+            } catch (trackError) {
+                log.warn({ repository, prNumber, jobId, error: (trackError as Error).message }, 'Merge conflict detection: failed to move merged PR job into the tracked queue-job index');
+            }
+        }
+
+        log.warn({ repository, prNumber, jobId, queueState, error: (error as Error).message }, warnMessage);
+    } finally {
+        try {
+            await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
+        } catch (error) {
+            log.warn({ repository, prNumber, jobId, error: (error as Error).message }, 'Merge conflict detection: failed to clear pending PR queue-job index entry after merge');
+        }
+    }
+}
+
+async function reloadQueueStateAfterRemovalFailure(queueJob: { getState: () => Promise<string> }): Promise<string | null> {
+    try {
+        return await queueJob.getState();
+    } catch {
+        return null;
+    }
+}
+
+async function setMergedPrAbortSignals(redisClient: Redis, taskIds: string[], prNumber: number): Promise<void> {
+    const payload = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        reasonCode: 'pull_request_merged',
+        reason: `Task cancelled because pull request #${prNumber} was merged.`,
+    });
+
+    for (const taskId of new Set(taskIds)) {
+        await redisClient.set(`worker:abort:${taskId}`, payload, 'EX', 3600);
+    }
 }

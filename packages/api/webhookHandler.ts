@@ -96,7 +96,10 @@ function toSupportedEventSet(supportedEvents: Iterable<string>): ReadonlySet<str
  * 1. Delivery IDs are reserved before any merge-time cancellation side effects,
  *    so duplicate GitHub deliveries are rejected before they can cancel the
  *    same task twice.
- * 2. Once a delivery ID is reserved in Redis, it is NOT removed on downstream
+ * 2. Merge-time task cancellation is best-effort inside this handler. A
+ *    transient cancellation failure must not prevent downstream webhook
+ *    processing because the reserved delivery ID intentionally blocks retries.
+ * 3. Once a delivery ID is reserved in Redis, it is NOT removed on downstream
  *    processing errors. This prevents a partially-processed webhook from being
  *    re-accepted on a GitHub retry, which could re-trigger side effects.
  *    Downstream consumers must be idempotent.
@@ -209,9 +212,7 @@ export async function handleWebhookRequest(
         repository: payload.repository.full_name,
         prNumber: payload.pull_request.number,
         error: (error as Error).message,
-      }, 'Merged PR task cancellation failed; returning failure response');
-      res.status(503).send('Merged PR task cancellation failed.');
-      return;
+      }, 'Merged PR task cancellation failed; continuing with webhook processing');
     }
   }
 
