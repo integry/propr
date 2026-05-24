@@ -13,6 +13,8 @@ This website is built using [Docusaurus](https://docusaurus.io/), a modern stati
 npm ci
 ```
 
+The docs site uses its own lockfile inside `docs/`. From the repository root, use the repo-level `npm ci` first for the application workspace, then run `npm ci` inside `docs/` when you need to build or validate the Docusaurus site.
+
 ## Local Development
 
 ```bash

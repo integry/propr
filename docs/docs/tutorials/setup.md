@@ -196,7 +196,7 @@ GIT_OPERATION_MAX_RETRIES=3
 Install the Node.js dependencies:
 
 ```bash
-npm install
+npm ci
 ```
 
 If you plan to build or validate the Docusaurus docs site in this repository, use Node.js 20 or newer for the `docs/` workspace as well.

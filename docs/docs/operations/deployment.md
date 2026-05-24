@@ -200,7 +200,7 @@ Important data to backup:
 - Logs: `./logs` directory
 - The environment or secret-management source that provides your production `.env` values
 
-Run backups during a maintenance window. The example below stops the services that write application state, records which of them were already running, and uses a subshell `trap` so only that original running set is started again if a backup command fails.
+Run backups during a maintenance window. The example below records which of the stateful services were already running, stops the application writers, forces Redis to persist its in-memory state, and uses a subshell `trap` so only that original running set is started again when the backup subshell exits.
 
 ```bash
 (
@@ -224,8 +224,14 @@ Run backups during a maintenance window. The example below stops the services th
   # Create a backup directory
   mkdir -p ./backups
 
-  # Stop services first so Redis and SQLite are not being written during the backup
-  docker-compose -f "$compose_file" stop api daemon worker redis
+  # Stop application writers first so Redis and SQLite are quiescent during the backup
+  docker-compose -f "$compose_file" stop api daemon worker
+
+  # Force Redis to flush in-memory queue and cache state to disk before snapshotting its volume
+  docker-compose -f "$compose_file" exec -T redis redis-cli SAVE
+
+  # Stop Redis after its on-disk snapshot has been updated
+  docker-compose -f "$compose_file" stop redis
 
   # Back up the shared SQLite volume
   docker run --rm \
@@ -305,6 +311,6 @@ docker-compose -f docker-compose.prod.yml exec redis redis-cli LRANGE system:act
 Adjust these settings based on your needs:
 
 - `WORKER_CONCURRENCY`: Number of jobs processed simultaneously (default: 5)
-- `POLL_INTERVAL`: How often daemon checks for new issues (default: 60000ms)
+- `POLLING_INTERVAL_MS`: How often daemon checks for new issues (default: 60000ms)
 - Redis memory limits in docker-compose configuration
 - Worker container CPU/memory limits

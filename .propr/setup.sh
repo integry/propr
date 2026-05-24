@@ -15,6 +15,9 @@ if [ "$NODE_MAJOR" -lt 20 ]; then
   exit 1
 fi
 
+cd "$WORKSPACE"
+npm ci
+
 cd "$WORKSPACE/docs"
 npm ci
 npm run typecheck
