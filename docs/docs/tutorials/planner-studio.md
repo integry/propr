@@ -6,12 +6,15 @@ sidebar_position: 4
 
 This tutorial shows how to use Planner Studio to draft a plan in the Web UI, turn it into actionable issues, and execute the work through ProPR.
 
+Planner Studio is already a UI-first workflow, but it works best when repository and agent defaults are also managed in the rest of the Web UI instead of being left as hidden deployment-only settings.
+
 ## Before You Start
 
 Make sure:
 
 - The Web UI is running and connected to the ProPR backend
 - The target repository has already been added to the monitored repository list
+- The agents and default models you want to use are already configured in the Web UI
 - The repository entry has the correct `baseBranch` if you do not want to use the repository default branch
 
 Important:
@@ -24,6 +27,8 @@ For the exact branch rules, see [Repository-Specific Default Branch Configuratio
 ## 1. Open Planner Studio And Create A Draft
 
 In the Web UI, open Planner Studio and start a new draft.
+
+If the repository or agent setup looks wrong, leave Planner Studio and fix it in Repositories, AI Agents, or Settings before you draft the plan.
 
 Provide:
 

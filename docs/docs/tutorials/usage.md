@@ -6,6 +6,8 @@ sidebar_position: 2
 
 Learn how to run and operate ProPR for automated issue processing.
 
+Most users will do day-to-day configuration and monitoring in the Web UI. This page focuses on the backend processes and operator commands that power those UI workflows.
+
 ## Running the Daemon
 
 The daemon monitors GitHub repositories for AI-eligible issues and adds them to the task queue.

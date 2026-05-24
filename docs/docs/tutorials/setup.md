@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Setup
 
-This guide walks you through setting up ProPR for your GitHub repositories.
+This guide walks you through bringing ProPR online, then finishing the day-to-day configuration in the Web UI. Most teams should treat environment variables as deployment bootstrap and use the browser UI for repositories, labels, branches, and agent settings.
 
 ## Prerequisites
 
@@ -41,7 +41,9 @@ Create a GitHub App with the following permissions:
 5. Install the app on your target repository
 6. Note down the **App ID** and **Installation ID**
 
-## 2. Environment Configuration
+## 2. Bootstrap Environment Configuration
+
+This step is for infrastructure bootstrap, credentials, and default paths. You do not need to keep editing `.env` for normal repository and agent configuration after the UI is up.
 
 ### Create Environment File
 
@@ -64,7 +66,7 @@ GH_INSTALLATION_ID=your_installation_id
 
 ### Configure Daemon
 
-Set up repository monitoring:
+Set up the daemon runtime. If you already know the repositories you want to seed on first launch, you can provide them here, but you can also manage monitored repositories later in the Web UI.
 
 ```bash
 # Daemon Configuration
@@ -74,7 +76,7 @@ POLLING_INTERVAL_MS=60000
 
 ### Configure Issue Detection
 
-Define which labels trigger processing:
+Define bootstrap label defaults. Most teams can review and adjust these later from the Settings page in the Web UI.
 
 ```bash
 # Issue Detection Configuration
@@ -233,6 +235,19 @@ Ensure your private key file has restricted permissions:
 chmod 600 your-app-private-key.pem
 ```
 
+## 8. Complete Configuration In The Web UI
+
+Once the services are running, open the Web UI and finish the product-level setup there.
+
+Recommended first pass:
+
+1. Add your repositories in the Repositories page and confirm the base branch for each one
+2. Open AI Agents and configure the agents, models, and credential paths you want available
+3. Open Settings and review primary processing labels, PR behavior, and planner defaults
+4. Return to the dashboard and verify the system can see repositories, queues, and agent configuration
+
+Use environment variables for deployment concerns such as credentials, filesystem paths, and service wiring. Use the Web UI for the settings your team will change over time.
+
 ## Next Steps
 
-Once setup is complete, proceed to the [Usage Guide](./usage.md) to learn how to run ProPR.
+Once setup is complete, proceed to the [Usage Guide](./usage.md) for service operation details, or jump straight to the [Planner Studio](./planner-studio.md) and [End-to-End Workflow](./end-to-end-workflow.md) tutorials to start using ProPR through the UI.

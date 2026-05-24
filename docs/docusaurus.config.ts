@@ -6,7 +6,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'ProPR',
-  tagline: 'Automated GitHub Issue Processor with AI',
+  tagline: 'Web UI for AI planning, execution, and PR automation',
   favicon: 'img/favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future

@@ -10,12 +10,12 @@ type FeatureItem = {
 
 const FeatureList: FeatureItem[] = [
   {
-    title: 'Multi-Agent Execution',
+    title: 'Web UI Control Plane',
     description: (
       <>
-        Run repository work through Claude, Codex, and Gemini agents with
-        model-aware routing, isolated execution, and PR workflows that can
-        switch reviewers or implementers as needed.
+        Configure monitored repositories, branches, processing labels, agent
+        defaults, and live task operations from the browser instead of
+        stitching together environment variables and logs for day-to-day work.
       </>
     ),
   },
@@ -30,12 +30,12 @@ const FeatureList: FeatureItem[] = [
     ),
   },
   {
-    title: 'Ultrafix Loop',
+    title: 'Multi-Agent PR Automation',
     description: (
       <>
-        Automate review-fix cycles on pull requests with configurable score
-        goals, CI gating, cooldown windows, and a simple label-based circuit
-        breaker for human control.
+        Run repository work through Claude, Codex, and Gemini agents, then
+        refine pull requests with slash commands and the Ultrafix loop when a
+        human wants follow-up help inside GitHub.
       </>
     ),
   },

@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # End-to-End Workflow
 
-This tutorial walks through ProPR's standard GitHub issue-to-PR workflow, from labeling an issue to refining the resulting pull request.
+This tutorial walks through ProPR's standard GitHub issue-to-PR workflow, from configuring the repository in the Web UI to refining the resulting pull request.
 
 ## Before You Start
 
@@ -12,12 +12,28 @@ Make sure:
 
 - ProPR is already configured for your repository
 - The daemon and at least one worker are running
-- Your repository appears in ProPR's monitored repository list, whether that list was seeded with `GITHUB_REPOS_TO_MONITOR` or managed in the Web UI
-- You know which primary processing label your team uses, such as `AI` or `propr`
+- Your repository appears in ProPR's monitored repository list in the Web UI
+- You know which primary processing label your team configured in Settings, such as `AI` or `propr`
 
 If you have not completed setup yet, start with the [Setup](./setup.md) and [Usage](./usage.md) guides.
 
-## 1. Create Or Choose A GitHub Issue
+## 1. Confirm Configuration In The Web UI
+
+Before you touch GitHub, open the Web UI and verify the repository-level setup.
+
+Check:
+
+1. The repository is enabled in the Repositories page
+2. The base branch is correct for that repository
+3. At least one coding agent is available in AI Agents
+4. The primary processing label you plan to use is present in Settings
+
+Actionable advice:
+
+- Treat the Web UI as the source of truth for repository and label configuration
+- Use environment variables mainly to bootstrap the deployment, not for routine tuning
+
+## 2. Create Or Choose A GitHub Issue
 
 Open a normal GitHub issue that clearly describes the work you want ProPR to implement.
 
@@ -28,7 +44,7 @@ Actionable advice:
 - Add links, screenshots, or reproduction steps when the task depends on context
 - Keep one issue focused on one deliverable so the generated PR stays reviewable
 
-## 2. Add The Processing Label
+## 3. Add The Processing Label
 
 Apply one of your configured primary processing labels to the issue.
 
@@ -46,10 +62,10 @@ What happens next:
 
 Actionable advice:
 
-- Use the exact label configured in `PRIMARY_PROCESSING_LABELS`
+- Use the exact label configured in the Web UI Settings page
 - Remove stale processing labels before retrying a previously failed issue
 
-## 3. Optionally Select A Model
+## 4. Optionally Select A Model
 
 If your team routes work by model, add the relevant model label before the worker starts.
 
@@ -65,7 +81,23 @@ Older aliases may still resolve for backward compatibility, but the current docs
 
 If you add more than one model label, ProPR can process the same issue in separate runs, each with its own branch and PR.
 
-## 4. Let The Worker Run The Issue
+## 5. Monitor The Run In The Web UI
+
+Once the issue is queued, use the dashboard and task detail views to follow progress.
+
+Watch for:
+
+- The task appearing in the recent activity list
+- State changes from queueing to execution
+- Streamed agent output or logs
+- Failures tied to authentication, branch configuration, or container setup
+
+Actionable advice:
+
+- Prefer checking the task detail view before jumping straight to container logs
+- Use the dashboard to confirm which repository, label, and model were actually selected
+
+## 6. Let The Worker Run The Issue
 
 Once a worker picks up the job, ProPR handles the git workflow automatically.
 
@@ -82,7 +114,7 @@ Actionable advice:
 - Keep the worker logs open while testing a new repository setup
 - Check for authentication, branch, or Docker errors first if a run stalls early
 
-## 5. Review The Generated Pull Request
+## 7. Review The Generated Pull Request
 
 When the run succeeds, ProPR opens a PR linked back to the issue.
 
@@ -95,7 +127,7 @@ Review the PR for:
 
 The issue is typically linked with closing keywords such as `Closes #123`, so the issue will close automatically when the PR merges.
 
-## 6. Ask ProPR For Follow-Up Changes In The PR
+## 8. Ask ProPR For Follow-Up Changes In The PR
 
 Use PR comment commands when the first pass needs refinement.
 
@@ -115,7 +147,7 @@ Other useful commands:
 
 For command details, see [PR Slash Commands](../features/pr-commands.md).
 
-## 7. Merge The Pull Request
+## 9. Merge The Pull Request
 
 After human review and passing checks, merge the PR in GitHub.
 
@@ -125,7 +157,7 @@ After merge:
 2. The PR becomes the system of record for the completed implementation
 3. Your team can continue follow-up work through new issues or additional PR commands on related work
 
-## 8. Re-Run Or Recover When Needed
+## 10. Re-Run Or Recover When Needed
 
 If a run fails or produces the wrong scope:
 
@@ -145,8 +177,9 @@ Actionable advice:
 Use this checklist for a smooth first run:
 
 1. Write a focused issue with acceptance criteria
-2. Add the correct processing label
-3. Add an optional model label if needed
-4. Wait for the daemon and worker to create the PR
-5. Review the PR and run `/review` or `/fix` if needed
-6. Merge when checks and human review are complete
+2. Confirm repository, agent, and label setup in the Web UI
+3. Add the correct processing label
+4. Add an optional model label if needed
+5. Monitor the run in the dashboard
+6. Review the PR and run `/review` or `/fix` if needed
+7. Merge when checks and human review are complete

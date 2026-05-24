@@ -6,11 +6,13 @@ sidebar_position: 2
 
 ProPR is a GitHub automation platform with a Web UI control plane, guided planning workflow, multi-agent execution, and PR refinement loops.
 
+For most users, the Web UI is the main way to configure and operate ProPR. Repositories, branches, processing labels, agents, planner settings, and task visibility all live there, while environment variables and scripts mainly bootstrap the deployment.
+
 ## Web UI Control Plane
 
 ### Dashboard
 
-The dashboard gives you a live operational view of the system:
+The dashboard gives you a live operational view of the system and a starting point for day-to-day operations:
 
 - Recent task activity and status
 - Queue health and throughput
@@ -33,11 +35,11 @@ The Repositories area is the operational home for monitored repos. From there yo
 
 ### AI Agent Management
 
-The Web UI includes an AI Agents area for configuring coding agents and testing them in a built-in playground. This separates agent configuration from task execution so teams can tune defaults before sending real work through the system.
+The Web UI includes an AI Agents area for configuring coding agents, choosing models, setting credential paths, and testing them in a built-in playground. This separates agent configuration from task execution so teams can tune defaults before sending real work through the system.
 
 ### Settings and Ops Controls
 
-Administrative settings cover worker behavior, planner defaults, and model defaults. Combined with the dashboard, this gives teams a browser-based control surface instead of relying only on environment variables and logs.
+Administrative settings cover primary processing labels, PR behavior, worker behavior, planner defaults, and model defaults. Combined with the dashboard, this gives teams a browser-based control surface instead of relying only on environment variables and logs.
 
 ## Planner Studio
 
@@ -100,7 +102,7 @@ Agent runs happen in controlled environments with Docker-backed execution and st
 
 ### Review And Fix Workflow
 
-ProPR supports PR comment commands that turn pull requests into an active control surface:
+ProPR supports PR comment commands that turn pull requests into an active follow-up surface after repositories and defaults are already configured in the Web UI:
 
 - `/review` posts AI review feedback
 - `/fix` applies outstanding AI review suggestions
