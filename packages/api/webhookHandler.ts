@@ -74,6 +74,9 @@ export interface WebhookHandlerDeps {
   processor: (payload: Record<string, unknown>, event: string, correlationId: string, deliveryId: string) => Promise<void>;
   correlationId: string;
   mergeTaskCancellation?: MergeTaskCancellationDeps;
+  supportedEvents?: Iterable<string>;
+  isMergedPullRequestClose?: typeof isMergedPullRequestClose;
+  cancelMergedPullRequestTasks?: typeof cancelMergedPullRequestTasks;
 }
 
 /**
@@ -86,8 +89,9 @@ export interface WebhookHandlerDeps {
  *    deliveries within the TTL window.
  *
  * Failure semantics:
- * 1. Merge-time PR task cancellation runs before delivery-ID reservation so a
- *    transient cancellation failure can return a retryable non-2xx response.
+ * 1. Delivery IDs are reserved before any merge-time cancellation side effects,
+ *    so duplicate GitHub deliveries are rejected before they can cancel the
+ *    same task twice.
  * 2. Once a delivery ID is reserved in Redis, it is NOT removed on downstream
  *    processing errors. This prevents a partially-processed webhook from being
  *    re-accepted on a GitHub retry, which could re-trigger side effects.
@@ -98,7 +102,16 @@ export async function handleWebhookRequest(
   res: Response,
   deps: WebhookHandlerDeps,
 ): Promise<void> {
-  const { webhookSecret, redis, processor, correlationId, mergeTaskCancellation } = deps;
+  const {
+    webhookSecret,
+    redis,
+    processor,
+    correlationId,
+    mergeTaskCancellation,
+    supportedEvents = SUPPORTED_EVENTS,
+    isMergedPullRequestClose: isMergedPullRequestCloseFn = isMergedPullRequestClose,
+    cancelMergedPullRequestTasks: cancelMergedPullRequestTasksFn = cancelMergedPullRequestTasks,
+  } = deps;
 
   // --- Fail closed if req.body is not a Buffer (middleware misconfiguration) ---
   if (!Buffer.isBuffer(req.body)) {
@@ -151,7 +164,7 @@ export async function handleWebhookRequest(
   // avoids marking those deliveries as failed in GitHub's UI while still
   // preventing any downstream processing. Checked before Redis dedup to avoid
   // consuming dedupe keys for events that will never be processed.
-  if (!SUPPORTED_EVENTS.has(rawEvent)) {
+  if (!new Set(supportedEvents).has(rawEvent)) {
     console.log(`[webhook] Ignoring unsupported event type: ${rawEvent}`);
     res.status(200).send('Unsupported event type — ignored.');
     return;
@@ -168,24 +181,6 @@ export async function handleWebhookRequest(
 
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
 
-  if (mergeTaskCancellation && isMergedPullRequestClose(payload)) {
-    try {
-      await cancelMergedPullRequestTasks(payload, correlationId, mergeTaskCancellation);
-    } catch (error) {
-      const log = mergeTaskCancellation.log ?? logger;
-      log.warn({
-        correlationId,
-        deliveryId: rawDeliveryId,
-        event: rawEvent,
-        repository: payload.repository.full_name,
-        prNumber: payload.pull_request.number,
-        error: (error as Error).message,
-      }, 'Merged PR task cancellation failed; returning retryable webhook response');
-      res.status(503).send('Merged PR task cancellation failed.');
-      return;
-    }
-  }
-
   // --- Replay protection: reject duplicate delivery IDs via Redis NX ---
   const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
   const isNew = await redis.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
@@ -197,6 +192,24 @@ export async function handleWebhookRequest(
 
   // The delivery ID remains reserved in Redis regardless of processing outcome.
   // This is intentional — see the JSDoc above for rationale.
+  if (mergeTaskCancellation && isMergedPullRequestCloseFn(payload)) {
+    try {
+      await cancelMergedPullRequestTasksFn(payload, correlationId, mergeTaskCancellation);
+    } catch (error) {
+      const log = mergeTaskCancellation.log ?? logger;
+      log.warn({
+        correlationId,
+        deliveryId: rawDeliveryId,
+        event: rawEvent,
+        repository: payload.repository.full_name,
+        prNumber: payload.pull_request.number,
+        error: (error as Error).message,
+      }, 'Merged PR task cancellation failed; returning failure response');
+      res.status(503).send('Merged PR task cancellation failed.');
+      return;
+    }
+  }
+
   await processor(payload, rawEvent, correlationId, rawDeliveryId);
 
   res.status(200).send('Webhook processed.');

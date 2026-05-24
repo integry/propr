@@ -26,6 +26,8 @@ export interface StopTaskExecutionDeps {
   getStateManager?: typeof getStateManager;
   getIssueQueue?: typeof import('@propr/core').getIssueQueue;
   db?: typeof import('@propr/core').db;
+  loadStopTaskContext?: typeof loadStopTaskContext;
+  ensureTaskStateForCancellation?: typeof ensureTaskStateForCancellation;
 }
 
 export interface StopTaskExecutionResult {
@@ -60,6 +62,7 @@ interface StopTaskActivity {
 
 const RUNNING_TASK_STATES = new Set(['processing', 'claude_execution', 'post_processing']);
 const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed']);
 const REMOVABLE_QUEUE_STATES = new Set(['waiting', 'delayed']);
 const DEFAULT_STOP_REASON: StopTaskCancellationReason = {
   code: 'user_requested_stop',
@@ -72,7 +75,7 @@ export async function stopTaskExecution(
   deps: StopTaskExecutionDeps = {},
 ): Promise<StopTaskExecutionResult> {
   const { redisClient, requestedBy = 'user', cancellation = DEFAULT_STOP_REASON } = options;
-  const context = await loadStopTaskContext(taskReference, redisClient, deps);
+  const context = await (deps.loadStopTaskContext ?? loadStopTaskContext)(taskReference, redisClient, deps);
   const activity = getStopTaskActivity(context.currentState, context.queueState);
   const shouldAbort = shouldAbortTask(activity);
 
@@ -83,7 +86,7 @@ export async function stopTaskExecution(
     queueState: context.queueState,
     activity,
   });
-  await ensureTaskStateForCancellation(context.taskId, context.state, context.queueJob, deps);
+  await (deps.ensureTaskStateForCancellation ?? ensureTaskStateForCancellation)(context.taskId, context.state, context.queueJob, deps);
 
   const timestamp = new Date().toISOString();
   await setAbortSignalIfNeeded({
@@ -105,7 +108,12 @@ export async function stopTaskExecution(
   });
 
   const jobRemoved = await removeQueueJobIfNeeded(context.queueJob, activity.isQueueRemovable);
-  const shouldPersistCancelledState = shouldMarkTaskCancelled(containerStopped, jobRemoved);
+  const shouldPersistCancelledState = shouldMarkTaskCancelled({
+    activity,
+    shouldAbort,
+    containerStopped,
+    jobRemoved,
+  });
 
   if (shouldClearAbortSignals(shouldAbort, containerStopped, jobRemoved)) {
     await clearAbortSignals(redisClient, context.abortTaskIds);
@@ -177,17 +185,12 @@ function assertTaskCanBeStopped(params: {
     });
   }
 
-  if (activity.isRunningTaskState || activity.isQueueActive || activity.isQueueRemovable) {
+  if (activity.isNonTerminalTaskState) {
     return;
   }
 
-  if (activity.isNonTerminalTaskState) {
-    throw new StopTaskExecutionError(409, {
-      error: 'Task stop unavailable',
-      message: 'The task is not in a stoppable worker or queue state.',
-      currentState,
-      queueState,
-    });
+  if (activity.isQueueActive || activity.isQueueRemovable) {
+    return;
   }
 
   throw new StopTaskExecutionError(400, {
@@ -243,7 +246,16 @@ function shouldClearAbortSignals(shouldAbort: boolean, containerStopped: boolean
   return shouldAbort && (containerStopped || jobRemoved);
 }
 
-function shouldMarkTaskCancelled(containerStopped: boolean, jobRemoved: boolean): boolean {
+function shouldMarkTaskCancelled(params: {
+  activity: StopTaskActivity;
+  shouldAbort: boolean;
+  containerStopped: boolean;
+  jobRemoved: boolean;
+}): boolean {
+  const { activity, shouldAbort, containerStopped, jobRemoved } = params;
+  if (!shouldAbort && activity.isNonTerminalTaskState) {
+    return true;
+  }
   return containerStopped || jobRemoved;
 }
 
@@ -294,12 +306,16 @@ async function removeQueueJobIfNeeded(queueJob: Job<QueueJobData> | null, isQueu
     return true;
   } catch (error) {
     const queueState = await reloadQueueStateAfterRemovalFailure(queueJob);
-    if (queueState === 'active') {
-      console.warn(`[stop-execution] Queue job ${String(queueJob.id)} became active during removal, relying on abort signal`);
+    if (isBenignQueueRemovalRace(queueState)) {
+      console.warn(`[stop-execution] Queue job ${String(queueJob.id)} changed state to ${queueState ?? 'unknown'} during removal, relying on abort signal`);
       return false;
     }
     throw error;
   }
+}
+
+export function isBenignQueueRemovalRace(queueState: string | null): boolean {
+  return queueState === null || queueState === 'active' || queueState === 'unknown' || TERMINAL_QUEUE_STATES.has(queueState);
 }
 
 async function reloadQueueStateAfterRemovalFailure(queueJob: Job<QueueJobData>): Promise<string | null> {

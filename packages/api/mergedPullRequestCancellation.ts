@@ -40,7 +40,7 @@ export async function cancelMergedPullRequestTasks(
   };
 
   await persistMergedState(deps.redisClient, repository, prNumber);
-  const activeTasks = await loadActiveTasks(repository, prNumber, { forceQueueScan: true });
+  const activeTasks = await loadActiveTasks(repository, prNumber);
   if (activeTasks.length === 0) {
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
