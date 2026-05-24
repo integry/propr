@@ -645,6 +645,7 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
 }
 
 const PR_QUEUE_STATE_SET = TRACKED_PR_QUEUE_STATE_SET;
+const STOPPABLE_TASK_HISTORY_STATES = ['processing', 'claude_execution', 'post_processing'] as const;
 
 export interface PRTaskActivity {
     taskId: string;
@@ -662,8 +663,6 @@ interface IndexedQueueTaskActivity {
     state: string;
     aliases: string[];
 }
-
-const TERMINAL_TASK_HISTORY_STATES = ['completed', 'failed', 'cancelled'] as const;
 
 export interface GetActiveTasksForPRDeps {
     getIssueQueue?: typeof getIssueQueue;
@@ -723,14 +722,16 @@ export async function getActiveTasksForPR(
             );
         }
 
-        await addQueuedPrJobsFromFallbackScan({
-            queue,
-            repository,
-            prNumber,
-            taskMap,
-            taskAliases,
-            log,
-        });
+        if (deps.forceQueueScan === true || taskMap.size === 0) {
+            await addQueuedPrJobsFromFallbackScan({
+                queue,
+                repository,
+                prNumber,
+                taskMap,
+                taskAliases,
+                log,
+            });
+        }
 
         const activeTasks = await database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -744,7 +745,7 @@ export async function getActiveTasksForPR(
             .where('tasks.repository', repository)
             .where('tasks.pr_number', prNumber)
             .whereNotNull('task_history.state')
-            .whereNotIn('task_history.state', TERMINAL_TASK_HISTORY_STATES) as ActiveTaskRow[];
+            .whereIn('task_history.state', STOPPABLE_TASK_HISTORY_STATES) as ActiveTaskRow[];
 
         for (const task of activeTasks) {
             const dedupeKey = resolveActiveTaskKey(taskMap, taskAliases, [task.job_id, task.task_id]);

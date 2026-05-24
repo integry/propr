@@ -100,37 +100,35 @@ export async function discardFreshQueueJobAfterMerge(params: {
       await setMergedPrAbortSignals(redisClient, taskIds, prNumber);
     }
 
-    if (!persistenceFailure) {
-      try {
-        await queuedJob.remove();
-        queueRemoved = true;
-        shouldClearPendingIndex = true;
-        log.info({ repository, prNumber, jobId }, removedMessage);
-      } catch (error) {
-        const queueState = await reloadQueueStateAfterRemovalFailure(queuedJob);
-        await setMergedPrAbortSignals(redisClient, taskIds, prNumber);
-        await trackQueueJobIfStillIndexed({
-          queue,
-          repository,
-          prNumber,
-          jobId,
-          queueState,
-          log,
-          trackFailureMessage,
-        });
+    try {
+      await queuedJob.remove();
+      queueRemoved = true;
+      shouldClearPendingIndex = true;
+      log.info({ repository, prNumber, jobId }, removedMessage);
+    } catch (error) {
+      const queueState = await reloadQueueStateAfterRemovalFailure(queuedJob);
+      await setMergedPrAbortSignals(redisClient, taskIds, prNumber);
+      await trackQueueJobIfStillIndexed({
+        queue,
+        repository,
+        prNumber,
+        jobId,
+        queueState,
+        log,
+        trackFailureMessage,
+      });
 
-        if (!isBenignRemovalFailureState(queueState)) {
-          removalFailure = new Error(`${removalFailureMessage}: queue job remained ${queueState ?? 'unknown'} after removal failure`);
-        }
-
-        log.warn({
-          repository,
-          prNumber,
-          jobId,
-          queueState,
-          error: (error as Error).message,
-        }, removalFailureMessage);
+      if (!isBenignRemovalFailureState(queueState)) {
+        removalFailure = new Error(`${removalFailureMessage}: queue job remained ${queueState ?? 'unknown'} after removal failure`);
       }
+
+      log.warn({
+        repository,
+        prNumber,
+        jobId,
+        queueState,
+        error: (error as Error).message,
+      }, removalFailureMessage);
     }
   } finally {
     if (shouldClearPendingIndex) {

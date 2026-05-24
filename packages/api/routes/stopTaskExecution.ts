@@ -324,13 +324,7 @@ function shouldMarkTaskCancelled(params: {
     return false;
   }
 
-  if (params.activity.hasContainerToStop) {
-    return false;
-  }
-
-  return params.activity.isRunningTaskState
-    || params.activity.isQueueActive
-    || params.effectiveQueueState === 'active';
+  return false;
 }
 
 function assertStopApplied(params: {
