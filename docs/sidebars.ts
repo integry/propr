@@ -15,11 +15,24 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   tutorialSidebar: [
     'intro',
-    'features',
     {
       type: 'category',
-      label: 'Getting Started',
-      items: ['getting-started/setup', 'getting-started/usage'],
+      label: 'Concepts',
+      items: ['concepts/pr-review-guidelines'],
+    },
+    {
+      type: 'category',
+      label: 'Features',
+      items: [
+        'features/overview',
+        'features/pr-commands',
+        'features/branch-config',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Tutorials',
+      items: ['tutorials/setup', 'tutorials/usage'],
     },
     {
       type: 'category',
@@ -34,14 +47,12 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Technical Docs',
+      label: 'Operations',
       items: [
-        'AI_PR_REVIEW_GUIDELINES',
-        'LLM_METRICS',
-        'PRODUCTION_DEPLOYMENT',
-        'REPOSITORY_BRANCH_CONFIG',
-        'SYSTEM_METRICS',
-        'WEB_UI_INTEGRATION',
+        'operations/deployment',
+        'operations/system-metrics',
+        'operations/llm-metrics',
+        'operations/web-ui-integration',
       ],
     },
   ],

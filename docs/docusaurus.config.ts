@@ -88,7 +88,7 @@ const config: Config = {
           items: [
             {
               label: 'Documentation',
-              to: '/docs/AI_PR_REVIEW_GUIDELINES',
+              to: '/docs/intro',
             },
           ],
         },
@@ -112,4 +112,3 @@ const config: Config = {
 };
 
 export default config;
-

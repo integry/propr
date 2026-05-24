@@ -110,7 +110,7 @@ ProPR AI review comments include a `/fix` instruction at the bottom. Instead of 
 2. **Edit or delete comments** — remove suggestions you disagree with, or refine them.
 3. **Comment `/fix`** — ProPR gathers all unprocessed AI review comments and applies the fixes automatically.
 
-This workflow lets you use AI reviews as actionable instructions rather than just informational feedback. See the [PR Slash Commands](./pr-commands.md) documentation for full details.
+This workflow lets you use AI reviews as actionable instructions rather than just informational feedback. See the [PR Slash Commands](../features/pr-commands.md) documentation for full details.
 
 ## Feedback Process
 
