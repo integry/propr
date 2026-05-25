@@ -147,7 +147,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.equal(mockLogger.warn.mock.calls.length, 1);
   });
 
-  test('accepts an abort-only merged-PR stop request without retrying immediately', async () => {
+  test('retries an abort-only merged-PR stop request when the task remains active', async () => {
     const redisClient = createRedisClient();
     let lookupCount = 0;
     mockGetActiveTasksForPR.mock.mockImplementation(async () => {
@@ -179,10 +179,10 @@ describe('cancelMergedPullRequestTasks', () => {
       log: mockLogger,
     });
 
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
+    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 3);
     assert.deepEqual(
       mockStopTaskExecution.mock.calls.map((call) => call.arguments[0]),
-      ['task-processing'],
+      ['task-processing', 'task-processing'],
     );
     assert.equal(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
@@ -209,7 +209,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.equal(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 
-  test('persists merge state and returns after an abort-only stop request is accepted', async () => {
+  test('fails after retry when an abort-only stop request remains active', async () => {
     const redisClient = {
       ...createRedisClient(),
       get: mock.fn(async () => JSON.stringify({
@@ -227,16 +227,19 @@ describe('cancelMergedPullRequestTasks', () => {
       abortSignalArmed: true,
     }));
 
-    await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
+    await assert.rejects(
+      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
         redisClient,
         markPullRequestMerged: mockMarkPullRequestMerged,
         getActiveTasksForPR: mockGetActiveTasksForPR,
         stopTaskExecution: mockStopTaskExecution,
         log: mockLogger,
-    });
+      }),
+      /Failed to cancel 1 merged PR task/,
+    );
 
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
-    assert.equal(mockStopTaskExecution.mock.calls.length, 1);
+    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 3);
+    assert.equal(mockStopTaskExecution.mock.calls.length, 2);
     assert.equal(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 

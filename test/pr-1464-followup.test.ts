@@ -236,7 +236,7 @@ test('stopTaskExecution records a pending merged-PR cancellation for abort-only 
   assert.deepEqual(delCalls, []);
   assert.deepEqual(
     setCalls.map((call) => call.key).sort(),
-    ['worker:abort:job-1464', 'worker:abort:task-1464', 'worker:stop-requested:task-1464'],
+    ['worker:abort:job-1464', 'worker:abort:task-1464', 'worker:stop-requested:job-1464', 'worker:stop-requested:task-1464'],
   );
   assert.equal(markTaskCancelledCalls.length, 0);
   assert.deepEqual(updateHistoryMetadataCalls, [{
@@ -305,6 +305,22 @@ test('ensureTaskStateForCancellation reconstructs queue-only PR jobs from reposi
     where(criteria: Record<string, unknown>) {
       assert.deepEqual(criteria, { task_id: 'queue-only-task' });
       return {
+        andWhere(callback: (queryBuilder: {
+          whereNull: (column: string) => { orWhere: (column: string, value: string) => unknown };
+        }) => void) {
+          callback({
+            whereNull(column: string) {
+              assert.equal(column, 'job_id');
+              return {
+                orWhere(jobIdColumn: string, value: string) {
+                  assert.equal(jobIdColumn, 'job_id');
+                  assert.equal(value, 'pr-comments-batch-owner-repo-42-123');
+                },
+              };
+            },
+          });
+          return this;
+        },
         async update(row: Record<string, unknown>) {
           updatedRows.push(row);
           return 1;
@@ -416,4 +432,36 @@ test('loadStopTaskContext fallback scan matches raw queue job ids before normali
   assert.equal(context.queueJob, queueJob);
   assert.equal(context.taskId, 'owner-repo-42');
   assert.deepEqual(context.abortTaskIds, ['owner-repo-42', rawJobId]);
+});
+
+test('loadStopTaskContext uses Redis worker state before loading queue context', async () => {
+  let dbLoaded = false;
+  let queueLoaded = false;
+
+  const context = await loadStopTaskContext('task-redis-first', {
+    async get(key: string) {
+      if (key !== 'worker:state:task-redis-first') {
+        return null;
+      }
+
+      return JSON.stringify({
+        history: [{ state: 'processing' }],
+      });
+    },
+  }, {
+    getIssueQueue: async () => {
+      queueLoaded = true;
+      throw new Error('queue should not be loaded');
+    },
+    db: (() => {
+      dbLoaded = true;
+      throw new Error('db should not be loaded');
+    }) as never,
+  });
+
+  assert.equal(context.taskId, 'task-redis-first');
+  assert.equal(context.currentState, 'processing');
+  assert.equal(context.queueJob, null);
+  assert.equal(dbLoaded, false);
+  assert.equal(queueLoaded, false);
 });

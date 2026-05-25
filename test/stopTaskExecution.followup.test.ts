@@ -200,6 +200,7 @@ test('stopTaskExecution arms abort signals only after a queued removal race turn
     assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), [
         'worker:abort:queue-job-active-race-1',
         'worker:abort:task-queue-active-race-1',
+        'worker:stop-requested:queue-job-active-race-1',
         'worker:stop-requested:task-queue-active-race-1',
     ]);
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
@@ -341,6 +342,7 @@ test('stopTaskExecution retries persisted cancellation after a queue removal per
         'worker:abort:queue-job-retry-1',
         'worker:abort:task-retry-1',
         'worker:stop-outcome:task-retry-1',
+        'worker:stop-requested:queue-job-retry-1',
         'worker:stop-requested:task-retry-1',
     ]);
     assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-retry-1'), false);
@@ -641,6 +643,41 @@ test('stopTaskExecution does not treat future conversation messages as duplicate
     assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
         'Cancellation requested. Worker shutdown is still in progress.',
     ]);
+});
+
+test('stopTaskExecution dedupes repeated messages when the existing timestamp is slightly newer', async () => {
+    const redisClient = createRedisClient();
+    redisClient.conversationEntries.set('conversation:task-clock-skew-message', [JSON.stringify({
+        type: 'system',
+        timestamp: new Date(Date.now() + 60 * 1000).toISOString(),
+        content: 'Cancellation requested. Worker shutdown is still in progress.',
+        level: 'info',
+        metadata: { reasonCode: 'pull_request_merged', requestedBy: 'system' },
+    })]);
+
+    await stopTaskExecution('task-clock-skew-message', {
+        redisClient,
+        requestedBy: 'system',
+        cancellation: {
+            code: 'pull_request_merged',
+            message: 'Task cancelled because pull request #42 was merged.',
+        },
+    }, {
+        loadStopTaskContext: async () => ({
+            normalizedTaskId: 'task-clock-skew-message',
+            state: { history: [{ state: 'processing' }] },
+            currentState: 'processing',
+            queueJob: { id: 'job-clock-skew-message' } as never,
+            queueState: 'active',
+            taskId: 'task-clock-skew-message',
+            abortTaskIds: ['task-clock-skew-message', 'job-clock-skew-message'],
+        }),
+        ensureTaskStateForCancellation: async () => {},
+        getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+        stopDockerContainer,
+    });
+
+    assert.deepStrictEqual(redisClient.messages, []);
 });
 
 test('stopTaskExecution rejects queued cancellation when queue state cannot be reloaded after removal failure', async () => {

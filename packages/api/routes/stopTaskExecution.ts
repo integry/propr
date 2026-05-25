@@ -186,7 +186,7 @@ export async function stopTaskExecution(
   });
   const shouldPersistCancelledState = stopVerified;
   if (!shouldPersistCancelledState && abortSignalArmed) {
-    await persistPendingStopRequest(redisClient, context.taskId, {
+    await persistPendingStopRequest(redisClient, context.abortTaskIds, {
       timestamp,
       requestedBy,
       reasonCode: cancellation.code,
@@ -247,7 +247,7 @@ export async function stopTaskExecution(
       shouldAbort: abortSignalArmed,
       stopVerified,
     });
-    await clearPendingStopRequest(redisClient, context.taskId);
+    await clearPendingStopRequest(redisClient, context.abortTaskIds);
     if (!shouldRetainAbortSignals) {
       await clearAbortSignals(redisClient, context.abortTaskIds);
     }
@@ -342,21 +342,26 @@ export async function loadPendingStopRequest(
 
 async function persistPendingStopRequest(
   redisClient: Pick<RedisClientType, 'set'>,
-  taskId: string,
+  taskIds: string[],
   pendingStopRequest: PendingStopRequest,
 ): Promise<void> {
-  await redisClient.set(
-    getPendingStopRequestKey(taskId),
-    JSON.stringify(pendingStopRequest),
-    { EX: PENDING_STOP_REQUEST_TTL_SECONDS },
-  );
+  const stopPayload = JSON.stringify(pendingStopRequest);
+  for (const taskId of taskIds) {
+    await redisClient.set(
+      getPendingStopRequestKey(taskId),
+      stopPayload,
+      { EX: PENDING_STOP_REQUEST_TTL_SECONDS },
+    );
+  }
 }
 
 async function clearPendingStopRequest(
   redisClient: Pick<RedisClientType, 'del'>,
-  taskId: string,
+  taskIds: string[],
 ): Promise<void> {
-  await redisClient.del(getPendingStopRequestKey(taskId));
+  for (const taskId of taskIds) {
+    await redisClient.del(getPendingStopRequestKey(taskId));
+  }
 }
 
 function getPendingStopRequestKey(taskId: string): string {

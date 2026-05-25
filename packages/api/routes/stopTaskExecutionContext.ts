@@ -64,6 +64,7 @@ type RedisClientLike = {
 
 const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const QUEUE_TASK_ID_SCAN_PAGE_SIZE = 100;
+const QUEUE_TASK_ID_SCAN_MAX_PAGES = 5;
 
 export function normalizeTaskId(jobId: string): string {
   return normalizeCoreTaskId(jobId);
@@ -75,6 +76,23 @@ export async function loadStopTaskContext(
   deps: StopTaskContextDeps,
 ): Promise<StopTaskContext> {
   const normalizedTaskId = normalizeTaskId(taskReference);
+  const directStateLookup = await loadTaskState(redisClient, [
+    normalizedTaskId,
+    taskReference,
+  ]);
+  if (directStateLookup.state && directStateLookup.taskId) {
+    const currentState = directStateLookup.state.history[directStateLookup.state.history.length - 1]?.state ?? null;
+    return {
+      normalizedTaskId,
+      state: directStateLookup.state,
+      currentState,
+      queueJob: null,
+      queueState: null,
+      taskId: directStateLookup.taskId,
+      abortTaskIds: [...new Set([directStateLookup.taskId, normalizedTaskId, taskReference])],
+    };
+  }
+
   const { persistedTask, queueJob, queueTaskId } = await resolvePersistedTaskContext(
     taskReference,
     normalizedTaskId,
@@ -261,7 +279,7 @@ async function getQueueJob(params: {
   }
 
   const candidateTaskIdSet = new Set(uniqueCandidates);
-  if (candidateTaskIdSet.size === 0) {
+  if (candidateTaskIdSet.size === 0 || uniqueCandidates.length === 0) {
     return null;
   }
 
@@ -279,8 +297,10 @@ async function findQueueJobByTaskIdScan(
 ): Promise<Job<QueueJobData> | null> {
   for (const trackedQueueState of TRACKED_QUEUE_STATES) {
     let start = 0;
+    let pageCount = 0;
     let jobs = await queue.getJobs([trackedQueueState], start, start + QUEUE_TASK_ID_SCAN_PAGE_SIZE - 1) as unknown as Job<QueueJobData>[];
-    while (jobs.length > 0) {
+    while (jobs.length > 0 && pageCount < QUEUE_TASK_ID_SCAN_MAX_PAGES) {
+      pageCount += 1;
       const matchingJob = findMatchingQueueJob(jobs, candidateTaskIdSet, uniqueCandidates);
       if (matchingJob) {
         return matchingJob;
@@ -290,7 +310,18 @@ async function findQueueJobByTaskIdScan(
       if (jobs.length < QUEUE_TASK_ID_SCAN_PAGE_SIZE) {
         break;
       }
+      if (pageCount >= QUEUE_TASK_ID_SCAN_MAX_PAGES) {
+        break;
+      }
       jobs = await queue.getJobs([trackedQueueState], start, start + QUEUE_TASK_ID_SCAN_PAGE_SIZE - 1) as unknown as Job<QueueJobData>[];
+    }
+
+    if (pageCount >= QUEUE_TASK_ID_SCAN_MAX_PAGES && jobs.length === QUEUE_TASK_ID_SCAN_PAGE_SIZE) {
+      logger.warn({
+        taskReferenceCandidates: uniqueCandidates,
+        queueState: trackedQueueState,
+        scannedJobs: QUEUE_TASK_ID_SCAN_PAGE_SIZE * QUEUE_TASK_ID_SCAN_MAX_PAGES,
+      }, 'Stopped queued task lookup fallback after scan limit');
     }
   }
 
@@ -364,18 +395,22 @@ async function createTaskStateFromQueueJob(
 
   await stateManager.createTaskState(taskId, issueRef, correlationId);
 
+  const queueJobId = String(queueJob.id ?? taskId);
   const updatedRows = await database('tasks')
     .where({ task_id: taskId })
+    .andWhere((queryBuilder: Knex.QueryBuilder) => {
+      queryBuilder.whereNull('job_id').orWhere('job_id', queueJobId);
+    })
     .update({
-      job_id: String(queueJob.id ?? taskId),
+      job_id: queueJobId,
       ...(prNumber !== null ? { pr_number: prNumber } : {}),
       initial_job_data: initialJobData,
     });
   if (updatedRows === 0) {
     logger.warn({
       taskId,
-      queueJobId: String(queueJob.id ?? taskId),
-    }, 'Queued task cancellation created worker state but did not update a persisted task row');
+      queueJobId,
+    }, 'Queued task cancellation created worker state but did not rewrite an existing persisted task row');
   }
 }
 

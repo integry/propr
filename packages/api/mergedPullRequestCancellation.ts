@@ -94,7 +94,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: firstAttempt.acceptedTaskIds,
+    ignoredTaskIds: firstAttempt.verifiedTaskIds,
   });
   if (remainingAfterFirstAttempt.length === 0) {
     return;
@@ -123,8 +123,8 @@ export async function cancelMergedPullRequestTasks(
     prNumber,
     log,
     ignoredTaskIds: new Set([
-      ...firstAttempt.acceptedTaskIds,
-      ...retryAttempt.acceptedTaskIds,
+      ...firstAttempt.verifiedTaskIds,
+      ...retryAttempt.verifiedTaskIds,
     ]),
   });
   if (finalActiveTasks.length === 0) {
@@ -170,7 +170,7 @@ async function stopMergeTasks(params: {
   prNumber: number;
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<{
-  acceptedTaskIds: Set<string>;
+  verifiedTaskIds: Set<string>;
   failures: Map<string, MergeTaskCancellationFailure>;
 }> {
   const {
@@ -183,7 +183,7 @@ async function stopMergeTasks(params: {
     prNumber,
     log,
   } = params;
-  const acceptedTaskIds = new Set<string>();
+  const verifiedTaskIds = new Set<string>();
   const failures = new Map<string, MergeTaskCancellationFailure>();
 
   for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
@@ -195,9 +195,9 @@ async function stopMergeTasks(params: {
           requestedBy: 'system',
           cancellation,
         });
-        if (isAcceptedMergeStopResult(result)) {
-          acceptedTaskIds.add(task.taskId);
-          acceptedTaskIds.add(result.taskId);
+        if (result.stopVerified) {
+          verifiedTaskIds.add(task.taskId);
+          verifiedTaskIds.add(result.taskId);
         }
         if (!result.stopVerified) {
           log.info({
@@ -226,11 +226,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { acceptedTaskIds, failures };
-}
-
-function isAcceptedMergeStopResult(result: Awaited<ReturnType<typeof stopTaskExecution>>): boolean {
-  return result.stopVerified || result.cancellationRequested || result.abortSignalArmed;
+  return { verifiedTaskIds, failures };
 }
 
 async function loadBlockingMergeCancellationTasks(params: {

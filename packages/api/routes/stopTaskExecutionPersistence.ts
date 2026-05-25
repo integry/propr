@@ -163,9 +163,9 @@ async function isDuplicateConversationMessage(
 
       const recentTimestamp = getConversationMessageTimestamp(parsedMessage);
       const elapsedMs = messageTimestamp !== null && recentTimestamp !== null
-        ? messageTimestamp - recentTimestamp
+        ? Math.abs(messageTimestamp - recentTimestamp)
         : null;
-      if (elapsedMs === null || (elapsedMs >= 0 && elapsedMs <= RECENT_DUPLICATE_MESSAGE_WINDOW_MS)) {
+      if (elapsedMs === null || elapsedMs <= RECENT_DUPLICATE_MESSAGE_WINDOW_MS) {
         return true;
       }
     } catch {
