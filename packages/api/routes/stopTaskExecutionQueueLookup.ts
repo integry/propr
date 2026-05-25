@@ -8,8 +8,6 @@ import {
 import type { QueueJobData } from './stopTaskExecutionContext.js';
 
 const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
-const QUEUE_TASK_ID_SCAN_PAGE_SIZE = 100;
-const QUEUE_TASK_ID_SCAN_MAX_JOBS = 5000;
 
 export async function findQueueJobByTaskIdScan(
   queue: Awaited<ReturnType<typeof getIssueQueue>>,
@@ -19,34 +17,16 @@ export async function findQueueJobByTaskIdScan(
   const startedAt = Date.now();
   let scannedJobs = 0;
   for (const trackedQueueState of TRACKED_QUEUE_STATES) {
-    let start = 0;
-    let jobs = await loadQueueScanPage(queue, trackedQueueState, start);
-    while (jobs.length > 0) {
-      scannedJobs += jobs.length;
-      const matchingJob = findMatchingQueueJob(jobs, candidateTaskIdSet);
-      if (matchingJob) {
-        logger.info({
-          taskReferenceCandidates: uniqueCandidates,
-          scannedJobs,
-          durationMs: Date.now() - startedAt,
-        }, 'Resolved queued task stop lookup via fallback task-id scan');
-        return matchingJob;
-      }
-
-      start += jobs.length;
-      if (jobs.length < QUEUE_TASK_ID_SCAN_PAGE_SIZE) {
-        break;
-      }
-      if (scannedJobs >= QUEUE_TASK_ID_SCAN_MAX_JOBS) {
-        logger.warn({
-          taskReferenceCandidates: uniqueCandidates,
-          scannedJobs,
-          durationMs: Date.now() - startedAt,
-          maxJobs: QUEUE_TASK_ID_SCAN_MAX_JOBS,
-        }, 'Stopped fallback queued task-id scan after reaching the defensive job cap');
-        return null;
-      }
-      jobs = await loadQueueScanPage(queue, trackedQueueState, start);
+    const jobs = await loadQueueScanState(queue, trackedQueueState);
+    scannedJobs += jobs.length;
+    const matchingJob = findMatchingQueueJob(jobs, candidateTaskIdSet);
+    if (matchingJob) {
+      logger.info({
+        taskReferenceCandidates: uniqueCandidates,
+        scannedJobs,
+        durationMs: Date.now() - startedAt,
+      }, 'Resolved queued task stop lookup via fallback task-id scan');
+      return matchingJob;
     }
   }
 
@@ -61,13 +41,11 @@ export async function findQueueJobByTaskIdScan(
   return null;
 }
 
-async function loadQueueScanPage(
+async function loadQueueScanState(
   queue: Awaited<ReturnType<typeof getIssueQueue>>,
   trackedQueueState: typeof TRACKED_QUEUE_STATES[number],
-  start: number,
 ): Promise<Job<QueueJobData>[]> {
-  const end = start + QUEUE_TASK_ID_SCAN_PAGE_SIZE - 1;
-  return await queue.getJobs([trackedQueueState], start, end) as unknown as Job<QueueJobData>[];
+  return await queue.getJobs([trackedQueueState], 0, -1) as unknown as Job<QueueJobData>[];
 }
 
 function findMatchingQueueJob(

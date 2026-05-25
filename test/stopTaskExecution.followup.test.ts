@@ -635,6 +635,7 @@ test('cancelMergedPullRequestTasks force-scans the initial merged-PR lookup and 
         log,
         stoppableOnly: true,
     }]);
+    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, true);
     assert.strictEqual(markPullRequestMerged.mock.calls.length, 1);
 });
 

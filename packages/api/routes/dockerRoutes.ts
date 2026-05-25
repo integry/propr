@@ -3,32 +3,19 @@ import { RedisClientType } from 'redis';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '@propr/core';
-import { loadStopTaskContext, normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
+import { normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
 import { stopTaskExecution, StopTaskExecutionError } from './stopTaskExecution.js';
-import type {
-  StopTaskCancellationReason,
-  StopTaskExecutionDeps,
-  StopTaskExecutionOptions,
-  StopTaskExecutionResult,
-} from './stopTaskExecution.js';
+import type { StopTaskExecutionResult } from './stopTaskExecution.js';
 import { validateTaskId, validateTailParam } from './validation.js';
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
-  loadStopTaskContext?: typeof loadStopTaskContext;
 }
 
 const execFileAsync = promisify(execFile);
 
-export type {
-  StopTaskCancellationReason,
-  StopTaskExecutionDeps,
-  StopTaskExecutionOptions,
-  StopTaskExecutionResult,
-};
-
 export function createDockerRoutes(deps: DockerRoutesDeps) {
-  const { redisClient, loadStopTaskContext: loadStopTaskContextOverride } = deps;
+  const { redisClient } = deps;
 
   async function getDockerInfo(req: Request, res: Response): Promise<void> {
     try {
@@ -41,7 +28,6 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       const containerMetadata = await loadDockerContainerMetadata(
         req.params.taskId,
         redisClient,
-        loadStopTaskContextOverride,
       );
       if (!containerMetadata) {
         res.status(404).json({ error: 'Task state not found' });
@@ -77,7 +63,6 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       const containerMetadata = await loadDockerContainerMetadata(
         req.params.taskId,
         redisClient,
-        loadStopTaskContextOverride,
       );
       if (!containerMetadata) {
         res.status(404).json({ error: 'Task state not found' });
@@ -141,26 +126,12 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
 async function loadDockerContainerMetadata(
   taskReference: string,
   redisClient: Pick<RedisClientType, 'get'>,
-  loadContext: typeof loadStopTaskContext = loadStopTaskContext,
 ): Promise<{ containerId: string | null; containerName: string | null } | null> {
   const directState = await loadDockerTaskStateFromRedis(taskReference, redisClient);
   if (directState) {
     return getDockerContainerMetadata(directState);
   }
-
-  let context: Awaited<ReturnType<typeof loadStopTaskContext>>;
-  try {
-    context = await loadContext(taskReference, redisClient, {});
-  } catch (error) {
-    logger.warn({ taskReference, error: getErrorLogFields(error) }, 'Failed to resolve extended task context for Docker metadata lookup');
-    return null;
-  }
-
-  if (!context.state) {
-    return null;
-  }
-
-  return getDockerContainerMetadata(context.state);
+  return null;
 }
 
 async function loadDockerTaskStateFromRedis(
