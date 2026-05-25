@@ -55,6 +55,9 @@ export function assertTaskCanBeStopped(params: {
     createError,
   } = params;
   if (hasConcreteStopOutcome(persistedStopOutcome)) {
+    // A concrete Redis stop outcome means an earlier stop removed the queued job
+    // or stopped the container but failed while persisting final task state. Let
+    // the retry finish persistence even if the live queue/worker state is gone.
     return;
   }
   if (!state && !queueJob) {

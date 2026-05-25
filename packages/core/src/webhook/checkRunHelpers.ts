@@ -638,6 +638,7 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
 
 const TRACKED_PR_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const TRACKED_PR_QUEUE_STATE_SET = new Set<string>(TRACKED_PR_QUEUE_STATES);
+const PR_QUEUE_SCAN_LIMIT_PER_STATE = 1000;
 
 export interface PRTaskActivity {
     taskId: string;
@@ -682,7 +683,8 @@ export async function getActiveTasksForPR(
             repository,
             prNumber,
             taskMap,
-            taskAliases
+            taskAliases,
+            log,
         });
 
         const activeTasksQuery = database('tasks')
@@ -727,16 +729,26 @@ async function addQueuedPrJobsFromLiveQueueScan(params: {
     prNumber: number;
     taskMap: Map<string, PRTaskActivity>;
     taskAliases: Map<string, string>;
+    log: Pick<typeof logger, 'info' | 'warn'>;
 }): Promise<void> {
     const {
         queue,
         repository,
         prNumber,
         taskMap,
-        taskAliases
+        taskAliases,
+        log,
     } = params;
     for (const trackedQueueState of TRACKED_PR_QUEUE_STATES) {
-        const jobs = await queue.getJobs([trackedQueueState]);
+        const jobs = await queue.getJobs([trackedQueueState], 0, PR_QUEUE_SCAN_LIMIT_PER_STATE - 1);
+        if (jobs.length >= PR_QUEUE_SCAN_LIMIT_PER_STATE) {
+            log.warn({
+                repository,
+                prNumber,
+                queueState: trackedQueueState,
+                scanLimit: PR_QUEUE_SCAN_LIMIT_PER_STATE,
+            }, 'Reached PR queue scan limit while looking for active PR work');
+        }
         for (const job of jobs) {
             const jobData = job.data as unknown as Record<string, unknown>;
             if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {

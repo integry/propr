@@ -7,6 +7,7 @@ export interface PrTaskJobData {
   owner?: unknown;
   prNumber?: unknown;
   pullRequestNumber?: unknown;
+  issueNumber?: unknown;
   number?: unknown;
   commandMode?: unknown;
   comments?: unknown;
@@ -37,12 +38,16 @@ export function getRepositoryFromJobData(jobData: PrTaskJobData): string | null 
 }
 
 export function getPrNumberFromJobData(jobData: PrTaskJobData): number | null {
-  if (typeof jobData.prNumber === 'number') {
-    return jobData.prNumber;
+  const prNumber = parsePositiveInteger(jobData.prNumber);
+  if (prNumber !== null) {
+    return prNumber;
   }
-  if (typeof jobData.pullRequestNumber === 'number') {
-    return jobData.pullRequestNumber;
+
+  const pullRequestNumber = parsePositiveInteger(jobData.pullRequestNumber);
+  if (pullRequestNumber !== null) {
+    return pullRequestNumber;
   }
+
   return null;
 }
 
@@ -98,10 +103,26 @@ export function buildIssueRefFromQueueJob(queueJob: QueueJobIdentityLike): Issue
 }
 
 function getTaskNumber(jobData: PrTaskJobData): number | null {
-  if (typeof jobData.number === 'number') {
-    return jobData.number;
+  const number = parsePositiveInteger(jobData.number);
+  if (number !== null) {
+    return number;
   }
-  return getPrNumberFromJobData(jobData);
+
+  const issueNumber = parsePositiveInteger(jobData.issueNumber);
+  return issueNumber ?? getPrNumberFromJobData(jobData);
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    return null;
+  }
+
+  const parsedValue = Number(value);
+  return Number.isSafeInteger(parsedValue) && parsedValue > 0 ? parsedValue : null;
 }
 
 function getQueueJobIssueType(queueJob: QueueJobIdentityLike): string {

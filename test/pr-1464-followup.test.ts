@@ -8,7 +8,7 @@ process.env.NODE_ENV ??= 'test';
 
 const { getActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
 const { stopTaskExecution } = await import('../packages/api/routes/stopTaskExecution.ts');
-const { ensureTaskStateForCancellation } = await import('../packages/api/routes/stopTaskExecutionContext.ts');
+const { ensureTaskStateForCancellation, loadStopTaskContext } = await import('../packages/api/routes/stopTaskExecutionContext.ts');
 
 type QueueState = 'waiting' | 'active' | 'delayed' | 'paused' | 'prioritized' | 'waiting-children';
 
@@ -219,4 +219,137 @@ test('ensureTaskStateForCancellation fails loudly when a queued job cannot be re
 
   assert.equal(createTaskStateCalled, false);
   assert.equal(dbUpdated, false);
+});
+
+test('ensureTaskStateForCancellation reconstructs queue-only PR jobs from repository and prNumber', async () => {
+  const insertedRows: Record<string, unknown>[] = [];
+  const updatedRows: Record<string, unknown>[] = [];
+  const createdStates: Array<{ taskId: string; issueRef: Record<string, unknown>; correlationId: string | null }> = [];
+  const insertChain = {
+    onConflict(column: string) {
+      assert.equal(column, 'task_id');
+      return {
+        async ignore() {},
+      };
+    },
+  };
+  const taskQuery = {
+    insert(row: Record<string, unknown>) {
+      insertedRows.push(row);
+      return insertChain;
+    },
+    where(criteria: Record<string, unknown>) {
+      assert.deepEqual(criteria, { task_id: 'queue-only-task' });
+      return {
+        async update(row: Record<string, unknown>) {
+          updatedRows.push(row);
+          return 1;
+        },
+      };
+    },
+  };
+
+  await ensureTaskStateForCancellation('queue-only-task', null, {
+    id: 'pr-comments-batch-owner-repo-42-123',
+    name: 'processPullRequestComment',
+    data: {
+      repository: 'owner/repo',
+      prNumber: 42,
+      commandMode: 'fix',
+      correlationId: 'corr-queue-only',
+    },
+  } as never, {
+    getStateManager: () => ({
+      async createTaskState(taskId: string, issueRef: Record<string, unknown>, correlationId: string | null) {
+        createdStates.push({ taskId, issueRef, correlationId });
+      },
+    }) as never,
+    db: (() => taskQuery) as never,
+  });
+
+  assert.deepEqual(insertedRows, [{
+    task_id: 'queue-only-task',
+    job_id: null,
+    correlation_id: 'corr-queue-only',
+    repository: 'owner/repo',
+    issue_number: 42,
+    task_type: 'pr-fix',
+    model_name: null,
+    initial_job_data: JSON.stringify({
+      repository: 'owner/repo',
+      prNumber: 42,
+      commandMode: 'fix',
+      correlationId: 'corr-queue-only',
+    }),
+    pr_number: 42,
+  }]);
+  assert.deepEqual(createdStates, [{
+    taskId: 'queue-only-task',
+    issueRef: {
+      number: 42,
+      repoOwner: 'owner',
+      repoName: 'repo',
+      pullRequestNumber: 42,
+      type: 'pr-fix',
+    },
+    correlationId: 'corr-queue-only',
+  }]);
+  assert.deepEqual(updatedRows, [{
+    job_id: 'pr-comments-batch-owner-repo-42-123',
+    pr_number: 42,
+    initial_job_data: JSON.stringify({
+      repository: 'owner/repo',
+      prNumber: 42,
+      commandMode: 'fix',
+      correlationId: 'corr-queue-only',
+    }),
+  }]);
+});
+
+test('loadStopTaskContext fallback scan matches raw queue job ids before normalization', async () => {
+  const rawJobId = 'issue-owner-repo-42-123';
+  const queueJob = {
+    id: rawJobId,
+    data: { repository: 'owner/repo', prNumber: 42 },
+    async getState() {
+      return 'waiting';
+    },
+  };
+  const dbQueryBuilder = {
+    whereIn() {
+      return dbQueryBuilder;
+    },
+    orWhereIn() {
+      return dbQueryBuilder;
+    },
+  };
+  const dbTasksQuery = {
+    select() {
+      return dbTasksQuery;
+    },
+    async where(callback: (queryBuilder: typeof dbQueryBuilder) => void) {
+      callback(dbQueryBuilder);
+      return [];
+    },
+  };
+
+  const context = await loadStopTaskContext(rawJobId, {
+    async get() {
+      return null;
+    },
+  }, {
+    getIssueQueue: async () => ({
+      async getJob() {
+        return null;
+      },
+      async getJobs() {
+        return [queueJob];
+      },
+    }) as never,
+    db: (() => dbTasksQuery) as never,
+  });
+
+  assert.equal(context.queueJob, queueJob);
+  assert.equal(context.taskId, 'owner-repo-42');
+  assert.deepEqual(context.abortTaskIds, ['owner-repo-42', rawJobId]);
 });

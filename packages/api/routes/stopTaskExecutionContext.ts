@@ -279,14 +279,16 @@ async function findQueueJobByTaskIdScan(
   const jobs = await queue.getJobs([...TRACKED_QUEUE_STATES]) as unknown as Job<QueueJobData>[];
   for (const job of jobs) {
     const derivedTaskId = getTaskIdFromQueueJob(job);
-    const normalizedJobId = job.id === null || job.id === undefined ? null : normalizeTaskId(String(job.id));
+    const rawJobId = job.id === null || job.id === undefined ? null : String(job.id);
+    const normalizedJobId = rawJobId === null ? null : normalizeTaskId(rawJobId);
     if (
       (derivedTaskId && candidateTaskIdSet.has(derivedTaskId))
+      || (rawJobId && candidateTaskIdSet.has(rawJobId))
       || (normalizedJobId && candidateTaskIdSet.has(normalizedJobId))
     ) {
       logger.info({
         taskReferenceCandidates: uniqueCandidates,
-        queueJobId: job.id === null || job.id === undefined ? null : String(job.id),
+        queueJobId: rawJobId,
         derivedTaskId,
       }, 'Resolved queued task stop lookup via fallback task-id scan');
       return job;
