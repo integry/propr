@@ -79,13 +79,13 @@ function createEmptyDb() {
   });
 }
 
-test('cancelMergedPullRequestTasks fails when a pending-verification task is still active after recheck', async () => {
+test('cancelMergedPullRequestTasks treats abort-only active worker stops as requested cancellation', async () => {
   process.env.NODE_ENV = 'test';
   const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
   const loadActiveTasksCalls: Array<{ forceQueueScan?: boolean }> = [];
   const stopCalls: string[] = [];
 
-  await assert.rejects(
+  await assert.doesNotReject(
     cancelMergedPullRequestTasks(
       {
         action: 'closed',
@@ -111,14 +111,13 @@ test('cancelMergedPullRequestTasks fails when a pending-verification task is sti
         },
       },
     ),
-    /task-1/,
   );
 
-  assert.deepEqual(loadActiveTasksCalls, [{ forceQueueScan: undefined }, { forceQueueScan: undefined }]);
-  assert.deepEqual(stopCalls, ['task-1', 'task-1']);
+  assert.deepEqual(loadActiveTasksCalls, [{ forceQueueScan: undefined }]);
+  assert.deepEqual(stopCalls, ['task-1']);
 });
 
-test('getActiveTasksForPR includes live queue jobs that are missing from the PR queue index', async () => {
+test('getActiveTasksForPR includes live queue jobs that are missing from the PR queue index when forced', async () => {
   process.env.NODE_ENV = 'test';
   const { getActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
   const job1 = {
@@ -151,6 +150,7 @@ test('getActiveTasksForPR includes live queue jobs that are missing from the PR 
   const activeTasks = await getActiveTasksForPR('acme/widgets', 42, {
     getIssueQueue: async () => queue as never,
     db: createEmptyDb() as never,
+    forceQueueScan: true,
     stoppableOnly: true,
     log: {
       info: () => {},

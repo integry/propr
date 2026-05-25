@@ -714,15 +714,15 @@ export async function getActiveTasksForPR(
             );
         }
 
-        // The PR queue-job index is best-effort. Always reconcile against the
-        // live queue so partially-missing index entries cannot hide queued work.
-        await addQueuedPrJobsFromFallbackScan({
-            queue,
-            repository,
-            prNumber,
-            taskMap,
-            taskAliases,
-        });
+        if (deps.forceQueueScan === true) {
+            await addQueuedPrJobsFromFallbackScan({
+                queue,
+                repository,
+                prNumber,
+                taskMap,
+                taskAliases,
+            });
+        }
 
         const activeTasksQuery = database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')

@@ -767,7 +767,7 @@ describe('merged PR queue follow-up fixes', () => {
         },
         getJobs: async ([queueState]: string[]) => (
           queueState === 'waiting'
-            ? [{ id: 'merge-conflict-integry-propr-1463-456', data: { repository: 'integry/propr', pullRequestNumber: 1463 } }]
+            ? [createQueueJob('merge-conflict-integry-propr-1463-456', { repository: 'integry/propr', pullRequestNumber: 1463 }, 'waiting')]
             : []
         ),
       }) as never,
@@ -776,6 +776,7 @@ describe('merged PR queue follow-up fixes', () => {
         info: mock.fn(),
         warn: mock.fn(),
       },
+      forceQueueScan: true,
     });
 
     assert.deepStrictEqual(activeTasks, [

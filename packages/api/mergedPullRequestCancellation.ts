@@ -108,9 +108,8 @@ export async function cancelMergedPullRequestTasks(
   const cancelledTaskIds = new Set(initialPass.cancelledTaskIds);
   const shouldForceQueueScan = initialPass.queuedTaskIds.length > 0;
   const shouldVerifyInactiveTasks = initialPass.inactiveTaskIds.length > 0;
-  const shouldVerifyPendingTasks = initialPass.pendingVerificationTaskIds.length > 0;
 
-  if (shouldForceQueueScan || shouldVerifyInactiveTasks || shouldVerifyPendingTasks) {
+  if (shouldForceQueueScan || shouldVerifyInactiveTasks) {
     log.info({
       correlationId,
       repository,
@@ -152,7 +151,7 @@ export async function cancelMergedPullRequestTasks(
         cancellation,
         log,
         allowInactiveRace: false,
-        allowPendingVerification: false,
+        allowPendingVerification: true,
       });
 
       for (const taskId of retryPass.cancelledTaskIds) {
@@ -239,20 +238,6 @@ async function cancelTaskSet(params: {
         }, 'Merged PR task stop armed an abort signal but still requires activity verification');
         return { kind: 'pendingVerification' as const, taskId: task.taskId };
       }
-      if (!allowPendingVerification && !result.stopVerified) {
-        const failure = buildPendingVerificationFailure(task.taskId, result);
-        log.warn({
-          correlationId,
-          repository,
-          prNumber,
-          taskId: task.taskId,
-          status: failure.status,
-          currentState: failure.currentState,
-          queueState: failure.queueState,
-          error: failure.message,
-        }, 'Merged PR task remained active after cancellation verification');
-        return { kind: 'failure' as const, failure };
-      }
       return { kind: 'cancelled' as const, taskId: task.taskId };
     } catch (error) {
       if (allowInactiveRace && isAlreadyInactiveStopError(error)) {
@@ -298,19 +283,6 @@ async function cancelTaskSet(params: {
     failures: results
       .filter((result): result is { kind: 'failure'; failure: MergeTaskCancellationFailure } => result.kind === 'failure')
       .map((result) => result.failure),
-  };
-}
-
-function buildPendingVerificationFailure(
-  taskId: string,
-  result: Awaited<ReturnType<typeof stopTaskExecution>>,
-): MergeTaskCancellationFailure {
-  return {
-    taskId,
-    status: 409,
-    message: 'Cancellation was requested, but the task is still active after verification.',
-    currentState: result.currentState,
-    queueState: result.queueState,
   };
 }
 
