@@ -19,9 +19,19 @@ export async function persistTaskCancellation(params: {
   queueState: string | null;
   containerId: string | null;
   containerStopped: boolean;
+  jobRemoved: boolean;
   deps: StopTaskExecutionDeps;
 }): Promise<void> {
-  const { taskId, requestedBy, cancellation, queueState, containerId, containerStopped, deps } = params;
+  const {
+    taskId,
+    requestedBy,
+    cancellation,
+    queueState,
+    containerId,
+    containerStopped,
+    jobRemoved,
+    deps,
+  } = params;
   const stateManager = (deps.getStateManager ?? getStateManager)();
 
   await stateManager.markTaskCancelled(taskId, requestedBy, {
@@ -32,6 +42,7 @@ export async function persistTaskCancellation(params: {
       cancelledBy: requestedBy === 'system' ? 'system' : 'user',
       source: getCancellationSource(cancellation),
       containerStopped,
+      jobRemoved,
       ...(containerId ? { containerId } : {}),
     },
     historyMetadata: {
@@ -41,6 +52,7 @@ export async function persistTaskCancellation(params: {
       },
       requestedBy,
       containerStopped,
+      jobRemoved,
       ...(containerId ? { containerId } : {}),
       ...(queueState ? { queueState } : {}),
     },
@@ -52,6 +64,7 @@ export async function persistTaskCancellation(params: {
     queueState,
     containerId: containerId ?? null,
     containerStopped,
+    jobRemoved,
   }, 'Task marked as cancelled');
 }
 

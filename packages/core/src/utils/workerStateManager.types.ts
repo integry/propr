@@ -85,6 +85,7 @@ export interface CancellationMetadata {
     reason?: string;
     source?: string;
     containerStopped?: boolean;
+    jobRemoved?: boolean;
     containerId?: string;
 }
 

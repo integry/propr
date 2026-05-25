@@ -200,6 +200,23 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 
+  test('uses the indexed PR task lookup without forcing a full queue scan', async () => {
+    const redisClient = createRedisClient();
+
+    await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
+      redisClient,
+      markPullRequestMerged: mockMarkPullRequestMerged,
+      getActiveTasksForPR: mockGetActiveTasksForPR,
+      stopTaskExecution: mockStopTaskExecution,
+      log: mockLogger,
+    });
+
+    assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0]?.arguments, ['integry/propr', 1463, {
+      log: mockLogger,
+      stoppableOnly: true,
+    }]);
+  });
+
   test('attempts all cancellations and rejects when a task stop fails', async () => {
     const redisClient = createRedisClient();
     mockGetActiveTasksForPR.mock.mockImplementation(async () => ([

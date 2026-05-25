@@ -18,11 +18,20 @@ const log = {
 
 function createRedisClient() {
     const messages: Array<Record<string, unknown>> = [];
+    const store = new Map<string, string>();
 
     return {
         messages,
-        set: mock.fn(async () => 'OK'),
-        del: mock.fn(async () => 1),
+        store,
+        get: mock.fn(async (key: string) => store.get(key) ?? null),
+        set: mock.fn(async (key: string, value: string) => {
+            store.set(key, value);
+            return 'OK';
+        }),
+        del: mock.fn(async (key: string) => {
+            store.delete(key);
+            return 1;
+        }),
         rPush: mock.fn(async (_key: string, value: string) => {
             messages.push(JSON.parse(value) as Record<string, unknown>);
             return 1;
@@ -32,7 +41,9 @@ function createRedisClient() {
 
 beforeEach(() => {
     markTaskCancelled.mock.resetCalls();
+    markTaskCancelled.mock.mockImplementation(async () => ({}));
     stopDockerContainer.mock.resetCalls();
+    stopDockerContainer.mock.mockImplementation(async () => ({ success: true }));
     log.info.mock.resetCalls();
     log.warn.mock.resetCalls();
 });
@@ -161,6 +172,147 @@ test('stopTaskExecution leaves abort-armed container-backed tasks non-terminal w
     assert.strictEqual(result.message, 'Stop request sent to worker. The execution will be terminated shortly.');
     assert.strictEqual(redisClient.set.mock.calls.length, 1);
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+});
+
+test('stopTaskExecution retries persisted cancellation after a queue removal persistence failure', async () => {
+    const redisClient = createRedisClient();
+    const queueJob = {
+        id: 'queue-job-retry-1',
+        data: {
+            repository: 'owner/repo',
+            prNumber: 42,
+        },
+        remove: mock.fn(async () => undefined),
+        getState: mock.fn(async () => 'waiting'),
+    };
+    let callCount = 0;
+    markTaskCancelled.mock.mockImplementation(async () => {
+        callCount += 1;
+        if (callCount === 1) {
+            throw new Error('persist failed');
+        }
+        return {};
+    });
+
+    await assert.rejects(async () => {
+        await stopTaskExecution(
+            'queue-job-retry-1',
+            {
+                redisClient,
+                requestedBy: 'system',
+                cancellation: {
+                    code: 'pull_request_merged',
+                    message: 'Task cancelled because pull request #42 was merged.',
+                },
+            },
+            {
+                loadStopTaskContext: async () => ({
+                    normalizedTaskId: 'queue-job-retry-1',
+                    state: null,
+                    currentState: null,
+                    queueJob: queueJob as never,
+                    queueState: 'waiting',
+                    taskId: 'task-retry-1',
+                    abortTaskIds: ['task-retry-1', 'queue-job-retry-1'],
+                }),
+                ensureTaskStateForCancellation: async () => {},
+                getStateManager: () => ({ markTaskCancelled }) as never,
+                getIssueQueue: async () => ({
+                    client: Promise.resolve({
+                        sRem: async () => 1,
+                        expire: async () => 1,
+                    }),
+                }) as never,
+                stopDockerContainer,
+            },
+        );
+    }, /persist failed/);
+
+    const retriedResult = await stopTaskExecution(
+        'task-retry-1',
+        {
+            redisClient,
+            requestedBy: 'system',
+            cancellation: {
+                code: 'pull_request_merged',
+                message: 'Task cancelled because pull request #42 was merged.',
+            },
+        },
+        {
+            loadStopTaskContext: async () => ({
+                normalizedTaskId: 'task-retry-1',
+                state: null,
+                currentState: null,
+                queueJob: null,
+                queueState: null,
+                taskId: 'task-retry-1',
+                abortTaskIds: ['task-retry-1', 'queue-job-retry-1'],
+            }),
+            ensureTaskStateForCancellation: async () => {},
+            getStateManager: () => ({ markTaskCancelled }) as never,
+            getIssueQueue: async () => ({
+                client: Promise.resolve({
+                    sRem: async () => 1,
+                    expire: async () => 1,
+                }),
+            }) as never,
+            stopDockerContainer,
+        },
+    );
+
+    assert.strictEqual(retriedResult.success, true);
+    assert.strictEqual(retriedResult.jobRemoved, true);
+    assert.strictEqual(retriedResult.message, 'Queued task cancelled before execution started.');
+    assert.strictEqual(queueJob.remove.mock.calls.length, 1);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 2);
+    assert.strictEqual(redisClient.get.mock.calls.length > 0, true);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), [
+        'worker:abort:queue-job-retry-1',
+        'worker:abort:task-retry-1',
+        'worker:stop-outcome:task-retry-1',
+    ]);
+    assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-retry-1'), false);
+});
+
+test('stopTaskExecution still terminates the Claude container from post_processing state', async () => {
+    const redisClient = createRedisClient();
+
+    const result = await stopTaskExecution(
+        'task-post-processing',
+        {
+            redisClient,
+            requestedBy: 'system',
+            cancellation: {
+                code: 'pull_request_merged',
+                message: 'Task cancelled because pull request #42 was merged.',
+            },
+        },
+        {
+            loadStopTaskContext: async () => ({
+                normalizedTaskId: 'task-post-processing',
+                state: {
+                    history: [
+                        { state: 'claude_execution', metadata: { containerId: 'container-post-1' } },
+                        { state: 'post_processing' },
+                    ],
+                },
+                currentState: 'post_processing',
+                queueJob: null,
+                queueState: null,
+                taskId: 'task-post-processing',
+                abortTaskIds: ['task-post-processing'],
+            }),
+            ensureTaskStateForCancellation: async () => {},
+            getStateManager: () => ({ markTaskCancelled }) as never,
+            stopDockerContainer,
+        },
+    );
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.containerStopped, true);
+    assert.strictEqual(stopDockerContainer.mock.calls.length, 1);
+    assert.deepStrictEqual(stopDockerContainer.mock.calls[0]?.arguments, ['container-post-1', 10]);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
 });
 
 test('isBenignQueueRemovalRace only accepts active or unknown removal races', () => {

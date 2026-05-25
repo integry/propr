@@ -289,7 +289,7 @@ describe('merged PR queue follow-up fixes', () => {
       },
       'corr-99',
     ]);
-    assert.strictEqual(mockMarkTaskCancelled.mock.calls.length, 1);
+    assert.strictEqual(mockMarkTaskCancelled.mock.calls.length, 0);
     const abortKeys = redisClient.set.mock.calls.map(call => call.arguments[0]).sort();
     assert.deepStrictEqual(abortKeys, [
       'worker:abort:issue-owner-repo-99-12345',
@@ -379,7 +379,7 @@ describe('merged PR queue follow-up fixes', () => {
       'worker:abort:owner-repo-99',
     ]);
     assert.strictEqual(redisClient.del.mock.calls.length, 0);
-    assert.strictEqual(mockMarkTaskCancelled.mock.calls.length, 1);
+    assert.strictEqual(mockMarkTaskCancelled.mock.calls.length, 0);
   });
 
   test('stopTaskExecution preserves command-specific task type for queued PR comment jobs', async () => {
@@ -603,7 +603,6 @@ describe('merged PR queue follow-up fixes', () => {
         info: mock.fn(),
         warn: mock.fn(),
       },
-      forceQueueScan: true,
     });
 
     assert.deepStrictEqual(activeTasks, [
@@ -797,6 +796,7 @@ describe('merged PR queue follow-up fixes', () => {
         info: mock.fn(),
         warn: mock.fn(),
       },
+      forceQueueScan: true,
     });
 
     assert.deepStrictEqual(activeTasks, [
@@ -829,6 +829,7 @@ describe('merged PR queue follow-up fixes', () => {
         info: mock.fn(),
         warn: mock.fn(),
       },
+      forceQueueScan: true,
     });
 
     assert.deepStrictEqual(activeTasks, [

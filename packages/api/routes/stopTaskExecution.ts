@@ -9,6 +9,15 @@ import {
 } from './stopTaskExecutionContext.js';
 import { persistTaskCancellation, pushStopConversationMessage } from './stopTaskExecutionPersistence.js';
 import {
+  clearPersistedStopOutcome,
+  hasConcreteStopOutcome,
+  loadPersistedStopOutcome,
+  mergeStopOutcomes,
+  persistStopOutcome,
+  type PersistedStopOutcome,
+  resolveCancellationQueueState,
+} from './stopTaskExecutionOutcome.js';
+import {
   clearPrQueueJobIndexEntriesIfNeeded,
   getStopTaskSuccessMessage,
   removeQueueJobIfNeeded,
@@ -72,6 +81,7 @@ interface StopTaskActivity {
 }
 
 const RUNNING_TASK_STATES = new Set<string>(STOPPABLE_TASK_STATES);
+const CONTAINER_TASK_STATES = new Set(['claude_execution', 'post_processing']);
 const TERMINAL_TASK_STATE_SET = new Set<string>(TERMINAL_TASK_STATES);
 const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed']);
 const PRE_START_QUEUE_STATES = new Set(['waiting', 'delayed', 'paused', 'prioritized', 'waiting-children']);
@@ -93,6 +103,8 @@ export async function stopTaskExecution(
     containerStopTimeoutSeconds,
   } = options;
   const context = await (deps.loadStopTaskContext ?? loadStopTaskContext)(taskReference, redisClient, deps);
+  const persistedStopOutcome = await loadPersistedStopOutcome(redisClient, context.taskId);
+  const hadPersistedStopOutcome = hasConcreteStopOutcome(persistedStopOutcome);
   const trackedContainerId = getTaskContainerId(context.state, context.currentState);
   const activity = getStopTaskActivity(context.currentState, context.queueState, trackedContainerId !== null);
   const shouldAbort = shouldAbortTask(activity);
@@ -102,6 +114,7 @@ export async function stopTaskExecution(
     currentState: context.currentState,
     queueState: context.queueState,
     activity,
+    persistedStopOutcome,
   });
   await (deps.ensureTaskStateForCancellation ?? ensureTaskStateForCancellation)(context.taskId, context.state, context.queueJob, deps);
 
@@ -131,34 +144,39 @@ export async function stopTaskExecution(
     currentState: context.currentState,
     queueState: effectiveQueueState,
     containerId,
-    containerStopped,
-    jobRemoved,
+    stopOutcome: mergeStopOutcomes(persistedStopOutcome, {
+      containerId,
+      containerStopped,
+      jobRemoved,
+    }),
     shouldAbort,
     queueStateAfterFailure,
   });
-  const shouldPersistCancelledState = shouldMarkTaskCancelled({
+  const stopOutcome = mergeStopOutcomes(persistedStopOutcome, {
+    containerId,
     containerStopped,
     jobRemoved,
   });
-  if (shouldClearAbortSignals({
-    shouldAbort,
-    containerStopped,
-    jobRemoved,
-  })) {
-    await clearAbortSignals(redisClient, context.abortTaskIds);
-  }
+  const shouldPersistCancelledState = shouldMarkTaskCancelled({
+    containerStopped: stopOutcome.containerStopped,
+    jobRemoved: stopOutcome.jobRemoved,
+  });
   if (shouldPersistCancelledState) {
-    await persistTaskCancellation({
-      taskId: context.taskId,
-      requestedBy,
-      cancellation,
-      queueState: effectiveQueueState,
-      containerId,
-      containerStopped,
-      deps,
-    });
-  }
-  if (shouldPersistCancelledState) {
+    try {
+      await persistTaskCancellation({
+        taskId: context.taskId,
+        requestedBy,
+        cancellation,
+        queueState: resolveCancellationQueueState(stopOutcome, effectiveQueueState),
+        containerId: stopOutcome.containerId,
+        containerStopped: stopOutcome.containerStopped,
+        jobRemoved: stopOutcome.jobRemoved,
+        deps,
+      });
+    } catch (error) {
+      await persistStopOutcome(redisClient, context.taskId, stopOutcome);
+      throw error;
+    }
     await pushStopConversationMessage(redisClient, context.taskId, {
       type: 'system',
       timestamp: new Date().toISOString(),
@@ -166,17 +184,21 @@ export async function stopTaskExecution(
       level: 'info',
       metadata: { reasonCode: cancellation.code, requestedBy },
     });
+    await clearAbortSignals(redisClient, context.abortTaskIds);
+    if (hadPersistedStopOutcome) {
+      await clearPersistedStopOutcome(redisClient, context.taskId);
+    }
   }
   return {
     success: true,
     message: getStopTaskSuccessMessage({
-      jobRemoved,
+      jobRemoved: stopOutcome.jobRemoved,
       shouldAbort,
-      containerStopped,
+      containerStopped: stopOutcome.containerStopped,
     }),
     taskId: context.taskId,
-    containerStopped,
-    jobRemoved,
+    containerStopped: stopOutcome.containerStopped,
+    jobRemoved: stopOutcome.jobRemoved,
     currentState: context.currentState,
     queueState: effectiveQueueState,
     cancellation,
@@ -207,8 +229,19 @@ function assertTaskCanBeStopped(params: {
   currentState: string | null;
   queueState: string | null;
   activity: StopTaskActivity;
+  persistedStopOutcome: PersistedStopOutcome;
 }): void {
-  const { state, queueJob, currentState, queueState, activity } = params;
+  const {
+    state,
+    queueJob,
+    currentState,
+    queueState,
+    activity,
+    persistedStopOutcome,
+  } = params;
+  if (hasConcreteStopOutcome(persistedStopOutcome)) {
+    return;
+  }
   if (!state && !queueJob) {
     throw new StopTaskExecutionError(404, {
       error: 'Task not found',
@@ -242,7 +275,7 @@ function assertTaskCanBeStopped(params: {
 }
 
 function getTaskContainerId(state: TaskState | null, currentState: string | null): string | null {
-  if (currentState !== 'claude_execution') {
+  if (!currentState || !CONTAINER_TASK_STATES.has(currentState)) {
     return null;
   }
 
@@ -301,18 +334,6 @@ async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]
   }
 }
 
-function shouldClearAbortSignals(params: {
-  shouldAbort: boolean;
-  containerStopped: boolean;
-  jobRemoved: boolean;
-}): boolean {
-  if (!params.shouldAbort) {
-    return false;
-  }
-
-  return params.containerStopped || params.jobRemoved;
-}
-
 function shouldMarkTaskCancelled(params: {
   containerStopped: boolean;
   jobRemoved: boolean;
@@ -325,8 +346,7 @@ function assertStopApplied(params: {
   currentState: string | null;
   queueState: string | null;
   containerId: string | null;
-  containerStopped: boolean;
-  jobRemoved: boolean;
+  stopOutcome: PersistedStopOutcome;
   shouldAbort: boolean;
   queueStateAfterFailure: string | null;
 }): void {
@@ -335,12 +355,11 @@ function assertStopApplied(params: {
     currentState,
     queueState,
     containerId,
-    containerStopped,
-    jobRemoved,
+    stopOutcome,
     shouldAbort,
     queueStateAfterFailure,
   } = params;
-  if (jobRemoved || containerStopped) {
+  if (hasConcreteStopOutcome(stopOutcome)) {
     return;
   }
 
