@@ -306,13 +306,31 @@ async function createTaskStateFromQueueJob(
     throw new Error(`Cannot reconstruct IssueRef for queued task cancellation: ${String(queueJob.id ?? taskId)}`);
   }
 
+  const database = deps.db ?? db;
   const stateManager = (deps.getStateManager ?? getStateManager)();
   const correlationId = typeof queueJob.data.correlationId === 'string' ? queueJob.data.correlationId : null;
+  const initialJobData = JSON.stringify(queueJob.data);
+  const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+  const prNumber = getPrNumberFromJobData(queueJob.data);
+
+  await database('tasks')
+    .insert({
+      task_id: taskId,
+      job_id: null,
+      correlation_id: correlationId,
+      repository,
+      issue_number: issueRef.number,
+      task_type: typeof issueRef.type === 'string' ? issueRef.type : 'issue',
+      model_name: typeof issueRef.modelName === 'string' ? issueRef.modelName : null,
+      initial_job_data: initialJobData,
+      ...(prNumber !== null ? { pr_number: prNumber } : {}),
+    })
+    .onConflict('task_id')
+    .ignore();
+
   await stateManager.createTaskState(taskId, issueRef, correlationId);
 
-  const prNumber = getPrNumberFromJobData(queueJob.data);
-  const initialJobData = JSON.stringify(queueJob.data);
-  const updatedRows = await (deps.db ?? db)('tasks')
+  const updatedRows = await database('tasks')
     .where({ task_id: taskId })
     .update({
       job_id: String(queueJob.id ?? taskId),

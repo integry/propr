@@ -637,7 +637,6 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
 }
 
 const TRACKED_PR_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
-const PRE_START_PR_QUEUE_STATES = ['waiting', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const TRACKED_PR_QUEUE_STATE_SET = new Set<string>(TRACKED_PR_QUEUE_STATES);
 
 export interface PRTaskActivity {
@@ -683,8 +682,7 @@ export async function getActiveTasksForPR(
             repository,
             prNumber,
             taskMap,
-            taskAliases,
-            stoppableOnly: deps.stoppableOnly === true
+            taskAliases
         });
 
         const activeTasksQuery = database('tasks')
@@ -729,18 +727,15 @@ async function addQueuedPrJobsFromLiveQueueScan(params: {
     prNumber: number;
     taskMap: Map<string, PRTaskActivity>;
     taskAliases: Map<string, string>;
-    stoppableOnly: boolean;
 }): Promise<void> {
     const {
         queue,
         repository,
         prNumber,
         taskMap,
-        taskAliases,
-        stoppableOnly
+        taskAliases
     } = params;
-    const queueStates = stoppableOnly ? PRE_START_PR_QUEUE_STATES : TRACKED_PR_QUEUE_STATES;
-    for (const trackedQueueState of queueStates) {
+    for (const trackedQueueState of TRACKED_PR_QUEUE_STATES) {
         const jobs = await queue.getJobs([trackedQueueState]);
         for (const job of jobs) {
             const jobData = job.data as unknown as Record<string, unknown>;

@@ -83,13 +83,33 @@ test('getActiveTasksForPR finds PR jobs by scanning the live queue', async () =>
   );
 });
 
-test('stopTaskExecution does not persist merged-PR cancellation metadata for abort-only active jobs', async () => {
+test('getActiveTasksForPR includes active BullMQ jobs when stoppableOnly is true', async () => {
+  const queue = createQueueMock([
+    createMockJob('active-pr-job', 'active', { repository: 'integry/propr', prNumber: 1464 }),
+  ]);
+
+  const tasks = await getActiveTasksForPR('integry/propr', 1464, {
+    getIssueQueue: async () => queue as never,
+    db: createTaskQueryDbMock([]),
+    stoppableOnly: true,
+    log: silentLog,
+  });
+
+  assert.deepEqual(tasks, [{ taskId: 'active-pr-job', state: 'active' }]);
+});
+
+test('stopTaskExecution records a pending merged-PR cancellation for abort-only active jobs', async () => {
   const setCalls: Array<{ key: string; value: Record<string, unknown> }> = [];
   const delCalls: string[] = [];
   const conversationMessages: Array<{ key: string; message: Record<string, unknown> }> = [];
   const markTaskCancelledCalls: Array<{
     taskId: string;
     requestedBy: string;
+    metadata: Record<string, unknown>;
+  }> = [];
+  const updateHistoryMetadataCalls: Array<{
+    taskId: string;
+    currentState: string;
     metadata: Record<string, unknown>;
   }> = [];
 
@@ -138,6 +158,10 @@ test('stopTaskExecution does not persist merged-PR cancellation metadata for abo
         markTaskCancelledCalls.push({ taskId, requestedBy, metadata });
         return {} as never;
       },
+      async updateHistoryMetadata(taskId: string, currentState: string, metadata: Record<string, unknown>) {
+        updateHistoryMetadataCalls.push({ taskId, currentState, metadata });
+        return {} as never;
+      },
     }) as never,
   });
 
@@ -148,9 +172,23 @@ test('stopTaskExecution does not persist merged-PR cancellation metadata for abo
   assert.deepEqual(delCalls, []);
   assert.deepEqual(
     setCalls.map((call) => call.key).sort(),
-    ['worker:abort:job-1464', 'worker:abort:task-1464'],
+    ['worker:abort:job-1464', 'worker:abort:task-1464', 'worker:stop-requested:task-1464'],
   );
   assert.equal(markTaskCancelledCalls.length, 0);
+  assert.deepEqual(updateHistoryMetadataCalls, [{
+    taskId: 'task-1464',
+    currentState: 'processing',
+    metadata: {
+      cancellationRequested: {
+        code: 'pull_request_merged',
+        message: 'Task cancelled because pull request #1464 was merged.',
+        requestedBy: 'system',
+        source: 'pull_request_merged',
+        abortSignalArmed: true,
+        queueState: 'active',
+      },
+    },
+  }]);
   assert.deepEqual(
     conversationMessages.map((entry) => entry.message.content),
     ['Cancellation requested. Worker shutdown is still in progress.'],

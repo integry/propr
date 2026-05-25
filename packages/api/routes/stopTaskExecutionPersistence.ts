@@ -1,4 +1,4 @@
-import { getStateManager, logger } from '@propr/core';
+import { getStateManager, logger, type TaskState } from '@propr/core';
 import type { RedisClientType } from 'redis';
 import type { StopTaskCancellationReason, StopTaskExecutionDeps } from './stopTaskExecution.js';
 
@@ -81,6 +81,52 @@ export async function persistTaskCancellation(params: {
     stopVerified,
     abortSignalArmed,
   }, 'Task marked as cancelled');
+}
+
+export async function persistPendingTaskCancellationRequest(params: {
+  taskId: string;
+  requestedBy: string;
+  cancellation: StopTaskCancellationReason;
+  currentState: string | null;
+  queueState: string | null;
+  containerId: string | null;
+  abortSignalArmed: boolean;
+  deps: StopTaskExecutionDeps;
+}): Promise<void> {
+  const {
+    taskId,
+    requestedBy,
+    cancellation,
+    currentState,
+    queueState,
+    containerId,
+    abortSignalArmed,
+    deps,
+  } = params;
+  if (!currentState) {
+    return;
+  }
+
+  const stateManager = (deps.getStateManager ?? getStateManager)();
+  await stateManager.updateHistoryMetadata(taskId, currentState as TaskState, {
+    cancellationRequested: {
+      code: cancellation.code,
+      message: cancellation.message,
+      requestedBy,
+      source: getCancellationSource(cancellation),
+      abortSignalArmed,
+      ...(containerId ? { containerId } : {}),
+      ...(queueState ? { queueState } : {}),
+    },
+  });
+  logger.info({
+    taskId,
+    requestedBy,
+    reasonCode: cancellation.code,
+    queueState,
+    containerId: containerId ?? null,
+    abortSignalArmed,
+  }, 'Recorded pending task cancellation request');
 }
 
 function getCancellationSource(cancellation: StopTaskCancellationReason): string {

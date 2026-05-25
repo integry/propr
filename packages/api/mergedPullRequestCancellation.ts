@@ -4,7 +4,6 @@ import {
   markPullRequestMerged,
 } from '@propr/core';
 import {
-  loadPendingStopRequest,
   StopTaskExecutionError,
   stopTaskExecution,
   type StopTaskExecutionOptions,
@@ -94,9 +93,7 @@ export async function cancelMergedPullRequestTasks(
     loadActiveTasks,
     repository,
     prNumber,
-    redisClient: deps.redisClient,
     log,
-    correlationId,
   });
   if (remainingAfterFirstAttempt.length === 0) {
     await persistMergedState(deps.redisClient, repository, prNumber);
@@ -124,9 +121,7 @@ export async function cancelMergedPullRequestTasks(
     loadActiveTasks,
     repository,
     prNumber,
-    redisClient: deps.redisClient,
     log,
-    correlationId,
   });
   if (finalActiveTasks.length === 0) {
     await persistMergedState(deps.redisClient, repository, prNumber);
@@ -227,46 +222,15 @@ async function loadBlockingMergeCancellationTasks(params: {
   loadActiveTasks: typeof getActiveTasksForPR;
   repository: string;
   prNumber: number;
-  redisClient: StopTaskExecutionOptions['redisClient'];
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
-  correlationId: string;
 }): Promise<MergeTaskActivity[]> {
   const {
     loadActiveTasks,
     repository,
     prNumber,
-    redisClient,
     log,
-    correlationId,
   } = params;
-  const activeTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
-  if (activeTasks.length === 0) {
-    return [];
-  }
-
-  const blockingTasks: MergeTaskActivity[] = [];
-  const pendingTaskIds: string[] = [];
-
-  for (const task of activeTasks) {
-    const pendingStopRequest = await loadPendingStopRequest(redisClient, task.taskId);
-    if (pendingStopRequest?.reasonCode === MERGE_CANCELLATION_REASON_CODE) {
-      pendingTaskIds.push(task.taskId);
-      continue;
-    }
-
-    blockingTasks.push(task);
-  }
-
-  if (pendingTaskIds.length > 0) {
-    log.info({
-      correlationId,
-      repository,
-      prNumber,
-      taskIds: pendingTaskIds,
-    }, 'Merged PR cancellation is waiting on worker shutdown for active tasks');
-  }
-
-  return blockingTasks;
+  return loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
 }
 
 function buildFinalFailures(
