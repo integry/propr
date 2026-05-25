@@ -1,5 +1,15 @@
 import type { Job } from 'bullmq';
-import { buildIssueRefFromQueueJob, db, getIssueQueue, getPrNumberFromJobData, getStateManager, getTaskIdFromQueueJob, logger, normalizeTaskId as normalizeCoreTaskId } from '@propr/core';
+import {
+  buildIssueRefFromQueueJob,
+  db,
+  getIssueQueue,
+  getPrNumberFromJobData,
+  getStateManager,
+  getTaskIdFromQueueJob,
+  logger,
+  normalizeTaskId as normalizeCoreTaskId,
+  TRACKED_PR_QUEUE_STATES,
+} from '@propr/core';
 
 export type QueueJobData = Record<string, unknown>;
 
@@ -45,8 +55,6 @@ interface ResolvedPersistedTaskContext {
   queueJob: Job<QueueJobData> | null;
   queueTaskId: string | null;
 }
-
-const TRACKED_QUEUE_LOOKUP_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 
 type RedisClientLike = {
   get: (key: string) => Promise<string | null>;
@@ -233,7 +241,7 @@ async function getQueueJob(
     return null;
   }
 
-  const jobs = await queue.getJobs([...TRACKED_QUEUE_LOOKUP_STATES]) as unknown as Job<QueueJobData>[];
+  const jobs = await queue.getJobs([...TRACKED_PR_QUEUE_STATES]) as unknown as Job<QueueJobData>[];
   for (const job of jobs) {
     const derivedTaskId = getTaskIdFromQueueJob(job);
     const normalizedJobId = job.id === null || job.id === undefined ? null : normalizeTaskId(String(job.id));

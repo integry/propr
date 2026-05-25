@@ -112,7 +112,7 @@ export async function clearPrQueueJobIndexEntriesIfNeeded(
 }
 
 export function isBenignQueueRemovalRace(queueState: string | null): boolean {
-  return queueState === 'active' || queueState === 'unknown';
+  return queueState === 'active';
 }
 
 function isTerminalQueueRemovalRace(queueState: string | null): boolean {

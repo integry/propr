@@ -20,6 +20,8 @@ export async function persistTaskCancellation(params: {
   containerId: string | null;
   containerStopped: boolean;
   jobRemoved: boolean;
+  stopVerified: boolean;
+  abortSignalArmed: boolean;
   deps: StopTaskExecutionDeps;
 }): Promise<void> {
   const {
@@ -30,6 +32,8 @@ export async function persistTaskCancellation(params: {
     containerId,
     containerStopped,
     jobRemoved,
+    stopVerified,
+    abortSignalArmed,
     deps,
   } = params;
   const stateManager = (deps.getStateManager ?? getStateManager)();
@@ -53,6 +57,8 @@ export async function persistTaskCancellation(params: {
       requestedBy,
       containerStopped,
       jobRemoved,
+      stopVerified,
+      abortSignalArmed,
       ...(containerId ? { containerId } : {}),
       ...(queueState ? { queueState } : {}),
     },
@@ -65,6 +71,8 @@ export async function persistTaskCancellation(params: {
     containerId: containerId ?? null,
     containerStopped,
     jobRemoved,
+    stopVerified,
+    abortSignalArmed,
   }, 'Task marked as cancelled');
 }
 
