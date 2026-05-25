@@ -8,7 +8,7 @@ import {
     issueQueue,
     recordLLMMetrics
 } from '@propr/core';
-import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo } from '@propr/core';
+import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, UpdateMetadata } from '@propr/core';
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -48,6 +48,15 @@ interface ExecutionAbortMetadata {
     reasonCode?: string;
     reason?: string;
     source?: string;
+}
+
+interface GenericErrorStateUpdateOptions {
+    stateManager: WorkerStateManager;
+    taskId: string;
+    errorCategory: string;
+    isUserCancelled: boolean;
+    abortMetadata: ExecutionAbortMetadata | null;
+    correlatedLogger: Logger;
 }
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
@@ -229,6 +238,10 @@ function categorizeError(errorMessage: string | undefined): string {
     return 'unknown_error';
 }
 
+function isUserCancellationError(error: Error): boolean {
+    return error.message?.includes('aborted by user') || error.name === 'ExecutionAbortedError';
+}
+
 async function postCancellationNotice(
     issueRef: IssueJobData,
     octokit: Octokit,
@@ -251,6 +264,65 @@ async function postCancellationNotice(
     }
 }
 
+function buildCancellationUpdateMetadata(
+    error: Error,
+    abortMetadata: ExecutionAbortMetadata | null,
+    cancelledBy: string
+): UpdateMetadata {
+    const historyMetadata: Record<string, unknown> = {
+        originalError: error.message,
+    };
+
+    if (!abortMetadata) {
+        return { historyMetadata };
+    }
+
+    return {
+        ...(abortMetadata.reason ? { reason: abortMetadata.reason } : {}),
+        cancellation: {
+            code: abortMetadata.reasonCode,
+            message: abortMetadata.reason,
+            cancelledBy,
+            source: abortMetadata.source,
+        },
+        historyMetadata: {
+            ...historyMetadata,
+            cancellation: {
+                code: abortMetadata.reasonCode,
+                message: abortMetadata.reason,
+                source: abortMetadata.source,
+            },
+        },
+    };
+}
+
+async function updateTaskStateAfterGenericError(
+    error: Error,
+    options: GenericErrorStateUpdateOptions
+): Promise<void> {
+    const { stateManager, taskId, errorCategory, isUserCancelled, abortMetadata, correlatedLogger } = options;
+
+    try {
+        const currentState = await stateManager.getTaskState(taskId);
+        const TERMINAL_STATES = ['completed', 'failed', 'cancelled'];
+        if (currentState && TERMINAL_STATES.includes(currentState.state)) {
+            correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');
+            return;
+        }
+
+        if (isUserCancelled) {
+            const cancelledBy = abortMetadata?.requestedBy ?? 'user';
+            await stateManager.markTaskCancelled(taskId, cancelledBy, buildCancellationUpdateMetadata(error, abortMetadata, cancelledBy));
+            correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
+            return;
+        }
+
+        await stateManager.markTaskFailed(taskId, error, { errorCategory });
+    } catch (stateError) {
+        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state');
+    }
+}
+
 export async function handleGenericError(
     error: Error,
     job: Job<IssueJobData>,
@@ -259,7 +331,7 @@ export async function handleGenericError(
 ): Promise<void> {
     const { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG } = options;
     const errorCategory = categorizeError(error.message);
-    const isUserCancelled = error.message?.includes('aborted by user') || error.name === 'ExecutionAbortedError';
+    const isUserCancelled = isUserCancellationError(error);
     const abortMetadata = getExecutionAbortMetadata(error);
 
     const sanitizedMessage = sanitizeErrorMessage(error.message);
@@ -296,44 +368,7 @@ export async function handleGenericError(
         await postCancellationNotice(issueRef, octokit, AI_PROCESSING_TAG, correlatedLogger);
     }
 
-    try {
-        const currentState = await stateManager.getTaskState(taskId);
-        const TERMINAL_STATES = ['completed', 'failed', 'cancelled'];
-        if (currentState && TERMINAL_STATES.includes(currentState.state)) {
-            correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');
-            return;
-        }
-
-        if (isUserCancelled) {
-            const cancelledBy = abortMetadata?.requestedBy ?? 'user';
-            await stateManager.markTaskCancelled(taskId, cancelledBy, {
-                ...(abortMetadata?.reason ? { reason: abortMetadata.reason } : {}),
-                ...(abortMetadata ? {
-                    cancellation: {
-                        code: abortMetadata.reasonCode,
-                        message: abortMetadata.reason,
-                        cancelledBy,
-                        source: abortMetadata.source,
-                    },
-                } : {}),
-                historyMetadata: {
-                    originalError: error.message,
-                    ...(abortMetadata ? {
-                        cancellation: {
-                            code: abortMetadata.reasonCode,
-                            message: abortMetadata.reason,
-                            source: abortMetadata.source,
-                        },
-                    } : {}),
-                },
-            });
-            correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
-        } else {
-            await stateManager.markTaskFailed(taskId, error, { errorCategory });
-        }
-    } catch (stateError) {
-        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state');
-    }
+    await updateTaskStateAfterGenericError(error, { stateManager, taskId, errorCategory, isUserCancelled, abortMetadata, correlatedLogger });
 }
 
 function getExecutionAbortMetadata(error: Error): ExecutionAbortMetadata | null {
