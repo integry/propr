@@ -217,8 +217,6 @@ async function runWebhookProcessorOrRetry(params: {
   rawDeliveryId: string;
   rawEvent: string;
   correlationId: string;
-  deliveryKey: string;
-  redis: WebhookHandlerDeps['redis'];
   processor: WebhookHandlerDeps['processor'];
   isMergedPrClose: boolean | undefined;
   res: Response;
@@ -228,8 +226,6 @@ async function runWebhookProcessorOrRetry(params: {
     rawDeliveryId,
     rawEvent,
     correlationId,
-    deliveryKey,
-    redis,
     processor,
     isMergedPrClose,
     res,
@@ -243,30 +239,15 @@ async function runWebhookProcessorOrRetry(params: {
       throw error;
     }
 
-    let deliveryReservationReleased = false;
-    try {
-      await redis.del(deliveryKey);
-      deliveryReservationReleased = true;
-    } catch (releaseError) {
-      logger.error({
-        correlationId,
-        deliveryId: rawDeliveryId,
-        event: rawEvent,
-        repository: payload.repository?.full_name,
-        prNumber: payload.pull_request?.number,
-        error: (releaseError as Error).message,
-      }, 'Failed to release webhook delivery reservation after merged PR processor failure');
-    }
-
     logger.error({
       correlationId,
       deliveryId: rawDeliveryId,
       event: rawEvent,
       repository: payload.repository?.full_name,
       prNumber: payload.pull_request?.number,
-      deliveryReservationReleased,
+      deliveryReservationRetained: true,
       error: (error as Error).message,
-    }, 'Merged PR task cancellation succeeded but downstream webhook processing failed; returning 500 for retry');
+    }, 'Merged PR task cancellation succeeded but downstream webhook processing failed; retaining delivery reservation to block duplicate side effects');
     res.status(500).send('Webhook processor failed after merged pull request task cancellation.');
     return false;
   }
@@ -287,10 +268,9 @@ async function runWebhookProcessorOrRetry(params: {
  *    same task twice.
  * 2. If merge-time task cancellation fails, the reservation is released and
  *    the request returns 500 so GitHub can retry the cancellation attempt.
- * 3. If downstream processing fails after merge-time cancellation succeeds,
- *    the delivery reservation is released before returning 500. GitHub can
- *    retry the ordinary webhook processing and the cancellation path remains
- *    idempotent.
+   * 3. If downstream processing fails after merge-time cancellation succeeds,
+   *    the delivery reservation remains in place so GitHub retries cannot replay
+   *    downstream side effects for the same delivery ID.
  */
 export async function handleWebhookRequest(
   req: Request,
@@ -378,8 +358,6 @@ export async function handleWebhookRequest(
     rawDeliveryId,
     rawEvent,
     correlationId,
-    deliveryKey,
-    redis,
     processor,
     isMergedPrClose,
     res,

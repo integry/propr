@@ -64,7 +64,6 @@ type RedisClientLike = {
 
 const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const QUEUE_TASK_ID_SCAN_PAGE_SIZE = 100;
-const QUEUE_TASK_ID_SCAN_MAX_PAGES = 5;
 
 export function normalizeTaskId(jobId: string): string {
   return normalizeCoreTaskId(jobId);
@@ -80,25 +79,14 @@ export async function loadStopTaskContext(
     normalizedTaskId,
     taskReference,
   ]);
-  if (directStateLookup.state && directStateLookup.taskId) {
-    const currentState = directStateLookup.state.history[directStateLookup.state.history.length - 1]?.state ?? null;
-    return {
-      normalizedTaskId,
-      state: directStateLookup.state,
-      currentState,
-      queueJob: null,
-      queueState: null,
-      taskId: directStateLookup.taskId,
-      abortTaskIds: [...new Set([directStateLookup.taskId, normalizedTaskId, taskReference])],
-    };
-  }
-
   const { persistedTask, queueJob, queueTaskId } = await resolvePersistedTaskContext(
     taskReference,
     normalizedTaskId,
     deps,
+    directStateLookup.taskId ? [directStateLookup.taskId] : [],
   );
   const stateLookup = await loadTaskState(redisClient, [
+    directStateLookup.taskId,
     persistedTask?.taskId,
     queueTaskId,
     normalizedTaskId,
@@ -114,10 +102,10 @@ export async function loadStopTaskContext(
     queueTaskId,
   }, 'Loading task stop context');
 
-  const state = stateLookup.state;
+  const state = stateLookup.state ?? directStateLookup.state;
   const currentState = state?.history[state.history.length - 1]?.state ?? null;
   const queueState = queueJob ? await queueJob.getState() : null;
-  const taskId = resolveStopTaskId(normalizedTaskId, queueTaskId, persistedTask?.taskId ?? stateLookup.taskId);
+  const taskId = resolveStopTaskId(normalizedTaskId, queueTaskId, persistedTask?.taskId ?? stateLookup.taskId ?? directStateLookup.taskId);
   const abortTaskIds = buildAbortTaskIds({
     taskId,
     normalizedTaskId,
@@ -206,13 +194,15 @@ async function resolvePersistedTaskContext(
   taskReference: string,
   normalizedTaskId: string,
   deps: StopTaskContextDeps,
+  extraCandidates: string[] = [],
 ): Promise<ResolvedPersistedTaskContext> {
   const database = deps.db ?? db;
-  let persistedTask = await findPersistedTaskRecord(taskReference, normalizedTaskId, database);
+  let persistedTask = await findPersistedTaskRecord(taskReference, normalizedTaskId, database, extraCandidates);
   const queueJob = await getQueueJob({
     candidateTaskIds: [
       taskReference,
       normalizedTaskId,
+      ...extraCandidates,
       persistedTask?.jobId,
       persistedTask?.taskId,
     ].filter((value): value is string => Boolean(value)),
@@ -221,7 +211,7 @@ async function resolvePersistedTaskContext(
   const queueTaskId = queueJob ? getTaskIdFromQueueJob(queueJob) : null;
 
   if (!persistedTask && queueTaskId) {
-    persistedTask = await findPersistedTaskRecord(taskReference, normalizedTaskId, database, [queueTaskId]);
+    persistedTask = await findPersistedTaskRecord(taskReference, normalizedTaskId, database, [queueTaskId, ...extraCandidates]);
   }
 
   return {
@@ -297,10 +287,8 @@ async function findQueueJobByTaskIdScan(
 ): Promise<Job<QueueJobData> | null> {
   for (const trackedQueueState of TRACKED_QUEUE_STATES) {
     let start = 0;
-    let pageCount = 0;
     let jobs = await queue.getJobs([trackedQueueState], start, start + QUEUE_TASK_ID_SCAN_PAGE_SIZE - 1) as unknown as Job<QueueJobData>[];
-    while (jobs.length > 0 && pageCount < QUEUE_TASK_ID_SCAN_MAX_PAGES) {
-      pageCount += 1;
+    while (jobs.length > 0) {
       const matchingJob = findMatchingQueueJob(jobs, candidateTaskIdSet, uniqueCandidates);
       if (matchingJob) {
         return matchingJob;
@@ -310,18 +298,7 @@ async function findQueueJobByTaskIdScan(
       if (jobs.length < QUEUE_TASK_ID_SCAN_PAGE_SIZE) {
         break;
       }
-      if (pageCount >= QUEUE_TASK_ID_SCAN_MAX_PAGES) {
-        break;
-      }
       jobs = await queue.getJobs([trackedQueueState], start, start + QUEUE_TASK_ID_SCAN_PAGE_SIZE - 1) as unknown as Job<QueueJobData>[];
-    }
-
-    if (pageCount >= QUEUE_TASK_ID_SCAN_MAX_PAGES && jobs.length === QUEUE_TASK_ID_SCAN_PAGE_SIZE) {
-      logger.warn({
-        taskReferenceCandidates: uniqueCandidates,
-        queueState: trackedQueueState,
-        scannedJobs: QUEUE_TASK_ID_SCAN_PAGE_SIZE * QUEUE_TASK_ID_SCAN_MAX_PAGES,
-      }, 'Stopped queued task lookup fallback after scan limit');
     }
   }
 

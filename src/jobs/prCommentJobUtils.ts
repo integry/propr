@@ -39,6 +39,13 @@ interface PRComment {
     pull_request_review_id?: number;
 }
 
+interface ExecutionAbortMetadata {
+    requestedBy?: string;
+    reasonCode?: string;
+    reason?: string;
+    source?: string;
+}
+
 export interface CombinedCommentResult {
     combinedCommentBody: string;
     combinedBodyHtml?: string;  // Combined HTML with signed image URLs
@@ -214,9 +221,32 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     await issueQueue.add(job.name, job.data, { jobId: requeueJobId, delay: Math.max(0, delay) });
 }
 
-async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
+async function handleUserCancellation(options: JobErrorOptions, error: Error): Promise<void> {
     const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
-    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } });
+    const abortMetadata = getExecutionAbortMetadata(error);
+    const cancelledBy = abortMetadata?.requestedBy ?? 'user';
+    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, {
+        reason: abortMetadata?.reason ?? 'Task cancelled by user',
+        error: { message: error.message },
+        ...(abortMetadata ? {
+            cancellation: {
+                code: abortMetadata.reasonCode,
+                message: abortMetadata.reason,
+                cancelledBy,
+                source: abortMetadata.source,
+            },
+        } : {}),
+        historyMetadata: {
+            cancelledBy,
+            ...(abortMetadata ? {
+                cancellation: {
+                    code: abortMetadata.reasonCode,
+                    message: abortMetadata.reason,
+                    source: abortMetadata.source,
+                },
+            } : {}),
+        },
+    });
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
     if (octokit && startingWorkComment) {
         await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
@@ -250,7 +280,7 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
 export async function handleJobError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
     const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
 
-    const isUserCancelled = error.message?.includes('aborted by user');
+    const isUserCancelled = error.message?.includes('aborted by user') || error.name === 'ExecutionAbortedError';
     const isUsageLimit = error.name === 'UsageLimitError' || error.message?.includes('usage limit');
 
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
@@ -268,10 +298,23 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
     if (isUsageLimit) {
         await handleUsageLimitError(error as UsageLimitError, job, options);
     } else if (isUserCancelled) {
-        await handleUserCancellation(options, error.message);
+        await handleUserCancellation(options, error);
     } else {
         await handleGenericError(error, options);
     }
+}
+
+function getExecutionAbortMetadata(error: Error): ExecutionAbortMetadata | null {
+    const metadata = (error as Error & { abortMetadata?: unknown }).abortMetadata;
+    if (!metadata || typeof metadata !== 'object') return null;
+
+    const record = metadata as Record<string, unknown>;
+    return {
+        ...(typeof record.requestedBy === 'string' ? { requestedBy: record.requestedBy } : {}),
+        ...(typeof record.reasonCode === 'string' ? { reasonCode: record.reasonCode } : {}),
+        ...(typeof record.reason === 'string' ? { reason: record.reason } : {}),
+        ...(typeof record.source === 'string' ? { source: record.source } : {}),
+    };
 }
 
 export interface CleanupOptions {

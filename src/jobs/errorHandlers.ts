@@ -43,6 +43,13 @@ interface PostErrorCommentOptions {
     correlatedLogger: Logger;
 }
 
+interface ExecutionAbortMetadata {
+    requestedBy?: string;
+    reasonCode?: string;
+    reason?: string;
+    source?: string;
+}
+
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
         model: response.model,
@@ -252,7 +259,8 @@ export async function handleGenericError(
 ): Promise<void> {
     const { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG } = options;
     const errorCategory = categorizeError(error.message);
-    const isUserCancelled = error.message?.includes('aborted by user');
+    const isUserCancelled = error.message?.includes('aborted by user') || error.name === 'ExecutionAbortedError';
+    const abortMetadata = getExecutionAbortMetadata(error);
 
     const sanitizedMessage = sanitizeErrorMessage(error.message);
     correlatedLogger.error({
@@ -297,7 +305,28 @@ export async function handleGenericError(
         }
 
         if (isUserCancelled) {
-            await stateManager.markTaskCancelled(taskId, 'user', { historyMetadata: { originalError: error.message } });
+            const cancelledBy = abortMetadata?.requestedBy ?? 'user';
+            await stateManager.markTaskCancelled(taskId, cancelledBy, {
+                ...(abortMetadata?.reason ? { reason: abortMetadata.reason } : {}),
+                ...(abortMetadata ? {
+                    cancellation: {
+                        code: abortMetadata.reasonCode,
+                        message: abortMetadata.reason,
+                        cancelledBy,
+                        source: abortMetadata.source,
+                    },
+                } : {}),
+                historyMetadata: {
+                    originalError: error.message,
+                    ...(abortMetadata ? {
+                        cancellation: {
+                            code: abortMetadata.reasonCode,
+                            message: abortMetadata.reason,
+                            source: abortMetadata.source,
+                        },
+                    } : {}),
+                },
+            });
             correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
         } else {
             await stateManager.markTaskFailed(taskId, error, { errorCategory });
@@ -305,6 +334,19 @@ export async function handleGenericError(
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state');
     }
+}
+
+function getExecutionAbortMetadata(error: Error): ExecutionAbortMetadata | null {
+    const metadata = (error as Error & { abortMetadata?: unknown }).abortMetadata;
+    if (!metadata || typeof metadata !== 'object') return null;
+
+    const record = metadata as Record<string, unknown>;
+    return {
+        ...(typeof record.requestedBy === 'string' ? { requestedBy: record.requestedBy } : {}),
+        ...(typeof record.reasonCode === 'string' ? { reasonCode: record.reasonCode } : {}),
+        ...(typeof record.reason === 'string' ? { reason: record.reason } : {}),
+        ...(typeof record.source === 'string' ? { source: record.source } : {}),
+    };
 }
 
 async function postErrorComment(issueRef: IssueJobData, error: Error, options: PostErrorCommentOptions): Promise<void> {

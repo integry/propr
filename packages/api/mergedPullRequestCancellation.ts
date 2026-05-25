@@ -37,6 +37,7 @@ interface MergeTaskCancellationFailure {
 }
 
 const MERGE_TASK_STOP_CONCURRENCY = 5;
+const MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS = 2;
 const MERGE_CANCELLATION_REASON_CODE = 'pull_request_merged';
 
 export async function cancelMergedPullRequestTasks(
@@ -94,7 +95,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: firstAttempt.verifiedTaskIds,
+    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds, firstAttempt.acceptedTaskIds),
   });
   if (remainingAfterFirstAttempt.length === 0) {
     return;
@@ -124,7 +125,9 @@ export async function cancelMergedPullRequestTasks(
     log,
     ignoredTaskIds: new Set([
       ...firstAttempt.verifiedTaskIds,
+      ...firstAttempt.acceptedTaskIds,
       ...retryAttempt.verifiedTaskIds,
+      ...retryAttempt.acceptedTaskIds,
     ]),
   });
   if (finalActiveTasks.length === 0) {
@@ -171,6 +174,7 @@ async function stopMergeTasks(params: {
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<{
   verifiedTaskIds: Set<string>;
+  acceptedTaskIds: Set<string>;
   failures: Map<string, MergeTaskCancellationFailure>;
 }> {
   const {
@@ -184,6 +188,7 @@ async function stopMergeTasks(params: {
     log,
   } = params;
   const verifiedTaskIds = new Set<string>();
+  const acceptedTaskIds = new Set<string>();
   const failures = new Map<string, MergeTaskCancellationFailure>();
 
   for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
@@ -194,12 +199,17 @@ async function stopMergeTasks(params: {
           redisClient,
           requestedBy: 'system',
           cancellation,
+          containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
         });
         if (result.stopVerified) {
           verifiedTaskIds.add(task.taskId);
           verifiedTaskIds.add(result.taskId);
         }
         if (!result.stopVerified) {
+          if (result.cancellationRequested || result.abortSignalArmed) {
+            acceptedTaskIds.add(task.taskId);
+            acceptedTaskIds.add(result.taskId);
+          }
           log.info({
             correlationId,
             repository,
@@ -207,7 +217,7 @@ async function stopMergeTasks(params: {
             taskId: task.taskId,
             currentState: result.currentState,
             queueState: result.queueState,
-        }, 'Merged PR task stop request accepted and is awaiting worker or queue-state confirmation');
+          }, 'Merged PR task stop request accepted and is awaiting worker or queue-state confirmation');
         }
       } catch (error) {
         const failure = buildMergeTaskCancellationFailure(task.taskId, error);
@@ -226,7 +236,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { verifiedTaskIds, failures };
+  return { verifiedTaskIds, acceptedTaskIds, failures };
 }
 
 async function loadBlockingMergeCancellationTasks(params: {
@@ -259,6 +269,10 @@ function buildFinalFailures(
 
 function dedupeTasks<T extends { taskId: string }>(tasks: T[]): T[] {
   return [...new Map(tasks.map((task) => [task.taskId, task])).values()];
+}
+
+function mergeTaskIdSets(...sets: ReadonlySet<string>[]): Set<string> {
+  return new Set(sets.flatMap((set) => [...set]));
 }
 
 function buildMergeTaskCancellationFailure(taskId: string, error: unknown): MergeTaskCancellationFailure {

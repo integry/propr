@@ -147,28 +147,19 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.equal(mockLogger.warn.mock.calls.length, 1);
   });
 
-  test('retries an abort-only merged-PR stop request when the task remains active', async () => {
+  test('accepts an abort-only merged-PR stop request without immediate retry verification', async () => {
     const redisClient = createRedisClient();
     let lookupCount = 0;
     mockGetActiveTasksForPR.mock.mockImplementation(async () => {
       lookupCount += 1;
       return [{ taskId: 'task-processing', state: 'processing' }];
     });
-    let stopCount = 0;
     mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => {
-      stopCount += 1;
-      return createStopResult(taskId, stopCount === 1
-        ? {
-            stopVerified: false,
-            cancellationRequested: true,
-            abortSignalArmed: true,
-          }
-        : {
-            stopVerified: true,
-            cancellationRequested: false,
-            abortSignalArmed: false,
-            containerStopped: true,
-          });
+      return createStopResult(taskId, {
+        stopVerified: false,
+        cancellationRequested: true,
+        abortSignalArmed: true,
+      });
     });
 
     await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
@@ -179,11 +170,12 @@ describe('cancelMergedPullRequestTasks', () => {
       log: mockLogger,
     });
 
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 3);
+    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
     assert.deepEqual(
       mockStopTaskExecution.mock.calls.map((call) => call.arguments[0]),
-      ['task-processing', 'task-processing'],
+      ['task-processing'],
     );
+    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].containerStopTimeoutSeconds, 2);
     assert.equal(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 
@@ -209,7 +201,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.equal(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 
-  test('fails after retry when an abort-only stop request remains active', async () => {
+  test('does not fail when an abort-only stop request remains active immediately after signalling', async () => {
     const redisClient = {
       ...createRedisClient(),
       get: mock.fn(async () => JSON.stringify({
@@ -227,7 +219,7 @@ describe('cancelMergedPullRequestTasks', () => {
       abortSignalArmed: true,
     }));
 
-    await assert.rejects(
+    await assert.doesNotReject(
       cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
         redisClient,
         markPullRequestMerged: mockMarkPullRequestMerged,
@@ -235,11 +227,10 @@ describe('cancelMergedPullRequestTasks', () => {
         stopTaskExecution: mockStopTaskExecution,
         log: mockLogger,
       }),
-      /Failed to cancel 1 merged PR task/,
     );
 
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 3);
-    assert.equal(mockStopTaskExecution.mock.calls.length, 2);
+    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
+    assert.equal(mockStopTaskExecution.mock.calls.length, 1);
     assert.equal(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 

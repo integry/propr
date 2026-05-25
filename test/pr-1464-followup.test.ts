@@ -434,9 +434,83 @@ test('loadStopTaskContext fallback scan matches raw queue job ids before normali
   assert.deepEqual(context.abortTaskIds, ['owner-repo-42', rawJobId]);
 });
 
-test('loadStopTaskContext uses Redis worker state before loading queue context', async () => {
+test('loadStopTaskContext fallback scan checks beyond 500 queued jobs', async () => {
+  const targetJobId = 'issue-owner-repo-42-999';
+  const waitingJobs = Array.from({ length: 650 }, (_, index) => ({
+    id: index === 620 ? targetJobId : `issue-other-repo-${index}-1`,
+    data: index === 620
+      ? { repository: 'owner/repo', prNumber: 42 }
+      : { repository: 'other/repo', prNumber: index },
+    async getState() {
+      return 'waiting';
+    },
+  }));
+  const dbQueryBuilder = {
+    whereIn() {
+      return dbQueryBuilder;
+    },
+    orWhereIn() {
+      return dbQueryBuilder;
+    },
+  };
+  const dbTasksQuery = {
+    select() {
+      return dbTasksQuery;
+    },
+    async where(callback: (queryBuilder: typeof dbQueryBuilder) => void) {
+      callback(dbQueryBuilder);
+      return [];
+    },
+  };
+
+  const context = await loadStopTaskContext(targetJobId, {
+    async get() {
+      return null;
+    },
+  }, {
+    getIssueQueue: async () => ({
+      async getJob() {
+        return null;
+      },
+      async getJobs(states: string[], start = 0, end = 99) {
+        return states.includes('waiting') ? waitingJobs.slice(start, end + 1) : [];
+      },
+    }) as never,
+    db: (() => dbTasksQuery) as never,
+  });
+
+  assert.equal(context.queueJob?.id, targetJobId);
+  assert.equal(context.taskId, 'owner-repo-42');
+});
+
+test('loadStopTaskContext keeps queue context when Redis worker state exists', async () => {
   let dbLoaded = false;
   let queueLoaded = false;
+  const queueJob = {
+    id: 'task-redis-first',
+    data: { repository: 'owner/repo', prNumber: 42 },
+    async getState() {
+      return 'delayed';
+    },
+  };
+  const dbQueryBuilder = {
+    whereIn() {
+      return dbQueryBuilder;
+    },
+    orWhereIn() {
+      return dbQueryBuilder;
+    },
+  };
+  const dbTasksQuery = {
+    select() {
+      return dbTasksQuery;
+    },
+    async where(callback: (queryBuilder: typeof dbQueryBuilder) => void) {
+      dbLoaded = true;
+      callback(dbQueryBuilder);
+      return [];
+    },
+  };
 
   const context = await loadStopTaskContext('task-redis-first', {
     async get(key: string) {
@@ -451,17 +525,22 @@ test('loadStopTaskContext uses Redis worker state before loading queue context',
   }, {
     getIssueQueue: async () => {
       queueLoaded = true;
-      throw new Error('queue should not be loaded');
+      return {
+        async getJob(jobId: string) {
+          return jobId === 'task-redis-first' ? queueJob : null;
+        },
+        async getJobs() {
+          return [];
+        },
+      } as never;
     },
-    db: (() => {
-      dbLoaded = true;
-      throw new Error('db should not be loaded');
-    }) as never,
+    db: (() => dbTasksQuery) as never,
   });
 
   assert.equal(context.taskId, 'task-redis-first');
   assert.equal(context.currentState, 'processing');
-  assert.equal(context.queueJob, null);
-  assert.equal(dbLoaded, false);
-  assert.equal(queueLoaded, false);
+  assert.equal(context.queueJob, queueJob);
+  assert.equal(context.queueState, 'delayed');
+  assert.equal(dbLoaded, true);
+  assert.equal(queueLoaded, true);
 });

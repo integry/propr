@@ -292,6 +292,7 @@ async function setAbortSignalIfNeeded(params: {
     requestedBy,
     reasonCode: cancellation.code,
     reason: cancellation.message,
+    source: cancellation.source ?? 'task_stop',
   });
 
   for (const taskId of taskIds) {

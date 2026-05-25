@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -14,6 +15,14 @@ export interface DockerCommandOptions {
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
 
+export interface ExecutionAbortMetadata {
+    timestamp?: string;
+    requestedBy?: string;
+    reasonCode?: string;
+    reason?: string;
+    source?: string;
+}
+
 const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest';
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
@@ -28,9 +37,12 @@ function stripAnsiCodes(text: string): string {
  * This allows job processors to distinguish between aborts and other errors.
  */
 export class ExecutionAbortedError extends Error {
-    constructor(message: string = 'Execution aborted by user request') {
-        super(message);
+    abortMetadata?: ExecutionAbortMetadata;
+
+    constructor(message: string = 'Execution aborted by user request', abortMetadata?: ExecutionAbortMetadata) {
+        super(abortMetadata?.reason ? `${message}: ${abortMetadata.reason}` : message);
         this.name = 'ExecutionAbortedError';
+        this.abortMetadata = abortMetadata;
     }
 }
 
@@ -45,7 +57,7 @@ const AGENT_DOCKERFILES: Record<string, string> = {
 // In Docker container, the app root is /usr/src/app but cwd may be /usr/src/app/packages/api
 const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
 
-async function checkAbortSignal(taskId: string): Promise<boolean> {
+async function checkAbortSignal(taskId: string): Promise<ExecutionAbortMetadata | null> {
     try {
         const redis = new Redis({
             host: process.env.REDIS_HOST || 'redis',
@@ -57,9 +69,27 @@ async function checkAbortSignal(taskId: string): Promise<boolean> {
             redis.get(`planner:abort:${taskId}`)
         ]);
         await redis.quit();
-        return workerAbort !== null || pendingWorkerStop !== null || plannerAbort !== null;
+        return parseAbortMetadata(workerAbort)
+            ?? parseAbortMetadata(pendingWorkerStop)
+            ?? parseAbortMetadata(plannerAbort);
     } catch {
-        return false;
+        return null;
+    }
+}
+
+function parseAbortMetadata(rawSignal: string | null): ExecutionAbortMetadata | null {
+    if (rawSignal === null) return null;
+    try {
+        const parsed = JSON.parse(rawSignal) as Partial<ExecutionAbortMetadata>;
+        return {
+            ...(typeof parsed.timestamp === 'string' ? { timestamp: parsed.timestamp } : {}),
+            ...(typeof parsed.requestedBy === 'string' ? { requestedBy: parsed.requestedBy } : {}),
+            ...(typeof parsed.reasonCode === 'string' ? { reasonCode: parsed.reasonCode } : {}),
+            ...(typeof parsed.reason === 'string' ? { reason: parsed.reason } : {}),
+            ...(typeof parsed.source === 'string' ? { source: parsed.source } : {}),
+        };
+    } catch {
+        return {};
     }
 }
 
@@ -165,12 +195,12 @@ function resolveDockerPath(command: string): string {
     return 'docker';
 }
 
-function setupAbortChecker(taskId: string, abortedRef: { value: boolean }, child: ChildProcess, containerIdRef: { value: string | null }): ReturnType<typeof setInterval> {
+function setupAbortChecker(taskId: string, abortedRef: { value: ExecutionAbortMetadata | null }, child: ChildProcess, containerIdRef: { value: string | null }): ReturnType<typeof setInterval> {
     return setInterval(async () => {
-        const shouldAbort = await checkAbortSignal(taskId);
-        if (shouldAbort && !abortedRef.value && !child.killed) {
-            abortedRef.value = true;
-            logger.info({ taskId, containerId: containerIdRef.value }, 'Abort signal detected, terminating execution');
+        const abortMetadata = await checkAbortSignal(taskId);
+        if (abortMetadata && !abortedRef.value && !child.killed) {
+            abortedRef.value = abortMetadata;
+            logger.info({ taskId, containerId: containerIdRef.value, reasonCode: abortMetadata.reasonCode }, 'Abort signal detected, terminating execution');
             if (containerIdRef.value) {
                 const stopResult = await stopDockerContainer(containerIdRef.value, 10);
                 if (stopResult.success) logger.info({ taskId, containerId: containerIdRef.value }, 'Docker container stopped successfully on abort');
@@ -200,7 +230,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         }
 
         let stdout = '', stderr = '';
-        const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
+        const state = { timedOut: false, aborted: { value: null as ExecutionAbortMetadata | null }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
         const messageTimestamps = new Map<string, string>();
         const timeoutHandle = setTimeout(() => { state.timedOut = true; child.kill('SIGTERM'); setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000); }, timeout);
         const abortCheckInterval = taskId ? setupAbortChecker(taskId, state.aborted, child, state.containerId) : null;
@@ -228,7 +258,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             if (abortCheckInterval) clearInterval(abortCheckInterval);
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, stdout);
             if (state.timedOut) { reject(new Error(`Command timed out after ${timeout}ms`)); return; }
-            if (state.aborted.value) { reject(new ExecutionAbortedError()); return; }
+            if (state.aborted.value) { reject(new ExecutionAbortedError('Execution aborted by user request', state.aborted.value)); return; }
             resolve({ exitCode, stdout, stderr, messageTimestamps });
         });
         child.on('error', (error: Error) => {

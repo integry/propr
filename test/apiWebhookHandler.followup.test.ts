@@ -130,7 +130,7 @@ test('merged-PR cancellation failures shorten the delivery reservation TTL when 
     assert.strictEqual(redis.del.mock.calls.length, 1);
 });
 
-test('processor failures after successful merged-PR cancellation release delivery reservation for retry', async () => {
+test('processor failures after successful merged-PR cancellation retain delivery reservation', async () => {
     const request = createSignedRequest({
         action: 'closed',
         repository: { full_name: 'owner/repo' },
@@ -159,8 +159,7 @@ test('processor failures after successful merged-PR cancellation release deliver
 
     assert.strictEqual(response.statusCode, 500);
     assert.strictEqual(response.body, 'Webhook processor failed after merged pull request task cancellation.');
-    assert.strictEqual(redis.del.mock.calls.length, 1);
-    assert.deepStrictEqual(redis.del.mock.calls[0]?.arguments, ['webhook:delivery:delivery-1']);
+    assert.strictEqual(redis.del.mock.calls.length, 0);
     assert.deepStrictEqual(redis.set.mock.calls[0]?.arguments, [
         'webhook:delivery:delivery-1',
         '1',
