@@ -79,12 +79,13 @@ export async function loadStopTaskContext(
     normalizedTaskId,
     taskReference,
   ]);
-  const { persistedTask, queueJob, queueTaskId } = await resolvePersistedTaskContext(
+  const { persistedTask, queueJob, queueTaskId } = await resolvePersistedTaskContextBestEffort({
     taskReference,
     normalizedTaskId,
     deps,
-    directStateLookup.taskId ? [directStateLookup.taskId] : [],
-  );
+    extraCandidates: directStateLookup.taskId ? [directStateLookup.taskId] : [],
+    hasDirectState: directStateLookup.state !== null,
+  });
   const stateLookup = await loadTaskState(redisClient, [
     directStateLookup.taskId,
     persistedTask?.taskId,
@@ -219,6 +220,34 @@ async function resolvePersistedTaskContext(
     queueJob,
     queueTaskId,
   };
+}
+
+async function resolvePersistedTaskContextBestEffort(params: {
+  taskReference: string;
+  normalizedTaskId: string;
+  deps: StopTaskContextDeps;
+  extraCandidates: string[];
+  hasDirectState: boolean;
+}): Promise<ResolvedPersistedTaskContext> {
+  const { taskReference, normalizedTaskId, deps, extraCandidates, hasDirectState } = params;
+  try {
+    return await resolvePersistedTaskContext(taskReference, normalizedTaskId, deps, extraCandidates);
+  } catch (error) {
+    if (!hasDirectState) {
+      throw error;
+    }
+
+    logger.warn({
+      taskReference,
+      normalizedTaskId,
+      error: (error as Error).message,
+    }, 'Continuing stop lookup with direct worker state after persisted or queue context lookup failed');
+    return {
+      persistedTask: null,
+      queueJob: null,
+      queueTaskId: null,
+    };
+  }
 }
 
 async function loadTaskState(
@@ -384,10 +413,7 @@ async function createTaskStateFromQueueJob(
       initial_job_data: initialJobData,
     });
   if (updatedRows === 0) {
-    logger.warn({
-      taskId,
-      queueJobId,
-    }, 'Queued task cancellation created worker state but did not rewrite an existing persisted task row');
+    throw new Error(`Queued task cancellation could not link persisted task ${taskId} to queue job ${queueJobId}`);
   }
 }
 

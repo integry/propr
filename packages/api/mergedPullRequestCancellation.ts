@@ -95,7 +95,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: firstAttempt.verifiedTaskIds,
+    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds, firstAttempt.acceptedTaskIds),
   });
   if (remainingAfterFirstAttempt.length === 0) {
     return;
@@ -123,7 +123,12 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds, retryAttempt.verifiedTaskIds),
+    ignoredTaskIds: mergeTaskIdSets(
+      firstAttempt.verifiedTaskIds,
+      firstAttempt.acceptedTaskIds,
+      retryAttempt.verifiedTaskIds,
+      retryAttempt.acceptedTaskIds,
+    ),
   });
   if (finalActiveTasks.length === 0) {
     return;

@@ -32,7 +32,6 @@ import {
 } from './stopTaskExecutionOutcome.js';
 import {
   getStopTaskSuccessMessage,
-  isBenignQueueRemovalRace,
   removeQueueJobIfNeeded,
   stopTaskContainer,
 } from './stopTaskExecutionQueueing.js';
@@ -138,7 +137,7 @@ export async function stopTaskExecution(
   let queueStateAfterFailure: string | null = null;
 
   if (queueRemovalShouldPrecedeAbort) {
-    ({ jobRemoved, queueStateAfterFailure } = await removeQueuedJobBeforeStateCreation(context, activity, deps));
+    ({ jobRemoved, queueStateAfterFailure } = await removeQueuedJobAfterStateCreation(context, activity, deps));
   } else {
     await ensureContextTaskStateForCancellation(context, deps);
   }
@@ -250,8 +249,8 @@ export async function stopTaskExecution(
       shouldAbort: abortSignalArmed,
       stopVerified,
     });
-    await clearPendingStopRequest(redisClient, context.abortTaskIds);
     if (!shouldRetainAbortSignals) {
+      await clearPendingStopRequest(redisClient, context.abortTaskIds);
       await clearAbortSignals(redisClient, context.abortTaskIds);
     }
     if (hadPersistedStopOutcome) {
@@ -379,16 +378,13 @@ function shouldRemoveQueueJobBeforeArmingAbort(activity: ReturnType<typeof getSt
     && !activity.hasContainerToStop;
 }
 
-async function removeQueuedJobBeforeStateCreation(
+async function removeQueuedJobAfterStateCreation(
   context: StopTaskContext,
   activity: ReturnType<typeof getStopTaskActivity>,
   deps: StopTaskExecutionDeps,
 ): Promise<{ jobRemoved: boolean; queueStateAfterFailure: string | null }> {
+  await ensureContextTaskStateForCancellation(context, deps);
   const removalResult = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
-  if (removalResult.jobRemoved || isBenignQueueRemovalRace(removalResult.queueStateAfterFailure)) {
-    await ensureContextTaskStateForCancellation(context, deps);
-  }
-
   return removalResult;
 }
 

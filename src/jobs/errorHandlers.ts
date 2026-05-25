@@ -343,13 +343,26 @@ export async function handleGenericError(
     });
     await recordFailedJobLlmMetrics(claudeResult, issueRef, taskId, correlatedLogger);
 
-    if (octokit && !isUserCancelled) {
-        await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger });
-    } else if (octokit && isUserCancelled) {
-        await postCancellationNotice(issueRef, octokit, AI_PROCESSING_TAG, correlatedLogger);
-    }
-
+    await postGenericErrorOutcome(issueRef, error, {
+        octokit,
+        errorCategory,
+        claudeResult,
+        worktreeInfo,
+        AI_PROCESSING_TAG,
+        correlatedLogger,
+        isUserCancelled,
+    });
     await updateTaskStateAfterGenericError(error, { stateManager, taskId, errorCategory, isUserCancelled, abortMetadata, correlatedLogger });
+}
+
+async function postGenericErrorOutcome(issueRef: IssueJobData, error: Error, options: PostErrorCommentOptions & { isUserCancelled: boolean }): Promise<void> {
+    const { octokit, isUserCancelled, AI_PROCESSING_TAG, correlatedLogger } = options;
+    if (!octokit) return;
+    if (isUserCancelled) {
+        await postCancellationNotice(issueRef, octokit, AI_PROCESSING_TAG, correlatedLogger);
+        return;
+    }
+    await postErrorComment(issueRef, error, options);
 }
 
 function logGenericErrorMetrics(

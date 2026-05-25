@@ -273,7 +273,12 @@ export function executeDockerCommand(command: string, args: string[], options: D
             if (abortCheckInterval) clearInterval(abortCheckInterval);
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, stdout);
             if (state.timedOut) { reject(new Error(`Command timed out after ${timeout}ms`)); return; }
-            if (state.aborted.value) { reject(new ExecutionAbortedError(getExecutionAbortedMessage(state.aborted.value), state.aborted.value)); return; }
+            if (!state.aborted.value && taskId) state.aborted.value = await checkAbortSignal(taskId);
+            if (state.aborted.value) {
+                if (taskId) await clearAbortSignal(taskId);
+                reject(new ExecutionAbortedError(getExecutionAbortedMessage(state.aborted.value), state.aborted.value));
+                return;
+            }
             resolve({ exitCode, stdout, stderr, messageTimestamps });
         });
         child.on('error', (error: Error) => {
