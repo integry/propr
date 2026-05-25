@@ -130,7 +130,7 @@ test('merged-PR cancellation failures shorten the delivery reservation TTL when 
     assert.strictEqual(redis.del.mock.calls.length, 1);
 });
 
-test('processor failures after successful merged-PR cancellation keep the delivery reservation', async () => {
+test('processor failures after successful merged-PR cancellation are acknowledged', async () => {
     const request = createSignedRequest({
         action: 'closed',
         repository: { full_name: 'owner/repo' },
@@ -142,24 +142,23 @@ test('processor failures after successful merged-PR cancellation keep the delive
         del: mock.fn(async () => 1),
     };
 
-    await assert.rejects(
-        handleWebhookRequest(request as never, response as never, {
-            webhookSecret: 'secret',
-            redis,
-            processor: async () => {
-                throw new Error('processor failed');
-            },
-            correlationId: 'cid-3',
-            supportedEvents: ['pull_request'],
-            isMergedPullRequestClose: () => true,
-            cancelMergedPullRequestTasks: async () => {},
-            mergeTaskCancellation: {
-                redisClient: {} as never,
-            },
-        }),
-        /processor failed/,
-    );
+    await handleWebhookRequest(request as never, response as never, {
+        webhookSecret: 'secret',
+        redis,
+        processor: async () => {
+            throw new Error('processor failed');
+        },
+        correlationId: 'cid-3',
+        supportedEvents: ['pull_request'],
+        isMergedPullRequestClose: () => true,
+        cancelMergedPullRequestTasks: async () => {},
+        mergeTaskCancellation: {
+            redisClient: {} as never,
+        },
+    });
 
+    assert.strictEqual(response.statusCode, 200);
+    assert.strictEqual(response.body, 'Webhook processed.');
     assert.strictEqual(redis.del.mock.calls.length, 0);
     assert.deepStrictEqual(redis.set.mock.calls[0]?.arguments, [
         'webhook:delivery:delivery-1',

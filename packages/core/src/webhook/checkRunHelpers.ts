@@ -638,7 +638,7 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
 
 const TRACKED_PR_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const TRACKED_PR_QUEUE_STATE_SET = new Set<string>(TRACKED_PR_QUEUE_STATES);
-const PR_QUEUE_SCAN_LIMIT_PER_STATE = 1000;
+const PR_QUEUE_SCAN_PAGE_SIZE = 1000;
 
 export interface PRTaskActivity {
     taskId: string;
@@ -666,6 +666,8 @@ export interface GetActiveTasksForPRDeps {
 /**
  * Returns active or queued task references for a PR.
  * Queue-backed entries use the BullMQ job id when no worker state exists yet.
+ * Throws if either queue or database lookup fails. Use hasActiveTasksForPR()
+ * when callers need the legacy fail-open behavior.
  */
 export async function getActiveTasksForPR(
     repository: string,
@@ -684,7 +686,6 @@ export async function getActiveTasksForPR(
             prNumber,
             taskMap,
             taskAliases,
-            log,
         });
 
         const activeTasksQuery = database('tasks')
@@ -729,7 +730,6 @@ async function addQueuedPrJobsFromLiveQueueScan(params: {
     prNumber: number;
     taskMap: Map<string, PRTaskActivity>;
     taskAliases: Map<string, string>;
-    log: Pick<typeof logger, 'info' | 'warn'>;
 }): Promise<void> {
     const {
         queue,
@@ -737,35 +737,34 @@ async function addQueuedPrJobsFromLiveQueueScan(params: {
         prNumber,
         taskMap,
         taskAliases,
-        log,
     } = params;
     for (const trackedQueueState of TRACKED_PR_QUEUE_STATES) {
-        const jobs = await queue.getJobs([trackedQueueState], 0, PR_QUEUE_SCAN_LIMIT_PER_STATE - 1);
-        if (jobs.length >= PR_QUEUE_SCAN_LIMIT_PER_STATE) {
-            log.warn({
-                repository,
-                prNumber,
-                queueState: trackedQueueState,
-                scanLimit: PR_QUEUE_SCAN_LIMIT_PER_STATE,
-            }, 'Reached PR queue scan limit while looking for active PR work');
-        }
-        for (const job of jobs) {
-            const jobData = job.data as unknown as Record<string, unknown>;
-            if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
-                continue;
-            }
+        let start = 0;
+        let jobs = await queue.getJobs([trackedQueueState], start, start + PR_QUEUE_SCAN_PAGE_SIZE - 1);
+        while (jobs.length > 0) {
+            for (const job of jobs) {
+                const jobData = job.data as unknown as Record<string, unknown>;
+                if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
+                    continue;
+                }
 
-            const queueJobId = job.id === undefined || job.id === null
-                ? getTaskIdFromQueueJob(job)
-                : String(job.id);
-            if (!queueJobId) {
-                continue;
-            }
+                const queueJobId = job.id === undefined || job.id === null
+                    ? getTaskIdFromQueueJob(job)
+                    : String(job.id);
+                if (!queueJobId) {
+                    continue;
+                }
 
-            registerActiveTask(taskMap, taskAliases, { taskId: queueJobId, state: trackedQueueState }, [
-                normalizeTaskId(queueJobId),
-                getTaskIdFromQueueJob(job),
-            ]);
+                registerActiveTask(taskMap, taskAliases, { taskId: queueJobId, state: trackedQueueState }, [
+                    normalizeTaskId(queueJobId),
+                    getTaskIdFromQueueJob(job),
+                ]);
+            }
+            start += jobs.length;
+            if (jobs.length < PR_QUEUE_SCAN_PAGE_SIZE) {
+                break;
+            }
+            jobs = await queue.getJobs([trackedQueueState], start, start + PR_QUEUE_SCAN_PAGE_SIZE - 1);
         }
     }
 }

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { execFileSync } from 'child_process';
-import { loadStopTaskContext, type TaskState } from './stopTaskExecutionContext.js';
+import { loadStopTaskContext, normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
 import { stopTaskExecution, StopTaskExecutionError } from './stopTaskExecution.js';
 import type {
   StopTaskCancellationReason,
@@ -139,12 +139,44 @@ async function loadDockerContainerMetadata(
   redisClient: Pick<RedisClientType, 'get'>,
   loadContext: typeof loadStopTaskContext = loadStopTaskContext,
 ): Promise<{ containerId: string | null; containerName: string | null } | null> {
-  const context = await loadContext(taskReference, redisClient, {});
+  const directState = await loadDockerTaskStateFromRedis(taskReference, redisClient);
+  if (directState) {
+    return getDockerContainerMetadata(directState);
+  }
+
+  let context: Awaited<ReturnType<typeof loadStopTaskContext>>;
+  try {
+    context = await loadContext(taskReference, redisClient, {});
+  } catch (error) {
+    console.warn('Failed to resolve extended task context for Docker metadata lookup:', error);
+    return null;
+  }
+
   if (!context.state) {
     return null;
   }
 
   return getDockerContainerMetadata(context.state);
+}
+
+async function loadDockerTaskStateFromRedis(
+  taskReference: string,
+  redisClient: Pick<RedisClientType, 'get'>,
+): Promise<TaskState | null> {
+  for (const candidateTaskId of [...new Set([taskReference, normalizeTaskId(taskReference)])]) {
+    const stateData = await redisClient.get(`worker:state:${candidateTaskId}`);
+    if (!stateData) {
+      continue;
+    }
+
+    try {
+      return JSON.parse(stateData) as TaskState;
+    } catch (error) {
+      console.warn(`Ignoring malformed worker task state for Docker metadata lookup: ${candidateTaskId}`, error);
+    }
+  }
+
+  return null;
 }
 
 function getDockerContainerMetadata(

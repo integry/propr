@@ -63,6 +63,7 @@ type RedisClientLike = {
 };
 
 const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
+const QUEUE_TASK_ID_SCAN_PAGE_SIZE = 100;
 
 export function normalizeTaskId(jobId: string): string {
   return normalizeCoreTaskId(jobId);
@@ -276,16 +277,36 @@ async function findQueueJobByTaskIdScan(
   candidateTaskIdSet: Set<string>,
   uniqueCandidates: string[],
 ): Promise<Job<QueueJobData> | null> {
-  const jobs = await queue.getJobs([...TRACKED_QUEUE_STATES]) as unknown as Job<QueueJobData>[];
+  for (const trackedQueueState of TRACKED_QUEUE_STATES) {
+    let start = 0;
+    let jobs = await queue.getJobs([trackedQueueState], start, start + QUEUE_TASK_ID_SCAN_PAGE_SIZE - 1) as unknown as Job<QueueJobData>[];
+    while (jobs.length > 0) {
+      const matchingJob = findMatchingQueueJob(jobs, candidateTaskIdSet, uniqueCandidates);
+      if (matchingJob) {
+        return matchingJob;
+      }
+
+      start += jobs.length;
+      if (jobs.length < QUEUE_TASK_ID_SCAN_PAGE_SIZE) {
+        break;
+      }
+      jobs = await queue.getJobs([trackedQueueState], start, start + QUEUE_TASK_ID_SCAN_PAGE_SIZE - 1) as unknown as Job<QueueJobData>[];
+    }
+  }
+
+  return null;
+}
+
+function findMatchingQueueJob(
+  jobs: Job<QueueJobData>[],
+  candidateTaskIdSet: Set<string>,
+  uniqueCandidates: string[],
+): Job<QueueJobData> | null {
   for (const job of jobs) {
     const derivedTaskId = getTaskIdFromQueueJob(job);
     const rawJobId = job.id === null || job.id === undefined ? null : String(job.id);
     const normalizedJobId = rawJobId === null ? null : normalizeTaskId(rawJobId);
-    if (
-      (derivedTaskId && candidateTaskIdSet.has(derivedTaskId))
-      || (rawJobId && candidateTaskIdSet.has(rawJobId))
-      || (normalizedJobId && candidateTaskIdSet.has(normalizedJobId))
-    ) {
+    if (isCandidateQueueJob(candidateTaskIdSet, derivedTaskId, rawJobId, normalizedJobId)) {
       logger.info({
         taskReferenceCandidates: uniqueCandidates,
         queueJobId: rawJobId,
@@ -296,6 +317,17 @@ async function findQueueJobByTaskIdScan(
   }
 
   return null;
+}
+
+function isCandidateQueueJob(
+  candidateTaskIdSet: Set<string>,
+  derivedTaskId: string | null,
+  rawJobId: string | null,
+  normalizedJobId: string | null,
+): boolean {
+  return (derivedTaskId !== null && candidateTaskIdSet.has(derivedTaskId))
+    || (rawJobId !== null && candidateTaskIdSet.has(rawJobId))
+    || (normalizedJobId !== null && candidateTaskIdSet.has(normalizedJobId));
 }
 
 async function createTaskStateFromQueueJob(

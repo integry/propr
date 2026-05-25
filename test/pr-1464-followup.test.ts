@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.GH_APP_ID ??= '1';
@@ -7,6 +7,7 @@ process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
 const { getActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
+const { createDockerRoutes } = await import('../packages/api/routes/dockerRoutes.ts');
 const { stopTaskExecution } = await import('../packages/api/routes/stopTaskExecution.ts');
 const { ensureTaskStateForCancellation, loadStopTaskContext } = await import('../packages/api/routes/stopTaskExecutionContext.ts');
 
@@ -96,6 +97,69 @@ test('getActiveTasksForPR includes active BullMQ jobs when stoppableOnly is true
   });
 
   assert.deepEqual(tasks, [{ taskId: 'active-pr-job', state: 'active' }]);
+});
+
+test('getActiveTasksForPR paginates queue scans beyond the first page', async () => {
+  const waitingJobs = Array.from({ length: 1001 }, (_, index) => createMockJob(
+    `waiting-job-${index}`,
+    'waiting',
+    { repository: 'integry/propr', prNumber: index === 1000 ? 1464 : 999 },
+  ));
+  const queue = {
+    async getJob() {
+      return null;
+    },
+    async getJobs(states: string[], start = 0, end = 999) {
+      return states.includes('waiting') ? waitingJobs.slice(start, end + 1) : [];
+    },
+  };
+
+  const tasks = await getActiveTasksForPR('integry/propr', 1464, {
+    getIssueQueue: async () => queue as never,
+    db: createTaskQueryDbMock([]),
+    stoppableOnly: true,
+    log: silentLog,
+  });
+
+  assert.deepEqual(tasks, [{ taskId: 'waiting-job-1000', state: 'waiting' }]);
+});
+
+test('Docker info reads direct Redis worker state before extended stop context', async () => {
+  const loadStopTaskContext = mock.fn(async () => {
+    throw new Error('DB unavailable');
+  });
+  const redisClient = {
+    async get(key: string): Promise<string | null> {
+      if (key !== 'worker:state:task-1464') {
+        return null;
+      }
+      return JSON.stringify({
+        history: [{ state: 'processing' }],
+      });
+    },
+  };
+  const routes = createDockerRoutes({
+    redisClient: redisClient as never,
+    loadStopTaskContext: loadStopTaskContext as never,
+  });
+  const response = {
+    statusCode: 200,
+    body: null as unknown,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body: unknown) {
+      this.body = body;
+      return this;
+    },
+  };
+
+  await routes.getDockerInfo({ params: { taskId: 'task-1464' } } as never, response as never);
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.body, { error: 'No Docker container info available for this task' });
+  assert.equal(loadStopTaskContext.mock.calls.length, 0);
 });
 
 test('stopTaskExecution records a pending merged-PR cancellation for abort-only active jobs', async () => {

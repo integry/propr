@@ -227,10 +227,10 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
  *    same task twice.
  * 2. If merge-time task cancellation fails, the reservation is released and
  *    the request returns 500 so GitHub can retry the cancellation attempt.
- * 3. Once merge-time cancellation succeeds, the delivery ID is NOT removed on
- *    downstream processing errors. This prevents a partially-processed webhook
- *    from being re-accepted on a GitHub retry, which could re-trigger side
- *    effects. Downstream consumers must be idempotent.
+ * 3. Once merge-time cancellation succeeds, downstream processing errors are
+ *    logged and the delivery is acknowledged. GitHub retries cannot recover
+ *    processor work after the delivery reservation is consumed, so returning
+ *    500 here would only create unrecoverable duplicate retries.
  */
 export async function handleWebhookRequest(
   req: Request,
@@ -291,7 +291,11 @@ export async function handleWebhookRequest(
     return;
   }
 
-  if (mergeTaskCancellation && rawEvent === 'pull_request' && isMergedPullRequestCloseFn(payload)) {
+  const isMergedPrClose = mergeTaskCancellation
+    && rawEvent === 'pull_request'
+    && isMergedPullRequestCloseFn(payload);
+
+  if (isMergedPrClose) {
     try {
       await cancelMergedPullRequestTasksOrRetry({
         payload,
@@ -309,7 +313,22 @@ export async function handleWebhookRequest(
     }
   }
 
-  await processor(payload, rawEvent, correlationId, rawDeliveryId);
+  try {
+    await processor(payload, rawEvent, correlationId, rawDeliveryId);
+  } catch (error) {
+    if (!isMergedPrClose) {
+      throw error;
+    }
+
+    logger.error({
+      correlationId,
+      deliveryId: rawDeliveryId,
+      event: rawEvent,
+      repository: payload.repository?.full_name,
+      prNumber: payload.pull_request?.number,
+      error: (error as Error).message,
+    }, 'Merged PR task cancellation succeeded but downstream webhook processing failed; acknowledging delivery');
+  }
 
   res.status(200).send('Webhook processed.');
 }

@@ -51,13 +51,13 @@ async function checkAbortSignal(taskId: string): Promise<boolean> {
             host: process.env.REDIS_HOST || 'redis',
             port: parseInt(process.env.REDIS_PORT || '6379', 10)
         });
-        // Check both worker abort signal (for task execution) and planner abort signal (for plan generation)
-        const [workerAbort, plannerAbort] = await Promise.all([
+        const [workerAbort, pendingWorkerStop, plannerAbort] = await Promise.all([
             redis.get(`worker:abort:${taskId}`),
+            redis.get(`worker:stop-requested:${taskId}`),
             redis.get(`planner:abort:${taskId}`)
         ]);
         await redis.quit();
-        return workerAbort !== null || plannerAbort !== null;
+        return workerAbort !== null || pendingWorkerStop !== null || plannerAbort !== null;
     } catch {
         return false;
     }
@@ -147,7 +147,7 @@ export async function stopDockerContainer(
 async function clearAbortSignal(taskId: string): Promise<void> {
     try {
         const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
-        await redis.del(`worker:abort:${taskId}`);
+        await redis.del(`worker:abort:${taskId}`, `worker:stop-requested:${taskId}`);
         await redis.quit();
         logger.debug({ taskId }, 'Cleared abort signal from Redis');
     } catch (err) {
