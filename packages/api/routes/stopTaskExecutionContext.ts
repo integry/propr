@@ -279,25 +279,7 @@ async function getQueueJob(params: {
     return null;
   }
 
-  const jobs = await queue.getJobs([...TRACKED_PR_QUEUE_STATES]) as unknown as Job<QueueJobData>[];
-  for (const job of jobs) {
-    const derivedTaskId = getTaskIdFromQueueJob(job);
-    const normalizedJobId = job.id === null || job.id === undefined ? null : normalizeTaskId(String(job.id));
-    if (
-      (derivedTaskId && candidateTaskIdSet.has(derivedTaskId))
-      || (normalizedJobId && candidateTaskIdSet.has(normalizedJobId))
-    ) {
-      logger.info({
-        taskReferenceCandidates: uniqueCandidates,
-        queueJobId: job.id === null || job.id === undefined ? null : String(job.id),
-        derivedTaskId,
-        queueState: await job.getState(),
-      }, 'Resolved queued task stop lookup via fallback task-id scan');
-      return job;
-    }
-  }
-
-  return null;
+  return findQueueJobByTaskIdScan(queue, candidateTaskIdSet, uniqueCandidates);
 }
 
 async function findPrScopedQueueJob(params: {
@@ -318,10 +300,10 @@ async function findPrScopedQueueJob(params: {
     ...await getTrackedPrQueueJobs(queue as never, repository, prNumber),
     ...await getPendingPrQueueJobs(queue as never, repository, prNumber),
   ];
-  const uniqueQueueJobIds = [...new Set(indexedQueueJobs.map((job) => job.jobId))];
+  const uniqueQueueJobs = [...new Map(indexedQueueJobs.map((job) => [job.jobId, job])).values()];
 
-  for (const queueJobId of uniqueQueueJobIds) {
-    const job = await queue.getJob(queueJobId) as Job<QueueJobData> | undefined;
+  for (const indexedQueueJob of uniqueQueueJobs) {
+    const job = await queue.getJob(indexedQueueJob.jobId) as Job<QueueJobData> | undefined;
     if (!job) {
       continue;
     }
@@ -338,9 +320,37 @@ async function findPrScopedQueueJob(params: {
         prNumber,
         queueJobId: job.id === null || job.id === undefined ? null : String(job.id),
         derivedTaskId,
-        queueState: await job.getState(),
+        queueState: indexedQueueJob.state,
       }, 'Resolved queued task stop lookup via PR-scoped queue-job index');
       return job;
+    }
+  }
+
+  return null;
+}
+
+async function findQueueJobByTaskIdScan(
+  queue: Awaited<ReturnType<typeof getIssueQueue>>,
+  candidateTaskIdSet: Set<string>,
+  uniqueCandidates: string[],
+): Promise<Job<QueueJobData> | null> {
+  for (const trackedQueueState of TRACKED_PR_QUEUE_STATES) {
+    const jobs = await queue.getJobs([trackedQueueState]) as unknown as Job<QueueJobData>[];
+    for (const job of jobs) {
+      const derivedTaskId = getTaskIdFromQueueJob(job);
+      const normalizedJobId = job.id === null || job.id === undefined ? null : normalizeTaskId(String(job.id));
+      if (
+        (derivedTaskId && candidateTaskIdSet.has(derivedTaskId))
+        || (normalizedJobId && candidateTaskIdSet.has(normalizedJobId))
+      ) {
+        logger.info({
+          taskReferenceCandidates: uniqueCandidates,
+          queueJobId: job.id === null || job.id === undefined ? null : String(job.id),
+          derivedTaskId,
+          queueState: trackedQueueState,
+        }, 'Resolved queued task stop lookup via fallback task-id scan');
+        return job;
+      }
     }
   }
 

@@ -774,19 +774,20 @@ async function addQueuedPrJobsFromFallbackScan(params: {
     taskAliases: Map<string, string>;
 }): Promise<void> {
     const { queue, repository, prNumber, taskMap, taskAliases } = params;
-    const jobs = await queue.getJobs([...TRACKED_PR_QUEUE_STATES]);
-    for (const job of jobs) {
-        const jobData = job.data as unknown as Record<string, unknown>;
-        if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
-            continue;
-        }
+    for (const trackedQueueState of TRACKED_PR_QUEUE_STATES) {
+        const jobs = await queue.getJobs([trackedQueueState]);
+        for (const job of jobs) {
+            const jobData = job.data as unknown as Record<string, unknown>;
+            if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
+                continue;
+            }
 
-        const queueJobId = String(job.id);
-        const queueState = await job.getState();
-        registerActiveTask(taskMap, taskAliases, { taskId: queueJobId, state: queueState }, [
-            getQueueTaskAlias(queueJobId),
-            getTaskIdFromQueueJob(job),
-        ]);
+            const queueJobId = String(job.id);
+            registerActiveTask(taskMap, taskAliases, { taskId: queueJobId, state: trackedQueueState }, [
+                getQueueTaskAlias(queueJobId),
+                getTaskIdFromQueueJob(job),
+            ]);
+        }
     }
 }
 

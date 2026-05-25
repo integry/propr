@@ -106,10 +106,11 @@ export async function cancelMergedPullRequestTasks(
   });
   const failureByTaskId = new Map(initialPass.failures.map((failure) => [failure.taskId, failure]));
   const cancelledTaskIds = new Set(initialPass.cancelledTaskIds);
-  const shouldForceQueueScan = initialPass.queuedTaskIds.length > 0;
+  const shouldVerifyPendingTasks = initialPass.pendingVerificationTaskIds.length > 0;
+  const shouldForceQueueScan = initialPass.queuedTaskIds.length > 0 || initialPass.inactiveTaskIds.length > 0;
   const shouldVerifyInactiveTasks = initialPass.inactiveTaskIds.length > 0;
 
-  if (shouldForceQueueScan || shouldVerifyInactiveTasks) {
+  if (shouldForceQueueScan || shouldVerifyInactiveTasks || shouldVerifyPendingTasks) {
     log.info({
       correlationId,
       repository,
@@ -151,7 +152,7 @@ export async function cancelMergedPullRequestTasks(
         cancellation,
         log,
         allowInactiveRace: false,
-        allowPendingVerification: true,
+        allowPendingVerification: false,
       });
 
       for (const taskId of retryPass.cancelledTaskIds) {
@@ -238,6 +239,19 @@ async function cancelTaskSet(params: {
         }, 'Merged PR task stop armed an abort signal but still requires activity verification');
         return { kind: 'pendingVerification' as const, taskId: task.taskId };
       }
+      if (!result.stopVerified) {
+        const failure = buildUnverifiedStopFailure(task.taskId, result);
+        log.warn({
+          correlationId,
+          repository,
+          prNumber,
+          taskId: task.taskId,
+          currentState: failure.currentState,
+          queueState: failure.queueState,
+          error: failure.message,
+        }, 'Merged PR task stop could not be verified after retry');
+        return { kind: 'failure' as const, failure };
+      }
       return { kind: 'cancelled' as const, taskId: task.taskId };
     } catch (error) {
       if (allowInactiveRace && isAlreadyInactiveStopError(error)) {
@@ -310,6 +324,21 @@ function buildMergeTaskCancellationFailure(taskId: string, error: unknown): Merg
     queueState: null,
   };
 }
+
+function buildUnverifiedStopFailure(
+  taskId: string,
+  result: Pick<StopTaskExecutionReturn, 'currentState' | 'queueState'>,
+): MergeTaskCancellationFailure {
+  return {
+    taskId,
+    status: 409,
+    message: 'Task stop could not be verified after retrying the merge-time cancellation.',
+    currentState: result.currentState,
+    queueState: result.queueState,
+  };
+}
+
+type StopTaskExecutionReturn = Awaited<ReturnType<typeof stopTaskExecution>>;
 
 function formatMergeTaskCancellationFailure(failure: MergeTaskCancellationFailure): string {
   const status = failure.status === null ? 'unknown' : String(failure.status);

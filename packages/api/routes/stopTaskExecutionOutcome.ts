@@ -9,6 +9,7 @@ export interface PersistedStopOutcome {
 }
 
 const STOP_OUTCOME_KEY_PREFIX = 'worker:stop-outcome';
+const STOP_OUTCOME_TTL_SECONDS = 24 * 60 * 60;
 
 export function hasConcreteStopOutcome(stopOutcome: PersistedStopOutcome): boolean {
   return stopOutcome.containerStopped || stopOutcome.jobRemoved;
@@ -71,7 +72,7 @@ export async function persistStopOutcome(
     return;
   }
 
-  await redisClient.set(getStopOutcomeKey(taskId), JSON.stringify(stopOutcome), { EX: 3600 });
+  await redisClient.set(getStopOutcomeKey(taskId), JSON.stringify(stopOutcome), { EX: STOP_OUTCOME_TTL_SECONDS });
 }
 
 export async function clearPersistedStopOutcome(redisClient: RedisClientLike, taskId: string): Promise<void> {
