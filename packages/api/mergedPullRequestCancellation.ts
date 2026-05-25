@@ -20,6 +20,8 @@ export interface MergeTaskCancellationDeps {
   getActiveTasksForPR?: typeof getActiveTasksForPR;
   markPullRequestMerged?: typeof markPullRequestMerged;
   stopTaskExecution?: typeof stopTaskExecution;
+  sleep?: (durationMs: number) => Promise<void>;
+  recheckDelayMs?: number;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
@@ -37,6 +39,7 @@ interface MergeTaskCancellationFailure {
 
 const MERGE_TASK_STOP_CONCURRENCY = 5;
 const MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS = 10;
+const MERGE_TASK_RECHECK_DELAY_MS = 250;
 const MERGE_CANCELLATION_REASON_CODE = 'pull_request_merged';
 const MAX_FAILURE_DETAILS_IN_ERROR = 10;
 
@@ -58,17 +61,18 @@ export async function cancelMergedPullRequestTasks(
   const log = deps.log ?? logger;
   const loadActiveTasks = deps.getActiveTasksForPR ?? getActiveTasksForPR;
   const stopTask = deps.stopTaskExecution ?? stopTaskExecution;
+  const persistMergedState = deps.markPullRequestMerged ?? markPullRequestMerged;
+  const sleep = deps.sleep ?? delay;
+  const recheckDelayMs = deps.recheckDelayMs ?? MERGE_TASK_RECHECK_DELAY_MS;
   const cancellation = {
     code: MERGE_CANCELLATION_REASON_CODE,
     message: `Task cancelled because pull request ${repository}#${prNumber} was merged.`,
     source: MERGE_CANCELLATION_REASON_CODE,
     requestId: `${correlationId}:${MERGE_CANCELLATION_REASON_CODE}:${repository}#${prNumber}`,
   };
-  const persistMergedState = deps.markPullRequestMerged ?? markPullRequestMerged;
-
-  await persistMergedState(deps.redisClient, repository, prNumber);
   const initialTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
   if (initialTasks.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
   }
@@ -91,6 +95,7 @@ export async function cancelMergedPullRequestTasks(
     log,
   });
 
+  await sleep(recheckDelayMs);
   const remainingAfterFirstAttempt = await loadBlockingMergeCancellationTasks({
     loadActiveTasks,
     repository,
@@ -98,6 +103,7 @@ export async function cancelMergedPullRequestTasks(
     log,
   });
   if (remainingAfterFirstAttempt.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     return;
   }
 
@@ -118,6 +124,7 @@ export async function cancelMergedPullRequestTasks(
     prNumber,
     log,
   });
+  await sleep(recheckDelayMs);
   const finalActiveTasks = await loadBlockingMergeCancellationTasks({
     loadActiveTasks,
     repository,
@@ -125,6 +132,7 @@ export async function cancelMergedPullRequestTasks(
     log,
   });
   if (finalActiveTasks.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     return;
   }
 
@@ -191,7 +199,6 @@ async function stopMergeTasks(params: {
           cancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
           forceQueueScan: true,
-          requireVerifiedStop: true,
         });
         if (!result.stopVerified) {
           log.info({
@@ -221,6 +228,16 @@ async function stopMergeTasks(params: {
   }
 
   return { failures };
+}
+
+async function delay(durationMs: number): Promise<void> {
+  if (durationMs <= 0) {
+    return;
+  }
+
+  await new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
 }
 
 async function loadBlockingMergeCancellationTasks(params: {

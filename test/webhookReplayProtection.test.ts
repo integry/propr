@@ -10,6 +10,7 @@ process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
 const { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } = await import('../packages/api/webhookHandler.js');
+const { releaseDeliveryReservationForRetry } = await import('../packages/api/webhookDeliveryReservation.js');
 
 after(async () => {
   const { closeConnection } = await import('../packages/core/src/db/connection.ts');
@@ -629,4 +630,80 @@ describe('Webhook Replay Protection', () => {
     });
   });
 
+});
+
+describe('webhook delivery reservation retry release', () => {
+  test('uses Redis eval for atomic reservation release when available', async () => {
+    const evalCalls: Array<{ keys: string[]; arguments: string[] }> = [];
+    const redisClient = {
+      async set() {
+        throw new Error('set fallback should not be used');
+      },
+      async get() {
+        throw new Error('get fallback should not be used');
+      },
+      async del() {
+        throw new Error('del fallback should not be used');
+      },
+      async eval(_script: string, opts: { keys: string[]; arguments: string[] }) {
+        evalCalls.push(opts);
+        return 1;
+      },
+    };
+
+    const result = await releaseDeliveryReservationForRetry({
+      redis: redisClient as never,
+      deliveryKey: 'webhook-delivery:123',
+      reservationToken: 'token-1',
+      payload: { repository: { full_name: 'owner/repo' }, pull_request: { number: 42 } },
+      rawDeliveryId: '123',
+      rawEvent: 'pull_request',
+      correlationId: 'corr-1',
+      log: { error() {} },
+      failureContext: 'test failure',
+    });
+
+    assert.deepStrictEqual(result, { released: true, retryTtlShortened: false });
+    assert.deepStrictEqual(evalCalls, [{
+      keys: ['webhook-delivery:123'],
+      arguments: ['token-1'],
+    }]);
+  });
+
+  test('uses Redis eval for atomic TTL shortening when the token is still reserved', async () => {
+    const evalCalls: Array<{ keys: string[]; arguments: string[] }> = [];
+    const redisClient = {
+      async set() {
+        throw new Error('set fallback should not be used');
+      },
+      async get() {
+        throw new Error('get fallback should not be used');
+      },
+      async del() {
+        throw new Error('del fallback should not be used');
+      },
+      async eval(_script: string, opts: { keys: string[]; arguments: string[] }) {
+        evalCalls.push(opts);
+        return evalCalls.length === 1 ? 0 : 1;
+      },
+    };
+
+    const result = await releaseDeliveryReservationForRetry({
+      redis: redisClient as never,
+      deliveryKey: 'webhook-delivery:456',
+      reservationToken: 'token-2',
+      payload: { repository: { full_name: 'owner/repo' }, pull_request: { number: 43 } },
+      rawDeliveryId: '456',
+      rawEvent: 'pull_request',
+      correlationId: 'corr-2',
+      log: { error() {} },
+      failureContext: 'test failure',
+    });
+
+    assert.deepStrictEqual(result, { released: false, retryTtlShortened: true });
+    assert.deepStrictEqual(evalCalls, [
+      { keys: ['webhook-delivery:456'], arguments: ['token-2'] },
+      { keys: ['webhook-delivery:456'], arguments: ['token-2', '30'] },
+    ]);
+  });
 });

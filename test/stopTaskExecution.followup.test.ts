@@ -341,10 +341,12 @@ test('stopTaskExecution retries persisted cancellation after a queue removal per
     assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), [
         'worker:abort:queue-job-retry-1',
         'worker:abort:task-retry-1',
+        'worker:stop-outcome:queue-job-retry-1',
         'worker:stop-outcome:task-retry-1',
         'worker:stop-requested:queue-job-retry-1',
         'worker:stop-requested:task-retry-1',
     ]);
+    assert.strictEqual(redisClient.store.has('worker:stop-outcome:queue-job-retry-1'), false);
     assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-retry-1'), false);
 });
 
@@ -615,6 +617,7 @@ test('cancelMergedPullRequestTasks force-scans the initial merged-PR lookup and 
             getActiveTasksForPR,
             markPullRequestMerged,
             stopTaskExecution: stopTaskExecutionForMerge,
+            recheckDelayMs: 0,
             log,
         },
     );

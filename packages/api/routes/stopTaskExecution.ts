@@ -118,7 +118,7 @@ export async function stopTaskExecution(
     requireVerifiedStop = false,
   } = options;
   const context = await (deps.loadStopTaskContext ?? loadStopTaskContext)(taskReference, redisClient, { ...deps, forceQueueScan });
-  const persistedStopOutcome = await loadPersistedStopOutcome(redisClient, context.taskId);
+  const persistedStopOutcome = await loadPersistedStopOutcome(redisClient, context.abortTaskIds);
   const hadPersistedStopOutcome = hasConcreteStopOutcome(persistedStopOutcome);
   const trackedContainerId = getTaskContainerId(context.state, context.currentState);
   const activity = getStopTaskActivity(context.currentState, context.queueState, trackedContainerId !== null);
@@ -240,7 +240,7 @@ export async function stopTaskExecution(
         deps,
       });
     } catch (error) {
-      await persistStopOutcome(redisClient, context.taskId, stopOutcome);
+      await persistStopOutcome(redisClient, context.abortTaskIds, stopOutcome);
       throw error;
     }
     await pushStopConversationMessage(redisClient, context.taskId, {
@@ -259,7 +259,7 @@ export async function stopTaskExecution(
       await clearAbortSignals(redisClient, context.abortTaskIds);
     }
     if (hadPersistedStopOutcome || persistedStopOutcomeDuringStop) {
-      await clearPersistedStopOutcome(redisClient, context.taskId);
+      await clearPersistedStopOutcome(redisClient, context.abortTaskIds);
     }
   }
   return {
@@ -335,7 +335,7 @@ async function removeQueuedJobAfterStateCreation(params: {
   let persistedStopOutcomeDuringStop = false;
   const removalResult = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
   if (removalResult.jobRemoved) {
-    persistedStopOutcomeDuringStop = await persistQueueRemovalOutcomeBestEffort(redisClient, context.taskId);
+    persistedStopOutcomeDuringStop = await persistQueueRemovalOutcomeBestEffort(redisClient, context.abortTaskIds);
   } else if (removalResult.queueStateAfterFailure === 'active') {
     logger.info({
       taskId: context.taskId,
@@ -350,10 +350,10 @@ async function removeQueuedJobAfterStateCreation(params: {
 
 async function persistQueueRemovalOutcomeBestEffort(
   redisClient: RedisClientLike,
-  taskId: string,
+  taskIds: string[],
 ): Promise<boolean> {
   try {
-    await persistStopOutcome(redisClient, taskId, {
+    await persistStopOutcome(redisClient, taskIds, {
       containerId: null,
       containerStopped: false,
       jobRemoved: true,
@@ -361,7 +361,7 @@ async function persistQueueRemovalOutcomeBestEffort(
     return true;
   } catch (error) {
     logger.warn({
-      taskId,
+      taskIds,
       error: (error as Error).message,
     }, 'Failed to persist queued removal stop outcome before durable cancellation write');
     return false;

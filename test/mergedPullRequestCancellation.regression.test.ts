@@ -108,6 +108,7 @@ test('cancelMergedPullRequestTasks succeeds when abort-only worker stops leave a
           stopCalls.push(taskId);
           return createStopResult();
         },
+        recheckDelayMs: 0,
         log: {
           info: () => {},
           warn: () => {},
@@ -149,6 +150,7 @@ test('cancelMergedPullRequestTasks keeps merged PR state gated while abort-only 
           stopCalls.push(taskId);
           return createStopResult();
         },
+        recheckDelayMs: 0,
         log: {
           info: () => {},
           warn: () => {},
@@ -161,7 +163,7 @@ test('cancelMergedPullRequestTasks keeps merged PR state gated while abort-only 
 
   assert.deepEqual(stopCalls, ['task-1', 'task-1']);
   assert.equal(loadActiveTasksCalls.length, 3);
-  assert.deepEqual(markMergedCalls, [{ repository: 'acme/widgets', prNumber: 42 }]);
+  assert.deepEqual(markMergedCalls, []);
 });
 
 test('getActiveTasksForPR includes matching jobs from the live queue', async () => {

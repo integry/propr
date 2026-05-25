@@ -43,42 +43,55 @@ export function resolveCancellationQueueState(
 
 export async function loadPersistedStopOutcome(
   redisClient: RedisClientLike,
-  taskId: string,
+  taskIds: string | string[],
 ): Promise<PersistedStopOutcome> {
-  const outcomeData = await redisClient.get(getStopOutcomeKey(taskId));
-  if (!outcomeData) {
-    return { containerId: null, containerStopped: false, jobRemoved: false };
+  let mergedOutcome: PersistedStopOutcome = { containerId: null, containerStopped: false, jobRemoved: false };
+  for (const taskId of getUniqueTaskIds(taskIds)) {
+    const outcomeData = await redisClient.get(getStopOutcomeKey(taskId));
+    if (!outcomeData) {
+      continue;
+    }
+
+    try {
+      const outcome = JSON.parse(outcomeData) as Partial<PersistedStopOutcome>;
+      mergedOutcome = mergeStopOutcomes(mergedOutcome, {
+        containerId: typeof outcome.containerId === 'string' ? outcome.containerId : null,
+        containerStopped: outcome.containerStopped === true,
+        jobRemoved: outcome.jobRemoved === true,
+      });
+    } catch {
+      await clearPersistedStopOutcome(redisClient, taskId);
+    }
   }
 
-  try {
-    const outcome = JSON.parse(outcomeData) as Partial<PersistedStopOutcome>;
-    return {
-      containerId: typeof outcome.containerId === 'string' ? outcome.containerId : null,
-      containerStopped: outcome.containerStopped === true,
-      jobRemoved: outcome.jobRemoved === true,
-    };
-  } catch {
-    await clearPersistedStopOutcome(redisClient, taskId);
-    return { containerId: null, containerStopped: false, jobRemoved: false };
-  }
+  return mergedOutcome;
 }
 
 export async function persistStopOutcome(
   redisClient: RedisClientLike,
-  taskId: string,
+  taskIds: string | string[],
   stopOutcome: PersistedStopOutcome,
 ): Promise<void> {
   if (!hasConcreteStopOutcome(stopOutcome)) {
     return;
   }
 
-  await redisClient.set(getStopOutcomeKey(taskId), JSON.stringify(stopOutcome), { EX: STOP_OUTCOME_TTL_SECONDS });
+  const serializedOutcome = JSON.stringify(stopOutcome);
+  await Promise.all(getUniqueTaskIds(taskIds).map((taskId) => redisClient.set(
+    getStopOutcomeKey(taskId),
+    serializedOutcome,
+    { EX: STOP_OUTCOME_TTL_SECONDS },
+  )));
 }
 
-export async function clearPersistedStopOutcome(redisClient: RedisClientLike, taskId: string): Promise<void> {
-  await redisClient.del(getStopOutcomeKey(taskId));
+export async function clearPersistedStopOutcome(redisClient: RedisClientLike, taskIds: string | string[]): Promise<void> {
+  await Promise.all(getUniqueTaskIds(taskIds).map((taskId) => redisClient.del(getStopOutcomeKey(taskId))));
 }
 
 function getStopOutcomeKey(taskId: string): string {
   return `${STOP_OUTCOME_KEY_PREFIX}:${taskId}`;
+}
+
+function getUniqueTaskIds(taskIds: string | string[]): string[] {
+  return [...new Set((Array.isArray(taskIds) ? taskIds : [taskIds]).filter(Boolean))];
 }
