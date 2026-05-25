@@ -1,9 +1,20 @@
-import { test, describe, beforeEach, afterEach } from 'node:test';
+import { test, describe, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert';
 import crypto from 'crypto';
 import http from 'node:http';
 import express, { Request, Response } from 'express';
-import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/api/webhookHandler.js';
+
+process.env.GH_APP_ID ??= '1';
+process.env.GH_PRIVATE_KEY_PATH ??= '.propr/test-private-key.pem';
+process.env.GH_INSTALLATION_ID ??= '1';
+process.env.NODE_ENV ??= 'test';
+
+const { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } = await import('../packages/api/webhookHandler.js');
+
+after(async () => {
+  const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+  await closeConnection();
+});
 
 /**
  * Webhook Replay Protection Tests
@@ -23,7 +34,7 @@ import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/
  * - Unsupported event type ignored with 200 (e.g. ping)
  * - Redis key storage with correct TTL
  * - Failed processing retains Redis key to block duplicate side effects
- * - Parse failure returns generic 400 and retains Redis key
+ * - Parse failure returns generic 400 before any Redis reservation
  * - Fail-closed behavior when webhook secret is not configured (500)
  */
 
@@ -44,6 +55,10 @@ function createMockRedisClient() {
       }
       store.set(key, { value, ex: opts?.EX });
       return 'OK';
+    },
+    del: async (key: string) => {
+      const existed = store.delete(key);
+      return existed ? 1 : 0;
     },
   };
 }
@@ -113,6 +128,23 @@ function sendWebhook(
   });
 }
 
+function createMockResponse() {
+  return {
+    statusCode: 200,
+    body: '',
+    headersSent: false,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    send(body: string) {
+      this.body = body;
+      this.headersSent = true;
+      return this;
+    },
+  };
+}
+
 describe('Webhook Replay Protection', () => {
   let redisClient: ReturnType<typeof createMockRedisClient>;
   let server: http.Server;
@@ -142,11 +174,24 @@ describe('Webhook Replay Protection', () => {
   describe('Array-valued delivery ID', () => {
     test('rejects request with multi-valued x-github-delivery header', async () => {
       const body = makeBody();
-      const res = await sendWebhook(server, body, {
-        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
-        'x-github-delivery': ['id-1', 'id-2'],
+      const req = {
+        body: Buffer.from(body),
+        headers: {
+          'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+          'x-github-delivery': ['id-1', 'id-2'],
+          'x-github-event': 'issues',
+        },
+      };
+      const res = createMockResponse();
+
+      await handleWebhookRequest(req as never, res as never, {
+        webhookSecret: WEBHOOK_SECRET,
+        redis: createMockRedisClient(),
+        processor: async () => {},
+        correlationId: 'test-correlation-id',
       });
-      assert.strictEqual(res.status, 400);
+
+      assert.strictEqual(res.statusCode, 400);
       assert.match(res.body, /Invalid x-github-delivery/);
     });
   });
@@ -259,7 +304,7 @@ describe('Webhook Replay Protection', () => {
       }
     });
 
-    test('retains Redis key when body parsing fails and returns generic 400', async () => {
+    test('does not reserve a Redis key when body parsing fails before dedupe', async () => {
       const parseRedis = createMockRedisClient();
       const parseApp = express();
       parseApp.use('/webhook', express.raw({ type: 'application/json' }));
@@ -294,7 +339,7 @@ describe('Webhook Replay Protection', () => {
         });
         assert.strictEqual(result.status, 400);
         assert.strictEqual(result.body, 'Invalid JSON payload.');
-        assert.ok(parseRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key must be retained after parse failure to block duplicate processing');
+        assert.ok(!parseRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key should not be reserved when JSON parsing fails first');
       } finally {
         await new Promise<void>((resolve) => parseServer.close(() => resolve()));
       }
@@ -340,7 +385,7 @@ describe('Webhook Replay Protection', () => {
         'x-github-event': 'issues',
       });
       assert.strictEqual(res.status, 401);
-      assert.match(res.body, /Invalid webhook signature/);
+      assert.match(res.body, /Webhook signature mismatch/);
     });
 
     test('does not store delivery ID when signature is invalid', async () => {

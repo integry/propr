@@ -94,6 +94,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
+    ignoredTaskIds: firstAttempt.acceptedTaskIds,
   });
   if (remainingAfterFirstAttempt.length === 0) {
     await persistMergedState(deps.redisClient, repository, prNumber);
@@ -122,6 +123,10 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
+    ignoredTaskIds: new Set([
+      ...firstAttempt.acceptedTaskIds,
+      ...retryAttempt.acceptedTaskIds,
+    ]),
   });
   if (finalActiveTasks.length === 0) {
     await persistMergedState(deps.redisClient, repository, prNumber);
@@ -166,7 +171,10 @@ async function stopMergeTasks(params: {
   repository: string;
   prNumber: number;
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
-}): Promise<{ failures: Map<string, MergeTaskCancellationFailure> }> {
+}): Promise<{
+  failures: Map<string, MergeTaskCancellationFailure>;
+  acceptedTaskIds: Set<string>;
+}> {
   const {
     tasks,
     redisClient,
@@ -178,6 +186,7 @@ async function stopMergeTasks(params: {
     log,
   } = params;
   const failures = new Map<string, MergeTaskCancellationFailure>();
+  const acceptedTaskIds = new Set<string>();
 
   for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
     const taskBatch = tasks.slice(index, index + MERGE_TASK_STOP_CONCURRENCY);
@@ -188,6 +197,8 @@ async function stopMergeTasks(params: {
           requestedBy: 'system',
           cancellation,
         });
+        acceptedTaskIds.add(task.taskId);
+        acceptedTaskIds.add(result.taskId);
         if (!result.stopVerified) {
           log.info({
             correlationId,
@@ -196,7 +207,7 @@ async function stopMergeTasks(params: {
             taskId: task.taskId,
             currentState: result.currentState,
             queueState: result.queueState,
-          }, 'Merged PR task stop is awaiting worker or queue-state confirmation');
+        }, 'Merged PR task stop request accepted and is awaiting worker or queue-state confirmation');
         }
       } catch (error) {
         const failure = buildMergeTaskCancellationFailure(task.taskId, error);
@@ -215,7 +226,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { failures };
+  return { failures, acceptedTaskIds };
 }
 
 async function loadBlockingMergeCancellationTasks(params: {
@@ -223,14 +234,17 @@ async function loadBlockingMergeCancellationTasks(params: {
   repository: string;
   prNumber: number;
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+  ignoredTaskIds?: ReadonlySet<string>;
 }): Promise<MergeTaskActivity[]> {
   const {
     loadActiveTasks,
     repository,
     prNumber,
     log,
+    ignoredTaskIds = new Set<string>(),
   } = params;
-  return loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
+  return (await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log))
+    .filter((task) => !ignoredTaskIds.has(task.taskId));
 }
 
 function buildFinalFailures(

@@ -16,7 +16,6 @@ interface DockerRoutesDeps {
   loadStopTaskContext?: typeof loadStopTaskContext;
 }
 
-export { StopTaskExecutionError, stopTaskExecution };
 export type {
   StopTaskCancellationReason,
   StopTaskExecutionDeps,

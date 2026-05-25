@@ -358,7 +358,7 @@ function resolveStopTaskId(
     return normalizedTaskId;
   }
 
-  return queueTaskId ?? normalizedTaskId;
+  return queueTaskId;
 }
 
 function buildAbortTaskIds(params: {

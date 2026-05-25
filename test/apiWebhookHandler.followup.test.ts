@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { mock, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import assert from 'node:assert';
 
 process.env.GH_APP_ID ??= '1';
@@ -8,6 +8,11 @@ process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
 const { handleWebhookRequest } = await import('../packages/api/webhookHandler.js');
+
+after(async () => {
+    const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+    await closeConnection();
+});
 
 function createSignedRequest(payload: Record<string, unknown>, secret: string) {
     const body = Buffer.from(JSON.stringify(payload));
@@ -51,6 +56,7 @@ test('duplicate deliveries are rejected before merged-PR cancellation side effec
             callOrder.push('redis.set');
             return null;
         }),
+        del: mock.fn(async () => 1),
     };
     const processor = mock.fn(async () => {
         callOrder.push('processor');

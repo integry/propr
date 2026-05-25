@@ -14,7 +14,6 @@ export interface StopTaskActivity {
 type StopTaskErrorFactory = (status: number, body: Record<string, unknown>) => Error;
 
 const RUNNING_TASK_STATES = new Set<string>(STOPPABLE_TASK_STATES);
-const CONTAINER_TASK_STATES = new Set(['claude_execution', 'post_processing']);
 const TERMINAL_TASK_STATE_SET = new Set<string>(TERMINAL_TASK_STATES);
 const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed']);
 const PRE_START_QUEUE_STATES = new Set(['waiting', 'delayed', 'paused', 'prioritized', 'waiting-children']);
@@ -85,7 +84,7 @@ export function assertTaskCanBeStopped(params: {
 }
 
 export function getTaskContainerId(state: TaskState | null, currentState: string | null): string | null {
-  if (!currentState || !CONTAINER_TASK_STATES.has(currentState) || !state) {
+  if (!state || (currentState !== null && TERMINAL_TASK_STATE_SET.has(currentState))) {
     return null;
   }
 

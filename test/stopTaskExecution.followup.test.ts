@@ -1,4 +1,4 @@
-import { beforeEach, mock, test } from 'node:test';
+import { after, beforeEach, mock, test } from 'node:test';
 import assert from 'node:assert';
 
 process.env.GH_APP_ID ??= '1';
@@ -8,6 +8,11 @@ process.env.NODE_ENV ??= 'test';
 
 const { stopTaskExecution, isBenignQueueRemovalRace } = await import('../packages/api/routes/stopTaskExecution.js');
 const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.js');
+
+after(async () => {
+    const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+    await closeConnection();
+});
 
 const markTaskCancelled = mock.fn(async () => ({}));
 const updateHistoryMetadata = mock.fn(async () => ({}));
@@ -425,6 +430,47 @@ test('stopTaskExecution still terminates the Claude container from post_processi
     assert.strictEqual(result.containerStopped, true);
     assert.strictEqual(stopDockerContainer.mock.calls.length, 1);
     assert.deepStrictEqual(stopDockerContainer.mock.calls[0]?.arguments, ['container-post-1', 10]);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
+});
+
+test('stopTaskExecution still stops the latest Claude container from processing state history', async () => {
+    const redisClient = createRedisClient();
+
+    const result = await stopTaskExecution(
+        'task-processing-history-container',
+        {
+            redisClient,
+            requestedBy: 'system',
+            cancellation: {
+                code: 'pull_request_merged',
+                message: 'Task cancelled because pull request #42 was merged.',
+            },
+        },
+        {
+            loadStopTaskContext: async () => ({
+                normalizedTaskId: 'task-processing-history-container',
+                state: {
+                    history: [
+                        { state: 'claude_execution', metadata: { containerId: 'container-processing-1' } },
+                        { state: 'processing' },
+                    ],
+                },
+                currentState: 'processing',
+                queueJob: null,
+                queueState: null,
+                taskId: 'task-processing-history-container',
+                abortTaskIds: ['task-processing-history-container'],
+            }),
+            ensureTaskStateForCancellation: async () => {},
+            getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+            stopDockerContainer,
+        },
+    );
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.containerStopped, true);
+    assert.strictEqual(stopDockerContainer.mock.calls.length, 1);
+    assert.deepStrictEqual(stopDockerContainer.mock.calls[0]?.arguments, ['container-processing-1', 10]);
     assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
 });
 
