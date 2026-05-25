@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { execSync } from 'child_process';
-import { normalizeTaskId } from './stopTaskExecutionContext.js';
+import { loadStopTaskContext, type TaskState } from './stopTaskExecutionContext.js';
 import { stopTaskExecution, StopTaskExecutionError } from './stopTaskExecution.js';
 import type {
   StopTaskCancellationReason,
@@ -13,6 +13,7 @@ import { validateTaskId, validateTailParam } from './validation.js';
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
+  loadStopTaskContext?: typeof loadStopTaskContext;
 }
 
 export { StopTaskExecutionError, stopTaskExecution };
@@ -24,7 +25,7 @@ export type {
 };
 
 export function createDockerRoutes(deps: DockerRoutesDeps) {
-  const { redisClient } = deps;
+  const { redisClient, loadStopTaskContext: loadStopTaskContextOverride } = deps;
 
   async function getDockerInfo(req: Request, res: Response): Promise<void> {
     try {
@@ -34,21 +35,21 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
 
-      const taskId = normalizeTaskId(req.params.taskId);
-      const stateData = await redisClient.get(`worker:state:${taskId}`);
-      if (!stateData) {
+      const containerMetadata = await loadDockerContainerMetadata(
+        req.params.taskId,
+        redisClient,
+        loadStopTaskContextOverride,
+      );
+      if (!containerMetadata) {
         res.status(404).json({ error: 'Task state not found' });
         return;
       }
-
-      const state = JSON.parse(stateData) as { history: Array<{ state: string; metadata?: { containerId?: string; containerName?: string } }> };
-      const entry = state.history.find((historyEntry) => historyEntry.state === 'claude_execution' && historyEntry.metadata?.containerId);
-      if (!entry?.metadata?.containerId) {
+      if (!containerMetadata.containerId) {
         res.status(404).json({ error: 'No Docker container info available for this task' });
         return;
       }
 
-      res.json(await getContainerInfo(entry.metadata.containerId, entry.metadata.containerName));
+      res.json(await getContainerInfo(containerMetadata.containerId, containerMetadata.containerName ?? undefined));
     } catch (error) {
       console.error('Error in /api/task/:taskId/docker-info:', error);
       res.status(500).json({ error: 'Internal server error' });
@@ -70,22 +71,22 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
       const tail = tailValidation.value!;
 
-      const taskId = normalizeTaskId(req.params.taskId);
-      const stateData = await redisClient.get(`worker:state:${taskId}`);
-      if (!stateData) {
+      const containerMetadata = await loadDockerContainerMetadata(
+        req.params.taskId,
+        redisClient,
+        loadStopTaskContextOverride,
+      );
+      if (!containerMetadata) {
         res.status(404).json({ error: 'Task state not found' });
         return;
       }
-
-      const state = JSON.parse(stateData) as { history: Array<{ state: string; metadata?: { containerId?: string } }> };
-      const entry = state.history.find((historyEntry) => historyEntry.state === 'claude_execution' && historyEntry.metadata?.containerId);
-      if (!entry?.metadata?.containerId) {
+      if (!containerMetadata.containerId) {
         res.status(404).json({ error: 'No Docker container info available for this task' });
         return;
       }
 
       try {
-        const logsOutput = execSync(`docker logs --tail ${tail} ${entry.metadata.containerId}`, {
+        const logsOutput = execSync(`docker logs --tail ${tail} ${containerMetadata.containerId}`, {
           encoding: 'utf8',
           timeout: 10000,
           maxBuffer: 10 * 1024 * 1024,
@@ -94,7 +95,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         res.send(logsOutput);
       } catch (err) {
         if ((err as Error).message.includes('No such container')) {
-          res.status(404).json({ error: 'Container no longer exists', containerId: entry.metadata.containerId });
+          res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
           return;
         }
         throw err;
@@ -132,6 +133,29 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
   }
 
   return { getDockerInfo, getDockerLogs, stopTask };
+}
+
+async function loadDockerContainerMetadata(
+  taskReference: string,
+  redisClient: Pick<RedisClientType, 'get'>,
+  loadContext: typeof loadStopTaskContext = loadStopTaskContext,
+): Promise<{ containerId: string | null; containerName: string | null } | null> {
+  const context = await loadContext(taskReference, redisClient, {});
+  if (!context.state) {
+    return null;
+  }
+
+  return getDockerContainerMetadata(context.state);
+}
+
+function getDockerContainerMetadata(
+  state: TaskState,
+): { containerId: string | null; containerName: string | null } {
+  const entry = state.history.find((historyEntry) => historyEntry.state === 'claude_execution' && historyEntry.metadata?.containerId);
+  return {
+    containerId: entry?.metadata?.containerId ?? null,
+    containerName: entry?.metadata?.containerName ?? null,
+  };
 }
 
 async function getContainerInfo(containerId: string, containerName?: string): Promise<Record<string, unknown>> {

@@ -6,7 +6,7 @@ process.env.GH_PRIVATE_KEY_PATH ??= '.propr/test-private-key.pem';
 process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
-const { stopTaskExecution } = await import('../packages/api/routes/dockerRoutes.ts');
+const { createDockerRoutes, stopTaskExecution } = await import('../packages/api/routes/dockerRoutes.ts');
 const { getActiveTasksForPR, hasActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
 const { discardFreshQueueJobAfterMerge } = await import('../packages/core/src/webhook/mergedPrQueueHelpers.ts');
 const { hasPullRequestMerged } = await import('../packages/core/src/webhook/prMergeState.ts');
@@ -25,6 +25,30 @@ function createRedisClient() {
     set: mock.fn(async () => 'OK'),
     del: mock.fn(async () => 1),
     rPush: mock.fn(async () => 1),
+  };
+}
+
+function createResponseRecorder() {
+  return {
+    statusCode: 200,
+    headers: new Map<string, string>(),
+    jsonBody: null as Record<string, unknown> | null,
+    textBody: null as string | null,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload: Record<string, unknown>) {
+      this.jsonBody = payload;
+      return this;
+    },
+    send(payload: string) {
+      this.textBody = payload;
+      return this;
+    },
+    setHeader(key: string, value: string) {
+      this.headers.set(key, value);
+    },
   };
 }
 
@@ -159,6 +183,61 @@ after(async () => {
 });
 
 describe('merged PR queue follow-up fixes', () => {
+  test('getDockerInfo resolves task references through the shared stop context loader', async () => {
+    const redisClient = createRedisClient();
+    const loadStopTaskContext = mock.fn(async () => ({
+      normalizedTaskId: 'issue-owner-repo-99-12345',
+      state: { history: [{ state: 'processing' }] },
+      currentState: 'processing',
+      queueJob: null,
+      queueState: null,
+      taskId: 'owner-repo-99',
+      abortTaskIds: ['owner-repo-99'],
+    }));
+    const response = createResponseRecorder();
+    const { getDockerInfo } = createDockerRoutes({
+      redisClient: redisClient as never,
+      loadStopTaskContext,
+    });
+
+    await getDockerInfo({
+      params: { taskId: 'issue-owner-repo-99-12345' },
+    } as never, response as never);
+
+    assert.strictEqual(loadStopTaskContext.mock.calls.length, 1);
+    assert.deepStrictEqual(loadStopTaskContext.mock.calls[0].arguments[0], 'issue-owner-repo-99-12345');
+    assert.strictEqual(response.statusCode, 404);
+    assert.deepStrictEqual(response.jsonBody, { error: 'No Docker container info available for this task' });
+  });
+
+  test('getDockerLogs resolves task references through the shared stop context loader', async () => {
+    const redisClient = createRedisClient();
+    const loadStopTaskContext = mock.fn(async () => ({
+      normalizedTaskId: 'issue-owner-repo-99-12345',
+      state: { history: [{ state: 'processing' }] },
+      currentState: 'processing',
+      queueJob: null,
+      queueState: null,
+      taskId: 'owner-repo-99',
+      abortTaskIds: ['owner-repo-99'],
+    }));
+    const response = createResponseRecorder();
+    const { getDockerLogs } = createDockerRoutes({
+      redisClient: redisClient as never,
+      loadStopTaskContext,
+    });
+
+    await getDockerLogs({
+      params: { taskId: 'issue-owner-repo-99-12345' },
+      query: { tail: '50' },
+    } as never, response as never);
+
+    assert.strictEqual(loadStopTaskContext.mock.calls.length, 1);
+    assert.deepStrictEqual(loadStopTaskContext.mock.calls[0].arguments[0], 'issue-owner-repo-99-12345');
+    assert.strictEqual(response.statusCode, 404);
+    assert.deepStrictEqual(response.jsonBody, { error: 'No Docker container info available for this task' });
+  });
+
   test('stopTaskExecution reconstructs issueRef from repository-only queue payloads', async () => {
     const queueJobId = 'pr-comments-batch-integry-propr-1463-123';
     const redisClient = createRedisClient();
@@ -249,6 +328,47 @@ describe('merged PR queue follow-up fixes', () => {
       'corr-123',
     ]);
     assert.strictEqual(mockMarkTaskCancelled.mock.calls[0].arguments[0], 'task-running-1');
+  });
+
+  test('stopTaskExecution preserves the exact requester in cancellation metadata', async () => {
+    const redisClient = createRedisClient();
+    const queueJobId = 'pr-comments-batch-integry-propr-1463-123';
+
+    await stopTaskExecution(queueJobId, {
+      redisClient,
+      requestedBy: 'alice',
+      cancellation: {
+        code: 'user_requested_stop',
+        message: 'Task cancelled by user request.',
+      },
+    }, {
+      getIssueQueue: async () => ({
+        getJob: async (id: string) => id === queueJobId ? createQueueJob(queueJobId, {
+          repository: 'integry/propr',
+          pullRequestNumber: 1463,
+          correlationId: 'corr-123',
+        }, 'waiting') : null,
+      }) as never,
+      getStateManager: () => ({
+        createTaskState: mockCreateTaskState,
+        markTaskCancelled: mockMarkTaskCancelled,
+      }) as never,
+      db: createTaskUpdateDb() as never,
+      stopDockerContainer: mockStopDockerContainer as never,
+    });
+
+    assert.strictEqual(mockMarkTaskCancelled.mock.calls.length, 1);
+    assert.deepStrictEqual(
+      mockMarkTaskCancelled.mock.calls[0].arguments[2].cancellation,
+      {
+        code: 'user_requested_stop',
+        message: 'Task cancelled by user request.',
+        cancelledBy: 'alice',
+        source: 'task_stop',
+        containerStopped: false,
+        jobRemoved: true,
+      },
+    );
   });
 
   test('stopTaskExecution resolves fresh queued issue jobs by canonical task id', async () => {

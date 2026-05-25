@@ -114,7 +114,7 @@ test.after(async () => {
   await closeConnection();
 });
 
-test('getActiveTasksForPR backfills unindexed queue jobs when a partial PR index is force-scanned', async () => {
+test('getActiveTasksForPR force-scans queued jobs without mutating the PR queue index', async () => {
   const indexedJob = createMockJob('indexed-job', 'active', {
     repository: 'integry/propr',
     prNumber: 1464,
@@ -141,11 +141,11 @@ test('getActiveTasksForPR backfills unindexed queue jobs when a partial PR index
   );
   assert.deepEqual(
     [...(client.sets.get('pr-queue-jobs:integry/propr:1464') ?? new Set<string>())].sort(),
-    ['indexed-job', 'scanned-job'],
+    ['indexed-job'],
   );
 });
 
-test('getActiveTasksForPR promotes pending queue jobs into the tracked PR index', async () => {
+test('getActiveTasksForPR reads pending queue jobs without promoting index state', async () => {
   const pendingJob = createMockJob('pending-job', 'waiting', {
     repository: 'integry/propr',
     prNumber: 1464,
@@ -164,11 +164,11 @@ test('getActiveTasksForPR promotes pending queue jobs into the tracked PR index'
   assert.deepEqual(tasks, [{ taskId: 'pending-job', state: 'waiting' }]);
   assert.deepEqual(
     [...(client.sets.get('pr-queue-jobs:integry/propr:1464') ?? new Set<string>())],
-    ['pending-job'],
+    [],
   );
   assert.deepEqual(
     [...(client.sets.get('pr-pending-queue-jobs:integry/propr:1464') ?? new Set<string>())],
-    [],
+    ['pending-job'],
   );
 });
 
@@ -244,6 +244,7 @@ test('stopTaskExecution does not persist merged-PR cancellation metadata for abo
     conversationMessages.map((entry) => entry.message.content),
     [
       'Task cancelled because pull request #1464 was merged.',
+      'Cancellation requested. Worker shutdown is still in progress.',
     ],
   );
 });

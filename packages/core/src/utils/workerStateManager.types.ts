@@ -80,7 +80,7 @@ export interface TaskStateData {
 export interface CancellationMetadata {
     code?: string;
     message?: string;
-    cancelledBy?: 'user' | 'system';
+    cancelledBy?: string;
     cancelledAt?: string;
     reason?: string;
     source?: string;

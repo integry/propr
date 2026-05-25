@@ -43,7 +43,7 @@ export async function persistTaskCancellation(params: {
     cancellation: {
       code: cancellation.code,
       message: cancellation.message,
-      cancelledBy: requestedBy === 'system' ? 'system' : 'user',
+      cancelledBy: requestedBy,
       source: getCancellationSource(cancellation),
       containerStopped,
       jobRemoved,
