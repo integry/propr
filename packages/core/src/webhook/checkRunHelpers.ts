@@ -791,29 +791,28 @@ async function addQueuedPrJobsFromFallbackScan(params: {
     log: Pick<typeof logger, 'info' | 'warn'>;
 }): Promise<void> {
     const { queue, repository, prNumber, taskMap, taskAliases, log } = params;
-    for (const queueState of TRACKED_PR_QUEUE_STATES) {
-        const jobs = await queue.getJobs([queueState]);
-        for (const job of jobs) {
-            const jobData = job.data as unknown as Record<string, unknown>;
-            if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
-                continue;
-            }
+    const jobs = await queue.getJobs([...TRACKED_PR_QUEUE_STATES]);
+    for (const job of jobs) {
+        const jobData = job.data as unknown as Record<string, unknown>;
+        if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
+            continue;
+        }
 
-            const queueJobId = String(job.id);
-            registerActiveTask(taskMap, taskAliases, { taskId: queueJobId, state: queueState }, [
-                getQueueTaskAlias(queueJobId),
-                getTaskIdFromQueueJob(job),
-            ]);
-            try {
-                await trackPrQueueJob(queue as never, repository, prNumber, queueJobId);
-            } catch (error) {
-                log.warn({
-                    repository,
-                    prNumber,
-                    jobId: queueJobId,
-                    error: (error as Error).message,
-                }, 'Failed to backfill PR queue-job index entry');
-            }
+        const queueJobId = String(job.id);
+        const queueState = await job.getState();
+        registerActiveTask(taskMap, taskAliases, { taskId: queueJobId, state: queueState }, [
+            getQueueTaskAlias(queueJobId),
+            getTaskIdFromQueueJob(job),
+        ]);
+        try {
+            await trackPrQueueJob(queue as never, repository, prNumber, queueJobId);
+        } catch (error) {
+            log.warn({
+                repository,
+                prNumber,
+                jobId: queueJobId,
+                error: (error as Error).message,
+            }, 'Failed to backfill PR queue-job index entry');
         }
     }
 }

@@ -233,23 +233,21 @@ async function getQueueJob(
     return null;
   }
 
-  for (const queueState of TRACKED_QUEUE_LOOKUP_STATES) {
-    const jobs = await queue.getJobs([queueState]) as unknown as Job<QueueJobData>[];
-    for (const job of jobs) {
-      const derivedTaskId = getTaskIdFromQueueJob(job);
-      const normalizedJobId = job.id === null || job.id === undefined ? null : normalizeTaskId(String(job.id));
-      if (
-        (derivedTaskId && candidateTaskIdSet.has(derivedTaskId))
-        || (normalizedJobId && candidateTaskIdSet.has(normalizedJobId))
-      ) {
-        logger.info({
-          taskReferenceCandidates: uniqueCandidates,
-          queueJobId: job.id === null || job.id === undefined ? null : String(job.id),
-          derivedTaskId,
-          queueState,
-        }, 'Resolved queued task stop lookup via fallback task-id scan');
-        return job;
-      }
+  const jobs = await queue.getJobs([...TRACKED_QUEUE_LOOKUP_STATES]) as unknown as Job<QueueJobData>[];
+  for (const job of jobs) {
+    const derivedTaskId = getTaskIdFromQueueJob(job);
+    const normalizedJobId = job.id === null || job.id === undefined ? null : normalizeTaskId(String(job.id));
+    if (
+      (derivedTaskId && candidateTaskIdSet.has(derivedTaskId))
+      || (normalizedJobId && candidateTaskIdSet.has(normalizedJobId))
+    ) {
+      logger.info({
+        taskReferenceCandidates: uniqueCandidates,
+        queueJobId: job.id === null || job.id === undefined ? null : String(job.id),
+        derivedTaskId,
+        queueState: await job.getState(),
+      }, 'Resolved queued task stop lookup via fallback task-id scan');
+      return job;
     }
   }
 

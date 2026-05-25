@@ -274,7 +274,7 @@ test('stopTaskExecution retries persisted cancellation after a queue removal per
     assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-retry-1'), false);
 });
 
-test('stopTaskExecution persists queued cancellation metadata for unknown queue-removal races', async () => {
+test('stopTaskExecution does not persist queued cancellation metadata for unknown queue-removal races', async () => {
     const redisClient = createRedisClient();
     const queueJob = {
         id: 'queue-job-unknown-1',
@@ -312,9 +312,9 @@ test('stopTaskExecution persists queued cancellation metadata for unknown queue-
 
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.jobRemoved, false);
+    assert.strictEqual(result.message, 'Stop request sent to worker. The execution will be terminated shortly.');
     assert.strictEqual(result.queueState, 'unknown');
-    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
-    assert.deepStrictEqual(markTaskCancelled.mock.calls[0]?.arguments.slice(0, 2), ['task-queue-unknown-1', 'system']);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
     assert.strictEqual(redisClient.set.mock.calls.length, 2);
     assert.strictEqual(redisClient.del.mock.calls.length, 0);
     assert.strictEqual(redisClient.store.has('worker:abort:task-queue-unknown-1'), true);

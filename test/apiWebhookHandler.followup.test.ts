@@ -78,3 +78,48 @@ test('duplicate deliveries are rejected before merged-PR cancellation side effec
     assert.strictEqual(cancelMerged.mock.calls.length, 0);
     assert.strictEqual(processor.mock.calls.length, 0);
 });
+
+test('merged-PR cancellation failures shorten the delivery reservation TTL when reservation release fails', async () => {
+    const request = createSignedRequest({
+        action: 'closed',
+        repository: { full_name: 'owner/repo' },
+        pull_request: { number: 42, merged: true },
+    }, 'secret');
+    const response = createResponse();
+    const redis = {
+        set: mock.fn(async () => 'OK'),
+        del: mock.fn(async () => {
+            throw new Error('redis unavailable');
+        }),
+    };
+
+    await handleWebhookRequest(request as never, response as never, {
+        webhookSecret: 'secret',
+        redis,
+        processor: async () => {},
+        correlationId: 'cid-2',
+        supportedEvents: ['pull_request'],
+        isMergedPullRequestClose: () => true,
+        cancelMergedPullRequestTasks: async () => {
+            throw new Error('cancellation failed');
+        },
+        mergeTaskCancellation: {
+            redisClient: {} as never,
+        },
+    });
+
+    assert.strictEqual(response.statusCode, 500);
+    assert.strictEqual(response.body, 'Merged pull request task cancellation failed.');
+    assert.strictEqual(redis.set.mock.calls.length, 2);
+    assert.deepStrictEqual(redis.set.mock.calls[0]?.arguments, [
+        'webhook:delivery:delivery-1',
+        '1',
+        { NX: true, EX: 300 },
+    ]);
+    assert.deepStrictEqual(redis.set.mock.calls[1]?.arguments, [
+        'webhook:delivery:delivery-1',
+        '1',
+        { EX: 5 },
+    ]);
+    assert.strictEqual(redis.del.mock.calls.length, 1);
+});

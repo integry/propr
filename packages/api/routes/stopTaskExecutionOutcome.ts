@@ -29,12 +29,12 @@ export function resolveCancellationQueueState(
   stopOutcome: PersistedStopOutcome,
   queueState: string | null,
 ): string | null {
-  if (queueState) {
-    return queueState;
-  }
-
   if (stopOutcome.jobRemoved) {
     return 'removed_before_start';
+  }
+
+  if (queueState) {
+    return queueState;
   }
 
   return null;

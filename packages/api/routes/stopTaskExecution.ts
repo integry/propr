@@ -144,6 +144,7 @@ export async function stopTaskExecution(
     containerStopped,
     jobRemoved,
   });
+  const resolvedQueueState = resolveCancellationQueueState(stopOutcome, queueStateAfterFailure ?? context.queueState);
   assertStopApplied({
     activity,
     currentState: context.currentState,
@@ -154,15 +155,13 @@ export async function stopTaskExecution(
     queueStateAfterFailure,
   });
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
-    activity,
     containerStopped: stopOutcome.containerStopped,
     jobRemoved: stopOutcome.jobRemoved,
-    queueState: effectiveQueueState,
   });
   const shouldRetainAbortSignals = shouldKeepAbortSignalsAfterCancellation({
     activity,
     jobRemoved: stopOutcome.jobRemoved,
-    queueState: effectiveQueueState,
+    queueState: resolvedQueueState,
   });
   if (shouldPersistCancelledState) {
     try {
@@ -170,7 +169,7 @@ export async function stopTaskExecution(
         taskId: context.taskId,
         requestedBy,
         cancellation,
-        queueState: resolveCancellationQueueState(stopOutcome, effectiveQueueState),
+        queueState: resolvedQueueState,
         containerId: stopOutcome.containerId,
         containerStopped: stopOutcome.containerStopped,
         jobRemoved: stopOutcome.jobRemoved,
@@ -205,7 +204,7 @@ export async function stopTaskExecution(
     containerStopped: stopOutcome.containerStopped,
     jobRemoved: stopOutcome.jobRemoved,
     currentState: context.currentState,
-    queueState: effectiveQueueState,
+    queueState: resolvedQueueState,
     cancellation,
   };
 }
@@ -340,14 +339,10 @@ async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]
 }
 
 function shouldMarkTaskCancelled(params: {
-  activity: StopTaskActivity;
   containerStopped: boolean;
   jobRemoved: boolean;
-  queueState: string | null;
 }): boolean {
-  return params.containerStopped
-    || params.jobRemoved
-    || shouldPersistUnknownQueueRaceCancellation(params.activity, params.jobRemoved, params.queueState);
+  return params.containerStopped || params.jobRemoved;
 }
 
 function shouldKeepAbortSignalsAfterCancellation(params: {
@@ -355,15 +350,7 @@ function shouldKeepAbortSignalsAfterCancellation(params: {
   jobRemoved: boolean;
   queueState: string | null;
 }): boolean {
-  return shouldPersistUnknownQueueRaceCancellation(params.activity, params.jobRemoved, params.queueState);
-}
-
-function shouldPersistUnknownQueueRaceCancellation(
-  activity: StopTaskActivity,
-  jobRemoved: boolean,
-  queueState: string | null,
-): boolean {
-  return activity.isQueuePreStart && !jobRemoved && queueState === 'unknown';
+  return params.activity.isQueuePreStart && !params.jobRemoved && params.queueState === 'unknown';
 }
 
 function assertStopApplied(params: {

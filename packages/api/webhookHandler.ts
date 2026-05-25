@@ -16,6 +16,7 @@ import {
  * your Redis capacity and expected webhook volume.
  */
 const DEFAULT_DELIVERY_TTL_SECONDS = 300;
+const FAILED_CANCELLATION_RETRY_TTL_SECONDS = 5;
 
 export const WEBHOOK_DELIVERY_TTL_SECONDS: number = (() => {
   const env = process.env.WEBHOOK_DELIVERY_TTL_SECONDS;
@@ -162,10 +163,25 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
     await cancelMergedPullRequestTasksFn(payload, correlationId, mergeTaskCancellation);
   } catch (error) {
     let deliveryReservationReleased = false;
+    let deliveryReservationRetryTtlShortened = false;
     try {
       await redis.del(deliveryKey);
       deliveryReservationReleased = true;
     } catch (releaseError) {
+      try {
+        await redis.set(deliveryKey, '1', { EX: FAILED_CANCELLATION_RETRY_TTL_SECONDS });
+        deliveryReservationRetryTtlShortened = true;
+      } catch (ttlUpdateError) {
+        log.error({
+          correlationId,
+          deliveryId: rawDeliveryId,
+          event: rawEvent,
+          repository: payload.repository?.full_name,
+          prNumber: payload.pull_request?.number,
+          error: (ttlUpdateError as Error).message,
+        }, 'Failed to shorten webhook delivery reservation TTL after merged PR cancellation failure');
+      }
+
       log.error({
         correlationId,
         deliveryId: rawDeliveryId,
@@ -173,6 +189,7 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
         repository: payload.repository?.full_name,
         prNumber: payload.pull_request?.number,
         error: (releaseError as Error).message,
+        deliveryReservationRetryTtlShortened,
       }, 'Failed to release webhook delivery reservation after merged PR cancellation failure');
     }
 
@@ -183,10 +200,13 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
       repository: payload.repository?.full_name,
       prNumber: payload.pull_request?.number,
       deliveryReservationReleased,
+      deliveryReservationRetryTtlShortened,
       error: (error as Error).message,
     }, deliveryReservationReleased
       ? 'Merged PR task cancellation failed; released webhook delivery reservation for retry'
-      : 'Merged PR task cancellation failed; returning 500 but delivery reservation release also failed');
+      : deliveryReservationRetryTtlShortened
+        ? 'Merged PR task cancellation failed; returning 500 after shortening webhook delivery reservation TTL for retry'
+        : 'Merged PR task cancellation failed; returning 500 but delivery reservation release also failed');
 
     throw error;
   }
