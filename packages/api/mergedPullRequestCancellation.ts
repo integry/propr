@@ -56,6 +56,7 @@ export async function cancelMergedPullRequestTasks(
   await persistMergedState(deps.redisClient, repository, prNumber);
 
   const activeTasks = await loadActiveTasks(repository, prNumber, {
+    forceQueueScan: true,
     log,
     stoppableOnly: true,
   });

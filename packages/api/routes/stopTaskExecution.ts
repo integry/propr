@@ -139,7 +139,6 @@ export async function stopTaskExecution(
   const shouldPersistCancelledState = shouldMarkTaskCancelled({
     containerStopped,
     jobRemoved,
-    shouldAbort,
   });
   if (shouldClearAbortSignals({
     shouldAbort,
@@ -317,9 +316,8 @@ function shouldClearAbortSignals(params: {
 function shouldMarkTaskCancelled(params: {
   containerStopped: boolean;
   jobRemoved: boolean;
-  shouldAbort: boolean;
 }): boolean {
-  return params.containerStopped || params.jobRemoved || params.shouldAbort;
+  return params.containerStopped || params.jobRemoved;
 }
 
 function assertStopApplied(params: {

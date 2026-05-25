@@ -725,16 +725,20 @@ export async function getActiveTasksForPR(
             );
         }
 
-        // Queue index updates are best-effort in several enqueue paths. Always scan the live
-        // queue states so a partially-indexed PR cannot hide active work after merge.
-        await addQueuedPrJobsFromFallbackScan({
-            queue,
-            repository,
-            prNumber,
-            taskMap,
-            taskAliases,
-            log,
-        });
+        if (shouldRunFallbackQueueScan({
+            forceQueueScan: deps.forceQueueScan === true,
+            indexedTrackedQueueJobs,
+            indexedPendingQueueJobs,
+        })) {
+            await addQueuedPrJobsFromFallbackScan({
+                queue,
+                repository,
+                prNumber,
+                taskMap,
+                taskAliases,
+                log,
+            });
+        }
 
         const activeTasksQuery = database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -812,6 +816,19 @@ async function addQueuedPrJobsFromFallbackScan(params: {
             }
         }
     }
+}
+
+function shouldRunFallbackQueueScan(params: {
+    forceQueueScan: boolean;
+    indexedTrackedQueueJobs: IndexedQueueTaskActivity[];
+    indexedPendingQueueJobs: IndexedQueueTaskActivity[];
+}): boolean {
+    const { forceQueueScan, indexedTrackedQueueJobs, indexedPendingQueueJobs } = params;
+    if (forceQueueScan) {
+        return true;
+    }
+
+    return indexedTrackedQueueJobs.length === 0 && indexedPendingQueueJobs.length === 0;
 }
 
 async function loadIndexedQueueTaskActivities(params: {
@@ -977,9 +994,9 @@ export async function hasActiveTasksForPR(
             repository,
             prNumber,
             error: (error as Error).message,
-        }, 'Failed to determine active tasks for PR; failing closed');
+        }, 'Failed to determine active tasks for PR; defaulting to no active tasks');
         return {
-            hasActive: true,
+            hasActive: false,
             activeTasks: [],
             queuedJobs: [],
         };
