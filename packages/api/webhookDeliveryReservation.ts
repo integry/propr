@@ -127,6 +127,8 @@ async function compareAndDeleteDeliveryReservation(
     return Number(result);
   }
 
+  // Best-effort fallback for tests or minimal Redis adapters. Production
+  // clients should provide eval so the token comparison and mutation are atomic.
   return (await redis.get(deliveryKey)) === reservationToken
     ? redis.del(deliveryKey)
     : 0;
@@ -145,6 +147,8 @@ async function compareAndShortenDeliveryReservationTtl(
     return Number(result) === 1;
   }
 
+  // Best-effort fallback for tests or minimal Redis adapters. Production
+  // clients should provide eval so the token comparison and TTL update are atomic.
   if (await redis.get(deliveryKey) !== reservationToken) {
     return false;
   }

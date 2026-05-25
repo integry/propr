@@ -528,10 +528,10 @@ test('stopTaskExecution records the cancellation reason only after a verified st
         'Task cancelled because pull request #42 was merged.',
         'Task cancelled successfully.',
     ]);
-    assert.deepStrictEqual(sideEffects, ['ensure.state', 'queue.remove']);
+    assert.deepStrictEqual(sideEffects, ['queue.remove', 'ensure.state']);
 });
 
-test('stopTaskExecution does not remove a queued job when cancellation state creation fails', async () => {
+test('stopTaskExecution records a queue removal outcome when cancellation state creation fails after removal', async () => {
     const redisClient = createRedisClient();
     const queueJob = {
         id: 'queue-job-state-fail-1',
@@ -574,7 +574,12 @@ test('stopTaskExecution does not remove a queued job when cancellation state cre
         /state creation failed/,
     );
 
-    assert.strictEqual(queueJob.remove.mock.calls.length, 0);
+    assert.strictEqual(queueJob.remove.mock.calls.length, 1);
+    assert.deepStrictEqual(JSON.parse(redisClient.store.get('worker:stop-outcome:task-state-fail-1') ?? '{}'), {
+        containerId: null,
+        containerStopped: false,
+        jobRemoved: true,
+    });
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
 });
 

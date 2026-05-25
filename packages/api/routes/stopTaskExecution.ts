@@ -68,6 +68,11 @@ export interface StopTaskExecutionResult {
   taskId: string;
   containerStopped: boolean;
   jobRemoved: boolean;
+  /**
+   * stopVerified means the container was stopped, queued job was removed, or no
+   * async abort was needed. cancellationRequested means a worker abort request
+   * was durably recorded but the worker may still look active briefly.
+   */
   stopVerified: boolean;
   cancellationRequested: boolean;
   abortSignalArmed: boolean;
@@ -127,9 +132,15 @@ export async function stopTaskExecution(
   const queueRemovalShouldPrecedeAbort = shouldRemoveQueueJobBeforeArmingAbort(activity);
   let jobRemoved = false;
   let queueStateAfterFailure: string | null = null;
+  let persistedStopOutcomeDuringStop = false;
 
   if (queueRemovalShouldPrecedeAbort) {
-    ({ jobRemoved, queueStateAfterFailure } = await removeQueuedJobAfterStateCreation(context, activity, deps));
+    ({ jobRemoved, queueStateAfterFailure, persistedStopOutcomeDuringStop } = await removeQueuedJobBeforeStateCreation({
+      context,
+      activity,
+      deps,
+      redisClient,
+    }));
   } else {
     await ensureContextTaskStateForCancellation(context, deps);
   }
@@ -232,7 +243,7 @@ export async function stopTaskExecution(
       await clearPendingStopRequest(redisClient, context.abortTaskIds);
       await clearAbortSignals(redisClient, context.abortTaskIds);
     }
-    if (hadPersistedStopOutcome) {
+    if (hadPersistedStopOutcome || persistedStopOutcomeDuringStop) {
       await clearPersistedStopOutcome(redisClient, context.taskId);
     }
   }
@@ -296,17 +307,35 @@ function shouldRemoveQueueJobBeforeArmingAbort(activity: ReturnType<typeof getSt
     && !activity.hasContainerToStop;
 }
 
-async function removeQueuedJobAfterStateCreation(
-  context: StopTaskContext,
-  activity: ReturnType<typeof getStopTaskActivity>,
-  deps: StopTaskExecutionDeps,
-): Promise<{ jobRemoved: boolean; queueStateAfterFailure: string | null }> {
-  await ensureContextTaskStateForCancellation(context, deps);
+async function removeQueuedJobBeforeStateCreation(params: {
+  context: StopTaskContext;
+  activity: ReturnType<typeof getStopTaskActivity>;
+  deps: StopTaskExecutionDeps;
+  redisClient: RedisClientLike;
+}): Promise<{ jobRemoved: boolean; queueStateAfterFailure: string | null; persistedStopOutcomeDuringStop: boolean }> {
+  const {
+    context,
+    activity,
+    deps,
+    redisClient,
+  } = params;
+  let persistedStopOutcomeDuringStop = false;
   const removalResult = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
-  if (removalResult.queueStateAfterFailure === 'active') {
+  if (removalResult.jobRemoved) {
+    await persistStopOutcome(redisClient, context.taskId, {
+      containerId: null,
+      containerStopped: false,
+      jobRemoved: true,
+    });
+    persistedStopOutcomeDuringStop = true;
+    await ensureContextTaskStateForCancellation(context, deps);
+  } else if (removalResult.queueStateAfterFailure === 'active') {
     await ensureContextTaskStateForCancellation(context, deps);
   }
-  return removalResult;
+  return {
+    ...removalResult,
+    persistedStopOutcomeDuringStop,
+  };
 }
 
 async function ensureContextTaskStateForCancellation(

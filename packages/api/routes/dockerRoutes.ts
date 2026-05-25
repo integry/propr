@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { logger } from '@propr/core';
 import { loadStopTaskContext, normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
 import { stopTaskExecution, StopTaskExecutionError } from './stopTaskExecution.js';
@@ -16,6 +17,8 @@ interface DockerRoutesDeps {
   redisClient: RedisClientType;
   loadStopTaskContext?: typeof loadStopTaskContext;
 }
+
+const execFileAsync = promisify(execFile);
 
 export type {
   StopTaskCancellationReason,
@@ -51,7 +54,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
 
       res.json(await getContainerInfo(containerMetadata.containerId, containerMetadata.containerName ?? undefined));
     } catch (error) {
-      logger.error({ error }, 'Error in /api/task/:taskId/docker-info');
+      logger.error({ error: getErrorLogFields(error) }, 'Error in /api/task/:taskId/docker-info');
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -86,7 +89,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
 
       try {
-        const logsOutput = execFileSync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
+        const { stdout: logsOutput } = await execFileAsync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
           encoding: 'utf8',
           timeout: 10000,
           maxBuffer: 10 * 1024 * 1024,
@@ -101,7 +104,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         throw err;
       }
     } catch (error) {
-      logger.error({ error }, 'Error in /api/task/:taskId/docker-logs');
+      logger.error({ error: getErrorLogFields(error) }, 'Error in /api/task/:taskId/docker-logs');
       res.status(500).json({ error: 'Internal server error', message: (error as Error).message });
     }
   }
@@ -127,7 +130,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         res.status(error.status).json(error.body);
         return;
       }
-      logger.error({ error }, 'Error in /api/task/:taskId/stop');
+      logger.error({ error: getErrorLogFields(error) }, 'Error in /api/task/:taskId/stop');
       res.status(500).json({ error: 'Internal server error', message: (error as Error).message });
     }
   }
@@ -149,7 +152,7 @@ async function loadDockerContainerMetadata(
   try {
     context = await loadContext(taskReference, redisClient, {});
   } catch (error) {
-    logger.warn({ taskReference, error }, 'Failed to resolve extended task context for Docker metadata lookup');
+    logger.warn({ taskReference, error: getErrorLogFields(error) }, 'Failed to resolve extended task context for Docker metadata lookup');
     return null;
   }
 
@@ -173,7 +176,7 @@ async function loadDockerTaskStateFromRedis(
     try {
       return JSON.parse(stateData) as TaskState;
     } catch (error) {
-      logger.warn({ taskId: candidateTaskId, error }, 'Ignoring malformed worker task state for Docker metadata lookup');
+      logger.warn({ taskId: candidateTaskId, error: getErrorLogFields(error) }, 'Ignoring malformed worker task state for Docker metadata lookup');
     }
   }
 
@@ -194,10 +197,11 @@ function getDockerContainerMetadata(
 
 async function getContainerInfo(containerId: string, containerName?: string): Promise<Record<string, unknown>> {
   try {
-    const statusOutput = execFileSync('docker', ['ps', '-a', '--filter', `id=${containerId}`, '--format', '{{.Status}}'], {
+    const { stdout } = await execFileAsync('docker', ['ps', '-a', '--filter', `id=${containerId}`, '--format', '{{.Status}}'], {
       encoding: 'utf8',
       timeout: 5000,
-    }).trim();
+    });
+    const statusOutput = stdout.trim();
     if (statusOutput) {
       return {
         id: containerId,
@@ -208,7 +212,7 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
     }
     return { id: containerId, name: containerName ?? null, status: 'removed', logsAvailable: false };
   } catch (error) {
-    logger.error({ containerId, error }, 'Error getting container info');
+    logger.error({ containerId, error: getErrorLogFields(error) }, 'Error getting container info');
     return {
       id: containerId,
       name: containerName ?? null,
@@ -217,4 +221,16 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
       error: `Failed to get container info: ${(error as Error).message}`,
     };
   }
+}
+
+function getErrorLogFields(error: unknown): { message: string; stack?: string; name?: string } {
+  if (!(error instanceof Error)) {
+    return { message: String(error) };
+  }
+
+  return {
+    message: error.message,
+    ...(error.stack ? { stack: error.stack } : {}),
+    ...(error.name ? { name: error.name } : {}),
+  };
 }
