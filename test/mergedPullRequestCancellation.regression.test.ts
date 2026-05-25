@@ -79,7 +79,7 @@ function createEmptyDb() {
   });
 }
 
-test('cancelMergedPullRequestTasks treats abort-only active worker stops as requested cancellation', async () => {
+test('cancelMergedPullRequestTasks rechecks abort-only worker stops before treating them as cancelled', async () => {
   process.env.NODE_ENV = 'test';
   const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
   const loadActiveTasksCalls: Array<{ forceQueueScan?: boolean }> = [];
@@ -98,7 +98,9 @@ test('cancelMergedPullRequestTasks treats abort-only active worker stops as requ
         markPullRequestMerged: async () => {},
         getActiveTasksForPR: async (_repository, _prNumber, options) => {
           loadActiveTasksCalls.push({ forceQueueScan: options?.forceQueueScan });
-          return [{ taskId: 'task-1', state: 'claude_execution' }];
+          return loadActiveTasksCalls.length === 1
+            ? [{ taskId: 'task-1', state: 'claude_execution' }]
+            : [];
         },
         stopTaskExecution: async (taskId) => {
           stopCalls.push(taskId);
@@ -113,7 +115,7 @@ test('cancelMergedPullRequestTasks treats abort-only active worker stops as requ
     ),
   );
 
-  assert.deepEqual(loadActiveTasksCalls, [{ forceQueueScan: true }]);
+  assert.deepEqual(loadActiveTasksCalls, [{ forceQueueScan: true }, { forceQueueScan: undefined }]);
   assert.deepEqual(stopCalls, ['task-1']);
 });
 

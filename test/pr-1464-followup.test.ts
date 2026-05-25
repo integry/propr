@@ -243,7 +243,6 @@ test('stopTaskExecution does not persist merged-PR cancellation metadata for abo
   assert.deepEqual(
     conversationMessages.map((entry) => entry.message.content),
     [
-      'Task cancelled because pull request #1464 was merged.',
       'Cancellation requested. Worker shutdown is still in progress.',
     ],
   );

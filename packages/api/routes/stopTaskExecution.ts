@@ -120,7 +120,6 @@ export async function stopTaskExecution(
   await setAbortSignalIfNeeded({
     redisClient,
     taskIds: context.abortTaskIds,
-    conversationTaskId: context.taskId,
     requestedBy,
     cancellation,
     timestamp,
@@ -165,6 +164,13 @@ export async function stopTaskExecution(
     });
   }
   if (shouldPersistCancelledState) {
+    await pushStopConversationMessage(redisClient, context.taskId, {
+      type: 'system',
+      timestamp: new Date().toISOString(),
+      content: cancellation.message,
+      level: 'warning',
+      metadata: { reasonCode: cancellation.code, requestedBy },
+    });
     try {
       await persistTaskCancellation({
         taskId: context.taskId,
@@ -221,13 +227,12 @@ export async function stopTaskExecution(
 async function setAbortSignalIfNeeded(params: {
   redisClient: RedisClientLike;
   taskIds: string[];
-  conversationTaskId: string;
   requestedBy: string;
   cancellation: StopTaskCancellationReason;
   timestamp: string;
   shouldAbort: boolean;
 }): Promise<void> {
-  const { redisClient, taskIds, conversationTaskId, requestedBy, cancellation, timestamp, shouldAbort } = params;
+  const { redisClient, taskIds, requestedBy, cancellation, timestamp, shouldAbort } = params;
   if (!shouldAbort) {
     return;
   }
@@ -243,14 +248,7 @@ async function setAbortSignalIfNeeded(params: {
     await redisClient.set(`worker:abort:${taskId}`, abortPayload, { EX: 3600 });
   }
 
-  await pushStopConversationMessage(redisClient, conversationTaskId, {
-    type: 'system',
-    timestamp,
-    content: cancellation.message,
-    level: 'warning',
-    metadata: { reasonCode: cancellation.code, requestedBy },
-  });
-  logger.info({ taskIds, conversationTaskId, requestedBy, reasonCode: cancellation.code }, 'Abort signal set for task execution');
+  logger.info({ taskIds, requestedBy, reasonCode: cancellation.code }, 'Abort signal set for task execution');
 }
 
 async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]): Promise<void> {

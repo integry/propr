@@ -108,9 +108,11 @@ export async function cancelMergedPullRequestTasks(
   const failureByTaskId = new Map(initialPass.failures.map((failure) => [failure.taskId, failure]));
   const cancelledTaskIds = new Set(initialPass.cancelledTaskIds);
   const shouldForceQueueScan = initialPass.queuedTaskIds.length > 0 || initialPass.inactiveTaskIds.length > 0;
-  const shouldVerifyInactiveTasks = initialPass.inactiveTaskIds.length > 0;
+  const shouldRecheckActiveTasks = shouldForceQueueScan
+    || initialPass.inactiveTaskIds.length > 0
+    || initialPass.pendingVerificationTaskIds.length > 0;
 
-  if (shouldForceQueueScan || shouldVerifyInactiveTasks) {
+  if (shouldRecheckActiveTasks) {
     log.info({
       correlationId,
       repository,
@@ -125,10 +127,7 @@ export async function cancelMergedPullRequestTasks(
       ...(shouldForceQueueScan ? { forceQueueScan: true } : {}),
       stoppableOnly: true,
     }));
-    const settledTaskIds = new Set([
-      ...cancelledTaskIds,
-      ...initialPass.pendingVerificationTaskIds,
-    ]);
+    const settledTaskIds = new Set(cancelledTaskIds);
     const retryTasks = recheckedActiveTasks.filter((task) => !settledTaskIds.has(task.taskId));
 
     if (retryTasks.length === 0) {

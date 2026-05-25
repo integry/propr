@@ -371,6 +371,51 @@ test('stopTaskExecution still terminates the Claude container from post_processi
     assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
 });
 
+test('stopTaskExecution records the cancellation reason only after a verified stop', async () => {
+    const redisClient = createRedisClient();
+    const queueJob = {
+        id: 'queue-job-success-1',
+        data: {
+            repository: 'owner/repo',
+            prNumber: 42,
+        },
+        remove: mock.fn(async () => undefined),
+        getState: mock.fn(async () => 'waiting'),
+    };
+
+    const result = await stopTaskExecution(
+        'queue-job-success-1',
+        {
+            redisClient,
+            requestedBy: 'system',
+            cancellation: {
+                code: 'pull_request_merged',
+                message: 'Task cancelled because pull request #42 was merged.',
+            },
+        },
+        {
+            loadStopTaskContext: async () => ({
+                normalizedTaskId: 'queue-job-success-1',
+                state: null,
+                currentState: null,
+                queueJob: queueJob as never,
+                queueState: 'waiting',
+                taskId: 'task-queue-success-1',
+                abortTaskIds: ['task-queue-success-1', 'queue-job-success-1'],
+            }),
+            ensureTaskStateForCancellation: async () => {},
+            getStateManager: () => ({ markTaskCancelled }) as never,
+            stopDockerContainer,
+        },
+    );
+
+    assert.strictEqual(result.success, true);
+    assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
+        'Task cancelled because pull request #42 was merged.',
+        'Task cancelled successfully.',
+    ]);
+});
+
 test('isBenignQueueRemovalRace only accepts active removal races', () => {
     assert.strictEqual(isBenignQueueRemovalRace('active'), true);
     assert.strictEqual(isBenignQueueRemovalRace('completed'), false);
@@ -454,7 +499,6 @@ test('stopTaskExecution dedupes repeated merge-cancellation conversation message
     await stopTaskExecution('task-duplicate-messages', options, deps);
 
     assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
-        'Task cancelled because pull request #42 was merged.',
         'Cancellation requested. Worker shutdown is still in progress.',
     ]);
 });
