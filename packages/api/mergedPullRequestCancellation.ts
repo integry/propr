@@ -25,7 +25,6 @@ export interface MergeTaskCancellationDeps {
 
 interface MergeTaskActivity {
   taskId: string;
-  state: string;
 }
 
 interface MergeTaskCancellationFailure {
@@ -39,6 +38,7 @@ interface MergeTaskCancellationFailure {
 const MERGE_TASK_STOP_CONCURRENCY = 5;
 const MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS = 10;
 const MERGE_CANCELLATION_REASON_CODE = 'pull_request_merged';
+const MAX_FAILURE_DETAILS_IN_ERROR = 10;
 
 export async function cancelMergedPullRequestTasks(
   payload: Record<string, unknown>,
@@ -62,12 +62,13 @@ export async function cancelMergedPullRequestTasks(
     code: MERGE_CANCELLATION_REASON_CODE,
     message: `Task cancelled because pull request ${repository}#${prNumber} was merged.`,
     source: MERGE_CANCELLATION_REASON_CODE,
+    requestId: `${correlationId}:${MERGE_CANCELLATION_REASON_CODE}:${repository}#${prNumber}`,
   };
   const persistMergedState = deps.markPullRequestMerged ?? markPullRequestMerged;
 
+  await persistMergedState(deps.redisClient, repository, prNumber);
   const initialTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
   if (initialTasks.length === 0) {
-    await persistMergedState(deps.redisClient, repository, prNumber);
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
   }
@@ -95,10 +96,8 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: firstAttempt.acceptedTaskIds,
   });
   if (remainingAfterFirstAttempt.length === 0) {
-    await persistMergedState(deps.redisClient, repository, prNumber);
     return;
   }
 
@@ -124,18 +123,13 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: mergeTaskIdSets(
-      firstAttempt.acceptedTaskIds,
-      retryAttempt.acceptedTaskIds,
-    ),
   });
   if (finalActiveTasks.length === 0) {
-    await persistMergedState(deps.redisClient, repository, prNumber);
     return;
   }
 
   const failures = buildFinalFailures(finalActiveTasks, retryAttempt.failures, firstAttempt.failures);
-  throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.map(formatMergeTaskCancellationFailure).join('; ')}`);
+  throw new Error(formatMergedTaskCancellationError(failures));
 }
 
 export function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {
@@ -173,7 +167,6 @@ async function stopMergeTasks(params: {
   prNumber: number;
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<{
-  acceptedTaskIds: Set<string>;
   failures: Map<string, MergeTaskCancellationFailure>;
 }> {
   const {
@@ -186,7 +179,6 @@ async function stopMergeTasks(params: {
     prNumber,
     log,
   } = params;
-  const acceptedTaskIds = new Set<string>();
   const failures = new Map<string, MergeTaskCancellationFailure>();
 
   for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
@@ -199,11 +191,8 @@ async function stopMergeTasks(params: {
           cancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
           forceQueueScan: true,
+          requireVerifiedStop: true,
         });
-        if (result.stopVerified || result.cancellationRequested) {
-          acceptedTaskIds.add(task.taskId);
-          acceptedTaskIds.add(result.taskId);
-        }
         if (!result.stopVerified) {
           log.info({
             correlationId,
@@ -231,7 +220,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { acceptedTaskIds, failures };
+  return { failures };
 }
 
 async function loadBlockingMergeCancellationTasks(params: {
@@ -239,17 +228,14 @@ async function loadBlockingMergeCancellationTasks(params: {
   repository: string;
   prNumber: number;
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
-  ignoredTaskIds?: ReadonlySet<string>;
 }): Promise<MergeTaskActivity[]> {
   const {
     loadActiveTasks,
     repository,
     prNumber,
     log,
-    ignoredTaskIds = new Set<string>(),
   } = params;
-  return (await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log))
-    .filter((task) => !ignoredTaskIds.has(task.taskId));
+  return loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
 }
 
 function buildFinalFailures(
@@ -264,10 +250,6 @@ function buildFinalFailures(
 
 function dedupeTasks<T extends { taskId: string }>(tasks: T[]): T[] {
   return [...new Map(tasks.map((task) => [task.taskId, task])).values()];
-}
-
-function mergeTaskIdSets(...sets: ReadonlySet<string>[]): Set<string> {
-  return new Set(sets.flatMap((set) => [...set]));
 }
 
 function buildMergeTaskCancellationFailure(taskId: string, error: unknown): MergeTaskCancellationFailure {
@@ -298,6 +280,15 @@ function buildUnverifiedStopFailure(taskId: string): MergeTaskCancellationFailur
     currentState: null,
     queueState: null,
   };
+}
+
+function formatMergedTaskCancellationError(failures: MergeTaskCancellationFailure[]): string {
+  const visibleFailures = failures.slice(0, MAX_FAILURE_DETAILS_IN_ERROR);
+  const hiddenFailureCount = failures.length - visibleFailures.length;
+  const suffix = hiddenFailureCount > 0
+    ? `; ...and ${hiddenFailureCount} more`
+    : '';
+  return `Failed to cancel ${failures.length} merged PR task(s): ${visibleFailures.map(formatMergeTaskCancellationFailure).join('; ')}${suffix}`;
 }
 
 function formatMergeTaskCancellationFailure(failure: MergeTaskCancellationFailure): string {

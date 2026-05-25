@@ -641,6 +641,7 @@ test('stopTaskExecution dedupes repeated merge-cancellation conversation message
         cancellation: {
             code: 'pull_request_merged',
             message: 'Task cancelled because pull request #42 was merged.',
+            requestId: 'merge-cancel-42',
         },
     };
     const deps = {
@@ -675,7 +676,7 @@ test('stopTaskExecution still detects duplicate messages after malformed recent 
             timestamp: new Date().toISOString(),
             content: 'Cancellation requested. Worker shutdown is still in progress.',
             level: 'info',
-            metadata: { reasonCode: 'pull_request_merged', requestedBy: 'system' },
+            metadata: { reasonCode: 'pull_request_merged', requestedBy: 'system', cancellationRequestId: 'malformed-cancel-42' },
         }),
     ]);
 
@@ -685,6 +686,7 @@ test('stopTaskExecution still detects duplicate messages after malformed recent 
         cancellation: {
             code: 'pull_request_merged',
             message: 'Task cancelled because pull request #42 was merged.',
+            requestId: 'malformed-cancel-42',
         },
     }, {
         loadStopTaskContext: async () => ({
@@ -704,7 +706,7 @@ test('stopTaskExecution still detects duplicate messages after malformed recent 
     assert.deepStrictEqual(redisClient.messages, []);
 });
 
-test('stopTaskExecution does not treat future conversation messages as duplicates', async () => {
+test('stopTaskExecution does not treat messages without request identity as duplicates', async () => {
     const redisClient = createRedisClient();
     redisClient.conversationEntries.set('conversation:task-future-message', [JSON.stringify({
         type: 'system',
@@ -741,14 +743,14 @@ test('stopTaskExecution does not treat future conversation messages as duplicate
     ]);
 });
 
-test('stopTaskExecution dedupes repeated messages when the existing timestamp is slightly newer', async () => {
+test('stopTaskExecution dedupes repeated messages with matching request identity', async () => {
     const redisClient = createRedisClient();
     redisClient.conversationEntries.set('conversation:task-clock-skew-message', [JSON.stringify({
         type: 'system',
         timestamp: new Date(Date.now() + 60 * 1000).toISOString(),
         content: 'Cancellation requested. Worker shutdown is still in progress.',
         level: 'info',
-        metadata: { reasonCode: 'pull_request_merged', requestedBy: 'system' },
+        metadata: { reasonCode: 'pull_request_merged', requestedBy: 'system', cancellationRequestId: 'clock-skew-cancel-42' },
     })]);
 
     await stopTaskExecution('task-clock-skew-message', {
@@ -757,6 +759,7 @@ test('stopTaskExecution dedupes repeated messages when the existing timestamp is
         cancellation: {
             code: 'pull_request_merged',
             message: 'Task cancelled because pull request #42 was merged.',
+            requestId: 'clock-skew-cancel-42',
         },
     }, {
         loadStopTaskContext: async () => ({

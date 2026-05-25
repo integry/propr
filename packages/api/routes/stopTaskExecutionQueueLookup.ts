@@ -9,7 +9,6 @@ import type { QueueJobData } from './stopTaskExecutionContext.js';
 
 const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const QUEUE_TASK_ID_SCAN_PAGE_SIZE = 100;
-const QUEUE_TASK_ID_SCAN_MAX_JOBS_PER_STATE = 5000;
 
 export async function findQueueJobByTaskIdScan(
   queue: Awaited<ReturnType<typeof getIssueQueue>>,
@@ -37,16 +36,6 @@ export async function findQueueJobByTaskIdScan(
       if (jobs.length < QUEUE_TASK_ID_SCAN_PAGE_SIZE) {
         break;
       }
-      if (start >= QUEUE_TASK_ID_SCAN_MAX_JOBS_PER_STATE) {
-        logger.warn({
-          queueState: trackedQueueState,
-          scannedJobs: start,
-          totalScannedJobs: scannedJobs,
-          durationMs: Date.now() - startedAt,
-          taskReferenceCandidates: uniqueCandidates,
-        }, 'Stopped fallback queued task-id scan after reaching the per-state scan bound');
-        break;
-      }
       jobs = await loadQueueScanPage(queue, trackedQueueState, start);
     }
   }
@@ -67,10 +56,7 @@ async function loadQueueScanPage(
   trackedQueueState: typeof TRACKED_QUEUE_STATES[number],
   start: number,
 ): Promise<Job<QueueJobData>[]> {
-  const end = Math.min(
-    start + QUEUE_TASK_ID_SCAN_PAGE_SIZE - 1,
-    QUEUE_TASK_ID_SCAN_MAX_JOBS_PER_STATE - 1,
-  );
+  const end = start + QUEUE_TASK_ID_SCAN_PAGE_SIZE - 1;
   return await queue.getJobs([trackedQueueState], start, end) as unknown as Job<QueueJobData>[];
 }
 

@@ -29,8 +29,6 @@ export interface TaskState {
 export interface PersistedTaskRecord {
   taskId: string;
   jobId: string | null;
-  repository: string | null;
-  prNumber: number | null;
 }
 
 export interface StopTaskContext {
@@ -161,15 +159,13 @@ async function findPersistedTaskRecord(
   }
 
   const records = await database('tasks')
-    .select('task_id', 'job_id', 'repository', 'pr_number')
+    .select('task_id', 'job_id')
     .where((queryBuilder: Knex.QueryBuilder) => {
       queryBuilder.whereIn('task_id', lookupValues).orWhereIn('job_id', lookupValues);
     }) as Array<{
-      task_id: string;
-      job_id: string | null;
-      repository: string | null;
-      pr_number: number | null;
-    }>;
+    task_id: string;
+    job_id: string | null;
+  }>;
 
   for (const candidate of lookupCandidates) {
     if (!candidate.value) {
@@ -181,8 +177,6 @@ async function findPersistedTaskRecord(
       return {
         taskId: record.task_id,
         jobId: record.job_id,
-        repository: typeof record.repository === 'string' ? record.repository : null,
-        prNumber: typeof record.pr_number === 'number' ? record.pr_number : null,
       };
     }
   }

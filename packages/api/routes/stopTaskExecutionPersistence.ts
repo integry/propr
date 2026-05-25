@@ -8,7 +8,6 @@ type PendingStopRedisClient = Pick<RedisClientType, 'set' | 'rPush'> & Partial<P
 type PendingStopReadClient = Pick<RedisClientType, 'get'> & Partial<Pick<RedisClientType, 'del'>>;
 type PendingStopClearClient = Pick<RedisClientType, 'del'>;
 const RECENT_DUPLICATE_MESSAGE_LIMIT = 5;
-const RECENT_DUPLICATE_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
 const PENDING_STOP_REQUEST_KEY_PREFIX = 'worker:stop-requested';
 const PENDING_STOP_REQUEST_TTL_SECONDS = 24 * 60 * 60;
 const CORE_TASK_STATE_SET = new Set<string>(Object.values(TaskStates));
@@ -19,6 +18,7 @@ export interface PendingStopRequest {
   reasonCode: string;
   reason: string;
   source: string;
+  requestId?: string;
 }
 
 export async function pushStopConversationMessage(
@@ -70,6 +70,7 @@ export async function persistTaskCancellation(params: {
       containerStopped,
       jobRemoved,
       ...(containerId ? { containerId } : {}),
+      ...(cancellation.requestId ? { requestId: cancellation.requestId } : {}),
     },
     historyMetadata: {
       cancellation: {
@@ -137,6 +138,7 @@ export async function persistPendingTaskCancellationRequest(params: {
       abortSignalArmed,
       ...(containerId ? { containerId } : {}),
       ...(queueState ? { queueState } : {}),
+      ...(cancellation.requestId ? { requestId: cancellation.requestId } : {}),
     },
   });
   logger.info({
@@ -177,6 +179,7 @@ export async function persistPendingCancellationRequest(params: {
     reasonCode: cancellation.code,
     reason: cancellation.message,
     source: cancellation.source ?? 'task_stop',
+    ...(cancellation.requestId ? { requestId: cancellation.requestId } : {}),
   });
   await persistPendingTaskCancellationRequest({
     taskId: context.taskId,
@@ -193,7 +196,7 @@ export async function persistPendingCancellationRequest(params: {
     timestamp: new Date().toISOString(),
     content: 'Cancellation requested. Worker shutdown is still in progress.',
     level: 'info',
-    metadata: { reasonCode: cancellation.code, requestedBy },
+    metadata: buildStopMessageMetadata(cancellation, requestedBy),
   });
 }
 
@@ -215,6 +218,7 @@ export async function loadPendingStopRequest(
       || typeof parsed.reasonCode !== 'string'
       || typeof parsed.reason !== 'string'
       || typeof parsed.source !== 'string'
+      || (parsed.requestId !== undefined && typeof parsed.requestId !== 'string')
     ) {
       await clearMalformedPendingStopRequest(redisClient, taskId, pendingStopRequestKey);
       return null;
@@ -226,6 +230,7 @@ export async function loadPendingStopRequest(
       reasonCode: parsed.reasonCode,
       reason: parsed.reason,
       source: parsed.source,
+      ...(parsed.requestId ? { requestId: parsed.requestId } : {}),
     };
   } catch {
     await clearMalformedPendingStopRequest(redisClient, taskId, pendingStopRequestKey);
@@ -300,21 +305,18 @@ async function isDuplicateConversationMessage(
   }
 
   const recentMessages = await redisClient.lRange(conversationKey, -RECENT_DUPLICATE_MESSAGE_LIMIT, -1);
-  const messageFingerprint = buildConversationMessageFingerprint(message);
-  const messageTimestamp = getConversationMessageTimestamp(message);
+  const cancellationRequestId = getConversationMessageRequestId(message);
+  if (cancellationRequestId === null) {
+    return false;
+  }
 
   for (const serializedMessage of recentMessages) {
     try {
       const parsedMessage = JSON.parse(serializedMessage) as Record<string, unknown>;
-      if (buildConversationMessageFingerprint(parsedMessage) !== messageFingerprint) {
-        continue;
-      }
-
-      const recentTimestamp = getConversationMessageTimestamp(parsedMessage);
-      const elapsedMs = messageTimestamp !== null && recentTimestamp !== null
-        ? Math.abs(messageTimestamp - recentTimestamp)
-        : null;
-      if (elapsedMs === null || elapsedMs <= RECENT_DUPLICATE_MESSAGE_WINDOW_MS) {
+      if (
+        getConversationMessageRequestId(parsedMessage) === cancellationRequestId
+        && buildConversationMessageFingerprint(parsedMessage) === buildConversationMessageFingerprint(message)
+      ) {
         return true;
       }
     } catch (error) {
@@ -326,6 +328,14 @@ async function isDuplicateConversationMessage(
   }
 
   return false;
+}
+
+function buildStopMessageMetadata(cancellation: StopTaskCancellationReason, requestedBy: string): Record<string, string> {
+  return {
+    reasonCode: cancellation.code,
+    requestedBy,
+    ...(cancellation.requestId ? { cancellationRequestId: cancellation.requestId } : {}),
+  };
 }
 
 function buildConversationMessageFingerprint(message: Record<string, unknown>): string {
@@ -350,11 +360,12 @@ function sortRecord(value: unknown): unknown {
   );
 }
 
-function getConversationMessageTimestamp(message: Record<string, unknown>): number | null {
-  if (typeof message.timestamp !== 'string') {
+function getConversationMessageRequestId(message: Record<string, unknown>): string | null {
+  const metadata = message.metadata;
+  if (!metadata || typeof metadata !== 'object') {
     return null;
   }
 
-  const parsedTimestamp = Date.parse(message.timestamp);
-  return Number.isNaN(parsedTimestamp) ? null : parsedTimestamp;
+  const requestId = (metadata as Record<string, unknown>).cancellationRequestId;
+  return typeof requestId === 'string' && requestId.length > 0 ? requestId : null;
 }

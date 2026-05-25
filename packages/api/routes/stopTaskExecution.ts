@@ -42,6 +42,7 @@ export interface StopTaskCancellationReason {
   code: string;
   message: string;
   source?: string;
+  requestId?: string;
 }
 
 type RedisClientLike = Pick<RedisClientType, 'get' | 'set' | 'del' | 'rPush'>;
@@ -52,6 +53,7 @@ export interface StopTaskExecutionOptions {
   cancellation?: StopTaskCancellationReason;
   containerStopTimeoutSeconds?: number;
   forceQueueScan?: boolean;
+  requireVerifiedStop?: boolean;
 }
 
 export interface StopTaskExecutionDeps {
@@ -113,6 +115,7 @@ export async function stopTaskExecution(
     cancellation = DEFAULT_STOP_REASON,
     containerStopTimeoutSeconds,
     forceQueueScan = false,
+    requireVerifiedStop = false,
   } = options;
   const context = await (deps.loadStopTaskContext ?? loadStopTaskContext)(taskReference, redisClient, { ...deps, forceQueueScan });
   const persistedStopOutcome = await loadPersistedStopOutcome(redisClient, context.taskId);
@@ -204,6 +207,16 @@ export async function stopTaskExecution(
     queueStateAfterFailure,
     createError: (status, body) => new StopTaskExecutionError(status, body),
   });
+  if (requireVerifiedStop && !stopVerified) {
+    throw new StopTaskExecutionError(409, {
+      error: 'Task stop awaiting verification',
+      message: 'The stop request was recorded, but the task is still active and must be rechecked before cancellation is complete.',
+      currentState: context.currentState,
+      queueState: resolvedQueueState,
+      taskId: context.taskId,
+      cancellationRequested,
+    });
+  }
   const shouldPersistCancelledState = stopVerified;
   if (shouldPersistCancelledState) {
     await pushStopConversationMessage(redisClient, context.taskId, {
@@ -211,7 +224,7 @@ export async function stopTaskExecution(
       timestamp: new Date().toISOString(),
       content: cancellation.message,
       level: 'warning',
-      metadata: { reasonCode: cancellation.code, requestedBy },
+      metadata: buildStopMessageMetadata(cancellation, requestedBy),
     });
     try {
       await persistTaskCancellation({
@@ -235,7 +248,7 @@ export async function stopTaskExecution(
       timestamp: new Date().toISOString(),
       content: 'Task cancelled successfully.',
       level: 'info',
-      metadata: { reasonCode: cancellation.code, requestedBy },
+      metadata: buildStopMessageMetadata(cancellation, requestedBy),
     });
     const shouldRetainAbortSignals = shouldKeepAbortSignalsAfterCancellation({
       shouldAbort: abortSignalArmed,
@@ -388,4 +401,12 @@ function shouldArmAbortSignal(params: {
   }
 
   return !jobRemoved && queueStateAfterFailure === 'active';
+}
+
+function buildStopMessageMetadata(cancellation: StopTaskCancellationReason, requestedBy: string): Record<string, string> {
+  return {
+    reasonCode: cancellation.code,
+    requestedBy,
+    ...(cancellation.requestId ? { cancellationRequestId: cancellation.requestId } : {}),
+  };
 }
