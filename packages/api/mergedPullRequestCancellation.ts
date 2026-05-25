@@ -108,8 +108,9 @@ export async function cancelMergedPullRequestTasks(
   const cancelledTaskIds = new Set(initialPass.cancelledTaskIds);
   const shouldForceQueueScan = initialPass.queuedTaskIds.length > 0;
   const shouldVerifyInactiveTasks = initialPass.inactiveTaskIds.length > 0;
+  const shouldVerifyPendingTasks = initialPass.pendingVerificationTaskIds.length > 0;
 
-  if (shouldForceQueueScan || shouldVerifyInactiveTasks) {
+  if (shouldForceQueueScan || shouldVerifyInactiveTasks || shouldVerifyPendingTasks) {
     log.info({
       correlationId,
       repository,
@@ -124,10 +125,10 @@ export async function cancelMergedPullRequestTasks(
       ...(shouldForceQueueScan ? { forceQueueScan: true } : {}),
       stoppableOnly: true,
     }));
-    const settledTaskIds = new Set([...cancelledTaskIds, ...initialPass.pendingVerificationTaskIds]);
+    const settledTaskIds = new Set(cancelledTaskIds);
     const retryTasks = recheckedActiveTasks.filter((task) => !settledTaskIds.has(task.taskId));
 
-    if (retryTasks.length === 0 && (shouldForceQueueScan || shouldVerifyInactiveTasks)) {
+    if (retryTasks.length === 0) {
       log.info({
         correlationId,
         repository,
@@ -151,14 +152,10 @@ export async function cancelMergedPullRequestTasks(
         cancellation,
         log,
         allowInactiveRace: false,
-        allowPendingVerification: true,
+        allowPendingVerification: false,
       });
 
       for (const taskId of retryPass.cancelledTaskIds) {
-        cancelledTaskIds.add(taskId);
-        failureByTaskId.delete(taskId);
-      }
-      for (const taskId of retryPass.pendingVerificationTaskIds) {
         cancelledTaskIds.add(taskId);
         failureByTaskId.delete(taskId);
       }

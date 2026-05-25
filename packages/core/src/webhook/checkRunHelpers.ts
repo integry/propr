@@ -714,19 +714,15 @@ export async function getActiveTasksForPR(
             );
         }
 
-        if (shouldRunFallbackQueueScan({
-            forceQueueScan: deps.forceQueueScan === true,
-            indexedTrackedQueueJobs,
-            indexedPendingQueueJobs,
-        })) {
-            await addQueuedPrJobsFromFallbackScan({
-                queue,
-                repository,
-                prNumber,
-                taskMap,
-                taskAliases,
-            });
-        }
+        // The PR queue-job index is best-effort. Always reconcile against the
+        // live queue so partially-missing index entries cannot hide queued work.
+        await addQueuedPrJobsFromFallbackScan({
+            queue,
+            repository,
+            prNumber,
+            taskMap,
+            taskAliases,
+        });
 
         const activeTasksQuery = database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -792,19 +788,6 @@ async function addQueuedPrJobsFromFallbackScan(params: {
             getTaskIdFromQueueJob(job),
         ]);
     }
-}
-
-function shouldRunFallbackQueueScan(params: {
-    forceQueueScan: boolean;
-    indexedTrackedQueueJobs: IndexedQueueTaskActivity[];
-    indexedPendingQueueJobs: IndexedQueueTaskActivity[];
-}): boolean {
-    const { forceQueueScan, indexedTrackedQueueJobs, indexedPendingQueueJobs } = params;
-    if (forceQueueScan) {
-        return true;
-    }
-
-    return indexedTrackedQueueJobs.length === 0 && indexedPendingQueueJobs.length === 0;
 }
 
 async function loadIndexedQueueTaskActivities(params: {

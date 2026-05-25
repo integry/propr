@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "..",
+    "paths": {
+      "@propr/core": ["test/stubs/proprCoreApiStub.ts"],
+      "@propr/shared": ["packages/shared/src/index.ts"]
+    }
+  },
+  "include": [
+    "./**/*.ts",
+    "../packages/api/**/*",
+    "../packages/core/**/*",
+    "../packages/shared/**/*"
+  ]
+}
