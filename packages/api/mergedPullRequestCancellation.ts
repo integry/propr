@@ -57,6 +57,7 @@ export async function cancelMergedPullRequestTasks(
 
   const activeTasks = await loadActiveTasks(repository, prNumber, {
     log,
+    forceQueueScan: true,
     stoppableOnly: true,
   });
   const dedupedActiveTasks = dedupeActiveTasks(activeTasks);

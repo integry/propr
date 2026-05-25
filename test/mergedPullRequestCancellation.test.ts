@@ -141,6 +141,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 1);
     assert.deepStrictEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
     assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0].arguments, ['integry/propr', 1463, {
+      forceQueueScan: true,
       log: mockLogger,
       stoppableOnly: true,
     }]);
@@ -200,7 +201,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 
-  test('uses the indexed PR task lookup without forcing a full queue scan', async () => {
+  test('forces a fallback queue scan when loading merged PR tasks to cancel', async () => {
     const redisClient = createRedisClient();
 
     await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
@@ -212,6 +213,7 @@ describe('cancelMergedPullRequestTasks', () => {
     });
 
     assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0]?.arguments, ['integry/propr', 1463, {
+      forceQueueScan: true,
       log: mockLogger,
       stoppableOnly: true,
     }]);
