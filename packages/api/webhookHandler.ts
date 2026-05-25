@@ -281,6 +281,8 @@ async function runWebhookProcessorOrRetry(params: {
  * 3. If downstream processing fails after merge-time cancellation succeeds,
  *    the reservation is released or shortened so GitHub can retry the skipped
  *    downstream processing path. Cancellation is idempotent.
+ * 4. For non-merged PR events, downstream processor failures preserve the
+ *    existing dedupe behavior: the delivery reservation remains consumed.
  */
 export async function handleWebhookRequest(
   req: Request,
@@ -354,11 +356,21 @@ export async function handleWebhookRequest(
     return;
   }
 
-  const isMergedPrClose = mergeTaskCancellation
-    && rawEvent === 'pull_request'
-    && isMergedPullRequestCloseFn(payload);
+  const isMergedPrClose = rawEvent === 'pull_request' && isMergedPullRequestCloseFn(payload);
 
   if (isMergedPrClose) {
+    if (!mergeTaskCancellation) {
+      logger.error({
+        correlationId,
+        deliveryId: rawDeliveryId,
+        event: rawEvent,
+        repository: payload.repository?.full_name,
+        prNumber: payload.pull_request?.number,
+      }, 'Merged PR webhook received without merge task cancellation dependencies');
+      res.status(500).send('Merge task cancellation dependencies are not configured.');
+      return;
+    }
+
     try {
       await cancelMergedPullRequestTasksOrRetry({
         payload,

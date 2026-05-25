@@ -51,6 +51,7 @@ export interface StopTaskExecutionOptions {
   requestedBy?: string;
   cancellation?: StopTaskCancellationReason;
   containerStopTimeoutSeconds?: number;
+  forceQueueScan?: boolean;
 }
 
 export interface StopTaskExecutionDeps {
@@ -111,8 +112,9 @@ export async function stopTaskExecution(
     requestedBy = 'user',
     cancellation = DEFAULT_STOP_REASON,
     containerStopTimeoutSeconds,
+    forceQueueScan = false,
   } = options;
-  const context = await (deps.loadStopTaskContext ?? loadStopTaskContext)(taskReference, redisClient, deps);
+  const context = await (deps.loadStopTaskContext ?? loadStopTaskContext)(taskReference, redisClient, { ...deps, forceQueueScan });
   const persistedStopOutcome = await loadPersistedStopOutcome(redisClient, context.taskId);
   const hadPersistedStopOutcome = hasConcreteStopOutcome(persistedStopOutcome);
   const trackedContainerId = getTaskContainerId(context.state, context.currentState);
@@ -164,6 +166,8 @@ export async function stopTaskExecution(
     shouldAbort: abortSignalArmed,
     containerStopTimeoutSeconds,
     stopContainer: deps.stopDockerContainer,
+    requestedBy,
+    cancellation,
   });
   if (!queueRemovalShouldPrecedeAbort) {
     ({ jobRemoved, queueStateAfterFailure } = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart));

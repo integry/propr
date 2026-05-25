@@ -46,6 +46,7 @@ export interface StopTaskContext {
 interface StopTaskContextDeps {
   db?: typeof db;
   getIssueQueue?: typeof getIssueQueue;
+  forceQueueScan?: boolean;
 }
 
 interface StopTaskStateDeps {
@@ -93,7 +94,7 @@ export async function loadStopTaskContext(
     persistedTask?.jobId,
   ]);
 
-  logger.info({
+  logger.debug({
     taskReference,
     normalizedTaskId,
     persistedTaskId: persistedTask?.taskId ?? null,
@@ -206,6 +207,7 @@ async function resolvePersistedTaskContext(
       persistedTask?.taskId,
     ].filter((value): value is string => Boolean(value)),
     loadQueue: deps.getIssueQueue,
+    forceQueueScan: deps.forceQueueScan === true,
   });
   const queueTaskId = queueJob ? getTaskIdFromQueueJob(queueJob) : null;
 
@@ -281,10 +283,12 @@ async function loadTaskState(
 async function getQueueJob(params: {
   candidateTaskIds: string[];
   loadQueue?: typeof getIssueQueue;
+  forceQueueScan: boolean;
 }): Promise<Job<QueueJobData> | null> {
   const {
     candidateTaskIds,
     loadQueue = getIssueQueue,
+    forceQueueScan,
   } = params;
   const queue = await loadQueue();
   const uniqueCandidates = [...new Set(candidateTaskIds.filter((value): value is string => Boolean(value)))];
@@ -296,7 +300,7 @@ async function getQueueJob(params: {
   }
 
   const candidateTaskIdSet = new Set(uniqueCandidates);
-  if (candidateTaskIdSet.size === 0 || uniqueCandidates.length === 0) {
+  if (candidateTaskIdSet.size === 0 || uniqueCandidates.length === 0 || !forceQueueScan) {
     return null;
   }
 
@@ -340,7 +344,9 @@ async function createTaskStateFromQueueJob(
     .onConflict('task_id')
     .ignore();
 
-  await stateManager.createTaskState(taskId, issueRef, correlationId);
+  if (!await stateManager.getTaskState(taskId)) {
+    await stateManager.createTaskState(taskId, issueRef, correlationId);
+  }
 
   const updatedRows = await database('tasks')
     .where({ task_id: taskId })

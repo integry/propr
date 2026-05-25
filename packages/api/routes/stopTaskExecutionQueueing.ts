@@ -8,6 +8,9 @@ import { pushStopConversationMessage } from './stopTaskExecutionPersistence.js';
 import type { QueueJobData } from './stopTaskExecutionContext.js';
 
 type RedisClientLike = Pick<RedisClientType, 'rPush'>;
+type StopTaskCancellationReason = {
+  code: string;
+};
 
 const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed']);
 
@@ -16,6 +19,8 @@ export async function stopTaskContainer(params: {
   taskId: string;
   containerId: string | null;
   shouldAbort: boolean;
+  requestedBy: string;
+  cancellation: StopTaskCancellationReason;
   containerStopTimeoutSeconds?: number;
   stopContainer?: typeof stopDockerContainer;
 }): Promise<{ containerId: string | null; containerStopped: boolean }> {
@@ -24,6 +29,8 @@ export async function stopTaskContainer(params: {
     taskId,
     containerId,
     shouldAbort,
+    requestedBy,
+    cancellation,
     containerStopTimeoutSeconds = 10,
     stopContainer = stopDockerContainer,
   } = params;
@@ -47,6 +54,7 @@ export async function stopTaskContainer(params: {
     timestamp: new Date().toISOString(),
     content: 'Docker container terminated.',
     level: 'info',
+    metadata: { reasonCode: cancellation.code, requestedBy },
   });
   return { containerId, containerStopped: true };
 }

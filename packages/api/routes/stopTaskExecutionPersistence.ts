@@ -1,16 +1,17 @@
-import { getStateManager, logger, type TaskState } from '@propr/core';
+import { getStateManager, logger, TaskStates, type TaskState } from '@propr/core';
 import type { RedisClientType } from 'redis';
 import type { StopTaskCancellationReason, StopTaskExecutionDeps } from './stopTaskExecution.js';
 import type { StopTaskContext } from './stopTaskExecutionContext.js';
 
 type RedisConversationClient = Pick<RedisClientType, 'rPush'> & Partial<Pick<RedisClientType, 'lRange'>>;
 type PendingStopRedisClient = Pick<RedisClientType, 'set' | 'rPush'> & Partial<Pick<RedisClientType, 'lRange'>>;
-type PendingStopReadClient = Pick<RedisClientType, 'get'>;
+type PendingStopReadClient = Pick<RedisClientType, 'get'> & Partial<Pick<RedisClientType, 'del'>>;
 type PendingStopClearClient = Pick<RedisClientType, 'del'>;
 const RECENT_DUPLICATE_MESSAGE_LIMIT = 5;
 const RECENT_DUPLICATE_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
 const PENDING_STOP_REQUEST_KEY_PREFIX = 'worker:stop-requested';
 const PENDING_STOP_REQUEST_TTL_SECONDS = 24 * 60 * 60;
+const CORE_TASK_STATE_SET = new Set<string>(Object.values(TaskStates));
 
 export interface PendingStopRequest {
   timestamp: string;
@@ -121,8 +122,13 @@ export async function persistPendingTaskCancellationRequest(params: {
     return;
   }
 
+  if (!isCoreTaskState(currentState)) {
+    logger.warn({ taskId, currentState }, 'Skipping pending cancellation metadata for unknown task state');
+    return;
+  }
+
   const stateManager = (deps.getStateManager ?? getStateManager)();
-  await stateManager.updateHistoryMetadata(taskId, currentState as TaskState, {
+  await stateManager.updateHistoryMetadata(taskId, currentState, {
     cancellationRequested: {
       code: cancellation.code,
       message: cancellation.message,
@@ -195,7 +201,8 @@ export async function loadPendingStopRequest(
   redisClient: PendingStopReadClient,
   taskId: string,
 ): Promise<PendingStopRequest | null> {
-  const requestData = await redisClient.get(getPendingStopRequestKey(taskId));
+  const pendingStopRequestKey = getPendingStopRequestKey(taskId);
+  const requestData = await redisClient.get(pendingStopRequestKey);
   if (!requestData) {
     return null;
   }
@@ -209,6 +216,7 @@ export async function loadPendingStopRequest(
       || typeof parsed.reason !== 'string'
       || typeof parsed.source !== 'string'
     ) {
+      await clearMalformedPendingStopRequest(redisClient, taskId, pendingStopRequestKey);
       return null;
     }
 
@@ -220,6 +228,7 @@ export async function loadPendingStopRequest(
       source: parsed.source,
     };
   } catch {
+    await clearMalformedPendingStopRequest(redisClient, taskId, pendingStopRequestKey);
     return null;
   }
 }
@@ -250,6 +259,23 @@ async function persistPendingStopRequest(
 
 function getPendingStopRequestKey(taskId: string): string {
   return `${PENDING_STOP_REQUEST_KEY_PREFIX}:${taskId}`;
+}
+
+function isCoreTaskState(state: string): state is TaskState {
+  return CORE_TASK_STATE_SET.has(state);
+}
+
+async function clearMalformedPendingStopRequest(
+  redisClient: PendingStopReadClient,
+  taskId: string,
+  pendingStopRequestKey: string,
+): Promise<void> {
+  if (!redisClient.del) {
+    return;
+  }
+
+  await redisClient.del(pendingStopRequestKey);
+  logger.warn({ taskId }, 'Cleared malformed pending stop request');
 }
 
 function getCancellationSource(cancellation: StopTaskCancellationReason): string {
