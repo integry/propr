@@ -635,7 +635,7 @@ test('cancelMergedPullRequestTasks force-scans the initial merged-PR lookup and 
         log,
         stoppableOnly: true,
     }]);
-    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, true);
+    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, false);
     assert.strictEqual(markPullRequestMerged.mock.calls.length, 1);
 });
 
@@ -710,6 +710,54 @@ test('stopTaskExecution still detects duplicate messages after malformed recent 
     });
 
     assert.deepStrictEqual(redisClient.messages, []);
+});
+
+test('stopTaskExecution dedupes repeated merge-cancellation messages when lRange is unavailable', async () => {
+    const redisClient = createRedisClient();
+    const redisWithoutRange = {
+        get: redisClient.get,
+        set: redisClient.set,
+        del: redisClient.del,
+        rPush: redisClient.rPush,
+    };
+    const options = {
+        redisClient: redisWithoutRange,
+        requestedBy: 'system',
+        cancellation: {
+            code: 'pull_request_merged',
+            message: 'Task cancelled because pull request #42 was merged.',
+            requestId: 'merge-cancel-no-lrange-42',
+        },
+    };
+    const deps = {
+        loadStopTaskContext: async () => ({
+            normalizedTaskId: 'task-no-lrange-messages',
+            state: { history: [{ state: 'processing' }] },
+            currentState: 'processing',
+            queueJob: { id: 'job-no-lrange-messages' } as never,
+            queueState: 'active',
+            taskId: 'task-no-lrange-messages',
+            abortTaskIds: ['task-no-lrange-messages', 'job-no-lrange-messages'],
+        }),
+        ensureTaskStateForCancellation: async () => {},
+        getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+        stopDockerContainer,
+    };
+
+    await stopTaskExecution('task-no-lrange-messages', options, deps);
+    redisClient.set.mock.mockImplementation(async (key: string, value: string, options?: Record<string, unknown>) => {
+        if (options?.NX === true && key.startsWith('conversation:stop-message-dedupe:')) {
+            return null;
+        }
+
+        redisClient.store.set(key, value);
+        return 'OK';
+    });
+    await stopTaskExecution('task-no-lrange-messages', options, deps);
+
+    assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
+        'Cancellation requested. Worker shutdown is still in progress.',
+    ]);
 });
 
 test('stopTaskExecution does not treat messages without request identity as duplicates', async () => {

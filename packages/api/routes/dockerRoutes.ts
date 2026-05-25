@@ -74,13 +74,13 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
 
       try {
-        const { stdout, stderr } = await execFileAsync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
+        const { stdout } = await execFileAsync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
           encoding: 'utf8',
           timeout: 10000,
           maxBuffer: 10 * 1024 * 1024,
         });
         res.setHeader('Content-Type', 'text/plain');
-        res.send(`${stdout}${stderr}`);
+        res.send(stdout);
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -168,21 +168,21 @@ function getDockerContainerMetadata(
 
 async function getContainerInfo(containerId: string, containerName?: string): Promise<Record<string, unknown>> {
   try {
-    const { stdout } = await execFileAsync('docker', ['ps', '-a', '--filter', `id=${containerId}`, '--format', '{{.Status}}'], {
+    const { stdout } = await execFileAsync('docker', ['inspect', '--format', '{{.State.Running}}', containerId], {
       encoding: 'utf8',
       timeout: 5000,
     });
-    const statusOutput = stdout.trim();
-    if (statusOutput) {
-      return {
-        id: containerId,
-        name: containerName ?? null,
-        status: statusOutput.includes('Up') ? 'running' : 'stopped',
-        logsAvailable: true,
-      };
-    }
-    return { id: containerId, name: containerName ?? null, status: 'removed', logsAvailable: false };
+    const isRunning = stdout.trim() === 'true';
+    return {
+      id: containerId,
+      name: containerName ?? null,
+      status: isRunning ? 'running' : 'stopped',
+      logsAvailable: true,
+    };
   } catch (error) {
+    if (isDockerNoSuchContainerError(error)) {
+      return { id: containerId, name: containerName ?? null, status: 'removed', logsAvailable: false };
+    }
     logger.error({ containerId, error: getErrorLogFields(error) }, 'Error getting container info');
     return {
       id: containerId,
@@ -194,15 +194,28 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
   }
 }
 
-function getErrorLogFields(error: unknown): { message: string; stack?: string; name?: string } {
+function getErrorLogFields(error: unknown): {
+  message: string;
+  stack?: string;
+  name?: string;
+  code?: unknown;
+  signal?: unknown;
+  stdout?: string;
+  stderr?: string;
+} {
   if (!(error instanceof Error)) {
     return { message: String(error) };
   }
 
+  const record = error as Error & Record<string, unknown>;
   return {
     message: error.message,
     ...(error.stack ? { stack: error.stack } : {}),
     ...(error.name ? { name: error.name } : {}),
+    ...(record.code !== undefined ? { code: record.code } : {}),
+    ...(record.signal !== undefined ? { signal: record.signal } : {}),
+    ...(typeof record.stdout === 'string' ? { stdout: record.stdout } : {}),
+    ...(typeof record.stderr === 'string' ? { stderr: record.stderr } : {}),
   };
 }
 

@@ -137,7 +137,12 @@ export async function cancelMergedPullRequestTasks(
   }
 
   const failures = buildFinalFailures(finalActiveTasks, retryAttempt.failures, firstAttempt.failures);
-  throw new Error(formatMergedTaskCancellationError(failures));
+  log.warn({
+    correlationId,
+    repository,
+    prNumber,
+    failures,
+  }, formatMergedTaskCancellationError(failures));
 }
 
 export function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {
@@ -158,11 +163,20 @@ async function loadStoppablePrTasks(
   prNumber: number,
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
 ): Promise<MergeTaskActivity[]> {
-  return dedupeTasks(await loadActiveTasks(repository, prNumber, {
-    forceQueueScan: true,
-    log,
-    stoppableOnly: true,
-  }));
+  try {
+    return dedupeTasks(await loadActiveTasks(repository, prNumber, {
+      forceQueueScan: true,
+      log,
+      stoppableOnly: true,
+    }));
+  } catch (error) {
+    log.error({
+      repository,
+      prNumber,
+      error: error instanceof Error ? error.message : String(error),
+    }, 'Failed to load active PR tasks during merged PR cancellation');
+    return [];
+  }
 }
 
 async function stopMergeTasks(params: {
@@ -200,7 +214,7 @@ async function stopMergeTasks(params: {
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
           forceQueueScan: true,
-          requireVerifiedStop: true,
+          requireVerifiedStop: false,
         });
         if (!result.stopVerified) {
           log.info({

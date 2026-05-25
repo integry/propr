@@ -1,15 +1,22 @@
+import { createHash } from 'crypto';
 import { getStateManager, logger, TaskStates, type TaskState } from '@propr/core';
 import type { RedisClientType } from 'redis';
 import type { StopTaskCancellationReason, StopTaskExecutionDeps } from './stopTaskExecution.js';
 import type { StopTaskContext } from './stopTaskExecutionContext.js';
 
-type RedisConversationClient = Pick<RedisClientType, 'rPush'> & Partial<Pick<RedisClientType, 'lRange'>>;
+type RedisConversationClient = {
+  rPush: RedisClientType['rPush'];
+  lRange?: RedisClientType['lRange'];
+  set?: RedisClientType['set'];
+};
 type PendingStopRedisClient = Pick<RedisClientType, 'set' | 'rPush'> & Partial<Pick<RedisClientType, 'lRange'>>;
 type PendingStopReadClient = Pick<RedisClientType, 'get'> & Partial<Pick<RedisClientType, 'del'>>;
 type PendingStopClearClient = Pick<RedisClientType, 'del'>;
-const RECENT_DUPLICATE_MESSAGE_LIMIT = 5;
+const RECENT_DUPLICATE_MESSAGE_LIMIT = 100;
 const PENDING_STOP_REQUEST_KEY_PREFIX = 'worker:stop-requested';
 const PENDING_STOP_REQUEST_TTL_SECONDS = 24 * 60 * 60;
+const CONVERSATION_MESSAGE_DEDUPE_KEY_PREFIX = 'conversation:stop-message-dedupe';
+const CONVERSATION_MESSAGE_DEDUPE_TTL_SECONDS = 24 * 60 * 60;
 const CORE_TASK_STATE_SET = new Set<string>(Object.values(TaskStates));
 
 export interface PendingStopRequest {
@@ -301,7 +308,7 @@ async function isDuplicateConversationMessage(
   message: Record<string, unknown>,
 ): Promise<boolean> {
   if (typeof redisClient.lRange !== 'function') {
-    return false;
+    return await reserveConversationMessageFingerprint(redisClient, conversationKey, message) === false;
   }
 
   const recentMessages = await redisClient.lRange(conversationKey, -RECENT_DUPLICATE_MESSAGE_LIMIT, -1);
@@ -330,6 +337,37 @@ async function isDuplicateConversationMessage(
   return false;
 }
 
+async function reserveConversationMessageFingerprint(
+  redisClient: RedisConversationClient,
+  conversationKey: string,
+  message: Record<string, unknown>,
+): Promise<boolean | null> {
+  if (typeof redisClient.set !== 'function') {
+    return null;
+  }
+
+  const cancellationRequestId = getConversationMessageRequestId(message);
+  if (cancellationRequestId === null) {
+    return null;
+  }
+
+  const fingerprint = buildConversationMessageFingerprint(message);
+  const dedupeKey = `${CONVERSATION_MESSAGE_DEDUPE_KEY_PREFIX}:${hashDedupeValue(`${conversationKey}:${cancellationRequestId}:${fingerprint}`)}`;
+  try {
+    const result = await redisClient.set(dedupeKey, '1', {
+      NX: true,
+      EX: CONVERSATION_MESSAGE_DEDUPE_TTL_SECONDS,
+    });
+    return result !== null;
+  } catch (error) {
+    logger.warn({
+      conversationKey,
+      error: (error as Error).message,
+    }, 'Failed to reserve duplicate stop-message fingerprint');
+    return null;
+  }
+}
+
 function buildStopMessageMetadata(cancellation: StopTaskCancellationReason, requestedBy: string): Record<string, string> {
   return {
     reasonCode: cancellation.code,
@@ -342,6 +380,10 @@ function buildConversationMessageFingerprint(message: Record<string, unknown>): 
   const messageWithoutTimestamp = { ...message };
   delete messageWithoutTimestamp.timestamp;
   return JSON.stringify(sortRecord(messageWithoutTimestamp));
+}
+
+function hashDedupeValue(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function sortRecord(value: unknown): unknown {

@@ -76,13 +76,15 @@ export async function loadStopTaskContext(
     normalizedTaskId,
     taskReference,
   ]);
-  const { persistedTask, queueJob, queueTaskId } = await resolvePersistedTaskContextBestEffort({
-    taskReference,
-    normalizedTaskId,
-    deps,
-    extraCandidates: directStateLookup.taskId ? [directStateLookup.taskId] : [],
-    hasDirectState: directStateLookup.state !== null,
-  });
+  const { persistedTask, queueJob, queueTaskId } = shouldUseDirectWorkerStateOnly(directStateLookup.state, deps)
+    ? { persistedTask: null, queueJob: null, queueTaskId: null }
+    : await resolvePersistedTaskContextBestEffort({
+      taskReference,
+      normalizedTaskId,
+      deps,
+      extraCandidates: directStateLookup.taskId ? [directStateLookup.taskId] : [],
+      hasDirectState: directStateLookup.state !== null,
+    });
   const stateLookup = await loadTaskState(redisClient, [
     directStateLookup.taskId,
     persistedTask?.taskId,
@@ -334,7 +336,7 @@ async function createTaskStateFromQueueJob(
       correlation_id: correlationId,
       repository,
       issue_number: issueRef.number,
-      task_type: typeof issueRef.type === 'string' ? issueRef.type : 'issue',
+      task_type: getQueuedTaskType(issueRef.type, prNumber),
       model_name: typeof issueRef.modelName === 'string' ? issueRef.modelName : null,
       initial_job_data: initialJobData,
       ...(prNumber !== null ? { pr_number: prNumber } : {}),
@@ -359,6 +361,21 @@ async function createTaskStateFromQueueJob(
   if (updatedRows === 0) {
     throw new Error(`Queued task cancellation could not link persisted task ${taskId} to queue job ${queueJobId}`);
   }
+}
+
+function shouldUseDirectWorkerStateOnly(
+  state: TaskState | null,
+  deps: StopTaskContextDeps,
+): boolean {
+  return state !== null && deps.forceQueueScan !== true;
+}
+
+function getQueuedTaskType(issueRefType: unknown, prNumber: number | null): string {
+  if (typeof issueRefType === 'string' && issueRefType.length > 0) {
+    return issueRefType;
+  }
+
+  return prNumber !== null ? 'pr' : 'issue';
 }
 
 function resolveStopTaskId(

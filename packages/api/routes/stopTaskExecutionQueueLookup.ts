@@ -8,6 +8,8 @@ import {
 import type { QueueJobData } from './stopTaskExecutionContext.js';
 
 const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
+const QUEUE_SCAN_PAGE_SIZE = 500;
+const MAX_QUEUE_SCAN_JOBS = 10000;
 
 export async function findQueueJobByTaskIdScan(
   queue: Awaited<ReturnType<typeof getIssueQueue>>,
@@ -17,16 +19,25 @@ export async function findQueueJobByTaskIdScan(
   const startedAt = Date.now();
   let scannedJobs = 0;
   for (const trackedQueueState of TRACKED_QUEUE_STATES) {
-    const jobs = await loadQueueScanState(queue, trackedQueueState);
-    scannedJobs += jobs.length;
-    const matchingJob = findMatchingQueueJob(jobs, candidateTaskIdSet);
-    if (matchingJob) {
-      logger.info({
-        taskReferenceCandidates: uniqueCandidates,
-        scannedJobs,
-        durationMs: Date.now() - startedAt,
-      }, 'Resolved queued task stop lookup via fallback task-id scan');
-      return matchingJob;
+    let start = 0;
+    while (scannedJobs < MAX_QUEUE_SCAN_JOBS) {
+      const jobs = await loadQueueScanState(queue, trackedQueueState, start);
+      scannedJobs += jobs.length;
+      const matchingJob = findMatchingQueueJob(jobs, candidateTaskIdSet);
+      if (matchingJob) {
+        logger.info({
+          taskReferenceCandidates: uniqueCandidates,
+          scannedJobs,
+          durationMs: Date.now() - startedAt,
+        }, 'Resolved queued task stop lookup via fallback task-id scan');
+        return matchingJob;
+      }
+
+      if (jobs.length < QUEUE_SCAN_PAGE_SIZE) {
+        break;
+      }
+
+      start += jobs.length;
     }
   }
 
@@ -37,6 +48,14 @@ export async function findQueueJobByTaskIdScan(
       durationMs: Date.now() - startedAt,
     }, 'Fallback queued task-id scan completed without a match');
   }
+  if (scannedJobs >= MAX_QUEUE_SCAN_JOBS) {
+    logger.warn({
+      taskReferenceCandidates: uniqueCandidates,
+      scannedJobs,
+      maxQueueScanJobs: MAX_QUEUE_SCAN_JOBS,
+      durationMs: Date.now() - startedAt,
+    }, 'Fallback queued task-id scan stopped after reaching the scan cap');
+  }
 
   return null;
 }
@@ -44,8 +63,9 @@ export async function findQueueJobByTaskIdScan(
 async function loadQueueScanState(
   queue: Awaited<ReturnType<typeof getIssueQueue>>,
   trackedQueueState: typeof TRACKED_QUEUE_STATES[number],
+  start: number,
 ): Promise<Job<QueueJobData>[]> {
-  return await queue.getJobs([trackedQueueState], 0, -1) as unknown as Job<QueueJobData>[];
+  return await queue.getJobs([trackedQueueState], start, start + QUEUE_SCAN_PAGE_SIZE - 1) as unknown as Job<QueueJobData>[];
 }
 
 function findMatchingQueueJob(

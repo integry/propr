@@ -580,7 +580,7 @@ test('loadStopTaskContext does not scan queue job data unless forced', async () 
   assert.equal(scannedQueue, false);
 });
 
-test('loadStopTaskContext keeps queue context when Redis worker state exists', async () => {
+test('loadStopTaskContext avoids DB and queue lookups when Redis worker state exists', async () => {
   let dbLoaded = false;
   let queueLoaded = false;
   const queueJob = {
@@ -636,8 +636,9 @@ test('loadStopTaskContext keeps queue context when Redis worker state exists', a
 
   assert.equal(context.taskId, 'task-redis-first');
   assert.equal(context.currentState, 'processing');
-  assert.equal(context.queueJob, queueJob);
-  assert.equal(context.queueState, 'delayed');
-  assert.equal(dbLoaded, true);
-  assert.equal(queueLoaded, true);
+  assert.equal(context.queueJob, null);
+  assert.equal(context.queueState, null);
+  assert.equal(dbLoaded, false);
+  assert.equal(queueLoaded, false);
+  assert.equal(queueJob.id, 'task-redis-first');
 });
