@@ -169,6 +169,57 @@ test('Docker info reads direct Redis worker state before extended stop context',
   assert.equal(loadStopTaskContext.mock.calls.length, 0);
 });
 
+test('Docker info resolves container metadata through persisted task aliases', async () => {
+  const loadStopTaskContextMock = mock.fn(async () => ({
+    normalizedTaskId: 'job-alias',
+    state: {
+      history: [
+        { state: 'claude_execution', metadata: { containerId: 'container-alias-1', containerName: 'task-alias' } },
+      ],
+    },
+    currentState: 'claude_execution',
+    queueJob: null,
+    queueState: null,
+    taskId: 'persisted-task-alias',
+    abortTaskIds: ['persisted-task-alias', 'job-alias'],
+  }));
+  const redisClient = {
+    async get(): Promise<null> {
+      return null;
+    },
+  };
+  const routes = createDockerRoutes({
+    redisClient: redisClient as never,
+    loadStopTaskContext: loadStopTaskContextMock as never,
+  });
+  const response = {
+    statusCode: 200,
+    body: null as unknown,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body: unknown) {
+      this.body = body;
+      return this;
+    },
+  };
+
+  await routes.getDockerInfo({ params: { taskId: 'job-alias' } } as never, response as never);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(loadStopTaskContextMock.mock.calls.length, 1);
+  assert.deepEqual(loadStopTaskContextMock.mock.calls[0]?.arguments.slice(0, 3), [
+    'job-alias',
+    redisClient,
+    { forceQueueScan: false },
+  ]);
+  const body = response.body as Record<string, unknown>;
+  assert.equal(body.id, 'container-alias-1');
+  assert.equal(body.name, 'task-alias');
+  assert.ok(body.status === 'removed' || body.status === 'error');
+});
+
 test('Docker info can inspect container metadata from terminal task history', async () => {
   const redisClient = {
     async get(key: string): Promise<string | null> {
@@ -208,6 +259,78 @@ test('Docker info can inspect container metadata from terminal task history', as
   if (body.status === 'error') {
     assert.match(String(body.error), /Failed to get container info/);
   }
+});
+
+test('manual Docker stop route accepts abort-only running task stops without verified container stop', async () => {
+  const stopTaskExecutionMock = mock.fn(async () => ({
+    success: true,
+    message: 'Stop request sent to worker. The execution will be terminated shortly.',
+    taskId: 'task-manual-stop',
+    containerStopped: false,
+    jobRemoved: false,
+    stopVerified: false,
+    cancellationRequested: true,
+    abortSignalArmed: true,
+    currentState: 'processing',
+    queueState: null,
+    cancellation: {
+      code: 'user_requested_stop',
+      message: 'Task cancelled by user request.',
+    },
+  }));
+  const redisClient = {
+    async get(): Promise<null> {
+      return null;
+    },
+    async set(): Promise<string> {
+      return 'OK';
+    },
+    async del(): Promise<number> {
+      return 1;
+    },
+    async rPush(): Promise<number> {
+      return 1;
+    },
+  };
+  const routes = createDockerRoutes({
+    redisClient: redisClient as never,
+    stopTaskExecution: stopTaskExecutionMock as never,
+  });
+  const response = {
+    statusCode: 200,
+    body: null as unknown,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body: unknown) {
+      this.body = body;
+      return this;
+    },
+  };
+
+  await routes.stopTask({
+    params: { taskId: 'task-manual-stop' },
+    user: { username: 'octocat' },
+  } as never, response as never);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(stopTaskExecutionMock.mock.calls[0]?.arguments[1], {
+    redisClient,
+    requestedBy: 'octocat',
+  });
+  assert.deepEqual(response.body, {
+    success: true,
+    message: 'Stop request sent to worker. The execution will be terminated shortly.',
+    taskId: 'task-manual-stop',
+    containerStopped: false,
+    jobRemoved: false,
+    stopVerified: false,
+    cancellationRequested: true,
+    abortSignalArmed: true,
+    currentState: 'processing',
+    queueState: null,
+  });
 });
 
 test('stopTaskExecution records a pending merged-PR cancellation for abort-only active jobs', async () => {

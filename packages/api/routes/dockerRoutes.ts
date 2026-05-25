@@ -3,13 +3,15 @@ import { RedisClientType } from 'redis';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '@propr/core';
-import { normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
+import { loadStopTaskContext, normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
 import { stopTaskExecution, StopTaskExecutionError } from './stopTaskExecution.js';
 import type { StopTaskExecutionResult } from './stopTaskExecution.js';
 import { validateTaskId, validateTailParam } from './validation.js';
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
+  loadStopTaskContext?: typeof loadStopTaskContext;
+  stopTaskExecution?: typeof stopTaskExecution;
 }
 
 const execFileAsync = promisify(execFile);
@@ -28,6 +30,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       const containerMetadata = await loadDockerContainerMetadata(
         req.params.taskId,
         redisClient,
+        deps.loadStopTaskContext,
       );
       if (!containerMetadata) {
         res.status(404).json({ error: 'Task state not found' });
@@ -63,6 +66,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       const containerMetadata = await loadDockerContainerMetadata(
         req.params.taskId,
         redisClient,
+        deps.loadStopTaskContext,
       );
       if (!containerMetadata) {
         res.status(404).json({ error: 'Task state not found' });
@@ -105,10 +109,10 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       const requestedBy = typeof req.user === 'object' && req.user !== null && 'username' in req.user && typeof req.user.username === 'string'
         ? req.user.username
         : 'user';
-      const result = await stopTaskExecution(req.params.taskId, {
+      const executeStopTask = deps.stopTaskExecution ?? stopTaskExecution;
+      const result = await executeStopTask(req.params.taskId, {
         redisClient,
         requestedBy,
-        requireVerifiedStop: true,
       });
       res.json(formatStopTaskRouteResponse(result));
     } catch (error) {
@@ -127,12 +131,34 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
 async function loadDockerContainerMetadata(
   taskReference: string,
   redisClient: Pick<RedisClientType, 'get'>,
+  loadContext: typeof loadStopTaskContext = loadStopTaskContext,
 ): Promise<{ containerId: string | null; containerName: string | null } | null> {
   const directState = await loadDockerTaskStateFromRedis(taskReference, redisClient);
   if (directState) {
     return getDockerContainerMetadata(directState);
   }
+  const contextState = await loadDockerTaskStateFromStopContext(taskReference, redisClient, loadContext);
+  if (contextState) {
+    return getDockerContainerMetadata(contextState);
+  }
   return null;
+}
+
+async function loadDockerTaskStateFromStopContext(
+  taskReference: string,
+  redisClient: Pick<RedisClientType, 'get'>,
+  loadContext: typeof loadStopTaskContext,
+): Promise<TaskState | null> {
+  try {
+    const context = await loadContext(taskReference, redisClient, { forceQueueScan: false });
+    return context.state;
+  } catch (error) {
+    logger.warn({
+      taskReference,
+      error: getErrorLogFields(error),
+    }, 'Unable to resolve extended task context for Docker metadata lookup');
+    return null;
+  }
 }
 
 async function loadDockerTaskStateFromRedis(

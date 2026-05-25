@@ -71,6 +71,8 @@ export async function cancelMergedPullRequestTasks(
     requestId: `${correlationId}:${MERGE_CANCELLATION_REASON_CODE}:${repository}#${prNumber}`,
   };
 
+  // Persist the merge gate before cancellation so no new PR work starts while
+  // the existing task shutdown and rechecks are still in flight.
   await persistMergedState(deps.redisClient, repository, prNumber);
 
   const initialTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
@@ -102,7 +104,9 @@ export async function cancelMergedPullRequestTasks(
     });
     mergeFailures(failuresByTaskId, attempt.failures);
 
-    await sleep(recheckDelaysMs[attemptIndex]);
+    if (attemptIndex < recheckDelaysMs.length - 1) {
+      await sleep(recheckDelaysMs[attemptIndex]);
+    }
     remainingTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
     if (remainingTasks.length === 0) {
       return;
@@ -180,7 +184,7 @@ async function stopMergeTasks(params: {
           requestedBy: 'system',
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
-          forceQueueScan: true,
+          forceQueueScan: false,
           requireVerifiedStop: false,
         });
         if (!result.stopVerified) {

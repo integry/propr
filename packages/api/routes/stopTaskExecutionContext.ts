@@ -10,6 +10,7 @@ import {
   logger,
   normalizeTaskId as normalizeCoreTaskId,
 } from '@propr/core';
+import type { TaskStateData } from '@propr/core';
 import { findQueueJobByTaskIdScan } from './stopTaskExecutionQueueLookup.js';
 
 export type QueueJobData = Record<string, unknown>;
@@ -130,10 +131,12 @@ export async function ensureTaskStateForCancellation(
   state: TaskState | null,
   queueJob: Job<QueueJobData> | null,
   deps: StopTaskStateDeps,
-): Promise<void> {
-  if (!state && queueJob) {
-    await createTaskStateFromQueueJob(taskId, queueJob, deps);
+): Promise<TaskState | null> {
+  if (state || !queueJob) {
+    return state;
   }
+
+  return createTaskStateFromQueueJob(taskId, queueJob, deps);
 }
 
 async function findPersistedTaskRecord(
@@ -315,7 +318,7 @@ async function createTaskStateFromQueueJob(
   taskId: string,
   queueJob: Job<QueueJobData>,
   deps: StopTaskStateDeps = {},
-): Promise<void> {
+): Promise<TaskStateData> {
   const issueRef = buildIssueRefFromQueueJob(queueJob);
   if (!issueRef) {
     throw new Error(`Cannot reconstruct IssueRef for queued task cancellation: ${String(queueJob.id ?? taskId)}`);
@@ -344,9 +347,8 @@ async function createTaskStateFromQueueJob(
     .onConflict('task_id')
     .ignore();
 
-  if (!await stateManager.getTaskState(taskId)) {
-    await stateManager.createTaskState(taskId, issueRef, correlationId);
-  }
+  const existingState = await stateManager.getTaskState(taskId);
+  const taskState = existingState ?? await stateManager.createTaskState(taskId, issueRef, correlationId);
 
   const updatedRows = await database('tasks')
     .where({ task_id: taskId })
@@ -361,6 +363,8 @@ async function createTaskStateFromQueueJob(
   if (updatedRows === 0) {
     throw new Error(`Queued task cancellation could not link persisted task ${taskId} to queue job ${queueJobId}`);
   }
+
+  return taskState;
 }
 
 function shouldUseDirectWorkerStateOnly(

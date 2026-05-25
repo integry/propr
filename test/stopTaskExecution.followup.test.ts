@@ -156,8 +156,14 @@ test('stopTaskExecution rejects queued cancellation when removal loses the race 
 
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
-    assert.strictEqual(redisClient.set.mock.calls.length, 0);
-    assert.strictEqual(redisClient.del.mock.calls.length, 0);
+    assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), [
+        'worker:stop-outcome:queue-job-1',
+        'worker:stop-outcome:task-queue-1',
+    ]);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), [
+        'worker:stop-outcome:queue-job-1',
+        'worker:stop-outcome:task-queue-1',
+    ]);
 });
 
 test('stopTaskExecution arms abort signals only after a queued removal race turns active', async () => {
@@ -202,9 +208,13 @@ test('stopTaskExecution arms abort signals only after a queued removal race turn
     assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), [
         'worker:abort:queue-job-active-race-1',
         'worker:abort:task-queue-active-race-1',
+        'worker:stop-outcome:queue-job-active-race-1',
+        'worker:stop-outcome:task-queue-active-race-1',
         'worker:stop-requested:queue-job-active-race-1',
         'worker:stop-requested:task-queue-active-race-1',
     ]);
+    assert.strictEqual(redisClient.store.has('worker:stop-outcome:queue-job-active-race-1'), false);
+    assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-queue-active-race-1'), false);
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
 });
 
@@ -392,10 +402,115 @@ test('stopTaskExecution rejects queued cancellation for unknown queue-removal ra
 
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
-    assert.strictEqual(redisClient.set.mock.calls.length, 0);
-    assert.strictEqual(redisClient.del.mock.calls.length, 0);
+    assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), [
+        'worker:stop-outcome:queue-job-unknown-1',
+        'worker:stop-outcome:task-queue-unknown-1',
+    ]);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), [
+        'worker:stop-outcome:queue-job-unknown-1',
+        'worker:stop-outcome:task-queue-unknown-1',
+    ]);
     assert.strictEqual(redisClient.store.has('worker:abort:task-queue-unknown-1'), false);
     assert.strictEqual(redisClient.store.has('worker:abort:queue-job-unknown-1'), false);
+    assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-queue-unknown-1'), false);
+    assert.strictEqual(redisClient.store.has('worker:stop-outcome:queue-job-unknown-1'), false);
+});
+
+test('stopTaskExecution does not remove queued jobs when queue-removal recovery state cannot be persisted', async () => {
+    const redisClient = createRedisClient();
+    redisClient.set.mock.mockImplementation(async (key: string, value: string) => {
+        if (key.startsWith('worker:stop-outcome:')) {
+            throw new Error('redis write failed');
+        }
+
+        redisClient.store.set(key, value);
+        return 'OK';
+    });
+    const queueJob = {
+        id: 'queue-job-outcome-fail-1',
+        data: {
+            repository: 'owner/repo',
+            prNumber: 42,
+        },
+        remove: mock.fn(async () => undefined),
+        getState: mock.fn(async () => 'waiting'),
+    };
+
+    await assert.rejects(
+        stopTaskExecution(
+            'queue-job-outcome-fail-1',
+            {
+                redisClient,
+                requestedBy: 'system',
+                cancellation: {
+                    code: 'pull_request_merged',
+                    message: 'Task cancelled because pull request #42 was merged.',
+                },
+            },
+            {
+                loadStopTaskContext: async () => ({
+                    normalizedTaskId: 'queue-job-outcome-fail-1',
+                    state: null,
+                    currentState: null,
+                    queueJob: queueJob as never,
+                    queueState: 'waiting',
+                    taskId: 'task-outcome-fail-1',
+                    abortTaskIds: ['task-outcome-fail-1', 'queue-job-outcome-fail-1'],
+                }),
+                ensureTaskStateForCancellation: async () => ({ history: [{ state: 'pending' }] }),
+                getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+                stopDockerContainer,
+            },
+        ),
+        /redis write failed/,
+    );
+
+    assert.strictEqual(queueJob.remove.mock.calls.length, 0);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+    assert.strictEqual(redisClient.store.has('worker:abort:task-outcome-fail-1'), false);
+});
+
+test('stopTaskExecution reports refreshed state after creating state for queue-only cancellations', async () => {
+    const redisClient = createRedisClient();
+    const queueJob = {
+        id: 'queue-job-refresh-1',
+        data: {
+            repository: 'owner/repo',
+            prNumber: 42,
+        },
+        remove: mock.fn(async () => undefined),
+        getState: mock.fn(async () => 'waiting'),
+    };
+
+    const result = await stopTaskExecution(
+        'queue-job-refresh-1',
+        {
+            redisClient,
+            requestedBy: 'system',
+            cancellation: {
+                code: 'pull_request_merged',
+                message: 'Task cancelled because pull request #42 was merged.',
+            },
+        },
+        {
+            loadStopTaskContext: async () => ({
+                normalizedTaskId: 'queue-job-refresh-1',
+                state: null,
+                currentState: null,
+                queueJob: queueJob as never,
+                queueState: 'waiting',
+                taskId: 'task-refresh-1',
+                abortTaskIds: ['task-refresh-1', 'queue-job-refresh-1'],
+            }),
+            ensureTaskStateForCancellation: async () => ({ history: [{ state: 'pending' }] }),
+            getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+            stopDockerContainer,
+        },
+    );
+
+    assert.strictEqual(result.currentState, 'pending');
+    assert.strictEqual(result.jobRemoved, true);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
 });
 
 test('stopTaskExecution still terminates the Claude container from post_processing state', async () => {
@@ -875,6 +990,12 @@ test('stopTaskExecution rejects queued cancellation when queue state cannot be r
 
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
-    assert.strictEqual(redisClient.set.mock.calls.length, 0);
-    assert.strictEqual(redisClient.del.mock.calls.length, 0);
+    assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), [
+        'worker:stop-outcome:queue-job-2',
+        'worker:stop-outcome:task-queue-2',
+    ]);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), [
+        'worker:stop-outcome:queue-job-2',
+        'worker:stop-outcome:task-queue-2',
+    ]);
 });
