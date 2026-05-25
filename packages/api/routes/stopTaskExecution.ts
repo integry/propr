@@ -214,7 +214,11 @@ export async function stopTaskExecution(
       currentState: context.currentState,
       queueState: resolvedQueueState,
       taskId: context.taskId,
+      containerStopped: stopOutcome.containerStopped,
+      jobRemoved: stopOutcome.jobRemoved,
+      stopVerified,
       cancellationRequested,
+      abortSignalArmed,
     });
   }
   const shouldPersistCancelledState = stopVerified;

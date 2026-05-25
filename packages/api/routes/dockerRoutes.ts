@@ -74,13 +74,13 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
 
       try {
-        const { stdout } = await execFileAsync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
+        const { stdout, stderr } = await execFileAsync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
           encoding: 'utf8',
           timeout: 10000,
           maxBuffer: 10 * 1024 * 1024,
         });
         res.setHeader('Content-Type', 'text/plain');
-        res.send(stdout);
+        res.send(`${stdout}${stderr}`);
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -108,6 +108,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       const result = await stopTaskExecution(req.params.taskId, {
         redisClient,
         requestedBy,
+        requireVerifiedStop: true,
       });
       res.json(formatStopTaskRouteResponse(result));
     } catch (error) {
@@ -224,12 +225,24 @@ function formatStopTaskRouteResponse(result: StopTaskExecutionResult): {
   message: string;
   taskId: string;
   containerStopped: boolean;
+  jobRemoved: boolean;
+  stopVerified: boolean;
+  cancellationRequested: boolean;
+  abortSignalArmed: boolean;
+  currentState: string | null;
+  queueState: string | null;
 } {
   return {
     success: true,
     message: result.message,
     taskId: result.taskId,
     containerStopped: result.containerStopped,
+    jobRemoved: result.jobRemoved,
+    stopVerified: result.stopVerified,
+    cancellationRequested: result.cancellationRequested,
+    abortSignalArmed: result.abortSignalArmed,
+    currentState: result.currentState,
+    queueState: result.queueState,
   };
 }
 

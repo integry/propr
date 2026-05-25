@@ -486,11 +486,11 @@ test('loadStopTaskContext fallback scan matches raw queue job ids before normali
   assert.deepEqual(context.abortTaskIds, ['owner-repo-42', rawJobId]);
 });
 
-test('loadStopTaskContext forced fallback scan checks beyond 5000 queued jobs', async () => {
+test('loadStopTaskContext forced fallback scan checks beyond 10000 queued jobs', async () => {
   const targetJobId = 'issue-owner-repo-42-999';
-  const waitingJobs = Array.from({ length: 5200 }, (_, index) => ({
-    id: index === 5100 ? targetJobId : `issue-other-repo-${index}-1`,
-    data: index === 5100
+  const waitingJobs = Array.from({ length: 10550 }, (_, index) => ({
+    id: index === 10200 ? targetJobId : `issue-other-repo-${index}-1`,
+    data: index === 10200
       ? { repository: 'owner/repo', prNumber: 42 }
       : { repository: 'other/repo', prNumber: index },
     async getState() {

@@ -307,8 +307,13 @@ async function isDuplicateConversationMessage(
   conversationKey: string,
   message: Record<string, unknown>,
 ): Promise<boolean> {
+  const fingerprintReserved = await reserveConversationMessageFingerprint(redisClient, conversationKey, message);
+  if (fingerprintReserved === false) {
+    return true;
+  }
+
   if (typeof redisClient.lRange !== 'function') {
-    return await reserveConversationMessageFingerprint(redisClient, conversationKey, message) === false;
+    return false;
   }
 
   const recentMessages = await redisClient.lRange(conversationKey, -RECENT_DUPLICATE_MESSAGE_LIMIT, -1);

@@ -124,14 +124,14 @@ test('cancelMergedPullRequestTasks succeeds when abort-only worker stops leave a
   assert.deepEqual(stopCalls, ['task-1']);
 });
 
-test('cancelMergedPullRequestTasks records merged PR state before accepting while abort-only stops remain active', async () => {
+test('cancelMergedPullRequestTasks records merged PR state before rejecting while abort-only stops remain active', async () => {
   process.env.NODE_ENV = 'test';
   const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
   const markMergedCalls: Array<{ repository: string; prNumber: number }> = [];
   const loadActiveTasksCalls: string[][] = [];
   const stopCalls: string[] = [];
 
-  await assert.doesNotReject(
+  await assert.rejects(
     cancelMergedPullRequestTasks(
       {
         action: 'closed',
@@ -160,6 +160,7 @@ test('cancelMergedPullRequestTasks records merged PR state before accepting whil
         },
       },
     ),
+    /Failed to cancel 1 merged PR task/,
   );
 
   assert.deepEqual(stopCalls, ['task-1', 'task-1']);
