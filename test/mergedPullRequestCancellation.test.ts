@@ -113,14 +113,16 @@ describe('cancelMergedPullRequestTasks', () => {
   test('cancels all active PR tasks for merged PR closes', async () => {
     const redisClient = createRedisClient();
     const callOrder: string[] = [];
-    mockGetActiveTasksForPR.mock.mockImplementation(async (_repository: string, _prNumber: number, options?: { forceQueueScan?: boolean }) => (
-      options?.forceQueueScan
-        ? []
-        : [
+    let lookupCount = 0;
+    mockGetActiveTasksForPR.mock.mockImplementation(async () => {
+      lookupCount += 1;
+      return lookupCount === 1
+        ? [
             { taskId: 'task-running', state: 'processing' },
             { taskId: 'job-queued', state: 'waiting' },
           ]
-    ));
+        : [];
+    });
     mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => {
       callOrder.push(`stop:${taskId}`);
       return {
@@ -151,6 +153,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 2);
     assert.deepStrictEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
     assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0].arguments, ['integry/propr', 1463, {
+      forceQueueScan: true,
       log: mockLogger,
       stoppableOnly: true,
     }]);
@@ -212,6 +215,7 @@ describe('cancelMergedPullRequestTasks', () => {
 
     assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 1);
     assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0]?.arguments, ['integry/propr', 1463, {
+      forceQueueScan: true,
       log: mockLogger,
       stoppableOnly: true,
     }]);
@@ -219,13 +223,15 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockMarkPullRequestMerged.mock.calls.length, 1);
   });
 
-  test('uses indexed lookup first and only forces a queue scan when queued work needs verification', async () => {
+  test('force-scans queue-backed work on the initial merged-PR discovery pass', async () => {
     const redisClient = createRedisClient();
-    mockGetActiveTasksForPR.mock.mockImplementation(async (_repository: string, _prNumber: number, options?: { forceQueueScan?: boolean }) => (
-      options?.forceQueueScan
+    let lookupCount = 0;
+    mockGetActiveTasksForPR.mock.mockImplementation(async () => {
+      lookupCount += 1;
+      return lookupCount === 1
         ? [{ taskId: 'job-hidden', state: 'waiting' }]
-        : [{ taskId: 'job-indexed', state: 'waiting' }]
-    ));
+        : [];
+    });
     mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => ({
       success: true,
       message: 'cancelled',
@@ -249,6 +255,7 @@ describe('cancelMergedPullRequestTasks', () => {
 
     assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 2);
     assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0]?.arguments, ['integry/propr', 1463, {
+      forceQueueScan: true,
       log: mockLogger,
       stoppableOnly: true,
     }]);
@@ -259,7 +266,7 @@ describe('cancelMergedPullRequestTasks', () => {
     }]);
     assert.deepStrictEqual(
       mockStopTaskExecution.mock.calls.map((call) => call.arguments[0]),
-      ['job-indexed', 'job-hidden'],
+      ['job-hidden'],
     );
   });
 
@@ -417,6 +424,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 2);
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 2);
     assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[1]?.arguments, ['integry/propr', 1463, {
+      forceQueueScan: true,
       log: mockLogger,
       stoppableOnly: true,
     }]);
@@ -453,7 +461,69 @@ describe('cancelMergedPullRequestTasks', () => {
     });
 
     assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 1);
+    assert.deepStrictEqual(mockGetActiveTasksForPR.mock.calls[0]?.arguments, ['integry/propr', 1463, {
+      forceQueueScan: true,
+      log: mockLogger,
+      stoppableOnly: true,
+    }]);
     assert.strictEqual(mockStopTaskExecution.mock.calls.length, 1);
+  });
+
+  test('does not retry pending-verification tasks during queued merge rechecks', async () => {
+    const redisClient = createRedisClient();
+    let lookupCount = 0;
+    mockGetActiveTasksForPR.mock.mockImplementation(async () => {
+      lookupCount += 1;
+      return lookupCount === 1
+        ? [
+            { taskId: 'task-processing', state: 'processing' },
+            { taskId: 'job-queued', state: 'waiting' },
+          ]
+        : [{ taskId: 'task-processing', state: 'processing' }];
+    });
+    mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => (
+      taskId === 'task-processing'
+        ? {
+            success: true,
+            message: 'cancelled',
+            taskId,
+            containerStopped: false,
+            jobRemoved: false,
+            stopVerified: false,
+            abortSignalArmed: true,
+            currentState: 'processing',
+            queueState: 'active',
+            cancellation: { code: 'pull_request_merged', message: 'Task cancelled because pull request #1463 was merged.' },
+          }
+        : {
+            success: true,
+            message: 'cancelled',
+            taskId,
+            containerStopped: false,
+            jobRemoved: true,
+            stopVerified: true,
+            abortSignalArmed: false,
+            currentState: null,
+            queueState: 'waiting',
+            cancellation: { code: 'pull_request_merged', message: 'Task cancelled because pull request #1463 was merged.' },
+          }
+    ));
+
+    await assert.doesNotReject(async () => {
+      await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
+        redisClient,
+        markPullRequestMerged: mockMarkPullRequestMerged,
+        getActiveTasksForPR: mockGetActiveTasksForPR,
+        stopTaskExecution: mockStopTaskExecution,
+        log: mockLogger,
+      });
+    });
+
+    assert.strictEqual(mockGetActiveTasksForPR.mock.calls.length, 2);
+    assert.deepStrictEqual(
+      mockStopTaskExecution.mock.calls.map((call) => call.arguments[0]),
+      ['task-processing', 'job-queued'],
+    );
   });
 
   test('fails closed when active PR lookup fails', async () => {

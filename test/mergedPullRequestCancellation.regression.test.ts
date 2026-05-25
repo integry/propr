@@ -113,7 +113,7 @@ test('cancelMergedPullRequestTasks treats abort-only active worker stops as requ
     ),
   );
 
-  assert.deepEqual(loadActiveTasksCalls, [{ forceQueueScan: undefined }]);
+  assert.deepEqual(loadActiveTasksCalls, [{ forceQueueScan: true }]);
   assert.deepEqual(stopCalls, ['task-1']);
 });
 
@@ -142,8 +142,14 @@ test('getActiveTasksForPR includes live queue jobs that are missing from the PR 
     async getJob(jobId: string) {
       return jobId === 'job-1' ? job1 : null;
     },
-    async getJobs() {
-      return [job1, job2];
+    async getJobs(states: string[]) {
+      const matchingJobs = [];
+      for (const job of [job1, job2]) {
+        if (states.includes(await job.getState())) {
+          matchingJobs.push(job);
+        }
+      }
+      return matchingJobs;
     },
   };
 
