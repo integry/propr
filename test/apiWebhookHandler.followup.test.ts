@@ -56,6 +56,7 @@ test('duplicate deliveries are rejected before merged-PR cancellation side effec
             callOrder.push('redis.set');
             return null;
         }),
+        get: mock.fn(async () => null),
         del: mock.fn(async () => 1),
     };
     const processor = mock.fn(async () => {
@@ -94,6 +95,7 @@ test('merged-PR cancellation failures shorten the delivery reservation TTL when 
     const response = createResponse();
     const redis = {
         set: mock.fn(async () => 'OK'),
+        get: mock.fn(async () => redis.set.mock.calls[0]?.arguments[1] as string),
         del: mock.fn(async () => {
             throw new Error('redis unavailable');
         }),
@@ -117,14 +119,16 @@ test('merged-PR cancellation failures shorten the delivery reservation TTL when 
     assert.strictEqual(response.statusCode, 500);
     assert.strictEqual(response.body, 'Merged pull request task cancellation failed.');
     assert.strictEqual(redis.set.mock.calls.length, 2);
+    const reservationToken = redis.set.mock.calls[0]?.arguments[1];
+    assert.strictEqual(typeof reservationToken, 'string');
     assert.deepStrictEqual(redis.set.mock.calls[0]?.arguments, [
         'webhook:delivery:delivery-1',
-        '1',
+        reservationToken,
         { NX: true, EX: 300 },
     ]);
     assert.deepStrictEqual(redis.set.mock.calls[1]?.arguments, [
         'webhook:delivery:delivery-1',
-        '1',
+        reservationToken,
         { EX: 30 },
     ]);
     assert.strictEqual(redis.del.mock.calls.length, 1);
@@ -139,6 +143,7 @@ test('processor failures after successful merged-PR cancellation keep delivery r
     const response = createResponse();
     const redis = {
         set: mock.fn(async () => 'OK'),
+        get: mock.fn(async () => null),
         del: mock.fn(async () => 1),
     };
 
@@ -162,7 +167,7 @@ test('processor failures after successful merged-PR cancellation keep delivery r
     assert.strictEqual(redis.del.mock.calls.length, 0);
     assert.deepStrictEqual(redis.set.mock.calls[0]?.arguments, [
         'webhook:delivery:delivery-1',
-        '1',
+        redis.set.mock.calls[0]?.arguments[1],
         { NX: true, EX: 300 },
     ]);
 });

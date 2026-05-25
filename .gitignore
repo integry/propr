@@ -28,7 +28,6 @@ src/**/*.d.ts
 
 # Local image cache for AI processing (issue/PR specific)
 .propr/assets/
-.propr/test-private-key.pem
 
 # E2E test reports (generated per run)
 test/reports/

@@ -56,6 +56,7 @@ function createMockRedisClient() {
       store.set(key, { value, ex: opts?.EX });
       return 'OK';
     },
+    get: async (key: string) => store.get(key)?.value ?? null,
     del: async (key: string) => {
       const existed = store.delete(key);
       return existed ? 1 : 0;
@@ -340,6 +341,29 @@ describe('Webhook Replay Protection', () => {
         assert.strictEqual(result.status, 400);
         assert.strictEqual(result.body, 'Invalid JSON payload.');
         assert.ok(!parseRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key should not be reserved when JSON parsing fails first');
+      } finally {
+        await new Promise<void>((resolve) => parseServer.close(() => resolve()));
+      }
+    });
+
+    test('rejects non-object JSON before reserving the delivery ID', async () => {
+      const parseRedis = createMockRedisClient();
+      const parseApp = createTestApp(parseRedis);
+      const parseServer = parseApp.listen(0);
+      await new Promise<void>((resolve) => parseServer.on('listening', resolve));
+
+      try {
+        const body = 'null';
+        const deliveryId = 'delivery-null-payload';
+        const result = await sendWebhook(parseServer, body, {
+          'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+          'x-github-delivery': deliveryId,
+          'x-github-event': 'issues',
+        });
+
+        assert.strictEqual(result.status, 400);
+        assert.strictEqual(result.body, 'Invalid JSON payload.');
+        assert.ok(!parseRedis.store.has(`webhook:delivery:${deliveryId}`), 'delivery key should not be reserved for non-object JSON');
       } finally {
         await new Promise<void>((resolve) => parseServer.close(() => resolve()));
       }

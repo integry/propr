@@ -283,10 +283,14 @@ function setupWebhookRoute(): void {
     try {
       await handleWebhookRequest(req, res, {
         webhookSecret: process.env.GH_WEBHOOK_SECRET,
-        redis: { set: (key, value, opts) => opts
-          ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
-          : redisClient.set(key, value) as Promise<string | null>,
-        del: (key) => redisClient.del(key) },
+        redis: {
+          set: (key, value, opts) => opts
+            ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
+            : redisClient.set(key, value) as Promise<string | null>,
+          get: (key) => redisClient.get(key),
+          del: (key) => redisClient.del(key),
+          eval: (script, opts) => redisClient.eval(script, opts),
+        },
         processor: (payload, event, cid, deliveryId) => processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId),
         correlationId,
         mergeTaskCancellation: { redisClient },

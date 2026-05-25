@@ -129,7 +129,7 @@ export async function stopTaskExecution(
   let queueStateAfterFailure: string | null = null;
 
   if (queueRemovalShouldPrecedeAbort) {
-    ({ jobRemoved, queueStateAfterFailure } = await removeQueuedJobBeforeStateCreation(context, activity, deps));
+    ({ jobRemoved, queueStateAfterFailure } = await removeQueuedJobAfterStateCreation(context, activity, deps));
   } else {
     await ensureContextTaskStateForCancellation(context, deps);
   }
@@ -296,13 +296,14 @@ function shouldRemoveQueueJobBeforeArmingAbort(activity: ReturnType<typeof getSt
     && !activity.hasContainerToStop;
 }
 
-async function removeQueuedJobBeforeStateCreation(
+async function removeQueuedJobAfterStateCreation(
   context: StopTaskContext,
   activity: ReturnType<typeof getStopTaskActivity>,
   deps: StopTaskExecutionDeps,
 ): Promise<{ jobRemoved: boolean; queueStateAfterFailure: string | null }> {
+  await ensureContextTaskStateForCancellation(context, deps);
   const removalResult = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
-  if (removalResult.jobRemoved || removalResult.queueStateAfterFailure === 'active') {
+  if (removalResult.queueStateAfterFailure === 'active') {
     await ensureContextTaskStateForCancellation(context, deps);
   }
   return removalResult;

@@ -119,14 +119,14 @@ test('cancelMergedPullRequestTasks rechecks abort-only worker stops before treat
   assert.deepEqual(stopCalls, ['task-1']);
 });
 
-test('cancelMergedPullRequestTasks treats accepted abort-only stops as pending success', async () => {
+test('cancelMergedPullRequestTasks fails accepted abort-only stops that remain active after retry', async () => {
   process.env.NODE_ENV = 'test';
   const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
   const markMergedCalls: Array<{ repository: string; prNumber: number }> = [];
   const loadActiveTasksCalls: string[][] = [];
   const stopCalls: string[] = [];
 
-  await assert.doesNotReject(
+  await assert.rejects(
     cancelMergedPullRequestTasks(
       {
         action: 'closed',
@@ -154,11 +154,12 @@ test('cancelMergedPullRequestTasks treats accepted abort-only stops as pending s
         },
       },
     ),
+    /Failed to cancel 1 merged PR task/,
   );
 
-  assert.deepEqual(stopCalls, ['task-1']);
-  assert.equal(loadActiveTasksCalls.length, 2);
-  assert.deepEqual(markMergedCalls, [{ repository: 'acme/widgets', prNumber: 42 }]);
+  assert.deepEqual(stopCalls, ['task-1', 'task-1']);
+  assert.equal(loadActiveTasksCalls.length, 3);
+  assert.deepEqual(markMergedCalls, []);
 });
 
 test('getActiveTasksForPR includes matching jobs from the live queue', async () => {

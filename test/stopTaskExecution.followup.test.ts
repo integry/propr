@@ -528,7 +528,54 @@ test('stopTaskExecution records the cancellation reason only after a verified st
         'Task cancelled because pull request #42 was merged.',
         'Task cancelled successfully.',
     ]);
-    assert.deepStrictEqual(sideEffects, ['queue.remove', 'ensure.state']);
+    assert.deepStrictEqual(sideEffects, ['ensure.state', 'queue.remove']);
+});
+
+test('stopTaskExecution does not remove a queued job when cancellation state creation fails', async () => {
+    const redisClient = createRedisClient();
+    const queueJob = {
+        id: 'queue-job-state-fail-1',
+        data: {
+            repository: 'owner/repo',
+            prNumber: 42,
+        },
+        remove: mock.fn(async () => undefined),
+        getState: mock.fn(async () => 'waiting'),
+    };
+
+    await assert.rejects(
+        stopTaskExecution(
+            'queue-job-state-fail-1',
+            {
+                redisClient,
+                requestedBy: 'system',
+                cancellation: {
+                    code: 'pull_request_merged',
+                    message: 'Task cancelled because pull request #42 was merged.',
+                },
+            },
+            {
+                loadStopTaskContext: async () => ({
+                    normalizedTaskId: 'queue-job-state-fail-1',
+                    state: null,
+                    currentState: null,
+                    queueJob: queueJob as never,
+                    queueState: 'waiting',
+                    taskId: 'task-state-fail-1',
+                    abortTaskIds: ['task-state-fail-1', 'queue-job-state-fail-1'],
+                }),
+                ensureTaskStateForCancellation: async () => {
+                    throw new Error('state creation failed');
+                },
+                getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+                stopDockerContainer,
+            },
+        ),
+        /state creation failed/,
+    );
+
+    assert.strictEqual(queueJob.remove.mock.calls.length, 0);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
 });
 
 test('isBenignQueueRemovalRace only accepts active removal races', () => {

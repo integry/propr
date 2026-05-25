@@ -6,6 +6,10 @@ import {
   isMergedPullRequestClose,
   type MergeTaskCancellationDeps,
 } from './mergedPullRequestCancellation.js';
+import {
+  releaseDeliveryReservationForRetry,
+  type WebhookDeliveryReservationRedis,
+} from './webhookDeliveryReservation.js';
 
 /**
  * Default TTL for webhook delivery deduplication keys in Redis (seconds).
@@ -16,7 +20,6 @@ import {
  * your Redis capacity and expected webhook volume.
  */
 const DEFAULT_DELIVERY_TTL_SECONDS = 300;
-const FAILED_CANCELLATION_RETRY_TTL_SECONDS = 30;
 
 export const WEBHOOK_DELIVERY_TTL_SECONDS: number = (() => {
   const env = process.env.WEBHOOK_DELIVERY_TTL_SECONDS;
@@ -69,10 +72,7 @@ function requireSingleHeader(
 
 export interface WebhookHandlerDeps {
   webhookSecret: string | undefined;
-  redis: {
-    set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => Promise<string | null>;
-    del: (key: string) => Promise<number>;
-  };
+  redis: WebhookDeliveryReservationRedis;
   processor: (payload: Record<string, unknown>, event: string, correlationId: string, deliveryId: string) => Promise<void>;
   correlationId: string;
   mergeTaskCancellation?: MergeTaskCancellationDeps;
@@ -88,15 +88,12 @@ type ParsedWebhookPayload = {
   [key: string]: unknown;
 };
 
-type WebhookRedisClient = WebhookHandlerDeps['redis'];
-
-interface DeliveryReservationRetryReleaseResult {
-  released: boolean;
-  retryTtlShortened: boolean;
-}
-
 function toSupportedEventSet(supportedEvents: Iterable<string>): ReadonlySet<string> {
   return supportedEvents instanceof Set ? supportedEvents : new Set(supportedEvents);
+}
+
+function isWebhookPayloadObject(payload: unknown): payload is ParsedWebhookPayload {
+  return typeof payload === 'object' && payload !== null && !Array.isArray(payload);
 }
 
 async function verifyWebhookSignature(
@@ -150,6 +147,7 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
   rawEvent: string;
   correlationId: string;
   deliveryKey: string;
+  deliveryReservationToken: string;
   redis: WebhookHandlerDeps['redis'];
   mergeTaskCancellation: MergeTaskCancellationDeps;
   cancelMergedPullRequestTasksFn: typeof cancelMergedPullRequestTasks;
@@ -160,6 +158,7 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
     rawEvent,
     correlationId,
     deliveryKey,
+    deliveryReservationToken,
     redis,
     mergeTaskCancellation,
     cancelMergedPullRequestTasksFn,
@@ -172,6 +171,7 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
     const deliveryReservationRetry = await releaseDeliveryReservationForRetry({
       redis,
       deliveryKey,
+      reservationToken: deliveryReservationToken,
       payload,
       rawDeliveryId,
       rawEvent,
@@ -235,94 +235,6 @@ async function runWebhookProcessorOrRetry(params: {
       error: (error as Error).message,
     }, 'Merged PR task cancellation succeeded but downstream webhook processing failed; keeping webhook delivery reservation to avoid replaying downstream side effects');
     res.status(500).send('Webhook processor failed after merged pull request task cancellation.');
-    return false;
-  }
-}
-
-async function releaseDeliveryReservationForRetry(params: {
-  redis: WebhookRedisClient;
-  deliveryKey: string;
-  payload: ParsedWebhookPayload;
-  rawDeliveryId: string;
-  rawEvent: string;
-  correlationId: string;
-  log: Pick<typeof logger, 'error'>;
-  failureContext: string;
-}): Promise<DeliveryReservationRetryReleaseResult> {
-  const {
-    redis,
-    deliveryKey,
-    payload,
-    rawDeliveryId,
-    rawEvent,
-    correlationId,
-    log,
-    failureContext,
-  } = params;
-  try {
-    const deletedKeys = await redis.del(deliveryKey);
-    if (deletedKeys > 0) {
-      return { released: true, retryTtlShortened: false };
-    }
-
-    const retryTtlShortened = await shortenDeliveryReservationRetryTtl({
-      redis,
-      deliveryKey,
-      payload,
-      rawDeliveryId,
-      rawEvent,
-      correlationId,
-      log,
-      failureContext,
-    });
-    return { released: false, retryTtlShortened };
-  } catch (releaseError) {
-    const retryTtlShortened = await shortenDeliveryReservationRetryTtl({
-      redis,
-      deliveryKey,
-      payload,
-      rawDeliveryId,
-      rawEvent,
-      correlationId,
-      log,
-      failureContext,
-    });
-    log.error({
-      correlationId,
-      deliveryId: rawDeliveryId,
-      event: rawEvent,
-      repository: payload.repository?.full_name,
-      prNumber: payload.pull_request?.number,
-      error: (releaseError as Error).message,
-      deliveryReservationRetryTtlShortened: retryTtlShortened,
-    }, `Failed to release webhook delivery reservation after ${failureContext}`);
-    return { released: false, retryTtlShortened };
-  }
-}
-
-async function shortenDeliveryReservationRetryTtl(params: {
-  redis: WebhookRedisClient;
-  deliveryKey: string;
-  payload: ParsedWebhookPayload;
-  rawDeliveryId: string;
-  rawEvent: string;
-  correlationId: string;
-  log: Pick<typeof logger, 'error'>;
-  failureContext: string;
-}): Promise<boolean> {
-  const { redis, deliveryKey, payload, rawDeliveryId, rawEvent, correlationId, log, failureContext } = params;
-  try {
-    await redis.set(deliveryKey, '1', { EX: FAILED_CANCELLATION_RETRY_TTL_SECONDS });
-    return true;
-  } catch (ttlUpdateError) {
-    log.error({
-      correlationId,
-      deliveryId: rawDeliveryId,
-      event: rawEvent,
-      repository: payload.repository?.full_name,
-      prNumber: payload.pull_request?.number,
-      error: (ttlUpdateError as Error).message,
-    }, `Failed to shorten webhook delivery reservation TTL after ${failureContext}`);
     return false;
   }
 }
@@ -395,6 +307,11 @@ export async function handleWebhookRequest(
     res.status(400).send('Invalid JSON payload.');
     return;
   }
+  if (!isWebhookPayloadObject(payload)) {
+    logger.error({ deliveryId: rawDeliveryId }, 'Webhook JSON body must be an object');
+    res.status(400).send('Invalid JSON payload.');
+    return;
+  }
 
   logger.info({
     event: rawEvent,
@@ -405,7 +322,8 @@ export async function handleWebhookRequest(
 
   // --- Replay protection: reject duplicate delivery IDs via Redis NX ---
   const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
-  const isNew = await redis.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
+  const deliveryReservationToken = crypto.randomUUID();
+  const isNew = await redis.set(deliveryKey, deliveryReservationToken, { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
   if (!isNew) {
     logger.warn({ deliveryId: rawDeliveryId, event: rawEvent }, 'Duplicate webhook delivery rejected');
     res.status(409).send('Duplicate webhook delivery.');
@@ -424,6 +342,7 @@ export async function handleWebhookRequest(
         rawEvent,
         correlationId,
         deliveryKey,
+        deliveryReservationToken,
         redis,
         mergeTaskCancellation,
         cancelMergedPullRequestTasksFn,

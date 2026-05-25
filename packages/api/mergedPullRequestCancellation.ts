@@ -95,7 +95,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds, firstAttempt.acceptedTaskIds),
+    ignoredTaskIds: firstAttempt.verifiedTaskIds,
   });
   if (remainingAfterFirstAttempt.length === 0) {
     await persistMergedState(deps.redisClient, repository, prNumber);
@@ -126,9 +126,7 @@ export async function cancelMergedPullRequestTasks(
     log,
     ignoredTaskIds: mergeTaskIdSets(
       firstAttempt.verifiedTaskIds,
-      firstAttempt.acceptedTaskIds,
       retryAttempt.verifiedTaskIds,
-      retryAttempt.acceptedTaskIds,
     ),
   });
   if (finalActiveTasks.length === 0) {
@@ -176,7 +174,6 @@ async function stopMergeTasks(params: {
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<{
   verifiedTaskIds: Set<string>;
-  acceptedTaskIds: Set<string>;
   failures: Map<string, MergeTaskCancellationFailure>;
 }> {
   const {
@@ -190,7 +187,6 @@ async function stopMergeTasks(params: {
     log,
   } = params;
   const verifiedTaskIds = new Set<string>();
-  const acceptedTaskIds = new Set<string>();
   const failures = new Map<string, MergeTaskCancellationFailure>();
 
   for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
@@ -208,10 +204,6 @@ async function stopMergeTasks(params: {
           verifiedTaskIds.add(result.taskId);
         }
         if (!result.stopVerified) {
-          if (result.cancellationRequested || result.abortSignalArmed) {
-            acceptedTaskIds.add(task.taskId);
-            acceptedTaskIds.add(result.taskId);
-          }
           log.info({
             correlationId,
             repository,
@@ -238,7 +230,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { verifiedTaskIds, acceptedTaskIds, failures };
+  return { verifiedTaskIds, failures };
 }
 
 async function loadBlockingMergeCancellationTasks(params: {
