@@ -18,8 +18,7 @@ import { safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
-import { clearPendingPrQueueJob, markPrQueueJobPending, trackPrQueueJob } from './prQueueJobIndex.js';
-import { discardFreshQueueJobAfterMerge, shouldSkipEnqueueForMergedPullRequest } from './mergedPrQueueHelpers.js';
+import { shouldSkipEnqueueForMergedPullRequest } from './mergedPrQueueHelpers.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -756,50 +755,12 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
             return;
         }
 
-        await markPrQueueJobPending(queue as never, repository, prNumber, jobId);
-
-        let queuedJob;
-        try {
-            queuedJob = await queue.add('processPullRequestComment', jobData, {
-                jobId,
-                delay: COMMENT_BATCH_DELAY_MS,
-                attempts: 3,
-                backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
-            });
-        } catch (error) {
-            await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
-            throw error;
-        }
-
-        if (await shouldSkipEnqueueForMergedPullRequest({
-            redisClient,
-            repository,
-            prNumber,
-            log: correlatedLogger,
-            mergedMessage: 'PR merged during comment enqueue; discarding freshly-queued job',
-            lookupFailureMessage: 'Failed to verify PR merge state after enqueuing comment follow-up; failing so GitHub can retry',
-        })) {
-            await discardFreshQueueJobAfterMerge({
-                queuedJob,
-                queue: queue as never,
-                redisClient,
-                repository,
-                prNumber,
-                jobId,
-                log: correlatedLogger,
-                removedMessage: 'Removed freshly-queued PR comment job because the PR merged during enqueue',
-                removalFailureMessage: 'Failed to remove freshly-queued PR comment job after merge; set abort signals instead',
-                pendingIndexClearFailureMessage: 'Failed to clear pending PR queue-job index entry after merge',
-                trackFailureMessage: 'Failed to move merged PR comment job into the tracked queue-job index',
-            });
-            return;
-        }
-
-        try {
-            await trackPrQueueJob(queue as never, repository, prNumber, jobId);
-        } catch (error) {
-            correlatedLogger.warn({ repository, pullRequestNumber: prNumber, jobId, error: (error as Error).message }, 'Failed to update PR queue-job index after comment enqueue');
-        }
+        await queue.add('processPullRequestComment', jobData, {
+            jobId,
+            delay: COMMENT_BATCH_DELAY_MS,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
+        });
         await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
         correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {

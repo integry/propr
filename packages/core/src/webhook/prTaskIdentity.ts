@@ -46,20 +46,6 @@ export function getPrNumberFromJobData(jobData: PrTaskJobData): number | null {
   return null;
 }
 
-export function buildPrQueueJobContext(queueJob: QueueJobIdentityLike): { repository: string; prNumber: number; jobId: string } | null {
-  const repository = getRepositoryFromJobData(queueJob.data);
-  const prNumber = getPrNumberFromJobData(queueJob.data);
-  if (!repository || prNumber === null || queueJob.id === null || queueJob.id === undefined) {
-    return null;
-  }
-
-  return {
-    repository,
-    prNumber,
-    jobId: String(queueJob.id),
-  };
-}
-
 export function getTaskIdFromQueueJob(queueJob: QueueJobIdentityLike): string | null {
   if (typeof queueJob.id === 'string') {
     return normalizeTaskId(queueJob.id);
@@ -109,10 +95,6 @@ export function buildIssueRefFromQueueJob(queueJob: QueueJobIdentityLike): Issue
     ...(typeof jobData.subtitle === 'string' ? { subtitle: jobData.subtitle } : {}),
     ...(prNumber !== null ? { pullRequestNumber: prNumber, type: getQueueJobIssueType(queueJob) } : {}),
   };
-}
-
-export function isPullRequestQueueJob(jobData: PrTaskJobData): boolean {
-  return getPrNumberFromJobData(jobData) !== null;
 }
 
 function getTaskNumber(jobData: PrTaskJobData): number | null {

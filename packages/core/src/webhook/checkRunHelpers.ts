@@ -5,12 +5,6 @@ import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
 import { STOPPABLE_TASK_STATES, TERMINAL_TASK_STATES } from '../utils/workerStateManager.types.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
-import {
-    getPendingPrQueueJobs,
-    getTrackedPrQueueJobs,
-    TRACKED_PR_QUEUE_STATES,
-    TRACKED_PR_QUEUE_STATE_SET
-} from './prQueueJobIndex.js';
 import { getPrNumberFromJobData, getRepositoryFromJobData, getTaskIdFromQueueJob, normalizeTaskId } from './prTaskIdentity.js';
 
 export interface MergePROptions {
@@ -642,7 +636,8 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
     }
 }
 
-const PR_QUEUE_STATE_SET = TRACKED_PR_QUEUE_STATE_SET;
+const TRACKED_PR_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
+const TRACKED_PR_QUEUE_STATE_SET = new Set<string>(TRACKED_PR_QUEUE_STATES);
 
 export interface PRTaskActivity {
     taskId: string;
@@ -655,25 +650,21 @@ interface ActiveTaskRow {
     state: string;
 }
 
-interface IndexedQueueTaskActivity {
-    taskId: string;
-    state: string;
-    aliases: string[];
-}
-
 export interface GetActiveTasksForPRDeps {
     getIssueQueue?: typeof getIssueQueue;
     db?: typeof db;
     log?: Pick<typeof logger, 'info' | 'warn'>;
+    /**
+     * Kept for older callers. Queue discovery is now always a live scan so PR
+     * cancellation has one source of truth.
+     */
     forceQueueScan?: boolean;
     stoppableOnly?: boolean;
 }
 
 /**
  * Returns active or queued task references for a PR.
- * Queue-backed entries use the BullMQ job id as their task id when no worker state exists yet.
- * This helper is intentionally read-only. Queue index maintenance lives in the enqueue/cancellation
- * paths so callers can reason about this lookup without hidden side effects.
+ * Queue-backed entries use the BullMQ job id when no worker state exists yet.
  */
 export async function getActiveTasksForPR(
     repository: string,
@@ -686,43 +677,7 @@ export async function getActiveTasksForPR(
         const queue = await (deps.getIssueQueue ?? getIssueQueue)();
         const database = deps.db ?? db;
         const log = deps.log ?? logger;
-        const trackedQueueJobs = await getTrackedPrQueueJobs(queue as never, repository, prNumber);
-        const pendingQueueJobs = await getPendingPrQueueJobs(queue as never, repository, prNumber);
-        const indexedTrackedQueueJobs = await loadIndexedQueueTaskActivities({
-            queue,
-            queueJobs: trackedQueueJobs,
-        });
-        const indexedPendingQueueJobs = await loadIndexedQueueTaskActivities({
-            queue,
-            queueJobs: pendingQueueJobs,
-        });
-
-        for (const job of indexedTrackedQueueJobs) {
-            registerActiveTask(
-                taskMap,
-                taskAliases,
-                { taskId: job.taskId, state: job.state },
-                job.aliases,
-            );
-        }
-        for (const job of indexedPendingQueueJobs) {
-            registerActiveTask(
-                taskMap,
-                taskAliases,
-                { taskId: job.taskId, state: job.state },
-                job.aliases,
-            );
-        }
-
-        if (deps.forceQueueScan === true) {
-            await addQueuedPrJobsFromFallbackScan({
-                queue,
-                repository,
-                prNumber,
-                taskMap,
-                taskAliases,
-            });
-        }
+        await addQueuedPrJobsFromLiveQueueScan({ queue, repository, prNumber, taskMap, taskAliases });
 
         const activeTasksQuery = database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -741,12 +696,6 @@ export async function getActiveTasksForPR(
             : await activeTasksQuery.whereNotIn('task_history.state', TERMINAL_TASK_STATES)) as ActiveTaskRow[];
 
         for (const task of activeTasks) {
-            const dedupeKey = resolveActiveTaskKey(taskMap, taskAliases, [task.job_id, task.task_id]);
-            if (taskMap.has(dedupeKey)) {
-                registerActiveTask(taskMap, taskAliases, { taskId: task.task_id, state: task.state }, [task.job_id]);
-                continue;
-            }
-
             registerActiveTask(taskMap, taskAliases, { taskId: task.task_id, state: task.state }, [task.job_id]);
         }
 
@@ -766,7 +715,7 @@ export async function getActiveTasksForPR(
     }
 }
 
-async function addQueuedPrJobsFromFallbackScan(params: {
+async function addQueuedPrJobsFromLiveQueueScan(params: {
     queue: Awaited<ReturnType<typeof getIssueQueue>>;
     repository: string;
     prNumber: number;
@@ -782,51 +731,19 @@ async function addQueuedPrJobsFromFallbackScan(params: {
                 continue;
             }
 
-            const queueJobId = String(job.id);
+            const queueJobId = job.id === undefined || job.id === null
+                ? getTaskIdFromQueueJob(job)
+                : String(job.id);
+            if (!queueJobId) {
+                continue;
+            }
+
             registerActiveTask(taskMap, taskAliases, { taskId: queueJobId, state: trackedQueueState }, [
-                getQueueTaskAlias(queueJobId),
+                normalizeTaskId(queueJobId),
                 getTaskIdFromQueueJob(job),
             ]);
         }
     }
-}
-
-async function loadIndexedQueueTaskActivities(params: {
-    queue: Awaited<ReturnType<typeof getIssueQueue>>;
-    queueJobs: Array<{ jobId: string; state: string }>;
-}): Promise<IndexedQueueTaskActivity[]> {
-    const { queueJobs } = params;
-    const resolvedQueueJobs = await Promise.all(queueJobs.map((queueJob) => loadIndexedQueueTaskActivity({
-        ...params,
-        queueJob,
-    })));
-
-    return resolvedQueueJobs.filter((queueJob): queueJob is IndexedQueueTaskActivity => queueJob !== null);
-}
-
-async function loadIndexedQueueTaskActivity(params: {
-    queue: Awaited<ReturnType<typeof getIssueQueue>>;
-    queueJob: { jobId: string; state: string };
-}): Promise<IndexedQueueTaskActivity | null> {
-    const { queue, queueJob } = params;
-    const resolvedQueueJob = await queue.getJob(queueJob.jobId);
-    if (!resolvedQueueJob) {
-        return null;
-    }
-
-    const queueState = await resolvedQueueJob.getState();
-    if (!TRACKED_PR_QUEUE_STATE_SET.has(queueState)) {
-        return null;
-    }
-
-    return {
-        taskId: queueJob.jobId,
-        state: queueState,
-        aliases: [
-            getQueueTaskAlias(queueJob.jobId),
-            getTaskIdFromQueueJob(resolvedQueueJob),
-        ].filter((alias): alias is string => Boolean(alias)),
-    };
 }
 
 function registerActiveTask(
@@ -875,11 +792,6 @@ function resolveActiveTaskKey(
     return '';
 }
 
-function getQueueTaskAlias(jobId: string): string | null {
-    const normalizedTaskId = normalizeTaskId(jobId);
-    return normalizedTaskId === jobId ? null : normalizedTaskId;
-}
-
 /**
  * Checks if there are any active (non-terminal) tasks for a given PR.
  * This is used to prevent auto-merge while a followup task is still running.
@@ -897,9 +809,9 @@ export async function hasActiveTasksForPR(
         const taskList = await getActiveTasksForPR(repository, prNumber, deps);
         return {
             hasActive: taskList.length > 0,
-            activeTasks: taskList.filter(task => !PR_QUEUE_STATE_SET.has(task.state)),
+            activeTasks: taskList.filter(task => !TRACKED_PR_QUEUE_STATE_SET.has(task.state)),
             queuedJobs: taskList
-                .filter(task => PR_QUEUE_STATE_SET.has(task.state))
+                .filter(task => TRACKED_PR_QUEUE_STATE_SET.has(task.state))
                 .map(task => ({ jobId: task.taskId, state: task.state })),
         };
     } catch (error) {

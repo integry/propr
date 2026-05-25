@@ -26,7 +26,6 @@ import {
   hasConcreteStopOutcome,
 } from './stopTaskExecutionOutcome.js';
 import {
-  clearPrQueueJobIndexEntriesIfNeeded,
   getStopTaskSuccessMessage,
   removeQueueJobIfNeeded,
   stopTaskContainer,
@@ -135,7 +134,6 @@ export async function stopTaskExecution(
   });
   const { jobRemoved, queueStateAfterFailure } = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
   const effectiveQueueState = queueStateAfterFailure ?? context.queueState;
-  if (jobRemoved) await clearPrQueueJobIndexEntriesIfNeeded(context.queueJob, deps);
   const stopOutcome = mergeStopOutcomes(persistedStopOutcome, {
     containerId,
     containerStopped,

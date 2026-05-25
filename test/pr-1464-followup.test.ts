@@ -7,7 +7,6 @@ process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
 const { getActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
-const { closeConnection } = await import('../packages/core/src/db/connection.ts');
 const { stopTaskExecution } = await import('../packages/api/routes/stopTaskExecution.ts');
 const { ensureTaskStateForCancellation } = await import('../packages/api/routes/stopTaskExecutionContext.ts');
 
@@ -15,58 +14,14 @@ type QueueState = 'waiting' | 'active' | 'delayed' | 'paused' | 'prioritized' | 
 
 interface MockJob {
   id: string;
-  name?: string;
   data: Record<string, unknown>;
   getState: () => Promise<QueueState>;
-  remove?: () => Promise<void>;
 }
 
-function createQueueIndexClient(initialMembers: Record<string, string[]>) {
-  const sets = new Map<string, Set<string>>(
-    Object.entries(initialMembers).map(([key, members]) => [key, new Set(members)]),
-  );
-
+function createQueueMock(jobs: MockJob[]) {
   return {
-    sets,
-    async expire(): Promise<void> {},
-    async sAdd(key: string, ...members: string[]): Promise<void> {
-      const set = sets.get(key) ?? new Set<string>();
-      for (const member of members) {
-        set.add(member);
-      }
-      sets.set(key, set);
-    },
-    async sRem(key: string, ...members: string[]): Promise<void> {
-      const set = sets.get(key);
-      if (!set) {
-        return;
-      }
-      for (const member of members) {
-        set.delete(member);
-      }
-    },
-    async sMembers(key: string): Promise<string[]> {
-      return [...(sets.get(key) ?? new Set<string>())];
-    },
-  };
-}
-
-function createQueueMock(params: {
-  trackedJobIds?: string[];
-  pendingJobIds?: string[];
-  jobs: MockJob[];
-}) {
-  const { trackedJobIds = [], pendingJobIds = [], jobs } = params;
-  const client = createQueueIndexClient({
-    'pr-queue-jobs:integry/propr:1464': trackedJobIds,
-    'pr-pending-queue-jobs:integry/propr:1464': pendingJobIds,
-  });
-  const jobsById = new Map(jobs.map((job) => [job.id, job]));
-
-  const queue = {
-    client: Promise.resolve(client),
     async getJob(jobId: string) {
-      return jobsById.get(jobId) ?? null;
+      return jobs.find((job) => job.id === jobId) ?? null;
     },
     async getJobs(states: string[]) {
       const matchingJobs: MockJob[] = [];
@@ -78,8 +33,6 @@ function createQueueMock(params: {
       return matchingJobs;
     },
   };
-
-  return { client, queue };
 }
 
 function createMockJob(id: string, state: QueueState, data: Record<string, unknown>): MockJob {
@@ -102,7 +55,9 @@ function createTaskQueryDbMock(rows: Array<{ task_id: string; job_id: string | n
     whereNotIn: async (_column: string, states: readonly string[]) => rows.filter((row) => !states.includes(row.state)),
   };
 
-  return (() => chain) as unknown as typeof import('@propr/core').db;
+  return Object.assign(() => chain, {
+    raw: () => 'raw',
+  }) as unknown as typeof import('@propr/core').db;
 }
 
 const silentLog = {
@@ -110,65 +65,21 @@ const silentLog = {
   warn(): void {},
 };
 
-test.after(async () => {
-  await closeConnection();
-});
-
-test('getActiveTasksForPR force-scans queued jobs without mutating the PR queue index', async () => {
-  const indexedJob = createMockJob('indexed-job', 'active', {
-    repository: 'integry/propr',
-    prNumber: 1464,
-  });
-  const scannedJob = createMockJob('scanned-job', 'waiting', {
-    repository: 'integry/propr',
-    prNumber: 1464,
-  });
-  const { client, queue } = createQueueMock({
-    trackedJobIds: ['indexed-job'],
-    jobs: [indexedJob, scannedJob],
-  });
+test('getActiveTasksForPR finds PR jobs by scanning the live queue', async () => {
+  const queue = createQueueMock([
+    createMockJob('comment-job', 'waiting', { repository: 'integry/propr', prNumber: 1464 }),
+    createMockJob('other-job', 'active', { repository: 'integry/propr', prNumber: 999 }),
+  ]);
 
   const tasks = await getActiveTasksForPR('integry/propr', 1464, {
     getIssueQueue: async () => queue as never,
-    db: createTaskQueryDbMock([]),
+    db: createTaskQueryDbMock([{ task_id: 'persisted-task', job_id: null, state: 'processing' }]),
     log: silentLog,
-    forceQueueScan: true,
   });
 
   assert.deepEqual(
     tasks.map((task) => `${task.taskId}:${task.state}`).sort(),
-    ['indexed-job:active', 'scanned-job:waiting'],
-  );
-  assert.deepEqual(
-    [...(client.sets.get('pr-queue-jobs:integry/propr:1464') ?? new Set<string>())].sort(),
-    ['indexed-job'],
-  );
-});
-
-test('getActiveTasksForPR reads pending queue jobs without promoting index state', async () => {
-  const pendingJob = createMockJob('pending-job', 'waiting', {
-    repository: 'integry/propr',
-    prNumber: 1464,
-  });
-  const { client, queue } = createQueueMock({
-    pendingJobIds: ['pending-job'],
-    jobs: [pendingJob],
-  });
-
-  const tasks = await getActiveTasksForPR('integry/propr', 1464, {
-    getIssueQueue: async () => queue as never,
-    db: createTaskQueryDbMock([]),
-    log: silentLog,
-  });
-
-  assert.deepEqual(tasks, [{ taskId: 'pending-job', state: 'waiting' }]);
-  assert.deepEqual(
-    [...(client.sets.get('pr-queue-jobs:integry/propr:1464') ?? new Set<string>())],
-    [],
-  );
-  assert.deepEqual(
-    [...(client.sets.get('pr-pending-queue-jobs:integry/propr:1464') ?? new Set<string>())],
-    ['pending-job'],
+    ['comment-job:waiting', 'persisted-task:processing'],
   );
 });
 
@@ -242,9 +153,7 @@ test('stopTaskExecution does not persist merged-PR cancellation metadata for abo
   assert.equal(markTaskCancelledCalls.length, 0);
   assert.deepEqual(
     conversationMessages.map((entry) => entry.message.content),
-    [
-      'Cancellation requested. Worker shutdown is still in progress.',
-    ],
+    ['Cancellation requested. Worker shutdown is still in progress.'],
   );
 });
 

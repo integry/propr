@@ -2,15 +2,12 @@ import type { Job } from 'bullmq';
 import {
   buildIssueRefFromQueueJob,
   db,
-  getPendingPrQueueJobs,
   getIssueQueue,
   getPrNumberFromJobData,
-  getTrackedPrQueueJobs,
   getStateManager,
   getTaskIdFromQueueJob,
   logger,
   normalizeTaskId as normalizeCoreTaskId,
-  TRACKED_PR_QUEUE_STATES,
 } from '@propr/core';
 
 export type QueueJobData = Record<string, unknown>;
@@ -63,6 +60,8 @@ interface ResolvedPersistedTaskContext {
 type RedisClientLike = {
   get: (key: string) => Promise<string | null>;
 };
+
+const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 
 export function normalizeTaskId(jobId: string): string {
   return normalizeCoreTaskId(jobId);
@@ -197,8 +196,6 @@ async function resolvePersistedTaskContext(
       persistedTask?.taskId,
     ].filter((value): value is string => Boolean(value)),
     loadQueue: deps.getIssueQueue,
-    repository: persistedTask?.repository ?? null,
-    prNumber: persistedTask?.prNumber ?? null,
   });
   const queueTaskId = queueJob ? getTaskIdFromQueueJob(queueJob) : null;
 
@@ -239,14 +236,10 @@ async function loadTaskState(
 async function getQueueJob(params: {
   candidateTaskIds: string[];
   loadQueue?: typeof getIssueQueue;
-  repository?: string | null;
-  prNumber?: number | null;
 }): Promise<Job<QueueJobData> | null> {
   const {
     candidateTaskIds,
     loadQueue = getIssueQueue,
-    repository = null,
-    prNumber = null,
   } = params;
   const queue = await loadQueue();
   const uniqueCandidates = [...new Set(candidateTaskIds.filter((value): value is string => Boolean(value)))];
@@ -262,19 +255,6 @@ async function getQueueJob(params: {
     return null;
   }
 
-  if (repository && prNumber !== null) {
-    const prScopedJob = await findPrScopedQueueJob({
-      queue,
-      repository,
-      prNumber,
-      candidateTaskIdSet,
-      uniqueCandidates,
-    });
-    if (prScopedJob) {
-      return prScopedJob;
-    }
-  }
-
   if (typeof queue.getJobs !== 'function') {
     return null;
   }
@@ -282,59 +262,12 @@ async function getQueueJob(params: {
   return findQueueJobByTaskIdScan(queue, candidateTaskIdSet, uniqueCandidates);
 }
 
-async function findPrScopedQueueJob(params: {
-  queue: Awaited<ReturnType<typeof getIssueQueue>>;
-  repository: string;
-  prNumber: number;
-  candidateTaskIdSet: Set<string>;
-  uniqueCandidates: string[];
-}): Promise<Job<QueueJobData> | null> {
-  const {
-    queue,
-    repository,
-    prNumber,
-    candidateTaskIdSet,
-    uniqueCandidates,
-  } = params;
-  const indexedQueueJobs = [
-    ...await getTrackedPrQueueJobs(queue as never, repository, prNumber),
-    ...await getPendingPrQueueJobs(queue as never, repository, prNumber),
-  ];
-  const uniqueQueueJobs = [...new Map(indexedQueueJobs.map((job) => [job.jobId, job])).values()];
-
-  for (const indexedQueueJob of uniqueQueueJobs) {
-    const job = await queue.getJob(indexedQueueJob.jobId) as Job<QueueJobData> | undefined;
-    if (!job) {
-      continue;
-    }
-
-    const derivedTaskId = getTaskIdFromQueueJob(job);
-    const normalizedJobId = job.id === null || job.id === undefined ? null : normalizeTaskId(String(job.id));
-    if (
-      (derivedTaskId && candidateTaskIdSet.has(derivedTaskId))
-      || (normalizedJobId && candidateTaskIdSet.has(normalizedJobId))
-    ) {
-      logger.info({
-        taskReferenceCandidates: uniqueCandidates,
-        repository,
-        prNumber,
-        queueJobId: job.id === null || job.id === undefined ? null : String(job.id),
-        derivedTaskId,
-        queueState: indexedQueueJob.state,
-      }, 'Resolved queued task stop lookup via PR-scoped queue-job index');
-      return job;
-    }
-  }
-
-  return null;
-}
-
 async function findQueueJobByTaskIdScan(
   queue: Awaited<ReturnType<typeof getIssueQueue>>,
   candidateTaskIdSet: Set<string>,
   uniqueCandidates: string[],
 ): Promise<Job<QueueJobData> | null> {
-  const jobs = await queue.getJobs([...TRACKED_PR_QUEUE_STATES]) as unknown as Job<QueueJobData>[];
+  const jobs = await queue.getJobs([...TRACKED_QUEUE_STATES]) as unknown as Job<QueueJobData>[];
   for (const job of jobs) {
     const derivedTaskId = getTaskIdFromQueueJob(job);
     const normalizedJobId = job.id === null || job.id === undefined ? null : normalizeTaskId(String(job.id));

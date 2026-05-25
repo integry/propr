@@ -127,17 +127,7 @@ export { handleCommentDeleted, handleCommentEdited, processCommentEvent, setUltr
 export type { CommentPayload, CommentEventConfig, CommentEventType, UltrafixDeps } from './webhook/commentEventHandler.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
 export { hasPullRequestMerged, markPullRequestMerged } from './webhook/prMergeState.js';
-export {
-    clearPendingPrQueueJob,
-    clearTrackedPrQueueJob,
-    getPendingPrQueueJobs,
-    getTrackedPrQueueJobs,
-    markPrQueueJobPending,
-    trackPrQueueJob,
-    TRACKED_PR_QUEUE_STATES,
-    TRACKED_PR_QUEUE_STATE_SET
-} from './webhook/prQueueJobIndex.js';
-export { buildIssueRefFromQueueJob, buildPrQueueJobContext, getPrNumberFromJobData, getRepositoryFromJobData, getTaskIdFromQueueJob, isPullRequestQueueJob, normalizeTaskId } from './webhook/prTaskIdentity.js';
+export { buildIssueRefFromQueueJob, getPrNumberFromJobData, getRepositoryFromJobData, getTaskIdFromQueueJob, normalizeTaskId } from './webhook/prTaskIdentity.js';
 export { parseSlashCommand, buildCommandMeta } from './webhook/slashCommandParser.js';
 export type { ParsedSlashCommand, SlashCommandName, CommandMeta, ReviewCommandMeta, FixCommandMeta, MergeCommandMeta, UltrafixCommandMeta } from './webhook/slashCommandParser.js';
 export { handlePullRequestConflictDetection, handlePushConflictDetection, handleMergeCommand } from './webhook/mergeConflictDetector.js';

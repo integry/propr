@@ -1,4 +1,4 @@
-import { logger, STOPPABLE_TASK_STATES, TERMINAL_TASK_STATES, TRACKED_PR_QUEUE_STATES } from '@propr/core';
+import { logger, STOPPABLE_TASK_STATES, TERMINAL_TASK_STATES } from '@propr/core';
 import type { Job } from 'bullmq';
 import type { QueueJobData, TaskState } from './stopTaskExecutionContext.js';
 import { hasConcreteStopOutcome, type PersistedStopOutcome } from './stopTaskExecutionOutcome.js';
@@ -17,7 +17,7 @@ const RUNNING_TASK_STATES = new Set<string>(STOPPABLE_TASK_STATES);
 const CONTAINER_TASK_STATES = new Set(['claude_execution', 'post_processing']);
 const TERMINAL_TASK_STATE_SET = new Set<string>(TERMINAL_TASK_STATES);
 const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed']);
-const PRE_START_QUEUE_STATES = new Set<string>(TRACKED_PR_QUEUE_STATES.filter((state) => state !== 'active'));
+const PRE_START_QUEUE_STATES = new Set(['waiting', 'delayed', 'paused', 'prioritized', 'waiting-children']);
 
 export function getStopTaskActivity(
   currentState: string | null,

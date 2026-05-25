@@ -115,11 +115,11 @@ test('cancelMergedPullRequestTasks rechecks abort-only worker stops before treat
     ),
   );
 
-  assert.deepEqual(loadActiveTasksCalls, [{ forceQueueScan: true }, { forceQueueScan: undefined }]);
+  assert.deepEqual(loadActiveTasksCalls, [{ forceQueueScan: true }, { forceQueueScan: true }]);
   assert.deepEqual(stopCalls, ['task-1']);
 });
 
-test('getActiveTasksForPR includes live queue jobs that are missing from the PR queue index when forced', async () => {
+test('getActiveTasksForPR includes matching jobs from the live queue', async () => {
   process.env.NODE_ENV = 'test';
   const { getActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
   const job1 = {
@@ -137,10 +137,6 @@ test('getActiveTasksForPR includes live queue jobs that are missing from the PR 
     },
   };
   const queue = {
-    client: Promise.resolve({
-      expire: async () => 1,
-      sMembers: async (key: string) => (key.includes('pr-pending-queue-jobs') ? [] : ['job-1']),
-    }),
     async getJob(jobId: string) {
       return jobId === 'job-1' ? job1 : null;
     },

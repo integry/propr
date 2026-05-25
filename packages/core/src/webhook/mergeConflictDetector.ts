@@ -4,8 +4,7 @@ import { loadAutoResolveMergeConflicts } from '../config/configManager.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getMergeConflictIdempotencyKey } from '../utils/constants.js';
 import { generateCorrelationId } from '../utils/logger.js';
-import { clearPendingPrQueueJob, markPrQueueJobPending, trackPrQueueJob } from './prQueueJobIndex.js';
-import { discardFreshQueueJobAfterMerge, shouldSkipEnqueueForMergedPullRequest } from './mergedPrQueueHelpers.js';
+import { shouldSkipEnqueueForMergedPullRequest } from './mergedPrQueueHelpers.js';
 import type { MergeConflictJobData } from '../queue/taskQueue.types.js';
 import type { PullRequestEvent, PushEvent } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
@@ -99,43 +98,7 @@ async function detectAndEnqueueForPR(
         return { outcome: 'skipped_merged', prNumber, repository };
     }
 
-    await markPrQueueJobPending(queue as never, repository, prNumber, jobId);
-    let queuedJob;
-    try {
-        queuedJob = await queue.add('processMergeConflict', jobData, { jobId });
-    } catch (error) {
-        await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
-        throw error;
-    }
-    if (await shouldSkipEnqueueForMergedPullRequest({
-        redisClient,
-        repository,
-        prNumber,
-        log,
-        mergedMessage: 'Merge conflict detection: PR merged during enqueue; discarding freshly-queued job',
-        lookupFailureMessage: 'Merge conflict detection: failed to verify PR merge state after enqueue; failing so GitHub can retry',
-    })) {
-        await discardFreshQueueJobAfterMerge({
-            queuedJob,
-            queue: queue as never,
-            redisClient,
-            repository,
-            prNumber,
-            jobId,
-            log,
-            removedMessage: 'Merge conflict detection: removed freshly-queued job because PR merged during enqueue',
-            removalFailureMessage: 'Merge conflict detection: failed to remove freshly-queued job after merge; set abort signals instead',
-            pendingIndexClearFailureMessage: 'Merge conflict detection: failed to clear pending PR queue-job index entry after merge',
-            trackFailureMessage: 'Merge conflict detection: failed to move merged PR job into the tracked queue-job index',
-        });
-        return { outcome: 'skipped_merged', prNumber, repository };
-    }
-
-    try {
-        await trackPrQueueJob(queue as never, repository, prNumber, jobId);
-    } catch (error) {
-        log.warn({ repository, prNumber, jobId, error: (error as Error).message }, 'Merge conflict detection: failed to update PR queue-job index');
-    }
+    await queue.add('processMergeConflict', jobData, { jobId });
 
     // Mark as queued in Redis
     await redisClient.setex(idempotencyKey, IDEMPOTENCY_TTL_SECONDS, Date.now().toString());
@@ -277,43 +240,7 @@ export async function handleMergeCommand(
         return null;
     }
 
-    await markPrQueueJobPending(queue as never, repository, prNumber, jobId);
-    let queuedJob;
-    try {
-        queuedJob = await queue.add('processMergeConflict', jobData, { jobId });
-    } catch (error) {
-        await clearPendingPrQueueJob(queue as never, repository, prNumber, jobId);
-        throw error;
-    }
-    if (await shouldSkipEnqueueForMergedPullRequest({
-        redisClient: options.redisClient,
-        repository,
-        prNumber,
-        log,
-        mergedMessage: '/merge command: PR merged during enqueue; discarding freshly-queued job',
-        lookupFailureMessage: '/merge command: failed to verify PR merge state after enqueue; failing so GitHub can retry',
-    })) {
-        await discardFreshQueueJobAfterMerge({
-            queuedJob,
-            queue: queue as never,
-            redisClient: options.redisClient,
-            repository,
-            prNumber,
-            jobId,
-            log,
-            removedMessage: '/merge command: removed freshly-queued job because the PR merged during enqueue',
-            removalFailureMessage: '/merge command: failed to remove freshly-queued job after merge; set abort signals instead',
-            pendingIndexClearFailureMessage: 'Merge conflict detection: failed to clear pending PR queue-job index entry after merge',
-            trackFailureMessage: 'Merge conflict detection: failed to move merged PR job into the tracked queue-job index',
-        });
-        return null;
-    }
-
-    try {
-        await trackPrQueueJob(queue as never, repository, prNumber, jobId);
-    } catch (error) {
-        log.warn({ repository, prNumber, jobId, error: (error as Error).message }, '/merge command: failed to update PR queue-job index');
-    }
+    await queue.add('processMergeConflict', jobData, { jobId });
 
     log.info({
         repository,

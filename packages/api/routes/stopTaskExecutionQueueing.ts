@@ -1,14 +1,9 @@
 import type { Job } from 'bullmq';
 import {
-  buildPrQueueJobContext,
-  clearPendingPrQueueJob,
-  clearTrackedPrQueueJob,
-  getIssueQueue,
   logger,
   stopDockerContainer,
 } from '@propr/core';
 import type { RedisClientType } from 'redis';
-import type { StopTaskExecutionDeps } from './stopTaskExecution.js';
 import { pushStopConversationMessage } from './stopTaskExecutionPersistence.js';
 import type { QueueJobData } from './stopTaskExecutionContext.js';
 
@@ -83,31 +78,6 @@ export async function removeQueueJobIfNeeded(
       return { jobRemoved: false, queueStateAfterFailure: queueState };
     }
     throw error;
-  }
-}
-
-export async function clearPrQueueJobIndexEntriesIfNeeded(
-  queueJob: Job<QueueJobData> | null,
-  deps: StopTaskExecutionDeps,
-): Promise<void> {
-  const prJobContext = queueJob ? buildPrQueueJobContext(queueJob) : null;
-  if (!prJobContext) {
-    return;
-  }
-
-  try {
-    const queue = await (deps.getIssueQueue ?? getIssueQueue)();
-    await Promise.all([
-      clearTrackedPrQueueJob(queue as never, prJobContext.repository, prJobContext.prNumber, prJobContext.jobId),
-      clearPendingPrQueueJob(queue as never, prJobContext.repository, prJobContext.prNumber, prJobContext.jobId),
-    ]);
-  } catch (error) {
-    logger.warn({
-      repository: prJobContext.repository,
-      prNumber: prJobContext.prNumber,
-      jobId: prJobContext.jobId,
-      error: (error as Error).message,
-    }, 'Failed to clear PR queue-job index entries after queued task cancellation');
   }
 }
 

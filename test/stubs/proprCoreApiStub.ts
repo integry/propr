@@ -1,6 +1,14 @@
-export const TRACKED_PR_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 export const STOPPABLE_TASK_STATES = ['processing', 'claude_execution', 'post_processing'] as const;
 export const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'] as const;
+export const SUPPORTED_WEBHOOK_EVENTS = [
+  'issues',
+  'issue_comment',
+  'pull_request_review_comment',
+  'pull_request',
+  'check_run',
+  'status',
+  'push',
+] as const;
 
 export const logger = {
   info: () => {},
@@ -52,16 +60,8 @@ export function buildIssueRefFromQueueJob() {
   return null;
 }
 
-export async function getPendingPrQueueJobs(): Promise<never[]> {
-  return [];
-}
-
 export function getPrNumberFromJobData() {
   return null;
-}
-
-export async function getTrackedPrQueueJobs(): Promise<never[]> {
-  return [];
 }
 
 export function getTaskIdFromQueueJob() {
@@ -71,11 +71,3 @@ export function getTaskIdFromQueueJob() {
 export function normalizeTaskId(taskId: string): string {
   return taskId;
 }
-
-export function buildPrQueueJobContext() {
-  return null;
-}
-
-export async function clearPendingPrQueueJob(): Promise<void> {}
-
-export async function clearTrackedPrQueueJob(): Promise<void> {}
