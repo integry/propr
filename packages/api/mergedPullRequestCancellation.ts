@@ -64,10 +64,10 @@ export async function cancelMergedPullRequestTasks(
     source: MERGE_CANCELLATION_REASON_CODE,
   };
   const persistMergedState = deps.markPullRequestMerged ?? markPullRequestMerged;
-  await persistMergedState(deps.redisClient, repository, prNumber);
 
   const initialTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
   if (initialTasks.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
   }
@@ -95,9 +95,10 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds, firstAttempt.acceptedTaskIds),
+    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds),
   });
   if (remainingAfterFirstAttempt.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     return;
   }
 
@@ -125,12 +126,11 @@ export async function cancelMergedPullRequestTasks(
     log,
     ignoredTaskIds: mergeTaskIdSets(
       firstAttempt.verifiedTaskIds,
-      firstAttempt.acceptedTaskIds,
       retryAttempt.verifiedTaskIds,
-      retryAttempt.acceptedTaskIds,
     ),
   });
   if (finalActiveTasks.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     return;
   }
 

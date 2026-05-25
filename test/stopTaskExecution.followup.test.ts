@@ -474,6 +474,10 @@ test('stopTaskExecution still stops the latest Claude container from processing 
     assert.strictEqual(stopDockerContainer.mock.calls.length, 1);
     assert.deepStrictEqual(stopDockerContainer.mock.calls[0]?.arguments, ['container-processing-1', 10]);
     assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), [
+        'worker:abort:task-processing-history-container',
+        'worker:stop-requested:task-processing-history-container',
+    ]);
 });
 
 test('stopTaskExecution records the cancellation reason only after a verified stop', async () => {
@@ -524,7 +528,7 @@ test('stopTaskExecution records the cancellation reason only after a verified st
         'Task cancelled because pull request #42 was merged.',
         'Task cancelled successfully.',
     ]);
-    assert.deepStrictEqual(sideEffects, ['queue.remove', 'ensure.state']);
+    assert.deepStrictEqual(sideEffects, ['ensure.state', 'queue.remove']);
 });
 
 test('isBenignQueueRemovalRace only accepts active removal races', () => {

@@ -162,6 +162,40 @@ test('Docker info reads direct Redis worker state before extended stop context',
   assert.equal(loadStopTaskContext.mock.calls.length, 0);
 });
 
+test('Docker info ignores stale container metadata from terminal task history', async () => {
+  const redisClient = {
+    async get(key: string): Promise<string | null> {
+      if (key !== 'worker:state:task-terminal') {
+        return null;
+      }
+      return JSON.stringify({
+        history: [
+          { state: 'claude_execution', metadata: { containerId: 'container-stale-1' } },
+          { state: 'cancelled' },
+        ],
+      });
+    },
+  };
+  const routes = createDockerRoutes({ redisClient: redisClient as never });
+  const response = {
+    statusCode: 200,
+    body: null as unknown,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body: unknown) {
+      this.body = body;
+      return this;
+    },
+  };
+
+  await routes.getDockerInfo({ params: { taskId: 'task-terminal' } } as never, response as never);
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.body, { error: 'No Docker container info available for this task' });
+});
+
 test('stopTaskExecution records a pending merged-PR cancellation for abort-only active jobs', async () => {
   const setCalls: Array<{ key: string; value: Record<string, unknown> }> = [];
   const delCalls: string[] = [];

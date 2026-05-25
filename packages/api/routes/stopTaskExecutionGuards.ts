@@ -105,7 +105,7 @@ export function shouldKeepAbortSignalsAfterCancellation(params: {
   shouldAbort: boolean;
   stopVerified: boolean;
 }): boolean {
-  return params.shouldAbort;
+  return params.shouldAbort && !params.stopVerified;
 }
 
 export function isStopVerified(params: {

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { execFileSync } from 'child_process';
+import { TERMINAL_TASK_STATES } from '@propr/core';
 import { loadStopTaskContext, normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
 import { stopTaskExecution, StopTaskExecutionError } from './stopTaskExecution.js';
 import type {
@@ -10,6 +11,8 @@ import type {
   StopTaskExecutionResult,
 } from './stopTaskExecution.js';
 import { validateTaskId, validateTailParam } from './validation.js';
+
+const TERMINAL_TASK_STATE_SET = new Set<string>(TERMINAL_TASK_STATES);
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
@@ -182,6 +185,11 @@ async function loadDockerTaskStateFromRedis(
 function getDockerContainerMetadata(
   state: TaskState,
 ): { containerId: string | null; containerName: string | null } {
+  const latestState = state.history[state.history.length - 1]?.state ?? null;
+  if (latestState !== null && TERMINAL_TASK_STATE_SET.has(latestState)) {
+    return { containerId: null, containerName: null };
+  }
+
   const entry = [...state.history].reverse().find(
     (historyEntry) => historyEntry.state === 'claude_execution' && historyEntry.metadata?.containerId,
   );

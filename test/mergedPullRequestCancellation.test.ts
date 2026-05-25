@@ -198,7 +198,7 @@ describe('cancelMergedPullRequestTasks', () => {
     );
 
     assert.equal(mockStopTaskExecution.mock.calls.length, 2);
-    assert.equal(mockMarkPullRequestMerged.mock.calls.length, 1);
+    assert.equal(mockMarkPullRequestMerged.mock.calls.length, 0);
   });
 
   test('fails when an abort-only stop request remains active after the merged-PR retry', async () => {
@@ -232,7 +232,7 @@ describe('cancelMergedPullRequestTasks', () => {
 
     assert.equal(mockGetActiveTasksForPR.mock.calls.length, 3);
     assert.equal(mockStopTaskExecution.mock.calls.length, 2);
-    assert.equal(mockMarkPullRequestMerged.mock.calls.length, 1);
+    assert.equal(mockMarkPullRequestMerged.mock.calls.length, 0);
   });
 
   test('rejects merged PR cancellation when required dependencies are missing', async () => {
