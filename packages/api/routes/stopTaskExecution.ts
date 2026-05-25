@@ -164,15 +164,16 @@ export async function stopTaskExecution(
     shouldAbort,
     queueStateAfterFailure,
   });
-  const shouldPersistCancelledState = shouldMarkTaskCancelled({
-    shouldAbort,
-    containerStopped: stopOutcome.containerStopped,
-    jobRemoved: stopOutcome.jobRemoved,
-  });
-  const shouldRetainAbortSignals = shouldKeepAbortSignalsAfterCancellation({
-    shouldAbort,
-    stopVerified,
-  });
+  const shouldPersistCancelledState = shouldMarkTaskCancelled(stopVerified);
+  if (!shouldPersistCancelledState && shouldAbort) {
+    await pushStopConversationMessage(redisClient, context.taskId, {
+      type: 'system',
+      timestamp: new Date().toISOString(),
+      content: 'Cancellation requested. Worker shutdown is still in progress.',
+      level: 'info',
+      metadata: { reasonCode: cancellation.code, requestedBy },
+    });
+  }
   if (shouldPersistCancelledState) {
     try {
       await persistTaskCancellation({
@@ -194,11 +195,13 @@ export async function stopTaskExecution(
     await pushStopConversationMessage(redisClient, context.taskId, {
       type: 'system',
       timestamp: new Date().toISOString(),
-      content: stopVerified
-        ? 'Task cancelled successfully.'
-        : 'Cancellation requested. Worker shutdown is still in progress.',
+      content: 'Task cancelled successfully.',
       level: 'info',
       metadata: { reasonCode: cancellation.code, requestedBy },
+    });
+    const shouldRetainAbortSignals = shouldKeepAbortSignalsAfterCancellation({
+      shouldAbort,
+      stopVerified,
     });
     if (!shouldRetainAbortSignals) {
       await clearAbortSignals(redisClient, context.abortTaskIds);
@@ -354,12 +357,8 @@ async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]
   }
 }
 
-function shouldMarkTaskCancelled(params: {
-  shouldAbort: boolean;
-  containerStopped: boolean;
-  jobRemoved: boolean;
-}): boolean {
-  return params.containerStopped || params.jobRemoved || params.shouldAbort;
+function shouldMarkTaskCancelled(stopVerified: boolean): boolean {
+  return stopVerified;
 }
 
 function shouldKeepAbortSignalsAfterCancellation(params: {

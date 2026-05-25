@@ -130,6 +130,8 @@ export { hasPullRequestMerged, markPullRequestMerged } from './webhook/prMergeSt
 export {
     clearPendingPrQueueJob,
     clearTrackedPrQueueJob,
+    getPendingPrQueueJobs,
+    getTrackedPrQueueJobs,
     markPrQueueJobPending,
     trackPrQueueJob,
     TRACKED_PR_QUEUE_STATES,

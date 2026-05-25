@@ -1,4 +1,4 @@
-import { getActiveTasksForPR, logger, markPullRequestMerged, TRACKED_PR_QUEUE_STATE_SET } from '@propr/core';
+import { getActiveTasksForPR, logger, markPullRequestMerged } from '@propr/core';
 import {
   StopTaskExecutionError,
   stopTaskExecution,
@@ -67,6 +67,7 @@ export async function cancelMergedPullRequestTasks(
   await persistMergedState(deps.redisClient, repository, prNumber);
 
   const activeTasks = await loadActiveTasks(repository, prNumber, {
+    forceQueueScan: true,
     log,
     stoppableOnly: true,
   });
@@ -209,7 +210,7 @@ async function cancelTaskSet(params: {
         requestedBy: 'system',
         cancellation,
       });
-      if (allowPendingVerification && !result.stopVerified && TRACKED_PR_QUEUE_STATE_SET.has(result.queueState ?? task.state)) {
+      if (allowPendingVerification && !result.stopVerified) {
         log.info({
           correlationId,
           repository,
@@ -217,7 +218,7 @@ async function cancelTaskSet(params: {
           taskId: task.taskId,
           currentState: result.currentState,
           queueState: result.queueState,
-        }, 'Merged PR task stop armed an abort signal but still requires queue-state verification');
+        }, 'Merged PR task stop armed an abort signal but still requires activity verification');
         return { kind: 'pendingVerification' as const, taskId: task.taskId };
       }
       if (!allowPendingVerification && !result.stopVerified) {
@@ -288,7 +289,7 @@ function buildPendingVerificationFailure(
   return {
     taskId,
     status: 409,
-    message: 'Cancellation was requested, but the queue-backed task is still active after verification.',
+    message: 'Cancellation was requested, but the task is still active after verification.',
     currentState: result.currentState,
     queueState: result.queueState,
   };
