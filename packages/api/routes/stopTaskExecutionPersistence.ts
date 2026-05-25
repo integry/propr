@@ -291,8 +291,11 @@ async function isDuplicateConversationMessage(
       if (elapsedMs === null || elapsedMs <= RECENT_DUPLICATE_MESSAGE_WINDOW_MS) {
         return true;
       }
-    } catch {
-      return false;
+    } catch (error) {
+      logger.warn({
+        conversationKey,
+        error: (error as Error).message,
+      }, 'Ignoring malformed conversation message during duplicate stop-message detection');
     }
   }
 

@@ -134,7 +134,7 @@ test('merged-PR cancellation failures shorten the delivery reservation TTL when 
     assert.strictEqual(redis.del.mock.calls.length, 1);
 });
 
-test('processor failures after successful merged-PR cancellation keep delivery reservation', async () => {
+test('processor failures after successful merged-PR cancellation release delivery reservation for retry', async () => {
     const request = createSignedRequest({
         action: 'closed',
         repository: { full_name: 'owner/repo' },
@@ -143,7 +143,7 @@ test('processor failures after successful merged-PR cancellation keep delivery r
     const response = createResponse();
     const redis = {
         set: mock.fn(async () => 'OK'),
-        get: mock.fn(async () => null),
+        get: mock.fn(async () => redis.set.mock.calls[0]?.arguments[1] as string),
         del: mock.fn(async () => 1),
     };
 
@@ -164,7 +164,7 @@ test('processor failures after successful merged-PR cancellation keep delivery r
 
     assert.strictEqual(response.statusCode, 500);
     assert.strictEqual(response.body, 'Webhook processor failed after merged pull request task cancellation.');
-    assert.strictEqual(redis.del.mock.calls.length, 0);
+    assert.deepStrictEqual(redis.del.mock.calls.map((call) => call.arguments[0]), ['webhook:delivery:delivery-1']);
     assert.deepStrictEqual(redis.set.mock.calls[0]?.arguments, [
         'webhook:delivery:delivery-1',
         redis.set.mock.calls[0]?.arguments[1],

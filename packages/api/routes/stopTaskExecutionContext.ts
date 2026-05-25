@@ -323,11 +323,12 @@ async function createTaskStateFromQueueJob(
   const initialJobData = JSON.stringify(queueJob.data);
   const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
   const prNumber = getPrNumberFromJobData(queueJob.data);
+  const queueJobId = String(queueJob.id ?? taskId);
 
   await database('tasks')
     .insert({
       task_id: taskId,
-      job_id: null,
+      job_id: queueJobId,
       correlation_id: correlationId,
       repository,
       issue_number: issueRef.number,
@@ -341,7 +342,6 @@ async function createTaskStateFromQueueJob(
 
   await stateManager.createTaskState(taskId, issueRef, correlationId);
 
-  const queueJobId = String(queueJob.id ?? taskId);
   const updatedRows = await database('tasks')
     .where({ task_id: taskId })
     .andWhere((queryBuilder: Knex.QueryBuilder) => {

@@ -95,7 +95,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: firstAttempt.acceptedTaskIds,
+    ignoredTaskIds: firstAttempt.verifiedTaskIds,
   });
   if (remainingAfterFirstAttempt.length === 0) {
     await persistMergedState(deps.redisClient, repository, prNumber);
@@ -125,8 +125,8 @@ export async function cancelMergedPullRequestTasks(
     prNumber,
     log,
     ignoredTaskIds: mergeTaskIdSets(
-      firstAttempt.acceptedTaskIds,
-      retryAttempt.acceptedTaskIds,
+      firstAttempt.verifiedTaskIds,
+      retryAttempt.verifiedTaskIds,
     ),
   });
   if (finalActiveTasks.length === 0) {
@@ -173,7 +173,7 @@ async function stopMergeTasks(params: {
   prNumber: number;
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<{
-  acceptedTaskIds: Set<string>;
+  verifiedTaskIds: Set<string>;
   failures: Map<string, MergeTaskCancellationFailure>;
 }> {
   const {
@@ -186,7 +186,7 @@ async function stopMergeTasks(params: {
     prNumber,
     log,
   } = params;
-  const acceptedTaskIds = new Set<string>();
+  const verifiedTaskIds = new Set<string>();
   const failures = new Map<string, MergeTaskCancellationFailure>();
 
   for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
@@ -199,9 +199,9 @@ async function stopMergeTasks(params: {
           cancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
         });
-        if (isMergeStopAccepted(result)) {
-          acceptedTaskIds.add(task.taskId);
-          acceptedTaskIds.add(result.taskId);
+        if (result.stopVerified) {
+          verifiedTaskIds.add(task.taskId);
+          verifiedTaskIds.add(result.taskId);
         }
         if (!result.stopVerified) {
           log.info({
@@ -230,14 +230,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { acceptedTaskIds, failures };
-}
-
-function isMergeStopAccepted(result: Awaited<ReturnType<typeof stopTaskExecution>>): boolean {
-  // For merge webhooks, an armed worker abort signal is durable enough to let
-  // the webhook succeed. The worker may still report active until it observes
-  // worker:abort:*, so callers must not require synchronous stop verification.
-  return result.stopVerified || result.cancellationRequested;
+  return { verifiedTaskIds, failures };
 }
 
 async function loadBlockingMergeCancellationTasks(params: {

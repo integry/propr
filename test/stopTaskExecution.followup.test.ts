@@ -528,10 +528,10 @@ test('stopTaskExecution records the cancellation reason only after a verified st
         'Task cancelled because pull request #42 was merged.',
         'Task cancelled successfully.',
     ]);
-    assert.deepStrictEqual(sideEffects, ['queue.remove', 'ensure.state']);
+    assert.deepStrictEqual(sideEffects, ['ensure.state', 'queue.remove']);
 });
 
-test('stopTaskExecution records a queue removal outcome when cancellation state creation fails after removal', async () => {
+test('stopTaskExecution does not remove a queued job when cancellation state creation fails', async () => {
     const redisClient = createRedisClient();
     const queueJob = {
         id: 'queue-job-state-fail-1',
@@ -574,12 +574,8 @@ test('stopTaskExecution records a queue removal outcome when cancellation state 
         /state creation failed/,
     );
 
-    assert.strictEqual(queueJob.remove.mock.calls.length, 1);
-    assert.deepStrictEqual(JSON.parse(redisClient.store.get('worker:stop-outcome:task-state-fail-1') ?? '{}'), {
-        containerId: null,
-        containerStopped: false,
-        jobRemoved: true,
-    });
+    assert.strictEqual(queueJob.remove.mock.calls.length, 0);
+    assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-state-fail-1'), false);
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
 });
 
@@ -668,6 +664,44 @@ test('stopTaskExecution dedupes repeated merge-cancellation conversation message
     assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
         'Cancellation requested. Worker shutdown is still in progress.',
     ]);
+});
+
+test('stopTaskExecution still detects duplicate messages after malformed recent conversation entries', async () => {
+    const redisClient = createRedisClient();
+    redisClient.conversationEntries.set('conversation:task-malformed-message', [
+        '{malformed-json',
+        JSON.stringify({
+            type: 'system',
+            timestamp: new Date().toISOString(),
+            content: 'Cancellation requested. Worker shutdown is still in progress.',
+            level: 'info',
+            metadata: { reasonCode: 'pull_request_merged', requestedBy: 'system' },
+        }),
+    ]);
+
+    await stopTaskExecution('task-malformed-message', {
+        redisClient,
+        requestedBy: 'system',
+        cancellation: {
+            code: 'pull_request_merged',
+            message: 'Task cancelled because pull request #42 was merged.',
+        },
+    }, {
+        loadStopTaskContext: async () => ({
+            normalizedTaskId: 'task-malformed-message',
+            state: { history: [{ state: 'processing' }] },
+            currentState: 'processing',
+            queueJob: { id: 'job-malformed-message' } as never,
+            queueState: 'active',
+            taskId: 'task-malformed-message',
+            abortTaskIds: ['task-malformed-message', 'job-malformed-message'],
+        }),
+        ensureTaskStateForCancellation: async () => {},
+        getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+        stopDockerContainer,
+    });
+
+    assert.deepStrictEqual(redisClient.messages, []);
 });
 
 test('stopTaskExecution does not treat future conversation messages as duplicates', async () => {

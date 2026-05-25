@@ -204,6 +204,9 @@ async function runWebhookProcessorOrRetry(params: {
   rawDeliveryId: string;
   rawEvent: string;
   correlationId: string;
+  deliveryKey: string;
+  deliveryReservationToken: string;
+  redis: WebhookHandlerDeps['redis'];
   processor: WebhookHandlerDeps['processor'];
   isMergedPrClose: boolean | undefined;
   res: Response;
@@ -213,6 +216,9 @@ async function runWebhookProcessorOrRetry(params: {
     rawDeliveryId,
     rawEvent,
     correlationId,
+    deliveryKey,
+    deliveryReservationToken,
+    redis,
     processor,
     isMergedPrClose,
     res,
@@ -226,14 +232,32 @@ async function runWebhookProcessorOrRetry(params: {
       throw error;
     }
 
+    const deliveryReservationRetry = await releaseDeliveryReservationForRetry({
+      redis,
+      deliveryKey,
+      reservationToken: deliveryReservationToken,
+      payload,
+      rawDeliveryId,
+      rawEvent,
+      correlationId,
+      log: logger,
+      failureContext: 'downstream merged PR webhook processing failure',
+    });
+
     logger.error({
       correlationId,
       deliveryId: rawDeliveryId,
       event: rawEvent,
       repository: payload.repository?.full_name,
       prNumber: payload.pull_request?.number,
+      deliveryReservationReleased: deliveryReservationRetry.released,
+      deliveryReservationRetryTtlShortened: deliveryReservationRetry.retryTtlShortened,
       error: (error as Error).message,
-    }, 'Merged PR task cancellation succeeded but downstream webhook processing failed; keeping webhook delivery reservation to avoid replaying downstream side effects');
+    }, deliveryReservationRetry.released
+      ? 'Merged PR task cancellation succeeded but downstream webhook processing failed; released webhook delivery reservation for retry'
+      : deliveryReservationRetry.retryTtlShortened
+        ? 'Merged PR task cancellation succeeded but downstream webhook processing failed; shortened webhook delivery reservation TTL for retry'
+        : 'Merged PR task cancellation succeeded but downstream webhook processing failed; returning 500 but delivery reservation release also failed');
     res.status(500).send('Webhook processor failed after merged pull request task cancellation.');
     return false;
   }
@@ -255,8 +279,8 @@ async function runWebhookProcessorOrRetry(params: {
  * 2. If merge-time task cancellation fails, the reservation is released and
  *    the request returns 500 so GitHub can retry the cancellation attempt.
  * 3. If downstream processing fails after merge-time cancellation succeeds,
- *    the reservation is kept so GitHub retries cannot replay downstream side
- *    effects that may have partially completed before the failure.
+ *    the reservation is released or shortened so GitHub can retry the skipped
+ *    downstream processing path. Cancellation is idempotent.
  */
 export async function handleWebhookRequest(
   req: Request,
@@ -358,6 +382,9 @@ export async function handleWebhookRequest(
     rawDeliveryId,
     rawEvent,
     correlationId,
+    deliveryKey,
+    deliveryReservationToken,
+    redis,
     processor,
     isMergedPrClose,
     res,
