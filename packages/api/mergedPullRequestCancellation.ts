@@ -4,6 +4,7 @@ import {
   markPullRequestMerged,
 } from '@propr/core';
 import {
+  loadPendingStopRequest,
   StopTaskExecutionError,
   stopTaskExecution,
   type StopTaskExecutionOptions,
@@ -36,6 +37,9 @@ interface MergeTaskCancellationFailure {
   queueState: string | null;
 }
 
+const MERGE_TASK_STOP_CONCURRENCY = 5;
+const MERGE_CANCELLATION_REASON_CODE = 'pull_request_merged';
+
 export async function cancelMergedPullRequestTasks(
   payload: Record<string, unknown>,
   correlationId: string,
@@ -55,15 +59,15 @@ export async function cancelMergedPullRequestTasks(
   const loadActiveTasks = deps.getActiveTasksForPR ?? getActiveTasksForPR;
   const stopTask = deps.stopTaskExecution ?? stopTaskExecution;
   const cancellation = {
-    code: 'pull_request_merged',
+    code: MERGE_CANCELLATION_REASON_CODE,
     message: `Task cancelled because pull request #${prNumber} was merged.`,
-    source: 'pull_request_merged',
+    source: MERGE_CANCELLATION_REASON_CODE,
   };
-
-  await (deps.markPullRequestMerged ?? markPullRequestMerged)(deps.redisClient, repository, prNumber);
+  const persistMergedState = deps.markPullRequestMerged ?? markPullRequestMerged;
 
   const initialTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
   if (initialTasks.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
   }
@@ -86,8 +90,16 @@ export async function cancelMergedPullRequestTasks(
     log,
   });
 
-  const remainingAfterFirstAttempt = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
+  const remainingAfterFirstAttempt = await loadBlockingMergeCancellationTasks({
+    loadActiveTasks,
+    repository,
+    prNumber,
+    redisClient: deps.redisClient,
+    log,
+    correlationId,
+  });
   if (remainingAfterFirstAttempt.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     return;
   }
 
@@ -108,8 +120,16 @@ export async function cancelMergedPullRequestTasks(
     prNumber,
     log,
   });
-  const finalActiveTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
+  const finalActiveTasks = await loadBlockingMergeCancellationTasks({
+    loadActiveTasks,
+    repository,
+    prNumber,
+    redisClient: deps.redisClient,
+    log,
+    correlationId,
+  });
   if (finalActiveTasks.length === 0) {
+    await persistMergedState(deps.redisClient, repository, prNumber);
     return;
   }
 
@@ -164,40 +184,89 @@ async function stopMergeTasks(params: {
   } = params;
   const failures = new Map<string, MergeTaskCancellationFailure>();
 
-  await Promise.all(tasks.map(async (task) => {
-    try {
-      const result = await stopTask(task.taskId, {
-        redisClient,
-        requestedBy: 'system',
-        cancellation,
-      });
-      if (!result.stopVerified) {
-        log.info({
+  for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
+    const taskBatch = tasks.slice(index, index + MERGE_TASK_STOP_CONCURRENCY);
+    await Promise.all(taskBatch.map(async (task) => {
+      try {
+        const result = await stopTask(task.taskId, {
+          redisClient,
+          requestedBy: 'system',
+          cancellation,
+        });
+        if (!result.stopVerified) {
+          log.info({
+            correlationId,
+            repository,
+            prNumber,
+            taskId: task.taskId,
+            currentState: result.currentState,
+            queueState: result.queueState,
+          }, 'Merged PR task stop is awaiting worker or queue-state confirmation');
+        }
+      } catch (error) {
+        const failure = buildMergeTaskCancellationFailure(task.taskId, error);
+        failures.set(task.taskId, failure);
+        log.warn({
           correlationId,
           repository,
           prNumber,
           taskId: task.taskId,
-          currentState: result.currentState,
-          queueState: result.queueState,
-        }, 'Merged PR task stop is awaiting worker or queue-state confirmation');
+          status: failure.status,
+          currentState: failure.currentState,
+          queueState: failure.queueState,
+          error: failure.message,
+        }, 'Failed to cancel merged PR task');
       }
-    } catch (error) {
-      const failure = buildMergeTaskCancellationFailure(task.taskId, error);
-      failures.set(task.taskId, failure);
-      log.warn({
-        correlationId,
-        repository,
-        prNumber,
-        taskId: task.taskId,
-        status: failure.status,
-        currentState: failure.currentState,
-        queueState: failure.queueState,
-        error: failure.message,
-      }, 'Failed to cancel merged PR task');
-    }
-  }));
+    }));
+  }
 
   return { failures };
+}
+
+async function loadBlockingMergeCancellationTasks(params: {
+  loadActiveTasks: typeof getActiveTasksForPR;
+  repository: string;
+  prNumber: number;
+  redisClient: StopTaskExecutionOptions['redisClient'];
+  log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+  correlationId: string;
+}): Promise<MergeTaskActivity[]> {
+  const {
+    loadActiveTasks,
+    repository,
+    prNumber,
+    redisClient,
+    log,
+    correlationId,
+  } = params;
+  const activeTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
+  if (activeTasks.length === 0) {
+    return [];
+  }
+
+  const blockingTasks: MergeTaskActivity[] = [];
+  const pendingTaskIds: string[] = [];
+
+  for (const task of activeTasks) {
+    const pendingStopRequest = await loadPendingStopRequest(redisClient, task.taskId);
+    if (pendingStopRequest?.reasonCode === MERGE_CANCELLATION_REASON_CODE) {
+      pendingTaskIds.push(task.taskId);
+      continue;
+    }
+
+    blockingTasks.push(task);
+  }
+
+  if (pendingTaskIds.length > 0) {
+    log.info({
+      correlationId,
+      repository,
+      prNumber,
+      taskIds: pendingTaskIds,
+    }, 'Merged PR cancellation is waiting on worker shutdown for active tasks');
+  }
+
+  return blockingTasks;
 }
 
 function buildFinalFailures(

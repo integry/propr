@@ -1,4 +1,5 @@
 import type { Job } from 'bullmq';
+import type { Knex } from 'knex';
 import {
   buildIssueRefFromQueueJob,
   db,
@@ -154,8 +155,9 @@ async function findPersistedTaskRecord(
 
   const records = await database('tasks')
     .select('task_id', 'job_id', 'repository', 'pr_number')
-    .whereIn('task_id', lookupValues)
-    .orWhereIn('job_id', lookupValues) as Array<{
+    .where((queryBuilder: Knex.QueryBuilder) => {
+      queryBuilder.whereIn('task_id', lookupValues).orWhereIn('job_id', lookupValues);
+    }) as Array<{
       task_id: string;
       job_id: string | null;
       repository: string | null;
@@ -224,10 +226,17 @@ async function loadTaskState(
       continue;
     }
 
-    return {
-      state: JSON.parse(stateData) as TaskState,
-      taskId: candidateTaskId,
-    };
+    try {
+      return {
+        state: JSON.parse(stateData) as TaskState,
+        taskId: candidateTaskId,
+      };
+    } catch (error) {
+      logger.warn({
+        taskId: candidateTaskId,
+        error: (error as Error).message,
+      }, 'Ignoring malformed worker task state during stop lookup');
+    }
   }
 
   return { state: null, taskId: null };
@@ -303,13 +312,19 @@ async function createTaskStateFromQueueJob(
 
   const prNumber = getPrNumberFromJobData(queueJob.data);
   const initialJobData = JSON.stringify(queueJob.data);
-  await (deps.db ?? db)('tasks')
+  const updatedRows = await (deps.db ?? db)('tasks')
     .where({ task_id: taskId })
     .update({
       job_id: String(queueJob.id ?? taskId),
       ...(prNumber !== null ? { pr_number: prNumber } : {}),
       initial_job_data: initialJobData,
     });
+  if (updatedRows === 0) {
+    logger.warn({
+      taskId,
+      queueJobId: String(queueJob.id ?? taskId),
+    }, 'Queued task cancellation created worker state but did not update a persisted task row');
+  }
 }
 
 function resolveStopTaskId(

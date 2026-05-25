@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { loadStopTaskContext, type TaskState } from './stopTaskExecutionContext.js';
 import { stopTaskExecution, StopTaskExecutionError } from './stopTaskExecution.js';
 import type {
@@ -86,7 +86,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
 
       try {
-        const logsOutput = execSync(`docker logs --tail ${tail} ${containerMetadata.containerId}`, {
+        const logsOutput = execFileSync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
           encoding: 'utf8',
           timeout: 10000,
           maxBuffer: 10 * 1024 * 1024,
@@ -151,7 +151,9 @@ async function loadDockerContainerMetadata(
 function getDockerContainerMetadata(
   state: TaskState,
 ): { containerId: string | null; containerName: string | null } {
-  const entry = state.history.find((historyEntry) => historyEntry.state === 'claude_execution' && historyEntry.metadata?.containerId);
+  const entry = [...state.history].reverse().find(
+    (historyEntry) => historyEntry.state === 'claude_execution' && historyEntry.metadata?.containerId,
+  );
   return {
     containerId: entry?.metadata?.containerId ?? null,
     containerName: entry?.metadata?.containerName ?? null,
@@ -160,7 +162,7 @@ function getDockerContainerMetadata(
 
 async function getContainerInfo(containerId: string, containerName?: string): Promise<Record<string, unknown>> {
   try {
-    const statusOutput = execSync(`docker ps -a --filter "id=${containerId}" --format "{{.Status}}"`, {
+    const statusOutput = execFileSync('docker', ['ps', '-a', '--filter', `id=${containerId}`, '--format', '{{.Status}}'], {
       encoding: 'utf8',
       timeout: 5000,
     }).trim();

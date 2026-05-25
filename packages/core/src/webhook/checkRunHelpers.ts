@@ -637,6 +637,7 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
 }
 
 const TRACKED_PR_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
+const PRE_START_PR_QUEUE_STATES = ['waiting', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const TRACKED_PR_QUEUE_STATE_SET = new Set<string>(TRACKED_PR_QUEUE_STATES);
 
 export interface PRTaskActivity {
@@ -677,7 +678,14 @@ export async function getActiveTasksForPR(
         const queue = await (deps.getIssueQueue ?? getIssueQueue)();
         const database = deps.db ?? db;
         const log = deps.log ?? logger;
-        await addQueuedPrJobsFromLiveQueueScan({ queue, repository, prNumber, taskMap, taskAliases });
+        await addQueuedPrJobsFromLiveQueueScan({
+            queue,
+            repository,
+            prNumber,
+            taskMap,
+            taskAliases,
+            stoppableOnly: deps.stoppableOnly === true
+        });
 
         const activeTasksQuery = database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -721,9 +729,18 @@ async function addQueuedPrJobsFromLiveQueueScan(params: {
     prNumber: number;
     taskMap: Map<string, PRTaskActivity>;
     taskAliases: Map<string, string>;
+    stoppableOnly: boolean;
 }): Promise<void> {
-    const { queue, repository, prNumber, taskMap, taskAliases } = params;
-    for (const trackedQueueState of TRACKED_PR_QUEUE_STATES) {
+    const {
+        queue,
+        repository,
+        prNumber,
+        taskMap,
+        taskAliases,
+        stoppableOnly
+    } = params;
+    const queueStates = stoppableOnly ? PRE_START_PR_QUEUE_STATES : TRACKED_PR_QUEUE_STATES;
+    for (const trackedQueueState of queueStates) {
         const jobs = await queue.getJobs([trackedQueueState]);
         for (const job of jobs) {
             const jobData = job.data as unknown as Record<string, unknown>;
@@ -753,7 +770,10 @@ function registerActiveTask(
     aliases: Array<string | null | undefined> = [],
 ): void {
     const dedupeKey = resolveActiveTaskKey(taskMap, taskAliases, [task.taskId, ...aliases]);
-    taskMap.set(dedupeKey, task);
+    const existingTask = taskMap.get(dedupeKey);
+    if (shouldReplaceActiveTask(existingTask, task)) {
+        taskMap.set(dedupeKey, task);
+    }
 
     for (const alias of [dedupeKey, task.taskId, ...aliases]) {
         if (!alias) {
@@ -790,6 +810,24 @@ function resolveActiveTaskKey(
     }
 
     return '';
+}
+
+function shouldReplaceActiveTask(
+    existingTask: PRTaskActivity | undefined,
+    nextTask: PRTaskActivity,
+): boolean {
+    if (!existingTask) {
+        return true;
+    }
+
+    const existingIsQueueState = TRACKED_PR_QUEUE_STATE_SET.has(existingTask.state);
+    const nextIsQueueState = TRACKED_PR_QUEUE_STATE_SET.has(nextTask.state);
+
+    if (existingIsQueueState !== nextIsQueueState) {
+        return existingIsQueueState && !nextIsQueueState;
+    }
+
+    return false;
 }
 
 /**

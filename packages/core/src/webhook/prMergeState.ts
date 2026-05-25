@@ -3,7 +3,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 const MERGED_PR_KEY_PREFIX = 'pr-merged';
 const MERGED_PR_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
 
-type PullRequestMergeStateRedisLike = {
+export type PullRequestMergeStateRedisLike = {
   del?: (key: string) => Promise<unknown>;
   get: (key: string) => Promise<string | null>;
   set?: (key: string, value: string, options?: { EX?: number }) => Promise<unknown>;

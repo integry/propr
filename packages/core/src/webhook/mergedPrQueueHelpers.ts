@@ -1,6 +1,6 @@
 import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
-import { hasPullRequestMerged } from './prMergeState.js';
+import { hasPullRequestMerged, type PullRequestMergeStateRedisLike } from './prMergeState.js';
 
 type LookupFailureBehavior = 'continue' | 'skip' | 'throw';
 type LogLike = Pick<Logger, 'info' | 'warn'>;
@@ -25,7 +25,7 @@ export async function shouldSkipEnqueueForMergedPullRequest(params: {
   } = params;
 
   try {
-    const merged = await hasPullRequestMerged(redisClient as never, repository, prNumber);
+    const merged = await hasPullRequestMerged(createPullRequestMergeRedisAdapter(redisClient), repository, prNumber);
     if (merged) {
       log.info({ repository, prNumber }, mergedMessage);
     }
@@ -45,4 +45,16 @@ export async function shouldSkipEnqueueForMergedPullRequest(params: {
     }
     throw error;
   }
+}
+
+function createPullRequestMergeRedisAdapter(redisClient: Redis): PullRequestMergeStateRedisLike {
+  return {
+    get: (key: string) => redisClient.get(key),
+    set: (key: string, value: string, options?: { EX?: number }) => (
+      options?.EX !== undefined
+        ? redisClient.set(key, value, 'EX', options.EX)
+        : redisClient.set(key, value)
+    ),
+    setex: (key: string, seconds: number, value: string) => redisClient.setex(key, seconds, value),
+  };
 }
