@@ -5,7 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$ROOT_DIR"
 npm ci
+
+# Local validation imports workspace packages through their package entrypoints,
+# so their dist output must exist before API tests run.
 npm --workspace @propr/shared run build
+npm --workspace @propr/core run build
 
 if [ ! -f "$ROOT_DIR/.propr/test-private-key.pem" ]; then
   # Generate an ephemeral local-only test key instead of checking private key material into the repo.

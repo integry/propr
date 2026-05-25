@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { execFileSync } from 'child_process';
-import { TERMINAL_TASK_STATES } from '@propr/core';
+import { logger } from '@propr/core';
 import { loadStopTaskContext, normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
 import { stopTaskExecution, StopTaskExecutionError } from './stopTaskExecution.js';
 import type {
@@ -11,8 +11,6 @@ import type {
   StopTaskExecutionResult,
 } from './stopTaskExecution.js';
 import { validateTaskId, validateTailParam } from './validation.js';
-
-const TERMINAL_TASK_STATE_SET = new Set<string>(TERMINAL_TASK_STATES);
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
@@ -53,7 +51,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
 
       res.json(await getContainerInfo(containerMetadata.containerId, containerMetadata.containerName ?? undefined));
     } catch (error) {
-      console.error('Error in /api/task/:taskId/docker-info:', error);
+      logger.error({ error }, 'Error in /api/task/:taskId/docker-info');
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -103,7 +101,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         throw err;
       }
     } catch (error) {
-      console.error('Error in /api/task/:taskId/docker-logs:', error);
+      logger.error({ error }, 'Error in /api/task/:taskId/docker-logs');
       res.status(500).json({ error: 'Internal server error', message: (error as Error).message });
     }
   }
@@ -129,7 +127,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         res.status(error.status).json(error.body);
         return;
       }
-      console.error('Error in /api/task/:taskId/stop:', error);
+      logger.error({ error }, 'Error in /api/task/:taskId/stop');
       res.status(500).json({ error: 'Internal server error', message: (error as Error).message });
     }
   }
@@ -151,7 +149,7 @@ async function loadDockerContainerMetadata(
   try {
     context = await loadContext(taskReference, redisClient, {});
   } catch (error) {
-    console.warn('Failed to resolve extended task context for Docker metadata lookup:', error);
+    logger.warn({ taskReference, error }, 'Failed to resolve extended task context for Docker metadata lookup');
     return null;
   }
 
@@ -175,7 +173,7 @@ async function loadDockerTaskStateFromRedis(
     try {
       return JSON.parse(stateData) as TaskState;
     } catch (error) {
-      console.warn(`Ignoring malformed worker task state for Docker metadata lookup: ${candidateTaskId}`, error);
+      logger.warn({ taskId: candidateTaskId, error }, 'Ignoring malformed worker task state for Docker metadata lookup');
     }
   }
 
@@ -185,11 +183,6 @@ async function loadDockerTaskStateFromRedis(
 function getDockerContainerMetadata(
   state: TaskState,
 ): { containerId: string | null; containerName: string | null } {
-  const latestState = state.history[state.history.length - 1]?.state ?? null;
-  if (latestState !== null && TERMINAL_TASK_STATE_SET.has(latestState)) {
-    return { containerId: null, containerName: null };
-  }
-
   const entry = [...state.history].reverse().find(
     (historyEntry) => historyEntry.state === 'claude_execution' && historyEntry.metadata?.containerId,
   );
@@ -215,7 +208,7 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
     }
     return { id: containerId, name: containerName ?? null, status: 'removed', logsAvailable: false };
   } catch (error) {
-    console.error('Error getting container info:', error);
+    logger.error({ containerId, error }, 'Error getting container info');
     return {
       id: containerId,
       name: containerName ?? null,

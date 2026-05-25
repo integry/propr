@@ -1,10 +1,24 @@
 import { getStateManager, logger, type TaskState } from '@propr/core';
 import type { RedisClientType } from 'redis';
 import type { StopTaskCancellationReason, StopTaskExecutionDeps } from './stopTaskExecution.js';
+import type { StopTaskContext } from './stopTaskExecutionContext.js';
 
 type RedisConversationClient = Pick<RedisClientType, 'rPush'> & Partial<Pick<RedisClientType, 'lRange'>>;
+type PendingStopRedisClient = Pick<RedisClientType, 'set' | 'rPush'> & Partial<Pick<RedisClientType, 'lRange'>>;
+type PendingStopReadClient = Pick<RedisClientType, 'get'>;
+type PendingStopClearClient = Pick<RedisClientType, 'del'>;
 const RECENT_DUPLICATE_MESSAGE_LIMIT = 5;
 const RECENT_DUPLICATE_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
+const PENDING_STOP_REQUEST_KEY_PREFIX = 'worker:stop-requested';
+const PENDING_STOP_REQUEST_TTL_SECONDS = 24 * 60 * 60;
+
+export interface PendingStopRequest {
+  timestamp: string;
+  requestedBy: string;
+  reasonCode: string;
+  reason: string;
+  source: string;
+}
 
 export async function pushStopConversationMessage(
   redisClient: RedisConversationClient,
@@ -127,6 +141,115 @@ export async function persistPendingTaskCancellationRequest(params: {
     containerId: containerId ?? null,
     abortSignalArmed,
   }, 'Recorded pending task cancellation request');
+}
+
+export async function persistPendingCancellationRequest(params: {
+  redisClient: PendingStopRedisClient;
+  context: StopTaskContext;
+  requestedBy: string;
+  cancellation: StopTaskCancellationReason;
+  resolvedQueueState: string | null;
+  containerId: string | null;
+  abortSignalArmed: boolean;
+  timestamp: string;
+  deps: StopTaskExecutionDeps;
+}): Promise<void> {
+  const {
+    redisClient,
+    context,
+    requestedBy,
+    cancellation,
+    resolvedQueueState,
+    containerId,
+    abortSignalArmed,
+    timestamp,
+    deps,
+  } = params;
+  await persistPendingStopRequest(redisClient, context.abortTaskIds, {
+    timestamp,
+    requestedBy,
+    reasonCode: cancellation.code,
+    reason: cancellation.message,
+    source: cancellation.source ?? 'task_stop',
+  });
+  await persistPendingTaskCancellationRequest({
+    taskId: context.taskId,
+    requestedBy,
+    cancellation,
+    currentState: context.currentState,
+    queueState: resolvedQueueState,
+    containerId,
+    abortSignalArmed,
+    deps,
+  });
+  await pushStopConversationMessage(redisClient, context.taskId, {
+    type: 'system',
+    timestamp: new Date().toISOString(),
+    content: 'Cancellation requested. Worker shutdown is still in progress.',
+    level: 'info',
+    metadata: { reasonCode: cancellation.code, requestedBy },
+  });
+}
+
+export async function loadPendingStopRequest(
+  redisClient: PendingStopReadClient,
+  taskId: string,
+): Promise<PendingStopRequest | null> {
+  const requestData = await redisClient.get(getPendingStopRequestKey(taskId));
+  if (!requestData) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(requestData) as Partial<PendingStopRequest>;
+    if (
+      typeof parsed.timestamp !== 'string'
+      || typeof parsed.requestedBy !== 'string'
+      || typeof parsed.reasonCode !== 'string'
+      || typeof parsed.reason !== 'string'
+      || typeof parsed.source !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      timestamp: parsed.timestamp,
+      requestedBy: parsed.requestedBy,
+      reasonCode: parsed.reasonCode,
+      reason: parsed.reason,
+      source: parsed.source,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function clearPendingStopRequest(
+  redisClient: PendingStopClearClient,
+  taskIds: string[],
+): Promise<void> {
+  for (const taskId of taskIds) {
+    await redisClient.del(getPendingStopRequestKey(taskId));
+  }
+}
+
+async function persistPendingStopRequest(
+  redisClient: Pick<RedisClientType, 'set'>,
+  taskIds: string[],
+  pendingStopRequest: PendingStopRequest,
+): Promise<void> {
+  const stopPayload = JSON.stringify(pendingStopRequest);
+  for (const taskId of taskIds) {
+    await redisClient.set(
+      getPendingStopRequestKey(taskId),
+      stopPayload,
+      { EX: PENDING_STOP_REQUEST_TTL_SECONDS },
+    );
+  }
+}
+
+function getPendingStopRequestKey(taskId: string): string {
+  return `${PENDING_STOP_REQUEST_KEY_PREFIX}:${taskId}`;
 }
 
 function getCancellationSource(cancellation: StopTaskCancellationReason): string {

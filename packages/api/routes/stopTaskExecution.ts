@@ -18,7 +18,8 @@ import {
   shouldKeepAbortSignalsAfterCancellation,
 } from './stopTaskExecutionGuards.js';
 import {
-  persistPendingTaskCancellationRequest,
+  clearPendingStopRequest,
+  persistPendingCancellationRequest,
   persistTaskCancellation,
   pushStopConversationMessage,
 } from './stopTaskExecutionPersistence.js';
@@ -93,16 +94,7 @@ const DEFAULT_STOP_REASON: StopTaskCancellationReason = {
   source: 'task_stop',
 };
 
-const PENDING_STOP_REQUEST_KEY_PREFIX = 'worker:stop-requested';
-const PENDING_STOP_REQUEST_TTL_SECONDS = 24 * 60 * 60;
-
-export interface PendingStopRequest {
-  timestamp: string;
-  requestedBy: string;
-  reasonCode: string;
-  reason: string;
-  source: string;
-}
+export { loadPendingStopRequest, type PendingStopRequest } from './stopTaskExecutionPersistence.js';
 
 export async function stopTaskExecution(
   taskReference: string,
@@ -137,7 +129,7 @@ export async function stopTaskExecution(
   let queueStateAfterFailure: string | null = null;
 
   if (queueRemovalShouldPrecedeAbort) {
-    ({ jobRemoved, queueStateAfterFailure } = await removeQueuedJobAfterStateCreation(context, activity, deps));
+    ({ jobRemoved, queueStateAfterFailure } = await removeQueuedJobBeforeStateCreation(context, activity, deps));
   } else {
     await ensureContextTaskStateForCancellation(context, deps);
   }
@@ -176,6 +168,19 @@ export async function stopTaskExecution(
   const resolvedQueueState = resolveCancellationQueueState(stopOutcome, queueStateAfterFailure ?? context.queueState);
   const stopVerified = isStopVerified({ stopOutcome, shouldAbort: abortSignalArmed });
   const cancellationRequested = abortSignalArmed && !stopVerified;
+  if (cancellationRequested) {
+    await persistPendingCancellationRequest({
+      redisClient,
+      context,
+      requestedBy,
+      cancellation,
+      resolvedQueueState,
+      containerId: stopOutcome.containerId,
+      abortSignalArmed,
+      timestamp,
+      deps,
+    });
+  }
   assertStopApplied({
     activity,
     currentState: context.currentState,
@@ -187,32 +192,6 @@ export async function stopTaskExecution(
     createError: (status, body) => new StopTaskExecutionError(status, body),
   });
   const shouldPersistCancelledState = stopVerified;
-  if (!shouldPersistCancelledState && abortSignalArmed) {
-    await persistPendingStopRequest(redisClient, context.abortTaskIds, {
-      timestamp,
-      requestedBy,
-      reasonCode: cancellation.code,
-      reason: cancellation.message,
-      source: cancellation.source ?? 'task_stop',
-    });
-    await persistPendingTaskCancellationRequest({
-      taskId: context.taskId,
-      requestedBy,
-      cancellation,
-      currentState: context.currentState,
-      queueState: resolvedQueueState,
-      containerId: stopOutcome.containerId,
-      abortSignalArmed,
-      deps,
-    });
-    await pushStopConversationMessage(redisClient, context.taskId, {
-      type: 'system',
-      timestamp: new Date().toISOString(),
-      content: 'Cancellation requested. Worker shutdown is still in progress.',
-      level: 'info',
-      metadata: { reasonCode: cancellation.code, requestedBy },
-    });
-  }
   if (shouldPersistCancelledState) {
     await pushStopConversationMessage(redisClient, context.taskId, {
       type: 'system',
@@ -310,67 +289,6 @@ async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]
   }
 }
 
-export async function loadPendingStopRequest(
-  redisClient: Pick<RedisClientType, 'get'>,
-  taskId: string,
-): Promise<PendingStopRequest | null> {
-  const requestData = await redisClient.get(getPendingStopRequestKey(taskId));
-  if (!requestData) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(requestData) as Partial<PendingStopRequest>;
-    if (
-      typeof parsed.timestamp !== 'string'
-      || typeof parsed.requestedBy !== 'string'
-      || typeof parsed.reasonCode !== 'string'
-      || typeof parsed.reason !== 'string'
-      || typeof parsed.source !== 'string'
-    ) {
-      return null;
-    }
-
-    return {
-      timestamp: parsed.timestamp,
-      requestedBy: parsed.requestedBy,
-      reasonCode: parsed.reasonCode,
-      reason: parsed.reason,
-      source: parsed.source,
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function persistPendingStopRequest(
-  redisClient: Pick<RedisClientType, 'set'>,
-  taskIds: string[],
-  pendingStopRequest: PendingStopRequest,
-): Promise<void> {
-  const stopPayload = JSON.stringify(pendingStopRequest);
-  for (const taskId of taskIds) {
-    await redisClient.set(
-      getPendingStopRequestKey(taskId),
-      stopPayload,
-      { EX: PENDING_STOP_REQUEST_TTL_SECONDS },
-    );
-  }
-}
-
-async function clearPendingStopRequest(
-  redisClient: Pick<RedisClientType, 'del'>,
-  taskIds: string[],
-): Promise<void> {
-  for (const taskId of taskIds) {
-    await redisClient.del(getPendingStopRequestKey(taskId));
-  }
-}
-
-function getPendingStopRequestKey(taskId: string): string {
-  return `${PENDING_STOP_REQUEST_KEY_PREFIX}:${taskId}`;
-}
-
 function shouldRemoveQueueJobBeforeArmingAbort(activity: ReturnType<typeof getStopTaskActivity>): boolean {
   return activity.isQueuePreStart
     && !activity.isRunningTaskState
@@ -378,13 +296,15 @@ function shouldRemoveQueueJobBeforeArmingAbort(activity: ReturnType<typeof getSt
     && !activity.hasContainerToStop;
 }
 
-async function removeQueuedJobAfterStateCreation(
+async function removeQueuedJobBeforeStateCreation(
   context: StopTaskContext,
   activity: ReturnType<typeof getStopTaskActivity>,
   deps: StopTaskExecutionDeps,
 ): Promise<{ jobRemoved: boolean; queueStateAfterFailure: string | null }> {
-  await ensureContextTaskStateForCancellation(context, deps);
   const removalResult = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
+  if (removalResult.jobRemoved || removalResult.queueStateAfterFailure === 'active') {
+    await ensureContextTaskStateForCancellation(context, deps);
+  }
   return removalResult;
 }
 

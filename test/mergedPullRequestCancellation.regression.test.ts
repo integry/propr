@@ -119,6 +119,48 @@ test('cancelMergedPullRequestTasks rechecks abort-only worker stops before treat
   assert.deepEqual(stopCalls, ['task-1']);
 });
 
+test('cancelMergedPullRequestTasks treats accepted abort-only stops as pending success', async () => {
+  process.env.NODE_ENV = 'test';
+  const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
+  const markMergedCalls: Array<{ repository: string; prNumber: number }> = [];
+  const loadActiveTasksCalls: string[][] = [];
+  const stopCalls: string[] = [];
+
+  await assert.doesNotReject(
+    cancelMergedPullRequestTasks(
+      {
+        action: 'closed',
+        repository: { full_name: 'acme/widgets' },
+        pull_request: { number: 42, merged: true },
+      },
+      'corr-1',
+      {
+        redisClient: {} as never,
+        markPullRequestMerged: async (_redisClient, repository, prNumber) => {
+          markMergedCalls.push({ repository, prNumber });
+        },
+        getActiveTasksForPR: async () => {
+          loadActiveTasksCalls.push(['task-1']);
+          return [{ taskId: 'task-1', state: 'claude_execution' }];
+        },
+        stopTaskExecution: async (taskId) => {
+          stopCalls.push(taskId);
+          return createStopResult();
+        },
+        log: {
+          info: () => {},
+          warn: () => {},
+          error: () => {},
+        },
+      },
+    ),
+  );
+
+  assert.deepEqual(stopCalls, ['task-1']);
+  assert.equal(loadActiveTasksCalls.length, 2);
+  assert.deepEqual(markMergedCalls, [{ repository: 'acme/widgets', prNumber: 42 }]);
+});
+
 test('getActiveTasksForPR includes matching jobs from the live queue', async () => {
   process.env.NODE_ENV = 'test';
   const { getActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');

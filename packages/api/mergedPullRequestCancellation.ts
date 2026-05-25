@@ -95,7 +95,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds),
+    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds, firstAttempt.acceptedTaskIds),
   });
   if (remainingAfterFirstAttempt.length === 0) {
     await persistMergedState(deps.redisClient, repository, prNumber);
@@ -126,7 +126,9 @@ export async function cancelMergedPullRequestTasks(
     log,
     ignoredTaskIds: mergeTaskIdSets(
       firstAttempt.verifiedTaskIds,
+      firstAttempt.acceptedTaskIds,
       retryAttempt.verifiedTaskIds,
+      retryAttempt.acceptedTaskIds,
     ),
   });
   if (finalActiveTasks.length === 0) {

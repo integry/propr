@@ -528,7 +528,7 @@ test('stopTaskExecution records the cancellation reason only after a verified st
         'Task cancelled because pull request #42 was merged.',
         'Task cancelled successfully.',
     ]);
-    assert.deepStrictEqual(sideEffects, ['ensure.state', 'queue.remove']);
+    assert.deepStrictEqual(sideEffects, ['queue.remove', 'ensure.state']);
 });
 
 test('isBenignQueueRemovalRace only accepts active removal races', () => {

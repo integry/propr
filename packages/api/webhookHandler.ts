@@ -60,7 +60,7 @@ function requireSingleHeader(
   if (!value || Array.isArray(value)) {
     const reason = Array.isArray(value) ? 'Invalid' : 'Missing';
     const logReason = Array.isArray(value) ? 'Rejecting multi-valued' : 'Missing';
-    console.warn(`[webhook] ${logReason} ${headerName} header`);
+    logger.warn({ headerName }, `${logReason} webhook header`);
     res.status(400).send(`${reason} ${headerName} header.`);
     return null;
   }
@@ -105,26 +105,26 @@ async function verifyWebhookSignature(
   webhookSecret: string | undefined,
 ): Promise<boolean> {
   if (!Buffer.isBuffer(req.body)) {
-    console.error('[webhook] req.body is not a Buffer — expected express.raw() middleware');
+    logger.error('Webhook req.body is not a Buffer; expected express.raw() middleware');
     res.status(500).send('Webhook middleware misconfiguration.');
     return false;
   }
 
   const rawSignature = req.headers['x-hub-signature-256'];
   if (Array.isArray(rawSignature)) {
-    console.error('[webhook] Rejecting multi-valued x-hub-signature-256 header');
+    logger.error('Rejecting multi-valued webhook signature header');
     res.status(401).send('Invalid webhook signature header.');
     return false;
   }
 
   if (!webhookSecret) {
-    console.error('[webhook] GH_WEBHOOK_SECRET is not configured — rejecting request. Set GH_WEBHOOK_SECRET in the environment to accept webhooks. This is a security requirement: all webhook deliveries are rejected until a secret is provisioned.');
+    logger.error('GH_WEBHOOK_SECRET is not configured; rejecting webhook request');
     res.status(500).send('Webhook secret not configured.');
     return false;
   }
 
   if (!rawSignature) {
-    console.error('[webhook] No signature provided');
+    logger.error('No webhook signature provided');
     res.status(401).send('No webhook signature provided.');
     return false;
   }
@@ -136,7 +136,7 @@ async function verifyWebhookSignature(
   const expectedBuf = Buffer.from(computedSignature);
 
   if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-    console.error('[webhook] Signature mismatch');
+    logger.error('Webhook signature mismatch');
     res.status(401).send('Webhook signature mismatch.');
     return false;
   }
@@ -380,27 +380,34 @@ export async function handleWebhookRequest(
   // preventing any downstream processing. Checked before Redis dedup to avoid
   // consuming dedupe keys for events that will never be processed.
   if (!supportedEventSet.has(rawEvent)) {
-    console.log(`[webhook] Ignoring unsupported event type: ${rawEvent}`);
+    logger.info({ event: rawEvent, deliveryId: rawDeliveryId }, 'Ignoring unsupported webhook event type');
     res.status(200).send('Unsupported event type — ignored.');
     return;
   }
 
+  // Keep JSON parsing before delivery reservation so malformed deliveries are
+  // rejected without consuming dedupe TTL for a payload we cannot process.
   let payload: ParsedWebhookPayload;
   try {
     payload = JSON.parse(req.body.toString());
   } catch {
-    console.error(`[webhook] Failed to parse JSON body for delivery ${rawDeliveryId}`);
+    logger.error({ deliveryId: rawDeliveryId }, 'Failed to parse webhook JSON body');
     res.status(400).send('Invalid JSON payload.');
     return;
   }
 
-  console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
+  logger.info({
+    event: rawEvent,
+    action: payload.action,
+    repository: payload.repository?.full_name,
+    deliveryId: rawDeliveryId,
+  }, 'Webhook event received');
 
   // --- Replay protection: reject duplicate delivery IDs via Redis NX ---
   const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
   const isNew = await redis.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
   if (!isNew) {
-    console.warn(`[webhook] Duplicate delivery rejected: ${rawDeliveryId}`);
+    logger.warn({ deliveryId: rawDeliveryId, event: rawEvent }, 'Duplicate webhook delivery rejected');
     res.status(409).send('Duplicate webhook delivery.');
     return;
   }
