@@ -46,6 +46,8 @@ interface ResolvedPersistedTaskContext {
   queueTaskId: string | null;
 }
 
+const TRACKED_QUEUE_LOOKUP_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
+
 type RedisClientLike = {
   get: (key: string) => Promise<string | null>;
 };
@@ -215,12 +217,42 @@ async function getQueueJob(
   loadQueue: typeof getIssueQueue = getIssueQueue,
 ): Promise<Job<QueueJobData> | null> {
   const queue = await loadQueue();
-  for (const candidateTaskId of candidateTaskIds) {
+  const uniqueCandidates = [...new Set(candidateTaskIds.filter((value): value is string => Boolean(value)))];
+  for (const candidateTaskId of uniqueCandidates) {
     const job = await queue.getJob(candidateTaskId) as Job<QueueJobData> | undefined;
     if (job) {
       return job;
     }
   }
+
+  const candidateTaskIdSet = new Set(uniqueCandidates);
+  if (candidateTaskIdSet.size === 0) {
+    return null;
+  }
+  if (typeof queue.getJobs !== 'function') {
+    return null;
+  }
+
+  for (const queueState of TRACKED_QUEUE_LOOKUP_STATES) {
+    const jobs = await queue.getJobs([queueState]) as unknown as Job<QueueJobData>[];
+    for (const job of jobs) {
+      const derivedTaskId = getTaskIdFromQueueJob(job);
+      const normalizedJobId = job.id === null || job.id === undefined ? null : normalizeTaskId(String(job.id));
+      if (
+        (derivedTaskId && candidateTaskIdSet.has(derivedTaskId))
+        || (normalizedJobId && candidateTaskIdSet.has(normalizedJobId))
+      ) {
+        logger.info({
+          taskReferenceCandidates: uniqueCandidates,
+          queueJobId: job.id === null || job.id === undefined ? null : String(job.id),
+          derivedTaskId,
+          queueState,
+        }, 'Resolved queued task stop lookup via fallback task-id scan');
+        return job;
+      }
+    }
+  }
+
   return null;
 }
 

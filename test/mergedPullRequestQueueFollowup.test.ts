@@ -250,6 +250,55 @@ describe('merged PR queue follow-up fixes', () => {
     assert.strictEqual(mockMarkTaskCancelled.mock.calls[0].arguments[0], 'task-running-1');
   });
 
+  test('stopTaskExecution resolves fresh queued issue jobs by canonical task id', async () => {
+    const queueJobId = 'issue-owner-repo-99-12345';
+    const redisClient = createRedisClient();
+    const queueJob = createQueueJob(queueJobId, {
+      repository: 'owner/repo',
+      prNumber: 99,
+      correlationId: 'corr-99',
+    }, 'waiting');
+    const getJobs = mock.fn(async ([queueState]: string[]) => (
+      queueState === 'waiting' ? [queueJob] : []
+    ));
+
+    const result = await stopTaskExecution('owner-repo-99', {
+      redisClient,
+      requestedBy: 'system',
+      cancellation: {
+        code: 'pull_request_merged',
+        message: 'Task cancelled because pull request #99 was merged.',
+      },
+    }, {
+      getIssueQueue: async () => ({
+        getJob: async () => null,
+        getJobs,
+      }) as never,
+      getStateManager: () => ({
+        createTaskState: mockCreateTaskState,
+        markTaskCancelled: mockMarkTaskCancelled,
+      }) as never,
+      db: createTaskUpdateDb() as never,
+      stopDockerContainer: mockStopDockerContainer as never,
+    });
+
+    assert.strictEqual(result.taskId, 'owner-repo-99');
+    assert.strictEqual(result.jobRemoved, true);
+    assert.strictEqual(queueJob.remove.mock.calls.length, 1);
+    assert.strictEqual(getJobs.mock.calls.length, 1);
+    assert.deepStrictEqual(mockCreateTaskState.mock.calls[0].arguments, [
+      'owner-repo-99',
+      {
+        number: 99,
+        repoOwner: 'owner',
+        repoName: 'repo',
+        pullRequestNumber: 99,
+        type: 'pr-followup',
+      },
+      'corr-99',
+    ]);
+  });
+
   test('stopTaskExecution sets abort markers for both queue and normalized task ids during active startup windows', async () => {
     const queueJobId = 'issue-owner-repo-99-12345';
     const redisClient = createRedisClient();

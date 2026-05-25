@@ -371,11 +371,18 @@ test('isBenignQueueRemovalRace only accepts active or unknown removal races', ()
     assert.strictEqual(isBenignQueueRemovalRace('waiting'), false);
 });
 
-test('cancelMergedPullRequestTasks uses indexed lookup before falling back to a full queue scan', async () => {
+test('cancelMergedPullRequestTasks escalates to a forced queue scan only when queued work needs verification', async () => {
     const redisClient = createRedisClient();
-    const getActiveTasksForPR = mock.fn(async () => []);
+    const getActiveTasksForPR = mock.fn(async (_repository: string, _prNumber: number, options?: { forceQueueScan?: boolean }) => (
+        options?.forceQueueScan
+            ? []
+            : [{ taskId: 'queue-task-1', state: 'waiting' }]
+    ));
     const markPullRequestMerged = mock.fn(async () => {});
-    const stopTaskExecutionForMerge = mock.fn(async () => ({}));
+    const stopTaskExecutionForMerge = mock.fn(async () => ({
+        success: true,
+        taskId: 'queue-task-1',
+    }));
 
     await cancelMergedPullRequestTasks(
         {
@@ -393,8 +400,12 @@ test('cancelMergedPullRequestTasks uses indexed lookup before falling back to a 
         },
     );
 
-    assert.strictEqual(getActiveTasksForPR.mock.calls.length, 1);
+    assert.strictEqual(getActiveTasksForPR.mock.calls.length, 2);
     assert.deepStrictEqual(getActiveTasksForPR.mock.calls[0]?.arguments, ['owner/repo', 42, {
+        log,
+        stoppableOnly: true,
+    }]);
+    assert.deepStrictEqual(getActiveTasksForPR.mock.calls[1]?.arguments, ['owner/repo', 42, {
         forceQueueScan: true,
         log,
         stoppableOnly: true,
