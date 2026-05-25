@@ -46,7 +46,7 @@ export interface StopTaskCancellationReason {
   requestId?: string;
 }
 
-type RedisClientLike = Pick<RedisClientType, 'get' | 'set' | 'del' | 'rPush'>;
+type RedisClientLike = Pick<RedisClientType, 'get' | 'set' | 'del' | 'rPush' | 'lRange'>;
 
 export interface StopTaskExecutionOptions {
   redisClient: RedisClientLike;

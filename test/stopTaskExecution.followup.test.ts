@@ -156,14 +156,8 @@ test('stopTaskExecution rejects queued cancellation when removal loses the race 
 
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
-    assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), [
-        'worker:stop-outcome:queue-job-1',
-        'worker:stop-outcome:task-queue-1',
-    ]);
-    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), [
-        'worker:stop-outcome:queue-job-1',
-        'worker:stop-outcome:task-queue-1',
-    ]);
+    assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), []);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), []);
 });
 
 test('stopTaskExecution arms abort signals only after a queued removal race turns active', async () => {
@@ -208,8 +202,6 @@ test('stopTaskExecution arms abort signals only after a queued removal race turn
     assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), [
         'worker:abort:queue-job-active-race-1',
         'worker:abort:task-queue-active-race-1',
-        'worker:stop-outcome:queue-job-active-race-1',
-        'worker:stop-outcome:task-queue-active-race-1',
         'worker:stop-requested:queue-job-active-race-1',
         'worker:stop-requested:task-queue-active-race-1',
     ]);
@@ -402,21 +394,15 @@ test('stopTaskExecution rejects queued cancellation for unknown queue-removal ra
 
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
-    assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), [
-        'worker:stop-outcome:queue-job-unknown-1',
-        'worker:stop-outcome:task-queue-unknown-1',
-    ]);
-    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), [
-        'worker:stop-outcome:queue-job-unknown-1',
-        'worker:stop-outcome:task-queue-unknown-1',
-    ]);
+    assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), []);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), []);
     assert.strictEqual(redisClient.store.has('worker:abort:task-queue-unknown-1'), false);
     assert.strictEqual(redisClient.store.has('worker:abort:queue-job-unknown-1'), false);
     assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-queue-unknown-1'), false);
     assert.strictEqual(redisClient.store.has('worker:stop-outcome:queue-job-unknown-1'), false);
 });
 
-test('stopTaskExecution does not remove queued jobs when queue-removal recovery state cannot be persisted', async () => {
+test('stopTaskExecution still marks queued cancellation when post-removal recovery state cannot be persisted', async () => {
     const redisClient = createRedisClient();
     redisClient.set.mock.mockImplementation(async (key: string, value: string) => {
         if (key.startsWith('worker:stop-outcome:')) {
@@ -436,37 +422,35 @@ test('stopTaskExecution does not remove queued jobs when queue-removal recovery 
         getState: mock.fn(async () => 'waiting'),
     };
 
-    await assert.rejects(
-        stopTaskExecution(
-            'queue-job-outcome-fail-1',
-            {
-                redisClient,
-                requestedBy: 'system',
-                cancellation: {
-                    code: 'pull_request_merged',
-                    message: 'Task cancelled because pull request #42 was merged.',
-                },
+    const result = await stopTaskExecution(
+        'queue-job-outcome-fail-1',
+        {
+            redisClient,
+            requestedBy: 'system',
+            cancellation: {
+                code: 'pull_request_merged',
+                message: 'Task cancelled because pull request #42 was merged.',
             },
-            {
-                loadStopTaskContext: async () => ({
-                    normalizedTaskId: 'queue-job-outcome-fail-1',
-                    state: null,
-                    currentState: null,
-                    queueJob: queueJob as never,
-                    queueState: 'waiting',
-                    taskId: 'task-outcome-fail-1',
-                    abortTaskIds: ['task-outcome-fail-1', 'queue-job-outcome-fail-1'],
-                }),
-                ensureTaskStateForCancellation: async () => ({ history: [{ state: 'pending' }] }),
-                getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
-                stopDockerContainer,
-            },
-        ),
-        /redis write failed/,
+        },
+        {
+            loadStopTaskContext: async () => ({
+                normalizedTaskId: 'queue-job-outcome-fail-1',
+                state: null,
+                currentState: null,
+                queueJob: queueJob as never,
+                queueState: 'waiting',
+                taskId: 'task-outcome-fail-1',
+                abortTaskIds: ['task-outcome-fail-1', 'queue-job-outcome-fail-1'],
+            }),
+            ensureTaskStateForCancellation: async () => ({ history: [{ state: 'pending' }] }),
+            getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+            stopDockerContainer,
+        },
     );
 
-    assert.strictEqual(queueJob.remove.mock.calls.length, 0);
-    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+    assert.strictEqual(result.jobRemoved, true);
+    assert.strictEqual(queueJob.remove.mock.calls.length, 1);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
     assert.strictEqual(redisClient.store.has('worker:abort:task-outcome-fail-1'), false);
 });
 
@@ -750,6 +734,7 @@ test('cancelMergedPullRequestTasks force-scans the initial merged-PR lookup and 
         log,
         stoppableOnly: true,
     }]);
+    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].forceQueueScan, true);
     assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, false);
     assert.strictEqual(markPullRequestMerged.mock.calls.length, 1);
 });
@@ -990,12 +975,6 @@ test('stopTaskExecution rejects queued cancellation when queue state cannot be r
 
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
-    assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), [
-        'worker:stop-outcome:queue-job-2',
-        'worker:stop-outcome:task-queue-2',
-    ]);
-    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), [
-        'worker:stop-outcome:queue-job-2',
-        'worker:stop-outcome:task-queue-2',
-    ]);
+    assert.deepStrictEqual(redisClient.set.mock.calls.map((call) => call.arguments[0]).sort(), []);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]).sort(), []);
 });

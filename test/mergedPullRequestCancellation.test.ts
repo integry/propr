@@ -109,6 +109,7 @@ describe('cancelMergedPullRequestTasks', () => {
       mockStopTaskExecution.mock.calls[0].arguments[1].cancellation.message,
       'Task cancelled because pull request integry/propr#1463 was merged.',
     );
+    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].forceQueueScan, true);
   });
 
   test('does nothing for unmerged PR closes', async () => {
@@ -175,10 +176,10 @@ describe('cancelMergedPullRequestTasks', () => {
       /Failed to cancel 1 merged PR task/,
     );
 
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 3);
+    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 4);
     assert.deepEqual(
       mockStopTaskExecution.mock.calls.map((call) => call.arguments[0]),
-      ['task-processing', 'task-processing'],
+      ['task-processing', 'task-processing', 'task-processing'],
     );
     assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].containerStopTimeoutSeconds, 30);
     assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].requireVerifiedStop, false);
@@ -205,9 +206,9 @@ describe('cancelMergedPullRequestTasks', () => {
       /Failed to cancel 1 merged PR task/,
     );
 
-    assert.equal(mockStopTaskExecution.mock.calls.length, 2);
+    assert.equal(mockStopTaskExecution.mock.calls.length, 3);
     assert.deepEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
-    assert.equal(mockLogger.warn.mock.calls.length, 3);
+    assert.equal(mockLogger.warn.mock.calls.length, 4);
   });
 
   test('marks the PR merged gate before rejecting an abort-only stop that remains active', async () => {
@@ -240,8 +241,8 @@ describe('cancelMergedPullRequestTasks', () => {
       /Failed to cancel 1 merged PR task/,
     );
 
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 3);
-    assert.equal(mockStopTaskExecution.mock.calls.length, 2);
+    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 4);
+    assert.equal(mockStopTaskExecution.mock.calls.length, 3);
     assert.deepEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
     assert.equal(mockLogger.warn.mock.calls.length, 1);
   });

@@ -22,6 +22,7 @@ export interface MergeTaskCancellationDeps {
   stopTaskExecution?: typeof stopTaskExecution;
   sleep?: (durationMs: number) => Promise<void>;
   recheckDelayMs?: number;
+  recheckDelaysMs?: readonly number[];
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
@@ -63,7 +64,7 @@ export async function cancelMergedPullRequestTasks(
   const stopTask = deps.stopTaskExecution ?? stopTaskExecution;
   const persistMergedState = deps.markPullRequestMerged ?? markPullRequestMerged;
   const sleep = deps.sleep ?? delay;
-  const recheckDelaysMs = getRecheckDelays(deps.recheckDelayMs);
+  const recheckDelaysMs = getRecheckDelays(deps.recheckDelaysMs, deps.recheckDelayMs);
   const cancellation = {
     code: MERGE_CANCELLATION_REASON_CODE,
     message: `Task cancelled because pull request ${repository}#${prNumber} was merged.`,
@@ -133,9 +134,13 @@ export async function cancelMergedPullRequestTasks(
   throw new Error(errorMessage);
 }
 
-function getRecheckDelays(recheckDelayMs?: number): readonly number[] {
+function getRecheckDelays(recheckDelaysMs?: readonly number[], recheckDelayMs?: number): readonly number[] {
+  if (recheckDelaysMs !== undefined) {
+    return recheckDelaysMs;
+  }
+
   if (recheckDelayMs !== undefined) {
-    return [recheckDelayMs, recheckDelayMs];
+    return MERGE_TASK_RECHECK_DELAYS_MS.map(() => recheckDelayMs);
   }
 
   return MERGE_TASK_RECHECK_DELAYS_MS;
@@ -184,7 +189,7 @@ async function stopMergeTasks(params: {
           requestedBy: 'system',
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
-          forceQueueScan: false,
+          forceQueueScan: true,
           requireVerifiedStop: false,
         });
         if (!result.stopVerified) {

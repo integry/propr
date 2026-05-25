@@ -163,8 +163,8 @@ test('cancelMergedPullRequestTasks records merged PR state before rejecting whil
     /Failed to cancel 1 merged PR task/,
   );
 
-  assert.deepEqual(stopCalls, ['task-1', 'task-1']);
-  assert.equal(loadActiveTasksCalls.length, 3);
+  assert.deepEqual(stopCalls, ['task-1', 'task-1', 'task-1']);
+  assert.equal(loadActiveTasksCalls.length, 4);
   assert.deepEqual(markMergedCalls, [{ repository: 'acme/widgets', prNumber: 42 }]);
 });
 

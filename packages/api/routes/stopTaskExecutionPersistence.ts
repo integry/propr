@@ -8,8 +8,9 @@ type RedisConversationClient = {
   rPush: RedisClientType['rPush'];
   lRange?: RedisClientType['lRange'];
   set?: RedisClientType['set'];
+  del?: RedisClientType['del'];
 };
-type PendingStopRedisClient = Pick<RedisClientType, 'set' | 'rPush'> & Partial<Pick<RedisClientType, 'lRange'>>;
+type PendingStopRedisClient = Pick<RedisClientType, 'set' | 'rPush' | 'del'> & Partial<Pick<RedisClientType, 'lRange'>>;
 type PendingStopReadClient = Pick<RedisClientType, 'get'> & Partial<Pick<RedisClientType, 'del'>>;
 type PendingStopClearClient = Pick<RedisClientType, 'del'>;
 const RECENT_DUPLICATE_MESSAGE_LIMIT = 100;
@@ -34,11 +35,21 @@ export async function pushStopConversationMessage(
   message: Record<string, unknown>,
 ): Promise<void> {
   const conversationKey = `conversation:${taskId}`;
-  if (await isDuplicateConversationMessage(redisClient, conversationKey, message)) {
+  if (await hasDuplicateRecentConversationMessage(redisClient, conversationKey, message)) {
     return;
   }
 
-  await redisClient.rPush(conversationKey, JSON.stringify(message));
+  const reservation = await reserveConversationMessageFingerprint(redisClient, conversationKey, message);
+  if (reservation.reserved === false) {
+    return;
+  }
+
+  try {
+    await redisClient.rPush(conversationKey, JSON.stringify(message));
+  } catch (error) {
+    await releaseConversationMessageFingerprintReservation(redisClient, reservation.dedupeKey);
+    throw error;
+  }
 }
 
 export async function persistTaskCancellation(params: {
@@ -302,16 +313,11 @@ function getCancellationSource(cancellation: StopTaskCancellationReason): string
   return 'task_stop';
 }
 
-async function isDuplicateConversationMessage(
+async function hasDuplicateRecentConversationMessage(
   redisClient: RedisConversationClient,
   conversationKey: string,
   message: Record<string, unknown>,
 ): Promise<boolean> {
-  const fingerprintReserved = await reserveConversationMessageFingerprint(redisClient, conversationKey, message);
-  if (fingerprintReserved === false) {
-    return true;
-  }
-
   if (typeof redisClient.lRange !== 'function') {
     return false;
   }
@@ -346,14 +352,14 @@ async function reserveConversationMessageFingerprint(
   redisClient: RedisConversationClient,
   conversationKey: string,
   message: Record<string, unknown>,
-): Promise<boolean | null> {
+): Promise<{ reserved: boolean | null; dedupeKey: string | null }> {
   if (typeof redisClient.set !== 'function') {
-    return null;
+    return { reserved: null, dedupeKey: null };
   }
 
   const cancellationRequestId = getConversationMessageRequestId(message);
   if (cancellationRequestId === null) {
-    return null;
+    return { reserved: null, dedupeKey: null };
   }
 
   const fingerprint = buildConversationMessageFingerprint(message);
@@ -363,13 +369,25 @@ async function reserveConversationMessageFingerprint(
       NX: true,
       EX: CONVERSATION_MESSAGE_DEDUPE_TTL_SECONDS,
     });
-    return result !== null;
+    return { reserved: result !== null, dedupeKey };
   } catch (error) {
-    logger.warn({
-      conversationKey,
-      error: (error as Error).message,
-    }, 'Failed to reserve duplicate stop-message fingerprint');
-    return null;
+    logger.warn({ conversationKey, error: (error as Error).message }, 'Failed to reserve duplicate stop-message fingerprint');
+    return { reserved: null, dedupeKey: null };
+  }
+}
+
+async function releaseConversationMessageFingerprintReservation(
+  redisClient: RedisConversationClient,
+  dedupeKey: string | null,
+): Promise<void> {
+  if (!dedupeKey || typeof redisClient.del !== 'function') {
+    return;
+  }
+
+  try {
+    await redisClient.del(dedupeKey);
+  } catch (error) {
+    logger.warn({ dedupeKey, error: (error as Error).message }, 'Failed to release duplicate stop-message fingerprint after conversation write failure');
   }
 }
 
