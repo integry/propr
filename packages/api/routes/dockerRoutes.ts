@@ -97,7 +97,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         res.setHeader('Content-Type', 'text/plain');
         res.send(`${stdout}${stderr}`);
       } catch (err) {
-        if ((err as Error).message.includes('No such container')) {
+        if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
           return;
         }
@@ -124,7 +124,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         redisClient,
         requestedBy,
       });
-      res.json(result);
+      res.json(formatStopTaskRouteResponse(result));
     } catch (error) {
       if (error instanceof StopTaskExecutionError) {
         res.status(error.status).json(error.body);
@@ -233,4 +233,35 @@ function getErrorLogFields(error: unknown): { message: string; stack?: string; n
     ...(error.stack ? { stack: error.stack } : {}),
     ...(error.name ? { name: error.name } : {}),
   };
+}
+
+function formatStopTaskRouteResponse(result: StopTaskExecutionResult): {
+  success: true;
+  message: string;
+  taskId: string;
+  containerStopped: boolean;
+} {
+  return {
+    success: true,
+    message: result.message,
+    taskId: result.taskId,
+    containerStopped: result.containerStopped,
+  };
+}
+
+function isDockerNoSuchContainerError(error: unknown): boolean {
+  return getDockerCommandErrorDetails(error).includes('No such container');
+}
+
+function getDockerCommandErrorDetails(error: unknown): string {
+  if (!error || typeof error !== 'object') {
+    return String(error);
+  }
+
+  const record = error as Record<string, unknown>;
+  return [
+    typeof record.stderr === 'string' ? record.stderr : null,
+    typeof record.stdout === 'string' ? record.stdout : null,
+    error instanceof Error ? error.message : null,
+  ].filter((detail): detail is string => detail !== null).join('\n');
 }

@@ -8,7 +8,9 @@ afterEach(() => {
 });
 
 after(async () => {
+  const { closeConnection: closePackageConnection } = await import('@propr/core');
   const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+  await closePackageConnection();
   await closeConnection();
 });
 
@@ -122,14 +124,14 @@ test('cancelMergedPullRequestTasks succeeds when abort-only worker stops leave a
   assert.deepEqual(stopCalls, ['task-1']);
 });
 
-test('cancelMergedPullRequestTasks keeps merged PR state gated while abort-only stops remain active', async () => {
+test('cancelMergedPullRequestTasks records merged PR state while abort-only stops remain active', async () => {
   process.env.NODE_ENV = 'test';
   const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
   const markMergedCalls: Array<{ repository: string; prNumber: number }> = [];
   const loadActiveTasksCalls: string[][] = [];
   const stopCalls: string[] = [];
 
-  await assert.rejects(
+  await assert.doesNotReject(
     cancelMergedPullRequestTasks(
       {
         action: 'closed',
@@ -158,12 +160,11 @@ test('cancelMergedPullRequestTasks keeps merged PR state gated while abort-only 
         },
       },
     ),
-    /Failed to cancel 1 merged PR task/,
   );
 
-  assert.deepEqual(stopCalls, ['task-1', 'task-1']);
-  assert.equal(loadActiveTasksCalls.length, 3);
-  assert.deepEqual(markMergedCalls, []);
+  assert.deepEqual(stopCalls, ['task-1']);
+  assert.equal(loadActiveTasksCalls.length, 2);
+  assert.deepEqual(markMergedCalls, [{ repository: 'acme/widgets', prNumber: 42 }]);
 });
 
 test('getActiveTasksForPR includes matching jobs from the live queue', async () => {

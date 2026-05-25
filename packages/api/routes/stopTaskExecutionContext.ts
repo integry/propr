@@ -282,7 +282,6 @@ async function getQueueJob(params: {
   const {
     candidateTaskIds,
     loadQueue = getIssueQueue,
-    forceQueueScan,
   } = params;
   const queue = await loadQueue();
   const uniqueCandidates = [...new Set(candidateTaskIds.filter((value): value is string => Boolean(value)))];
@@ -294,7 +293,7 @@ async function getQueueJob(params: {
   }
 
   const candidateTaskIdSet = new Set(uniqueCandidates);
-  if (candidateTaskIdSet.size === 0 || uniqueCandidates.length === 0 || !forceQueueScan) {
+  if (candidateTaskIdSet.size === 0 || uniqueCandidates.length === 0) {
     return null;
   }
 

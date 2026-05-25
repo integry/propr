@@ -10,7 +10,9 @@ const { stopTaskExecution, isBenignQueueRemovalRace } = await import('../package
 const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.js');
 
 after(async () => {
+    const { closeConnection: closePackageConnection } = await import('@propr/core');
     const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+    await closePackageConnection();
     await closeConnection();
 });
 

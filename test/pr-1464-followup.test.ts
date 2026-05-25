@@ -1,4 +1,4 @@
-import test, { mock } from 'node:test';
+import test, { after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.GH_APP_ID ??= '1';
@@ -10,6 +10,13 @@ const { getActiveTasksForPR } = await import('../packages/core/src/webhook/check
 const { createDockerRoutes } = await import('../packages/api/routes/dockerRoutes.ts');
 const { stopTaskExecution } = await import('../packages/api/routes/stopTaskExecution.ts');
 const { ensureTaskStateForCancellation, loadStopTaskContext } = await import('../packages/api/routes/stopTaskExecutionContext.ts');
+
+after(async () => {
+  const { closeConnection: closePackageConnection } = await import('@propr/core');
+  const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+  await closePackageConnection();
+  await closeConnection();
+});
 
 type QueueState = 'waiting' | 'active' | 'delayed' | 'paused' | 'prioritized' | 'waiting-children';
 
@@ -381,6 +388,9 @@ test('ensureTaskStateForCancellation reconstructs queue-only PR jobs from reposi
     },
   } as never, {
     getStateManager: () => ({
+      async getTaskState() {
+        return null;
+      },
       async createTaskState(taskId: string, issueRef: Record<string, unknown>, correlationId: string | null) {
         createdStates.push({ taskId, issueRef, correlationId });
       },
@@ -390,7 +400,7 @@ test('ensureTaskStateForCancellation reconstructs queue-only PR jobs from reposi
 
   assert.deepEqual(insertedRows, [{
     task_id: 'queue-only-task',
-    job_id: null,
+    job_id: 'pr-comments-batch-owner-repo-42-123',
     correlation_id: 'corr-queue-only',
     repository: 'owner/repo',
     issue_number: 42,
