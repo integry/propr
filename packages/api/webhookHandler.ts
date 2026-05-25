@@ -88,6 +88,13 @@ type ParsedWebhookPayload = {
   [key: string]: unknown;
 };
 
+type WebhookRedisClient = WebhookHandlerDeps['redis'];
+
+interface DeliveryReservationRetryReleaseResult {
+  released: boolean;
+  retryTtlShortened: boolean;
+}
+
 function toSupportedEventSet(supportedEvents: Iterable<string>): ReadonlySet<string> {
   return supportedEvents instanceof Set ? supportedEvents : new Set(supportedEvents);
 }
@@ -162,36 +169,16 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
   try {
     await cancelMergedPullRequestTasksFn(payload, correlationId, mergeTaskCancellation);
   } catch (error) {
-    let deliveryReservationReleased = false;
-    let deliveryReservationRetryTtlShortened = false;
-    try {
-      await redis.del(deliveryKey);
-      deliveryReservationReleased = true;
-    } catch (releaseError) {
-      try {
-        await redis.set(deliveryKey, '1', { EX: FAILED_CANCELLATION_RETRY_TTL_SECONDS });
-        deliveryReservationRetryTtlShortened = true;
-      } catch (ttlUpdateError) {
-        log.error({
-          correlationId,
-          deliveryId: rawDeliveryId,
-          event: rawEvent,
-          repository: payload.repository?.full_name,
-          prNumber: payload.pull_request?.number,
-          error: (ttlUpdateError as Error).message,
-        }, 'Failed to shorten webhook delivery reservation TTL after merged PR cancellation failure');
-      }
-
-      log.error({
-        correlationId,
-        deliveryId: rawDeliveryId,
-        event: rawEvent,
-        repository: payload.repository?.full_name,
-        prNumber: payload.pull_request?.number,
-        error: (releaseError as Error).message,
-        deliveryReservationRetryTtlShortened,
-      }, 'Failed to release webhook delivery reservation after merged PR cancellation failure');
-    }
+    const deliveryReservationRetry = await releaseDeliveryReservationForRetry({
+      redis,
+      deliveryKey,
+      payload,
+      rawDeliveryId,
+      rawEvent,
+      correlationId,
+      log,
+      failureContext: 'merged PR cancellation failure',
+    });
 
     log.error({
       correlationId,
@@ -199,12 +186,12 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
       event: rawEvent,
       repository: payload.repository?.full_name,
       prNumber: payload.pull_request?.number,
-      deliveryReservationReleased,
-      deliveryReservationRetryTtlShortened,
+      deliveryReservationReleased: deliveryReservationRetry.released,
+      deliveryReservationRetryTtlShortened: deliveryReservationRetry.retryTtlShortened,
       error: (error as Error).message,
-    }, deliveryReservationReleased
+    }, deliveryReservationRetry.released
       ? 'Merged PR task cancellation failed; released webhook delivery reservation for retry'
-      : deliveryReservationRetryTtlShortened
+      : deliveryReservationRetry.retryTtlShortened
         ? 'Merged PR task cancellation failed; returning 500 after shortening webhook delivery reservation TTL for retry'
         : 'Merged PR task cancellation failed; returning 500 but delivery reservation release also failed');
 
@@ -217,6 +204,8 @@ async function runWebhookProcessorOrRetry(params: {
   rawDeliveryId: string;
   rawEvent: string;
   correlationId: string;
+  deliveryKey: string;
+  redis: WebhookRedisClient;
   processor: WebhookHandlerDeps['processor'];
   isMergedPrClose: boolean | undefined;
   res: Response;
@@ -226,6 +215,8 @@ async function runWebhookProcessorOrRetry(params: {
     rawDeliveryId,
     rawEvent,
     correlationId,
+    deliveryKey,
+    redis,
     processor,
     isMergedPrClose,
     res,
@@ -239,16 +230,106 @@ async function runWebhookProcessorOrRetry(params: {
       throw error;
     }
 
+    const deliveryReservationRetry = await releaseDeliveryReservationForRetry({
+      redis,
+      deliveryKey,
+      payload,
+      rawDeliveryId,
+      rawEvent,
+      correlationId,
+      log: logger,
+      failureContext: 'downstream webhook processor failure',
+    });
+
     logger.error({
       correlationId,
       deliveryId: rawDeliveryId,
       event: rawEvent,
       repository: payload.repository?.full_name,
       prNumber: payload.pull_request?.number,
-      deliveryReservationRetained: true,
+      deliveryReservationReleased: deliveryReservationRetry.released,
+      deliveryReservationRetryTtlShortened: deliveryReservationRetry.retryTtlShortened,
       error: (error as Error).message,
-    }, 'Merged PR task cancellation succeeded but downstream webhook processing failed; retaining delivery reservation to block duplicate side effects');
+    }, deliveryReservationRetry.released
+      ? 'Merged PR task cancellation succeeded but downstream webhook processing failed; released webhook delivery reservation for retry'
+      : deliveryReservationRetry.retryTtlShortened
+        ? 'Merged PR task cancellation succeeded but downstream webhook processing failed; shortened webhook delivery reservation TTL for retry'
+        : 'Merged PR task cancellation succeeded but downstream webhook processing failed; retry reservation release also failed');
     res.status(500).send('Webhook processor failed after merged pull request task cancellation.');
+    return false;
+  }
+}
+
+async function releaseDeliveryReservationForRetry(params: {
+  redis: WebhookRedisClient;
+  deliveryKey: string;
+  payload: ParsedWebhookPayload;
+  rawDeliveryId: string;
+  rawEvent: string;
+  correlationId: string;
+  log: Pick<typeof logger, 'error'>;
+  failureContext: string;
+}): Promise<DeliveryReservationRetryReleaseResult> {
+  const {
+    redis,
+    deliveryKey,
+    payload,
+    rawDeliveryId,
+    rawEvent,
+    correlationId,
+    log,
+    failureContext,
+  } = params;
+  try {
+    await redis.del(deliveryKey);
+    return { released: true, retryTtlShortened: false };
+  } catch (releaseError) {
+    const retryTtlShortened = await shortenDeliveryReservationRetryTtl({
+      redis,
+      deliveryKey,
+      payload,
+      rawDeliveryId,
+      rawEvent,
+      correlationId,
+      log,
+      failureContext,
+    });
+    log.error({
+      correlationId,
+      deliveryId: rawDeliveryId,
+      event: rawEvent,
+      repository: payload.repository?.full_name,
+      prNumber: payload.pull_request?.number,
+      error: (releaseError as Error).message,
+      deliveryReservationRetryTtlShortened: retryTtlShortened,
+    }, `Failed to release webhook delivery reservation after ${failureContext}`);
+    return { released: false, retryTtlShortened };
+  }
+}
+
+async function shortenDeliveryReservationRetryTtl(params: {
+  redis: WebhookRedisClient;
+  deliveryKey: string;
+  payload: ParsedWebhookPayload;
+  rawDeliveryId: string;
+  rawEvent: string;
+  correlationId: string;
+  log: Pick<typeof logger, 'error'>;
+  failureContext: string;
+}): Promise<boolean> {
+  const { redis, deliveryKey, payload, rawDeliveryId, rawEvent, correlationId, log, failureContext } = params;
+  try {
+    await redis.set(deliveryKey, '1', { EX: FAILED_CANCELLATION_RETRY_TTL_SECONDS });
+    return true;
+  } catch (ttlUpdateError) {
+    log.error({
+      correlationId,
+      deliveryId: rawDeliveryId,
+      event: rawEvent,
+      repository: payload.repository?.full_name,
+      prNumber: payload.pull_request?.number,
+      error: (ttlUpdateError as Error).message,
+    }, `Failed to shorten webhook delivery reservation TTL after ${failureContext}`);
     return false;
   }
 }
@@ -268,9 +349,9 @@ async function runWebhookProcessorOrRetry(params: {
  *    same task twice.
  * 2. If merge-time task cancellation fails, the reservation is released and
  *    the request returns 500 so GitHub can retry the cancellation attempt.
-   * 3. If downstream processing fails after merge-time cancellation succeeds,
-   *    the delivery reservation remains in place so GitHub retries cannot replay
-   *    downstream side effects for the same delivery ID.
+ * 3. If downstream processing fails after merge-time cancellation succeeds,
+ *    the reservation is released so GitHub can retry downstream processing;
+ *    merge-time cancellation is idempotent and will re-verify any remaining work.
  */
 export async function handleWebhookRequest(
   req: Request,
@@ -358,6 +439,8 @@ export async function handleWebhookRequest(
     rawDeliveryId,
     rawEvent,
     correlationId,
+    deliveryKey,
+    redis,
     processor,
     isMergedPrClose,
     res,

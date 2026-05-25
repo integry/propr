@@ -478,13 +478,16 @@ test('stopTaskExecution still stops the latest Claude container from processing 
 
 test('stopTaskExecution records the cancellation reason only after a verified stop', async () => {
     const redisClient = createRedisClient();
+    const sideEffects: string[] = [];
     const queueJob = {
         id: 'queue-job-success-1',
         data: {
             repository: 'owner/repo',
             prNumber: 42,
         },
-        remove: mock.fn(async () => undefined),
+        remove: mock.fn(async () => {
+            sideEffects.push('queue.remove');
+        }),
         getState: mock.fn(async () => 'waiting'),
     };
 
@@ -508,7 +511,9 @@ test('stopTaskExecution records the cancellation reason only after a verified st
                 taskId: 'task-queue-success-1',
                 abortTaskIds: ['task-queue-success-1', 'queue-job-success-1'],
             }),
-            ensureTaskStateForCancellation: async () => {},
+            ensureTaskStateForCancellation: async () => {
+                sideEffects.push('ensure.state');
+            },
             getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
             stopDockerContainer,
         },
@@ -519,6 +524,7 @@ test('stopTaskExecution records the cancellation reason only after a verified st
         'Task cancelled because pull request #42 was merged.',
         'Task cancelled successfully.',
     ]);
+    assert.deepStrictEqual(sideEffects, ['queue.remove', 'ensure.state']);
 });
 
 test('isBenignQueueRemovalRace only accepts active removal races', () => {

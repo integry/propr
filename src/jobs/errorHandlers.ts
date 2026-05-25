@@ -334,14 +334,44 @@ export async function handleGenericError(
     const isUserCancelled = isUserCancellationError(error);
     const abortMetadata = getExecutionAbortMetadata(error);
 
-    const sanitizedMessage = sanitizeErrorMessage(error.message);
+    logGenericErrorMetrics(error, job, issueRef, {
+        claudeResult,
+        worktreeInfo,
+        correlatedLogger,
+        taskId,
+        errorCategory,
+    });
+    await recordFailedJobLlmMetrics(claudeResult, issueRef, taskId, correlatedLogger);
+
+    if (octokit && !isUserCancelled) {
+        await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger });
+    } else if (octokit && isUserCancelled) {
+        await postCancellationNotice(issueRef, octokit, AI_PROCESSING_TAG, correlatedLogger);
+    }
+
+    await updateTaskStateAfterGenericError(error, { stateManager, taskId, errorCategory, isUserCancelled, abortMetadata, correlatedLogger });
+}
+
+function logGenericErrorMetrics(
+    error: Error,
+    job: Job<IssueJobData>,
+    issueRef: IssueJobData,
+    options: {
+        claudeResult: GenericErrorOptions['claudeResult'];
+        worktreeInfo: GenericErrorOptions['worktreeInfo'];
+        correlatedLogger: Logger;
+        taskId: string;
+        errorCategory: string;
+    }
+): void {
+    const { claudeResult, worktreeInfo, correlatedLogger, taskId, errorCategory } = options;
     correlatedLogger.error({
         jobId: job.id,
         issueNumber: issueRef.number,
         repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
         correlationId: issueRef.correlationId,
         taskId,
-        errMessage: sanitizedMessage,
+        errMessage: sanitizeErrorMessage(error.message),
         stack: error.stack,
         status: 'system_error',
         resolution: 'failed',
@@ -352,23 +382,24 @@ export async function handleGenericError(
         timestamp: new Date().toISOString(),
         systemVersion: process.env.npm_package_version || 'unknown'
     }, 'Error processing GitHub issue job - enhanced error metrics logged');
+}
 
-    if (claudeResult) {
-        try {
-            await recordLLMMetrics(toClaudeResult(claudeResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId: issueRef.correlationId, taskId });
-            correlatedLogger.info({ correlationId: issueRef.correlationId, issueNumber: issueRef.number }, 'LLM metrics recorded for failed job');
-        } catch (metricsError) {
-            correlatedLogger.error({ error: (metricsError as Error).message, correlationId: issueRef.correlationId }, 'Failed to record LLM metrics for failed job');
-        }
+async function recordFailedJobLlmMetrics(
+    claudeResult: GenericErrorOptions['claudeResult'],
+    issueRef: IssueJobData,
+    taskId: string,
+    correlatedLogger: Logger
+): Promise<void> {
+    if (!claudeResult) {
+        return;
     }
 
-    if (octokit && !isUserCancelled) {
-        await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger });
-    } else if (octokit && isUserCancelled) {
-        await postCancellationNotice(issueRef, octokit, AI_PROCESSING_TAG, correlatedLogger);
+    try {
+        await recordLLMMetrics(toClaudeResult(claudeResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId: issueRef.correlationId, taskId });
+        correlatedLogger.info({ correlationId: issueRef.correlationId, issueNumber: issueRef.number }, 'LLM metrics recorded for failed job');
+    } catch (metricsError) {
+        correlatedLogger.error({ error: (metricsError as Error).message, correlationId: issueRef.correlationId }, 'Failed to record LLM metrics for failed job');
     }
-
-    await updateTaskStateAfterGenericError(error, { stateManager, taskId, errorCategory, isUserCancelled, abortMetadata, correlatedLogger });
 }
 
 function getExecutionAbortMetadata(error: Error): ExecutionAbortMetadata | null {

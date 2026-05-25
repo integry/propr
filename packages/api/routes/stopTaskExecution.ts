@@ -6,6 +6,7 @@ import {
 import {
   ensureTaskStateForCancellation,
   loadStopTaskContext,
+  type StopTaskContext,
 } from './stopTaskExecutionContext.js';
 import {
   assertStopApplied,
@@ -31,6 +32,7 @@ import {
 } from './stopTaskExecutionOutcome.js';
 import {
   getStopTaskSuccessMessage,
+  isBenignQueueRemovalRace,
   removeQueueJobIfNeeded,
   stopTaskContainer,
 } from './stopTaskExecutionQueueing.js';
@@ -129,7 +131,6 @@ export async function stopTaskExecution(
     persistedStopOutcome,
     createError: (status, body) => new StopTaskExecutionError(status, body),
   });
-  await (deps.ensureTaskStateForCancellation ?? ensureTaskStateForCancellation)(context.taskId, context.state, context.queueJob, deps);
 
   const timestamp = new Date().toISOString();
   const queueRemovalShouldPrecedeAbort = shouldRemoveQueueJobBeforeArmingAbort(activity);
@@ -137,7 +138,9 @@ export async function stopTaskExecution(
   let queueStateAfterFailure: string | null = null;
 
   if (queueRemovalShouldPrecedeAbort) {
-    ({ jobRemoved, queueStateAfterFailure } = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart));
+    ({ jobRemoved, queueStateAfterFailure } = await removeQueuedJobBeforeStateCreation(context, activity, deps));
+  } else {
+    await ensureContextTaskStateForCancellation(context, deps);
   }
 
   const abortSignalArmed = shouldArmAbortSignal({
@@ -374,6 +377,31 @@ function shouldRemoveQueueJobBeforeArmingAbort(activity: ReturnType<typeof getSt
     && !activity.isRunningTaskState
     && !activity.isQueueActive
     && !activity.hasContainerToStop;
+}
+
+async function removeQueuedJobBeforeStateCreation(
+  context: StopTaskContext,
+  activity: ReturnType<typeof getStopTaskActivity>,
+  deps: StopTaskExecutionDeps,
+): Promise<{ jobRemoved: boolean; queueStateAfterFailure: string | null }> {
+  const removalResult = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
+  if (removalResult.jobRemoved || isBenignQueueRemovalRace(removalResult.queueStateAfterFailure)) {
+    await ensureContextTaskStateForCancellation(context, deps);
+  }
+
+  return removalResult;
+}
+
+async function ensureContextTaskStateForCancellation(
+  context: StopTaskContext,
+  deps: StopTaskExecutionDeps,
+): Promise<void> {
+  await (deps.ensureTaskStateForCancellation ?? ensureTaskStateForCancellation)(
+    context.taskId,
+    context.state,
+    context.queueJob,
+    deps,
+  );
 }
 
 function shouldArmAbortSignal(params: {

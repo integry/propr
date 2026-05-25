@@ -33,7 +33,7 @@ function stripAnsiCodes(text: string): string {
 }
 
 /**
- * Custom error class for when task execution is aborted by user request.
+ * Custom error class for when task execution is aborted by a cancellation request.
  * This allows job processors to distinguish between aborts and other errors.
  */
 export class ExecutionAbortedError extends Error {
@@ -88,9 +88,24 @@ function parseAbortMetadata(rawSignal: string | null): ExecutionAbortMetadata | 
             ...(typeof parsed.reason === 'string' ? { reason: parsed.reason } : {}),
             ...(typeof parsed.source === 'string' ? { source: parsed.source } : {}),
         };
-    } catch {
+    } catch (error) {
+        logger.warn({ error: (error as Error).message }, 'Malformed abort signal detected; treating it as a cancellation request without metadata');
         return {};
     }
+}
+
+function getExecutionAbortedMessage(abortMetadata: ExecutionAbortMetadata | null): string {
+    if (abortMetadata?.reasonCode === 'pull_request_merged' || abortMetadata?.source === 'pull_request_merged') {
+        return 'Execution aborted because the pull request was merged';
+    }
+
+    if (abortMetadata?.requestedBy && abortMetadata.requestedBy !== 'user') {
+        return 'Execution aborted by cancellation request';
+    }
+
+    return abortMetadata?.requestedBy === 'user'
+        ? 'Execution aborted by user request'
+        : 'Execution aborted by cancellation request';
 }
 
 /**
@@ -258,7 +273,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             if (abortCheckInterval) clearInterval(abortCheckInterval);
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, stdout);
             if (state.timedOut) { reject(new Error(`Command timed out after ${timeout}ms`)); return; }
-            if (state.aborted.value) { reject(new ExecutionAbortedError('Execution aborted by user request', state.aborted.value)); return; }
+            if (state.aborted.value) { reject(new ExecutionAbortedError(getExecutionAbortedMessage(state.aborted.value), state.aborted.value)); return; }
             resolve({ exitCode, stdout, stderr, messageTimestamps });
         });
         child.on('error', (error: Error) => {

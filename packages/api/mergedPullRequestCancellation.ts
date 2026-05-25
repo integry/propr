@@ -37,7 +37,7 @@ interface MergeTaskCancellationFailure {
 }
 
 const MERGE_TASK_STOP_CONCURRENCY = 5;
-const MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS = 2;
+const MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS = 10;
 const MERGE_CANCELLATION_REASON_CODE = 'pull_request_merged';
 
 export async function cancelMergedPullRequestTasks(
@@ -95,7 +95,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds, firstAttempt.acceptedTaskIds),
+    ignoredTaskIds: firstAttempt.verifiedTaskIds,
   });
   if (remainingAfterFirstAttempt.length === 0) {
     return;
@@ -123,12 +123,7 @@ export async function cancelMergedPullRequestTasks(
     repository,
     prNumber,
     log,
-    ignoredTaskIds: new Set([
-      ...firstAttempt.verifiedTaskIds,
-      ...firstAttempt.acceptedTaskIds,
-      ...retryAttempt.verifiedTaskIds,
-      ...retryAttempt.acceptedTaskIds,
-    ]),
+    ignoredTaskIds: mergeTaskIdSets(firstAttempt.verifiedTaskIds, retryAttempt.verifiedTaskIds),
   });
   if (finalActiveTasks.length === 0) {
     return;
