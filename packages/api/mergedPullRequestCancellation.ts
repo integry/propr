@@ -66,6 +66,10 @@ export async function cancelMergedPullRequestTasks(
     code: MERGE_CANCELLATION_REASON_CODE,
     message: `Task cancelled because pull request #${prNumber} was merged.`,
     source: MERGE_CANCELLATION_REASON_CODE,
+    metadata: {
+      repository,
+      prNumber: String(prNumber),
+    },
   };
 
   await (deps.markPullRequestMerged ?? markPullRequestMerged)(deps.redisClient, repository, prNumber);

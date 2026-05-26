@@ -8,8 +8,12 @@ afterEach(() => {
 });
 
 after(async () => {
-  const { closeConnection } = await import('../packages/core/src/db/connection.ts');
-  await closeConnection();
+  const corePackage = await import('@propr/core');
+  const coreSource = await import('../packages/core/src/db/connection.ts');
+  await Promise.all([
+    corePackage.closeConnection(),
+    coreSource.closeConnection(),
+  ]);
 });
 
 function createStopResult(overrides: Partial<{

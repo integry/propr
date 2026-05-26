@@ -38,6 +38,7 @@ export interface StopTaskCancellationReason {
   message: string;
   source?: string;
   requestId?: string;
+  metadata?: Record<string, string>;
 }
 
 type RedisClientLike = Pick<RedisClientType, 'get' | 'set' | 'del' | 'rPush'>;
@@ -325,6 +326,7 @@ async function setAbortSignalIfNeeded(params: {
     reason: cancellation.message,
     source: cancellation.source ?? 'task_stop',
     ...(cancellation.requestId ? { requestId: cancellation.requestId } : {}),
+    ...(cancellation.metadata ? { metadata: cancellation.metadata } : {}),
   });
 
   for (const taskId of taskIds) {
@@ -364,6 +366,7 @@ function buildStopMessageMetadata(
   requestedBy: string,
 ): Record<string, string> {
   return {
+    ...(cancellation.metadata ?? {}),
     reasonCode: cancellation.code,
     requestedBy,
     ...(cancellation.source ? { source: cancellation.source } : {}),

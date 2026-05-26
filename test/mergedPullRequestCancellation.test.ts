@@ -1,4 +1,4 @@
-import { beforeEach, describe, mock, test } from 'node:test';
+import { after, beforeEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.GH_APP_ID ??= '1';
@@ -7,6 +7,11 @@ process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
 const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
+
+after(async () => {
+  const { closeConnection } = await import('@propr/core');
+  await closeConnection();
+});
 
 function createRedisClient() {
   return {

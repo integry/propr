@@ -61,8 +61,11 @@ interface ResolvedPersistedTaskContext {
 type RedisClientLike = {
   get: (key: string) => Promise<string | null>;
 };
+type IssueQueue = Awaited<ReturnType<typeof getIssueQueue>>;
 
 const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
+const STOP_TASK_QUEUE_SCAN_PAGE_SIZE = 1000;
+const STOP_TASK_QUEUE_SCAN_MAX_JOBS = 20000;
 
 export function normalizeTaskId(jobId: string): string {
   return normalizeCoreTaskId(jobId);
@@ -287,23 +290,78 @@ async function getQueueJob(params: {
   } = params;
   const queue = await loadQueue();
   const uniqueCandidates = [...new Set(candidateTaskIds.filter((value): value is string => Boolean(value)))];
-  for (const candidateTaskId of uniqueCandidates) {
-    const job = await queue.getJob(candidateTaskId) as unknown as Job<QueueJobData> | undefined;
-    if (job) {
-      return job;
-    }
+  const directJob = await getDirectQueueJob(queue, uniqueCandidates);
+  if (directJob) {
+    return directJob;
   }
 
   if (!forceQueueScan || typeof queue.getJobs !== 'function') {
     return null;
   }
 
-  const candidateTaskIdSet = new Set(uniqueCandidates);
-  if (candidateTaskIdSet.size === 0) {
+  if (uniqueCandidates.length === 0) {
     return null;
   }
 
-  const jobs = await queue.getJobs([...TRACKED_QUEUE_STATES], 0, -1) as unknown as Job<QueueJobData>[];
+  return scanQueueForMatchingJob(queue, new Set(uniqueCandidates), uniqueCandidates);
+}
+
+async function getDirectQueueJob(queue: IssueQueue, candidateTaskIds: string[]): Promise<Job<QueueJobData> | null> {
+  for (const candidateTaskId of candidateTaskIds) {
+    const job = await queue.getJob(candidateTaskId) as unknown as Job<QueueJobData> | undefined;
+    if (job) {
+      return job;
+    }
+  }
+
+  return null;
+}
+
+async function scanQueueForMatchingJob(
+  queue: IssueQueue,
+  candidateTaskIdSet: Set<string>,
+  uniqueCandidates: string[],
+): Promise<Job<QueueJobData> | null> {
+  let scannedJobs = 0;
+  for (const trackedQueueState of TRACKED_QUEUE_STATES) {
+    let start = 0;
+    let jobs = await queue.getJobs([trackedQueueState], start, start + STOP_TASK_QUEUE_SCAN_PAGE_SIZE - 1) as unknown as Job<QueueJobData>[];
+    while (jobs.length > 0) {
+      scannedJobs += jobs.length;
+      const matchedJob = findMatchingQueueJob(jobs, candidateTaskIdSet);
+      if (matchedJob) {
+        logger.info({
+          taskReferenceCandidates: uniqueCandidates,
+          queueJobId: matchedJob.rawJobId,
+          derivedTaskId: matchedJob.derivedTaskId,
+          scannedJobs,
+        }, 'Resolved queued task stop lookup via fallback task-id scan');
+        return matchedJob.job;
+      }
+
+      if (jobs.length < STOP_TASK_QUEUE_SCAN_PAGE_SIZE) {
+        break;
+      }
+      if (scannedJobs >= STOP_TASK_QUEUE_SCAN_MAX_JOBS) {
+        logger.warn({
+          taskReferenceCandidates: uniqueCandidates,
+          scannedJobs,
+          maxJobs: STOP_TASK_QUEUE_SCAN_MAX_JOBS,
+        }, 'Stopping queued task fallback scan after reaching scan limit');
+        return null;
+      }
+      start += jobs.length;
+      jobs = await queue.getJobs([trackedQueueState], start, start + STOP_TASK_QUEUE_SCAN_PAGE_SIZE - 1) as unknown as Job<QueueJobData>[];
+    }
+  }
+
+  return null;
+}
+
+function findMatchingQueueJob(
+  jobs: Job<QueueJobData>[],
+  candidateTaskIdSet: Set<string>,
+): { job: Job<QueueJobData>; rawJobId: string | null; derivedTaskId: string | null } | null {
   for (const job of jobs) {
     const derivedTaskId = getTaskIdFromQueueJob(job);
     const rawJobId = job.id === null || job.id === undefined ? null : String(job.id);
@@ -313,12 +371,7 @@ async function getQueueJob(params: {
       || (rawJobId !== null && candidateTaskIdSet.has(rawJobId))
       || (normalizedJobId !== null && candidateTaskIdSet.has(normalizedJobId))
     ) {
-      logger.info({
-        taskReferenceCandidates: uniqueCandidates,
-        queueJobId: rawJobId,
-        derivedTaskId,
-      }, 'Resolved queued task stop lookup via fallback task-id scan');
-      return job;
+      return { job, rawJobId, derivedTaskId };
     }
   }
 
@@ -350,7 +403,7 @@ async function createTaskStateFromQueueJob(
       correlation_id: correlationId,
       repository,
       issue_number: issueRef.number,
-      task_type: getQueuedTaskType(issueRef.type, prNumber),
+      task_type: typeof issueRef.type === 'string' && issueRef.type.length > 0 ? issueRef.type : prNumber !== null ? 'pr' : 'issue',
       model_name: typeof issueRef.modelName === 'string' ? issueRef.modelName : null,
       initial_job_data: initialJobData,
       ...(prNumber !== null ? { pr_number: prNumber } : {}),
@@ -373,14 +426,6 @@ async function createTaskStateFromQueueJob(
     });
 
   return taskState;
-}
-
-function getQueuedTaskType(issueRefType: unknown, prNumber: number | null): string {
-  if (typeof issueRefType === 'string' && issueRefType.length > 0) {
-    return issueRefType;
-  }
-
-  return prNumber !== null ? 'pr' : 'issue';
 }
 
 function resolveStopTaskId(

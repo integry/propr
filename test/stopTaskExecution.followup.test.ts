@@ -1,4 +1,4 @@
-import { beforeEach, mock, test } from 'node:test';
+import { after, beforeEach, mock, test } from 'node:test';
 import assert from 'node:assert';
 
 process.env.GH_APP_ID ??= '1';
@@ -7,6 +7,7 @@ process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
 const { stopTaskExecution, isBenignQueueRemovalRace } = await import('../packages/api/routes/stopTaskExecution.js');
+const { loadStopTaskContext } = await import('../packages/api/routes/stopTaskExecutionContext.js');
 const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.js');
 
 const markTaskCancelled = mock.fn(async () => ({}));
@@ -45,6 +46,27 @@ function createRedisClient() {
   };
 }
 
+function createEmptyTaskDb() {
+  const queryBuilder = {
+    whereIn() {
+      return queryBuilder;
+    },
+    orWhereIn() {
+      return queryBuilder;
+    },
+  };
+  const builder = {
+    select() {
+      return builder;
+    },
+    where(callback: (query: typeof queryBuilder) => void) {
+      callback(queryBuilder);
+      return Promise.resolve([]);
+    },
+  };
+  return () => builder;
+}
+
 beforeEach(() => {
   markTaskCancelled.mock.resetCalls();
   markTaskCancelled.mock.mockImplementation(async () => ({}));
@@ -53,6 +75,11 @@ beforeEach(() => {
   log.info.mock.resetCalls();
   log.warn.mock.resetCalls();
   log.error.mock.resetCalls();
+});
+
+after(async () => {
+  const { closeConnection } = await import('@propr/core');
+  await closeConnection();
 });
 
 test('stopTaskExecution rejects pending non-terminal tasks without a queue-backed worker', async () => {
@@ -507,6 +534,45 @@ test('cancelMergedPullRequestTasks force-scans the initial merged-PR lookup and 
     stoppableOnly: true,
   }]);
   assert.strictEqual(markPullRequestMerged.mock.calls.length, 1);
+});
+
+test('loadStopTaskContext scans queue fallback in bounded pages', async () => {
+  const redisClient = createRedisClient();
+  const matchingJob = {
+    id: 'task-match',
+    data: {},
+    getState: mock.fn(async () => 'waiting'),
+  };
+  const getJobsCalls: Array<{ states: string[]; start: number; end: number }> = [];
+  const queue = {
+    getJob: mock.fn(async () => null),
+    getJobs: mock.fn(async (states: string[], start: number, end: number) => {
+      getJobsCalls.push({ states, start, end });
+      if (states[0] === 'waiting' && start === 0) {
+        return Array.from({ length: 1000 }, (_value, index) => ({
+          id: `filler-${index}`,
+          data: {},
+          getState: async () => 'waiting',
+        }));
+      }
+      if (states[0] === 'waiting' && start === 1000) {
+        return [matchingJob];
+      }
+      return [];
+    }),
+  };
+
+  const context = await loadStopTaskContext('task-match', redisClient, {
+    db: createEmptyTaskDb() as never,
+    getIssueQueue: async () => queue as never,
+    forceQueueScan: true,
+  });
+
+  assert.strictEqual(context.queueJob, matchingJob);
+  assert.deepStrictEqual(getJobsCalls, [
+    { states: ['waiting'], start: 0, end: 999 },
+    { states: ['waiting'], start: 1000, end: 1999 },
+  ]);
 });
 
 test('stopTaskExecution rejects queued cancellation when queue state cannot be reloaded after removal failure', async () => {

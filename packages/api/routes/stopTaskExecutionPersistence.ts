@@ -51,11 +51,13 @@ export async function persistTaskCancellation(params: {
       jobRemoved,
       ...(containerId ? { containerId } : {}),
       ...(cancellation.requestId ? { requestId: cancellation.requestId } : {}),
+      ...(cancellation.metadata ? { metadata: cancellation.metadata } : {}),
     },
     historyMetadata: {
       cancellation: {
         code: cancellation.code,
         message: cancellation.message,
+        ...(cancellation.metadata ? { metadata: cancellation.metadata } : {}),
       },
       requestedBy,
       containerStopped,
