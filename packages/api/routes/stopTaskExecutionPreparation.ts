@@ -76,11 +76,14 @@ export async function refreshContextForStop(
   const initialTrackedContainerId = getTaskContainerId(context.state, context.currentState);
   const initialActivity = getStopTaskActivity(context.currentState, context.queueState, initialTrackedContainerId !== null);
   if (shouldRemoveQueueJobBeforeArmingAbort(initialActivity)) {
+    const stateBackedContext = await ensureContextTaskStateForCancellation(context, deps);
+    const trackedContainerId = getTaskContainerId(stateBackedContext.state, stateBackedContext.currentState);
+    const activity = getStopTaskActivity(stateBackedContext.currentState, stateBackedContext.queueState, trackedContainerId !== null);
     return {
-      context,
-      trackedContainerId: initialTrackedContainerId,
-      activity: initialActivity,
-      shouldAbort: shouldAbortTask(initialActivity),
+      context: stateBackedContext,
+      trackedContainerId,
+      activity,
+      shouldAbort: shouldAbortTask(activity),
       queueRemovalShouldPrecedeAbort: true,
     };
   }

@@ -15,16 +15,5 @@ export function isStopTaskExecutionError(error: unknown): error is {
   body: Record<string, unknown>;
   message?: unknown;
 } {
-  if (error instanceof StopTaskExecutionError) {
-    return true;
-  }
-
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-
-  const record = error as Record<string, unknown>;
-  return typeof record.status === 'number'
-    && record.body !== null
-    && typeof record.body === 'object';
+  return error instanceof StopTaskExecutionError;
 }
