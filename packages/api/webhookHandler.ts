@@ -8,6 +8,7 @@ import {
 } from './mergedPullRequestCancellation.js';
 import {
   releaseDeliveryReservationForRetry,
+  reserveRetryableDeliveryReservation,
   type WebhookDeliveryReservationRedis,
 } from './webhookDeliveryReservation.js';
 
@@ -223,12 +224,12 @@ async function cancelMergedPullRequestTasksOrRetry(params: {
       repository: payload.repository?.full_name,
       prNumber: payload.pull_request?.number,
       deliveryReservationReleased: deliveryReservationRetry.released,
-      deliveryReservationRetryTtlShortened: deliveryReservationRetry.retryTtlShortened,
+      deliveryReservationRetryOpened: deliveryReservationRetry.retryReservationOpened,
       error: (error as Error).message,
     }, deliveryReservationRetry.released
       ? 'Merged PR task cancellation failed; released webhook delivery reservation for retry'
-      : deliveryReservationRetry.retryTtlShortened
-        ? 'Merged PR task cancellation failed; returning 500 after shortening webhook delivery reservation TTL for retry'
+      : deliveryReservationRetry.retryReservationOpened
+        ? 'Merged PR task cancellation failed; opened webhook delivery reservation for immediate retry'
         : 'Merged PR task cancellation failed; returning 500 but delivery reservation release also failed');
 
     throw error;
@@ -287,12 +288,12 @@ async function runWebhookProcessorOrRetry(params: {
       repository: payload.repository?.full_name,
       prNumber: payload.pull_request?.number,
       deliveryReservationReleased: deliveryReservationRetry.released,
-      deliveryReservationRetryTtlShortened: deliveryReservationRetry.retryTtlShortened,
+      deliveryReservationRetryOpened: deliveryReservationRetry.retryReservationOpened,
       error: (error as Error).message,
     }, deliveryReservationRetry.released
       ? 'Merged PR task cancellation succeeded but downstream webhook processing failed; released webhook delivery reservation for retry'
-      : deliveryReservationRetry.retryTtlShortened
-        ? 'Merged PR task cancellation succeeded but downstream webhook processing failed; shortened webhook delivery reservation TTL for retry'
+      : deliveryReservationRetry.retryReservationOpened
+        ? 'Merged PR task cancellation succeeded but downstream webhook processing failed; opened webhook delivery reservation for immediate retry'
         : 'Merged PR task cancellation succeeded but downstream webhook processing failed; returning 500 but delivery reservation release also failed');
     res.status(500).send('Webhook processor failed after merged pull request task cancellation.');
     return false;
@@ -401,9 +402,18 @@ export async function handleWebhookRequest(
   const deliveryReservationToken = crypto.randomUUID();
   const isNew = await redis.set(deliveryKey, deliveryReservationToken, { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
   if (!isNew) {
-    logger.warn({ deliveryId: rawDeliveryId, event: rawEvent }, 'Duplicate webhook delivery rejected');
-    res.status(409).send('Duplicate webhook delivery.');
-    return;
+    const retryReserved = await reserveRetryableDeliveryReservation({
+      redis,
+      deliveryKey,
+      reservationToken: deliveryReservationToken,
+      ttlSeconds: WEBHOOK_DELIVERY_TTL_SECONDS,
+    });
+    if (!retryReserved) {
+      logger.warn({ deliveryId: rawDeliveryId, event: rawEvent }, 'Duplicate webhook delivery rejected');
+      res.status(409).send('Duplicate webhook delivery.');
+      return;
+    }
+    logger.info({ deliveryId: rawDeliveryId, event: rawEvent }, 'Retrying webhook delivery after failed merged-PR processing');
   }
 
   if (mergeTaskCancellationDeps) {

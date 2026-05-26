@@ -87,7 +87,6 @@ export async function cancelMergedPullRequestTasks(
     activeTaskCount: initialTasks.length,
   }, 'Cancelling active PR tasks after merge');
 
-  const cancellationAttempts = new MergeTaskCancellationAttempts();
   const firstAttempt = await stopMergeTasks({
     tasks: initialTasks,
     redisClient: deps.redisClient,
@@ -98,7 +97,6 @@ export async function cancelMergedPullRequestTasks(
     prNumber,
     log,
   });
-  cancellationAttempts.record(firstAttempt);
 
   await sleep(recheckDelayMs);
   const remainingAfterFirstAttempt = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
@@ -123,7 +121,6 @@ export async function cancelMergedPullRequestTasks(
     prNumber,
     log,
   });
-  cancellationAttempts.record(retryAttempt);
 
   await sleep(recheckDelayMs);
   const finalActiveTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
@@ -131,18 +128,7 @@ export async function cancelMergedPullRequestTasks(
     return;
   }
 
-  const finalBlockingTasks = finalActiveTasks.filter((task) => !cancellationAttempts.hasPendingCancellation(task.taskId));
-  if (finalBlockingTasks.length === 0) {
-    log.info({
-      correlationId,
-      repository,
-      prNumber,
-      taskIds: finalActiveTasks.map((task) => task.taskId),
-    }, 'Merged PR task cancellation is armed and awaiting async worker shutdown');
-    return;
-  }
-
-  const failures = buildFinalFailures(finalBlockingTasks, retryAttempt.failures, firstAttempt.failures);
+  const failures = buildFinalFailures(finalActiveTasks, retryAttempt.failures, firstAttempt.failures);
   throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.map(formatMergeTaskCancellationFailure).join('; ')}`);
 }
 
@@ -180,7 +166,7 @@ async function stopMergeTasks(params: {
   repository: string;
   prNumber: number;
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
-}): Promise<{ failures: Map<string, MergeTaskCancellationFailure>; pendingCancellations: Set<string> }> {
+}): Promise<{ failures: Map<string, MergeTaskCancellationFailure> }> {
   const {
     tasks,
     redisClient,
@@ -192,7 +178,6 @@ async function stopMergeTasks(params: {
     log,
   } = params;
   const failures = new Map<string, MergeTaskCancellationFailure>();
-  const pendingCancellations = new Set<string>();
 
   for (let index = 0; index < tasks.length; index += MERGE_CANCELLATION_CONCURRENCY) {
     const batch = tasks.slice(index, index + MERGE_CANCELLATION_CONCURRENCY);
@@ -202,11 +187,8 @@ async function stopMergeTasks(params: {
           redisClient,
           requestedBy: 'system',
           cancellation,
-          forceQueueScan: shouldForceQueueScanForMergeTask(task),
+          forceQueueScan: false,
         });
-        if (result.cancellationRequested) {
-          pendingCancellations.add(task.taskId);
-        }
         if (!result.stopVerified) {
           log.info({
             correlationId,
@@ -234,21 +216,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { failures, pendingCancellations };
-}
-
-class MergeTaskCancellationAttempts {
-  private pendingCancellations = new Set<string>();
-
-  record(attempt: { pendingCancellations: Set<string> }): void {
-    for (const taskId of attempt.pendingCancellations) {
-      this.pendingCancellations.add(taskId);
-    }
-  }
-
-  hasPendingCancellation(taskId: string): boolean {
-    return this.pendingCancellations.has(taskId);
-  }
+  return { failures };
 }
 
 function buildFinalFailures(
@@ -311,17 +279,6 @@ function formatMergeTaskCancellationFailure(failure: MergeTaskCancellationFailur
 
 function getStopErrorState(body: Record<string, unknown>, key: 'currentState' | 'queueState'): string | null {
   return typeof body[key] === 'string' ? body[key] : null;
-}
-
-function shouldForceQueueScanForMergeTask(task: MergeTaskActivity): boolean {
-  return [
-    'waiting',
-    'active',
-    'delayed',
-    'paused',
-    'prioritized',
-    'waiting-children',
-  ].includes(task.state);
 }
 
 async function delay(durationMs: number): Promise<void> {

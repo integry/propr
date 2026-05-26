@@ -225,7 +225,7 @@ test('stopTaskExecution persists cancellation when a queued job starts during re
   });
 });
 
-test('stopTaskExecution leaves abort-armed container-backed tasks non-terminal when the container stop fails', async () => {
+test('stopTaskExecution persists abort-armed container-backed cancellation when the container stop fails', async () => {
   const redisClient = createRedisClient();
   const result = await stopTaskExecution(
     'task-2',
@@ -260,7 +260,19 @@ test('stopTaskExecution leaves abort-armed container-backed tasks non-terminal w
   assert.strictEqual(result.cancellationRequested, true);
   assert.strictEqual(result.message, 'Stop request sent to worker. The execution will be terminated shortly.');
   assert.strictEqual(redisClient.set.mock.calls.length, 1);
-  assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+  assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
+  assert.deepStrictEqual(markTaskCancelled.mock.calls[0]?.arguments[2].historyMetadata, {
+    cancellation: {
+      code: 'pull_request_merged',
+      message: 'Task cancelled because pull request #42 was merged.',
+    },
+    requestedBy: 'system',
+    containerStopped: false,
+    jobRemoved: false,
+    stopVerified: false,
+    abortSignalArmed: true,
+    containerId: 'container-1',
+  });
 });
 
 test('stopTaskExecution retries persisted cancellation after a queue removal persistence failure', async () => {

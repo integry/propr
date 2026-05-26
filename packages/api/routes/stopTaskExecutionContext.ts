@@ -135,7 +135,7 @@ export async function ensureTaskStateForCancellation(
     return state;
   }
 
-  return createTaskStateFromQueueJob(taskId, queueJob, deps);
+  return createCancellationTaskStateFromQueueJob(taskId, queueJob, deps);
 }
 
 async function findPersistedTaskRecord(
@@ -378,7 +378,9 @@ function findMatchingQueueJob(
   return null;
 }
 
-async function createTaskStateFromQueueJob(
+// Queue-only jobs have no worker state yet. Create the minimal task record and
+// state required for a durable cancellation before reporting stop success.
+async function createCancellationTaskStateFromQueueJob(
   taskId: string,
   queueJob: Job<QueueJobData>,
   deps: StopTaskStateDeps = {},

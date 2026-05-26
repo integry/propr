@@ -10,8 +10,12 @@ process.env.NODE_ENV ??= 'test';
 const { handleWebhookRequest } = await import('../packages/api/webhookHandler.js');
 
 after(async () => {
+    const corePackage = await import('@propr/core');
     const { closeConnection } = await import('../packages/core/src/db/connection.ts');
-    await closeConnection();
+    await Promise.all([
+        corePackage.closeConnection(),
+        closeConnection(),
+    ]);
 });
 
 function createSignedRequest(payload: Record<string, unknown>, secret: string) {
@@ -56,7 +60,10 @@ test('duplicate deliveries are rejected before merged-PR cancellation side effec
             callOrder.push('redis.set');
             return null;
         }),
-        get: mock.fn(async () => null),
+        get: mock.fn(async () => {
+            callOrder.push('redis.get');
+            return null;
+        }),
         del: mock.fn(async () => 1),
     };
     const processor = mock.fn(async () => {
@@ -81,7 +88,7 @@ test('duplicate deliveries are rejected before merged-PR cancellation side effec
 
     assert.strictEqual(response.statusCode, 409);
     assert.strictEqual(response.body, 'Duplicate webhook delivery.');
-    assert.deepStrictEqual(callOrder, ['redis.set']);
+    assert.deepStrictEqual(callOrder, ['redis.set', 'redis.get']);
     assert.strictEqual(cancelMerged.mock.calls.length, 0);
     assert.strictEqual(processor.mock.calls.length, 0);
 });
@@ -115,7 +122,7 @@ test('merged-PR cancellation dependency failures do not consume delivery reserva
     assert.strictEqual(processor.mock.calls.length, 0);
 });
 
-test('merged-PR cancellation failures shorten the delivery reservation TTL when reservation release fails', async () => {
+test('merged-PR cancellation failures open the delivery reservation for immediate retry when release fails', async () => {
     const request = createSignedRequest({
         action: 'closed',
         repository: { full_name: 'owner/repo' },
@@ -157,7 +164,7 @@ test('merged-PR cancellation failures shorten the delivery reservation TTL when 
     ]);
     assert.deepStrictEqual(redis.set.mock.calls[1]?.arguments, [
         'webhook:delivery:delivery-1',
-        reservationToken,
+        `retry-open:${reservationToken}`,
         { EX: 30 },
     ]);
     assert.strictEqual(redis.del.mock.calls.length, 1);
@@ -199,4 +206,68 @@ test('processor failures after successful merged-PR cancellation release deliver
         redis.set.mock.calls[0]?.arguments[1],
         { NX: true, EX: 300 },
     ]);
+});
+
+test('merged-PR retry marker allows the next GitHub retry through', async () => {
+    const request = createSignedRequest({
+        action: 'closed',
+        repository: { full_name: 'owner/repo' },
+        pull_request: { number: 42, merged: true },
+    }, 'secret');
+    const firstResponse = createResponse();
+    const secondResponse = createResponse();
+    const store = new Map<string, string>();
+    const redis = {
+        set: mock.fn(async (key: string, value: string, opts?: { NX?: boolean }) => {
+            if (opts?.NX && store.has(key)) {
+                return null;
+            }
+            store.set(key, value);
+            return 'OK';
+        }),
+        get: mock.fn(async (key: string) => store.get(key) ?? null),
+        del: mock.fn(async () => {
+            throw new Error('redis delete unavailable');
+        }),
+    };
+    let cancellationAttempts = 0;
+    const processor = mock.fn(async () => {});
+
+    await handleWebhookRequest(request as never, firstResponse as never, {
+        webhookSecret: 'secret',
+        redis,
+        processor,
+        correlationId: 'cid-retry-open',
+        supportedEvents: ['pull_request'],
+        isMergedPullRequestClose: () => true,
+        cancelMergedPullRequestTasks: async () => {
+            cancellationAttempts += 1;
+            if (cancellationAttempts === 1) {
+                throw new Error('cancellation failed');
+            }
+        },
+        mergeTaskCancellation: {
+            redisClient: {} as never,
+        },
+    });
+
+    await handleWebhookRequest(request as never, secondResponse as never, {
+        webhookSecret: 'secret',
+        redis,
+        processor,
+        correlationId: 'cid-retry-open',
+        supportedEvents: ['pull_request'],
+        isMergedPullRequestClose: () => true,
+        cancelMergedPullRequestTasks: async () => {
+            cancellationAttempts += 1;
+        },
+        mergeTaskCancellation: {
+            redisClient: {} as never,
+        },
+    });
+
+    assert.strictEqual(firstResponse.statusCode, 500);
+    assert.strictEqual(secondResponse.statusCode, 200);
+    assert.strictEqual(cancellationAttempts, 2);
+    assert.strictEqual(processor.mock.calls.length, 1);
 });

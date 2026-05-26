@@ -96,7 +96,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         if (stderr) {
           logger.debug({ containerId: containerMetadata.containerId, stderr }, 'Docker logs wrote to stderr');
         }
-        res.send(formatDockerLogsResponse(stdout));
+        res.send(formatDockerLogsResponse(stdout, stderr));
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -206,8 +206,16 @@ async function loadDockerTaskStateFromStopContext(
   redisClient: Pick<RedisClientType, 'get'>,
   loadContext: typeof loadStopTaskContext,
 ): Promise<TaskState | null> {
-  const context = await loadContext(taskReference, redisClient, { forceQueueScan: false });
-  return context.state;
+  try {
+    const context = await loadContext(taskReference, redisClient, { forceQueueScan: false });
+    return context.state;
+  } catch (error) {
+    logger.warn({
+      taskReference,
+      error: getErrorLogFields(error),
+    }, 'Continuing Docker metadata lookup without stop-task context');
+    return null;
+  }
 }
 
 async function loadDockerTaskStateFromRedis(
@@ -305,8 +313,8 @@ function formatDockerContainerStatus(state: DockerContainerState): string {
     : 'stopped';
 }
 
-function formatDockerLogsResponse(stdout: string): string {
-  return stdout;
+function formatDockerLogsResponse(stdout: string, stderr: string): string {
+  return `${stdout}${stderr}`;
 }
 
 function formatDockerContainerStateDescription(state: DockerContainerState): string {

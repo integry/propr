@@ -13,8 +13,12 @@ const { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } = await import('../
 const { releaseDeliveryReservationForRetry } = await import('../packages/api/webhookDeliveryReservation.js');
 
 after(async () => {
+  const corePackage = await import('@propr/core');
   const { closeConnection } = await import('../packages/core/src/db/connection.ts');
-  await closeConnection();
+  await Promise.all([
+    corePackage.closeConnection(),
+    closeConnection(),
+  ]);
 });
 
 /**
@@ -663,14 +667,14 @@ describe('webhook delivery reservation retry release', () => {
       failureContext: 'test failure',
     });
 
-    assert.deepStrictEqual(result, { released: true, retryTtlShortened: false });
+    assert.deepStrictEqual(result, { released: true, retryReservationOpened: false });
     assert.deepStrictEqual(evalCalls, [{
       keys: ['webhook-delivery:123'],
       arguments: ['token-1'],
     }]);
   });
 
-  test('uses Redis eval for atomic TTL shortening when the token is still reserved', async () => {
+  test('uses Redis eval to open immediate retry when the token is still reserved', async () => {
     const evalCalls: Array<{ keys: string[]; arguments: string[] }> = [];
     const redisClient = {
       async set() {
@@ -700,10 +704,10 @@ describe('webhook delivery reservation retry release', () => {
       failureContext: 'test failure',
     });
 
-    assert.deepStrictEqual(result, { released: false, retryTtlShortened: true });
+    assert.deepStrictEqual(result, { released: false, retryReservationOpened: true });
     assert.deepStrictEqual(evalCalls, [
       { keys: ['webhook-delivery:456'], arguments: ['token-2'] },
-      { keys: ['webhook-delivery:456'], arguments: ['token-2', '30'] },
+      { keys: ['webhook-delivery:456'], arguments: ['token-2', 'retry-open:token-2', '30'] },
     ]);
   });
 });

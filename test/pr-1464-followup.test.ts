@@ -1,4 +1,4 @@
-import { mock, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.GH_APP_ID ??= '1';
@@ -12,6 +12,15 @@ const {
   ensureTaskStateForCancellation,
   loadStopTaskContext,
 } = await import('../packages/api/routes/stopTaskExecutionContext.ts');
+
+after(async () => {
+  const corePackage = await import('@propr/core');
+  const coreSource = await import('../packages/core/src/db/connection.ts');
+  await Promise.all([
+    corePackage.closeConnection(),
+    coreSource.closeConnection(),
+  ]);
+});
 
 type QueueState = 'waiting' | 'active' | 'delayed' | 'paused' | 'prioritized' | 'waiting-children';
 
@@ -127,7 +136,7 @@ test('getActiveTasksForPR includes active BullMQ jobs when stoppableOnly is true
   assert.deepEqual(tasks, [{ taskId: 'active-job', state: 'active' }]);
 });
 
-test('stopTaskExecution does not persist merged-PR cancellation metadata for abort-only active jobs', async () => {
+test('stopTaskExecution persists merged-PR cancellation metadata for abort-only active jobs', async () => {
   const setCalls: Array<{ key: string; value: Record<string, unknown> }> = [];
   const delCalls: string[] = [];
   const conversationMessages: Array<{ key: string; message: Record<string, unknown> }> = [];
@@ -198,7 +207,34 @@ test('stopTaskExecution does not persist merged-PR cancellation metadata for abo
     setCalls.map((call) => call.key).sort(),
     ['worker:abort:job-1464', 'worker:abort:task-1464'],
   );
-  assert.equal(markTaskCancelledCalls.length, 0);
+  assert.equal(markTaskCancelledCalls.length, 1);
+  assert.deepEqual(markTaskCancelledCalls[0], {
+    taskId: 'task-1464',
+    requestedBy: 'system',
+    metadata: {
+      reason: 'Task cancelled because pull request #1464 was merged.',
+      cancellation: {
+        code: 'pull_request_merged',
+        message: 'Task cancelled because pull request #1464 was merged.',
+        cancelledBy: 'system',
+        source: 'task_stop',
+        containerStopped: false,
+        jobRemoved: false,
+      },
+      historyMetadata: {
+        cancellation: {
+          code: 'pull_request_merged',
+          message: 'Task cancelled because pull request #1464 was merged.',
+        },
+        requestedBy: 'system',
+        containerStopped: false,
+        jobRemoved: false,
+        stopVerified: false,
+        abortSignalArmed: true,
+        queueState: 'active',
+      },
+    },
+  });
   assert.deepEqual(
     conversationMessages.map((entry) => entry.message.content),
     ['Cancellation requested. Worker shutdown is still in progress.'],
