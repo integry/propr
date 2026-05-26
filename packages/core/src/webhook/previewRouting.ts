@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { fetch } from 'undici';
+import { parseTruthyEnvValue } from '@propr/shared';
 import { getGitHubInstallationToken } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import type {
@@ -25,7 +26,7 @@ const execFileAsync = promisify(execFile);
 // - Source issues/comments do NOT need any special labels for processing
 //
 // ENABLE_PREVIEW_ROUTING: Set to 'true' to enable the preview environment feature.
-const ENABLE_PREVIEW_ROUTING = process.env.ENABLE_PREVIEW_ROUTING === 'true';
+const ENABLE_PREVIEW_ROUTING = parseTruthyEnvValue(process.env.ENABLE_PREVIEW_ROUTING);
 // PROCESSOR_LABEL: The label that designates a ProPR PR as the active processor.
 const PROCESSOR_LABEL = process.env.PROCESSOR_LABEL || 'preview-env';
 // PROPR_REPO: The ProPR repository in 'owner/repo' format. Label events from this repo

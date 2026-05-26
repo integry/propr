@@ -2,16 +2,19 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, afterEach, test } from 'node:test';
 import express from 'express';
-import type { NextFunction, Request, Response } from 'express';
+import type { NextFunction, Request, Response as ExpressResponse } from 'express';
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { setupAuth, ensureAuthenticated } from '../auth.js';
-import { demoModeReadOnlyMiddleware, getDemoUser, isDemoMode } from '../demoMode.js';
-import { buildDemoRepositoryMetadata } from '../routes/demoRepositoryMetadata.js';
+import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware, getDemoUser, isDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
+import { buildDemoRepositoryMetadata, clearDemoRepositoryMetadataCache } from '../routes/demoRepositoryMetadata.js';
 import { createGitHubRoutes } from '../routes/githubRoutes.js';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createRepoTodoRoutes } from '../routes/repoTodoRoutes.js';
+import { createQueueRoutes } from '../routes/queueRoutes.js';
+import { createStatusRoutes } from '../routes/statusRoutes.js';
+import { normalizeRepoConfig } from '../routes/configRepoValidation.js';
 
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 const originalFrontendUrl = process.env.FRONTEND_URL;
@@ -24,7 +27,7 @@ async function cleanupDemoData(): Promise<void> {
   if (await db.schema.hasTable('system_configs')) await db('system_configs').where({ key: 'repos_to_monitor' }).delete();
 }
 
-function createJsonResponse(): { response: Response; status: () => number; body: () => unknown } {
+function createJsonResponse(): { response: ExpressResponse; status: () => number; body: () => unknown } {
   let statusCode = 200;
   let payload: unknown;
   const response = {
@@ -37,11 +40,25 @@ function createJsonResponse(): { response: Response; status: () => number; body:
       payload = body;
       return response;
     }
-  } as unknown as Response;
+  } as unknown as ExpressResponse;
   return { response, status: () => statusCode, body: () => payload };
 }
 
+async function fetchFromApp(app: express.Express, path: string, init?: RequestInit): Promise<globalThis.Response> {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  try {
+    return await fetch(`http://127.0.0.1:${address.port}${path}`, init);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}
+
 afterEach(async () => {
+  resetConfiguredDemoMode();
+  clearDemoRepositoryMetadataCache();
   if (originalDemoMode === undefined) delete process.env.PROPR_DEMO_MODE;
   else process.env.PROPR_DEMO_MODE = originalDemoMode;
   if (originalFrontendUrl === undefined) delete process.env.FRONTEND_URL;
@@ -67,7 +84,7 @@ test('demoModeReadOnlyMiddleware rejects mutating requests in demo mode', () => 
       payload = body;
       return response;
     }
-  } as unknown as Response;
+  } as unknown as ExpressResponse;
 
   demoModeReadOnlyMiddleware({ method: 'POST' } as Request, response, (() => { nextCalled = true; }) as NextFunction);
 
@@ -103,11 +120,88 @@ test('isDemoMode accepts common truthy environment values', () => {
   assert.equal(isDemoMode(), true);
 });
 
+test('configured demo mode keeps auth and middleware on the same startup value', async () => {
+  process.env.PROPR_DEMO_MODE = '1';
+  configureDemoMode();
+  process.env.PROPR_DEMO_MODE = 'false';
+  let nextCalled = false;
+  const authRequest = { headers: {}, isAuthenticated: () => false } as unknown as Request;
+  const authResponse = { set() { return authResponse; } } as unknown as ExpressResponse;
+
+  await ensureAuthenticated(authRequest, authResponse, (() => { nextCalled = true; }) as NextFunction);
+  assert.equal(nextCalled, true);
+  assert.deepEqual(authRequest.user, getDemoUser());
+
+  const { response, status, body } = createJsonResponse();
+  demoModeReadOnlyMiddleware({ method: 'POST' } as Request, response, (() => { assert.fail('next should not be called'); }) as NextFunction);
+  assert.equal(status(), 403);
+  assert.deepEqual(body(), {
+    code: DEMO_MODE_READ_ONLY_CODE,
+    error: 'Demo mode is read-only. Mutating requests are disabled.'
+  });
+});
+
+test('demo Redis facade covers read-only route Redis usage', async () => {
+  const redis = createDemoRedisClient();
+  assert.equal(await redis.ping(), 'PONG');
+  assert.equal(await redis.set('lock', 'owner', { NX: true, EX: 60 }), 'OK');
+  assert.equal(await redis.set('lock', 'other', { NX: true, EX: 60 }), null);
+  assert.equal(await redis.get('lock'), 'owner');
+  assert.equal(await redis.expire('lock', 60), true);
+  assert.equal(await redis.exists('lock'), 1);
+  assert.equal(await redis.lPush('system:activity:log', JSON.stringify({ description: 'one' })), 1);
+  assert.equal(await redis.rPush('system:activity:log', JSON.stringify({ description: 'two' })), 2);
+  assert.equal((await redis.lRange('system:activity:log', 0, -1)).length, 2);
+  assert.equal(await redis.sAdd('active:repositories', ['integry/propr', 'integry/propr']), 1);
+  assert.deepEqual(await redis.sMembers('active:repositories'), ['integry/propr']);
+  assert.equal(await redis.incr('metrics:jobs:processed'), 1);
+  assert.deepEqual(await redis.keys('metrics:*'), ['metrics:jobs:processed']);
+  assert.equal(await redis.del(['lock', 'metrics:jobs:processed']), 2);
+});
+
+test('demo Express GET routes work with the in-memory Redis facade', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'http://localhost:5173';
+  configureDemoMode();
+  const redis = createDemoRedisClient();
+  await redis.lPush('system:activity:log', JSON.stringify({ description: 'Demo activity', timestamp: '2026-05-26T00:00:00.000Z' }));
+  const taskQueue = {
+    getWaitingCount: async () => 0,
+    getActiveCount: async () => 0,
+    getCompletedCount: async () => 0,
+    getFailedCount: async () => 0,
+    getDelayedCount: async () => 0,
+  } as never;
+  const app = express();
+  app.use(express.json());
+  app.use('/api', demoModeReadOnlyMiddleware);
+  setupAuth(app);
+  app.use('/api', ensureAuthenticated);
+  const statusRoutes = createStatusRoutes({ redisClient: redis });
+  const queueRoutes = createQueueRoutes({ redisClient: redis, taskQueue });
+  app.get('/api/status', statusRoutes.getStatus);
+  app.get('/api/activity', queueRoutes.getActivity);
+  app.post('/api/activity', (_req, res) => res.json({ ok: true }));
+
+  const statusResponse = await fetchFromApp(app, '/api/status');
+  assert.equal(statusResponse.status, 200);
+  const statusBody = await statusResponse.json() as { redis: string; worker: string };
+  assert.equal(statusBody.redis, 'connected');
+  assert.equal(statusBody.worker, 'stopped');
+
+  const activityResponse = await fetchFromApp(app, '/api/activity');
+  assert.equal(activityResponse.status, 200);
+  assert.equal((await activityResponse.json() as Array<{ description: string }>)[0].description, 'Demo activity');
+
+  const blockedResponse = await fetchFromApp(app, '/api/activity', { method: 'POST' });
+  assert.equal(blockedResponse.status, 403);
+});
+
 test('ensureAuthenticated attaches the synthetic demo user', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   let nextCalled = false;
   const request = { headers: {}, isAuthenticated: () => false } as unknown as Request;
-  const response = { set() { return response; } } as unknown as Response;
+  const response = { set() { return response; } } as unknown as ExpressResponse;
 
   await ensureAuthenticated(request, response, (() => { nextCalled = true; }) as NextFunction);
 
@@ -151,6 +245,25 @@ test('demo repository metadata resolves enabled configured repositories', () => 
     isPrivate: null,
     description: 'Repository metadata is unavailable in read-only demo mode.'
   });
+});
+
+test('repository config branch validation documents ProPR-supported branch names', () => {
+  assert.deepEqual(normalizeRepoConfig({
+    name: 'integry/propr',
+    enabled: true,
+    baseBranch: 'release/2026',
+    defaultBranch: 'main'
+  }).ok, true);
+
+  const invalid = normalizeRepoConfig({
+    name: 'integry/propr',
+    enabled: true,
+    baseBranch: 'feature/with whitespace'
+  });
+  assert.equal(invalid.ok, false);
+  if (!invalid.ok) {
+    assert.match(invalid.error, /unsupported by ProPR/);
+  }
 });
 
 test('/api/github/repos returns configured and persisted repositories in demo mode', async () => {
@@ -241,11 +354,11 @@ test('repo todo demo reads use the curated database without owner filters', asyn
   const demoTodoId = randomUUID();
   const otherTodoId = randomUUID();
   await db('repo_todo_categories').insert([
-    { category_id: demoCategoryId, user_id: 'demo', repository: 'integry/propr', name: 'Demo category', order_index: 0 },
+    { category_id: demoCategoryId, user_id: 'demo', repository: 'integry/propr', name: 'Demo category', order_index: 2 },
     { category_id: otherCategoryId, user_id: 'real-user', repository: 'integry/propr', name: 'Other category', order_index: 1 },
   ]);
   await db('repo_todos').insert([
-    { todo_id: demoTodoId, user_id: 'demo', repository: 'integry/propr', category_id: demoCategoryId, content: 'Demo todo', order_index: 0 },
+    { todo_id: demoTodoId, user_id: 'demo', repository: 'integry/propr', category_id: demoCategoryId, content: 'Demo todo', order_index: 2 },
     { todo_id: otherTodoId, user_id: 'real-user', repository: 'integry/propr', category_id: otherCategoryId, content: 'Other todo', order_index: 1 },
   ]);
   const routes = createRepoTodoRoutes();
@@ -262,8 +375,16 @@ test('repo todo demo reads use the curated database without owner filters', asyn
     [demoCategoryId, otherCategoryId].sort()
   );
   assert.deepEqual(
+    (categoryResponse.body() as { categories: Array<{ categoryId: string }> }).categories.map(category => category.categoryId),
+    [otherCategoryId, demoCategoryId]
+  );
+  assert.deepEqual(
     (todoResponse.body() as { todos: Array<{ todoId: string }> }).todos.map(todo => todo.todoId).sort(),
     [demoTodoId, otherTodoId].sort()
+  );
+  assert.deepEqual(
+    (todoResponse.body() as { todos: Array<{ todoId: string }> }).todos.map(todo => todo.todoId),
+    [otherTodoId, demoTodoId]
   );
   assert.equal(singleTodoResponse.status(), 200);
   assert.equal((singleTodoResponse.body() as { todoId: string }).todoId, otherTodoId);

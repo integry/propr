@@ -7,6 +7,11 @@ type DemoRepositorySource = {
   defaultBranch?: string | null;
   branch?: string | null;
 };
+type DemoRepositoryCache = {
+  configuredRepos: RepoConfig[];
+  databaseSources: DemoRepositorySource[];
+  expiresAt: number;
+};
 
 export interface DemoRepositoryMetadata {
   repository: string;
@@ -15,6 +20,10 @@ export interface DemoRepositoryMetadata {
   isPrivate: boolean | null;
   description: string;
 }
+
+const DEMO_REPOSITORY_CACHE_TTL_MS = 30_000;
+let demoRepositoryCache: DemoRepositoryCache | null = null;
+let demoRepositoryCacheLoad: Promise<DemoRepositoryCache> | null = null;
 
 function sortNames(names: string[]): string[] {
   return [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
@@ -83,6 +92,31 @@ async function loadDemoDatabaseRepositorySources(): Promise<DemoRepositorySource
   ];
 }
 
+async function loadDemoRepositoryCache(): Promise<DemoRepositoryCache> {
+  const now = Date.now();
+  if (demoRepositoryCache && demoRepositoryCache.expiresAt > now) return demoRepositoryCache;
+  if (demoRepositoryCacheLoad) return demoRepositoryCacheLoad;
+  demoRepositoryCacheLoad = Promise.all([
+    configManager.loadMonitoredReposRaw(),
+    loadDemoDatabaseRepositorySources()
+  ]).then(([configuredRepos, databaseSources]) => {
+    demoRepositoryCache = {
+      configuredRepos,
+      databaseSources,
+      expiresAt: Date.now() + DEMO_REPOSITORY_CACHE_TTL_MS
+    };
+    return demoRepositoryCache;
+  }).finally(() => {
+    demoRepositoryCacheLoad = null;
+  });
+  return demoRepositoryCacheLoad;
+}
+
+export function clearDemoRepositoryMetadataCache(): void {
+  demoRepositoryCache = null;
+  demoRepositoryCacheLoad = null;
+}
+
 function buildDemoRepositorySources(configuredRepos: RepoConfig[], databaseSources: DemoRepositorySource[] = []): DemoRepositorySource[] {
   const sources: DemoRepositorySource[] = [];
   for (const source of getDemoConfiguredRepoSources(configuredRepos)) addRepositorySource(sources, source);
@@ -110,18 +144,12 @@ export function buildDemoRepositoryMetadata(repos: RepoConfig[], repoFullName: s
 }
 
 export async function loadDemoRepositoryMetadata(repoFullName: string): Promise<DemoRepositoryMetadata | null> {
-  const [configuredRepos, databaseSources] = await Promise.all([
-    configManager.loadMonitoredReposRaw(),
-    loadDemoDatabaseRepositorySources()
-  ]);
+  const { configuredRepos, databaseSources } = await loadDemoRepositoryCache();
   return buildDemoRepositoryMetadata(configuredRepos, repoFullName, databaseSources);
 }
 
 export async function loadDemoConfiguredRepoNames(): Promise<string[]> {
-  const [configuredRepos, databaseSources] = await Promise.all([
-    configManager.loadMonitoredReposRaw(),
-    loadDemoDatabaseRepositorySources()
-  ]);
+  const { configuredRepos, databaseSources } = await loadDemoRepositoryCache();
   const names = buildDemoRepositorySources(configuredRepos, databaseSources)
     .map(source => source.repository)
     .filter(Boolean);

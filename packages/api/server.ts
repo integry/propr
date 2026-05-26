@@ -6,7 +6,8 @@ import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
-import { demoModeReadOnlyMiddleware, isDemoMode } from './demoMode.js';
+import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
+import { parseTruthyEnvValue } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import {
   createStatusRoutes,
@@ -57,7 +58,7 @@ type RouteHandler = RequestHandler;
 type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
 type ShutdownTask = { name: string; close: () => Promise<unknown> };
 
-const demoMode = isDemoMode();
+const demoMode = configureDemoMode();
 
 function buildRedisUrlFromOptions(options: RedisOptions): string {
   const protocol = options.tls ? 'rediss' : 'redis';
@@ -191,49 +192,6 @@ setupAuth(app);
 let redisClient: RedisClientType;
 let taskQueue: Queue;
 
-function createDemoRedisClient(): RedisClientType {
-  const strings = new Map<string, string>();
-  const lists = new Map<string, string[]>();
-  const sets = new Map<string, Set<string>>();
-  const listRange = (list: string[], start: number, stop: number): string[] => {
-    const normalizedStart = start < 0 ? list.length + start : start;
-    const normalizedStop = stop < 0 ? list.length + stop : stop;
-    const from = Math.max(normalizedStart, 0);
-    const to = Math.min(normalizedStop, list.length - 1);
-    if (from > to || from >= list.length || to < 0) return [];
-    return list.slice(from, to + 1);
-  };
-  return {
-    connect: async () => undefined,
-    quit: async () => 'OK',
-    ping: async () => 'PONG',
-    get: async (key: string) => strings.get(key) ?? null,
-    set: async (key: string, value: string) => { strings.set(key, value); return 'OK'; },
-    del: async (key: string) => Number(strings.delete(key) || lists.delete(key) || sets.delete(key)),
-    publish: async () => 0,
-    lPush: async (key: string, value: string) => {
-      const list = lists.get(key) ?? [];
-      list.unshift(value);
-      lists.set(key, list);
-      return list.length;
-    },
-    rPush: async (key: string, value: string) => {
-      const list = lists.get(key) ?? [];
-      list.push(value);
-      lists.set(key, list);
-      return list.length;
-    },
-    lTrim: async (key: string, start: number, stop: number) => {
-      const list = lists.get(key) ?? [];
-      lists.set(key, listRange(list, start, stop));
-      return 'OK';
-    },
-    lRange: async (key: string, start: number, stop: number) => listRange(lists.get(key) ?? [], start, stop),
-    sMembers: async (key: string) => Array.from(sets.get(key) ?? []),
-    sCard: async (key: string) => (sets.get(key) ?? new Set()).size,
-  } as unknown as RedisClientType;
-}
-
 function createDemoTaskQueue(): Queue {
   return {
     add: async () => { throw new Error('Task queue is disabled in demo mode'); },
@@ -354,7 +312,7 @@ function setupWebhookRoute(): void {
     return;
   }
 
-  if (process.env.ENABLE_GITHUB_WEBHOOKS !== 'true') {
+  if (!parseTruthyEnvValue(process.env.ENABLE_GITHUB_WEBHOOKS)) {
     console.log('[webhook] Webhook endpoint disabled (ENABLE_GITHUB_WEBHOOKS not set to true)');
     return;
   }

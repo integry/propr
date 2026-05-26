@@ -80,17 +80,18 @@ function toTodoDomain(record: RepoTodoRecord): RepoTodo {
 async function getDemoCategoriesForRepository(repository: string): Promise<RepoTodoCategory[]> {
   const records = await db<RepoTodoCategoryRecord>('repo_todo_categories')
     .where('repository', repository)
-    .orderBy('user_id', 'asc')
-    .orderBy('order_index', 'asc');
+    .orderBy('order_index', 'asc')
+    .orderBy('name', 'asc')
+    .orderBy('category_id', 'asc');
   return records.map(toCategoryDomain);
 }
 
 async function getDemoTodosForRepository(repository: string): Promise<RepoTodo[]> {
   const records = await db<RepoTodoRecord>('repo_todos')
     .where('repository', repository)
-    .orderBy('user_id', 'asc')
+    .orderBy('order_index', 'asc')
     .orderBy('category_id', 'asc')
-    .orderBy('order_index', 'asc');
+    .orderBy('todo_id', 'asc');
   return records.map(toTodoDomain);
 }
 

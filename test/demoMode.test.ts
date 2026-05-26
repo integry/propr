@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import { ensureAuthenticated } from '../packages/api/auth.ts';
-import { demoModeReadOnlyMiddleware, DEMO_MODE_ACCESS_TOKEN } from '../packages/api/demoMode.ts';
+import { demoModeReadOnlyMiddleware, DEMO_MODE_ACCESS_TOKEN, resetConfiguredDemoMode } from '../packages/api/demoMode.ts';
 
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 
 afterEach(() => {
+  resetConfiguredDemoMode();
   if (originalDemoMode === undefined) {
     delete process.env.PROPR_DEMO_MODE;
   } else {

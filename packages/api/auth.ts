@@ -4,7 +4,7 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient, type RedisClientType } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
-import { getDemoUser, isDemoMode } from './demoMode.js';
+import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 
 interface GitHubUser {
     id: string;
@@ -16,12 +16,6 @@ interface GitHubUser {
     accessToken: string;
     refreshToken?: string;
     tokenExpiresAt?: number;
-}
-
-let authDemoModeAtStartup: boolean | null = null;
-
-function getAuthDemoMode(): boolean {
-    return authDemoModeAtStartup ?? isDemoMode();
 }
 
 function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
@@ -79,8 +73,7 @@ declare global {
 }
 
 export function setupAuth(app: Express): void {
-    const demoModeAtStartup = isDemoMode();
-    authDemoModeAtStartup = demoModeAtStartup;
+    const demoModeAtStartup = configureDemoMode(isDemoMode());
     const requiredEnvVars = demoModeAtStartup
         ? ['FRONTEND_URL']
         : ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL'];
@@ -409,7 +402,7 @@ export async function refreshGitHubTokenIfNeeded(req: Request, force: boolean = 
 }
 
 export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {
-    if (getAuthDemoMode()) {
+    if (isDemoMode()) {
         res.set('X-ProPR-Demo-Mode', 'true');
         if (req.headers.authorization?.startsWith('Bearer ')) {
             res.status(403).json({
