@@ -353,8 +353,12 @@ async function start(): Promise<void> {
     try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await initRedis();
-    try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
-    try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+    if (!demoMode) {
+      try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
+      try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+    } else {
+      console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
+    }
     setupRoutes();
     if (!demoMode) {
       const socketService = initSocketService(httpServer, validateCorsOrigin);

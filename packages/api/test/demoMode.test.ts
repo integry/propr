@@ -156,12 +156,16 @@ test('demo Redis facade covers read-only route Redis usage', async () => {
   assert.deepEqual(await redis.sMembers('active:repositories'), ['integry/propr']);
   assert.equal(await redis.incr('metrics:jobs:processed'), 1);
   assert.deepEqual(await redis.keys('metrics:*'), ['metrics:jobs:processed']);
+  assert.equal(await redis.hSet('demo:hash', { field: 'value' }), 1);
+  assert.equal(await redis.hGet('demo:hash', 'field'), 'value');
+  assert.deepEqual(await redis.hGetAll('demo:hash'), { field: 'value' });
+  assert.deepEqual(await redis.zRange('demo:zset', 0, -1), []);
   assert.equal(await (redis as unknown as { setex: (key: string, seconds: number, value: string) => Promise<string | null> }).setex('lowercase-setex', 60, 'ok'), 'OK');
   assert.equal(await redis.get('lowercase-setex'), 'ok');
   assert.equal(await redis.del(['lock', 'metrics:jobs:processed']), 2);
   await assert.rejects(
-    () => (redis as unknown as { hGet: (key: string, field: string) => Promise<string | null> }).hGet('hash', 'field'),
-    /Demo Redis facade does not implement Redis command "hGet"/
+    () => (redis as unknown as { flushAll: () => Promise<string> }).flushAll(),
+    /Demo Redis facade blocks unsupported Redis command "flushAll"/
   );
 });
 
@@ -218,20 +222,17 @@ test('ensureAuthenticated attaches the synthetic demo user', async () => {
   assert.equal(request.user?.accessToken, undefined);
 });
 
-test('ensureAuthenticated rejects bearer auth in demo mode', async () => {
+test('ensureAuthenticated ignores bearer auth and attaches the synthetic demo user in demo mode', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   let nextCalled = false;
   const request = { headers: { authorization: 'Bearer ghp_test' }, isAuthenticated: () => false } as unknown as Request;
-  const { response, status, body } = createJsonResponse();
+  const { response, status } = createJsonResponse();
 
   await ensureAuthenticated(request, response, (() => { nextCalled = true; }) as NextFunction);
 
-  assert.equal(nextCalled, false);
-  assert.equal(status(), 403);
-  assert.deepEqual(body(), {
-    error: 'Bearer token authentication is disabled in demo mode',
-    code: 'DEMO_MODE_BEARER_AUTH_DISABLED'
-  });
+  assert.equal(nextCalled, true);
+  assert.equal(status(), 200);
+  assert.deepEqual(request.user, getDemoUser());
 });
 
 test('demo repository metadata resolves enabled configured repositories', () => {
@@ -420,7 +421,7 @@ test('auth demo-mode metadata endpoint reports startup environment value', async
   const app = express();
   setupAuth(app);
   process.env.PROPR_DEMO_MODE = 'false';
-  assert.equal(isDemoMode(), false);
+  assert.equal(isDemoMode(), true);
 
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));

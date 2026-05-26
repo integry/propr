@@ -123,6 +123,8 @@ export function clearDemoRepositoryMetadataCache(): void {
 function buildDemoRepositorySources(configuredRepos: RepoConfig[], databaseSources: DemoRepositorySource[] = []): DemoRepositorySource[] {
   const sources: DemoRepositorySource[] = [];
   for (const source of getDemoConfiguredRepoSources(configuredRepos)) addRepositorySource(sources, source);
+  // Demo deployments use a curated database as the access boundary, so persisted
+  // repository references are intentionally visible even when they are not in config.
   for (const source of databaseSources) addRepositorySource(sources, source);
   return sources;
 }

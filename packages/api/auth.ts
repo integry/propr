@@ -4,7 +4,7 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient, type RedisClientType } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
-import { getDemoUser, isDemoMode } from './demoMode.js';
+import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 
 interface GitHubUser {
     id: string;
@@ -16,6 +16,10 @@ interface GitHubUser {
     accessToken?: string;
     refreshToken?: string;
     tokenExpiresAt?: number;
+}
+interface AllowedRedirectHost {
+    host: string;
+    includeSubdomains: boolean;
 }
 
 function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
@@ -29,29 +33,35 @@ function getValidatedRedirectTo(redirectTo: string | undefined): string | undefi
     return undefined;
 }
 
-function parseHostFromUrlOrHostname(value: string): string | null {
+function parseAllowedRedirectHost(value: string, includeSubdomainsByDefault = false): AllowedRedirectHost | null {
     const trimmed = value.trim();
     if (!trimmed) return null;
+    const includeSubdomains = includeSubdomainsByDefault || trimmed.startsWith('.') || trimmed.startsWith('*.') || trimmed.startsWith('https://*.') || trimmed.startsWith('http://*.');
+    const normalized = trimmed.replace(/^(https?:\/\/)\*\./, '$1').replace(/^\*\./, '');
     try {
-        return new URL(trimmed).hostname;
+        return { host: new URL(normalized).hostname.replace(/^\./, ''), includeSubdomains };
     } catch {
-        return trimmed.replace(/^\./, '');
+        return { host: normalized.replace(/^\./, ''), includeSubdomains };
     }
 }
 
-function getAllowedRedirectHosts(): string[] {
+function getAllowedRedirectHosts(): AllowedRedirectHost[] {
     const hosts = [
-        process.env.FRONTEND_URL,
-        process.env.COOKIE_DOMAIN,
-        ...(process.env.AUTH_REDIRECT_ALLOWED_HOSTS || '').split(',')
-    ].map(value => value ? parseHostFromUrlOrHostname(value) : null)
-      .filter((value): value is string => Boolean(value));
-    return Array.from(new Set(hosts));
+        process.env.FRONTEND_URL ? parseAllowedRedirectHost(process.env.FRONTEND_URL) : null,
+        process.env.COOKIE_DOMAIN ? parseAllowedRedirectHost(process.env.COOKIE_DOMAIN, process.env.COOKIE_DOMAIN.trim().startsWith('.')) : null,
+        ...(process.env.AUTH_REDIRECT_ALLOWED_HOSTS || '').split(',').map(value => parseAllowedRedirectHost(value))
+    ].filter((value): value is AllowedRedirectHost => Boolean(value));
+    const uniqueHosts = new Map<string, AllowedRedirectHost>();
+    for (const host of hosts) {
+        const existing = uniqueHosts.get(host.host);
+        uniqueHosts.set(host.host, { host: host.host, includeSubdomains: host.includeSubdomains || existing?.includeSubdomains === true });
+    }
+    return Array.from(uniqueHosts.values());
 }
 
 function isAllowedRedirectHost(hostname: string): boolean {
-    return getAllowedRedirectHosts().some(allowedHost =>
-        hostname === allowedHost || hostname.endsWith(`.${allowedHost}`)
+    return getAllowedRedirectHosts().some(({ host, includeSubdomains }) =>
+        hostname === host || (includeSubdomains && hostname.endsWith(`.${host}`))
     );
 }
 
@@ -73,6 +83,7 @@ declare global {
 }
 
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
+    configureDemoMode(demoModeAtStartup);
     const requiredEnvVars = demoModeAtStartup
         ? ['FRONTEND_URL']
         : ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL'];
@@ -403,14 +414,8 @@ export async function refreshGitHubTokenIfNeeded(req: Request, force: boolean = 
 export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {
     if (isDemoMode()) {
         res.set('X-ProPR-Demo-Mode', 'true');
-        if (req.headers.authorization?.startsWith('Bearer ')) {
-            res.status(403).json({
-                error: 'Bearer token authentication is disabled in demo mode',
-                code: 'DEMO_MODE_BEARER_AUTH_DISABLED'
-            });
-            return;
-        }
         // Demo mode is deployment-wide: browser callers receive the synthetic read-only user.
+        // Stale bearer headers are ignored so public demo visitors are treated consistently.
         (req as Request & { user: GitHubUser }).user = getDemoUser();
         return next();
     }
