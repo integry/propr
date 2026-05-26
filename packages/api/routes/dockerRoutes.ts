@@ -135,8 +135,22 @@ async function loadDockerContainerMetadata(
 ): Promise<{ containerId: string | null; containerName: string | null } | null> {
   const directState = await loadDockerTaskStateFromRedis(taskReference, redisClient);
   if (directState) {
-    return getDockerContainerMetadata(directState);
+    const directMetadata = getDockerContainerMetadata(directState);
+    if (directMetadata.containerId) {
+      return directMetadata;
+    }
+
+    const contextState = await loadDockerTaskStateFromStopContext(taskReference, redisClient, loadContext);
+    if (contextState) {
+      const contextMetadata = getDockerContainerMetadata(contextState);
+      if (contextMetadata.containerId) {
+        return contextMetadata;
+      }
+    }
+
+    return directMetadata;
   }
+
   const contextState = await loadDockerTaskStateFromStopContext(taskReference, redisClient, loadContext);
   if (contextState) {
     return getDockerContainerMetadata(contextState);

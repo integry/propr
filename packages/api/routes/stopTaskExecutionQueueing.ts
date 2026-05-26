@@ -112,7 +112,7 @@ export async function removeQueuedJobAfterStateCreation(params: {
       logger.info({
         taskId: context.taskId,
         jobId: context.queueJob?.id ? String(context.queueJob.id) : null,
-      }, 'Queued job became active after cancellation state was created; relying on worker abort signal');
+      }, 'Queued job became active during cancellation; relying on worker abort signal');
     }
   }
   return {

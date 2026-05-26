@@ -136,55 +136,47 @@ export async function stopTaskExecution(
 
   const timestamp = new Date().toISOString();
   const queueRemovalShouldPrecedeAbort = shouldRemoveQueueJobBeforeArmingAbort(activity);
-  let jobRemoved = false;
-  let queueStateAfterFailure: string | null = null;
-  let persistedStopOutcomeDuringStop = false;
-
-  context = await ensureContextTaskStateForCancellation(context, deps);
-  if (queueRemovalShouldPrecedeAbort) {
-    ({ jobRemoved, queueStateAfterFailure, persistedStopOutcomeDuringStop } = await removeQueuedJobAfterStateCreation({
-      context,
-      activity,
-      redisClient,
-    }));
-  }
-
-  const abortSignalArmed = shouldArmAbortSignal({
+  const preparedStop = await prepareContextForStop({
+    context,
+    deps,
+    redisClient,
+    activity,
     shouldAbort,
     queueRemovalShouldPrecedeAbort,
-    jobRemoved,
-    queueStateAfterFailure,
   });
+  context = preparedStop.context;
   await setAbortSignalIfNeeded({
     redisClient,
     taskIds: context.abortTaskIds,
     requestedBy,
     cancellation,
     timestamp,
-    shouldAbort: abortSignalArmed,
+    shouldAbort: preparedStop.abortSignalArmed,
   });
   const { containerId, containerStopped } = await stopTaskContainer({
     redisClient,
     taskId: context.taskId,
     containerId: trackedContainerId,
-    shouldAbort: abortSignalArmed,
+    shouldAbort: preparedStop.abortSignalArmed,
     containerStopTimeoutSeconds,
     stopContainer: deps.stopDockerContainer,
     requestedBy,
     cancellation,
   });
   if (!queueRemovalShouldPrecedeAbort) {
-    ({ jobRemoved, queueStateAfterFailure } = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart));
+    const removalResult = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
+    preparedStop.jobRemoved = removalResult.jobRemoved;
+    preparedStop.queueStateAfterFailure = removalResult.queueStateAfterFailure;
   }
-  const effectiveQueueState = queueStateAfterFailure ?? context.queueState;
+  const effectiveQueueState = preparedStop.queueStateAfterFailure ?? context.queueState;
   const stopOutcome = mergeStopOutcomes(persistedStopOutcome, {
     containerId,
     containerStopped,
-    jobRemoved,
+    jobRemoved: preparedStop.jobRemoved,
   });
-  const resolvedQueueState = resolveCancellationQueueState(stopOutcome, queueStateAfterFailure ?? context.queueState);
-  const stopVerified = isStopVerified({ stopOutcome, shouldAbort: abortSignalArmed });
-  const cancellationRequested = abortSignalArmed && !stopVerified;
+  const resolvedQueueState = resolveCancellationQueueState(stopOutcome, preparedStop.queueStateAfterFailure ?? context.queueState);
+  const stopVerified = isStopVerified({ stopOutcome, shouldAbort: preparedStop.abortSignalArmed });
+  const cancellationRequested = preparedStop.abortSignalArmed && !stopVerified;
   if (cancellationRequested) {
     await persistPendingCancellationRequest({
       redisClient,
@@ -193,7 +185,7 @@ export async function stopTaskExecution(
       cancellation,
       resolvedQueueState,
       containerId: stopOutcome.containerId,
-      abortSignalArmed,
+      abortSignalArmed: preparedStop.abortSignalArmed,
       timestamp,
       deps,
     });
@@ -204,8 +196,8 @@ export async function stopTaskExecution(
     queueState: effectiveQueueState,
     containerId,
     stopOutcome,
-    shouldAbort: abortSignalArmed,
-    queueStateAfterFailure,
+    shouldAbort: preparedStop.abortSignalArmed,
+    queueStateAfterFailure: preparedStop.queueStateAfterFailure,
     createError: (status, body) => new StopTaskExecutionError(status, body),
   });
   if (requireVerifiedStop && !stopVerified) {
@@ -219,7 +211,7 @@ export async function stopTaskExecution(
       jobRemoved: stopOutcome.jobRemoved,
       stopVerified,
       cancellationRequested,
-      abortSignalArmed,
+      abortSignalArmed: preparedStop.abortSignalArmed,
     });
   }
   const shouldPersistCancelledState = stopVerified;
@@ -241,7 +233,7 @@ export async function stopTaskExecution(
         containerStopped: stopOutcome.containerStopped,
         jobRemoved: stopOutcome.jobRemoved,
         stopVerified,
-        abortSignalArmed,
+        abortSignalArmed: preparedStop.abortSignalArmed,
         deps,
       });
     } catch (error) {
@@ -256,14 +248,14 @@ export async function stopTaskExecution(
       metadata: buildStopMessageMetadata(cancellation, requestedBy),
     });
     const shouldRetainAbortSignals = shouldKeepAbortSignalsAfterCancellation({
-      shouldAbort: abortSignalArmed,
+      shouldAbort: preparedStop.abortSignalArmed,
       stopVerified,
     });
     if (!shouldRetainAbortSignals) {
       await clearPendingStopRequest(redisClient, context.abortTaskIds);
       await clearAbortSignals(redisClient, context.abortTaskIds);
     }
-    if (hadPersistedStopOutcome || persistedStopOutcomeDuringStop) {
+    if (hadPersistedStopOutcome || preparedStop.persistedStopOutcomeDuringStop) {
       await clearPersistedStopOutcome(redisClient, context.abortTaskIds);
     }
   }
@@ -271,7 +263,7 @@ export async function stopTaskExecution(
     success: true,
     message: getStopTaskSuccessMessage({
       jobRemoved: stopOutcome.jobRemoved,
-      shouldAbort: abortSignalArmed,
+      shouldAbort: preparedStop.abortSignalArmed,
       containerStopped: stopOutcome.containerStopped,
     }),
     taskId: context.taskId,
@@ -279,7 +271,7 @@ export async function stopTaskExecution(
     jobRemoved: stopOutcome.jobRemoved,
     stopVerified,
     cancellationRequested,
-    abortSignalArmed,
+    abortSignalArmed: preparedStop.abortSignalArmed,
     currentState: context.currentState,
     queueState: resolvedQueueState,
     cancellation,
@@ -305,6 +297,7 @@ async function setAbortSignalIfNeeded(params: {
     reasonCode: cancellation.code,
     reason: cancellation.message,
     source: cancellation.source ?? 'task_stop',
+    ...(cancellation.requestId ? { requestId: cancellation.requestId } : {}),
   });
 
   for (const taskId of taskIds) {
@@ -325,6 +318,61 @@ function shouldRemoveQueueJobBeforeArmingAbort(activity: ReturnType<typeof getSt
     && !activity.isRunningTaskState
     && !activity.isQueueActive
     && !activity.hasContainerToStop;
+}
+
+async function prepareContextForStop(params: {
+  context: StopTaskContext;
+  deps: StopTaskExecutionDeps;
+  redisClient: RedisClientLike;
+  activity: ReturnType<typeof getStopTaskActivity>;
+  shouldAbort: boolean;
+  queueRemovalShouldPrecedeAbort: boolean;
+}): Promise<{
+  context: StopTaskContext;
+  jobRemoved: boolean;
+  queueStateAfterFailure: string | null;
+  persistedStopOutcomeDuringStop: boolean;
+  abortSignalArmed: boolean;
+}> {
+  const {
+    deps,
+    redisClient,
+    activity,
+    shouldAbort,
+    queueRemovalShouldPrecedeAbort,
+  } = params;
+  let { context } = params;
+  let jobRemoved = false;
+  let queueStateAfterFailure: string | null = null;
+  let persistedStopOutcomeDuringStop = false;
+
+  if (queueRemovalShouldPrecedeAbort) {
+    ({ jobRemoved, queueStateAfterFailure, persistedStopOutcomeDuringStop } = await removeQueuedJobAfterStateCreation({
+      context,
+      activity,
+      redisClient,
+    }));
+  } else {
+    context = await ensureContextTaskStateForCancellation(context, deps);
+  }
+
+  const abortSignalArmed = shouldArmAbortSignal({
+    shouldAbort,
+    queueRemovalShouldPrecedeAbort,
+    jobRemoved,
+    queueStateAfterFailure,
+  });
+  if (queueRemovalShouldPrecedeAbort && (jobRemoved || abortSignalArmed)) {
+    context = await ensureContextTaskStateForCancellation(context, deps);
+  }
+
+  return {
+    context,
+    jobRemoved,
+    queueStateAfterFailure,
+    persistedStopOutcomeDuringStop,
+    abortSignalArmed,
+  };
 }
 
 async function ensureContextTaskStateForCancellation(

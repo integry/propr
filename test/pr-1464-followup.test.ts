@@ -131,7 +131,7 @@ test('getActiveTasksForPR paginates queue scans beyond the first page', async ()
   assert.deepEqual(tasks, [{ taskId: 'waiting-job-1000', state: 'waiting' }]);
 });
 
-test('Docker info reads direct Redis worker state before extended stop context', async () => {
+test('Docker info falls back to extended stop context when direct state has no container', async () => {
   const loadStopTaskContext = mock.fn(async () => {
     throw new Error('DB unavailable');
   });
@@ -166,7 +166,7 @@ test('Docker info reads direct Redis worker state before extended stop context',
 
   assert.equal(response.statusCode, 404);
   assert.deepEqual(response.body, { error: 'No Docker container info available for this task' });
-  assert.equal(loadStopTaskContext.mock.calls.length, 0);
+  assert.equal(loadStopTaskContext.mock.calls.length, 1);
 });
 
 test('Docker info resolves container metadata through persisted task aliases', async () => {
@@ -406,7 +406,9 @@ test('stopTaskExecution records a pending merged-PR cancellation for abort-only 
   assert.equal(result.message, 'Stop request sent to worker. The execution will be terminated shortly.');
   assert.deepEqual(delCalls, []);
   assert.deepEqual(
-    setCalls.map((call) => call.key).sort(),
+    setCalls.map((call) => call.key)
+      .filter((key) => !key.startsWith('conversation:stop-message-dedupe:'))
+      .sort(),
     ['worker:abort:job-1464', 'worker:abort:task-1464', 'worker:stop-requested:job-1464', 'worker:stop-requested:task-1464'],
   );
   assert.equal(markTaskCancelledCalls.length, 0);

@@ -49,12 +49,12 @@ export async function cancelMergedPullRequestTasks(
   correlationId: string,
   deps: MergeTaskCancellationDeps,
 ): Promise<void> {
-  if (!deps?.redisClient) {
-    throw new Error('Merge task cancellation dependencies are required');
-  }
-
   if (!isMergedPullRequestClose(payload)) {
     return;
+  }
+
+  if (!deps?.redisClient) {
+    throw new Error('Merge task cancellation dependencies are required');
   }
 
   const repository = payload.repository.full_name;
@@ -92,7 +92,8 @@ export async function cancelMergedPullRequestTasks(
   let remainingTasks = initialTasks;
   const failuresByTaskId = new Map<string, MergeTaskCancellationFailure>();
 
-  for (let attemptIndex = 0; attemptIndex < recheckDelaysMs.length; attemptIndex += 1) {
+  const verificationDelaysMs = recheckDelaysMs.length > 0 ? recheckDelaysMs : [0];
+  for (let attemptIndex = 0; attemptIndex < verificationDelaysMs.length; attemptIndex += 1) {
     const attempt = await stopMergeTasks({
       tasks: remainingTasks,
       redisClient: deps.redisClient,
@@ -105,15 +106,13 @@ export async function cancelMergedPullRequestTasks(
     });
     mergeFailures(failuresByTaskId, attempt.failures);
 
-    if (attemptIndex < recheckDelaysMs.length - 1) {
-      await sleep(recheckDelaysMs[attemptIndex]);
-    }
+    await sleep(verificationDelaysMs[attemptIndex]);
     remainingTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
     if (remainingTasks.length === 0) {
       return;
     }
 
-    if (attemptIndex < recheckDelaysMs.length - 1) {
+    if (attemptIndex < verificationDelaysMs.length - 1) {
       log.info({
         correlationId,
         repository,
@@ -189,7 +188,7 @@ async function stopMergeTasks(params: {
           requestedBy: 'system',
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
-          forceQueueScan: true,
+          forceQueueScan: false,
           requireVerifiedStop: false,
         });
         if (!result.stopVerified) {

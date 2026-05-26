@@ -109,7 +109,7 @@ describe('cancelMergedPullRequestTasks', () => {
       mockStopTaskExecution.mock.calls[0].arguments[1].cancellation.message,
       'Task cancelled because pull request integry/propr#1463 was merged.',
     );
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].forceQueueScan, true);
+    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].forceQueueScan, false);
   });
 
   test('does nothing for unmerged PR closes', async () => {
@@ -123,6 +123,14 @@ describe('cancelMergedPullRequestTasks', () => {
       recheckDelayMs: 0,
       log: mockLogger,
     });
+
+    assert.equal(mockMarkPullRequestMerged.mock.calls.length, 0);
+    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 0);
+    assert.equal(mockStopTaskExecution.mock.calls.length, 0);
+  });
+
+  test('does nothing for irrelevant payloads even when cancellation deps are unavailable', async () => {
+    await cancelMergedPullRequestTasks({ action: 'opened' }, 'test-correlation-id', undefined as never);
 
     assert.equal(mockMarkPullRequestMerged.mock.calls.length, 0);
     assert.equal(mockGetActiveTasksForPR.mock.calls.length, 0);
@@ -275,5 +283,28 @@ describe('cancelMergedPullRequestTasks', () => {
       cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', undefined as never),
       /dependencies are required/,
     );
+  });
+
+  test('waits through the final configured recheck delay before failing cancellation', async () => {
+    const redisClient = createRedisClient();
+    const sleep = mock.fn(async () => undefined);
+    mockGetActiveTasksForPR.mock.mockImplementation(async () => ([{ taskId: 'task-still-active', state: 'processing' }]));
+
+    await assert.rejects(
+      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
+        redisClient,
+        markPullRequestMerged: mockMarkPullRequestMerged,
+        getActiveTasksForPR: mockGetActiveTasksForPR,
+        stopTaskExecution: mockStopTaskExecution,
+        recheckDelaysMs: [1, 3, 5],
+        sleep,
+        log: mockLogger,
+      }),
+      /Failed to cancel 1 merged PR task/,
+    );
+
+    assert.deepEqual(sleep.mock.calls.map((call) => call.arguments[0]), [1, 3, 5]);
+    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 4);
+    assert.equal(mockStopTaskExecution.mock.calls.length, 3);
   });
 });
