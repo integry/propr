@@ -47,3 +47,5 @@ export {
   type UsageMetricRecord,
   type UsageMetrics,
 } from './usageTypes.js';
+
+export { DEMO_MODE_READ_ONLY_CODE } from './demoMode.js';

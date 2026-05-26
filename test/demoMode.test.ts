@@ -70,3 +70,17 @@ test('demo mode allows GET requests and blocks mutating requests', async () => {
     error: 'Demo mode is read-only. Mutating requests are disabled.'
   });
 });
+
+test('demo mode middleware blocks webhook POST requests outside /api', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  const app = express();
+  app.post('/webhook', demoModeReadOnlyMiddleware);
+
+  const response = await fetchFromApp(app, '/webhook', { method: 'POST', body: '{}' });
+
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), {
+    code: 'DEMO_MODE_READ_ONLY',
+    error: 'Demo mode is read-only. Mutating requests are disabled.'
+  });
+});

@@ -1,8 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
-
-export const DEMO_MODE_READ_ONLY_CODE = 'DEMO_MODE_READ_ONLY';
+import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+export const DEMO_MODE_ACCESS_TOKEN = 'demo-mode';
 
 export function isDemoMode(): boolean {
   return process.env.PROPR_DEMO_MODE === 'true';
@@ -15,7 +15,7 @@ export function getDemoUser(): Express.User {
     displayName: 'Demo User',
     email: null,
     avatarUrl: null,
-    accessToken: 'demo-mode',
+    accessToken: DEMO_MODE_ACCESS_TOKEN,
   };
 }
 

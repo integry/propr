@@ -1,6 +1,7 @@
 // API for fetching system data from backend
+import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
-const DEMO_MODE_READ_ONLY_CODE = 'DEMO_MODE_READ_ONLY';
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 let demoModeEnabled = false;
 
@@ -12,6 +13,16 @@ export const setDemoModeEnabled = (enabled: boolean): void => {
   demoModeEnabled = enabled;
 };
 
+export class DemoModeReadOnlyError extends Error {
+  constructor(message = 'Demo mode is read-only. Write and AI execution actions are disabled.') {
+    super(message);
+    this.name = DEMO_MODE_READ_ONLY_CODE;
+  }
+}
+
+export const isDemoModeReadOnlyError = (error: unknown): error is DemoModeReadOnlyError =>
+  error instanceof Error && error.name === DEMO_MODE_READ_ONLY_CODE;
+
 const getRequestMethod = (input: RequestInfo | URL, init?: RequestInit): string => {
   if (init?.method) return init.method.toUpperCase();
   if (typeof Request !== 'undefined' && input instanceof Request) return input.method.toUpperCase();
@@ -20,9 +31,7 @@ const getRequestMethod = (input: RequestInfo | URL, init?: RequestInit): string 
 
 export const assertWritableInDemoMode = (method = 'POST'): void => {
   if (demoModeEnabled && MUTATING_METHODS.has(method.toUpperCase())) {
-    const error = new Error('Demo mode is read-only. Write and AI execution actions are disabled.');
-    error.name = DEMO_MODE_READ_ONLY_CODE;
-    throw error;
+    throw new DemoModeReadOnlyError();
   }
 };
 
@@ -49,16 +58,14 @@ export const handleApiResponse = async (response: Response): Promise<Response> =
     throw new Error('Authentication required');
   }
   if (response.status === 403) {
+    let data: { code?: string; error?: string } | null = null;
     try {
-      const data = await response.clone().json() as { code?: string; error?: string };
-      if (data.code === DEMO_MODE_READ_ONLY_CODE) {
-        const error = new Error(data.error || 'Demo mode is read-only. Write and AI execution actions are disabled.');
-        error.name = DEMO_MODE_READ_ONLY_CODE;
-        throw error;
-      }
-    } catch (error) {
-      if (error instanceof Error && error.name === DEMO_MODE_READ_ONLY_CODE) throw error;
+      data = await response.clone().json() as { code?: string; error?: string };
+    } catch { /* Preserve the generic status fallback for malformed 403 bodies. */ }
+    if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
+      throw new DemoModeReadOnlyError(data.error);
     }
+    if (data?.error) throw new Error(data.error);
   }
   if (!response.ok) throw new Error(`API request failed: ${response.status}`);
   return response;

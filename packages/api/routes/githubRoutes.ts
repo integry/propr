@@ -5,12 +5,34 @@ import { Knex } from 'knex';
 import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import { RequestError } from '@octokit/request-error';
+import * as configManager from '@propr/core';
 import { refreshGitHubTokenIfNeeded } from '../auth.js';
+import { isDemoMode } from '../demoMode.js';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
   db: Knex;
+}
+
+function sortNames(names: string[]): string[] {
+  return names.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
+async function getDemoConfiguredRepoNames(): Promise<string[]> {
+  const repos = await configManager.loadMonitoredReposRaw();
+  return sortNames(Array.from(new Set(repos.map(repo => repo.name).filter(Boolean))));
+}
+
+async function getDemoConfiguredBranches(owner: string, repoName: string): Promise<{ branches: string[]; defaultBranch: string }> {
+  const fullName = `${owner}/${repoName}`;
+  const repos = await configManager.loadMonitoredReposRaw();
+  const configuredBranches = repos
+    .filter(repo => repo.name === fullName && repo.baseBranch)
+    .map(repo => repo.baseBranch as string);
+  const branches = sortNames(Array.from(new Set(configuredBranches)));
+  const defaultBranch = branches[0] || 'main';
+  return { branches: branches.length > 0 ? branches : [defaultBranch], defaultBranch };
 }
 
 /**
@@ -96,6 +118,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
   async function getRepos(req: Request, res: Response): Promise<void> {
     try {
+      if (isDemoMode()) {
+        res.json({ repos: await getDemoConfiguredRepoNames() });
+        return;
+      }
+
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
       if (!accessToken) {
@@ -145,6 +172,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
       if (!owner || !repo) {
         res.status(400).json({ error: 'Owner and repo are required' });
+        return;
+      }
+
+      if (isDemoMode()) {
+        res.json(await getDemoConfiguredBranches(owner, repo));
         return;
       }
 

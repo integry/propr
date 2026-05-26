@@ -17,6 +17,17 @@ interface GitHubUser {
     tokenExpiresAt?: number;
 }
 
+function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
+    if (!redirectTo) return undefined;
+    try {
+        const url = new URL(redirectTo);
+        if (url.hostname.endsWith('.gitfix.dev') || url.hostname === 'gitfix.dev') return redirectTo;
+    } catch {
+        // Invalid URL, ignore
+    }
+    return undefined;
+}
+
 declare global {
     // eslint-disable-next-line @typescript-eslint/no-namespace
     namespace Express {
@@ -40,44 +51,44 @@ export function setupAuth(app: Express): void {
         throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
     }
 
-    // Create Redis client for session store
-    // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
-    const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
-    const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
-    const redisClient = createClient({
-        url: `redis://${sessionRedisHost}:${sessionRedisPort}`
-    });
-    redisClient.on('error', (err) => {
-        console.error('Session Redis Client Error', err);
-    });
-    redisClient.connect().catch(console.error);
-
-    // Use Redis store for sessions to share across subdomains
-    const redisStore = new RedisStore({
-        client: redisClient,
-        prefix: 'propr:session:'
-    });
-
-    app.use(session({
-        store: redisStore,
-        secret: process.env.SESSION_SECRET || 'your-secret-key-here',
-        resave: false,
-        saveUninitialized: false,
-        rolling: true, // Extend session expiration on each request
-        cookie: {
-            // Always secure since gitfix.dev uses HTTPS
-            secure: true,
-            httpOnly: true,
-            maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-            // Set domain to .gitfix.dev to share cookies across all subdomains
-            domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
-            sameSite: 'lax'
-        }
-    }));
-    app.use(passport.initialize());
-    app.use(passport.session());
-
     if (!isDemoMode()) {
+        // Create Redis client for session store
+        // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
+        const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
+        const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
+        const redisClient = createClient({
+            url: `redis://${sessionRedisHost}:${sessionRedisPort}`
+        });
+        redisClient.on('error', (err) => {
+            console.error('Session Redis Client Error', err);
+        });
+        redisClient.connect().catch(console.error);
+
+        // Use Redis store for sessions to share across subdomains
+        const redisStore = new RedisStore({
+            client: redisClient,
+            prefix: 'propr:session:'
+        });
+
+        app.use(session({
+            store: redisStore,
+            secret: process.env.SESSION_SECRET || 'your-secret-key-here',
+            resave: false,
+            saveUninitialized: false,
+            rolling: true, // Extend session expiration on each request
+            cookie: {
+                // Always secure since gitfix.dev uses HTTPS
+                secure: true,
+                httpOnly: true,
+                maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+                // Set domain to .gitfix.dev to share cookies across all subdomains
+                domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
+                sameSite: 'lax'
+            }
+        }));
+        app.use(passport.initialize());
+        app.use(passport.session());
+
         passport.use(new GitHubStrategy({
             clientID: process.env.GH_OAUTH_CLIENT_ID!,
             clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
@@ -106,38 +117,31 @@ export function setupAuth(app: Express): void {
             };
             return done(null, user);
         }));
-    }
 
-    passport.serializeUser((user, done) => done(null, user));
-    passport.deserializeUser((obj: Express.User, done) => done(null, obj));
+        passport.serializeUser((user, done) => done(null, user));
+        passport.deserializeUser((obj: Express.User, done) => done(null, obj));
+    }
 
     // Routes
     // Accept optional redirect_to parameter for PR preview environments
     app.get('/api/auth/github', (req: Request, res: Response, next: NextFunction) => {
+        const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
+
         if (isDemoMode()) {
-            res.redirect(`${process.env.FRONTEND_URL}/`);
+            res.redirect(redirectTo || `${process.env.FRONTEND_URL}/`);
             return;
         }
 
-        const redirectTo = req.query.redirect_to as string | undefined;
         if (redirectTo) {
-            // Validate redirect URL to prevent open redirect attacks
-            // Only allow redirects to *.gitfix.dev domains
-            try {
-                const url = new URL(redirectTo);
-                if (url.hostname.endsWith('.gitfix.dev') || url.hostname === 'gitfix.dev') {
-                    (req.session as session.Session & { redirectTo?: string }).redirectTo = redirectTo;
-                }
-            } catch {
-                // Invalid URL, ignore
-            }
+            (req.session as session.Session & { redirectTo?: string }).redirectTo = redirectTo;
         }
         passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] })(req, res, next);
     });
 
     if (isDemoMode()) {
-        app.get('/api/auth/github/callback', (_req: Request, res: Response) => {
-            res.redirect(`${process.env.FRONTEND_URL}/`);
+        app.get('/api/auth/github/callback', (req: Request, res: Response) => {
+            const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
+            res.redirect(redirectTo || `${process.env.FRONTEND_URL}/`);
         });
     } else {
         app.get('/api/auth/github/callback',

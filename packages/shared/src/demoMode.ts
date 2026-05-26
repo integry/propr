@@ -1,0 +1,2 @@
+export const DEMO_MODE_READ_ONLY_CODE = 'DEMO_MODE_READ_ONLY';
+

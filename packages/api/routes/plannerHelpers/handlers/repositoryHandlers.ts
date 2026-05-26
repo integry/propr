@@ -3,11 +3,35 @@
  */
 
 import { Request, Response } from 'express';
+import * as configManager from '@propr/core';
+import { isDemoMode } from '../../../demoMode.js';
 import type { OwnershipResult, ValidateContextRepositoryResponse } from '../types.js';
 import { getRepoAuthToken } from '../auth.js';
 
 interface RepositoryInfoDeps {
   verifyOwnership: (draftId: string, userId: string, fields: string[]) => Promise<OwnershipResult>;
+}
+
+async function getDemoRepositoryInfo(repoFullName: string): Promise<{
+  repository: string;
+  defaultBranch: string;
+  branches: string[];
+  isPrivate: boolean;
+  description: string;
+}> {
+  const repos = await configManager.loadMonitoredReposRaw();
+  const configuredBranches = repos
+    .filter(repo => repo.name === repoFullName && repo.baseBranch)
+    .map(repo => repo.baseBranch as string)
+    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const defaultBranch = configuredBranches[0] || 'main';
+  return {
+    repository: repoFullName,
+    defaultBranch,
+    branches: configuredBranches.length > 0 ? configuredBranches : [defaultBranch],
+    isPrivate: false,
+    description: 'Repository metadata is unavailable in read-only demo mode.'
+  };
 }
 
 export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
@@ -41,6 +65,11 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
       const [owner, repoName] = (repoFullName as string).split('/');
       if (!owner || !repoName) {
         res.status(400).json({ error: 'Invalid repository format' });
+        return;
+      }
+
+      if (isDemoMode()) {
+        res.json(await getDemoRepositoryInfo(repoFullName));
         return;
       }
 

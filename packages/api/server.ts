@@ -273,6 +273,12 @@ function setupRoutes(): void {
 }
 
 function setupWebhookRoute(): void {
+  if (isDemoMode()) {
+    app.post('/webhook', demoModeReadOnlyMiddleware);
+    console.log('[webhook] Webhook endpoint disabled in demo mode');
+    return;
+  }
+
   if (process.env.ENABLE_GITHUB_WEBHOOKS !== 'true') {
     console.log('[webhook] Webhook endpoint disabled (ENABLE_GITHUB_WEBHOOKS not set to true)');
     return;

@@ -15,17 +15,27 @@ import LoginPage from './pages/LoginPage'
 import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
+import { useDemoMode } from './contexts/DemoModeContext'
 import { DemoModeProvider } from './contexts/DemoModeProvider'
 import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
 import { getCurrentUser } from './api/proprApi'
 
-const App: React.FC = () => {
+const LoadingSpinner: React.FC = () => (
+  <div className="flex h-screen w-full items-center justify-center bg-gray-50">
+    <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
+  </div>
+);
+
+const AppContent: React.FC = () => {
+  const { isLoading: isDemoModeLoading } = useDemoMode();
   // Auth check state - start loading unless already on login page
   const [isLoading, setIsLoading] = useState(window.location.pathname !== '/login');
 
   // Perform initial auth check
   useEffect(() => {
+    if (isDemoModeLoading) return;
+
     const checkSession = async () => {
       // Don't check if we are already on login page
       if (window.location.pathname === '/login') {
@@ -48,20 +58,13 @@ const App: React.FC = () => {
     };
 
     checkSession();
-  }, []);
+  }, [isDemoModeLoading]);
 
 
   // Render spinner while checking auth
-  if (isLoading) {
-    return (
-      <div className="flex h-screen w-full items-center justify-center bg-gray-50">
-        <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
-      </div>
-    );
-  }
+  if (isDemoModeLoading || isLoading) return <LoadingSpinner />;
 
   return (
-    <DemoModeProvider>
       <SocketProvider>
         <ToastProvider>
           <div className="flex h-screen flex-col">
@@ -165,6 +168,13 @@ const App: React.FC = () => {
           </div>
         </ToastProvider>
       </SocketProvider>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <DemoModeProvider>
+      <AppContent />
     </DemoModeProvider>
   )
 }
