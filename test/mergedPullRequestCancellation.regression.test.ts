@@ -124,7 +124,7 @@ test('cancelMergedPullRequestTasks waits until abort-only worker stops disappear
   assert.deepEqual(stopCalls, ['task-1']);
 });
 
-test('cancelMergedPullRequestTasks records pending abort-only stops without rejecting the webhook', async () => {
+test('cancelMergedPullRequestTasks rejects after recording pending abort-only stops that stay active', async () => {
   process.env.NODE_ENV = 'test';
   const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
   const markMergedCalls: Array<{ repository: string; prNumber: number }> = [];
@@ -132,7 +132,7 @@ test('cancelMergedPullRequestTasks records pending abort-only stops without reje
   const stopCalls: string[] = [];
 
   const persistedWarnings: string[] = [];
-  await assert.doesNotReject(
+  await assert.rejects(
     cancelMergedPullRequestTasks(
       {
         action: 'closed',
@@ -166,6 +166,7 @@ test('cancelMergedPullRequestTasks records pending abort-only stops without reje
         },
       },
     ),
+    /Failed to cancel 1 merged PR task/,
   );
 
   assert.deepEqual(stopCalls, ['task-1', 'task-1', 'task-1']);

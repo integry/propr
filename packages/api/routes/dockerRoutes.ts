@@ -122,6 +122,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       const result = await executeStopTask(req.params.taskId, {
         redisClient,
         requestedBy,
+        forceQueueScan: true,
       });
       if (result.cancellationRequested && !result.stopVerified) {
         res.status(202);
@@ -226,6 +227,19 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
       timeout: 5000,
     });
     const state = parseDockerContainerState(stdout);
+    if (!state) {
+      logger.error({ containerId }, 'Docker inspect returned malformed container state');
+      return {
+        id: containerId,
+        name: containerName ?? null,
+        status: 'error',
+        stateStatus: null,
+        stateDescription: 'Unable to parse container state.',
+        state: null,
+        logsAvailable: false,
+        error: 'Failed to parse container info.',
+      };
+    }
     return {
       id: containerId,
       name: containerName ?? null,
@@ -250,12 +264,12 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
   }
 }
 
-function parseDockerContainerState(stdout: string): DockerContainerState {
+function parseDockerContainerState(stdout: string): DockerContainerState | null {
   try {
     const parsed = JSON.parse(stdout.trim()) as DockerContainerState;
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
-    return {};
+    return null;
   }
 }
 

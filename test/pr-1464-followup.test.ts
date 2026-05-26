@@ -318,6 +318,7 @@ test('manual Docker stop route accepts abort-only running task stops without ver
   assert.deepEqual(stopTaskExecutionMock.mock.calls[0]?.arguments[1], {
     redisClient,
     requestedBy: 'octocat',
+    forceQueueScan: true,
   });
   assert.deepEqual(response.body, {
     success: true,

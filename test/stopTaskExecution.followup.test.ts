@@ -257,48 +257,58 @@ test('stopTaskExecution records pending cancellation when abort-armed container 
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 1);
 });
 
-test('stopTaskExecution finalizes merge cancellation metadata for verified-stop pending aborts', async () => {
+test('stopTaskExecution with requireVerifiedStop records but does not finalize pending aborts', async () => {
     const redisClient = createRedisClient();
-    const result = await stopTaskExecution(
-        'task-require-verified-pending',
-        {
-            redisClient,
-            requestedBy: 'system',
-            requireVerifiedStop: true,
-            cancellation: {
-                code: 'pull_request_merged',
-                message: 'Task cancelled because pull request #42 was merged.',
+    await assert.rejects(async () => {
+        await stopTaskExecution(
+            'task-require-verified-pending',
+            {
+                redisClient,
+                requestedBy: 'system',
+                requireVerifiedStop: true,
+                cancellation: {
+                    code: 'pull_request_merged',
+                    message: 'Task cancelled because pull request #42 was merged.',
+                },
             },
-        },
-        {
-            loadStopTaskContext: async () => ({
-                normalizedTaskId: 'task-require-verified-pending',
-                state: { history: [{ state: 'processing' }] },
-                currentState: 'processing',
-                queueJob: null,
-                queueState: null,
-                taskId: 'task-require-verified-pending',
-                abortTaskIds: ['task-require-verified-pending'],
-            }),
-            ensureTaskStateForCancellation: async () => {},
-            getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
-            stopDockerContainer,
-        },
-    );
+            {
+                loadStopTaskContext: async () => ({
+                    normalizedTaskId: 'task-require-verified-pending',
+                    state: { history: [{ state: 'processing' }] },
+                    currentState: 'processing',
+                    queueJob: null,
+                    queueState: null,
+                    taskId: 'task-require-verified-pending',
+                    abortTaskIds: ['task-require-verified-pending'],
+                }),
+                ensureTaskStateForCancellation: async () => {},
+                getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+                stopDockerContainer,
+            },
+        );
+    }, (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.strictEqual(error.name, 'StopTaskExecutionError');
+        assert.strictEqual((error as { status?: number }).status, 409);
+        assert.match(error.message, /must be rechecked/);
+        return true;
+    });
 
-    assert.strictEqual(result.success, true);
-    assert.strictEqual(result.stopVerified, false);
-    assert.strictEqual(result.cancellationRequested, true);
-    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
-    assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+    assert.strictEqual(updateHistoryMetadata.mock.calls.length, 1);
     assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
-        'Task cancelled because pull request #42 was merged.',
         'Cancellation requested. Worker shutdown is still in progress.',
     ]);
-    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]), [
+    assert.deepStrictEqual(redisClient.set.mock.calls
+        .map((call) => call.arguments[0])
+        .filter((key) => !key.startsWith('conversation:stop-message-dedupe:'))
+        .sort(), [
+        'worker:abort:task-require-verified-pending',
         'worker:stop-requested:task-require-verified-pending',
     ]);
+    assert.deepStrictEqual(redisClient.del.mock.calls.map((call) => call.arguments[0]), []);
     assert.strictEqual(redisClient.store.has('worker:abort:task-require-verified-pending'), true);
+    assert.strictEqual(redisClient.store.has('worker:stop-requested:task-require-verified-pending'), true);
 });
 
 test('stopTaskExecution retries persisted cancellation after a queue removal persistence failure', async () => {

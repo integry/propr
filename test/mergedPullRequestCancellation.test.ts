@@ -190,7 +190,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.equal(mockLogger.warn.mock.calls.length, 1);
   });
 
-  test('persists a warning without rejecting when abort-only cancellation remains active after rechecks', async () => {
+  test('rejects after persisting a warning when abort-only cancellation remains active after rechecks', async () => {
     const redisClient = createRedisClient();
     mockGetActiveTasksForPR.mock.mockImplementation(async () => ([{ taskId: 'task-processing', state: 'processing' }]));
     mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => {
@@ -201,7 +201,7 @@ describe('cancelMergedPullRequestTasks', () => {
       });
     });
 
-    await assert.doesNotReject(
+    await assert.rejects(
       cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
         redisClient,
         markPullRequestMerged: mockMarkPullRequestMerged,
@@ -210,6 +210,7 @@ describe('cancelMergedPullRequestTasks', () => {
         recheckDelayMs: 0,
         log: mockLogger,
       }),
+      /Failed to cancel 1 merged PR task/,
     );
 
     assert.equal(mockGetActiveTasksForPR.mock.calls.length, 4);
@@ -278,7 +279,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.equal(mockLogger.warn.mock.calls.length, 4);
   });
 
-  test('does not reject pending abort-only stops that remain active after the PR merged gate is marked', async () => {
+  test('rejects pending abort-only stops that remain active after the PR merged gate is marked', async () => {
     const redisClient = {
       ...createRedisClient(),
       get: mock.fn(async () => JSON.stringify({
@@ -296,7 +297,7 @@ describe('cancelMergedPullRequestTasks', () => {
       abortSignalArmed: true,
     }));
 
-    await assert.doesNotReject(
+    await assert.rejects(
       cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
         redisClient,
         markPullRequestMerged: mockMarkPullRequestMerged,
@@ -305,6 +306,7 @@ describe('cancelMergedPullRequestTasks', () => {
         recheckDelayMs: 0,
         log: mockLogger,
       }),
+      /Failed to cancel 1 merged PR task/,
     );
 
     assert.equal(mockGetActiveTasksForPR.mock.calls.length, 4);

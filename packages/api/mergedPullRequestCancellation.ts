@@ -151,7 +151,7 @@ export async function cancelMergedPullRequestTasks(
     failures,
     log,
   });
-  if (hasCancellationRequestFailures(failures)) {
+  if (failures.length > 0) {
     throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${errorMessage}`);
   }
 }
@@ -385,8 +385,4 @@ function buildMergeCancellationRequestId(
 
 function hashRequestIdPart(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 32);
-}
-
-function hasCancellationRequestFailures(failures: MergeTaskCancellationFailure[]): boolean {
-  return failures.some((failure) => failure.status !== 202);
 }

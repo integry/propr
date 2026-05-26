@@ -168,7 +168,6 @@ export async function stopTaskExecution(
   const resolvedQueueState = resolveCancellationQueueState(stopOutcome, preparedStop.queueStateAfterFailure ?? context.queueState);
   const stopVerified = isStopVerified({ stopOutcome, shouldAbort: preparedStop.abortSignalArmed });
   const cancellationRequested = preparedStop.abortSignalArmed && !stopVerified;
-  const finalizePendingCancellation = requireVerifiedStop && cancellationRequested;
   assertStopApplied({
     activity,
     currentState: context.currentState,
@@ -179,7 +178,7 @@ export async function stopTaskExecution(
     queueStateAfterFailure: preparedStop.queueStateAfterFailure,
     createError: (status, body) => new StopTaskExecutionError(status, body),
   });
-  if (cancellationRequested && !finalizePendingCancellation) {
+  if (cancellationRequested) {
     await persistPendingCancellationRequest({
       redisClient,
       context,
@@ -192,7 +191,7 @@ export async function stopTaskExecution(
       deps,
     });
   }
-  if (requireVerifiedStop && !stopVerified && !finalizePendingCancellation) {
+  if (requireVerifiedStop && !stopVerified) {
     throw new StopTaskExecutionError(409, {
       error: 'Task stop awaiting verification',
       message: 'The stop request was recorded, but the task is still active and must be rechecked before cancellation is complete.',
@@ -214,8 +213,7 @@ export async function stopTaskExecution(
     deps,
   });
 
-  const shouldFinalizeCancellation = stopVerified || finalizePendingCancellation;
-  if (shouldFinalizeCancellation) {
+  if (stopVerified) {
     await finalizeStopCancellation({
       redisClient,
       context,
