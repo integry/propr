@@ -93,7 +93,10 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
           maxBuffer: 10 * 1024 * 1024,
         });
         res.setHeader('Content-Type', 'text/plain');
-        res.send(formatDockerLogsResponse(stdout, stderr));
+        if (stderr) {
+          logger.debug({ containerId: containerMetadata.containerId, stderr }, 'Docker logs wrote to stderr');
+        }
+        res.send(formatDockerLogsResponse(stdout));
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -203,16 +206,8 @@ async function loadDockerTaskStateFromStopContext(
   redisClient: Pick<RedisClientType, 'get'>,
   loadContext: typeof loadStopTaskContext,
 ): Promise<TaskState | null> {
-  try {
-    const context = await loadContext(taskReference, redisClient, { forceQueueScan: false });
-    return context.state;
-  } catch (error) {
-    logger.warn({
-      taskReference,
-      error: getErrorLogFields(error),
-    }, 'Unable to resolve extended task context for Docker metadata lookup');
-    return null;
-  }
+  const context = await loadContext(taskReference, redisClient, { forceQueueScan: false });
+  return context.state;
 }
 
 async function loadDockerTaskStateFromRedis(
@@ -308,8 +303,8 @@ function formatDockerContainerStatus(state: DockerContainerState): string {
   return 'stopped';
 }
 
-function formatDockerLogsResponse(stdout: string, stderr: string): string {
-  return `${stdout}${stderr}`;
+function formatDockerLogsResponse(stdout: string): string {
+  return stdout;
 }
 
 function formatDockerContainerStateDescription(state: DockerContainerState): string {
@@ -375,7 +370,8 @@ function formatStopTaskRouteResponse(result: StopTaskExecutionResult): {
 }
 
 function isDockerNoSuchContainerError(error: unknown): boolean {
-  return getDockerCommandErrorDetails(error).includes('No such container');
+  const details = getDockerCommandErrorDetails(error);
+  return /\bNo such (container|object)\b/i.test(details);
 }
 
 function getDockerCommandErrorDetails(error: unknown): string {

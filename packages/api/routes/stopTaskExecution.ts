@@ -38,6 +38,12 @@ import {
   refreshContextForStop,
   removeQueueJobAfterAbortIfNeeded,
 } from './stopTaskExecutionPreparation.js';
+import {
+  buildPendingStopResult,
+  isSameCancellationRequest,
+  loadFirstPendingStopRequest,
+} from './stopTaskExecutionPending.js';
+import type { CancellationTarget } from './stopTaskExecutionQueueIdentity.js';
 import { StopTaskExecutionError } from './stopTaskExecutionErrors.js';
 import { buildStopMessageMetadata } from './stopTaskExecutionMetadata.js';
 export { isBenignQueueRemovalRace } from './stopTaskExecutionQueueing.js';
@@ -68,6 +74,7 @@ export interface StopTaskExecutionDeps {
   db?: typeof import('@propr/core').db;
   loadStopTaskContext?: typeof loadStopTaskContext;
   ensureTaskStateForCancellation?: typeof ensureTaskStateForCancellation;
+  cancellationTarget?: CancellationTarget;
 }
 
 export interface StopTaskExecutionResult {
@@ -113,9 +120,20 @@ export async function stopTaskExecution(
   let context = await (deps.loadStopTaskContext ?? loadStopTaskContext)(taskReference, redisClient, { ...deps, forceQueueScan });
   const persistedStopOutcome = await loadPersistedStopOutcome(redisClient, context.abortTaskIds);
   const hadPersistedStopOutcome = hasConcreteStopOutcome(persistedStopOutcome);
+  const pendingStopRequest = hadPersistedStopOutcome
+    ? null
+    : await loadFirstPendingStopRequest(redisClient, context.abortTaskIds);
   const refreshedStopContext = await refreshContextForStop(context, deps);
   context = refreshedStopContext.context;
   const { trackedContainerId, activity, shouldAbort, queueRemovalShouldPrecedeAbort } = refreshedStopContext;
+  if (pendingStopRequest && isSameCancellationRequest(pendingStopRequest, cancellation)) {
+    return buildPendingStopResult({
+      context,
+      cancellation,
+      currentState: context.currentState,
+      queueState: context.queueState,
+    });
+  }
   assertTaskCanBeStopped({
     state: context.state,
     queueJob: context.queueJob,
@@ -191,6 +209,14 @@ export async function stopTaskExecution(
       deps,
     });
   }
+
+  context = await ensureContextTaskStateAfterQueueRemoval({
+    context,
+    preparedStop,
+    queueRemovalShouldPrecedeAbort,
+    deps,
+  });
+
   if (requireVerifiedStop && !stopVerified) {
     throw new StopTaskExecutionError(409, {
       error: 'Task stop awaiting verification',
@@ -205,13 +231,6 @@ export async function stopTaskExecution(
       abortSignalArmed: preparedStop.abortSignalArmed,
     });
   }
-
-  context = await ensureContextTaskStateAfterQueueRemoval({
-    context,
-    preparedStop,
-    queueRemovalShouldPrecedeAbort,
-    deps,
-  });
 
   if (stopVerified) {
     await finalizeStopCancellation({

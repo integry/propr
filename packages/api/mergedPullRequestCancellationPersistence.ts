@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import type { StopTaskExecutionOptions } from './routes/stopTaskExecution.js';
 import type { MergeTaskCancellationFailure } from './mergedPullRequestCancellation.js';
 
-const MERGE_CANCELLATION_FAILURE_TTL_SECONDS = 24 * 60 * 60;
+const MERGE_CANCELLATION_FAILURE_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 export async function persistMergedCancellationFailures(params: {
   redisClient: StopTaskExecutionOptions['redisClient'];

@@ -3,7 +3,6 @@ import {
   logger,
   markPullRequestMerged,
 } from '@propr/core';
-import { createHash } from 'crypto';
 import { stopTaskExecution, type StopTaskExecutionOptions } from './routes/stopTaskExecution.js';
 import { persistMergedCancellationFailures } from './mergedPullRequestCancellationPersistence.js';
 import {
@@ -11,6 +10,10 @@ import {
   buildUnverifiedStopFailure,
   formatMergedTaskCancellationWarning,
 } from './mergedPullRequestCancellationFailures.js';
+import {
+  buildMergeCancellationRequestId,
+  buildTaskCancellation,
+} from './mergedPullRequestCancellationRequest.js';
 
 interface MergedPullRequestPayload {
   action: 'closed';
@@ -73,7 +76,7 @@ export async function cancelMergedPullRequestTasks(
     code: MERGE_CANCELLATION_REASON_CODE,
     message: `Task cancelled because pull request ${repository}#${prNumber} was merged.`,
     source: MERGE_CANCELLATION_REASON_CODE,
-    requestId: buildMergeCancellationRequestId(correlationId, repository, prNumber),
+    requestId: buildMergeCancellationRequestId(repository, prNumber),
   };
 
   // Try to persist the merge gate before cancellation so no new PR work starts
@@ -88,7 +91,13 @@ export async function cancelMergedPullRequestTasks(
     log,
   });
 
-  const initialTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
+  const initialTasks = await loadStoppablePrTasks({
+    loadActiveTasks,
+    repository,
+    prNumber,
+    log,
+    forceQueueScan: true,
+  });
   if (initialTasks.length === 0) {
     logMergedStatePersistenceWarning(mergedStateError, {
       correlationId,
@@ -108,25 +117,30 @@ export async function cancelMergedPullRequestTasks(
     activeTaskCount: initialTasks.length,
   }, 'Cancelling active PR tasks after merge');
 
-  let remainingTasks = initialTasks;
   const failuresByTaskId = new Map<string, MergeTaskCancellationFailure>();
 
-  const verificationDelaysMs = recheckDelaysMs.length > 0 ? recheckDelaysMs : [0];
-  for (let attemptIndex = 0; attemptIndex < verificationDelaysMs.length; attemptIndex += 1) {
-    const attempt = await stopMergeTasks({
-      tasks: remainingTasks,
-      redisClient: deps.redisClient,
-      stopTask,
-      cancellation,
-      correlationId,
+  const attempt = await stopMergeTasks({
+    tasks: initialTasks,
+    redisClient: deps.redisClient,
+    stopTask,
+    cancellation,
+    correlationId,
+    repository,
+    prNumber,
+    log,
+  });
+  mergeFailures(failuresByTaskId, attempt.failures);
+
+  let remainingTasks = initialTasks;
+  for (const recheckDelayMs of recheckDelaysMs) {
+    await sleep(recheckDelayMs);
+    remainingTasks = await loadStoppablePrTasks({
+      loadActiveTasks,
       repository,
       prNumber,
       log,
+      forceQueueScan: false,
     });
-    mergeFailures(failuresByTaskId, attempt.failures);
-
-    await sleep(verificationDelaysMs[attemptIndex]);
-    remainingTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
     clearResolvedFailures(failuresByTaskId, remainingTasks);
     if (remainingTasks.length === 0) {
       logMergedStatePersistenceWarning(mergedStateError, {
@@ -137,15 +151,6 @@ export async function cancelMergedPullRequestTasks(
       });
       throwMergedStatePersistenceErrorIfAny(mergedStateError);
       return;
-    }
-
-    if (attemptIndex < verificationDelaysMs.length - 1) {
-      log.info({
-        correlationId,
-        repository,
-        prNumber,
-        taskIds: remainingTasks.map((task) => task.taskId),
-      }, 'Retrying tasks that remain active after merged PR cancellation request');
     }
   }
 
@@ -171,7 +176,10 @@ export async function cancelMergedPullRequestTasks(
     prNumber,
     log,
   });
-  throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${formatMergedTaskCancellationWarning(failures)}`);
+  throwMergedStatePersistenceErrorIfAny(mergedStateError);
+  if (hasStopRequestFailures(failures)) {
+    throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${formatMergedTaskCancellationWarning(failures)}`);
+  }
 }
 
 function getRecheckDelays(recheckDelaysMs?: readonly number[], recheckDelayMs?: number): readonly number[] {
@@ -180,10 +188,14 @@ function getRecheckDelays(recheckDelaysMs?: readonly number[], recheckDelayMs?: 
   }
 
   if (recheckDelayMs !== undefined) {
-    return MERGE_TASK_RECHECK_DELAYS_MS.map(() => recheckDelayMs);
+    return [recheckDelayMs];
   }
 
   return MERGE_TASK_RECHECK_DELAYS_MS;
+}
+
+function hasStopRequestFailures(failures: MergeTaskCancellationFailure[]): boolean {
+  return failures.some((failure) => failure.abortRequestedOnly !== true);
 }
 
 function mergeFailures(
@@ -298,7 +310,8 @@ async function stopMergeTasks(params: {
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
           forceQueueScan: shouldForceQueueScanForMergeTask(task),
-          requireVerifiedStop: true,
+        }, {
+          cancellationTarget: { repository, prNumber },
         });
         if (!result.stopVerified) {
           const failure = buildUnverifiedStopFailure(task.taskId, result.currentState, result.queueState);
@@ -353,15 +366,23 @@ export function isMergedPullRequestClose(payload: unknown): payload is MergedPul
     && prPayload.pull_request?.merged === true;
 }
 
-async function loadStoppablePrTasks(
-  loadActiveTasks: typeof getActiveTasksForPR,
-  repository: string,
-  prNumber: number,
-  log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
-): Promise<MergeTaskActivity[]> {
+async function loadStoppablePrTasks(params: {
+  loadActiveTasks: typeof getActiveTasksForPR;
+  repository: string;
+  prNumber: number;
+  log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+  forceQueueScan: boolean;
+}): Promise<MergeTaskActivity[]> {
+  const {
+    loadActiveTasks,
+    repository,
+    prNumber,
+    log,
+    forceQueueScan,
+  } = params;
   try {
     return dedupeTasks(await loadActiveTasks(repository, prNumber, {
-      forceQueueScan: true,
+      forceQueueScan,
       log,
       stoppableOnly: true,
     }));
@@ -406,30 +427,4 @@ function shouldForceQueueScanForMergeTask(task: MergeTaskActivity): boolean {
     'prioritized',
     'waiting-children',
   ].includes(task.state);
-}
-
-function buildTaskCancellation(
-  cancellation: StopTaskExecutionOptions['cancellation'],
-  taskId: string,
-): StopTaskExecutionOptions['cancellation'] {
-  if (!cancellation?.requestId) {
-    return cancellation;
-  }
-
-  return {
-    ...cancellation,
-    requestId: `${cancellation.requestId}:${hashRequestIdPart(taskId)}`,
-  };
-}
-
-function buildMergeCancellationRequestId(
-  correlationId: string,
-  repository: string,
-  prNumber: number,
-): string {
-  return `merge-pr-cancel:${hashRequestIdPart(`${correlationId}:${repository}#${prNumber}`)}`;
-}
-
-function hashRequestIdPart(value: string): string {
-  return createHash('sha256').update(value).digest('hex').slice(0, 32);
 }

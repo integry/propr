@@ -82,6 +82,7 @@ test('getActiveTasksForPR finds PR jobs by scanning the live queue', async () =>
   const tasks = await getActiveTasksForPR('integry/propr', 1464, {
     getIssueQueue: async () => queue as never,
     db: createTaskQueryDbMock([{ task_id: 'persisted-task', job_id: null, state: 'processing' }]),
+    forceQueueScan: true,
     log: silentLog,
   });
 
@@ -99,6 +100,7 @@ test('getActiveTasksForPR includes active BullMQ jobs when stoppableOnly is true
   const tasks = await getActiveTasksForPR('integry/propr', 1464, {
     getIssueQueue: async () => queue as never,
     db: createTaskQueryDbMock([]),
+    forceQueueScan: true,
     stoppableOnly: true,
     log: silentLog,
   });
@@ -124,6 +126,7 @@ test('getActiveTasksForPR paginates queue scans beyond the first page', async ()
   const tasks = await getActiveTasksForPR('integry/propr', 1464, {
     getIssueQueue: async () => queue as never,
     db: createTaskQueryDbMock([]),
+    forceQueueScan: true,
     stoppableOnly: true,
     log: silentLog,
   });
@@ -131,7 +134,7 @@ test('getActiveTasksForPR paginates queue scans beyond the first page', async ()
   assert.deepEqual(tasks, [{ taskId: 'waiting-job-1000', state: 'waiting' }]);
 });
 
-test('Docker info falls back to extended stop context when direct state has no container', async () => {
+test('Docker info surfaces extended stop context lookup failures when direct state has no container', async () => {
   const loadStopTaskContext = mock.fn(async () => {
     throw new Error('DB unavailable');
   });
@@ -164,8 +167,8 @@ test('Docker info falls back to extended stop context when direct state has no c
 
   await routes.getDockerInfo({ params: { taskId: 'task-1464' } } as never, response as never);
 
-  assert.equal(response.statusCode, 404);
-  assert.deepEqual(response.body, { error: 'No Docker container info available for this task' });
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(response.body, { error: 'Internal server error' });
   assert.equal(loadStopTaskContext.mock.calls.length, 1);
 });
 

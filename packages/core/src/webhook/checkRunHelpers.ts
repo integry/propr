@@ -657,8 +657,8 @@ export interface GetActiveTasksForPRDeps {
     db?: typeof db;
     log?: Pick<typeof logger, 'info' | 'warn'>;
     /**
-     * Kept for older callers. Queue discovery is now always a live scan so PR
-     * cancellation has one source of truth.
+     * Enables the expensive live BullMQ scan needed to discover queued jobs that
+     * do not have persisted task rows yet.
      */
     forceQueueScan?: boolean;
     stoppableOnly?: boolean;
@@ -678,17 +678,19 @@ export async function getActiveTasksForPR(
     try {
         const taskMap = new Map<string, PRTaskActivity>();
         const taskAliases = new Map<string, string>();
-        const queue = await (deps.getIssueQueue ?? getIssueQueue)();
         const database = deps.db ?? db;
         const log = deps.log ?? logger;
-        await addQueuedPrJobsFromLiveQueueScan({
-            queue,
-            repository,
-            prNumber,
-            taskMap,
-            taskAliases,
-            log,
-        });
+        if (deps.forceQueueScan === true) {
+            const queue = await (deps.getIssueQueue ?? getIssueQueue)();
+            await addQueuedPrJobsFromLiveQueueScan({
+                queue,
+                repository,
+                prNumber,
+                taskMap,
+                taskAliases,
+                log,
+            });
+        }
 
         const activeTasksQuery = database('tasks')
             .select('tasks.task_id', 'tasks.job_id', 'task_history.state')
@@ -865,7 +867,10 @@ export async function hasActiveTasksForPR(
     queuedJobs: Array<{ jobId: string; state: string }>;
 }> {
     try {
-        const taskList = await getActiveTasksForPR(repository, prNumber, deps);
+        const taskList = await getActiveTasksForPR(repository, prNumber, {
+            ...deps,
+            forceQueueScan: deps.forceQueueScan ?? true,
+        });
         return {
             hasActive: taskList.length > 0,
             activeTasks: taskList.filter(task => !TRACKED_PR_QUEUE_STATE_SET.has(task.state)),

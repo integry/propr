@@ -833,12 +833,15 @@ test('cancelMergedPullRequestTasks force-scans the initial merged-PR lookup and 
         stoppableOnly: true,
     }]);
     assert.deepStrictEqual(getActiveTasksForPR.mock.calls[1]?.arguments, ['owner/repo', 42, {
-        forceQueueScan: true,
+        forceQueueScan: false,
         log,
         stoppableOnly: true,
     }]);
     assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].forceQueueScan, true);
-    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, true);
+    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, undefined);
+    assert.deepStrictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[2], {
+        cancellationTarget: { repository: 'owner/repo', prNumber: 42 },
+    });
     assert.strictEqual(markPullRequestMerged.mock.calls.length, 1);
 });
 

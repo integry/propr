@@ -12,6 +12,10 @@ import {
 } from '@propr/core';
 import type { TaskStateData } from '@propr/core';
 import { findQueueJobByTaskIdScan } from './stopTaskExecutionQueueLookup.js';
+import {
+  assertQueueJobMatchesCancellationTarget,
+  type CancellationTarget,
+} from './stopTaskExecutionQueueIdentity.js';
 
 export type QueueJobData = Record<string, unknown>;
 
@@ -51,6 +55,7 @@ interface StopTaskContextDeps {
 interface StopTaskStateDeps {
   db?: typeof db;
   getStateManager?: typeof getStateManager;
+  cancellationTarget?: CancellationTarget;
 }
 
 interface ResolvedPersistedTaskContext {
@@ -331,6 +336,13 @@ async function createTaskStateFromQueueJob(
   const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
   const prNumber = getPrNumberFromJobData(queueJob.data);
   const queueJobId = String(queueJob.id ?? taskId);
+  assertQueueJobMatchesCancellationTarget({
+    taskId,
+    queueJobId,
+    repository,
+    prNumber,
+    cancellationTarget: deps.cancellationTarget,
+  });
 
   await database('tasks')
     .insert({
