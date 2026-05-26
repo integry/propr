@@ -46,11 +46,6 @@ export async function releaseDeliveryReservationForRetry(params: {
   } = params;
 
   try {
-    const deletedKeys = await compareAndDeleteDeliveryReservation(redis, deliveryKey, reservationToken);
-    if (deletedKeys > 0) {
-      return { released: true, retryReservationOpened: false };
-    }
-
     const retryReservationOpened = await openDeliveryReservationForRetry({
       redis,
       deliveryKey,
@@ -128,26 +123,6 @@ async function openDeliveryReservationForRetry(params: {
     }, `Failed to open webhook delivery reservation for retry after ${failureContext}`);
     return false;
   }
-}
-
-async function compareAndDeleteDeliveryReservation(
-  redis: WebhookDeliveryReservationRedis,
-  deliveryKey: string,
-  reservationToken: string,
-): Promise<number> {
-  if (typeof redis.eval === 'function') {
-    const result = await redis.eval(
-      'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end',
-      { keys: [deliveryKey], arguments: [reservationToken] },
-    );
-    return Number(result);
-  }
-
-  // Best-effort fallback for tests or minimal Redis adapters. Production
-  // clients should provide eval so the token comparison and mutation are atomic.
-  return (await redis.get(deliveryKey)) === reservationToken
-    ? redis.del(deliveryKey)
-    : 0;
 }
 
 async function compareAndOpenDeliveryReservationForRetry(

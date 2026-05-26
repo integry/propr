@@ -142,16 +142,21 @@ export async function stopTaskExecution(
     createError: (status, body) => new StopTaskExecutionError(status, body),
   });
 
-  context = await ensureContextTaskStateForCancellation(context, deps);
-  trackedContainerId = getTaskContainerId(context.state, context.currentState);
-  activity = getStopTaskActivity(context.currentState, context.queueState, trackedContainerId !== null);
-
   const timestamp = new Date().toISOString();
   const queueRemovalFirst = shouldRemoveQueueJobBeforeAbort(activity);
   let queueRemoval = { jobRemoved: false, queueStateAfterFailure: null as string | null };
   if (queueRemovalFirst) {
-    queueRemoval = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
+    queueRemoval = await removeQueueJobBeforeSyntheticState({
+      context,
+      activity,
+      redisClient,
+      trackedContainerId,
+    });
   }
+
+  context = await ensureContextTaskStateForCancellation(context, deps);
+  trackedContainerId = getTaskContainerId(context.state, context.currentState);
+  activity = getStopTaskActivity(context.currentState, context.queueState, trackedContainerId !== null);
 
   const shouldAbort = shouldAbortTask(activity)
     && (!queueRemovalFirst || (!queueRemoval.jobRemoved && queueRemoval.queueStateAfterFailure === 'active'));
@@ -204,18 +209,6 @@ export async function stopTaskExecution(
       content: 'Cancellation requested. Worker shutdown is still in progress.',
       level: 'info',
       metadata: buildStopMessageMetadata(cancellation, requestedBy),
-    });
-    await persistTaskCancellation({
-      taskId: context.taskId,
-      requestedBy,
-      cancellation,
-      queueState: resolvedQueueState,
-      containerId: stopOutcome.containerId,
-      containerStopped: stopOutcome.containerStopped,
-      jobRemoved: stopOutcome.jobRemoved,
-      stopVerified,
-      abortSignalArmed: shouldAbort,
-      deps,
     });
   }
 
@@ -340,6 +333,38 @@ function shouldRemoveQueueJobBeforeAbort(activity: ReturnType<typeof getStopTask
     && !activity.isRunningTaskState
     && !activity.isQueueActive
     && !activity.hasContainerToStop;
+}
+
+async function removeQueueJobBeforeSyntheticState(params: {
+  context: StopTaskContext;
+  activity: ReturnType<typeof getStopTaskActivity>;
+  redisClient: RedisClientLike;
+  trackedContainerId: string | null;
+}): Promise<{ jobRemoved: boolean; queueStateAfterFailure: string | null }> {
+  const { context, activity, redisClient, trackedContainerId } = params;
+  const queueRemoval = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
+  if (queueRemoval.jobRemoved) {
+    await persistStopOutcome(redisClient, context.abortTaskIds, {
+      containerId: null,
+      containerStopped: false,
+      jobRemoved: true,
+    });
+  }
+
+  if (!queueRemoval.jobRemoved && queueRemoval.queueStateAfterFailure !== 'active') {
+    assertStopApplied({
+      activity,
+      currentState: context.currentState,
+      queueState: queueRemoval.queueStateAfterFailure ?? context.queueState,
+      containerId: trackedContainerId,
+      stopOutcome: { containerId: null, containerStopped: false, jobRemoved: false },
+      shouldAbort: false,
+      queueStateAfterFailure: queueRemoval.queueStateAfterFailure,
+      createError: (status, body) => new StopTaskExecutionError(status, body),
+    });
+  }
+
+  return queueRemoval;
 }
 
 function buildStopMessageMetadata(

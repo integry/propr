@@ -96,7 +96,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         if (stderr) {
           logger.debug({ containerId: containerMetadata.containerId, stderr }, 'Docker logs wrote to stderr');
         }
-        res.send(formatDockerLogsResponse(stdout, stderr));
+        res.send(formatDockerLogsResponse(stdout));
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -276,7 +276,7 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
       status: formatDockerContainerStatus(state),
       stateStatus: state.Status ?? null,
       stateDescription: formatDockerContainerStateDescription(state),
-      state,
+      state: sanitizeDockerContainerState(state),
       logsAvailable: true,
     };
   } catch (error) {
@@ -313,8 +313,8 @@ function formatDockerContainerStatus(state: DockerContainerState): string {
     : 'stopped';
 }
 
-function formatDockerLogsResponse(stdout: string, stderr: string): string {
-  return `${stdout}${stderr}`;
+function formatDockerLogsResponse(stdout: string): string {
+  return stdout;
 }
 
 function formatDockerContainerStateDescription(state: DockerContainerState): string {
@@ -324,6 +324,17 @@ function formatDockerContainerStateDescription(state: DockerContainerState): str
   }
 
   return status;
+}
+
+function sanitizeDockerContainerState(state: DockerContainerState): DockerContainerState {
+  return {
+    ...(typeof state.Status === 'string' ? { Status: state.Status } : {}),
+    ...(typeof state.Running === 'boolean' ? { Running: state.Running } : {}),
+    ...(typeof state.ExitCode === 'number' ? { ExitCode: state.ExitCode } : {}),
+    ...(typeof state.Error === 'string' ? { Error: state.Error } : {}),
+    ...(typeof state.StartedAt === 'string' ? { StartedAt: state.StartedAt } : {}),
+    ...(typeof state.FinishedAt === 'string' ? { FinishedAt: state.FinishedAt } : {}),
+  };
 }
 
 function getErrorLogFields(error: unknown): {

@@ -122,7 +122,7 @@ test('merged-PR cancellation dependency failures do not consume delivery reserva
     assert.strictEqual(processor.mock.calls.length, 0);
 });
 
-test('merged-PR cancellation failures open the delivery reservation for immediate retry when release fails', async () => {
+test('merged-PR cancellation failures open the delivery reservation for immediate retry without deleting it', async () => {
     const request = createSignedRequest({
         action: 'closed',
         repository: { full_name: 'owner/repo' },
@@ -132,9 +132,7 @@ test('merged-PR cancellation failures open the delivery reservation for immediat
     const redis = {
         set: mock.fn(async () => 'OK'),
         get: mock.fn(async () => redis.set.mock.calls[0]?.arguments[1] as string),
-        del: mock.fn(async () => {
-            throw new Error('redis unavailable');
-        }),
+        del: mock.fn(async () => 1),
     };
 
     await handleWebhookRequest(request as never, response as never, {
@@ -167,10 +165,10 @@ test('merged-PR cancellation failures open the delivery reservation for immediat
         `retry-open:${reservationToken}`,
         { EX: 30 },
     ]);
-    assert.strictEqual(redis.del.mock.calls.length, 1);
+    assert.strictEqual(redis.del.mock.calls.length, 0);
 });
 
-test('processor failures after successful merged-PR cancellation release delivery reservation for retry', async () => {
+test('processor failures after successful merged-PR cancellation mark delivery reservation retryable', async () => {
     const request = createSignedRequest({
         action: 'closed',
         repository: { full_name: 'owner/repo' },
@@ -200,12 +198,17 @@ test('processor failures after successful merged-PR cancellation release deliver
 
     assert.strictEqual(response.statusCode, 500);
     assert.strictEqual(response.body, 'Webhook processor failed after merged pull request task cancellation.');
-    assert.deepStrictEqual(redis.del.mock.calls.map((call) => call.arguments[0]), ['webhook:delivery:delivery-1']);
     assert.deepStrictEqual(redis.set.mock.calls[0]?.arguments, [
         'webhook:delivery:delivery-1',
         redis.set.mock.calls[0]?.arguments[1],
         { NX: true, EX: 300 },
     ]);
+    assert.deepStrictEqual(redis.set.mock.calls[1]?.arguments, [
+        'webhook:delivery:delivery-1',
+        `retry-open:${redis.set.mock.calls[0]?.arguments[1]}`,
+        { EX: 30 },
+    ]);
+    assert.strictEqual(redis.del.mock.calls.length, 0);
 });
 
 test('merged-PR retry marker allows the next GitHub retry through', async () => {

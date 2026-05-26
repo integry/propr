@@ -424,7 +424,6 @@ async function createCancellationTaskStateFromQueueJob(
     .update({
       job_id: queueJobId,
       ...(prNumber !== null ? { pr_number: prNumber } : {}),
-      initial_job_data: initialJobData,
     });
 
   return taskState;

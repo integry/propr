@@ -22,6 +22,7 @@ export interface MergeTaskCancellationDeps {
   stopTaskExecution?: typeof stopTaskExecution;
   sleep?: (durationMs: number) => Promise<void>;
   recheckDelayMs?: number;
+  recheckAttempts?: number;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
@@ -38,7 +39,8 @@ interface MergeTaskCancellationFailure {
   queueState: string | null;
 }
 
-const MERGE_TASK_RECHECK_DELAY_MS = 1000;
+const MERGE_TASK_RECHECK_DELAY_MS = parsePositiveIntegerEnv('MERGE_TASK_RECHECK_DELAY_MS', 1000);
+const MERGE_TASK_RECHECK_ATTEMPTS = parsePositiveIntegerEnv('MERGE_TASK_RECHECK_ATTEMPTS', 2);
 const MERGE_CANCELLATION_REASON_CODE = 'pull_request_merged';
 const MERGE_CANCELLATION_CONCURRENCY = 4;
 
@@ -51,7 +53,7 @@ export async function cancelMergedPullRequestTasks(
     return;
   }
 
-  if (!deps?.redisClient) {
+  if (!isStopTaskRedisClient(deps?.redisClient)) {
     throw new Error('Merge task cancellation dependencies are required');
   }
 
@@ -62,6 +64,7 @@ export async function cancelMergedPullRequestTasks(
   const stopTask = deps.stopTaskExecution ?? stopTaskExecution;
   const sleep = deps.sleep ?? delay;
   const recheckDelayMs = deps.recheckDelayMs ?? MERGE_TASK_RECHECK_DELAY_MS;
+  const recheckAttempts = Math.max(1, deps.recheckAttempts ?? MERGE_TASK_RECHECK_ATTEMPTS);
   const cancellation = {
     code: MERGE_CANCELLATION_REASON_CODE,
     message: `Task cancelled because pull request #${prNumber} was merged.`,
@@ -87,48 +90,40 @@ export async function cancelMergedPullRequestTasks(
     activeTaskCount: initialTasks.length,
   }, 'Cancelling active PR tasks after merge');
 
-  const firstAttempt = await stopMergeTasks({
-    tasks: initialTasks,
-    redisClient: deps.redisClient,
-    stopTask,
-    cancellation,
-    correlationId,
-    repository,
-    prNumber,
-    log,
-  });
+  const failuresByTaskId = new Map<string, MergeTaskCancellationFailure>();
+  let remainingTasks = initialTasks;
+  for (let attempt = 1; attempt <= recheckAttempts; attempt += 1) {
+    const attemptResult = await stopMergeTasks({
+      tasks: remainingTasks,
+      redisClient: deps.redisClient,
+      stopTask,
+      cancellation,
+      correlationId,
+      repository,
+      prNumber,
+      log,
+    });
+    for (const [taskId, failure] of attemptResult.failures) {
+      failuresByTaskId.set(taskId, failure);
+    }
 
-  await sleep(recheckDelayMs);
-  const remainingAfterFirstAttempt = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
-  if (remainingAfterFirstAttempt.length === 0) {
-    return;
+    await sleep(recheckDelayMs);
+    remainingTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
+    if (remainingTasks.length === 0) {
+      return;
+    }
+    if (attempt < recheckAttempts) {
+      log.info({
+        correlationId,
+        repository,
+        prNumber,
+        attempt: attempt + 1,
+        taskIds: remainingTasks.map((task) => task.taskId),
+      }, 'Retrying tasks that are still active after merged PR cancellation');
+    }
   }
 
-  log.info({
-    correlationId,
-    repository,
-    prNumber,
-    taskIds: remainingAfterFirstAttempt.map((task) => task.taskId),
-  }, 'Retrying tasks that are still active after merged PR cancellation');
-
-  const retryAttempt = await stopMergeTasks({
-    tasks: remainingAfterFirstAttempt,
-    redisClient: deps.redisClient,
-    stopTask,
-    cancellation,
-    correlationId,
-    repository,
-    prNumber,
-    log,
-  });
-
-  await sleep(recheckDelayMs);
-  const finalActiveTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
-  if (finalActiveTasks.length === 0) {
-    return;
-  }
-
-  const failures = buildFinalFailures(finalActiveTasks, retryAttempt.failures, firstAttempt.failures);
+  const failures = buildFinalFailures(remainingTasks, failuresByTaskId, new Map());
   throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.map(formatMergeTaskCancellationFailure).join('; ')}`);
 }
 
@@ -187,7 +182,7 @@ async function stopMergeTasks(params: {
           redisClient,
           requestedBy: 'system',
           cancellation,
-          forceQueueScan: false,
+          forceQueueScan: true,
         });
         if (!result.stopVerified) {
           log.info({
@@ -279,6 +274,28 @@ function formatMergeTaskCancellationFailure(failure: MergeTaskCancellationFailur
 
 function getStopErrorState(body: Record<string, unknown>, key: 'currentState' | 'queueState'): string | null {
   return typeof body[key] === 'string' ? body[key] : null;
+}
+
+function isStopTaskRedisClient(redisClient: unknown): redisClient is StopTaskExecutionOptions['redisClient'] {
+  if (!redisClient || typeof redisClient !== 'object') {
+    return false;
+  }
+
+  const candidate = redisClient as Record<string, unknown>;
+  return typeof candidate.get === 'function'
+    && typeof candidate.set === 'function'
+    && typeof candidate.del === 'function'
+    && typeof candidate.rPush === 'function';
+}
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const rawValue = process.env[name];
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const parsedValue = Number.parseInt(rawValue, 10);
+  return Number.isInteger(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
 }
 
 async function delay(durationMs: number): Promise<void> {

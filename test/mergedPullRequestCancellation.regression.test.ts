@@ -85,6 +85,15 @@ function createEmptyDb() {
   });
 }
 
+function createRedisClient() {
+  return {
+    get: async () => null,
+    set: async () => 'OK',
+    del: async () => 1,
+    rPush: async () => 1,
+  };
+}
+
 test('cancelMergedPullRequestTasks rechecks abort-only worker stops before treating them as cancelled', async () => {
   process.env.NODE_ENV = 'test';
   const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
@@ -100,7 +109,7 @@ test('cancelMergedPullRequestTasks rechecks abort-only worker stops before treat
       },
       'corr-1',
       {
-        redisClient: {} as never,
+        redisClient: createRedisClient() as never,
         markPullRequestMerged: async () => {},
         getActiveTasksForPR: async (_repository, _prNumber, options) => {
           loadActiveTasksCalls.push({ forceQueueScan: options?.forceQueueScan });

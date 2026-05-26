@@ -87,8 +87,12 @@ export function assertTaskCanBeStopped(params: {
 }
 
 export function getTaskContainerId(state: TaskState | null, currentState: string | null): string | null {
-  if (!state || (currentState !== null && TERMINAL_TASK_STATE_SET.has(currentState))) {
+  if (!state) {
     return null;
+  }
+
+  if (currentState !== null && TERMINAL_TASK_STATE_SET.has(currentState)) {
+    logger.warn({ currentState }, 'Terminal task state still has Docker metadata lookup enabled during stop');
   }
 
   for (let index = state.history.length - 1; index >= 0; index -= 1) {

@@ -637,7 +637,7 @@ describe('Webhook Replay Protection', () => {
 });
 
 describe('webhook delivery reservation retry release', () => {
-  test('uses Redis eval for atomic reservation release when available', async () => {
+  test('uses Redis eval to atomically mark the reservation retryable when available', async () => {
     const evalCalls: Array<{ keys: string[]; arguments: string[] }> = [];
     const redisClient = {
       async set() {
@@ -667,14 +667,14 @@ describe('webhook delivery reservation retry release', () => {
       failureContext: 'test failure',
     });
 
-    assert.deepStrictEqual(result, { released: true, retryReservationOpened: false });
+    assert.deepStrictEqual(result, { released: false, retryReservationOpened: true });
     assert.deepStrictEqual(evalCalls, [{
       keys: ['webhook-delivery:123'],
-      arguments: ['token-1'],
+      arguments: ['token-1', 'retry-open:token-1', '30'],
     }]);
   });
 
-  test('uses Redis eval to open immediate retry when the token is still reserved', async () => {
+  test('reports unopened retry when reservation token no longer matches', async () => {
     const evalCalls: Array<{ keys: string[]; arguments: string[] }> = [];
     const redisClient = {
       async set() {
@@ -688,7 +688,7 @@ describe('webhook delivery reservation retry release', () => {
       },
       async eval(_script: string, opts: { keys: string[]; arguments: string[] }) {
         evalCalls.push(opts);
-        return evalCalls.length === 1 ? 0 : 1;
+        return 0;
       },
     };
 
@@ -704,10 +704,10 @@ describe('webhook delivery reservation retry release', () => {
       failureContext: 'test failure',
     });
 
-    assert.deepStrictEqual(result, { released: false, retryReservationOpened: true });
-    assert.deepStrictEqual(evalCalls, [
-      { keys: ['webhook-delivery:456'], arguments: ['token-2'] },
-      { keys: ['webhook-delivery:456'], arguments: ['token-2', 'retry-open:token-2', '30'] },
-    ]);
+    assert.deepStrictEqual(result, { released: false, retryReservationOpened: false });
+    assert.deepStrictEqual(evalCalls, [{
+      keys: ['webhook-delivery:456'],
+      arguments: ['token-2', 'retry-open:token-2', '30'],
+    }]);
   });
 });
