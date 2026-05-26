@@ -1,4 +1,4 @@
-import { handleApiResponse, API_BASE_URL } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 // Re-export all types from plannerTypes for backwards compatibility
 export type {
@@ -66,7 +66,7 @@ export type {
 } from './plannerDraftManagementApi';
 
 export const createDraft = async (repository: string, prompt: string, options?: CreateDraftOptions): Promise<PlannerDraft> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repository, prompt, todoIds: options?.todoIds }),
@@ -77,13 +77,13 @@ export const createDraft = async (repository: string, prompt: string, options?: 
 };
 
 export const getDraft = async (id: string): Promise<PlannerDraft> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${id}`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${id}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const getContextStats = async (draftId: string, config: { level: string }): Promise<ContextStats> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/context/stats`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/context/stats`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId, ...config }),
@@ -96,7 +96,7 @@ export const getContextStats = async (draftId: string, config: { level: string }
 export const uploadAttachment = async (draftId: string, file: File): Promise<PlannerAttachment> => {
   const formData = new FormData();
   formData.append('file', file);
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/attachments`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/attachments`, {
     method: 'POST',
     body: formData,
     credentials: 'include'
@@ -106,7 +106,7 @@ export const uploadAttachment = async (draftId: string, file: File): Promise<Pla
 };
 
 export const removeAttachment = async (draftId: string, attachmentId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/attachments/${attachmentId}`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/attachments/${attachmentId}`, {
     method: 'DELETE',
     credentials: 'include'
   });
@@ -114,7 +114,7 @@ export const removeAttachment = async (draftId: string, attachmentId: string): P
 };
 
 export const generatePlan = async (draftId: string, options?: PlanGenerationOptions): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/generate`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId, ...options }),
@@ -124,7 +124,7 @@ export const generatePlan = async (draftId: string, options?: PlanGenerationOpti
 };
 
 export const previewContext = async (options: PreviewOptions, signal?: AbortSignal): Promise<PreviewResult> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/preview`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/preview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(options),
@@ -136,13 +136,13 @@ export const previewContext = async (options: PreviewOptions, signal?: AbortSign
 };
 
 export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${id}`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${id}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[]; chat_history?: ChatMessage[]; initial_prompt?: string; name?: string }): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -152,7 +152,7 @@ export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[
 };
 
 export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string, signal?: AbortSignal): Promise<RefineResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/refine`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/refine`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId, plan: currentPlan, instruction }),
@@ -164,7 +164,7 @@ export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instr
 };
 
 export const finalizePlan = async (draftId: string): Promise<FinalizeResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/finalize`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/finalize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId }),
@@ -199,7 +199,7 @@ export const updateExecutionSettings = async (
   draftId: string,
   options: UpdateExecutionSettingsOptions
 ): Promise<UpdateExecutionSettingsResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/execution-settings`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/execution-settings`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(options),
@@ -219,13 +219,13 @@ export const getDrafts = async (options: GetDraftsOptions = {}): Promise<Paginat
   if (options.excludeStatuses) params.append('excludeStatuses', options.excludeStatuses);
   const queryString = params.toString();
   const url = queryString ? `${API_BASE_URL}/api/planner/drafts?${queryString}` : `${API_BASE_URL}/api/planner/drafts`;
-  const response = await fetch(url, { credentials: 'include' });
+  const response = await apiFetch(url, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const deleteDraft = async (draftId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
     method: 'DELETE',
     credentials: 'include'
   });
@@ -243,7 +243,7 @@ export interface RepositoriesResponse {
 }
 
 export const getDraftRepositories = async (): Promise<RepositoriesResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/repositories`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/repositories`, {
     credentials: 'include'
   });
   await handleApiResponse(response);
@@ -251,7 +251,7 @@ export const getDraftRepositories = async (): Promise<RepositoriesResponse> => {
 };
 
 export const getRepositoryInfo = async (draftId: string): Promise<RepositoryInfo> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/repository-info`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/repository-info`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
@@ -261,7 +261,7 @@ export const getAttachmentUrl = (draftId: string, attachmentId: string): string 
 };
 
 export const downloadContext = async (options: PreviewOptions): Promise<Blob> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/preview/context`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/preview/context`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(options),

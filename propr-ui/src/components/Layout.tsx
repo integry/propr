@@ -9,6 +9,7 @@ import { HomeIcon, SettingsIcon, MenuIcon, CloseIcon } from './icons/LayoutIcons
 import GlobalHeader from './GlobalHeader';
 import AgentTankSidebar from './AgentTankSidebar';
 import { useSocket } from '../contexts/useSocket';
+import { useDemoMode } from '../contexts/DemoModeContext';
 import { QueueStatsUpdatePayload, IndexingUpdatePayload, DraftUpdatePayload } from '@propr/shared';
 
 interface LayoutProps {
@@ -31,6 +32,7 @@ interface User {
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const { addToast } = useToast();
+  const { isDemoMode } = useDemoMode();
   const { isConnected, subscribeToQueueStats, unsubscribeFromQueueStats, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates, onQueueStatsUpdate, onIndexingUpdate, onDraftUpdate } = useSocket();
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
   const [generatingPlansCount, setGeneratingPlansCount] = useState<number>(0);
@@ -172,7 +174,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-light-100 relative">
+    <div className="flex h-full overflow-hidden bg-light-100 relative">
       {/* Mobile Overlay */}
       {isSidebarOpen && (
         <div
@@ -248,6 +250,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           onLogout={logout}
           onMenuToggle={handleMenuToggle}
           MenuIcon={MenuIcon}
+          isDemoMode={isDemoMode}
         />
 
         <main className="flex-1 overflow-y-auto">

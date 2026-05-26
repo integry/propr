@@ -6,6 +6,7 @@ import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
+import { demoModeReadOnlyMiddleware, isDemoMode } from './demoMode.js';
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import {
   createStatusRoutes,
@@ -197,6 +198,7 @@ async function initRedis(): Promise<void> {
 
 function setupRoutes(): void {
   app.use('/api', ensureAuthenticated);
+  app.use('/api', demoModeReadOnlyMiddleware);
   const statusRoutes = createStatusRoutes({ redisClient });
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
@@ -312,6 +314,9 @@ async function start(): Promise<void> {
     try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
     await initRedis();
     setupRoutes();
+    if (isDemoMode()) {
+      console.log('Demo mode enabled: API uses a synthetic user and rejects mutating requests');
+    }
     const socketService = initSocketService(httpServer, validateCorsOrigin);
     console.log('[WebSocket] Socket.IO server initialized');
     socketService.initQueueFeatures({ taskQueue, redisClient, db });

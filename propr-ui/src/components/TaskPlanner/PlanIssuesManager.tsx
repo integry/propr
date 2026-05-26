@@ -29,6 +29,7 @@ interface PlanIssuesManagerProps {
   draftStatus?: string;
   onCreationComplete?: (createdCount: number, failedCount: number) => void;
   isSavingExecutionSettings?: boolean;
+  isReadOnly?: boolean;
 }
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
@@ -50,7 +51,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   onUltrafixMaxCyclesChange,
   draftStatus,
   onCreationComplete,
-  isSavingExecutionSettings = false
+  isSavingExecutionSettings = false,
+  isReadOnly = false
 }) => {
   const [showMerged, setShowMerged] = useState(false);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
@@ -75,10 +77,11 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete });
 
   const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
+    if (isReadOnly) return;
     setPendingImplementIssue(issueNumber);
     setPendingImplementModels(models);
     setShowSequenceWarning(true);
-  }, []);
+  }, [isReadOnly]);
 
   const handleCloseWarning = useCallback(() => {
     setShowSequenceWarning(false);
@@ -87,13 +90,14 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   }, []);
 
   const handleProceedAnyway = useCallback(async () => {
+    if (isReadOnly) return;
     if (pendingImplementIssue !== null) {
       setShowSequenceWarning(false);
       await handleImplementIssue(pendingImplementIssue, pendingImplementModels);
       setPendingImplementIssue(null);
       setPendingImplementModels(undefined);
     }
-  }, [pendingImplementIssue, pendingImplementModels, handleImplementIssue]);
+  }, [isReadOnly, pendingImplementIssue, pendingImplementModels, handleImplementIssue]);
 
   const warningUnmergedIssues = useMemo(() => {
     if (pendingImplementIssue === null) return [];
@@ -101,7 +105,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   }, [pendingImplementIssue, getUnmergedIssuesBefore]);
 
   const handleImplementAll = useCallback(async () => {
-    if (pendingCount === 0 || isSavingExecutionSettings) return;
+    if (pendingCount === 0 || isSavingExecutionSettings || isReadOnly) return;
     setImplementingAll(true);
     try {
       await implementAllIssues(draftId, { useEpic, autoMerge });
@@ -111,7 +115,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     } finally {
       setImplementingAll(false);
     }
-  }, [draftId, pendingCount, useEpic, autoMerge, handleRefresh, isSavingExecutionSettings]);
+  }, [draftId, pendingCount, useEpic, autoMerge, handleRefresh, isSavingExecutionSettings, isReadOnly]);
 
   const showIssueUltrafixControls = issues.length >= 2;
 
@@ -203,7 +207,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           pendingCount={pendingCount}
           implementingAll={implementingAll}
           handleImplementAll={handleImplementAll}
-          disableImplementation={isSavingExecutionSettings}
+          disableImplementation={isSavingExecutionSettings || isReadOnly}
         />
       )}
       <div className="space-y-1.5">
@@ -223,7 +227,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             plannerUltrafixGoal={ultrafixGoal}
             plannerUltrafixMaxCycles={ultrafixMaxCycles}
             implementing={implementingIssue === issue.issue_number}
-            disableImplementation={isSavingExecutionSettings}
+            disableImplementation={isSavingExecutionSettings || isReadOnly}
             isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
             showUltrafixControls={showIssueUltrafixControls}
             onImplementWithWarning={handleImplementWithWarning}
@@ -272,7 +276,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     plannerUltrafixGoal={ultrafixGoal}
                     plannerUltrafixMaxCycles={ultrafixMaxCycles}
                     implementing={false}
-                    disableImplementation={isSavingExecutionSettings}
+                    disableImplementation={isSavingExecutionSettings || isReadOnly}
                     showUltrafixControls={showIssueUltrafixControls}
                     task={issueTaskMap[issue.issue_number]}
                     draftId={draftId}

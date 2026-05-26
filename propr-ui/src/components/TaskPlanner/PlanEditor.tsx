@@ -11,6 +11,7 @@ import RefinementChat from './RefinementChat';
 import BackToSetupDialog from './BackToSetupDialog';
 import DeletePlanDialog from './DeletePlanDialog';
 import { useToast } from '../ui/useToast';
+import { useDemoMode } from '../../contexts/DemoModeContext';
 import { GranularityEnforcementNotice, PlanEditorHeader } from './PlanEditorComponents';
 import { PlanEditorMobileLayout } from './PlanEditorMobileLayout';
 
@@ -33,6 +34,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
   const [isDeleting, setIsDeleting] = useState(false);
   const [isChatExpanded, setIsChatExpanded] = useState(false);
   const { addToast } = useToast();
+  const { isDemoMode } = useDemoMode();
 
   const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
   const granularityEnforcement = draft.context_config?.granularityEnforcement;
@@ -53,11 +55,15 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
   } = usePlanRefinement(draft.draft_id, initialPlan);
 
   const handleDeleteTask = useCallback((taskId: string) => {
+    if (isDemoMode) {
+      addToast({ type: 'warning', message: 'Demo mode is read-only.', duration: 3000 });
+      return;
+    }
     const deleted = deleteTask(taskId);
     if (deleted) {
       addToast({ type: 'undo', message: `Task "${deleted.task.title}" deleted`, duration: 5000, onUndo: () => restoreTask(deleted) });
     }
-  }, [deleteTask, restoreTask, addToast]);
+  }, [addToast, deleteTask, isDemoMode, restoreTask]);
 
   const saveChatHistoryRef = useRef(
     debounce(async (draftId: string, messages: ChatMessage[]) => {
@@ -66,12 +72,31 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
   );
 
   const handleChatMessagesChange = useCallback((messages: ChatMessage[]) => {
+    if (isDemoMode) return;
     saveChatHistoryRef.current(draft.draft_id, messages);
-  }, [draft.draft_id]);
+  }, [draft.draft_id, isDemoMode]);
 
-  const handleStopRefinement = useCallback(async () => { await abortRefinement(draft.draft_id); }, [draft.draft_id]);
+  const handleStopRefinement = useCallback(async () => {
+    if (isDemoMode) return;
+    await abortRefinement(draft.draft_id);
+  }, [draft.draft_id, isDemoMode]);
+
+  const handleRefineRequest = useCallback(async (message: string, signal?: AbortSignal) => {
+    if (isDemoMode) {
+      return {
+        success: false,
+        message: 'Demo mode is read-only. Plan refinement is disabled.',
+        cancelled: true,
+      };
+    }
+    return handleRefine(message, signal);
+  }, [handleRefine, isDemoMode]);
 
   const handleDeletePlanConfirm = async () => {
+    if (isDemoMode) {
+      addToast({ type: 'warning', message: 'Demo mode is read-only.', duration: 3000 });
+      return;
+    }
     setIsDeleting(true);
     try {
       await deleteDraft(draft.draft_id);
@@ -86,6 +111,10 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
   };
 
   const handleFinalize = async () => {
+    if (isDemoMode) {
+      addToast({ type: 'warning', message: 'Demo mode is read-only. GitHub issue creation is disabled.', duration: 4000 });
+      return;
+    }
     setIsFinalizing(true);
     setFinalizeError(null);
     try {
@@ -102,6 +131,10 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
   };
 
   const handleBackToSetup = async () => {
+    if (isDemoMode) {
+      addToast({ type: 'warning', message: 'Demo mode is read-only.', duration: 3000 });
+      return;
+    }
     setIsResettingToSetup(true);
     try {
       await resetDraftToSetup(draft.draft_id);
@@ -124,8 +157,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
         isDeleting={isDeleting}
         isFinalizing={isFinalizing}
         isResettingToSetup={isResettingToSetup}
-        canUndo={canUndo}
-        canRedo={canRedo}
+        canUndo={canUndo && !isDemoMode}
+        canRedo={canRedo && !isDemoMode}
         finalizeError={finalizeError}
         granularityEnforcement={granularityEnforcement}
         enforcementNoticeDismissed={enforcementNoticeDismissed}
@@ -139,21 +172,22 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
         showDeleteDialog={showDeleteDialog}
         onDelete={() => setShowDeleteDialog(true)}
         onBackToSetup={() => setShowBackToSetupDialog(true)}
-        onUndo={undo}
-        onRedo={redo}
+        onUndo={isDemoMode ? () => {} : undo}
+        onRedo={isDemoMode ? () => {} : redo}
         onSetEnforcementNoticeDismissed={setEnforcementNoticeDismissed}
-        onTaskChange={updateTask}
+        onTaskChange={isDemoMode ? () => {} : updateTask}
         onDeleteTask={handleDeleteTask}
-        onReorderTasks={reorderTasks}
+        onReorderTasks={isDemoMode ? () => {} : reorderTasks}
         onFinalize={handleFinalize}
         onSetChatExpanded={setIsChatExpanded}
-        onRefine={handleRefine}
+        onRefine={handleRefineRequest}
         onChatMessagesChange={handleChatMessagesChange}
         onStopRefinement={handleStopRefinement}
         onSetShowBackToSetupDialog={setShowBackToSetupDialog}
         onSetShowDeleteDialog={setShowDeleteDialog}
         onBackToSetupConfirm={handleBackToSetup}
         onDeleteConfirm={handleDeletePlanConfirm}
+        isReadOnly={isDemoMode}
       />
     );
   }
@@ -168,12 +202,13 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
         isDeleting={isDeleting}
         isFinalizing={isFinalizing}
         isResettingToSetup={isResettingToSetup}
-        canUndo={canUndo}
-        canRedo={canRedo}
-        onDelete={() => setShowDeleteDialog(true)}
-        onBackToSetup={() => setShowBackToSetupDialog(true)}
-        onUndo={undo}
-        onRedo={redo}
+        canUndo={canUndo && !isDemoMode}
+        canRedo={canRedo && !isDemoMode}
+        onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }}
+        onBackToSetup={() => { if (!isDemoMode) setShowBackToSetupDialog(true); }}
+        onUndo={isDemoMode ? () => {} : undo}
+        onRedo={isDemoMode ? () => {} : redo}
+        isReadOnly={isDemoMode}
       />
 
       {finalizeError && (
@@ -198,9 +233,9 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
                 tasks={plan}
                 highlightedIds={highlightedIds}
                 draftId={draft.draft_id}
-                onTaskChange={updateTask}
+                onTaskChange={isDemoMode ? () => {} : updateTask}
                 onDeleteTask={handleDeleteTask}
-                onReorderTasks={reorderTasks}
+                onReorderTasks={isDemoMode ? () => {} : reorderTasks}
               />
             </div>
           </Panel>
@@ -212,7 +247,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
           <Panel defaultSize={40} minSize={25}>
             <div className="h-full bg-slate-50">
               <RefinementChat
-                onSendMessage={handleRefine}
+                onSendMessage={handleRefineRequest}
                 initialMessages={draft.chat_history}
                 onMessagesChange={handleChatMessagesChange}
                 refinementProgress={refinementProgress}
@@ -230,13 +265,19 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
           </div>
           <button
             onClick={handleFinalize}
-            disabled={isFinalizing || plan.length === 0}
+            disabled={isFinalizing || plan.length === 0 || isDemoMode}
             className="flex items-center gap-2 px-5 py-2.5 text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
-            style={{ backgroundColor: isFinalizing || plan.length === 0 ? undefined : 'rgb(29, 138, 138)' }}
-            onMouseEnter={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
-            onMouseLeave={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
+            title={isDemoMode ? 'Demo mode is read-only' : undefined}
+            style={{ backgroundColor: isFinalizing || plan.length === 0 || isDemoMode ? undefined : 'rgb(29, 138, 138)' }}
+            onMouseEnter={(e) => { if (!isFinalizing && plan.length > 0 && !isDemoMode) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
+            onMouseLeave={(e) => { if (!isFinalizing && plan.length > 0 && !isDemoMode) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
           >
-            {isFinalizing ? (
+            {isDemoMode ? (
+              <>
+                <Github size={16} />
+                Read-only Demo
+              </>
+            ) : isFinalizing ? (
               <>
                 <Loader2 size={16} className="animate-spin" />
                 Creating Issues...

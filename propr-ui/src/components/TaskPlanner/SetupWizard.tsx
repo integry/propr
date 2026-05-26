@@ -8,6 +8,7 @@ import { useContextExport } from '../../hooks/useContextExport';
 import { useContextRefresh } from '../../hooks/useContextRefresh';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useToast } from '../ui/useToast';
+import { useDemoMode } from '../../contexts/DemoModeContext';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
 import { GranularityPills } from './ComposerControls';
@@ -51,6 +52,7 @@ type SetupWizardContentProps = { isNewMode: boolean; draft: PlannerDraft | undef
 
 const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const { isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo, fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers, autoResize, textareaRef, fileInputRef, error, branchError, isCreating, initialConfiguredBaseBranch, handleRepoChangeInEditMode, handleFileInputChange, handleExportContext, handleGenerate, agents, availableRepos, previewTrace } = props;
+  const { isDemoMode } = useDemoMode();
   const repository = draft?.repository ?? repoLoader.selectedRepo;
   const isRepoLoading = isNewMode ? newModeBranches.isLoading : repoInfo.isLoading;
   const repoError = isNewMode ? newModeBranches.error : repoInfo.error;
@@ -59,7 +61,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const setPrompt = updateConfigField(setConfig, 'prompt');
   const setContextLevel = updateConfigField(setConfig, 'contextLevel');
   const setGranularity = updateConfigField(setConfig, 'granularity');
-  const isGenerateDisabled = computeIsGenerateDisabled({
+  const isGenerateDisabled = isDemoMode || computeIsGenerateDisabled({
     isNewMode, isCreating, selectedRepo: repoLoader.selectedRepo, promptTrimmed,
     reposLoading: repoLoader.reposLoading, isGenerating: generationPolling.isGenerating,
     branchError, repoInfoLoading: isRepoLoading, repoError, baseBranch: config.baseBranch
@@ -147,14 +149,15 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           </div>
           <div className="flex items-center gap-2 sm:gap-3 md:gap-4">
             <button
-              onClick={handleGenerate}
+              onClick={isDemoMode ? undefined : handleGenerate}
               disabled={isGenerateDisabled}
+              title={isDemoMode ? 'Demo mode is read-only' : undefined}
               className="flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 md:px-6 py-2 md:py-2.5 text-white text-sm sm:text-base font-medium rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0"
               style={{ backgroundColor: isGenerateDisabled ? undefined : 'rgb(29, 138, 138)' }}
               onMouseEnter={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
               onMouseLeave={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
             >
-              <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />
+              {isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />}
             </button>
             <ModelSelector
               agents={agents}

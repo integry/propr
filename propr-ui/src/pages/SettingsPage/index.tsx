@@ -8,9 +8,11 @@ import KnowledgeBaseSection from './KnowledgeBaseSection';
 import AgentTankSection from './AgentTankSection';
 import { useSettingsState } from './useSettingsState';
 import { API_BASE_URL } from '../../api/proprApi';
+import { useDemoMode } from '../../contexts/DemoModeContext';
 
 const SettingsPage: React.FC = () => {
   useDocumentTitle('Settings');
+  const { isDemoMode } = useDemoMode();
 
   const {
     loading,
@@ -69,10 +71,18 @@ const SettingsPage: React.FC = () => {
       {/* Anchored Header */}
       <div className="flex-shrink-0 border-b border-gray-200 px-6 py-4">
         <h2 className="text-gray-900 text-xl font-semibold">Settings</h2>
+        {isDemoMode && (
+          <p className="mt-1 text-xs text-amber-700">
+            Demo mode is read-only. Settings can be inspected but not saved.
+          </p>
+        )}
       </div>
 
       {/* Main Content Area - 2 Column Split */}
-      <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-y-auto md:overflow-hidden">
+      <fieldset
+        disabled={isDemoMode}
+        className={`flex-1 flex flex-col md:flex-row min-h-0 overflow-y-auto md:overflow-hidden ${isDemoMode ? 'opacity-70' : ''}`}
+      >
         {/* Left Column - AI Engine Configuration */}
         <div className="w-full md:w-1/2 md:overflow-y-auto border-b md:border-b-0 md:border-r border-gray-200 p-6">
           <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-4">AI Engine Configuration</h3>
@@ -234,7 +244,7 @@ const SettingsPage: React.FC = () => {
             </div>
           </div>
         </div>
-      </div>
+      </fieldset>
 
       {/* Anchored Footer - Status Bar */}
       <div className="flex-shrink-0 border-t border-gray-200 px-6 py-3 bg-gray-50">

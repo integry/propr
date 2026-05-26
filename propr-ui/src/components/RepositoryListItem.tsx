@@ -111,11 +111,13 @@ const RepositoryActionButtons: React.FC<{
   onDeleteClick: () => void;
   onToggleStar: (repoId: string) => void;
   onToggleHidden: (repoId: string) => void;
-}> = ({ repo, statusType, onToggle, onReindex, onDeleteClick, onToggleStar, onToggleHidden }) => (
+  isReadOnly?: boolean;
+}> = ({ repo, statusType, onToggle, onReindex, onDeleteClick, onToggleStar, onToggleHidden, isReadOnly = false }) => (
   <div className="flex items-center gap-1 flex-shrink-0 w-full sm:w-auto justify-end" onClick={(e) => e.stopPropagation()}>
     {/* Star Button */}
     <button
       onClick={() => onToggleStar(repo.id)}
+      disabled={isReadOnly}
       className={`p-1.5 rounded transition-colors ${
         repo.starred
           ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50'
@@ -129,6 +131,7 @@ const RepositoryActionButtons: React.FC<{
     {/* Hide/Unhide Button */}
     <button
       onClick={() => onToggleHidden(repo.id)}
+      disabled={isReadOnly}
       className={`p-1.5 rounded transition-colors ${
         repo.hidden
           ? 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
@@ -144,7 +147,7 @@ const RepositoryActionButtons: React.FC<{
       onClick={() => onReindex(repo.name, repo.baseBranch)}
       className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors"
       title="Reindex Repository"
-      disabled={statusType === 'indexing'}
+      disabled={statusType === 'indexing' || isReadOnly}
     >
       <RefreshCw className={`w-3.5 h-3.5 ${statusType === 'indexing' ? 'animate-spin opacity-50' : ''}`} />
     </button>
@@ -155,6 +158,7 @@ const RepositoryActionButtons: React.FC<{
         type="checkbox"
         checked={repo.enabled}
         onChange={() => onToggle(repo.id)}
+        disabled={isReadOnly}
         className="sr-only peer"
       />
       <div className="w-7 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-teal-500/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-teal-500"></div>
@@ -163,6 +167,7 @@ const RepositoryActionButtons: React.FC<{
     {/* Delete Button - Only visible on hover */}
     <button
       onClick={onDeleteClick}
+      disabled={isReadOnly}
       className="p-1.5 text-slate-300 opacity-0 group-hover:opacity-100 hover:text-red-600 hover:bg-red-50 rounded transition-all"
       title="Remove repository"
     >
@@ -182,6 +187,7 @@ interface RepositoryListItemProps {
   onToggleHidden: (repoId: string) => void;
   isSelected?: boolean;
   onSelect?: (repoId: string) => void;
+  isReadOnly?: boolean;
 }
 
 export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
@@ -195,11 +201,13 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   onToggleHidden,
   isSelected = false,
   onSelect,
+  isReadOnly = false,
 }) => {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
   const handleDeleteClick = () => {
+    if (isReadOnly) return;
     setIsDeleteDialogOpen(true);
   };
 
@@ -313,9 +321,10 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           onToggle={onToggle}
           onReindex={onReindex}
           onDeleteClick={handleDeleteClick}
-          onToggleStar={onToggleStar}
-          onToggleHidden={onToggleHidden}
-        />
+        onToggleStar={onToggleStar}
+        onToggleHidden={onToggleHidden}
+        isReadOnly={isReadOnly}
+      />
       </div>
 
       <DeleteRepoDialog

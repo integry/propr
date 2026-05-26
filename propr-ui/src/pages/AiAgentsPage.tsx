@@ -9,9 +9,11 @@ import {
 } from '../api/proprApi';
 import AgentsListSection from './SettingsPage/AgentsListSection';
 import ChatPanel from '../components/AgentChat/ChatPanel';
+import { useDemoMode } from '../contexts/DemoModeContext';
 
 const AiAgentsPage: React.FC = () => {
   useDocumentTitle('AI Agents');
+  const { isDemoMode } = useDemoMode();
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsLoading, setAgentsLoading] = useState<boolean>(true);
   const [agentsSaving, setAgentsSaving] = useState<boolean>(false);
@@ -38,6 +40,10 @@ const AiAgentsPage: React.FC = () => {
   }, []);
 
   const handleSaveAgents = async (updatedAgents: AgentConfig[]) => {
+    if (isDemoMode) {
+      setAgentsError('Demo mode is read-only. Agent settings cannot be saved.');
+      return;
+    }
     try {
       setAgentsSaving(true);
       setAgentsError(null);
@@ -55,8 +61,9 @@ const AiAgentsPage: React.FC = () => {
   // Callback for Add Agent button in the header
   const [showAddModal, setShowAddModal] = useState(false);
   const handleAddAgentClick = useCallback(() => {
+    if (isDemoMode) return;
     setShowAddModal(true);
-  }, []);
+  }, [isDemoMode]);
 
   const handleCloseModal = useCallback(() => {
     setShowAddModal(false);
@@ -72,9 +79,9 @@ const AiAgentsPage: React.FC = () => {
           {mobileTab === 'config' && (
             <button
               onClick={handleAddAgentClick}
-              disabled={agentsLoading || agentsSaving}
+              disabled={agentsLoading || agentsSaving || isDemoMode}
               className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors ${
-                agentsLoading || agentsSaving
+                agentsLoading || agentsSaving || isDemoMode
                   ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                   : 'border-gray-300 text-gray-700 hover:bg-gray-50'
               }`}
@@ -115,7 +122,7 @@ const AiAgentsPage: React.FC = () => {
         {mobileTab === 'playground' ? (
           <div className="h-full bg-[#F8FAFC] flex flex-col">
             <div className="flex-1 min-h-0">
-              {!agentsLoading && <ChatPanel agents={agents} />}
+              {!agentsLoading && <ChatPanel agents={agents} disabled={isDemoMode} />}
             </div>
           </div>
         ) : (
@@ -151,9 +158,9 @@ const AiAgentsPage: React.FC = () => {
               <h2 className="text-gray-900 text-lg font-semibold">Agent Configuration</h2>
               <button
                 onClick={handleAddAgentClick}
-                disabled={agentsLoading || agentsSaving}
+                disabled={agentsLoading || agentsSaving || isDemoMode}
                 className={`px-3 py-1.5 text-sm font-medium rounded-md border transition-colors ${
-                  agentsLoading || agentsSaving
+                  agentsLoading || agentsSaving || isDemoMode
                     ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                     : 'border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400'
                 }`}
@@ -206,7 +213,7 @@ const AiAgentsPage: React.FC = () => {
           <Panel defaultSize={60} minSize={30}>
             <div className="h-full bg-[#F8FAFC] flex flex-col">
               <div className="flex-1 min-h-0">
-                {!agentsLoading && <ChatPanel agents={agents} />}
+                {!agentsLoading && <ChatPanel agents={agents} disabled={isDemoMode} />}
               </div>
             </div>
           </Panel>

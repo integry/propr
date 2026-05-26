@@ -101,6 +101,7 @@ export interface PlanEditorHeaderProps {
   onUndo: () => void;
   onRedo: () => void;
   isMobile?: boolean;
+  isReadOnly?: boolean;
 }
 
 export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
@@ -117,7 +118,8 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
   onBackToSetup,
   onUndo,
   onRedo,
-  isMobile
+  isMobile,
+  isReadOnly = false
 }) => {
   // Mobile header - compact layout
   if (isMobile) {
@@ -131,7 +133,7 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={onUndo}
-              disabled={!canUndo}
+              disabled={!canUndo || isReadOnly}
               className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               title="Undo"
             >
@@ -139,7 +141,7 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
             </button>
             <button
               onClick={onRedo}
-              disabled={!canRedo}
+              disabled={!canRedo || isReadOnly}
               className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               title="Redo"
             >
@@ -147,17 +149,17 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
             </button>
             <button
               onClick={onBackToSetup}
-              disabled={isFinalizing || isResettingToSetup || isDeleting}
+              disabled={isFinalizing || isResettingToSetup || isDeleting || isReadOnly}
               className="p-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Back to Setup"
+              title={isReadOnly ? 'Demo mode is read-only' : 'Back to Setup'}
             >
               <ArrowLeft size={16} />
             </button>
             <button
               onClick={onDelete}
-              disabled={isFinalizing || isResettingToSetup || isDeleting}
+              disabled={isFinalizing || isResettingToSetup || isDeleting || isReadOnly}
               className="p-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Delete Plan"
+              title={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
             >
               {isDeleting ? (
                 <Loader2 size={16} className="animate-spin" />
@@ -211,9 +213,9 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
         {/* Delete Plan */}
         <button
           onClick={onDelete}
-          disabled={isFinalizing || isResettingToSetup || isDeleting}
+          disabled={isFinalizing || isResettingToSetup || isDeleting || isReadOnly}
           className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Delete Plan"
+          title={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
         >
           {isDeleting ? (
             <Loader2 size={16} className="animate-spin" />
@@ -225,9 +227,9 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
         {/* Back to Setup */}
         <button
           onClick={onBackToSetup}
-          disabled={isFinalizing || isResettingToSetup || isDeleting}
+          disabled={isFinalizing || isResettingToSetup || isDeleting || isReadOnly}
           className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Back to Setup"
+          title={isReadOnly ? 'Demo mode is read-only' : 'Back to Setup'}
         >
           <ArrowLeft size={16} />
           Back to Setup
@@ -237,7 +239,7 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
         <div className="flex items-center gap-1">
           <button
             onClick={onUndo}
-            disabled={!canUndo}
+            disabled={!canUndo || isReadOnly}
             className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             title="Undo"
           >
@@ -245,7 +247,7 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
           </button>
           <button
             onClick={onRedo}
-            disabled={!canRedo}
+            disabled={!canRedo || isReadOnly}
             className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             title="Redo"
           >

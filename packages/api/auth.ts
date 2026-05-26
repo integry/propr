@@ -4,6 +4,7 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient, type RedisClientType } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
+import { getDemoUser, isDemoMode } from './demoMode.js';
 
 interface GitHubUser {
     id: string;
@@ -34,7 +35,7 @@ declare global {
 
 export function setupAuth(app: Express): void {
     const requiredEnvVars = ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL'];
-    const missingVars = requiredEnvVars.filter(v => !process.env[v]);
+    const missingVars = isDemoMode() ? [] : requiredEnvVars.filter(v => !process.env[v]);
     if (missingVars.length > 0) {
         throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
     }
@@ -76,34 +77,36 @@ export function setupAuth(app: Express): void {
     app.use(passport.initialize());
     app.use(passport.session());
 
-    passport.use(new GitHubStrategy({
-        clientID: process.env.GH_OAUTH_CLIENT_ID!,
-        clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
-        callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
-    },
-    // eslint-disable-next-line max-params
-    function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
-        // Here you would find or create a user in your database.
-        // For now, we'll just pass the profile through.
-        console.log('User authenticated:', profile.username);
+    if (!isDemoMode()) {
+        passport.use(new GitHubStrategy({
+            clientID: process.env.GH_OAUTH_CLIENT_ID!,
+            clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
+            callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
+        },
+        // eslint-disable-next-line max-params
+        function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
+            // Here you would find or create a user in your database.
+            // For now, we'll just pass the profile through.
+            console.log('User authenticated:', profile.username);
 
-        // Calculate token expiration time (expires_in is in seconds)
-        const tokenExpiresAt = params.expires_in
-            ? Date.now() + (params.expires_in * 1000)
-            : undefined;
+            // Calculate token expiration time (expires_in is in seconds)
+            const tokenExpiresAt = params.expires_in
+                ? Date.now() + (params.expires_in * 1000)
+                : undefined;
 
-        const user: GitHubUser = {
-            id: profile.id,
-            username: profile.username || '',
-            displayName: profile.displayName,
-            email: profile.emails && profile.emails[0] ? profile.emails[0].value : null,
-            avatarUrl: profile.photos && profile.photos[0] ? profile.photos[0].value : null,
-            accessToken: accessToken,
-            refreshToken: refreshToken || undefined,
-            tokenExpiresAt: tokenExpiresAt
-        };
-        return done(null, user);
-    }));
+            const user: GitHubUser = {
+                id: profile.id,
+                username: profile.username || '',
+                displayName: profile.displayName,
+                email: profile.emails && profile.emails[0] ? profile.emails[0].value : null,
+                avatarUrl: profile.photos && profile.photos[0] ? profile.photos[0].value : null,
+                accessToken: accessToken,
+                refreshToken: refreshToken || undefined,
+                tokenExpiresAt: tokenExpiresAt
+            };
+            return done(null, user);
+        }));
+    }
 
     passport.serializeUser((user, done) => done(null, user));
     passport.deserializeUser((obj: Express.User, done) => done(null, obj));
@@ -111,6 +114,11 @@ export function setupAuth(app: Express): void {
     // Routes
     // Accept optional redirect_to parameter for PR preview environments
     app.get('/api/auth/github', (req: Request, res: Response, next: NextFunction) => {
+        if (isDemoMode()) {
+            res.redirect(`${process.env.FRONTEND_URL}/`);
+            return;
+        }
+
         const redirectTo = req.query.redirect_to as string | undefined;
         if (redirectTo) {
             // Validate redirect URL to prevent open redirect attacks
@@ -127,30 +135,41 @@ export function setupAuth(app: Express): void {
         passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] })(req, res, next);
     });
 
-    app.get('/api/auth/github/callback',
-        passport.authenticate('github', { failureRedirect: '/login' }),
-        (req: Request, res: Response) => {
-            // Check for stored redirect URL (for PR preview environments)
-            const redirectTo = (req.session as session.Session & { redirectTo?: string }).redirectTo;
-            if (redirectTo) {
-                // Clear the stored redirect
-                delete (req.session as session.Session & { redirectTo?: string }).redirectTo;
-            }
-
-            const finalRedirect = redirectTo || `${process.env.FRONTEND_URL}/`;
-
-            // Explicitly save session before redirect to ensure cookie is set
-            // This is required when using Redis store with async operations
-            req.session.save((err) => {
-                if (err) {
-                    console.error('Session save error:', err);
+    if (isDemoMode()) {
+        app.get('/api/auth/github/callback', (_req: Request, res: Response) => {
+            res.redirect(`${process.env.FRONTEND_URL}/`);
+        });
+    } else {
+        app.get('/api/auth/github/callback',
+            passport.authenticate('github', { failureRedirect: '/login' }),
+            (req: Request, res: Response) => {
+                // Check for stored redirect URL (for PR preview environments)
+                const redirectTo = (req.session as session.Session & { redirectTo?: string }).redirectTo;
+                if (redirectTo) {
+                    // Clear the stored redirect
+                    delete (req.session as session.Session & { redirectTo?: string }).redirectTo;
                 }
-                res.redirect(finalRedirect);
-            });
-        }
-    );
+
+                const finalRedirect = redirectTo || `${process.env.FRONTEND_URL}/`;
+
+                // Explicitly save session before redirect to ensure cookie is set
+                // This is required when using Redis store with async operations
+                req.session.save((err) => {
+                    if (err) {
+                        console.error('Session save error:', err);
+                    }
+                    res.redirect(finalRedirect);
+                });
+            }
+        );
+    }
 
     app.get('/api/auth/logout', (req: Request, res: Response) => {
+        if (isDemoMode()) {
+            res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
+            return;
+        }
+
         req.logout((err) => {
             if (err) {
                 console.error('Logout error:', err);
@@ -167,6 +186,10 @@ export function setupAuth(app: Express): void {
 
     app.get('/api/auth/user', ensureAuthenticated, (req: Request, res: Response) => {
         res.json(req.user);
+    });
+
+    app.get('/api/auth/demo-mode', (_req: Request, res: Response) => {
+        res.json({ demoMode: isDemoMode() });
     });
 
 }
@@ -342,6 +365,11 @@ export async function refreshGitHubTokenIfNeeded(req: Request, force: boolean = 
 }
 
 export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {
+    if (isDemoMode()) {
+        (req as Request & { user: GitHubUser }).user = getDemoUser();
+        return next();
+    }
+
     // Session-based auth (Passport)
     if (req.isAuthenticated()) {
         // Proactively refresh token in background if needed
