@@ -54,9 +54,6 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
   if (!baseBranch.ok) return baseBranch;
   const defaultBranch = normalizeOptionalBranchName(candidate.defaultBranch, 'defaultBranch', name);
   if (!defaultBranch.ok) return defaultBranch;
-  if (candidate.demoVisible !== undefined && typeof candidate.demoVisible !== 'boolean') {
-    return failure(`Invalid demoVisible format for ${name}: must be a boolean`);
-  }
 
   return success({
     id: candidate.id?.trim() || randomUUID(),
@@ -64,7 +61,6 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
     enabled,
     alias: alias.value,
     baseBranch: baseBranch.value,
-    defaultBranch: defaultBranch.value,
-    demoVisible: candidate.demoVisible
+    defaultBranch: defaultBranch.value
   });
 }

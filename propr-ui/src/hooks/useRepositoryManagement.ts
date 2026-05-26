@@ -97,10 +97,9 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
             const id = (repoObj.id as string) || generateId();
             const alias = repoObj.alias as string | undefined;
             const baseBranch = repoObj.baseBranch as string | undefined;
-            const demoVisible = repoObj.demoVisible as boolean | undefined;
             const userPref = name ? (prefs[name] || {}) : {};
             if (name) {
-              return { id, name, enabled, alias, baseBranch, demoVisible, starred: userPref.starred, hidden: userPref.hidden };
+              return { id, name, enabled, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
             }
           }
           return null;

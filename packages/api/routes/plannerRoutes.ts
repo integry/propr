@@ -19,8 +19,7 @@ import {
 } from './plannerExecutionSettings.js';
 export { buildUpdatedExecutionConfig, mergeExecutionContextConfig } from './plannerExecutionSettings.js';
 import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
-import { getDemoVisibleUserIds, isDemoMode } from '../demoMode.js';
-import { loadDemoConfiguredRepoNames } from './demoRepositoryMetadata.js';
+import { isDemoMode } from '../demoMode.js';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -52,26 +51,12 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
   const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
   const sendExecutionSettingsResponse = (res: Response, updatedConfig: DraftExecutionConfig): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
-  async function getDemoVisibleReposOrEmptyResponse(res: Response): Promise<string[] | null> {
-    if (!isDemoMode()) return null;
-    const visibleRepos = await loadDemoConfiguredRepoNames();
-    if (visibleRepos.length === 0) {
-      res.json({ repositories: [], total: 0 });
-      return null;
-    }
-    return visibleRepos;
-  }
-
   async function listRepositories(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     try {
       let query = db!('task_drafts').select('repository').count('* as count');
-      if (isDemoMode()) {
-        const visibleRepos = await getDemoVisibleReposOrEmptyResponse(res);
-        if (!visibleRepos) return;
-        query = query.whereIn('user_id', getDemoVisibleUserIds()).whereIn('repository', visibleRepos);
-      } else query = query.where({ user_id: req.user!.id });
+      if (!isDemoMode()) query = query.where({ user_id: req.user!.id });
       const results = await query.groupBy('repository').orderBy('repository') as { repository: string; count: number | string }[];
       const repositories = results.map((row) => ({
         repo: row.repository, count: typeof row.count === 'string' ? parseInt(row.count, 10) : row.count
@@ -104,14 +89,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const status = req.query.status as string | undefined;
       const excludeStatuses = req.query.excludeStatuses as string | undefined;
       let query = db!('task_drafts');
-      if (isDemoMode()) {
-        const visibleRepos = await loadDemoConfiguredRepoNames();
-        if (visibleRepos.length === 0) {
-          res.json({ drafts: [], total: 0, page, limit, hasMore: false });
-          return;
-        }
-        query = query.whereIn('user_id', getDemoVisibleUserIds()).whereIn('repository', visibleRepos);
-      } else query = query.where({ user_id: req.user!.id });
+      if (!isDemoMode()) query = query.where({ user_id: req.user!.id });
 
       if (repository && repository !== 'all') query = query.andWhere('repository', repository);
       if (status && status !== 'all' && (validStatuses as readonly string[]).includes(status)) query = query.andWhere('status', status);
@@ -197,11 +175,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
     try {
       const draftQuery = db!('task_drafts').where({ draft_id: req.params.id });
-      if (isDemoMode()) {
-        const visibleRepos = await loadDemoConfiguredRepoNames();
-        if (visibleRepos.length === 0) { res.status(404).json({ error: 'Draft not found' }); return; }
-        draftQuery.whereIn('user_id', getDemoVisibleUserIds()).whereIn('repository', visibleRepos);
-      }
       const draft = await draftQuery.first();
       if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
       if (!isDemoMode() && draft.user_id !== req.user!.id) { res.status(403).json({ error: 'Unauthorized access to draft' }); return; }

@@ -48,7 +48,6 @@ export interface MonitoredRepo {
   enabled: boolean;
   alias?: string;
   baseBranch?: string;
-  demoVisible?: boolean;
   starred?: boolean;
   hidden?: boolean;
 }

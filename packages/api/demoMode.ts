@@ -20,20 +20,6 @@ export function getDemoUser(): Express.User {
   };
 }
 
-function parseCommaSeparatedEnv(value: string | undefined): string[] {
-  if (!value) return [];
-  return value.split(',').map(item => item.trim()).filter(Boolean);
-}
-
-export function getDemoVisibleUserIds(): string[] {
-  const configuredIds = parseCommaSeparatedEnv(process.env.PROPR_DEMO_VISIBLE_USER_IDS);
-  return configuredIds.length > 0 ? configuredIds : [getDemoUser().id];
-}
-
-export function isDemoDraftOwnerIdVisible(userId: unknown): boolean {
-  return typeof userId === 'string' && getDemoVisibleUserIds().includes(userId);
-}
-
 function isDemoModeMetadataRequest(req: Request): boolean {
   return req.method.toUpperCase() === 'GET' &&
     (req.path === '/auth/demo-mode' || req.originalUrl === '/api/auth/demo-mode');

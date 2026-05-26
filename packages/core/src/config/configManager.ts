@@ -17,7 +17,6 @@ export interface RepoToMonitor {
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata
-    demoVisible?: boolean;   // Explicitly expose this repository in public demo mode
 }
 
 interface ConfigSettings {

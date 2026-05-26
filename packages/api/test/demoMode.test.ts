@@ -14,8 +14,6 @@ import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 const originalFrontendUrl = process.env.FRONTEND_URL;
-const originalDemoRepositories = process.env.PROPR_DEMO_REPOSITORIES;
-const originalDemoVisibleUserIds = process.env.PROPR_DEMO_VISIBLE_USER_IDS;
 
 async function cleanupDemoData(): Promise<void> {
   if (await db.schema.hasTable('task_drafts')) await db('task_drafts').delete();
@@ -44,10 +42,6 @@ afterEach(async () => {
   else process.env.PROPR_DEMO_MODE = originalDemoMode;
   if (originalFrontendUrl === undefined) delete process.env.FRONTEND_URL;
   else process.env.FRONTEND_URL = originalFrontendUrl;
-  if (originalDemoRepositories === undefined) delete process.env.PROPR_DEMO_REPOSITORIES;
-  else process.env.PROPR_DEMO_REPOSITORIES = originalDemoRepositories;
-  if (originalDemoVisibleUserIds === undefined) delete process.env.PROPR_DEMO_VISIBLE_USER_IDS;
-  else process.env.PROPR_DEMO_VISIBLE_USER_IDS = originalDemoVisibleUserIds;
   await cleanupDemoData();
 });
 
@@ -135,15 +129,17 @@ test('ensureAuthenticated rejects bearer auth in demo mode', async () => {
   });
 });
 
-test('demo repository metadata only resolves demo-visible configured repositories', () => {
+test('demo repository metadata resolves enabled configured repositories', () => {
   const repos = [
-    { id: '1', name: 'integry/propr', enabled: true, demoVisible: true, baseBranch: 'develop', defaultBranch: 'main' },
-    { id: '2', name: 'integry/propr', enabled: true, demoVisible: true, baseBranch: 'release' },
+    { id: '1', name: 'integry/propr', enabled: true, baseBranch: 'develop', defaultBranch: 'main' },
+    { id: '2', name: 'integry/propr', enabled: true, baseBranch: 'release' },
     { id: '3', name: 'integry/private', enabled: true, baseBranch: 'main' },
+    { id: '4', name: 'integry/disabled', enabled: false, baseBranch: 'main' },
   ];
 
   assert.equal(buildDemoRepositoryMetadata(repos, 'other/repo'), null);
-  assert.equal(buildDemoRepositoryMetadata(repos, 'integry/private'), null);
+  assert.equal(buildDemoRepositoryMetadata(repos, 'integry/disabled'), null);
+  assert.deepEqual(buildDemoRepositoryMetadata(repos, 'integry/private')?.branches, ['main']);
   assert.deepEqual(buildDemoRepositoryMetadata(repos, 'integry/propr'), {
     repository: 'integry/propr',
     defaultBranch: 'main',
@@ -153,60 +149,56 @@ test('demo repository metadata only resolves demo-visible configured repositorie
   });
 });
 
-test('demo repository metadata supports explicit environment allowlist', () => {
-  process.env.PROPR_DEMO_REPOSITORIES = 'integry/propr';
-  const repos = [
-    { id: '1', name: 'integry/propr', enabled: true, baseBranch: 'develop', defaultBranch: 'main' },
-    { id: '2', name: 'integry/private', enabled: true, baseBranch: 'main' },
-  ];
-
-  assert.equal(buildDemoRepositoryMetadata(repos, 'integry/private'), null);
-  assert.deepEqual(buildDemoRepositoryMetadata(repos, 'integry/propr')?.branches, ['main', 'develop']);
-});
-
-test('/api/github/repos returns only demo-visible configured repositories', async () => {
+test('/api/github/repos returns enabled configured repositories in demo mode', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   await db.migrate.latest();
   await configManager.saveMonitoredRepos([
-    { id: '1', name: 'integry/propr', enabled: true, demoVisible: true },
+    { id: '1', name: 'integry/propr', enabled: true },
     { id: '2', name: 'integry/private', enabled: true },
-    { id: '3', name: 'integry/disabled', enabled: false, demoVisible: true },
+    { id: '3', name: 'integry/disabled', enabled: false },
   ]);
   const routes = createGitHubRoutes({ redisClient: {} as never, taskQueue: {} as never, db });
   const { response, body } = createJsonResponse();
 
   await routes.getRepos({ user: getDemoUser() } as Request, response);
 
-  assert.deepEqual(body(), { repos: ['integry/propr'] });
+  assert.deepEqual(body(), { repos: ['integry/private', 'integry/propr'] });
 });
 
-test('planner demo reads are limited to demo-visible owners and repositories', async () => {
+test('planner demo reads use the curated database without owner or repository allowlists', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   await db.migrate.latest();
   await configManager.saveMonitoredRepos([
-    { id: '1', name: 'integry/propr', enabled: true, demoVisible: true },
+    { id: '1', name: 'integry/propr', enabled: true },
     { id: '2', name: 'integry/private', enabled: true },
   ]);
   const visibleDraftId = randomUUID();
-  const wrongOwnerDraftId = randomUUID();
-  const hiddenRepoDraftId = randomUUID();
+  const otherOwnerDraftId = randomUUID();
+  const otherRepoDraftId = randomUUID();
   await db('task_drafts').insert([
     { draft_id: visibleDraftId, user_id: 'demo', repository: 'integry/propr', name: 'Visible draft' },
-    { draft_id: wrongOwnerDraftId, user_id: 'real-user', repository: 'integry/propr', name: 'Wrong owner draft' },
-    { draft_id: hiddenRepoDraftId, user_id: 'demo', repository: 'integry/private', name: 'Hidden repo draft' },
+    { draft_id: otherOwnerDraftId, user_id: 'real-user', repository: 'integry/propr', name: 'Other owner draft' },
+    { draft_id: otherRepoDraftId, user_id: 'demo', repository: 'integry/private', name: 'Other repo draft' },
   ]);
   const routes = createPlannerRoutes({ db });
   const listResponse = createJsonResponse();
 
   await routes.listDrafts({ query: {}, user: getDemoUser() } as Request, listResponse.response);
 
-  assert.deepEqual((listResponse.body() as { drafts: Array<{ draft_id: string }> }).drafts.map(draft => draft.draft_id), [visibleDraftId]);
+  const listedDraftIds = (listResponse.body() as { drafts: Array<{ draft_id: string }> }).drafts
+    .map(draft => draft.draft_id)
+    .sort();
+  assert.deepEqual(listedDraftIds, [
+    visibleDraftId,
+    otherOwnerDraftId,
+    otherRepoDraftId,
+  ].sort());
 
-  const hiddenResponse = createJsonResponse();
-  await routes.getDraft({ params: { id: hiddenRepoDraftId }, user: getDemoUser() } as unknown as Request, hiddenResponse.response);
+  const otherOwnerResponse = createJsonResponse();
+  await routes.getDraft({ params: { id: otherOwnerDraftId }, user: getDemoUser() } as unknown as Request, otherOwnerResponse.response);
 
-  assert.equal(hiddenResponse.status(), 404);
-  assert.deepEqual(hiddenResponse.body(), { error: 'Draft not found' });
+  assert.equal(otherOwnerResponse.status(), 200);
+  assert.equal((otherOwnerResponse.body() as { draft_id: string }).draft_id, otherOwnerDraftId);
 });
 
 test('auth demo-mode metadata endpoint reports startup environment value', async () => {
