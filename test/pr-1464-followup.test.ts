@@ -333,6 +333,61 @@ test('manual Docker stop route accepts abort-only running task stops without ver
   });
 });
 
+test('manual Docker stop route serializes structural stop errors without instanceof', async () => {
+  const stopTaskExecutionMock = mock.fn(async () => {
+    throw {
+      name: 'StopTaskExecutionError',
+      status: 409,
+      body: {
+        error: 'Task is not stoppable',
+        message: 'The task is not in a stoppable worker or queue state.',
+      },
+      message: 'The task is not in a stoppable worker or queue state.',
+    };
+  });
+  const redisClient = {
+    async get(): Promise<null> {
+      return null;
+    },
+    async set(): Promise<string> {
+      return 'OK';
+    },
+    async del(): Promise<number> {
+      return 1;
+    },
+    async rPush(): Promise<number> {
+      return 1;
+    },
+  };
+  const routes = createDockerRoutes({
+    redisClient: redisClient as never,
+    stopTaskExecution: stopTaskExecutionMock as never,
+  });
+  const response = {
+    statusCode: 200,
+    body: null as unknown,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body: unknown) {
+      this.body = body;
+      return this;
+    },
+  };
+
+  await routes.stopTask({
+    params: { taskId: 'task-manual-stop' },
+    user: { username: 'octocat' },
+  } as never, response as never);
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body, {
+    error: 'Task is not stoppable',
+    message: 'The task is not in a stoppable worker or queue state.',
+  });
+});
+
 test('stopTaskExecution records a pending merged-PR cancellation for abort-only active jobs', async () => {
   const setCalls: Array<{ key: string; value: Record<string, unknown> }> = [];
   const delCalls: string[] = [];

@@ -4,7 +4,7 @@ import {
   markPullRequestMerged,
 } from '@propr/core';
 import {
-  StopTaskExecutionError,
+  isStopTaskExecutionError,
   stopTaskExecution,
   type StopTaskExecutionOptions,
 } from './routes/stopTaskExecution.js';
@@ -91,6 +91,7 @@ export async function cancelMergedPullRequestTasks(
 
   let remainingTasks = initialTasks;
   const failuresByTaskId = new Map<string, MergeTaskCancellationFailure>();
+  const acceptedStopRequestTaskIds = new Set<string>();
 
   const verificationDelaysMs = recheckDelaysMs.length > 0 ? recheckDelaysMs : [0];
   for (let attemptIndex = 0; attemptIndex < verificationDelaysMs.length; attemptIndex += 1) {
@@ -104,11 +105,25 @@ export async function cancelMergedPullRequestTasks(
       prNumber,
       log,
     });
+    for (const taskId of attempt.acceptedStopRequestTaskIds) {
+      acceptedStopRequestTaskIds.add(taskId);
+    }
     mergeFailures(failuresByTaskId, attempt.failures);
 
     await sleep(verificationDelaysMs[attemptIndex]);
     remainingTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
     if (remainingTasks.length === 0) {
+      return;
+    }
+
+    remainingTasks = remainingTasks.filter((task) => !acceptedStopRequestTaskIds.has(task.taskId));
+    if (remainingTasks.length === 0) {
+      log.info({
+        correlationId,
+        repository,
+        prNumber,
+        taskIds: [...acceptedStopRequestTaskIds],
+      }, 'Merged PR task stop requests accepted; worker shutdown may complete asynchronously');
       return;
     }
 
@@ -165,6 +180,7 @@ async function stopMergeTasks(params: {
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<{
   failures: Map<string, MergeTaskCancellationFailure>;
+  acceptedStopRequestTaskIds: Set<string>;
 }> {
   const {
     tasks,
@@ -177,6 +193,7 @@ async function stopMergeTasks(params: {
     log,
   } = params;
   const failures = new Map<string, MergeTaskCancellationFailure>();
+  const acceptedStopRequestTaskIds = new Set<string>();
 
   for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
     const taskBatch = tasks.slice(index, index + MERGE_TASK_STOP_CONCURRENCY);
@@ -191,6 +208,7 @@ async function stopMergeTasks(params: {
           forceQueueScan: true,
           requireVerifiedStop: false,
         });
+        acceptedStopRequestTaskIds.add(task.taskId);
         if (!result.stopVerified) {
           log.info({
             correlationId,
@@ -200,13 +218,6 @@ async function stopMergeTasks(params: {
             currentState: result.currentState,
             queueState: result.queueState,
           }, 'Merged PR task stop request accepted and is awaiting worker or queue-state confirmation');
-          failures.set(task.taskId, {
-            taskId: task.taskId,
-            status: 409,
-            message: 'Task stop request was accepted but not yet verified.',
-            currentState: result.currentState,
-            queueState: result.queueState,
-          });
         }
       } catch (error) {
         const failure = buildMergeTaskCancellationFailure(task.taskId, error);
@@ -225,7 +236,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { failures };
+  return { failures, acceptedStopRequestTaskIds };
 }
 
 export function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {
@@ -324,24 +335,14 @@ function getStopTaskExecutionError(error: unknown): {
   body: Record<string, unknown>;
   message: string;
 } | null {
-  if (error instanceof StopTaskExecutionError) {
-    return error;
+  if (isStopTaskExecutionError(error)) {
+    return {
+      status: error.status,
+      body: error.body,
+      message: typeof error.message === 'string' ? error.message : 'Task stop failed',
+    };
   }
-
-  if (!error || typeof error !== 'object') {
-    return null;
-  }
-
-  const record = error as Record<string, unknown>;
-  if (typeof record.status !== 'number' || !record.body || typeof record.body !== 'object') {
-    return null;
-  }
-
-  return {
-    status: record.status,
-    body: record.body as Record<string, unknown>,
-    message: typeof record.message === 'string' ? record.message : 'Task stop failed',
-  };
+  return null;
 }
 
 function buildUnverifiedStopFailure(taskId: string): MergeTaskCancellationFailure {

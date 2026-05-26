@@ -4,7 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '@propr/core';
 import { loadStopTaskContext, normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
-import { stopTaskExecution, StopTaskExecutionError } from './stopTaskExecution.js';
+import { stopTaskExecution, isStopTaskExecutionError } from './stopTaskExecution.js';
 import type { StopTaskExecutionResult } from './stopTaskExecution.js';
 import { validateTaskId, validateTailParam } from './validation.js';
 
@@ -87,13 +87,13 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
 
       try {
-        const { stdout, stderr } = await execFileAsync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
+        const { stdout } = await execFileAsync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
           encoding: 'utf8',
           timeout: 10000,
           maxBuffer: 10 * 1024 * 1024,
         });
         res.setHeader('Content-Type', 'text/plain');
-        res.send(`${stdout}${stderr}`);
+        res.send(stdout);
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -103,7 +103,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
     } catch (error) {
       logger.error({ error: getErrorLogFields(error) }, 'Error in /api/task/:taskId/docker-logs');
-      res.status(500).json({ error: 'Internal server error', message: (error as Error).message });
+      res.status(500).json({ error: 'Internal server error', message: 'Failed to retrieve Docker logs' });
     }
   }
 
@@ -125,12 +125,12 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       });
       res.json(formatStopTaskRouteResponse(result));
     } catch (error) {
-      if (error instanceof StopTaskExecutionError) {
+      if (isStopTaskExecutionError(error)) {
         res.status(error.status).json(error.body);
         return;
       }
       logger.error({ error: getErrorLogFields(error) }, 'Error in /api/task/:taskId/stop');
-      res.status(500).json({ error: 'Internal server error', message: (error as Error).message });
+      res.status(500).json({ error: 'Internal server error', message: 'Failed to stop task' });
     }
   }
 

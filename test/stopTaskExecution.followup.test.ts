@@ -589,6 +589,47 @@ test('stopTaskExecution still stops the latest Claude container from processing 
     ]);
 });
 
+test('stopTaskExecution uses cancellation-ensured state when choosing the container to stop', async () => {
+    const redisClient = createRedisClient();
+
+    const result = await stopTaskExecution(
+        'task-ensured-container',
+        {
+            redisClient,
+            requestedBy: 'system',
+            cancellation: {
+                code: 'pull_request_merged',
+                message: 'Task cancelled because pull request #42 was merged.',
+            },
+        },
+        {
+            loadStopTaskContext: async () => ({
+                normalizedTaskId: 'task-ensured-container',
+                state: {
+                    history: [{ state: 'processing' }],
+                },
+                currentState: 'processing',
+                queueJob: null,
+                queueState: null,
+                taskId: 'task-ensured-container',
+                abortTaskIds: ['task-ensured-container'],
+            }),
+            ensureTaskStateForCancellation: async () => ({
+                history: [
+                    { state: 'claude_execution', metadata: { containerId: 'container-ensured-1' } },
+                    { state: 'processing' },
+                ],
+            }),
+            getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+            stopDockerContainer,
+        },
+    );
+
+    assert.strictEqual(result.containerStopped, true);
+    assert.deepStrictEqual(stopDockerContainer.mock.calls[0]?.arguments, ['container-ensured-1', 10]);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
+});
+
 test('stopTaskExecution records the cancellation reason only after a verified stop', async () => {
     const redisClient = createRedisClient();
     const sideEffects: string[] = [];
@@ -821,6 +862,47 @@ test('stopTaskExecution still detects duplicate messages after malformed recent 
     });
 
     assert.deepStrictEqual(redisClient.messages, []);
+});
+
+test('stopTaskExecution dedupes repeated merge-cancellation messages across webhook request ids', async () => {
+    const redisClient = createRedisClient();
+    const deps = {
+        loadStopTaskContext: async () => ({
+            normalizedTaskId: 'task-retried-webhook-message',
+            state: { history: [{ state: 'processing' }] },
+            currentState: 'processing',
+            queueJob: { id: 'job-retried-webhook-message' } as never,
+            queueState: 'active',
+            taskId: 'task-retried-webhook-message',
+            abortTaskIds: ['task-retried-webhook-message', 'job-retried-webhook-message'],
+        }),
+        ensureTaskStateForCancellation: async () => {},
+        getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+        stopDockerContainer,
+    };
+
+    await stopTaskExecution('task-retried-webhook-message', {
+        redisClient,
+        requestedBy: 'system',
+        cancellation: {
+            code: 'pull_request_merged',
+            message: 'Task cancelled because pull request #42 was merged.',
+            requestId: 'corr-1:pull_request_merged:owner/repo#42:task-retried-webhook-message',
+        },
+    }, deps);
+    await stopTaskExecution('task-retried-webhook-message', {
+        redisClient,
+        requestedBy: 'system',
+        cancellation: {
+            code: 'pull_request_merged',
+            message: 'Task cancelled because pull request #42 was merged.',
+            requestId: 'corr-2:pull_request_merged:owner/repo#42:task-retried-webhook-message',
+        },
+    }, deps);
+
+    assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
+        'Cancellation requested. Worker shutdown is still in progress.',
+    ]);
 });
 
 test('stopTaskExecution dedupes repeated merge-cancellation messages when lRange is unavailable', async () => {
