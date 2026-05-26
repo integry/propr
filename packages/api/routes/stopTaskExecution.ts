@@ -38,6 +38,7 @@ import {
   stopTaskContainer,
 } from './stopTaskExecutionQueueing.js';
 import { StopTaskExecutionError } from './stopTaskExecutionErrors.js';
+import { buildStopMessageMetadata } from './stopTaskExecutionMetadata.js';
 export { isBenignQueueRemovalRace } from './stopTaskExecutionQueueing.js';
 export { StopTaskExecutionError, isStopTaskExecutionError } from './stopTaskExecutionErrors.js';
 
@@ -419,12 +420,4 @@ function shouldArmAbortSignal(params: {
   }
 
   return !jobRemoved && queueStateAfterFailure === 'active';
-}
-
-function buildStopMessageMetadata(cancellation: StopTaskCancellationReason, requestedBy: string): Record<string, string> {
-  return {
-    reasonCode: cancellation.code,
-    requestedBy,
-    ...(cancellation.requestId ? { cancellationRequestId: cancellation.requestId } : {}),
-  };
 }

@@ -330,6 +330,10 @@ test('manual Docker stop route accepts abort-only running task stops without ver
     abortSignalArmed: true,
     currentState: 'processing',
     queueState: null,
+    cancellation: {
+      code: 'user_requested_stop',
+      message: 'Task cancelled by user request.',
+    },
   });
 });
 

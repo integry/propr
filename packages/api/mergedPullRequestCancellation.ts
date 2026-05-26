@@ -38,6 +38,10 @@ interface MergeTaskCancellationFailure {
   queueState: string | null;
 }
 
+interface MergeGatePersistenceFailure {
+  message: string;
+}
+
 const MERGE_TASK_STOP_CONCURRENCY = 5;
 const MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS = 30;
 const MERGE_TASK_RECHECK_DELAYS_MS = [250, 750, 1500] as const;
@@ -74,11 +78,19 @@ export async function cancelMergedPullRequestTasks(
 
   // Persist the merge gate before cancellation so no new PR work starts while
   // the existing task shutdown and rechecks are still in flight.
-  await persistMergedState(deps.redisClient, repository, prNumber);
+  const mergeGateFailure = await persistMergedStateBestEffort({
+    persistMergedState,
+    redisClient: deps.redisClient,
+    repository,
+    prNumber,
+    correlationId,
+    log,
+  });
 
   const initialTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
   if (initialTasks.length === 0) {
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
+    throwMergeGateFailureIfPresent(mergeGateFailure);
     return;
   }
 
@@ -91,7 +103,6 @@ export async function cancelMergedPullRequestTasks(
 
   let remainingTasks = initialTasks;
   const failuresByTaskId = new Map<string, MergeTaskCancellationFailure>();
-  const acceptedStopRequestTaskIds = new Set<string>();
 
   const verificationDelaysMs = recheckDelaysMs.length > 0 ? recheckDelaysMs : [0];
   for (let attemptIndex = 0; attemptIndex < verificationDelaysMs.length; attemptIndex += 1) {
@@ -105,25 +116,12 @@ export async function cancelMergedPullRequestTasks(
       prNumber,
       log,
     });
-    for (const taskId of attempt.acceptedStopRequestTaskIds) {
-      acceptedStopRequestTaskIds.add(taskId);
-    }
     mergeFailures(failuresByTaskId, attempt.failures);
 
     await sleep(verificationDelaysMs[attemptIndex]);
     remainingTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
     if (remainingTasks.length === 0) {
-      return;
-    }
-
-    remainingTasks = remainingTasks.filter((task) => !acceptedStopRequestTaskIds.has(task.taskId));
-    if (remainingTasks.length === 0) {
-      log.info({
-        correlationId,
-        repository,
-        prNumber,
-        taskIds: [...acceptedStopRequestTaskIds],
-      }, 'Merged PR task stop requests accepted; worker shutdown may complete asynchronously');
+      throwMergeGateFailureIfPresent(mergeGateFailure);
       return;
     }
 
@@ -133,7 +131,7 @@ export async function cancelMergedPullRequestTasks(
         repository,
         prNumber,
         taskIds: remainingTasks.map((task) => task.taskId),
-      }, 'Retrying tasks that are still active after merged PR cancellation');
+      }, 'Retrying tasks that remain active after merged PR cancellation request');
     }
   }
 
@@ -169,6 +167,46 @@ function mergeFailures(
   }
 }
 
+async function persistMergedStateBestEffort(params: {
+  persistMergedState: typeof markPullRequestMerged;
+  redisClient: StopTaskExecutionOptions['redisClient'];
+  repository: string;
+  prNumber: number;
+  correlationId: string;
+  log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+}): Promise<MergeGatePersistenceFailure | null> {
+  const {
+    persistMergedState,
+    redisClient,
+    repository,
+    prNumber,
+    correlationId,
+    log,
+  } = params;
+
+  try {
+    await persistMergedState(redisClient, repository, prNumber);
+    return null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error({
+      correlationId,
+      repository,
+      prNumber,
+      error: message,
+    }, 'Failed to persist merged PR gate before cancellation; continuing with active task cancellation');
+    return { message };
+  }
+}
+
+function throwMergeGateFailureIfPresent(failure: MergeGatePersistenceFailure | null): void {
+  if (!failure) {
+    return;
+  }
+
+  throw new Error(`Merged PR task cancellation completed, but failed to persist merged PR gate: ${failure.message}`);
+}
+
 async function stopMergeTasks(params: {
   tasks: MergeTaskActivity[];
   redisClient: StopTaskExecutionOptions['redisClient'];
@@ -180,7 +218,6 @@ async function stopMergeTasks(params: {
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<{
   failures: Map<string, MergeTaskCancellationFailure>;
-  acceptedStopRequestTaskIds: Set<string>;
 }> {
   const {
     tasks,
@@ -193,7 +230,6 @@ async function stopMergeTasks(params: {
     log,
   } = params;
   const failures = new Map<string, MergeTaskCancellationFailure>();
-  const acceptedStopRequestTaskIds = new Set<string>();
 
   for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
     const taskBatch = tasks.slice(index, index + MERGE_TASK_STOP_CONCURRENCY);
@@ -206,9 +242,8 @@ async function stopMergeTasks(params: {
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
           forceQueueScan: true,
-          requireVerifiedStop: false,
+          requireVerifiedStop: true,
         });
-        acceptedStopRequestTaskIds.add(task.taskId);
         if (!result.stopVerified) {
           log.info({
             correlationId,
@@ -236,7 +271,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { failures, acceptedStopRequestTaskIds };
+  return { failures };
 }
 
 export function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {

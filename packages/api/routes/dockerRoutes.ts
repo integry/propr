@@ -303,6 +303,7 @@ function formatStopTaskRouteResponse(result: StopTaskExecutionResult): {
   abortSignalArmed: boolean;
   currentState: string | null;
   queueState: string | null;
+  cancellation: StopTaskExecutionResult['cancellation'];
 } {
   return {
     success: true,
@@ -315,6 +316,7 @@ function formatStopTaskRouteResponse(result: StopTaskExecutionResult): {
     abortSignalArmed: result.abortSignalArmed,
     currentState: result.currentState,
     queueState: result.queueState,
+    cancellation: result.cancellation,
   };
 }
 

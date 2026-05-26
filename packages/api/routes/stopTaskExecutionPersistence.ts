@@ -7,6 +7,7 @@ import {
   releaseConversationMessageFingerprintReservation,
   reserveConversationMessageFingerprint,
 } from './stopTaskExecutionConversationDedupe.js';
+import { buildStopMessageMetadata } from './stopTaskExecutionMetadata.js';
 
 type RedisConversationClient = {
   rPush: RedisClientType['rPush'];
@@ -312,12 +313,4 @@ function getCancellationSource(cancellation: StopTaskCancellationReason): string
   }
 
   return 'task_stop';
-}
-
-function buildStopMessageMetadata(cancellation: StopTaskCancellationReason, requestedBy: string): Record<string, string> {
-  return {
-    reasonCode: cancellation.code,
-    requestedBy,
-    ...(cancellation.requestId ? { cancellationRequestId: cancellation.requestId } : {}),
-  };
 }
