@@ -103,6 +103,7 @@ export async function cancelMergedPullRequestTasks(
 
   let remainingTasks = initialTasks;
   const failuresByTaskId = new Map<string, MergeTaskCancellationFailure>();
+  const acceptedCancellationTaskIds = new Set<string>();
 
   const verificationDelaysMs = recheckDelaysMs.length > 0 ? recheckDelaysMs : [0];
   for (let attemptIndex = 0; attemptIndex < verificationDelaysMs.length; attemptIndex += 1) {
@@ -117,9 +118,11 @@ export async function cancelMergedPullRequestTasks(
       log,
     });
     mergeFailures(failuresByTaskId, attempt.failures);
+    mergeAcceptedCancellations(acceptedCancellationTaskIds, attempt.acceptedTaskIds, failuresByTaskId);
 
     await sleep(verificationDelaysMs[attemptIndex]);
-    remainingTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
+    remainingTasks = (await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log))
+      .filter((task) => !acceptedCancellationTaskIds.has(task.taskId));
     if (remainingTasks.length === 0) {
       throwMergeGateFailureIfPresent(mergeGateFailure);
       return;
@@ -164,6 +167,17 @@ function mergeFailures(
 ): void {
   for (const [taskId, failure] of nextFailures.entries()) {
     failuresByTaskId.set(taskId, failure);
+  }
+}
+
+function mergeAcceptedCancellations(
+  acceptedCancellationTaskIds: Set<string>,
+  nextAcceptedTaskIds: Set<string>,
+  failuresByTaskId: Map<string, MergeTaskCancellationFailure>,
+): void {
+  for (const taskId of nextAcceptedTaskIds) {
+    acceptedCancellationTaskIds.add(taskId);
+    failuresByTaskId.delete(taskId);
   }
 }
 
@@ -218,6 +232,7 @@ async function stopMergeTasks(params: {
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<{
   failures: Map<string, MergeTaskCancellationFailure>;
+  acceptedTaskIds: Set<string>;
 }> {
   const {
     tasks,
@@ -230,6 +245,7 @@ async function stopMergeTasks(params: {
     log,
   } = params;
   const failures = new Map<string, MergeTaskCancellationFailure>();
+  const acceptedTaskIds = new Set<string>();
 
   for (let index = 0; index < tasks.length; index += MERGE_TASK_STOP_CONCURRENCY) {
     const taskBatch = tasks.slice(index, index + MERGE_TASK_STOP_CONCURRENCY);
@@ -242,8 +258,8 @@ async function stopMergeTasks(params: {
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
           forceQueueScan: true,
-          requireVerifiedStop: true,
         });
+        acceptedTaskIds.add(task.taskId);
         if (!result.stopVerified) {
           log.info({
             correlationId,
@@ -271,7 +287,7 @@ async function stopMergeTasks(params: {
     }));
   }
 
-  return { failures };
+  return { failures, acceptedTaskIds };
 }
 
 export function isMergedPullRequestClose(payload: unknown): payload is MergedPullRequestPayload {

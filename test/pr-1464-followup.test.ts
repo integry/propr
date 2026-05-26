@@ -392,7 +392,7 @@ test('manual Docker stop route serializes structural stop errors without instanc
   });
 });
 
-test('stopTaskExecution records a pending merged-PR cancellation for abort-only active jobs', async () => {
+test('stopTaskExecution records a durable merged-PR cancellation for abort-only active jobs', async () => {
   const setCalls: Array<{ key: string; value: Record<string, unknown> }> = [];
   const delCalls: string[] = [];
   const conversationMessages: Array<{ key: string; message: Record<string, unknown> }> = [];
@@ -463,31 +463,45 @@ test('stopTaskExecution records a pending merged-PR cancellation for abort-only 
   assert.equal(result.containerStopped, false);
   assert.equal(result.jobRemoved, false);
   assert.equal(result.message, 'Stop request sent to worker. The execution will be terminated shortly.');
-  assert.deepEqual(delCalls, []);
+  assert.deepEqual(delCalls.sort(), ['worker:stop-requested:job-1464', 'worker:stop-requested:task-1464']);
   assert.deepEqual(
     setCalls.map((call) => call.key)
       .filter((key) => !key.startsWith('conversation:stop-message-dedupe:'))
       .sort(),
-    ['worker:abort:job-1464', 'worker:abort:task-1464', 'worker:stop-requested:job-1464', 'worker:stop-requested:task-1464'],
+    ['worker:abort:job-1464', 'worker:abort:task-1464'],
   );
-  assert.equal(markTaskCancelledCalls.length, 0);
-  assert.deepEqual(updateHistoryMetadataCalls, [{
+  assert.equal(markTaskCancelledCalls.length, 1);
+  assert.deepEqual(markTaskCancelledCalls[0], {
     taskId: 'task-1464',
-    currentState: 'processing',
+    requestedBy: 'system',
     metadata: {
-      cancellationRequested: {
+      reason: 'Task cancelled because pull request #1464 was merged.',
+      cancellation: {
         code: 'pull_request_merged',
         message: 'Task cancelled because pull request #1464 was merged.',
-        requestedBy: 'system',
+        cancelledBy: 'system',
         source: 'pull_request_merged',
+        containerStopped: false,
+        jobRemoved: false,
+      },
+      historyMetadata: {
+        cancellation: {
+          code: 'pull_request_merged',
+          message: 'Task cancelled because pull request #1464 was merged.',
+        },
+        requestedBy: 'system',
+        containerStopped: false,
+        jobRemoved: false,
+        stopVerified: false,
         abortSignalArmed: true,
         queueState: 'active',
       },
     },
-  }]);
+  });
+  assert.deepEqual(updateHistoryMetadataCalls, []);
   assert.deepEqual(
     conversationMessages.map((entry) => entry.message.content),
-    ['Cancellation requested. Worker shutdown is still in progress.'],
+    ['Task cancelled because pull request #1464 was merged.', 'Task cancelled successfully.'],
   );
 });
 

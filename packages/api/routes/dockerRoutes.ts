@@ -240,7 +240,7 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
       name: containerName ?? null,
       status: 'error',
       logsAvailable: false,
-      error: `Failed to get container info: ${(error as Error).message}`,
+      error: 'Failed to get container info.',
     };
   }
 }

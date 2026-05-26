@@ -205,15 +205,14 @@ test('stopTaskExecution arms abort signals only after a queued removal race turn
         .sort(), [
         'worker:abort:queue-job-active-race-1',
         'worker:abort:task-queue-active-race-1',
-        'worker:stop-requested:queue-job-active-race-1',
-        'worker:stop-requested:task-queue-active-race-1',
     ]);
     assert.strictEqual(redisClient.store.has('worker:stop-outcome:queue-job-active-race-1'), false);
     assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-queue-active-race-1'), false);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
     assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
 });
 
-test('stopTaskExecution leaves abort-armed container-backed tasks non-terminal when the container stop fails', async () => {
+test('stopTaskExecution marks abort-armed container-backed tasks cancelled when the container stop fails', async () => {
     const redisClient = createRedisClient();
     const result = await stopTaskExecution(
         'task-2',
@@ -250,10 +249,9 @@ test('stopTaskExecution leaves abort-armed container-backed tasks non-terminal w
         .filter((key) => !key.startsWith('conversation:stop-message-dedupe:'))
         .sort(), [
         'worker:abort:task-2',
-        'worker:stop-requested:task-2',
     ]);
-    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
-    assert.strictEqual(updateHistoryMetadata.mock.calls.length, 1);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
+    assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
 });
 
 test('stopTaskExecution retries persisted cancellation after a queue removal persistence failure', async () => {
@@ -630,7 +628,7 @@ test('stopTaskExecution uses cancellation-ensured state when choosing the contai
     assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
 });
 
-test('stopTaskExecution records the cancellation reason only after a verified stop', async () => {
+test('stopTaskExecution records the cancellation reason only after queued removal succeeds', async () => {
     const redisClient = createRedisClient();
     const sideEffects: string[] = [];
     const queueJob = {
@@ -678,10 +676,10 @@ test('stopTaskExecution records the cancellation reason only after a verified st
         'Task cancelled because pull request #42 was merged.',
         'Task cancelled successfully.',
     ]);
-    assert.deepStrictEqual(sideEffects, ['ensure.state', 'queue.remove']);
+    assert.deepStrictEqual(sideEffects, ['queue.remove', 'ensure.state']);
 });
 
-test('stopTaskExecution does not remove queued jobs when cancellation state creation fails', async () => {
+test('stopTaskExecution removes queued jobs before cancellation state creation', async () => {
     const redisClient = createRedisClient();
     const queueJob = {
         id: 'queue-job-state-fail-1',
@@ -724,9 +722,9 @@ test('stopTaskExecution does not remove queued jobs when cancellation state crea
         /state creation failed/,
     );
 
-    assert.strictEqual(queueJob.remove.mock.calls.length, 0);
-    assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-state-fail-1'), false);
-    assert.strictEqual(redisClient.store.has('worker:stop-outcome:queue-job-state-fail-1'), false);
+    assert.strictEqual(queueJob.remove.mock.calls.length, 1);
+    assert.strictEqual(redisClient.store.has('worker:stop-outcome:task-state-fail-1'), true);
+    assert.strictEqual(redisClient.store.has('worker:stop-outcome:queue-job-state-fail-1'), true);
     assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
 });
 
@@ -783,7 +781,7 @@ test('cancelMergedPullRequestTasks force-scans the initial merged-PR lookup and 
         stoppableOnly: true,
     }]);
     assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].forceQueueScan, true);
-    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, true);
+    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, undefined);
     assert.strictEqual(markPullRequestMerged.mock.calls.length, 1);
 });
 
@@ -817,7 +815,8 @@ test('stopTaskExecution dedupes repeated merge-cancellation conversation message
     await stopTaskExecution('task-duplicate-messages', options, deps);
 
     assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
-        'Cancellation requested. Worker shutdown is still in progress.',
+        'Task cancelled because pull request #42 was merged.',
+        'Task cancelled successfully.',
     ]);
     assert.strictEqual(
         JSON.parse(redisClient.store.get('worker:abort:task-duplicate-messages') ?? '{}').requestId,
@@ -861,7 +860,10 @@ test('stopTaskExecution still detects duplicate messages after malformed recent 
         stopDockerContainer,
     });
 
-    assert.deepStrictEqual(redisClient.messages, []);
+    assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
+        'Task cancelled because pull request #42 was merged.',
+        'Task cancelled successfully.',
+    ]);
 });
 
 test('stopTaskExecution dedupes repeated merge-cancellation messages across webhook request ids', async () => {
@@ -901,7 +903,8 @@ test('stopTaskExecution dedupes repeated merge-cancellation messages across webh
     }, deps);
 
     assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
-        'Cancellation requested. Worker shutdown is still in progress.',
+        'Task cancelled because pull request #42 was merged.',
+        'Task cancelled successfully.',
     ]);
 });
 
@@ -949,7 +952,8 @@ test('stopTaskExecution dedupes repeated merge-cancellation messages when lRange
     await stopTaskExecution('task-no-lrange-messages', options, deps);
 
     assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
-        'Cancellation requested. Worker shutdown is still in progress.',
+        'Task cancelled because pull request #42 was merged.',
+        'Task cancelled successfully.',
     ]);
 });
 
@@ -985,7 +989,10 @@ test('stopTaskExecution dedupes repeated messages without request identity by fi
         stopDockerContainer,
     });
 
-    assert.deepStrictEqual(redisClient.messages, []);
+    assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
+        'Task cancelled because pull request #42 was merged.',
+        'Task cancelled successfully.',
+    ]);
 });
 
 test('stopTaskExecution dedupes repeated messages with matching request identity', async () => {
@@ -1021,7 +1028,10 @@ test('stopTaskExecution dedupes repeated messages with matching request identity
         stopDockerContainer,
     });
 
-    assert.deepStrictEqual(redisClient.messages, []);
+    assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
+        'Task cancelled because pull request #42 was merged.',
+        'Task cancelled successfully.',
+    ]);
 });
 
 test('stopTaskExecution rejects queued cancellation when queue state cannot be reloaded after removal failure', async () => {
