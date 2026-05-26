@@ -4,6 +4,8 @@ import { DeleteRepoDialog } from './DeleteRepoDialog';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
 
+type RepoStatusType = 'indexed' | 'indexing' | 'failed' | 'idle';
+
 // --- Icons ---
 
 const TrashIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
@@ -32,7 +34,7 @@ const MonoCodeChip: React.FC<{ children: React.ReactNode; href?: string }> = ({ 
 };
 
 // Status dot with pulsing animation for indexing
-const StatusDot: React.FC<{ status: 'indexed' | 'indexing' | 'failed' | 'idle'; className?: string }> = ({ status, className = "" }) => {
+const StatusDot: React.FC<{ status: RepoStatusType; className?: string }> = ({ status, className = "" }) => {
   const dotColors = {
     indexed: 'bg-slate-400',
     indexing: 'bg-blue-500 animate-pulse',
@@ -81,7 +83,7 @@ const getProgressText = (status: RepositoryIndexingStatus): string => {
 
 // Get status info from indexing status
 const getStatusInfo = (status: RepositoryIndexingStatus | undefined): {
-  statusType: 'indexed' | 'indexing' | 'failed' | 'idle';
+  statusType: RepoStatusType;
   statusText: string;
   progressText?: string;
 } => {
@@ -102,10 +104,25 @@ const getStatusInfo = (status: RepositoryIndexingStatus | undefined): {
   }
 };
 
+const getRepositoryListItemClassName = (isSelected: boolean) => (
+  `border-b border-slate-100 cursor-pointer transition-colors relative group ${isSelected ? 'bg-[#F0FDFA]' : 'hover:bg-slate-50/50'}`
+);
+
+const getStatusTextClassName = (statusType: RepoStatusType) => {
+  const colorClass = {
+    indexed: 'text-slate-500',
+    indexing: 'text-blue-600',
+    failed: 'text-red-600',
+    idle: 'text-slate-500'
+  };
+
+  return `inline-flex items-center gap-1.5 ${colorClass[statusType]}`;
+};
+
 // Action buttons component to reduce complexity
 const RepositoryActionButtons: React.FC<{
   repo: MonitoredRepo;
-  statusType: 'indexed' | 'indexing' | 'failed' | 'idle';
+  statusType: RepoStatusType;
   onToggle: (repoId: string) => void;
   onReindex: (repoName: string, baseBranch?: string) => void;
   onDeleteClick: () => void;
@@ -233,14 +250,12 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   const commitUrl = repoStatus?.full_name && repoStatus?.last_indexed_hash
     ? `https://github.com/${repoStatus.full_name}/commit/${repoStatus.last_indexed_hash}`
     : undefined;
+  const itemClassName = getRepositoryListItemClassName(isSelected);
+  const statusClassName = getStatusTextClassName(statusType);
 
   return (
     <div
-      className={`border-b border-slate-100 cursor-pointer transition-colors relative group ${
-        isSelected
-          ? 'bg-[#F0FDFA]'
-          : 'hover:bg-slate-50/50'
-      }`}
+      className={itemClassName}
       onClick={() => onSelect?.(repo.id)}
     >
       {/* Right-edge teal rail for selected state - points toward right pane */}
@@ -276,11 +291,7 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           {/* Line 2: Status + Commit Hash + Timestamp */}
           <div className="flex items-center gap-2 text-xs">
             {/* Status Indicator */}
-            <span className={`inline-flex items-center gap-1.5 ${
-              statusType === 'indexing' ? 'text-blue-600' :
-              statusType === 'failed' ? 'text-red-600' :
-              'text-slate-500'
-            }`}>
+            <span className={statusClassName}>
               <StatusDot status={statusType} />
               <span>{statusText}</span>
               {progressText && <span className="text-blue-500">({progressText})</span>}
@@ -321,10 +332,10 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           onToggle={onToggle}
           onReindex={onReindex}
           onDeleteClick={handleDeleteClick}
-        onToggleStar={onToggleStar}
-        onToggleHidden={onToggleHidden}
-        isReadOnly={isReadOnly}
-      />
+          onToggleStar={onToggleStar}
+          onToggleHidden={onToggleHidden}
+          isReadOnly={isReadOnly}
+        />
       </div>
 
       <DeleteRepoDialog

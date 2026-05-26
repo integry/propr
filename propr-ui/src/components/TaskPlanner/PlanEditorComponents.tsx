@@ -104,7 +104,93 @@ export interface PlanEditorHeaderProps {
   isReadOnly?: boolean;
 }
 
-export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
+const isPlanActionDisabled = (
+  isFinalizing: boolean,
+  isResettingToSetup: boolean,
+  isDeleting: boolean,
+  isReadOnly: boolean
+) => isFinalizing || isResettingToSetup || isDeleting || isReadOnly;
+
+const getReadOnlyTitle = (isReadOnly: boolean, title: string) => (
+  isReadOnly ? 'Demo mode is read-only' : title
+);
+
+const PlanEditorMobileHeader: React.FC<PlanEditorHeaderProps> = ({
+  planName,
+  repository,
+  baseBranch,
+  isDeleting,
+  isFinalizing,
+  isResettingToSetup,
+  canUndo,
+  canRedo,
+  onDelete,
+  onBackToSetup,
+  onUndo,
+  onRedo,
+  isReadOnly = false
+}) => {
+  const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
+
+  return (
+    <div className="flex flex-col border-b border-gray-200 bg-gray-100 flex-shrink-0">
+      {/* First row: Plan name and actions */}
+      <div className="flex items-center justify-between px-3 py-2 gap-2">
+        <h1 className="text-base font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
+          {planName}
+        </h1>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            onClick={onUndo}
+            disabled={!canUndo || isReadOnly}
+            className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Undo"
+          >
+            <Undo2 size={16} className="text-gray-600" />
+          </button>
+          <button
+            onClick={onRedo}
+            disabled={!canRedo || isReadOnly}
+            className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Redo"
+          >
+            <Redo2 size={16} className="text-gray-600" />
+          </button>
+          <button
+            onClick={onBackToSetup}
+            disabled={actionDisabled}
+            className="p-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title={getReadOnlyTitle(isReadOnly, 'Back to Setup')}
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <button
+            onClick={onDelete}
+            disabled={actionDisabled}
+            className="p-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
+          >
+            {isDeleting ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Trash2 size={16} />
+            )}
+          </button>
+        </div>
+      </div>
+      {/* Second row: Repository info */}
+      <div className="flex items-center gap-2 px-3 pb-2 text-xs text-gray-600">
+        <Github size={12} className="text-gray-500 flex-shrink-0" />
+        <span className="truncate">{repository}</span>
+        <span className="text-gray-400">/</span>
+        <GitBranch size={12} className="text-gray-500 flex-shrink-0" />
+        <span className="truncate">{baseBranch}</span>
+      </div>
+    </div>
+  );
+};
+
+const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   planName,
   repository,
   baseBranch,
@@ -118,70 +204,10 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
   onBackToSetup,
   onUndo,
   onRedo,
-  isMobile,
   isReadOnly = false
 }) => {
-  // Mobile header - compact layout
-  if (isMobile) {
-    return (
-      <div className="flex flex-col border-b border-gray-200 bg-gray-100 flex-shrink-0">
-        {/* First row: Plan name and actions */}
-        <div className="flex items-center justify-between px-3 py-2 gap-2">
-          <h1 className="text-base font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
-            {planName}
-          </h1>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            <button
-              onClick={onUndo}
-              disabled={!canUndo || isReadOnly}
-              className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title="Undo"
-            >
-              <Undo2 size={16} className="text-gray-600" />
-            </button>
-            <button
-              onClick={onRedo}
-              disabled={!canRedo || isReadOnly}
-              className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title="Redo"
-            >
-              <Redo2 size={16} className="text-gray-600" />
-            </button>
-            <button
-              onClick={onBackToSetup}
-              disabled={isFinalizing || isResettingToSetup || isDeleting || isReadOnly}
-              className="p-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title={isReadOnly ? 'Demo mode is read-only' : 'Back to Setup'}
-            >
-              <ArrowLeft size={16} />
-            </button>
-            <button
-              onClick={onDelete}
-              disabled={isFinalizing || isResettingToSetup || isDeleting || isReadOnly}
-              className="p-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
-            >
-              {isDeleting ? (
-                <Loader2 size={16} className="animate-spin" />
-              ) : (
-                <Trash2 size={16} />
-              )}
-            </button>
-          </div>
-        </div>
-        {/* Second row: Repository info */}
-        <div className="flex items-center gap-2 px-3 pb-2 text-xs text-gray-600">
-          <Github size={12} className="text-gray-500 flex-shrink-0" />
-          <span className="truncate">{repository}</span>
-          <span className="text-gray-400">/</span>
-          <GitBranch size={12} className="text-gray-500 flex-shrink-0" />
-          <span className="truncate">{baseBranch}</span>
-        </div>
-      </div>
-    );
-  }
+  const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
 
-  // Desktop header - original layout
   return (
     <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
       <div className="flex items-center gap-4 min-w-0 flex-1">
@@ -213,9 +239,9 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
         {/* Delete Plan */}
         <button
           onClick={onDelete}
-          disabled={isFinalizing || isResettingToSetup || isDeleting || isReadOnly}
+          disabled={actionDisabled}
           className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          title={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
+          title={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
         >
           {isDeleting ? (
             <Loader2 size={16} className="animate-spin" />
@@ -227,9 +253,9 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
         {/* Back to Setup */}
         <button
           onClick={onBackToSetup}
-          disabled={isFinalizing || isResettingToSetup || isDeleting || isReadOnly}
+          disabled={actionDisabled}
           className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          title={isReadOnly ? 'Demo mode is read-only' : 'Back to Setup'}
+          title={getReadOnlyTitle(isReadOnly, 'Back to Setup')}
         >
           <ArrowLeft size={16} />
           Back to Setup
@@ -257,6 +283,11 @@ export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
       </div>
     </div>
   );
+};
+
+export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = (props) => {
+  if (props.isMobile) return <PlanEditorMobileHeader {...props} />;
+  return <PlanEditorDesktopHeader {...props} />;
 };
 
 // Error banner component
