@@ -16,7 +16,15 @@ interface GitHubRoutesDeps {
 }
 
 function sortNames(names: string[]): string[] {
-  return names.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  return [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
+function getConfiguredDefaultBranch(
+  repos: Awaited<ReturnType<typeof configManager.loadMonitoredReposRaw>>,
+  fullName: string
+): string | undefined {
+  const repoWithDefault = repos.find(repo => repo.name === fullName && typeof repo.defaultBranch === 'string');
+  return repoWithDefault?.defaultBranch;
 }
 
 async function getDemoConfiguredRepoNames(): Promise<string[]> {
@@ -30,7 +38,7 @@ async function getDemoConfiguredBranches(owner: string, repoName: string): Promi
   const configuredBranches = repos
     .filter(repo => repo.name === fullName && repo.baseBranch)
     .map(repo => repo.baseBranch as string);
-  const defaultBranch = configuredBranches[0] || 'main';
+  const defaultBranch = getConfiguredDefaultBranch(repos, fullName) || configuredBranches[0] || 'main';
   const branches = sortNames(Array.from(new Set(configuredBranches)));
   const orderedBranches = branches.filter(branch => branch !== defaultBranch);
   return { branches: branches.length > 0 ? [defaultBranch, ...orderedBranches] : [defaultBranch], defaultBranch };

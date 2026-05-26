@@ -5,6 +5,7 @@
 import { Response } from 'express';
 import { Knex } from 'knex';
 import { getGitHubInstallationToken } from '@propr/core';
+import { isDemoMode } from '../../demoMode.js';
 import type { DbCheck, DbCheckResult, HandlerFunction, OwnershipResult } from './types.js';
 
 export function checkDbAndAuth(
@@ -53,7 +54,7 @@ export async function verifyDraftOwnership(
     return { authorized: false, error: 'Draft not found', status: 404 };
   }
 
-  if (existing.user_id !== userId) {
+  if (!isDemoMode() && existing.user_id !== userId) {
     return { authorized: false, error: 'Unauthorized', status: 403 };
   }
 

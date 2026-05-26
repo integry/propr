@@ -196,7 +196,7 @@ export function setupAuth(app: Express): void {
     });
 
     app.get('/api/auth/demo-mode', (_req: Request, res: Response) => {
-        res.json({ demoMode });
+        res.json({ demoMode: isDemoMode() });
     });
 
 }

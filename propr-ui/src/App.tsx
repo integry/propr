@@ -28,7 +28,7 @@ const LoadingSpinner: React.FC = () => (
 );
 
 const AppContent: React.FC = () => {
-  const { isLoading: isDemoModeLoading } = useDemoMode();
+  const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
   // Auth check state - start loading unless already on login page
   const [isLoading, setIsLoading] = useState(window.location.pathname !== '/login');
 
@@ -65,7 +65,7 @@ const AppContent: React.FC = () => {
   if (isDemoModeLoading || isLoading) return <LoadingSpinner />;
 
   return (
-      <SocketProvider>
+      <SocketProvider disabled={isDemoMode}>
         <ToastProvider>
           <div className="flex h-screen flex-col">
             <DemoModeBanner />

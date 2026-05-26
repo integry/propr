@@ -19,6 +19,7 @@ import {
   validateUltrafixValue
 } from './planIssueRouteUtils.js';
 import { linkTodosToDraft, pauseDraft, resumeDraft, parseExistingContextConfig, type TaskDraftConfig } from '@propr/core';
+import { isDemoMode } from '../demoMode.js';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -176,8 +177,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     try {
-      const results = await db!('task_drafts').select('repository').count('* as count')
-        .where({ user_id: req.user!.id }).groupBy('repository').orderBy('repository') as { repository: string; count: number | string }[];
+      let query = db!('task_drafts').select('repository').count('* as count');
+      if (!isDemoMode()) query = query.where({ user_id: req.user!.id });
+      const results = await query.groupBy('repository').orderBy('repository') as { repository: string; count: number | string }[];
       const repositories = results.map((row) => ({
         repo: row.repository, count: typeof row.count === 'string' ? parseInt(row.count, 10) : row.count
       }));
@@ -208,7 +210,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const search = req.query.search as string | undefined;
       const status = req.query.status as string | undefined;
       const excludeStatuses = req.query.excludeStatuses as string | undefined;
-      let query = db!('task_drafts').where({ user_id: req.user!.id });
+      let query = db!('task_drafts');
+      if (!isDemoMode()) query = query.where({ user_id: req.user!.id });
 
       if (repository && repository !== 'all') query = query.andWhere('repository', repository);
       if (status && status !== 'all' && (validStatuses as readonly string[]).includes(status)) query = query.andWhere('status', status);
@@ -295,7 +298,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     try {
       const draft = await db!('task_drafts').where({ draft_id: req.params.id }).first();
       if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
-      if (draft.user_id !== req.user!.id) { res.status(403).json({ error: 'Unauthorized access to draft' }); return; }
+      if (!isDemoMode() && draft.user_id !== req.user!.id) { res.status(403).json({ error: 'Unauthorized access to draft' }); return; }
 
       const parsedDraft = parseDraftJsonFields(draft) as Record<string, unknown> & { task_title?: string };
       parsedDraft.task_title = draft.name;

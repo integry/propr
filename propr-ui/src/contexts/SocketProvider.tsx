@@ -5,9 +5,10 @@ import { SocketContext, SocketContextValue } from './SocketContext';
 
 interface SocketProviderProps {
   children: React.ReactNode;
+  disabled?: boolean;
 }
 
-export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
+export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabled = false }) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const taskUpdateCallbacksRef = useRef<Set<(payload: TaskUpdatePayload) => void>>(new Set());
@@ -17,6 +18,12 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
   const taskLiveUpdateCallbacksRef = useRef<Set<(payload: TaskLiveUpdatePayload) => void>>(new Set());
 
   useEffect(() => {
+    if (disabled) {
+      setSocket(null);
+      setIsConnected(false);
+      return;
+    }
+
     // Connect to the backend WebSocket server
     // Use the same API base URL as REST API calls
     // When empty or undefined, socket.io-client connects to the same origin
@@ -76,7 +83,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
       console.log('[SocketContext] Cleaning up socket connection');
       newSocket.disconnect();
     };
-  }, []);
+  }, [disabled]);
 
   const subscribeToTask = useCallback((taskId: string) => {
     if (socket && isConnected) {

@@ -23,7 +23,8 @@ async function getDemoRepositoryInfo(repoFullName: string): Promise<{
   const configuredBranches = repos
     .filter(repo => repo.name === repoFullName && repo.baseBranch)
     .map(repo => repo.baseBranch as string);
-  const defaultBranch = configuredBranches[0] || 'main';
+  const repoWithDefault = repos.find(repo => repo.name === repoFullName && typeof repo.defaultBranch === 'string');
+  const defaultBranch = repoWithDefault?.defaultBranch || configuredBranches[0] || 'main';
   const branches = Array.from(new Set(configuredBranches))
     .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
     .filter(branch => branch !== defaultBranch);

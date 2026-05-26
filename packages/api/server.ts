@@ -182,6 +182,10 @@ app.use('/api', (_req, res, next) => {
 app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
+// Register demo read-only protection before routes so future mutating /api routes,
+// including auth-adjacent endpoints, cannot bypass it by ordering.
+app.use('/api', demoModeReadOnlyMiddleware);
+
 setupAuth(app);
 
 let redisClient: RedisClientType;
@@ -235,7 +239,6 @@ function initDemoReadOnlyDependencies(): void {
 
 function setupRoutes(): void {
   app.use('/api', ensureAuthenticated);
-  app.use('/api', demoModeReadOnlyMiddleware);
   const statusRoutes = createStatusRoutes({ redisClient });
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
@@ -356,11 +359,11 @@ const httpServer: HttpServer = createServer(app);
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
+    try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
     if (demoMode) {
       console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution infrastructure');
       initDemoReadOnlyDependencies();
     } else {
-      try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
       await initRedis();
     }
     setupRoutes();

@@ -77,6 +77,39 @@ function success<T>(value: T): ValidationResult<T> {
 function failure<T>(error: string): ValidationResult<T> {
   return { ok: false, error };
 }
+function normalizeOptionalString(value: unknown, fieldName: string, repoName: string): ValidationResult<string | undefined> {
+  if (value === undefined) return success(undefined);
+  if (typeof value !== 'string') return failure(`Invalid ${fieldName} format for ${repoName}: must be a string`);
+  return success(value.trim() || undefined);
+}
+function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonitor> {
+  const candidate = repo as Partial<RepoToMonitor> | undefined;
+  const name = candidate?.name;
+  const enabled = candidate?.enabled;
+  if (
+    typeof name !== 'string' ||
+    !name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/) ||
+    typeof enabled !== 'boolean'
+  ) {
+    return failure(`Invalid repository format: ${JSON.stringify(repo)}`);
+  }
+
+  const alias = normalizeOptionalString(candidate?.alias, 'alias', name);
+  if (!alias.ok) return alias;
+  const baseBranch = normalizeOptionalString(candidate?.baseBranch, 'baseBranch', name);
+  if (!baseBranch.ok) return baseBranch;
+  const defaultBranch = normalizeOptionalString(candidate?.defaultBranch, 'defaultBranch', name);
+  if (!defaultBranch.ok) return defaultBranch;
+
+  return success({
+    id: candidate?.id || randomUUID(),
+    name,
+    enabled,
+    alias: alias.value,
+    baseBranch: baseBranch.value,
+    defaultBranch: defaultBranch.value
+  });
+}
 function parseNormalizedStringArrayResult(value: unknown, fieldName: string): ValidationResult<string[]> {
   const validated = validateStringArray(value, fieldName);
   return typeof validated === 'string' ? failure(validated) : success(normalizeStringEntries(validated));
@@ -207,23 +240,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     // Validate and process repos before taking the lock to avoid blocking valid updates on malformed requests.
     const processedRepos: RepoToMonitor[] = [];
     for (const repo of repos_to_monitor) {
-      const isValid = typeof repo?.name === 'string' &&
-        repo.name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/) &&
-        typeof repo.enabled === 'boolean';
-      if (!isValid) {
-        res.status(400).json({ error: `Invalid repository format: ${JSON.stringify(repo)}` });
+      const normalized = normalizeRepoConfig(repo);
+      if (!normalized.ok) {
+        res.status(400).json({ error: normalized.error });
         return;
       }
-
-      if (repo.alias !== undefined && typeof repo.alias !== 'string') {
-        res.status(400).json({ error: `Invalid alias format for ${repo.name}: must be a string` });
-        return;
-      }
-      if (repo.baseBranch !== undefined && typeof repo.baseBranch !== 'string') {
-        res.status(400).json({ error: `Invalid baseBranch format for ${repo.name}: must be a string` });
-        return;
-      }
-      processedRepos.push({ id: repo.id || randomUUID(), name: repo.name, enabled: repo.enabled, alias: repo.alias?.trim() || undefined, baseBranch: repo.baseBranch?.trim() || undefined });
+      processedRepos.push(normalized.value);
     }
     const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
       return saveThenPublishConfigUpdate({
