@@ -3,7 +3,6 @@ import { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from '@propr/shared';
 import type { RedisClientType } from 'redis';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-export const DEMO_MODE_ACCESS_TOKEN = 'demo-mode';
 let configuredDemoMode: boolean | null = null;
 
 export function isDemoMode(): boolean {
@@ -31,7 +30,6 @@ export function getDemoUser(): Express.User {
     displayName: 'Demo User',
     email: null,
     avatarUrl: null,
-    accessToken: DEMO_MODE_ACCESS_TOKEN,
   };
 }
 
@@ -124,6 +122,7 @@ export function createDemoRedisClient(): RedisClientType {
     else expirations.delete(key);
     return 'OK';
   };
+  const setEx = async (key: string, seconds: number, value: string) => set(key, value, { EX: seconds });
   const evalScript = async (_script: string, options: { keys: string[]; arguments: string[] }): Promise<number> => {
     const [key] = options.keys;
     const [lockValue, seconds] = options.arguments;
@@ -149,7 +148,7 @@ export function createDemoRedisClient(): RedisClientType {
     ping: async () => 'PONG',
     get: async (key: string) => getString(key),
     set,
-    setEx: async (key: string, seconds: number, value: string) => set(key, value, { EX: seconds }),
+    setEx,
     del,
     exists: async (...keys: Array<string | string[]>) => normalizeKeys(keys).filter(hasKey).length,
     expire,
@@ -229,5 +228,15 @@ export function createDemoRedisClient(): RedisClientType {
   client.srem = client.sRem;
   client.smembers = client.sMembers;
   client.scard = client.sCard;
-  return client as unknown as RedisClientType;
+  client.setex = setEx;
+  const unsupportedRedisCommand = (command: string) => async () => {
+    throw new Error(`Demo Redis facade does not implement Redis command "${command}". Add support before using this route in demo mode.`);
+  };
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      if (typeof prop !== 'string' || prop === 'then') return Reflect.get(target, prop, receiver);
+      if (prop in target) return Reflect.get(target, prop, receiver);
+      return unsupportedRedisCommand(prop);
+    }
+  }) as unknown as RedisClientType;
 }

@@ -29,12 +29,16 @@ function validateRepoIdentity(candidate: Partial<RepoToMonitor>): ValidationResu
   const { name, enabled } = candidate;
   if (
     typeof name !== 'string' ||
-    !name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/) ||
+    !isValidRepoName(name) ||
     typeof enabled !== 'boolean'
   ) {
     return failure('Invalid repository format: name must be owner/repo and enabled must be a boolean');
   }
   return success({ name, enabled });
+}
+
+export function isValidRepoName(value: string): boolean {
+  return /^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/.test(value);
 }
 
 export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonitor> {

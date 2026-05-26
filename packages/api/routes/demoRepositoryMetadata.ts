@@ -1,5 +1,6 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
+import { isValidRepoName } from './configRepoValidation.js';
 
 type RepoConfig = Awaited<ReturnType<typeof configManager.loadMonitoredReposRaw>>[number];
 type DemoRepositorySource = {
@@ -34,7 +35,9 @@ function normalizeBranchName(value: unknown): string | undefined {
 }
 
 function normalizeRepositoryName(value: unknown): string | undefined {
-  return typeof value === 'string' && value.includes('/') && value.trim() ? value.trim() : undefined;
+  if (typeof value !== 'string') return undefined;
+  const repository = value.trim();
+  return isValidRepoName(repository) ? repository : undefined;
 }
 
 function getDemoConfiguredRepoSources(repos: RepoConfig[]): DemoRepositorySource[] {

@@ -156,7 +156,13 @@ test('demo Redis facade covers read-only route Redis usage', async () => {
   assert.deepEqual(await redis.sMembers('active:repositories'), ['integry/propr']);
   assert.equal(await redis.incr('metrics:jobs:processed'), 1);
   assert.deepEqual(await redis.keys('metrics:*'), ['metrics:jobs:processed']);
+  assert.equal(await (redis as unknown as { setex: (key: string, seconds: number, value: string) => Promise<string | null> }).setex('lowercase-setex', 60, 'ok'), 'OK');
+  assert.equal(await redis.get('lowercase-setex'), 'ok');
   assert.equal(await redis.del(['lock', 'metrics:jobs:processed']), 2);
+  await assert.rejects(
+    () => (redis as unknown as { hGet: (key: string, field: string) => Promise<string | null> }).hGet('hash', 'field'),
+    /Demo Redis facade does not implement Redis command "hGet"/
+  );
 });
 
 test('demo Express GET routes work with the in-memory Redis facade', async () => {
@@ -209,6 +215,7 @@ test('ensureAuthenticated attaches the synthetic demo user', async () => {
   assert.deepEqual(request.user, getDemoUser());
   assert.equal(request.user?.login, 'demo');
   assert.equal(request.user?.username, 'demo');
+  assert.equal(request.user?.accessToken, undefined);
 });
 
 test('ensureAuthenticated rejects bearer auth in demo mode', async () => {
@@ -310,6 +317,23 @@ test('demo repository metadata resolves persisted repositories without configure
   assert.deepEqual(body(), { branches: ['release'], defaultBranch: 'release' });
 });
 
+test('demo repository metadata ignores malformed database repository names', () => {
+  assert.deepEqual(buildDemoRepositoryMetadata([], 'integry/indexed', [
+    { repository: 'integry/indexed', branch: 'release' },
+    { repository: 'integry/indexed/extra', branch: 'main' },
+    { repository: 'integry/with whitespace', branch: 'main' },
+  ]), {
+    repository: 'integry/indexed',
+    defaultBranch: 'release',
+    branches: ['release'],
+    isPrivate: null,
+    description: 'Repository metadata is unavailable in read-only demo mode.'
+  });
+  assert.deepEqual(buildDemoRepositoryMetadata([], 'integry/indexed/extra', [
+    { repository: 'integry/indexed/extra', branch: 'main' },
+  ]), null);
+});
+
 test('planner demo reads use the curated database without owner or repository allowlists', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   await db.migrate.latest();
@@ -396,6 +420,7 @@ test('auth demo-mode metadata endpoint reports startup environment value', async
   const app = express();
   setupAuth(app);
   process.env.PROPR_DEMO_MODE = 'false';
+  assert.equal(isDemoMode(), false);
 
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));

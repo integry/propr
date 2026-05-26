@@ -4,7 +4,7 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient, type RedisClientType } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
-import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
+import { getDemoUser, isDemoMode } from './demoMode.js';
 
 interface GitHubUser {
     id: string;
@@ -13,7 +13,7 @@ interface GitHubUser {
     displayName: string;
     email: string | null;
     avatarUrl: string | null;
-    accessToken: string;
+    accessToken?: string;
     refreshToken?: string;
     tokenExpiresAt?: number;
 }
@@ -65,15 +65,14 @@ declare global {
             displayName: string;
             email: string | null;
             avatarUrl: string | null;
-            accessToken: string;
+            accessToken?: string;
             refreshToken?: string;
             tokenExpiresAt?: number;
         }
     }
 }
 
-export function setupAuth(app: Express): void {
-    const demoModeAtStartup = configureDemoMode(isDemoMode());
+export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
     const requiredEnvVars = demoModeAtStartup
         ? ['FRONTEND_URL']
         : ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL'];

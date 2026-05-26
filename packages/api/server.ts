@@ -187,7 +187,7 @@ app.use(express.json());
 // including auth-adjacent endpoints, cannot bypass it by ordering.
 app.use('/api', demoModeReadOnlyMiddleware);
 
-setupAuth(app);
+setupAuth(app, demoMode);
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
