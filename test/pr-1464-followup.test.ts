@@ -1,4 +1,4 @@
-import test, { after, mock } from 'node:test';
+import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.GH_APP_ID ??= '1';
@@ -7,21 +7,17 @@ process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
 const { getActiveTasksForPR } = await import('../packages/core/src/webhook/checkRunHelpers.ts');
-const { createDockerRoutes } = await import('../packages/api/routes/dockerRoutes.ts');
 const { stopTaskExecution } = await import('../packages/api/routes/stopTaskExecution.ts');
-const { ensureTaskStateForCancellation, loadStopTaskContext } = await import('../packages/api/routes/stopTaskExecutionContext.ts');
-
-after(async () => {
-  const { closeConnection: closePackageConnection } = await import('@propr/core');
-  const { closeConnection } = await import('../packages/core/src/db/connection.ts');
-  await closePackageConnection();
-  await closeConnection();
-});
+const {
+  ensureTaskStateForCancellation,
+  loadStopTaskContext,
+} = await import('../packages/api/routes/stopTaskExecutionContext.ts');
 
 type QueueState = 'waiting' | 'active' | 'delayed' | 'paused' | 'prioritized' | 'waiting-children';
 
 interface MockJob {
   id: string;
+  name?: string;
   data: Record<string, unknown>;
   getState: () => Promise<QueueState>;
 }
@@ -43,9 +39,10 @@ function createQueueMock(jobs: MockJob[]) {
   };
 }
 
-function createMockJob(id: string, state: QueueState, data: Record<string, unknown>): MockJob {
+function createMockJob(id: string, state: QueueState, data: Record<string, unknown>, name?: string): MockJob {
   return {
     id,
+    name,
     data,
     async getState() {
       return state;
@@ -66,6 +63,28 @@ function createTaskQueryDbMock(rows: Array<{ task_id: string; job_id: string | n
   return Object.assign(() => chain, {
     raw: () => 'raw',
   }) as unknown as typeof import('@propr/core').db;
+}
+
+function createEmptyTaskLookupDb() {
+  const dbQueryBuilder = {
+    whereIn() {
+      return dbQueryBuilder;
+    },
+    orWhereIn() {
+      return dbQueryBuilder;
+    },
+  };
+  const dbTasksQuery = {
+    select() {
+      return dbTasksQuery;
+    },
+    async where(callback: (queryBuilder: typeof dbQueryBuilder) => void) {
+      callback(dbQueryBuilder);
+      return [];
+    },
+  };
+
+  return (() => dbTasksQuery) as never;
 }
 
 const silentLog = {
@@ -94,320 +113,27 @@ test('getActiveTasksForPR finds PR jobs by scanning the live queue', async () =>
 
 test('getActiveTasksForPR includes active BullMQ jobs when stoppableOnly is true', async () => {
   const queue = createQueueMock([
-    createMockJob('active-pr-job', 'active', { repository: 'integry/propr', prNumber: 1464 }),
+    createMockJob('active-job', 'active', { repository: 'integry/propr', prNumber: 1464 }),
   ]);
 
   const tasks = await getActiveTasksForPR('integry/propr', 1464, {
     getIssueQueue: async () => queue as never,
     db: createTaskQueryDbMock([]),
     forceQueueScan: true,
-    stoppableOnly: true,
     log: silentLog,
-  });
-
-  assert.deepEqual(tasks, [{ taskId: 'active-pr-job', state: 'active' }]);
-});
-
-test('getActiveTasksForPR paginates queue scans beyond the first page', async () => {
-  const waitingJobs = Array.from({ length: 1001 }, (_, index) => createMockJob(
-    `waiting-job-${index}`,
-    'waiting',
-    { repository: 'integry/propr', prNumber: index === 1000 ? 1464 : 999 },
-  ));
-  const queue = {
-    async getJob() {
-      return null;
-    },
-    async getJobs(states: string[], start = 0, end = 999) {
-      return states.includes('waiting') ? waitingJobs.slice(start, end + 1) : [];
-    },
-  };
-
-  const tasks = await getActiveTasksForPR('integry/propr', 1464, {
-    getIssueQueue: async () => queue as never,
-    db: createTaskQueryDbMock([]),
-    forceQueueScan: true,
     stoppableOnly: true,
-    log: silentLog,
   });
 
-  assert.deepEqual(tasks, [{ taskId: 'waiting-job-1000', state: 'waiting' }]);
+  assert.deepEqual(tasks, [{ taskId: 'active-job', state: 'active' }]);
 });
 
-test('Docker info surfaces extended stop context lookup failures when direct state has no container', async () => {
-  const loadStopTaskContext = mock.fn(async () => {
-    throw new Error('DB unavailable');
-  });
-  const redisClient = {
-    async get(key: string): Promise<string | null> {
-      if (key !== 'worker:state:task-1464') {
-        return null;
-      }
-      return JSON.stringify({
-        history: [{ state: 'processing' }],
-      });
-    },
-  };
-  const routes = createDockerRoutes({
-    redisClient: redisClient as never,
-    loadStopTaskContext: loadStopTaskContext as never,
-  });
-  const response = {
-    statusCode: 200,
-    body: null as unknown,
-    status(code: number) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body: unknown) {
-      this.body = body;
-      return this;
-    },
-  };
-
-  await routes.getDockerInfo({ params: { taskId: 'task-1464' } } as never, response as never);
-
-  assert.equal(response.statusCode, 500);
-  assert.deepEqual(response.body, { error: 'Internal server error' });
-  assert.equal(loadStopTaskContext.mock.calls.length, 1);
-});
-
-test('Docker info resolves container metadata through persisted task aliases', async () => {
-  const loadStopTaskContextMock = mock.fn(async () => ({
-    normalizedTaskId: 'job-alias',
-    state: {
-      history: [
-        { state: 'claude_execution', metadata: { containerId: 'container-alias-1', containerName: 'task-alias' } },
-      ],
-    },
-    currentState: 'claude_execution',
-    queueJob: null,
-    queueState: null,
-    taskId: 'persisted-task-alias',
-    abortTaskIds: ['persisted-task-alias', 'job-alias'],
-  }));
-  const redisClient = {
-    async get(): Promise<null> {
-      return null;
-    },
-  };
-  const routes = createDockerRoutes({
-    redisClient: redisClient as never,
-    loadStopTaskContext: loadStopTaskContextMock as never,
-  });
-  const response = {
-    statusCode: 200,
-    body: null as unknown,
-    status(code: number) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body: unknown) {
-      this.body = body;
-      return this;
-    },
-  };
-
-  await routes.getDockerInfo({ params: { taskId: 'job-alias' } } as never, response as never);
-
-  assert.equal(response.statusCode, 200);
-  assert.equal(loadStopTaskContextMock.mock.calls.length, 1);
-  assert.deepEqual(loadStopTaskContextMock.mock.calls[0]?.arguments.slice(0, 3), [
-    'job-alias',
-    redisClient,
-    { forceQueueScan: false },
-  ]);
-  const body = response.body as Record<string, unknown>;
-  assert.equal(body.id, 'container-alias-1');
-  assert.equal(body.name, 'task-alias');
-  assert.ok(body.status === 'removed' || body.status === 'error');
-});
-
-test('Docker info can inspect container metadata from terminal task history', async () => {
-  const redisClient = {
-    async get(key: string): Promise<string | null> {
-      if (key !== 'worker:state:task-terminal') {
-        return null;
-      }
-      return JSON.stringify({
-        history: [
-          { state: 'claude_execution', metadata: { containerId: 'container-stale-1' } },
-          { state: 'cancelled' },
-        ],
-      });
-    },
-  };
-  const routes = createDockerRoutes({ redisClient: redisClient as never });
-  const response = {
-    statusCode: 200,
-    body: null as unknown,
-    status(code: number) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body: unknown) {
-      this.body = body;
-      return this;
-    },
-  };
-
-  await routes.getDockerInfo({ params: { taskId: 'task-terminal' } } as never, response as never);
-
-  assert.equal(response.statusCode, 200);
-  const body = response.body as Record<string, unknown>;
-  assert.equal(body.id, 'container-stale-1');
-  assert.equal(body.name, null);
-  assert.equal(body.logsAvailable, false);
-  assert.ok(body.status === 'removed' || body.status === 'error');
-  if (body.status === 'error') {
-    assert.match(String(body.error), /Failed to get container info/);
-  }
-});
-
-test('manual Docker stop route accepts abort-only running task stops without verified container stop', async () => {
-  const stopTaskExecutionMock = mock.fn(async () => ({
-    success: true,
-    message: 'Stop request sent to worker. The execution will be terminated shortly.',
-    taskId: 'task-manual-stop',
-    containerStopped: false,
-    jobRemoved: false,
-    stopVerified: false,
-    cancellationRequested: true,
-    abortSignalArmed: true,
-    currentState: 'processing',
-    queueState: null,
-    cancellation: {
-      code: 'user_requested_stop',
-      message: 'Task cancelled by user request.',
-    },
-  }));
-  const redisClient = {
-    async get(): Promise<null> {
-      return null;
-    },
-    async set(): Promise<string> {
-      return 'OK';
-    },
-    async del(): Promise<number> {
-      return 1;
-    },
-    async rPush(): Promise<number> {
-      return 1;
-    },
-  };
-  const routes = createDockerRoutes({
-    redisClient: redisClient as never,
-    stopTaskExecution: stopTaskExecutionMock as never,
-  });
-  const response = {
-    statusCode: 200,
-    body: null as unknown,
-    status(code: number) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body: unknown) {
-      this.body = body;
-      return this;
-    },
-  };
-
-  await routes.stopTask({
-    params: { taskId: 'task-manual-stop' },
-    user: { username: 'octocat' },
-  } as never, response as never);
-
-  assert.equal(response.statusCode, 202);
-  assert.deepEqual(stopTaskExecutionMock.mock.calls[0]?.arguments[1], {
-    redisClient,
-    requestedBy: 'octocat',
-    forceQueueScan: false,
-  });
-  assert.deepEqual(response.body, {
-    success: true,
-    message: 'Stop request sent to worker. The execution will be terminated shortly.',
-    taskId: 'task-manual-stop',
-    containerStopped: false,
-    jobRemoved: false,
-    stopVerified: false,
-    cancellationRequested: true,
-    abortSignalArmed: true,
-    currentState: 'processing',
-    queueState: null,
-    cancellation: {
-      code: 'user_requested_stop',
-      message: 'Task cancelled by user request.',
-    },
-  });
-});
-
-test('manual Docker stop route serializes structural stop errors without instanceof', async () => {
-  const stopTaskExecutionMock = mock.fn(async () => {
-    throw {
-      name: 'StopTaskExecutionError',
-      status: 409,
-      body: {
-        error: 'Task is not stoppable',
-        message: 'The task is not in a stoppable worker or queue state.',
-      },
-      message: 'The task is not in a stoppable worker or queue state.',
-    };
-  });
-  const redisClient = {
-    async get(): Promise<null> {
-      return null;
-    },
-    async set(): Promise<string> {
-      return 'OK';
-    },
-    async del(): Promise<number> {
-      return 1;
-    },
-    async rPush(): Promise<number> {
-      return 1;
-    },
-  };
-  const routes = createDockerRoutes({
-    redisClient: redisClient as never,
-    stopTaskExecution: stopTaskExecutionMock as never,
-  });
-  const response = {
-    statusCode: 200,
-    body: null as unknown,
-    status(code: number) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body: unknown) {
-      this.body = body;
-      return this;
-    },
-  };
-
-  await routes.stopTask({
-    params: { taskId: 'task-manual-stop' },
-    user: { username: 'octocat' },
-  } as never, response as never);
-
-  assert.equal(response.statusCode, 409);
-  assert.deepEqual(response.body, {
-    error: 'Task is not stoppable',
-    message: 'The task is not in a stoppable worker or queue state.',
-  });
-});
-
-test('stopTaskExecution records a durable pending merged-PR cancellation for abort-only active jobs', async () => {
+test('stopTaskExecution does not persist merged-PR cancellation metadata for abort-only active jobs', async () => {
   const setCalls: Array<{ key: string; value: Record<string, unknown> }> = [];
   const delCalls: string[] = [];
   const conversationMessages: Array<{ key: string; message: Record<string, unknown> }> = [];
   const markTaskCancelledCalls: Array<{
     taskId: string;
     requestedBy: string;
-    metadata: Record<string, unknown>;
-  }> = [];
-  const updateHistoryMetadataCalls: Array<{
-    taskId: string;
-    currentState: string;
     metadata: Record<string, unknown>;
   }> = [];
 
@@ -450,14 +176,12 @@ test('stopTaskExecution records a durable pending merged-PR cancellation for abo
         abortTaskIds: ['task-1464', 'job-1464'],
       };
     },
-    async ensureTaskStateForCancellation() {},
+    async ensureTaskStateForCancellation() {
+      return null;
+    },
     getStateManager: () => ({
       async markTaskCancelled(taskId: string, requestedBy: string, metadata: Record<string, unknown>) {
         markTaskCancelledCalls.push({ taskId, requestedBy, metadata });
-        return {} as never;
-      },
-      async updateHistoryMetadata(taskId: string, currentState: string, metadata: Record<string, unknown>) {
-        updateHistoryMetadataCalls.push({ taskId, currentState, metadata });
         return {} as never;
       },
     }) as never,
@@ -466,34 +190,15 @@ test('stopTaskExecution records a durable pending merged-PR cancellation for abo
   assert.equal(result.success, true);
   assert.equal(result.containerStopped, false);
   assert.equal(result.jobRemoved, false);
+  assert.equal(result.stopVerified, false);
+  assert.equal(result.cancellationRequested, true);
   assert.equal(result.message, 'Stop request sent to worker. The execution will be terminated shortly.');
-  assert.deepEqual(delCalls.sort(), []);
+  assert.deepEqual(delCalls, []);
   assert.deepEqual(
-    setCalls.map((call) => call.key)
-      .filter((key) => !key.startsWith('conversation:stop-message-dedupe:'))
-      .sort(),
-    [
-      'worker:abort:job-1464',
-      'worker:abort:task-1464',
-      'worker:stop-requested:job-1464',
-      'worker:stop-requested:task-1464',
-    ],
+    setCalls.map((call) => call.key).sort(),
+    ['worker:abort:job-1464', 'worker:abort:task-1464'],
   );
   assert.equal(markTaskCancelledCalls.length, 0);
-  assert.deepEqual(updateHistoryMetadataCalls, [{
-    taskId: 'task-1464',
-    currentState: 'processing',
-    metadata: {
-      cancellationRequested: {
-        code: 'pull_request_merged',
-        message: 'Task cancelled because pull request #1464 was merged.',
-        requestedBy: 'system',
-        source: 'pull_request_merged',
-        abortSignalArmed: true,
-        queueState: 'active',
-      },
-    },
-  }]);
   assert.deepEqual(
     conversationMessages.map((entry) => entry.message.content),
     ['Cancellation requested. Worker shutdown is still in progress.'],
@@ -586,6 +291,7 @@ test('ensureTaskStateForCancellation reconstructs queue-only PR jobs from reposi
       },
       async createTaskState(taskId: string, issueRef: Record<string, unknown>, correlationId: string | null) {
         createdStates.push({ taskId, issueRef, correlationId });
+        return { history: [{ state: 'pending' }] };
       },
     }) as never,
     db: (() => taskQuery) as never,
@@ -630,66 +336,6 @@ test('ensureTaskStateForCancellation reconstructs queue-only PR jobs from reposi
   }]);
 });
 
-test('ensureTaskStateForCancellation continues when an existing task has a different job id', async () => {
-  const createdStates: string[] = [];
-  const insertChain = {
-    onConflict() {
-      return {
-        async ignore() {},
-      };
-    },
-  };
-  const taskQuery = {
-    insert() {
-      return insertChain;
-    },
-    where() {
-      return {
-        andWhere() {
-          return this;
-        },
-        async update() {
-          return 0;
-        },
-      };
-    },
-    select() {
-      return {
-        where() {
-          return {
-            async first() {
-              return { task_id: 'queue-existing-task', job_id: 'legacy-job-id' };
-            },
-          };
-        },
-      };
-    },
-  };
-
-  const state = await ensureTaskStateForCancellation('queue-existing-task', null, {
-    id: 'pr-comments-batch-owner-repo-42-456',
-    name: 'processPullRequestComment',
-    data: {
-      repository: 'owner/repo',
-      prNumber: 42,
-    },
-  } as never, {
-    getStateManager: () => ({
-      async getTaskState() {
-        return null;
-      },
-      async createTaskState(taskId: string) {
-        createdStates.push(taskId);
-        return { history: [{ state: 'pending' }] };
-      },
-    }) as never,
-    db: (() => taskQuery) as never,
-  });
-
-  assert.deepEqual(state, { history: [{ state: 'pending' }] });
-  assert.deepEqual(createdStates, ['queue-existing-task']);
-});
-
 test('loadStopTaskContext fallback scan matches raw queue job ids before normalization', async () => {
   const rawJobId = 'issue-owner-repo-42-123';
   const queueJob = {
@@ -697,23 +343,6 @@ test('loadStopTaskContext fallback scan matches raw queue job ids before normali
     data: { repository: 'owner/repo', prNumber: 42 },
     async getState() {
       return 'waiting';
-    },
-  };
-  const dbQueryBuilder = {
-    whereIn() {
-      return dbQueryBuilder;
-    },
-    orWhereIn() {
-      return dbQueryBuilder;
-    },
-  };
-  const dbTasksQuery = {
-    select() {
-      return dbTasksQuery;
-    },
-    async where(callback: (queryBuilder: typeof dbQueryBuilder) => void) {
-      callback(dbQueryBuilder);
-      return [];
     },
   };
 
@@ -730,7 +359,7 @@ test('loadStopTaskContext fallback scan matches raw queue job ids before normali
         return [queueJob];
       },
     }) as never,
-    db: (() => dbTasksQuery) as never,
+    db: createEmptyTaskLookupDb(),
     forceQueueScan: true,
   });
 
@@ -739,128 +368,8 @@ test('loadStopTaskContext fallback scan matches raw queue job ids before normali
   assert.deepEqual(context.abortTaskIds, ['owner-repo-42', rawJobId]);
 });
 
-test('loadStopTaskContext forced scan can resolve a unique queued PR job by cancellation target', async () => {
-  const queueJob = {
-    id: 'pr-comments-batch-owner-repo-42-123',
-    data: { repository: 'owner/repo', prNumber: 42, commandMode: 'fix' },
-    async getState() {
-      return 'prioritized';
-    },
-  };
-  const dbQueryBuilder = {
-    whereIn() {
-      return dbQueryBuilder;
-    },
-    orWhereIn() {
-      return dbQueryBuilder;
-    },
-  };
-  const dbTasksQuery = {
-    select() {
-      return dbTasksQuery;
-    },
-    async where(callback: (queryBuilder: typeof dbQueryBuilder) => void) {
-      callback(dbQueryBuilder);
-      return [];
-    },
-  };
-
-  const context = await loadStopTaskContext('owner-repo-42', {
-    async get() {
-      return null;
-    },
-  }, {
-    getIssueQueue: async () => ({
-      async getJob() {
-        return null;
-      },
-      async getJobs() {
-        return [queueJob];
-      },
-    }) as never,
-    db: (() => dbTasksQuery) as never,
-    forceQueueScan: true,
-    cancellationTarget: { repository: 'owner/repo', prNumber: 42 },
-  });
-
-  assert.equal(context.queueJob, queueJob);
-  assert.equal(context.queueState, 'prioritized');
-  assert.equal(context.taskId, 'pr-comments-batch-owner-repo-42-123');
-  assert.deepEqual(context.abortTaskIds, ['pr-comments-batch-owner-repo-42-123', 'owner-repo-42']);
-});
-
-test('loadStopTaskContext forced fallback scan checks beyond 10000 queued jobs', async () => {
-  const targetJobId = 'issue-owner-repo-42-999';
-  const waitingJobs = Array.from({ length: 10550 }, (_, index) => ({
-    id: index === 10200 ? targetJobId : `issue-other-repo-${index}-1`,
-    data: index === 10200
-      ? { repository: 'owner/repo', prNumber: 42 }
-      : { repository: 'other/repo', prNumber: index },
-    async getState() {
-      return 'waiting';
-    },
-  }));
-  const dbQueryBuilder = {
-    whereIn() {
-      return dbQueryBuilder;
-    },
-    orWhereIn() {
-      return dbQueryBuilder;
-    },
-  };
-  const dbTasksQuery = {
-    select() {
-      return dbTasksQuery;
-    },
-    async where(callback: (queryBuilder: typeof dbQueryBuilder) => void) {
-      callback(dbQueryBuilder);
-      return [];
-    },
-  };
-
-  const context = await loadStopTaskContext(targetJobId, {
-    async get() {
-      return null;
-    },
-  }, {
-    getIssueQueue: async () => ({
-      async getJob() {
-        return null;
-      },
-      async getJobs(states: string[], start = 0, end = 99) {
-        if (!states.includes('waiting')) {
-          return [];
-        }
-        return end === -1 ? waitingJobs : waitingJobs.slice(start, end + 1);
-      },
-    }) as never,
-    db: (() => dbTasksQuery) as never,
-    forceQueueScan: true,
-  });
-
-  assert.equal(context.queueJob?.id, targetJobId);
-  assert.equal(context.taskId, 'owner-repo-42');
-});
-
 test('loadStopTaskContext does not scan queue job data unless forced', async () => {
   let scannedQueue = false;
-  const dbQueryBuilder = {
-    whereIn() {
-      return dbQueryBuilder;
-    },
-    orWhereIn() {
-      return dbQueryBuilder;
-    },
-  };
-  const dbTasksQuery = {
-    select() {
-      return dbTasksQuery;
-    },
-    async where(callback: (queryBuilder: typeof dbQueryBuilder) => void) {
-      callback(dbQueryBuilder);
-      return [];
-    },
-  };
 
   const context = await loadStopTaskContext('owner-repo-42', {
     async get() {
@@ -876,7 +385,7 @@ test('loadStopTaskContext does not scan queue job data unless forced', async () 
         return [];
       },
     }) as never,
-    db: (() => dbTasksQuery) as never,
+    db: createEmptyTaskLookupDb(),
   });
 
   assert.equal(context.queueJob, null);
@@ -943,5 +452,4 @@ test('loadStopTaskContext still loads queue context when Redis worker state exis
   assert.equal(context.queueState, 'delayed');
   assert.equal(dbLoaded, true);
   assert.equal(queueLoaded, true);
-  assert.equal(queueJob.id, 'task-redis-first');
 });

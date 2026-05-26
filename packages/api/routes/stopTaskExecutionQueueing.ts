@@ -5,12 +5,9 @@ import {
 } from '@propr/core';
 import type { RedisClientType } from 'redis';
 import { pushStopConversationMessage } from './stopTaskExecutionPersistence.js';
-import type { QueueJobData, StopTaskContext } from './stopTaskExecutionContext.js';
-import type { StopTaskActivity } from './stopTaskExecutionGuards.js';
-import { persistStopOutcome } from './stopTaskExecutionOutcome.js';
+import type { QueueJobData } from './stopTaskExecutionContext.js';
 
-type RedisClientLike = Pick<RedisClientType, 'rPush' | 'set' | 'del'> & Partial<Pick<RedisClientType, 'lRange'>>;
-type QueueRemovalRedisClient = Pick<RedisClientType, 'get' | 'set' | 'del'>;
+type RedisClientLike = Pick<RedisClientType, 'rPush' | 'set' | 'del'>;
 type StopTaskCancellationReason = {
   code: string;
 };
@@ -92,41 +89,8 @@ export async function removeQueueJobIfNeeded(
   }
 }
 
-export async function removeQueuedJobAfterStateCreation(params: {
-  context: StopTaskContext;
-  activity: StopTaskActivity;
-  redisClient: QueueRemovalRedisClient;
-}): Promise<{ jobRemoved: boolean; queueStateAfterFailure: string | null; persistedStopOutcomeDuringStop: boolean }> {
-  const {
-    context,
-    activity,
-    redisClient,
-  } = params;
-  let persistedStopOutcomeDuringStop = false;
-  const removalResult = await removeQueueJobIfNeeded(context.queueJob, activity.isQueuePreStart);
-  if (removalResult.jobRemoved) {
-    persistedStopOutcomeDuringStop = await persistQueueRemovalOutcome(redisClient, context.abortTaskIds);
-  }
-  if (!removalResult.jobRemoved) {
-    if (removalResult.queueStateAfterFailure === 'active') {
-      logger.info({
-        taskId: context.taskId,
-        jobId: context.queueJob?.id ? String(context.queueJob.id) : null,
-      }, 'Queued job became active during cancellation; relying on worker abort signal');
-    }
-  }
-  return {
-    ...removalResult,
-    persistedStopOutcomeDuringStop,
-  };
-}
-
 export function isBenignQueueRemovalRace(queueState: string | null): boolean {
   return queueState === 'active';
-}
-
-function isTerminalQueueRemovalRace(queueState: string | null): boolean {
-  return queueState !== null && TERMINAL_QUEUE_STATES.has(queueState);
 }
 
 export function getStopTaskSuccessMessage(params: {
@@ -153,22 +117,6 @@ async function reloadQueueStateAfterRemovalFailure(queueJob: Job<QueueJobData>):
   }
 }
 
-async function persistQueueRemovalOutcome(
-  redisClient: QueueRemovalRedisClient,
-  taskIds: string[],
-): Promise<boolean> {
-  try {
-    await persistStopOutcome(redisClient, taskIds, {
-      containerId: null,
-      containerStopped: false,
-      jobRemoved: true,
-    });
-    return true;
-  } catch (error) {
-    logger.error({
-      taskIds,
-      error: (error as Error).message,
-    }, 'Failed to persist queued removal stop outcome after removing queued job');
-    return false;
-  }
+function isTerminalQueueRemovalRace(queueState: string | null): boolean {
+  return queueState !== null && TERMINAL_QUEUE_STATES.has(queueState);
 }

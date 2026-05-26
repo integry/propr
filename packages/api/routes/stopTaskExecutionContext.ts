@@ -9,13 +9,8 @@ import {
   getTaskIdFromQueueJob,
   logger,
   normalizeTaskId as normalizeCoreTaskId,
+  type TaskStateData,
 } from '@propr/core';
-import type { TaskStateData } from '@propr/core';
-import { findQueueJobByTaskIdScan } from './stopTaskExecutionQueueLookup.js';
-import {
-  assertQueueJobMatchesCancellationTarget,
-  type CancellationTarget,
-} from './stopTaskExecutionQueueIdentity.js';
 
 export type QueueJobData = Record<string, unknown>;
 
@@ -50,13 +45,11 @@ interface StopTaskContextDeps {
   db?: typeof db;
   getIssueQueue?: typeof getIssueQueue;
   forceQueueScan?: boolean;
-  cancellationTarget?: CancellationTarget;
 }
 
 interface StopTaskStateDeps {
   db?: typeof db;
   getStateManager?: typeof getStateManager;
-  cancellationTarget?: CancellationTarget;
 }
 
 interface ResolvedPersistedTaskContext {
@@ -69,6 +62,8 @@ type RedisClientLike = {
   get: (key: string) => Promise<string | null>;
 };
 
+const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
+
 export function normalizeTaskId(jobId: string): string {
   return normalizeCoreTaskId(jobId);
 }
@@ -79,10 +74,7 @@ export async function loadStopTaskContext(
   deps: StopTaskContextDeps,
 ): Promise<StopTaskContext> {
   const normalizedTaskId = normalizeTaskId(taskReference);
-  const directStateLookup = await loadTaskState(redisClient, [
-    normalizedTaskId,
-    taskReference,
-  ]);
+  const directStateLookup = await loadTaskState(redisClient, [normalizedTaskId, taskReference]);
   const { persistedTask, queueJob, queueTaskId } = await resolvePersistedTaskContextBestEffort({
     taskReference,
     normalizedTaskId,
@@ -135,7 +127,7 @@ export async function ensureTaskStateForCancellation(
   state: TaskState | null,
   queueJob: Job<QueueJobData> | null,
   deps: StopTaskStateDeps,
-): Promise<TaskState | null> {
+): Promise<TaskStateData | null> {
   if (state || !queueJob) {
     return state;
   }
@@ -171,7 +163,7 @@ async function findPersistedTaskRecord(
     .select('task_id', 'job_id')
     .where((queryBuilder: Knex.QueryBuilder) => {
       queryBuilder.whereIn('task_id', lookupValues).orWhereIn('job_id', lookupValues);
-    }) as Array<{
+    }) as unknown as Array<{
     task_id: string;
     job_id: string | null;
   }>;
@@ -211,7 +203,6 @@ async function resolvePersistedTaskContext(
     ].filter((value): value is string => Boolean(value)),
     loadQueue: deps.getIssueQueue,
     forceQueueScan: deps.forceQueueScan === true,
-    cancellationTarget: deps.cancellationTarget,
   });
   const queueTaskId = queueJob ? getTaskIdFromQueueJob(queueJob) : null;
 
@@ -288,37 +279,50 @@ async function getQueueJob(params: {
   candidateTaskIds: string[];
   loadQueue?: typeof getIssueQueue;
   forceQueueScan: boolean;
-  cancellationTarget?: CancellationTarget;
 }): Promise<Job<QueueJobData> | null> {
   const {
     candidateTaskIds,
     loadQueue = getIssueQueue,
     forceQueueScan,
-    cancellationTarget,
   } = params;
   const queue = await loadQueue();
   const uniqueCandidates = [...new Set(candidateTaskIds.filter((value): value is string => Boolean(value)))];
   for (const candidateTaskId of uniqueCandidates) {
-    const job = await queue.getJob(candidateTaskId) as Job<QueueJobData> | undefined;
+    const job = await queue.getJob(candidateTaskId) as unknown as Job<QueueJobData> | undefined;
     if (job) {
       return job;
     }
   }
 
-  if (!forceQueueScan) {
+  if (!forceQueueScan || typeof queue.getJobs !== 'function') {
     return null;
   }
 
   const candidateTaskIdSet = new Set(uniqueCandidates);
-  if (candidateTaskIdSet.size === 0 && !cancellationTarget) {
+  if (candidateTaskIdSet.size === 0) {
     return null;
   }
 
-  if (typeof queue.getJobs !== 'function') {
-    return null;
+  const jobs = await queue.getJobs([...TRACKED_QUEUE_STATES], 0, -1) as unknown as Job<QueueJobData>[];
+  for (const job of jobs) {
+    const derivedTaskId = getTaskIdFromQueueJob(job);
+    const rawJobId = job.id === null || job.id === undefined ? null : String(job.id);
+    const normalizedJobId = rawJobId === null ? null : normalizeTaskId(rawJobId);
+    if (
+      (derivedTaskId !== null && candidateTaskIdSet.has(derivedTaskId))
+      || (rawJobId !== null && candidateTaskIdSet.has(rawJobId))
+      || (normalizedJobId !== null && candidateTaskIdSet.has(normalizedJobId))
+    ) {
+      logger.info({
+        taskReferenceCandidates: uniqueCandidates,
+        queueJobId: rawJobId,
+        derivedTaskId,
+      }, 'Resolved queued task stop lookup via fallback task-id scan');
+      return job;
+    }
   }
 
-  return findQueueJobByTaskIdScan(queue, candidateTaskIdSet, uniqueCandidates, cancellationTarget);
+  return null;
 }
 
 async function createTaskStateFromQueueJob(
@@ -338,13 +342,6 @@ async function createTaskStateFromQueueJob(
   const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
   const prNumber = getPrNumberFromJobData(queueJob.data);
   const queueJobId = String(queueJob.id ?? taskId);
-  assertQueueJobMatchesCancellationTarget({
-    taskId,
-    queueJobId,
-    repository,
-    prNumber,
-    cancellationTarget: deps.cancellationTarget,
-  });
 
   await database('tasks')
     .insert({
@@ -364,7 +361,7 @@ async function createTaskStateFromQueueJob(
   const existingState = await stateManager.getTaskState(taskId);
   const taskState = existingState ?? await stateManager.createTaskState(taskId, issueRef, correlationId);
 
-  const updatedRows = await database('tasks')
+  await database('tasks')
     .where({ task_id: taskId })
     .andWhere((queryBuilder: Knex.QueryBuilder) => {
       queryBuilder.whereNull('job_id').orWhere('job_id', queueJobId);
@@ -374,21 +371,6 @@ async function createTaskStateFromQueueJob(
       ...(prNumber !== null ? { pr_number: prNumber } : {}),
       initial_job_data: initialJobData,
     });
-  if (updatedRows === 0) {
-    const existingTask = await database('tasks')
-      .select('task_id', 'job_id')
-      .where({ task_id: taskId })
-      .first() as { task_id: string; job_id: string | null } | undefined;
-    if (!existingTask) {
-      throw new Error(`Queued task cancellation could not link persisted task ${taskId} to queue job ${queueJobId}`);
-    }
-
-    logger.warn({
-      taskId,
-      queueJobId,
-      existingJobId: existingTask.job_id,
-    }, 'Continuing queued cancellation for task with a different persisted job id');
-  }
 
   return taskState;
 }
@@ -406,15 +388,7 @@ function resolveStopTaskId(
   queueTaskId: string | null,
   persistedTaskId: string | null,
 ): string {
-  if (persistedTaskId) {
-    return persistedTaskId;
-  }
-
-  if (!queueTaskId) {
-    return normalizedTaskId;
-  }
-
-  return queueTaskId;
+  return persistedTaskId ?? queueTaskId ?? normalizedTaskId;
 }
 
 function buildAbortTaskIds(params: {

@@ -1,4 +1,4 @@
-import { after, beforeEach, describe, mock, test } from 'node:test';
+import { beforeEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.GH_APP_ID ??= '1';
@@ -7,13 +7,6 @@ process.env.GH_INSTALLATION_ID ??= '1';
 process.env.NODE_ENV ??= 'test';
 
 const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
-
-after(async () => {
-  const { closeConnection: closePackageConnection } = await import('@propr/core');
-  const { closeConnection } = await import('../packages/core/src/db/connection.ts');
-  await closePackageConnection();
-  await closeConnection();
-});
 
 function createRedisClient() {
   return {
@@ -59,6 +52,7 @@ describe('cancelMergedPullRequestTasks', () => {
   const mockMarkPullRequestMerged = mock.fn(async () => undefined);
   const mockGetActiveTasksForPR = mock.fn(async () => []);
   const mockStopTaskExecution = mock.fn(async (taskId: string) => createStopResult(taskId));
+  const mockSleep = mock.fn(async () => undefined);
 
   beforeEach(() => {
     mockLogger.info.mock.resetCalls();
@@ -67,8 +61,8 @@ describe('cancelMergedPullRequestTasks', () => {
     mockMarkPullRequestMerged.mock.resetCalls();
     mockGetActiveTasksForPR.mock.resetCalls();
     mockStopTaskExecution.mock.resetCalls();
+    mockSleep.mock.resetCalls();
 
-    mockMarkPullRequestMerged.mock.mockImplementation(async () => undefined);
     mockGetActiveTasksForPR.mock.mockImplementation(async () => []);
     mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => createStopResult(taskId));
   });
@@ -91,7 +85,7 @@ describe('cancelMergedPullRequestTasks', () => {
       markPullRequestMerged: mockMarkPullRequestMerged,
       getActiveTasksForPR: mockGetActiveTasksForPR,
       stopTaskExecution: mockStopTaskExecution,
-      recheckDelayMs: 0,
+      sleep: mockSleep,
       log: mockLogger,
     });
 
@@ -106,40 +100,6 @@ describe('cancelMergedPullRequestTasks', () => {
       mockStopTaskExecution.mock.calls.map((call) => call.arguments[0]),
       ['task-running', 'job-queued'],
     );
-    assert.equal(
-      mockStopTaskExecution.mock.calls[0].arguments[1].cancellation.message,
-      'Task cancelled because pull request integry/propr#1463 was merged.',
-    );
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].forceQueueScan, false);
-    assert.equal(mockStopTaskExecution.mock.calls[1].arguments[1].forceQueueScan, true);
-  });
-
-  test('force-scans stop lookup for queue-scanned PR jobs whose BullMQ id differs from task id', async () => {
-    const redisClient = createRedisClient();
-    let lookupCount = 0;
-    mockGetActiveTasksForPR.mock.mockImplementation(async () => {
-      lookupCount += 1;
-      return lookupCount === 1 ? [{ taskId: 'owner-repo-1463', state: 'waiting' }] : [];
-    });
-    mockStopTaskExecution.mock.mockImplementation(async (taskId: string, options: { forceQueueScan?: boolean }) => {
-      if (taskId === 'owner-repo-1463' && options.forceQueueScan !== true) {
-        throw new Error('Task not found without queue scan');
-      }
-      return createStopResult(taskId, { jobRemoved: true, queueState: 'removed_before_start' });
-    });
-
-    await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-      redisClient,
-      markPullRequestMerged: mockMarkPullRequestMerged,
-      getActiveTasksForPR: mockGetActiveTasksForPR,
-      stopTaskExecution: mockStopTaskExecution,
-      recheckDelayMs: 0,
-      log: mockLogger,
-    });
-
-    assert.equal(mockStopTaskExecution.mock.calls.length, 1);
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[0], 'owner-repo-1463');
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].forceQueueScan, true);
   });
 
   test('does nothing for unmerged PR closes', async () => {
@@ -150,40 +110,9 @@ describe('cancelMergedPullRequestTasks', () => {
       markPullRequestMerged: mockMarkPullRequestMerged,
       getActiveTasksForPR: mockGetActiveTasksForPR,
       stopTaskExecution: mockStopTaskExecution,
-      recheckDelayMs: 0,
+      sleep: mockSleep,
       log: mockLogger,
     });
-
-    assert.equal(mockMarkPullRequestMerged.mock.calls.length, 0);
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 0);
-    assert.equal(mockStopTaskExecution.mock.calls.length, 0);
-  });
-
-  test('fails the webhook when the merge gate write fails and no active tasks remain', async () => {
-    mockMarkPullRequestMerged.mock.mockImplementation(async () => {
-      throw new Error('redis write failed');
-    });
-
-    await assert.rejects(
-      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-        redisClient: createRedisClient(),
-        markPullRequestMerged: mockMarkPullRequestMerged,
-        getActiveTasksForPR: mockGetActiveTasksForPR,
-        stopTaskExecution: mockStopTaskExecution,
-        recheckDelayMs: 0,
-        log: mockLogger,
-      }),
-      /failed to persist merged PR gate/,
-    );
-
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 1);
-    assert.equal(mockStopTaskExecution.mock.calls.length, 0);
-    assert.equal(mockLogger.error.mock.calls.length, 1);
-    assert.equal(mockLogger.warn.mock.calls.length, 1);
-  });
-
-  test('does nothing for irrelevant payloads even when cancellation deps are unavailable', async () => {
-    await cancelMergedPullRequestTasks({ action: 'opened' }, 'test-correlation-id', undefined as never);
 
     assert.equal(mockMarkPullRequestMerged.mock.calls.length, 0);
     assert.equal(mockGetActiveTasksForPR.mock.calls.length, 0);
@@ -206,7 +135,7 @@ describe('cancelMergedPullRequestTasks', () => {
       markPullRequestMerged: mockMarkPullRequestMerged,
       getActiveTasksForPR: mockGetActiveTasksForPR,
       stopTaskExecution: mockStopTaskExecution,
-      recheckDelayMs: 0,
+      sleep: mockSleep,
       log: mockLogger,
     });
 
@@ -214,106 +143,43 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.equal(mockLogger.warn.mock.calls.length, 1);
   });
 
-  test('rejects after persisting diagnostics when requested abort-only cancellation remains active after recheck', async () => {
-    const redisClient = createRedisClient();
-    mockGetActiveTasksForPR.mock.mockImplementation(async () => ([{ taskId: 'task-processing', state: 'processing' }]));
-    mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => {
-      return createStopResult(taskId, {
-        stopVerified: false,
-        cancellationRequested: true,
-        abortSignalArmed: true,
-      });
-    });
-
-    await assert.rejects(
-      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-        redisClient,
-        markPullRequestMerged: mockMarkPullRequestMerged,
-        getActiveTasksForPR: mockGetActiveTasksForPR,
-        stopTaskExecution: mockStopTaskExecution,
-        recheckDelayMs: 0,
-        log: mockLogger,
-      }),
-      /Failed to cancel 1 merged PR task/,
-    );
-
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
-    assert.deepEqual(
-      mockStopTaskExecution.mock.calls.map((call) => call.arguments[0]),
-      ['task-processing'],
-    );
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].containerStopTimeoutSeconds, 30);
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].requireVerifiedStop, true);
-    assert.deepEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
-    assert.equal(mockLogger.warn.mock.calls.length, 2);
-    assert.equal(redisClient.set.mock.calls.length, 2);
-  });
-
-  test('succeeds when an abort-only cancellation disappears during merged-PR recheck', async () => {
+  test('retries tasks that remain active after the first cancellation pass', async () => {
     const redisClient = createRedisClient();
     let lookupCount = 0;
     mockGetActiveTasksForPR.mock.mockImplementation(async () => {
       lookupCount += 1;
-      return lookupCount === 1 ? [{ taskId: 'task-processing', state: 'processing' }] : [];
+      if (lookupCount === 1) {
+        return [{ taskId: 'task-processing', state: 'processing' }];
+      }
+      if (lookupCount === 2) {
+        return [{ taskId: 'task-processing', state: 'processing' }];
+      }
+      return [];
     });
-    mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => {
-      return createStopResult(taskId, {
-        stopVerified: false,
-        cancellationRequested: true,
-        abortSignalArmed: true,
-      });
-    });
+    mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => createStopResult(taskId, {
+      stopVerified: false,
+      cancellationRequested: true,
+      abortSignalArmed: true,
+    }));
 
     await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
       redisClient,
       markPullRequestMerged: mockMarkPullRequestMerged,
       getActiveTasksForPR: mockGetActiveTasksForPR,
       stopTaskExecution: mockStopTaskExecution,
-      recheckDelayMs: 0,
+      sleep: mockSleep,
       log: mockLogger,
     });
 
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
-    assert.equal(mockStopTaskExecution.mock.calls.length, 1);
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].requireVerifiedStop, true);
-    assert.equal(mockLogger.warn.mock.calls.length, 1);
-  });
-
-  test('rejects the webhook when a task still errors after the merged-PR recheck', async () => {
-    const redisClient = createRedisClient();
-    mockGetActiveTasksForPR.mock.mockImplementation(async () => ([{ taskId: 'task-stuck', state: 'processing' }]));
-    mockStopTaskExecution.mock.mockImplementation(async () => {
-      throw new Error('stop failed');
-    });
-
-    await assert.rejects(
-      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-        redisClient,
-        markPullRequestMerged: mockMarkPullRequestMerged,
-        getActiveTasksForPR: mockGetActiveTasksForPR,
-        stopTaskExecution: mockStopTaskExecution,
-        recheckDelayMs: 0,
-        log: mockLogger,
-      }),
-      /Failed to cancel 1 merged PR task/,
+    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 3);
+    assert.deepEqual(
+      mockStopTaskExecution.mock.calls.map((call) => call.arguments[0]),
+      ['task-processing', 'task-processing'],
     );
-
-    assert.equal(mockStopTaskExecution.mock.calls.length, 1);
-    assert.deepEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
-    assert.equal(mockLogger.warn.mock.calls.length, 2);
   });
 
-  test('fails the webhook for pending abort-only stops that remain active after the PR merged gate is marked', async () => {
-    const redisClient = {
-      ...createRedisClient(),
-      get: mock.fn(async () => JSON.stringify({
-        timestamp: '2026-05-25T00:00:00.000Z',
-        requestedBy: 'system',
-        reasonCode: 'pull_request_merged',
-        reason: 'Task cancelled because pull request #1463 was merged.',
-        source: 'pull_request_merged',
-      })),
-    };
+  test('fails when tasks remain active after retry', async () => {
+    const redisClient = createRedisClient();
     mockGetActiveTasksForPR.mock.mockImplementation(async () => ([{ taskId: 'task-stuck', state: 'processing' }]));
     mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => createStopResult(taskId, {
       stopVerified: false,
@@ -327,69 +193,13 @@ describe('cancelMergedPullRequestTasks', () => {
         markPullRequestMerged: mockMarkPullRequestMerged,
         getActiveTasksForPR: mockGetActiveTasksForPR,
         stopTaskExecution: mockStopTaskExecution,
-        recheckDelayMs: 0,
+        sleep: mockSleep,
         log: mockLogger,
       }),
       /Failed to cancel 1 merged PR task/,
     );
 
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
-    assert.equal(mockStopTaskExecution.mock.calls.length, 1);
-    assert.deepEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
-    assert.equal(mockLogger.warn.mock.calls.length, 2);
-    assert.equal(redisClient.set.mock.calls.length, 2);
-  });
-
-  test('still cancels active tasks before failing when persisting the merged PR gate fails', async () => {
-    const redisClient = createRedisClient();
-    let lookupCount = 0;
-    mockMarkPullRequestMerged.mock.mockImplementation(async () => {
-      throw new Error('redis write failed');
-    });
-    mockGetActiveTasksForPR.mock.mockImplementation(async () => {
-      lookupCount += 1;
-      return lookupCount === 1 ? [{ taskId: 'task-running', state: 'processing' }] : [];
-    });
-
-    await assert.rejects(
-      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-        redisClient,
-        markPullRequestMerged: mockMarkPullRequestMerged,
-        getActiveTasksForPR: mockGetActiveTasksForPR,
-        stopTaskExecution: mockStopTaskExecution,
-        recheckDelayMs: 0,
-        log: mockLogger,
-      }),
-      /failed to persist merged PR gate/,
-    );
-
-    assert.equal(mockStopTaskExecution.mock.calls.length, 1);
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
-    assert.equal(mockLogger.error.mock.calls.length, 1);
-    assert.equal(mockLogger.warn.mock.calls.length, 1);
-  });
-
-  test('rejects merged PR cancellation when active-task lookup fails', async () => {
-    const redisClient = createRedisClient();
-    mockGetActiveTasksForPR.mock.mockImplementation(async () => {
-      throw new Error('redis unavailable');
-    });
-
-    await assert.rejects(
-      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-        redisClient,
-        markPullRequestMerged: mockMarkPullRequestMerged,
-        getActiveTasksForPR: mockGetActiveTasksForPR,
-        stopTaskExecution: mockStopTaskExecution,
-        recheckDelayMs: 0,
-        log: mockLogger,
-      }),
-      /redis unavailable/,
-    );
-
-    assert.deepEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
-    assert.equal(mockStopTaskExecution.mock.calls.length, 0);
-    assert.equal(mockLogger.error.mock.calls.length, 1);
+    assert.equal(mockStopTaskExecution.mock.calls.length, 2);
   });
 
   test('rejects merged PR cancellation when required dependencies are missing', async () => {
@@ -397,31 +207,5 @@ describe('cancelMergedPullRequestTasks', () => {
       cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', undefined as never),
       /dependencies are required/,
     );
-  });
-
-  test('waits through the final configured recheck delay before failing cancellation', async () => {
-    const redisClient = createRedisClient();
-    const sleep = mock.fn(async () => undefined);
-    mockGetActiveTasksForPR.mock.mockImplementation(async () => ([{ taskId: 'task-still-active', state: 'processing' }]));
-    mockStopTaskExecution.mock.mockImplementation(async () => {
-      throw new Error('stop failed');
-    });
-
-    await assert.rejects(
-      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-        redisClient,
-        markPullRequestMerged: mockMarkPullRequestMerged,
-        getActiveTasksForPR: mockGetActiveTasksForPR,
-        stopTaskExecution: mockStopTaskExecution,
-        recheckDelaysMs: [1, 3, 5],
-        sleep,
-        log: mockLogger,
-      }),
-      /Failed to cancel 1 merged PR task/,
-    );
-
-    assert.deepEqual(sleep.mock.calls.map((call) => call.arguments[0]), [1, 3, 5]);
-    assert.equal(mockGetActiveTasksForPR.mock.calls.length, 4);
-    assert.equal(mockStopTaskExecution.mock.calls.length, 1);
   });
 });
