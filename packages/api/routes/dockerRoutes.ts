@@ -96,7 +96,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         if (stderr) {
           logger.debug({ containerId: containerMetadata.containerId, stderr }, 'Docker logs wrote to stderr');
         }
-        res.send(formatDockerLogsResponse(stdout));
+        res.send(formatDockerLogsResponse(stdout, stderr));
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -300,11 +300,13 @@ function formatDockerContainerStatus(state: DockerContainerState): string {
     return 'running';
   }
 
-  return 'stopped';
+  return typeof state.Status === 'string' && state.Status.length > 0
+    ? state.Status
+    : 'stopped';
 }
 
-function formatDockerLogsResponse(stdout: string): string {
-  return stdout;
+function formatDockerLogsResponse(stdout: string, stderr: string): string {
+  return `${stdout}${stderr}`;
 }
 
 function formatDockerContainerStateDescription(state: DockerContainerState): string {

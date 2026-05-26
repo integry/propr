@@ -6,25 +6,18 @@ import {
 import {
   ensureTaskStateForCancellation,
   loadStopTaskContext,
-  type StopTaskContext,
 } from './stopTaskExecutionContext.js';
 import {
-  assertStopApplied,
   assertTaskCanBeStopped,
+  assertStopApplied,
   isStopVerified,
-  shouldKeepAbortSignalsAfterCancellation,
 } from './stopTaskExecutionGuards.js';
 import {
-  clearPendingStopRequest,
   persistPendingCancellationRequest,
-  persistTaskCancellation,
-  pushStopConversationMessage,
 } from './stopTaskExecutionPersistence.js';
 import {
-  clearPersistedStopOutcome,
   loadPersistedStopOutcome,
   mergeStopOutcomes,
-  persistStopOutcome,
   resolveCancellationQueueState,
   hasConcreteStopOutcome,
 } from './stopTaskExecutionOutcome.js';
@@ -43,9 +36,17 @@ import {
   isSameCancellationRequest,
   loadFirstPendingStopRequest,
 } from './stopTaskExecutionPending.js';
+import {
+  buildAwaitingVerificationErrorBody,
+  buildVerifiedPendingStopResult,
+  isPendingStopNowVerified,
+} from './stopTaskExecutionPendingVerification.js';
+import {
+  clearFinalizedStopState,
+  finalizeStopCancellation,
+} from './stopTaskExecutionFinalization.js';
 import type { CancellationTarget } from './stopTaskExecutionQueueIdentity.js';
 import { StopTaskExecutionError } from './stopTaskExecutionErrors.js';
-import { buildStopMessageMetadata } from './stopTaskExecutionMetadata.js';
 export { isBenignQueueRemovalRace } from './stopTaskExecutionQueueing.js';
 export { StopTaskExecutionError, isStopTaskExecutionError } from './stopTaskExecutionErrors.js';
 
@@ -83,11 +84,7 @@ export interface StopTaskExecutionResult {
   taskId: string;
   containerStopped: boolean;
   jobRemoved: boolean;
-  /**
-   * stopVerified means the container was stopped, queued job was removed, or no
-   * async abort was needed. cancellationRequested means a worker abort request
-   * was durably recorded but the worker may still look active briefly.
-   */
+  /** True once the container stopped, queued job was removed, or no async abort was needed. */
   stopVerified: boolean;
   cancellationRequested: boolean;
   abortSignalArmed: boolean;
@@ -127,6 +124,30 @@ export async function stopTaskExecution(
   context = refreshedStopContext.context;
   const { trackedContainerId, activity, shouldAbort, queueRemovalShouldPrecedeAbort } = refreshedStopContext;
   if (pendingStopRequest && isSameCancellationRequest(pendingStopRequest, cancellation)) {
+    if (isPendingStopNowVerified(context)) {
+      await clearFinalizedStopState({
+        redisClient,
+        taskIds: context.abortTaskIds,
+        shouldAbort: true,
+        stopVerified: true,
+        shouldClearPersistedStopOutcome: false,
+      });
+      return buildVerifiedPendingStopResult(context, cancellation);
+    }
+
+    if (requireVerifiedStop) {
+      throw new StopTaskExecutionError(409, buildAwaitingVerificationErrorBody({
+        currentState: context.currentState,
+        queueState: context.queueState,
+        taskId: context.taskId,
+        containerStopped: false,
+        jobRemoved: false,
+        stopVerified: false,
+        cancellationRequested: true,
+        abortSignalArmed: true,
+      }));
+    }
+
     return buildPendingStopResult({
       context,
       cancellation,
@@ -218,9 +239,7 @@ export async function stopTaskExecution(
   });
 
   if (requireVerifiedStop && !stopVerified) {
-    throw new StopTaskExecutionError(409, {
-      error: 'Task stop awaiting verification',
-      message: 'The stop request was recorded, but the task is still active and must be rechecked before cancellation is complete.',
+    throw new StopTaskExecutionError(409, buildAwaitingVerificationErrorBody({
       currentState: context.currentState,
       queueState: resolvedQueueState,
       taskId: context.taskId,
@@ -229,7 +248,7 @@ export async function stopTaskExecution(
       stopVerified,
       cancellationRequested,
       abortSignalArmed: preparedStop.abortSignalArmed,
-    });
+    }));
   }
 
   if (stopVerified) {
@@ -266,105 +285,6 @@ export async function stopTaskExecution(
   };
 }
 
-async function finalizeStopCancellation(params: {
-  redisClient: RedisClientLike;
-  context: StopTaskContext;
-  requestedBy: string;
-  cancellation: StopTaskCancellationReason;
-  resolvedQueueState: string | null;
-  stopOutcome: {
-    containerId: string | null;
-    containerStopped: boolean;
-    jobRemoved: boolean;
-  };
-  stopVerified: boolean;
-  abortSignalArmed: boolean;
-  hadPersistedStopOutcome: boolean;
-  persistedStopOutcomeDuringStop: boolean;
-  deps: StopTaskExecutionDeps;
-}): Promise<void> {
-  const {
-    redisClient,
-    context,
-    requestedBy,
-    cancellation,
-    resolvedQueueState,
-    stopOutcome,
-    stopVerified,
-    abortSignalArmed,
-    hadPersistedStopOutcome,
-    persistedStopOutcomeDuringStop,
-    deps,
-  } = params;
-  await pushStopConversationMessage(redisClient, context.taskId, {
-    type: 'system',
-    timestamp: new Date().toISOString(),
-    content: cancellation.message,
-    level: 'warning',
-    metadata: buildStopMessageMetadata(cancellation, requestedBy),
-  });
-  try {
-    await persistTaskCancellation({
-      taskId: context.taskId,
-      requestedBy,
-      cancellation,
-      queueState: resolvedQueueState,
-      containerId: stopOutcome.containerId,
-      containerStopped: stopOutcome.containerStopped,
-      jobRemoved: stopOutcome.jobRemoved,
-      stopVerified,
-      abortSignalArmed,
-      deps,
-    });
-  } catch (error) {
-    await persistStopOutcome(redisClient, context.abortTaskIds, stopOutcome);
-    throw error;
-  }
-  await pushStopConversationMessage(redisClient, context.taskId, {
-    type: 'system',
-    timestamp: new Date().toISOString(),
-    content: stopVerified
-      ? 'Task cancelled successfully.'
-      : 'Cancellation requested. Worker shutdown is still in progress.',
-    level: stopVerified ? 'info' : 'warning',
-    metadata: buildStopMessageMetadata(cancellation, requestedBy),
-  });
-  await clearFinalizedStopState({
-    redisClient,
-    taskIds: context.abortTaskIds,
-    shouldAbort: abortSignalArmed,
-    stopVerified,
-    shouldClearPersistedStopOutcome: hadPersistedStopOutcome || persistedStopOutcomeDuringStop,
-  });
-}
-
-async function clearFinalizedStopState(params: {
-  redisClient: RedisClientLike;
-  taskIds: string[];
-  shouldAbort: boolean;
-  stopVerified: boolean;
-  shouldClearPersistedStopOutcome: boolean;
-}): Promise<void> {
-  const {
-    redisClient,
-    taskIds,
-    shouldAbort,
-    stopVerified,
-    shouldClearPersistedStopOutcome,
-  } = params;
-  const shouldRetainAbortSignals = shouldKeepAbortSignalsAfterCancellation({
-    shouldAbort,
-    stopVerified,
-  });
-  await clearPendingStopRequest(redisClient, taskIds);
-  if (!shouldRetainAbortSignals) {
-    await clearAbortSignals(redisClient, taskIds);
-  }
-  if (shouldClearPersistedStopOutcome) {
-    await clearPersistedStopOutcome(redisClient, taskIds);
-  }
-}
-
 async function setAbortSignalIfNeeded(params: {
   redisClient: RedisClientLike;
   taskIds: string[];
@@ -392,10 +312,4 @@ async function setAbortSignalIfNeeded(params: {
   }
 
   logger.info({ taskIds, requestedBy, reasonCode: cancellation.code }, 'Abort signal set for task execution');
-}
-
-async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]): Promise<void> {
-  for (const taskId of taskIds) {
-    await redisClient.del(`worker:abort:${taskId}`);
-  }
 }

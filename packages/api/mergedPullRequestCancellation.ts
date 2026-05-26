@@ -177,9 +177,7 @@ export async function cancelMergedPullRequestTasks(
     log,
   });
   throwMergedStatePersistenceErrorIfAny(mergedStateError);
-  if (hasStopRequestFailures(failures)) {
-    throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${formatMergedTaskCancellationWarning(failures)}`);
-  }
+  throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${formatMergedTaskCancellationWarning(failures)}`);
 }
 
 function getRecheckDelays(recheckDelaysMs?: readonly number[], recheckDelayMs?: number): readonly number[] {
@@ -192,10 +190,6 @@ function getRecheckDelays(recheckDelaysMs?: readonly number[], recheckDelayMs?: 
   }
 
   return MERGE_TASK_RECHECK_DELAYS_MS;
-}
-
-function hasStopRequestFailures(failures: MergeTaskCancellationFailure[]): boolean {
-  return failures.some((failure) => failure.abortRequestedOnly !== true);
 }
 
 function mergeFailures(
@@ -310,6 +304,7 @@ async function stopMergeTasks(params: {
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
           forceQueueScan: shouldForceQueueScanForMergeTask(task),
+          requireVerifiedStop: true,
         }, {
           cancellationTarget: { repository, prNumber },
         });

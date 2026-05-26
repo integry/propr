@@ -214,7 +214,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.equal(mockLogger.warn.mock.calls.length, 1);
   });
 
-  test('succeeds after persisting diagnostics when requested abort-only cancellation remains active after recheck', async () => {
+  test('rejects after persisting diagnostics when requested abort-only cancellation remains active after recheck', async () => {
     const redisClient = createRedisClient();
     mockGetActiveTasksForPR.mock.mockImplementation(async () => ([{ taskId: 'task-processing', state: 'processing' }]));
     mockStopTaskExecution.mock.mockImplementation(async (taskId: string) => {
@@ -225,14 +225,17 @@ describe('cancelMergedPullRequestTasks', () => {
       });
     });
 
-    await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-      redisClient,
-      markPullRequestMerged: mockMarkPullRequestMerged,
-      getActiveTasksForPR: mockGetActiveTasksForPR,
-      stopTaskExecution: mockStopTaskExecution,
-      recheckDelayMs: 0,
-      log: mockLogger,
-    });
+    await assert.rejects(
+      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
+        redisClient,
+        markPullRequestMerged: mockMarkPullRequestMerged,
+        getActiveTasksForPR: mockGetActiveTasksForPR,
+        stopTaskExecution: mockStopTaskExecution,
+        recheckDelayMs: 0,
+        log: mockLogger,
+      }),
+      /Failed to cancel 1 merged PR task/,
+    );
 
     assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
     assert.deepEqual(
@@ -240,7 +243,7 @@ describe('cancelMergedPullRequestTasks', () => {
       ['task-processing'],
     );
     assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].containerStopTimeoutSeconds, 30);
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].requireVerifiedStop, undefined);
+    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].requireVerifiedStop, true);
     assert.deepEqual(mockMarkPullRequestMerged.mock.calls[0].arguments, [redisClient, 'integry/propr', 1463]);
     assert.equal(mockLogger.warn.mock.calls.length, 2);
     assert.equal(redisClient.set.mock.calls.length, 2);
@@ -272,7 +275,7 @@ describe('cancelMergedPullRequestTasks', () => {
 
     assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
     assert.equal(mockStopTaskExecution.mock.calls.length, 1);
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].requireVerifiedStop, undefined);
+    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].requireVerifiedStop, true);
     assert.equal(mockLogger.warn.mock.calls.length, 1);
   });
 
@@ -300,7 +303,7 @@ describe('cancelMergedPullRequestTasks', () => {
     assert.equal(mockLogger.warn.mock.calls.length, 2);
   });
 
-  test('does not fail the webhook for pending abort-only stops that remain active after the PR merged gate is marked', async () => {
+  test('fails the webhook for pending abort-only stops that remain active after the PR merged gate is marked', async () => {
     const redisClient = {
       ...createRedisClient(),
       get: mock.fn(async () => JSON.stringify({
@@ -318,14 +321,17 @@ describe('cancelMergedPullRequestTasks', () => {
       abortSignalArmed: true,
     }));
 
-    await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
-      redisClient,
-      markPullRequestMerged: mockMarkPullRequestMerged,
-      getActiveTasksForPR: mockGetActiveTasksForPR,
-      stopTaskExecution: mockStopTaskExecution,
-      recheckDelayMs: 0,
-      log: mockLogger,
-    });
+    await assert.rejects(
+      cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
+        redisClient,
+        markPullRequestMerged: mockMarkPullRequestMerged,
+        getActiveTasksForPR: mockGetActiveTasksForPR,
+        stopTaskExecution: mockStopTaskExecution,
+        recheckDelayMs: 0,
+        log: mockLogger,
+      }),
+      /Failed to cancel 1 merged PR task/,
+    );
 
     assert.equal(mockGetActiveTasksForPR.mock.calls.length, 2);
     assert.equal(mockStopTaskExecution.mock.calls.length, 1);

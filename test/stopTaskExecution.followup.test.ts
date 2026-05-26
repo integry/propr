@@ -311,6 +311,102 @@ test('stopTaskExecution with requireVerifiedStop records but does not finalize p
     assert.strictEqual(redisClient.store.has('worker:stop-requested:task-require-verified-pending'), true);
 });
 
+test('stopTaskExecution rechecks matching pending stops and rejects when verification is still pending', async () => {
+    const redisClient = createRedisClient();
+    redisClient.store.set('worker:stop-requested:task-pending-active', JSON.stringify({
+        timestamp: '2026-05-26T00:00:00.000Z',
+        requestedBy: 'system',
+        reasonCode: 'pull_request_merged',
+        reason: 'Task cancelled because pull request #42 was merged.',
+        source: 'pull_request_merged',
+        requestId: 'merge-cancel-42',
+    }));
+
+    await assert.rejects(async () => {
+        await stopTaskExecution(
+            'task-pending-active',
+            {
+                redisClient,
+                requestedBy: 'system',
+                requireVerifiedStop: true,
+                cancellation: {
+                    code: 'pull_request_merged',
+                    message: 'Task cancelled because pull request #42 was merged.',
+                    source: 'pull_request_merged',
+                    requestId: 'merge-cancel-42',
+                },
+            },
+            {
+                loadStopTaskContext: async () => ({
+                    normalizedTaskId: 'task-pending-active',
+                    state: { history: [{ state: 'processing' }] },
+                    currentState: 'processing',
+                    queueJob: { id: 'job-pending-active' } as never,
+                    queueState: 'active',
+                    taskId: 'task-pending-active',
+                    abortTaskIds: ['task-pending-active', 'job-pending-active'],
+                }),
+                ensureTaskStateForCancellation: async () => {},
+                getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+                stopDockerContainer,
+            },
+        );
+    }, /must be rechecked/);
+
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+    assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
+});
+
+test('stopTaskExecution finalizes matching pending stops after task reaches a terminal state', async () => {
+    const redisClient = createRedisClient();
+    redisClient.store.set('worker:stop-requested:task-pending-cancelled', JSON.stringify({
+        timestamp: '2026-05-26T00:00:00.000Z',
+        requestedBy: 'system',
+        reasonCode: 'pull_request_merged',
+        reason: 'Task cancelled because pull request #42 was merged.',
+        source: 'pull_request_merged',
+        requestId: 'merge-cancel-42',
+    }));
+    redisClient.store.set('worker:abort:task-pending-cancelled', JSON.stringify({ reasonCode: 'pull_request_merged' }));
+
+    const result = await stopTaskExecution(
+        'task-pending-cancelled',
+        {
+            redisClient,
+            requestedBy: 'system',
+            requireVerifiedStop: true,
+            cancellation: {
+                code: 'pull_request_merged',
+                message: 'Task cancelled because pull request #42 was merged.',
+                source: 'pull_request_merged',
+                requestId: 'merge-cancel-42',
+            },
+        },
+        {
+            loadStopTaskContext: async () => ({
+                normalizedTaskId: 'task-pending-cancelled',
+                state: { history: [{ state: 'cancelled' }] },
+                currentState: 'cancelled',
+                queueJob: null,
+                queueState: null,
+                taskId: 'task-pending-cancelled',
+                abortTaskIds: ['task-pending-cancelled'],
+            }),
+            ensureTaskStateForCancellation: async () => {},
+            getStateManager: () => ({ markTaskCancelled, updateHistoryMetadata }) as never,
+            stopDockerContainer,
+        },
+    );
+
+    assert.strictEqual(result.stopVerified, true);
+    assert.strictEqual(result.cancellationRequested, false);
+    assert.strictEqual(result.currentState, 'cancelled');
+    assert.strictEqual(redisClient.store.has('worker:stop-requested:task-pending-cancelled'), false);
+    assert.strictEqual(redisClient.store.has('worker:abort:task-pending-cancelled'), false);
+    assert.strictEqual(markTaskCancelled.mock.calls.length, 0);
+    assert.strictEqual(updateHistoryMetadata.mock.calls.length, 0);
+});
+
 test('stopTaskExecution retries persisted cancellation after a queue removal persistence failure', async () => {
     const redisClient = createRedisClient();
     const queueJob = {
@@ -838,7 +934,7 @@ test('cancelMergedPullRequestTasks force-scans the initial merged-PR lookup and 
         stoppableOnly: true,
     }]);
     assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].forceQueueScan, true);
-    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, undefined);
+    assert.strictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[1].requireVerifiedStop, true);
     assert.deepStrictEqual(stopTaskExecutionForMerge.mock.calls[0]?.arguments[2], {
         cancellationTarget: { repository: 'owner/repo', prNumber: 42 },
     });

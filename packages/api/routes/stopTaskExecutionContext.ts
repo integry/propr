@@ -50,6 +50,7 @@ interface StopTaskContextDeps {
   db?: typeof db;
   getIssueQueue?: typeof getIssueQueue;
   forceQueueScan?: boolean;
+  cancellationTarget?: CancellationTarget;
 }
 
 interface StopTaskStateDeps {
@@ -82,15 +83,13 @@ export async function loadStopTaskContext(
     normalizedTaskId,
     taskReference,
   ]);
-  const { persistedTask, queueJob, queueTaskId } = shouldUseDirectWorkerStateOnly(directStateLookup.state, deps)
-    ? { persistedTask: null, queueJob: null, queueTaskId: null }
-    : await resolvePersistedTaskContextBestEffort({
-      taskReference,
-      normalizedTaskId,
-      deps,
-      extraCandidates: directStateLookup.taskId ? [directStateLookup.taskId] : [],
-      hasDirectState: directStateLookup.state !== null,
-    });
+  const { persistedTask, queueJob, queueTaskId } = await resolvePersistedTaskContextBestEffort({
+    taskReference,
+    normalizedTaskId,
+    deps,
+    extraCandidates: directStateLookup.taskId ? [directStateLookup.taskId] : [],
+    hasDirectState: directStateLookup.state !== null,
+  });
   const stateLookup = await loadTaskState(redisClient, [
     directStateLookup.taskId,
     persistedTask?.taskId,
@@ -212,6 +211,7 @@ async function resolvePersistedTaskContext(
     ].filter((value): value is string => Boolean(value)),
     loadQueue: deps.getIssueQueue,
     forceQueueScan: deps.forceQueueScan === true,
+    cancellationTarget: deps.cancellationTarget,
   });
   const queueTaskId = queueJob ? getTaskIdFromQueueJob(queueJob) : null;
 
@@ -288,11 +288,13 @@ async function getQueueJob(params: {
   candidateTaskIds: string[];
   loadQueue?: typeof getIssueQueue;
   forceQueueScan: boolean;
+  cancellationTarget?: CancellationTarget;
 }): Promise<Job<QueueJobData> | null> {
   const {
     candidateTaskIds,
     loadQueue = getIssueQueue,
     forceQueueScan,
+    cancellationTarget,
   } = params;
   const queue = await loadQueue();
   const uniqueCandidates = [...new Set(candidateTaskIds.filter((value): value is string => Boolean(value)))];
@@ -308,7 +310,7 @@ async function getQueueJob(params: {
   }
 
   const candidateTaskIdSet = new Set(uniqueCandidates);
-  if (candidateTaskIdSet.size === 0) {
+  if (candidateTaskIdSet.size === 0 && !cancellationTarget) {
     return null;
   }
 
@@ -316,7 +318,7 @@ async function getQueueJob(params: {
     return null;
   }
 
-  return findQueueJobByTaskIdScan(queue, candidateTaskIdSet, uniqueCandidates);
+  return findQueueJobByTaskIdScan(queue, candidateTaskIdSet, uniqueCandidates, cancellationTarget);
 }
 
 async function createTaskStateFromQueueJob(
@@ -389,13 +391,6 @@ async function createTaskStateFromQueueJob(
   }
 
   return taskState;
-}
-
-function shouldUseDirectWorkerStateOnly(
-  state: TaskState | null,
-  deps: StopTaskContextDeps,
-): boolean {
-  return state !== null && deps.forceQueueScan !== true;
 }
 
 function getQueuedTaskType(issueRefType: unknown, prNumber: number | null): string {
