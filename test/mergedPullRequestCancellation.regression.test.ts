@@ -124,14 +124,15 @@ test('cancelMergedPullRequestTasks waits until abort-only worker stops disappear
   assert.deepEqual(stopCalls, ['task-1']);
 });
 
-test('cancelMergedPullRequestTasks rejects abort-only stops while worker shutdown is pending', async () => {
+test('cancelMergedPullRequestTasks records pending abort-only stops without rejecting the webhook', async () => {
   process.env.NODE_ENV = 'test';
   const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
   const markMergedCalls: Array<{ repository: string; prNumber: number }> = [];
   const loadActiveTasksCalls: string[][] = [];
   const stopCalls: string[] = [];
 
-  await assert.rejects(
+  const persistedWarnings: string[] = [];
+  await assert.doesNotReject(
     cancelMergedPullRequestTasks(
       {
         action: 'closed',
@@ -140,7 +141,12 @@ test('cancelMergedPullRequestTasks rejects abort-only stops while worker shutdow
       },
       'corr-1',
       {
-        redisClient: {} as never,
+        redisClient: {
+          async set(key: string) {
+            persistedWarnings.push(key);
+            return 'OK';
+          },
+        } as never,
         markPullRequestMerged: async (_redisClient, repository, prNumber) => {
           markMergedCalls.push({ repository, prNumber });
         },
@@ -160,12 +166,12 @@ test('cancelMergedPullRequestTasks rejects abort-only stops while worker shutdow
         },
       },
     ),
-    /Failed to cancel 1 merged PR task/,
   );
 
   assert.deepEqual(stopCalls, ['task-1', 'task-1', 'task-1']);
   assert.equal(loadActiveTasksCalls.length, 4);
   assert.deepEqual(markMergedCalls, [{ repository: 'acme/widgets', prNumber: 42 }]);
+  assert.equal(persistedWarnings.length, 2);
 });
 
 test('getActiveTasksForPR includes matching jobs from the live queue', async () => {

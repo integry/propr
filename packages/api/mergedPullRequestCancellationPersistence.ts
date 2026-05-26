@@ -22,6 +22,7 @@ export async function persistMergedCancellationFailures(params: {
     log,
   } = params;
   const failureKey = buildMergedCancellationFailureKey(repository, prNumber, correlationId);
+  const latestFailureKey = buildLatestMergedCancellationFailureKey(repository, prNumber);
   try {
     await redisClient.set(
       failureKey,
@@ -32,6 +33,11 @@ export async function persistMergedCancellationFailures(params: {
         recordedAt: new Date().toISOString(),
         failures,
       }),
+      { EX: MERGE_CANCELLATION_FAILURE_TTL_SECONDS },
+    );
+    await redisClient.set(
+      latestFailureKey,
+      failureKey,
       { EX: MERGE_CANCELLATION_FAILURE_TTL_SECONDS },
     );
   } catch (error) {
@@ -52,4 +58,12 @@ export function buildMergedCancellationFailureKey(
   const repositoryKey = encodeURIComponent(`${repository}#${prNumber}`);
   const correlationHash = createHash('sha256').update(correlationId).digest('hex').slice(0, 32);
   return `webhook:merged-pr-cancellation:${repositoryKey}:${correlationHash}`;
+}
+
+export function buildLatestMergedCancellationFailureKey(
+  repository: string,
+  prNumber: number,
+): string {
+  const repositoryKey = encodeURIComponent(`${repository}#${prNumber}`);
+  return `webhook:merged-pr-cancellation:${repositoryKey}:latest`;
 }

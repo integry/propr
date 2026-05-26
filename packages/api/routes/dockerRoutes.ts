@@ -230,6 +230,8 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
       id: containerId,
       name: containerName ?? null,
       status: formatDockerContainerStatus(state),
+      stateStatus: state.Status ?? null,
+      stateDescription: formatDockerContainerStateDescription(state),
       state,
       logsAvailable: true,
     };
@@ -262,7 +264,11 @@ function formatDockerContainerStatus(state: DockerContainerState): string {
     return 'running';
   }
 
-  const status = typeof state.Status === 'string' && state.Status.length > 0 ? state.Status : 'stopped';
+  return 'stopped';
+}
+
+function formatDockerContainerStateDescription(state: DockerContainerState): string {
+  const status = typeof state.Status === 'string' && state.Status.length > 0 ? state.Status : formatDockerContainerStatus(state);
   if (typeof state.ExitCode === 'number' && status === 'exited') {
     return `${status} (code ${state.ExitCode})`;
   }

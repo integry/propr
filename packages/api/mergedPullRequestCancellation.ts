@@ -3,6 +3,7 @@ import {
   logger,
   markPullRequestMerged,
 } from '@propr/core';
+import { createHash } from 'crypto';
 import { stopTaskExecution, type StopTaskExecutionOptions } from './routes/stopTaskExecution.js';
 import { persistMergedCancellationFailures } from './mergedPullRequestCancellationPersistence.js';
 import {
@@ -70,7 +71,7 @@ export async function cancelMergedPullRequestTasks(
     code: MERGE_CANCELLATION_REASON_CODE,
     message: `Task cancelled because pull request ${repository}#${prNumber} was merged.`,
     source: MERGE_CANCELLATION_REASON_CODE,
-    requestId: `${correlationId}:${MERGE_CANCELLATION_REASON_CODE}:${repository}#${prNumber}`,
+    requestId: buildMergeCancellationRequestId(correlationId, repository, prNumber),
   };
 
   // Try to persist the merge gate before cancellation so no new PR work starts
@@ -150,7 +151,9 @@ export async function cancelMergedPullRequestTasks(
     failures,
     log,
   });
-  throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${errorMessage}`);
+  if (hasCancellationRequestFailures(failures)) {
+    throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${errorMessage}`);
+  }
 }
 
 function getRecheckDelays(recheckDelaysMs?: readonly number[], recheckDelayMs?: number): readonly number[] {
@@ -368,6 +371,22 @@ function buildTaskCancellation(
 
   return {
     ...cancellation,
-    requestId: `${cancellation.requestId}:${taskId}`,
+    requestId: `${cancellation.requestId}:${hashRequestIdPart(taskId)}`,
   };
+}
+
+function buildMergeCancellationRequestId(
+  correlationId: string,
+  repository: string,
+  prNumber: number,
+): string {
+  return `merge-pr-cancel:${hashRequestIdPart(`${correlationId}:${repository}#${prNumber}`)}`;
+}
+
+function hashRequestIdPart(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 32);
+}
+
+function hasCancellationRequestFailures(failures: MergeTaskCancellationFailure[]): boolean {
+  return failures.some((failure) => failure.status !== 202);
 }
