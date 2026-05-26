@@ -139,6 +139,65 @@ test('stopTaskExecution rejects queued cancellation when removal loses the race 
   assert.strictEqual(redisClient.del.mock.calls.length, 0);
 });
 
+test('stopTaskExecution persists cancellation when a queued job starts during removal', async () => {
+  const redisClient = createRedisClient();
+  const queueJob = {
+    id: 'queue-job-active-race-1',
+    remove: mock.fn(async () => {
+      throw new Error('job lock missing');
+    }),
+    getState: mock.fn(async () => 'active'),
+  };
+
+  const result = await stopTaskExecution(
+    'queue-job-active-race-1',
+    {
+      redisClient,
+      requestedBy: 'system',
+      cancellation: {
+        code: 'pull_request_merged',
+        message: 'Task cancelled because pull request #42 was merged.',
+      },
+    },
+    {
+      loadStopTaskContext: async () => ({
+        normalizedTaskId: 'queue-job-active-race-1',
+        state: null,
+        currentState: null,
+        queueJob: queueJob as never,
+        queueState: 'waiting',
+        taskId: 'task-active-race-1',
+        abortTaskIds: ['task-active-race-1', 'queue-job-active-race-1'],
+      }),
+      ensureTaskStateForCancellation: async () => null,
+      getStateManager: () => ({ markTaskCancelled }) as never,
+      stopDockerContainer,
+    },
+  );
+
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(result.stopVerified, false);
+  assert.strictEqual(result.cancellationRequested, true);
+  assert.strictEqual(result.queueState, 'active');
+  assert.strictEqual(markTaskCancelled.mock.calls.length, 1);
+  assert.strictEqual(redisClient.set.mock.calls.length, 2);
+  assert.deepStrictEqual(redisClient.messages.map((message) => message.content), [
+    'Cancellation requested. Worker shutdown is still in progress.',
+  ]);
+  assert.deepStrictEqual(markTaskCancelled.mock.calls[0]?.arguments[2].historyMetadata, {
+    cancellation: {
+      code: 'pull_request_merged',
+      message: 'Task cancelled because pull request #42 was merged.',
+    },
+    requestedBy: 'system',
+    containerStopped: false,
+    jobRemoved: false,
+    stopVerified: false,
+    abortSignalArmed: true,
+    queueState: 'active',
+  });
+});
+
 test('stopTaskExecution leaves abort-armed container-backed tasks non-terminal when the container stop fails', async () => {
   const redisClient = createRedisClient();
   const result = await stopTaskExecution(

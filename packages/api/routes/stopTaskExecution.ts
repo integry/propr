@@ -184,6 +184,12 @@ export async function stopTaskExecution(
   const resolvedQueueState = resolveCancellationQueueState(stopOutcome, effectiveQueueState);
   const stopVerified = isStopVerified({ stopOutcome, shouldAbort });
   const cancellationRequested = shouldAbort && !stopVerified;
+  const persistUnverifiedQueueCancellation = shouldPersistUnverifiedQueueCancellation({
+    activity,
+    queueRemovalFirst,
+    queueStateAfterFailure: queueRemoval.queueStateAfterFailure,
+    cancellationRequested,
+  });
   assertStopApplied({
     activity,
     currentState: context.currentState,
@@ -203,6 +209,20 @@ export async function stopTaskExecution(
       level: 'info',
       metadata: buildStopMessageMetadata(cancellation, requestedBy),
     });
+    if (persistUnverifiedQueueCancellation) {
+      await persistTaskCancellation({
+        taskId: context.taskId,
+        requestedBy,
+        cancellation,
+        queueState: resolvedQueueState,
+        containerId: stopOutcome.containerId,
+        containerStopped: stopOutcome.containerStopped,
+        jobRemoved: stopOutcome.jobRemoved,
+        stopVerified,
+        abortSignalArmed: shouldAbort,
+        deps,
+      });
+    }
   }
 
   if (stopVerified) {
@@ -325,6 +345,18 @@ function shouldRemoveQueueJobBeforeAbort(activity: ReturnType<typeof getStopTask
     && !activity.isRunningTaskState
     && !activity.isQueueActive
     && !activity.hasContainerToStop;
+}
+
+function shouldPersistUnverifiedQueueCancellation(params: {
+  activity: ReturnType<typeof getStopTaskActivity>;
+  queueRemovalFirst: boolean;
+  queueStateAfterFailure: string | null;
+  cancellationRequested: boolean;
+}): boolean {
+  return params.cancellationRequested
+    && params.queueRemovalFirst
+    && params.activity.isQueuePreStart
+    && params.queueStateAfterFailure === 'active';
 }
 
 function buildStopMessageMetadata(

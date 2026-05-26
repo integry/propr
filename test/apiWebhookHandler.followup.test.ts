@@ -86,6 +86,35 @@ test('duplicate deliveries are rejected before merged-PR cancellation side effec
     assert.strictEqual(processor.mock.calls.length, 0);
 });
 
+test('merged-PR cancellation dependency failures do not consume delivery reservations', async () => {
+    const request = createSignedRequest({
+        action: 'closed',
+        repository: { full_name: 'owner/repo' },
+        pull_request: { number: 42, merged: true },
+    }, 'secret');
+    const response = createResponse();
+    const redis = {
+        set: mock.fn(async () => 'OK'),
+        get: mock.fn(async () => null),
+        del: mock.fn(async () => 1),
+    };
+    const processor = mock.fn(async () => {});
+
+    await handleWebhookRequest(request as never, response as never, {
+        webhookSecret: 'secret',
+        redis,
+        processor,
+        correlationId: 'cid-missing-deps',
+        supportedEvents: ['pull_request'],
+        isMergedPullRequestClose: () => true,
+    });
+
+    assert.strictEqual(response.statusCode, 500);
+    assert.strictEqual(response.body, 'Merge task cancellation dependencies are not configured.');
+    assert.strictEqual(redis.set.mock.calls.length, 0);
+    assert.strictEqual(processor.mock.calls.length, 0);
+});
+
 test('merged-PR cancellation failures shorten the delivery reservation TTL when reservation release fails', async () => {
     const request = createSignedRequest({
         action: 'closed',

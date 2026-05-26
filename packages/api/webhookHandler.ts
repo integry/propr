@@ -96,6 +96,42 @@ function isWebhookPayloadObject(payload: unknown): payload is ParsedWebhookPaylo
   return typeof payload === 'object' && payload !== null && !Array.isArray(payload);
 }
 
+function resolveMergeTaskCancellationDeps(params: {
+  isMergedPrClose: boolean;
+  mergeTaskCancellation: MergeTaskCancellationDeps | undefined;
+  payload: ParsedWebhookPayload;
+  rawDeliveryId: string;
+  rawEvent: string;
+  correlationId: string;
+  res: Response;
+}): MergeTaskCancellationDeps | null | undefined {
+  const {
+    isMergedPrClose,
+    mergeTaskCancellation,
+    payload,
+    rawDeliveryId,
+    rawEvent,
+    correlationId,
+    res,
+  } = params;
+  if (!isMergedPrClose) {
+    return undefined;
+  }
+  if (mergeTaskCancellation) {
+    return mergeTaskCancellation;
+  }
+
+  logger.error({
+    correlationId,
+    deliveryId: rawDeliveryId,
+    event: rawEvent,
+    repository: payload.repository?.full_name,
+    prNumber: payload.pull_request?.number,
+  }, 'Merged PR webhook received without merge task cancellation dependencies');
+  res.status(500).send('Merge task cancellation dependencies are not configured.');
+  return null;
+}
+
 async function verifyWebhookSignature(
   req: Request,
   res: Response,
@@ -346,6 +382,20 @@ export async function handleWebhookRequest(
     deliveryId: rawDeliveryId,
   }, 'Webhook event received');
 
+  const isMergedPrClose = rawEvent === 'pull_request' && isMergedPullRequestCloseFn(payload);
+  const mergeTaskCancellationDeps = resolveMergeTaskCancellationDeps({
+    isMergedPrClose,
+    mergeTaskCancellation,
+    payload,
+    rawDeliveryId,
+    rawEvent,
+    correlationId,
+    res,
+  });
+  if (mergeTaskCancellationDeps === null) {
+    return;
+  }
+
   // --- Replay protection: reject duplicate delivery IDs via Redis NX ---
   const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
   const deliveryReservationToken = crypto.randomUUID();
@@ -356,21 +406,7 @@ export async function handleWebhookRequest(
     return;
   }
 
-  const isMergedPrClose = rawEvent === 'pull_request' && isMergedPullRequestCloseFn(payload);
-
-  if (isMergedPrClose) {
-    if (!mergeTaskCancellation) {
-      logger.error({
-        correlationId,
-        deliveryId: rawDeliveryId,
-        event: rawEvent,
-        repository: payload.repository?.full_name,
-        prNumber: payload.pull_request?.number,
-      }, 'Merged PR webhook received without merge task cancellation dependencies');
-      res.status(500).send('Merge task cancellation dependencies are not configured.');
-      return;
-    }
-
+  if (mergeTaskCancellationDeps) {
     try {
       await cancelMergedPullRequestTasksOrRetry({
         payload,
@@ -380,7 +416,7 @@ export async function handleWebhookRequest(
         deliveryKey,
         deliveryReservationToken,
         redis,
-        mergeTaskCancellation,
+        mergeTaskCancellation: mergeTaskCancellationDeps,
         cancelMergedPullRequestTasksFn,
       });
     } catch {
