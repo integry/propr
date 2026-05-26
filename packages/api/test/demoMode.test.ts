@@ -11,12 +11,16 @@ import { demoModeReadOnlyMiddleware, getDemoUser, isDemoMode } from '../demoMode
 import { buildDemoRepositoryMetadata } from '../routes/demoRepositoryMetadata.js';
 import { createGitHubRoutes } from '../routes/githubRoutes.js';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
+import { createRepoTodoRoutes } from '../routes/repoTodoRoutes.js';
 
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 const originalFrontendUrl = process.env.FRONTEND_URL;
 
 async function cleanupDemoData(): Promise<void> {
+  if (await db.schema.hasTable('repo_todos')) await db('repo_todos').delete();
+  if (await db.schema.hasTable('repo_todo_categories')) await db('repo_todo_categories').delete();
   if (await db.schema.hasTable('task_drafts')) await db('task_drafts').delete();
+  if (await db.schema.hasTable('repositories')) await db('repositories').delete();
   if (await db.schema.hasTable('system_configs')) await db('system_configs').where({ key: 'repos_to_monitor' }).delete();
 }
 
@@ -149,7 +153,7 @@ test('demo repository metadata resolves enabled configured repositories', () => 
   });
 });
 
-test('/api/github/repos returns enabled configured repositories in demo mode', async () => {
+test('/api/github/repos returns configured and persisted repositories in demo mode', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   await db.migrate.latest();
   await configManager.saveMonitoredRepos([
@@ -157,12 +161,40 @@ test('/api/github/repos returns enabled configured repositories in demo mode', a
     { id: '2', name: 'integry/private', enabled: true },
     { id: '3', name: 'integry/disabled', enabled: false },
   ]);
+  await db('task_drafts').insert({
+    draft_id: randomUUID(),
+    user_id: 'real-user',
+    repository: 'integry/from-draft',
+    name: 'Persisted draft'
+  });
+  await db('repositories').insert({
+    full_name: 'integry/indexed',
+    branch: 'release',
+    indexing_status: 'completed',
+  });
   const routes = createGitHubRoutes({ redisClient: {} as never, taskQueue: {} as never, db });
   const { response, body } = createJsonResponse();
 
   await routes.getRepos({ user: getDemoUser() } as Request, response);
 
-  assert.deepEqual(body(), { repos: ['integry/private', 'integry/propr'] });
+  assert.deepEqual(body(), { repos: ['integry/from-draft', 'integry/indexed', 'integry/private', 'integry/propr'] });
+});
+
+test('demo repository metadata resolves persisted repositories without configured allowlists', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  await db.migrate.latest();
+  await db('repositories').insert({
+    full_name: 'integry/indexed',
+    branch: 'release',
+    indexing_status: 'completed',
+  });
+  const routes = createGitHubRoutes({ redisClient: {} as never, taskQueue: {} as never, db });
+  const { response, body, status } = createJsonResponse();
+
+  await routes.getBranches({ params: { owner: 'integry', repo: 'indexed' }, user: getDemoUser() } as unknown as Request, response);
+
+  assert.equal(status(), 200);
+  assert.deepEqual(body(), { branches: ['release'], defaultBranch: 'release' });
 });
 
 test('planner demo reads use the curated database without owner or repository allowlists', async () => {
@@ -199,6 +231,42 @@ test('planner demo reads use the curated database without owner or repository al
 
   assert.equal(otherOwnerResponse.status(), 200);
   assert.equal((otherOwnerResponse.body() as { draft_id: string }).draft_id, otherOwnerDraftId);
+});
+
+test('repo todo demo reads use the curated database without owner filters', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  await db.migrate.latest();
+  const demoCategoryId = randomUUID();
+  const otherCategoryId = randomUUID();
+  const demoTodoId = randomUUID();
+  const otherTodoId = randomUUID();
+  await db('repo_todo_categories').insert([
+    { category_id: demoCategoryId, user_id: 'demo', repository: 'integry/propr', name: 'Demo category', order_index: 0 },
+    { category_id: otherCategoryId, user_id: 'real-user', repository: 'integry/propr', name: 'Other category', order_index: 1 },
+  ]);
+  await db('repo_todos').insert([
+    { todo_id: demoTodoId, user_id: 'demo', repository: 'integry/propr', category_id: demoCategoryId, content: 'Demo todo', order_index: 0 },
+    { todo_id: otherTodoId, user_id: 'real-user', repository: 'integry/propr', category_id: otherCategoryId, content: 'Other todo', order_index: 1 },
+  ]);
+  const routes = createRepoTodoRoutes();
+  const categoryResponse = createJsonResponse();
+  const todoResponse = createJsonResponse();
+  const singleTodoResponse = createJsonResponse();
+
+  await routes.getCategories({ query: { repository: 'integry/propr' }, user: getDemoUser() } as unknown as Request, categoryResponse.response);
+  await routes.getTodos({ query: { repository: 'integry/propr' }, user: getDemoUser() } as unknown as Request, todoResponse.response);
+  await routes.getTodo({ params: { todoId: otherTodoId }, user: getDemoUser() } as unknown as Request, singleTodoResponse.response);
+
+  assert.deepEqual(
+    (categoryResponse.body() as { categories: Array<{ categoryId: string }> }).categories.map(category => category.categoryId).sort(),
+    [demoCategoryId, otherCategoryId].sort()
+  );
+  assert.deepEqual(
+    (todoResponse.body() as { todos: Array<{ todoId: string }> }).todos.map(todo => todo.todoId).sort(),
+    [demoTodoId, otherTodoId].sort()
+  );
+  assert.equal(singleTodoResponse.status(), 200);
+  assert.equal((singleTodoResponse.body() as { todoId: string }).todoId, otherTodoId);
 });
 
 test('auth demo-mode metadata endpoint reports startup environment value', async () => {
