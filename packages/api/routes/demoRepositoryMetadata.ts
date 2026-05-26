@@ -6,7 +6,7 @@ export interface DemoRepositoryMetadata {
   repository: string;
   defaultBranch: string;
   branches: string[];
-  isPrivate: boolean;
+  isPrivate: boolean | null;
   description: string;
 }
 
@@ -18,8 +18,24 @@ function normalizeBranchName(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function parseConfiguredDemoRepositories(): Set<string> {
+  return new Set((process.env.PROPR_DEMO_REPOSITORIES || '')
+    .split(',')
+    .map(name => name.trim())
+    .filter(Boolean));
+}
+
+function isDemoVisibleRepo(repo: RepoConfig, allowlist = parseConfiguredDemoRepositories()): boolean {
+  return repo.enabled === true && (repo.demoVisible === true || allowlist.has(repo.name));
+}
+
+function getDemoVisibleRepos(repos: RepoConfig[]): RepoConfig[] {
+  const allowlist = parseConfiguredDemoRepositories();
+  return repos.filter(repo => isDemoVisibleRepo(repo, allowlist));
+}
+
 export function buildDemoRepositoryMetadata(repos: RepoConfig[], repoFullName: string): DemoRepositoryMetadata | null {
-  const matchingRepos = repos.filter(repo => repo.name === repoFullName);
+  const matchingRepos = getDemoVisibleRepos(repos).filter(repo => repo.name === repoFullName);
   if (matchingRepos.length === 0) return null;
 
   const configuredBranches = matchingRepos.map(repo => normalizeBranchName(repo.baseBranch)).filter((branch): branch is string => Boolean(branch));
@@ -32,7 +48,7 @@ export function buildDemoRepositoryMetadata(repos: RepoConfig[], repoFullName: s
     repository: repoFullName,
     defaultBranch,
     branches,
-    isPrivate: false,
+    isPrivate: null,
     description: 'Repository metadata is unavailable in read-only demo mode.'
   };
 }
@@ -43,5 +59,5 @@ export async function loadDemoRepositoryMetadata(repoFullName: string): Promise<
 
 export async function loadDemoConfiguredRepoNames(): Promise<string[]> {
   const repos = await configManager.loadMonitoredReposRaw();
-  return sortNames(Array.from(new Set(repos.map(repo => repo.name).filter(Boolean))));
+  return sortNames(Array.from(new Set(getDemoVisibleRepos(repos).map(repo => repo.name).filter(Boolean))));
 }

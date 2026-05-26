@@ -26,5 +26,5 @@ export function normalizeOptionalBranchName(value: unknown, fieldName: string, r
   if (!trimmed) return { ok: true, value: undefined };
   return isSafeBranchName(trimmed)
     ? { ok: true, value: trimmed }
-    : { ok: false, error: `Invalid ${fieldName} format for ${repoName}: contains unsafe branch-name characters` };
+    : { ok: false, error: `Invalid ${fieldName} format for ${repoName}: contains whitespace or branch characters unsupported by ProPR` };
 }

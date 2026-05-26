@@ -22,11 +22,37 @@ function getValidatedRedirectTo(redirectTo: string | undefined): string | undefi
     if (!redirectTo) return undefined;
     try {
         const url = new URL(redirectTo);
-        if (url.hostname.endsWith('.gitfix.dev') || url.hostname === 'gitfix.dev') return redirectTo;
+        if ((url.protocol === 'https:' || url.protocol === 'http:') && isAllowedRedirectHost(url.hostname)) return redirectTo;
     } catch {
         // Invalid URL, ignore
     }
     return undefined;
+}
+
+function parseHostFromUrlOrHostname(value: string): string | null {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try {
+        return new URL(trimmed).hostname;
+    } catch {
+        return trimmed.replace(/^\./, '');
+    }
+}
+
+function getAllowedRedirectHosts(): string[] {
+    const hosts = [
+        process.env.FRONTEND_URL,
+        process.env.COOKIE_DOMAIN,
+        ...(process.env.AUTH_REDIRECT_ALLOWED_HOSTS || '').split(',')
+    ].map(value => value ? parseHostFromUrlOrHostname(value) : null)
+      .filter((value): value is string => Boolean(value));
+    return Array.from(new Set(hosts));
+}
+
+function isAllowedRedirectHost(hostname: string): boolean {
+    return getAllowedRedirectHosts().some(allowedHost =>
+        hostname === allowedHost || hostname.endsWith(`.${allowedHost}`)
+    );
 }
 
 declare global {
@@ -47,8 +73,8 @@ declare global {
 }
 
 export function setupAuth(app: Express): void {
-    const demoMode = isDemoMode();
-    const requiredEnvVars = demoMode
+    const demoModeAtStartup = isDemoMode();
+    const requiredEnvVars = demoModeAtStartup
         ? ['FRONTEND_URL']
         : ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL'];
     const missingVars = requiredEnvVars.filter(v => !process.env[v]);
@@ -56,7 +82,7 @@ export function setupAuth(app: Express): void {
         throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
     }
 
-    if (!demoMode) {
+    if (!demoModeAtStartup) {
         // Create Redis client for session store
         // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
         const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
@@ -133,7 +159,7 @@ export function setupAuth(app: Express): void {
     app.get('/api/auth/github', (req: Request, res: Response, next: NextFunction) => {
         const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
 
-        if (demoMode) {
+        if (demoModeAtStartup) {
             res.redirect(redirectTo || `${process.env.FRONTEND_URL}/`);
             return;
         }
@@ -144,7 +170,7 @@ export function setupAuth(app: Express): void {
         passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] })(req, res, next);
     });
 
-    if (demoMode) {
+    if (demoModeAtStartup) {
         app.get('/api/auth/github/callback', (req: Request, res: Response) => {
             const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
             res.redirect(redirectTo || `${process.env.FRONTEND_URL}/`);
@@ -175,7 +201,7 @@ export function setupAuth(app: Express): void {
     }
 
     app.get('/api/auth/logout', (req: Request, res: Response) => {
-        if (demoMode) {
+        if (demoModeAtStartup) {
             res.redirect(`${process.env.FRONTEND_URL}/`);
             return;
         }
@@ -199,7 +225,7 @@ export function setupAuth(app: Express): void {
     });
 
     app.get('/api/auth/demo-mode', (_req: Request, res: Response) => {
-        res.json({ demoMode: isDemoMode() });
+        res.json({ demoMode: demoModeAtStartup });
     });
 
 }
@@ -377,8 +403,15 @@ export async function refreshGitHubTokenIfNeeded(req: Request, force: boolean = 
 
 export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {
     if (isDemoMode()) {
-        // Demo mode is deployment-wide: every caller receives the synthetic read-only user,
-        // including requests that provide CLI bearer tokens.
+        res.set('X-ProPR-Demo-Mode', 'true');
+        if (req.headers.authorization?.startsWith('Bearer ')) {
+            res.status(403).json({
+                error: 'Bearer token authentication is disabled in demo mode',
+                code: 'DEMO_MODE_BEARER_AUTH_DISABLED'
+            });
+            return;
+        }
+        // Demo mode is deployment-wide: browser callers receive the synthetic read-only user.
         (req as Request & { user: GitHubUser }).user = getDemoUser();
         return next();
     }

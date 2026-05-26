@@ -4,6 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
+import { parseTruthyEnvValue } from '@propr/shared';
 
 interface InstallationAuth {
     token: string;
@@ -13,8 +14,7 @@ interface InstallationAuth {
 const appId = process.env.GH_APP_ID;
 const privateKeyPath = process.env.GH_PRIVATE_KEY_PATH;
 const installationId = process.env.GH_INSTALLATION_ID;
-const demoModeValue = process.env.PROPR_DEMO_MODE?.trim().toLowerCase();
-const demoMode = demoModeValue === 'true' || demoModeValue === '1';
+const demoMode = parseTruthyEnvValue(process.env.PROPR_DEMO_MODE);
 
 let privateKey: string | undefined;
 const PaginatedOctokit = Octokit.plugin(paginateRest);

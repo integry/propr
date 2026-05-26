@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
-import { randomUUID } from 'crypto';
 import * as configManager from '@propr/core';
 import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY } from './configHelpers.js';
@@ -9,7 +8,7 @@ import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
 import { saveSettingsWithRollback } from './configRoutesSettings.js';
 import type { ConfigLockContext } from './configHelpers.js';
-import { normalizeOptionalBranchName } from './branchNameValidation.js';
+import { normalizeRepoConfig } from './configRepoValidation.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -77,39 +76,6 @@ function success<T>(value: T): ValidationResult<T> {
 }
 function failure<T>(error: string): ValidationResult<T> {
   return { ok: false, error };
-}
-function normalizeOptionalString(value: unknown, fieldName: string, repoName: string): ValidationResult<string | undefined> {
-  if (value === undefined) return success(undefined);
-  if (typeof value !== 'string') return failure(`Invalid ${fieldName} format for ${repoName}: must be a string`);
-  return success(value.trim() || undefined);
-}
-function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonitor> {
-  const candidate = repo as Partial<RepoToMonitor> | undefined;
-  const name = candidate?.name;
-  const enabled = candidate?.enabled;
-  if (
-    typeof name !== 'string' ||
-    !name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/) ||
-    typeof enabled !== 'boolean'
-  ) {
-    return failure(`Invalid repository format: ${JSON.stringify(repo)}`);
-  }
-
-  const alias = normalizeOptionalString(candidate?.alias, 'alias', name);
-  if (!alias.ok) return alias;
-  const baseBranch = normalizeOptionalString(candidate?.baseBranch, 'baseBranch', name);
-  if (!baseBranch.ok) return baseBranch;
-  const defaultBranch = normalizeOptionalBranchName(candidate?.defaultBranch, 'defaultBranch', name);
-  if (!defaultBranch.ok) return defaultBranch;
-
-  return success({
-    id: candidate?.id || randomUUID(),
-    name,
-    enabled,
-    alias: alias.value,
-    baseBranch: baseBranch.value,
-    defaultBranch: defaultBranch.value
-  });
 }
 function parseNormalizedStringArrayResult(value: unknown, fieldName: string): ValidationResult<string[]> {
   const validated = validateStringArray(value, fieldName);

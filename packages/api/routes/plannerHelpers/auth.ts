@@ -5,7 +5,8 @@
 import { Response } from 'express';
 import { Knex } from 'knex';
 import { getGitHubInstallationToken } from '@propr/core';
-import { isDemoMode } from '../../demoMode.js';
+import { isDemoDraftOwnerIdVisible, isDemoMode } from '../../demoMode.js';
+import { loadDemoConfiguredRepoNames } from '../demoRepositoryMetadata.js';
 import type { DbCheck, DbCheckResult, HandlerFunction, OwnershipResult } from './types.js';
 
 export function checkDbAndAuth(
@@ -43,8 +44,9 @@ export async function verifyDraftOwnership(
   userId: string,
   selectFields: string[] = ['user_id']
 ): Promise<OwnershipResult> {
-  // Always include user_id for ownership verification
-  const fieldsWithUserId = selectFields.includes('user_id') ? selectFields : ['user_id', ...selectFields];
+  // Always include ownership and repository fields for authorization checks.
+  const requiredFields = isDemoMode() ? ['user_id', 'repository'] : ['user_id'];
+  const fieldsWithUserId = Array.from(new Set([...requiredFields, ...selectFields]));
   const existing = await db('task_drafts')
     .select(...fieldsWithUserId)
     .where({ draft_id: draftId })
@@ -54,7 +56,12 @@ export async function verifyDraftOwnership(
     return { authorized: false, error: 'Draft not found', status: 404 };
   }
 
-  if (!isDemoMode() && existing.user_id !== userId) {
+  if (isDemoMode()) {
+    const visibleRepos = await loadDemoConfiguredRepoNames();
+    if (!isDemoDraftOwnerIdVisible(existing.user_id) || !visibleRepos.includes(existing.repository)) {
+      return { authorized: false, error: 'Draft not found', status: 404 };
+    }
+  } else if (existing.user_id !== userId) {
     return { authorized: false, error: 'Unauthorized', status: 403 };
   }
 

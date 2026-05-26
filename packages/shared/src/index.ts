@@ -48,4 +48,4 @@ export {
   type UsageMetrics,
 } from './usageTypes.js';
 
-export { DEMO_MODE_READ_ONLY_CODE } from './demoMode.js';
+export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';

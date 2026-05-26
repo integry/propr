@@ -191,7 +191,62 @@ setupAuth(app);
 let redisClient: RedisClientType;
 let taskQueue: Queue;
 
+function createDemoRedisClient(): RedisClientType {
+  const strings = new Map<string, string>();
+  const lists = new Map<string, string[]>();
+  const sets = new Map<string, Set<string>>();
+  return {
+    connect: async () => undefined,
+    quit: async () => 'OK',
+    ping: async () => 'PONG',
+    get: async (key: string) => strings.get(key) ?? null,
+    set: async (key: string, value: string) => { strings.set(key, value); return 'OK'; },
+    del: async (key: string) => Number(strings.delete(key) || lists.delete(key) || sets.delete(key)),
+    publish: async () => 0,
+    lPush: async (key: string, value: string) => {
+      const list = lists.get(key) ?? [];
+      list.unshift(value);
+      lists.set(key, list);
+      return list.length;
+    },
+    rPush: async (key: string, value: string) => {
+      const list = lists.get(key) ?? [];
+      list.push(value);
+      lists.set(key, list);
+      return list.length;
+    },
+    lTrim: async (key: string, start: number, stop: number) => {
+      const list = lists.get(key) ?? [];
+      lists.set(key, list.slice(start, stop + 1));
+      return 'OK';
+    },
+    lRange: async (key: string, start: number, stop: number) => (lists.get(key) ?? []).slice(start, stop + 1),
+    sMembers: async (key: string) => Array.from(sets.get(key) ?? []),
+    sCard: async (key: string) => (sets.get(key) ?? new Set()).size,
+  } as unknown as RedisClientType;
+}
+
+function createDemoTaskQueue(): Queue {
+  return {
+    add: async () => { throw new Error('Task queue is disabled in demo mode'); },
+    close: async () => undefined,
+    getWaitingCount: async () => 0,
+    getActiveCount: async () => 0,
+    getCompletedCount: async () => 0,
+    getFailedCount: async () => 0,
+    getDelayedCount: async () => 0,
+    getJob: async () => null,
+  } as unknown as Queue;
+}
+
 async function initRedis(): Promise<void> {
+  if (demoMode) {
+    redisClient = createDemoRedisClient();
+    taskQueue = createDemoTaskQueue();
+    console.log('Demo mode: Redis and task queue clients are disabled; using read-only in-memory facades');
+    return;
+  }
+
   redisClient = createClient({
     url: redisRuntimeConfig.url
   });
