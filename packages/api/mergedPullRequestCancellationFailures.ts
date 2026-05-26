@@ -12,6 +12,7 @@ export function buildMergeTaskCancellationFailure(taskId: string, error: unknown
       message: stopError.message,
       currentState: getStopErrorState(stopError.body, 'currentState'),
       queueState: getStopErrorState(stopError.body, 'queueState'),
+      ...(isAbortRequestedOnly(stopError.body) ? { abortRequestedOnly: true } : {}),
     };
   }
 
@@ -35,7 +36,7 @@ export function buildUnverifiedStopFailure(
     message: 'Stop request was recorded; worker or queue-state confirmation is still pending.',
     currentState,
     queueState,
-    stopRequested: true,
+    abortRequestedOnly: true,
   };
 }
 
@@ -83,4 +84,9 @@ function formatMergeTaskCancellationFailure(failure: MergeTaskCancellationFailur
 
 function getStopErrorState(body: Record<string, unknown>, key: 'currentState' | 'queueState'): string | null {
   return typeof body[key] === 'string' ? body[key] : null;
+}
+
+function isAbortRequestedOnly(body: Record<string, unknown>): boolean {
+  return body.cancellationRequested === true
+    && body.stopVerified === false;
 }

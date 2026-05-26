@@ -40,12 +40,12 @@ export interface MergeTaskCancellationFailure {
   message: string;
   currentState: string | null;
   queueState: string | null;
-  stopRequested?: boolean;
+  abortRequestedOnly?: boolean;
 }
 
 const MERGE_TASK_STOP_CONCURRENCY = 5;
 const MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS = 30;
-const MERGE_TASK_RECHECK_DELAYS_MS = [1000, 5000, 30000] as const;
+const MERGE_TASK_RECHECK_DELAYS_MS = [500, 1500, 3000] as const;
 const MERGE_CANCELLATION_REASON_CODE = 'pull_request_merged';
 
 export async function cancelMergedPullRequestTasks(
@@ -96,6 +96,7 @@ export async function cancelMergedPullRequestTasks(
       prNumber,
       log,
     });
+    throwMergedStatePersistenceErrorIfAny(mergedStateError);
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
   }
@@ -134,6 +135,7 @@ export async function cancelMergedPullRequestTasks(
         prNumber,
         log,
       });
+      throwMergedStatePersistenceErrorIfAny(mergedStateError);
       return;
     }
 
@@ -169,10 +171,7 @@ export async function cancelMergedPullRequestTasks(
     prNumber,
     log,
   });
-  const blockingFailures = failures.filter((failure) => failure.stopRequested !== true);
-  if (blockingFailures.length > 0) {
-    throw new Error(`Failed to cancel ${blockingFailures.length} merged PR task(s): ${formatMergedTaskCancellationWarning(blockingFailures)}`);
-  }
+  throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${formatMergedTaskCancellationWarning(failures)}`);
 }
 
 function getRecheckDelays(recheckDelaysMs?: readonly number[], recheckDelayMs?: number): readonly number[] {
@@ -255,7 +254,13 @@ function logMergedStatePersistenceWarning(error: Error | null, params: {
     repository: params.repository,
     prNumber: params.prNumber,
     error: error.message,
-  }, 'Merged PR gate persistence failed; cancellation webhook will not be failed after best-effort task cancellation');
+  }, 'Merged PR gate persistence failed; cancellation webhook will fail after best-effort task cancellation');
+}
+
+function throwMergedStatePersistenceErrorIfAny(error: Error | null): void {
+  if (error) {
+    throw error;
+  }
 }
 
 async function stopMergeTasks(params: {
@@ -293,6 +298,7 @@ async function stopMergeTasks(params: {
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
           forceQueueScan: shouldForceQueueScanForMergeTask(task),
+          requireVerifiedStop: true,
         });
         if (!result.stopVerified) {
           const failure = buildUnverifiedStopFailure(task.taskId, result.currentState, result.queueState);

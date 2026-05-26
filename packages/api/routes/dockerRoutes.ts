@@ -92,15 +92,8 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
           timeout: 10000,
           maxBuffer: 10 * 1024 * 1024,
         });
-        if (stderr.trim().length > 0) {
-          logger.warn({
-            taskId: req.params.taskId,
-            containerId: containerMetadata.containerId,
-            stderr,
-          }, 'Docker logs command wrote stderr; omitting it from task log response');
-        }
         res.setHeader('Content-Type', 'text/plain');
-        res.send(stdout);
+        res.send(formatDockerLogsResponse(stdout, stderr));
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -313,6 +306,10 @@ function formatDockerContainerStatus(state: DockerContainerState): string {
   }
 
   return 'stopped';
+}
+
+function formatDockerLogsResponse(stdout: string, stderr: string): string {
+  return `${stdout}${stderr}`;
 }
 
 function formatDockerContainerStateDescription(state: DockerContainerState): string {

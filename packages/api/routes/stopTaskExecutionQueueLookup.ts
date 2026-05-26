@@ -9,7 +9,7 @@ import type { QueueJobData } from './stopTaskExecutionContext.js';
 
 const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const QUEUE_SCAN_PAGE_SIZE = 500;
-const QUEUE_SCAN_MAX_JOBS = 20000;
+const QUEUE_SCAN_MAX_JOBS = 12000;
 
 export async function findQueueJobByTaskIdScan(
   queue: Awaited<ReturnType<typeof getIssueQueue>>,
