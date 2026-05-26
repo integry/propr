@@ -39,6 +39,10 @@ export function buildUnverifiedStopFailure(
 }
 
 export function formatMergedTaskCancellationWarning(failures: MergeTaskCancellationFailure[]): string {
+  if (failures.length === 0) {
+    return 'Merged PR task cancellation completed with no remaining unverified tasks.';
+  }
+
   const visibleFailures = failures.slice(0, MAX_FAILURE_DETAILS_IN_ERROR);
   const hiddenFailureCount = failures.length - visibleFailures.length;
   const suffix = hiddenFailureCount > 0

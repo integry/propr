@@ -87,13 +87,13 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
 
       try {
-        const { stdout } = await execFileAsync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
+        const { stdout, stderr } = await execFileAsync('docker', ['logs', '--tail', String(tail), containerMetadata.containerId], {
           encoding: 'utf8',
           timeout: 10000,
           maxBuffer: 10 * 1024 * 1024,
         });
         res.setHeader('Content-Type', 'text/plain');
-        res.send(stdout);
+        res.send(`${stdout}${stderr}`);
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -123,6 +123,9 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         redisClient,
         requestedBy,
       });
+      if (result.cancellationRequested && !result.stopVerified) {
+        res.status(202);
+      }
       res.json(formatStopTaskRouteResponse(result));
     } catch (error) {
       if (isStopTaskExecutionError(error)) {

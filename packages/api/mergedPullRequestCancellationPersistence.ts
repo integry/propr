@@ -1,4 +1,5 @@
 import { logger } from '@propr/core';
+import { createHash } from 'crypto';
 import type { StopTaskExecutionOptions } from './routes/stopTaskExecution.js';
 import type { MergeTaskCancellationFailure } from './mergedPullRequestCancellation.js';
 
@@ -20,7 +21,7 @@ export async function persistMergedCancellationFailures(params: {
     failures,
     log,
   } = params;
-  const failureKey = `webhook:merged-pr-cancellation:${repository}#${prNumber}:${correlationId}`;
+  const failureKey = buildMergedCancellationFailureKey(repository, prNumber, correlationId);
   try {
     await redisClient.set(
       failureKey,
@@ -41,4 +42,14 @@ export async function persistMergedCancellationFailures(params: {
       error: error instanceof Error ? error.message : String(error),
     }, 'Failed to persist merged PR cancellation verification details');
   }
+}
+
+export function buildMergedCancellationFailureKey(
+  repository: string,
+  prNumber: number,
+  correlationId: string,
+): string {
+  const repositoryKey = encodeURIComponent(`${repository}#${prNumber}`);
+  const correlationHash = createHash('sha256').update(correlationId).digest('hex').slice(0, 32);
+  return `webhook:merged-pr-cancellation:${repositoryKey}:${correlationHash}`;
 }
