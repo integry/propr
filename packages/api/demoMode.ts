@@ -5,12 +5,14 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 export const DEMO_MODE_ACCESS_TOKEN = 'demo-mode';
 
 export function isDemoMode(): boolean {
-  return process.env.PROPR_DEMO_MODE === 'true';
+  const value = process.env.PROPR_DEMO_MODE?.trim().toLowerCase();
+  return value === 'true' || value === '1';
 }
 
 export function getDemoUser(): Express.User {
   return {
     id: 'demo',
+    login: 'demo',
     username: 'demo',
     displayName: 'Demo User',
     email: null,
@@ -19,8 +21,12 @@ export function getDemoUser(): Express.User {
   };
 }
 
+function isDemoModeMetadataRequest(req: Request): boolean {
+  return req.path === '/auth/demo-mode' || req.originalUrl === '/api/auth/demo-mode';
+}
+
 export function demoModeReadOnlyMiddleware(req: Request, res: Response, next: NextFunction): void {
-  if (!isDemoMode() || !MUTATING_METHODS.has(req.method.toUpperCase())) {
+  if (!isDemoMode() || !MUTATING_METHODS.has(req.method.toUpperCase()) || isDemoModeMetadataRequest(req)) {
     next();
     return;
   }

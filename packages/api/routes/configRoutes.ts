@@ -9,6 +9,7 @@ import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
 import { saveSettingsWithRollback } from './configRoutesSettings.js';
 import type { ConfigLockContext } from './configHelpers.js';
+import { normalizeOptionalBranchName } from './branchNameValidation.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -98,7 +99,7 @@ function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonitor> {
   if (!alias.ok) return alias;
   const baseBranch = normalizeOptionalString(candidate?.baseBranch, 'baseBranch', name);
   if (!baseBranch.ok) return baseBranch;
-  const defaultBranch = normalizeOptionalString(candidate?.defaultBranch, 'defaultBranch', name);
+  const defaultBranch = normalizeOptionalBranchName(candidate?.defaultBranch, 'defaultBranch', name);
   if (!defaultBranch.ok) return defaultBranch;
 
   return success({

@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { fetch } from 'undici';
 import { getGitHubInstallationToken } from '../auth/githubAuth.js';
@@ -11,7 +11,7 @@ import type {
 } from '@octokit/webhooks-types';
 import type { WebhookEventType } from './webhookHandler.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // --- PREVIEW ENVIRONMENT CONFIGURATION ---
 // This implements the "Singleton Processor" pattern for webhook routing.
@@ -132,7 +132,7 @@ async function handleInfrastructureEvents(
             const githubToken = await getGitHubInstallationToken();
             const githubRepository = prEvent.repository.full_name;
             // Use absolute path - scripts are copied to /usr/src/app/scripts/ in the container
-            await execAsync(`/usr/src/app/scripts/deploy-pr.sh ${prNumber}`, {
+            await execFileAsync('/usr/src/app/scripts/deploy-pr.sh', [String(prNumber)], {
                 env: {
                     ...process.env,
                     GITHUB_TOKEN: githubToken,
@@ -141,7 +141,7 @@ async function handleInfrastructureEvents(
             });
         } else if (action === 'closed') {
             log.info({ prNumber, action }, 'Triggering Preview Teardown...');
-            await execAsync(`/usr/src/app/scripts/teardown-pr.sh ${prNumber}`);
+            await execFileAsync('/usr/src/app/scripts/teardown-pr.sh', [String(prNumber)]);
         }
     } catch (err) {
         log.error({ err, prNumber }, 'Failed to execute infrastructure script');

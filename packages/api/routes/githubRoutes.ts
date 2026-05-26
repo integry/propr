@@ -5,43 +5,14 @@ import { Knex } from 'knex';
 import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import { RequestError } from '@octokit/request-error';
-import * as configManager from '@propr/core';
 import { refreshGitHubTokenIfNeeded } from '../auth.js';
 import { isDemoMode } from '../demoMode.js';
+import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
   db: Knex;
-}
-
-function sortNames(names: string[]): string[] {
-  return [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-}
-
-function getConfiguredDefaultBranch(
-  repos: Awaited<ReturnType<typeof configManager.loadMonitoredReposRaw>>,
-  fullName: string
-): string | undefined {
-  const repoWithDefault = repos.find(repo => repo.name === fullName && typeof repo.defaultBranch === 'string');
-  return repoWithDefault?.defaultBranch;
-}
-
-async function getDemoConfiguredRepoNames(): Promise<string[]> {
-  const repos = await configManager.loadMonitoredReposRaw();
-  return sortNames(Array.from(new Set(repos.map(repo => repo.name).filter(Boolean))));
-}
-
-async function getDemoConfiguredBranches(owner: string, repoName: string): Promise<{ branches: string[]; defaultBranch: string }> {
-  const fullName = `${owner}/${repoName}`;
-  const repos = await configManager.loadMonitoredReposRaw();
-  const configuredBranches = repos
-    .filter(repo => repo.name === fullName && repo.baseBranch)
-    .map(repo => repo.baseBranch as string);
-  const defaultBranch = getConfiguredDefaultBranch(repos, fullName) || configuredBranches[0] || 'main';
-  const branches = sortNames(Array.from(new Set(configuredBranches)));
-  const orderedBranches = branches.filter(branch => branch !== defaultBranch);
-  return { branches: branches.length > 0 ? [defaultBranch, ...orderedBranches] : [defaultBranch], defaultBranch };
 }
 
 /**
@@ -128,7 +99,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   async function getRepos(req: Request, res: Response): Promise<void> {
     try {
       if (isDemoMode()) {
-        res.json({ repos: await getDemoConfiguredRepoNames() });
+        res.json({ repos: await loadDemoConfiguredRepoNames() });
         return;
       }
 
@@ -185,7 +156,12 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       }
 
       if (isDemoMode()) {
-        res.json(await getDemoConfiguredBranches(owner, repo));
+        const metadata = await loadDemoRepositoryMetadata(`${owner}/${repo}`);
+        if (!metadata) {
+          res.status(404).json({ error: 'Repository is not configured in demo mode' });
+          return;
+        }
+        res.json({ branches: metadata.branches, defaultBranch: metadata.defaultBranch });
         return;
       }
 

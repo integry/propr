@@ -13,7 +13,8 @@ interface InstallationAuth {
 const appId = process.env.GH_APP_ID;
 const privateKeyPath = process.env.GH_PRIVATE_KEY_PATH;
 const installationId = process.env.GH_INSTALLATION_ID;
-const demoMode = process.env.PROPR_DEMO_MODE === 'true';
+const demoModeValue = process.env.PROPR_DEMO_MODE?.trim().toLowerCase();
+const demoMode = demoModeValue === 'true' || demoModeValue === '1';
 
 let privateKey: string | undefined;
 const PaginatedOctokit = Octokit.plugin(paginateRest);

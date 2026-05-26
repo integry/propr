@@ -8,6 +8,7 @@ import { getDemoUser, isDemoMode } from './demoMode.js';
 
 interface GitHubUser {
     id: string;
+    login?: string;
     username: string;
     displayName: string;
     email: string | null;
@@ -33,6 +34,7 @@ declare global {
     namespace Express {
         interface User {
             id: string;
+            login?: string;
             username: string;
             displayName: string;
             email: string | null;
@@ -110,6 +112,7 @@ export function setupAuth(app: Express): void {
 
             const user: GitHubUser = {
                 id: profile.id,
+                login: profile.username || '',
                 username: profile.username || '',
                 displayName: profile.displayName,
                 email: profile.emails && profile.emails[0] ? profile.emails[0].value : null,
@@ -173,7 +176,7 @@ export function setupAuth(app: Express): void {
 
     app.get('/api/auth/logout', (req: Request, res: Response) => {
         if (demoMode) {
-            res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
+            res.redirect(`${process.env.FRONTEND_URL}/`);
             return;
         }
 
@@ -260,6 +263,7 @@ async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
 
         const user: GitHubUser = {
             id: String(profile.id),
+            login: profile.login,
             username: profile.login,
             displayName: profile.name || profile.login,
             email: profile.email,

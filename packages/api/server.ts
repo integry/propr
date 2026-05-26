@@ -99,8 +99,8 @@ function assertNoDuplicateRoutes(routes: RouteEntry[]): void {
   });
 }
 
-const redisRuntimeConfig = demoMode ? null : getRedisRuntimeConfig();
-const ioRedisClient = redisRuntimeConfig ? new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options) : null;
+const redisRuntimeConfig = getRedisRuntimeConfig();
+const ioRedisClient = demoMode ? null : new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options);
 
 const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
@@ -192,7 +192,6 @@ let redisClient: RedisClientType;
 let taskQueue: Queue;
 
 async function initRedis(): Promise<void> {
-  if (!redisRuntimeConfig) throw new Error('Redis initialization is disabled in demo mode');
   redisClient = createClient({
     url: redisRuntimeConfig.url
   });
@@ -206,35 +205,6 @@ async function initRedis(): Promise<void> {
   });
   
   console.log('Connected to Redis');
-}
-
-function initDemoReadOnlyDependencies(): void {
-  const emptyRedisClient = {
-    ping: async () => { throw new Error('Redis disabled in demo mode'); },
-    get: async () => null,
-    set: async () => null,
-    del: async () => 0,
-    lRange: async () => [],
-    lPush: async () => 0,
-    lTrim: async () => 'OK',
-    rPush: async () => 0,
-    sCard: async () => 0,
-    sMembers: async () => [],
-    publish: async () => 0,
-    quit: async () => 'OK',
-  };
-  const emptyTaskQueue = {
-    add: async () => { throw new Error('Task queue disabled in demo mode'); },
-    getJob: async () => null,
-    getWaitingCount: async () => 0,
-    getActiveCount: async () => 0,
-    getCompletedCount: async () => 0,
-    getFailedCount: async () => 0,
-    getDelayedCount: async () => 0,
-    close: async () => undefined,
-  };
-  redisClient = emptyRedisClient as unknown as RedisClientType;
-  taskQueue = emptyTaskQueue as unknown as Queue;
 }
 
 function setupRoutes(): void {
@@ -360,20 +330,16 @@ async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
     try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
-    if (demoMode) {
-      console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution infrastructure');
-      initDemoReadOnlyDependencies();
-    } else {
-      await initRedis();
-    }
+    if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
+    await initRedis();
+    try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
+    try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
     setupRoutes();
     if (!demoMode) {
       const socketService = initSocketService(httpServer, validateCorsOrigin);
       console.log('[WebSocket] Socket.IO server initialized');
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
       console.log('[WebSocket] Queue features initialized for real-time updates');
-      try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
-      try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
       await initializeUltrafix(getIoRedisClient());
       try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
       setInterval(async () => {

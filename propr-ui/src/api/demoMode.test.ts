@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import { apiFetch, getDemoModeStatus, setDemoModeEnabled } from './proprApi';
 
 describe('demo mode API helpers', () => {
@@ -24,7 +25,7 @@ describe('demo mode API helpers', () => {
     setDemoModeEnabled(true);
 
     await expect(apiFetch('/api/planner/generate', { method: 'POST' })).rejects.toMatchObject({
-      code: 'DEMO_MODE_READ_ONLY',
+      code: DEMO_MODE_READ_ONLY_CODE,
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });

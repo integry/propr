@@ -3,38 +3,13 @@
  */
 
 import { Request, Response } from 'express';
-import * as configManager from '@propr/core';
 import { isDemoMode } from '../../../demoMode.js';
 import type { OwnershipResult, ValidateContextRepositoryResponse } from '../types.js';
 import { getRepoAuthToken } from '../auth.js';
+import { loadDemoRepositoryMetadata } from '../../demoRepositoryMetadata.js';
 
 interface RepositoryInfoDeps {
   verifyOwnership: (draftId: string, userId: string, fields: string[]) => Promise<OwnershipResult>;
-}
-
-async function getDemoRepositoryInfo(repoFullName: string): Promise<{
-  repository: string;
-  defaultBranch: string;
-  branches: string[];
-  isPrivate: boolean;
-  description: string;
-}> {
-  const repos = await configManager.loadMonitoredReposRaw();
-  const configuredBranches = repos
-    .filter(repo => repo.name === repoFullName && repo.baseBranch)
-    .map(repo => repo.baseBranch as string);
-  const repoWithDefault = repos.find(repo => repo.name === repoFullName && typeof repo.defaultBranch === 'string');
-  const defaultBranch = repoWithDefault?.defaultBranch || configuredBranches[0] || 'main';
-  const branches = Array.from(new Set(configuredBranches))
-    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
-    .filter(branch => branch !== defaultBranch);
-  return {
-    repository: repoFullName,
-    defaultBranch,
-    branches: configuredBranches.length > 0 ? [defaultBranch, ...branches] : [defaultBranch],
-    isPrivate: false,
-    description: 'Repository metadata is unavailable in read-only demo mode.'
-  };
 }
 
 export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
@@ -72,7 +47,12 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
       }
 
       if (isDemoMode()) {
-        res.json(await getDemoRepositoryInfo(repoFullName));
+        const metadata = await loadDemoRepositoryMetadata(repoFullName);
+        if (!metadata) {
+          res.status(404).json({ error: 'Repository is not configured in demo mode' });
+          return;
+        }
+        res.json(metadata);
         return;
       }
 
