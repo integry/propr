@@ -24,7 +24,7 @@ describe('demo mode API helpers', () => {
     setDemoModeEnabled(true);
 
     await expect(apiFetch('/api/planner/generate', { method: 'POST' })).rejects.toMatchObject({
-      name: 'DEMO_MODE_READ_ONLY',
+      code: 'DEMO_MODE_READ_ONLY',
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });

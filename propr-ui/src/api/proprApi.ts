@@ -14,14 +14,20 @@ export const setDemoModeEnabled = (enabled: boolean): void => {
 };
 
 export class DemoModeReadOnlyError extends Error {
+  readonly code = DEMO_MODE_READ_ONLY_CODE;
+
   constructor(message = 'Demo mode is read-only. Write and AI execution actions are disabled.') {
     super(message);
-    this.name = DEMO_MODE_READ_ONLY_CODE;
+    this.name = 'DemoModeReadOnlyError';
   }
 }
 
 export const isDemoModeReadOnlyError = (error: unknown): error is DemoModeReadOnlyError =>
-  error instanceof Error && error.name === DEMO_MODE_READ_ONLY_CODE;
+  error instanceof DemoModeReadOnlyError || (
+    error instanceof Error &&
+    'code' in error &&
+    (error as { code?: unknown }).code === DEMO_MODE_READ_ONLY_CODE
+  );
 
 const getRequestMethod = (input: RequestInfo | URL, init?: RequestInit): string => {
   if (init?.method) return init.method.toUpperCase();

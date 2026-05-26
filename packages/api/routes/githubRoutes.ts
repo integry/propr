@@ -30,9 +30,10 @@ async function getDemoConfiguredBranches(owner: string, repoName: string): Promi
   const configuredBranches = repos
     .filter(repo => repo.name === fullName && repo.baseBranch)
     .map(repo => repo.baseBranch as string);
+  const defaultBranch = configuredBranches[0] || 'main';
   const branches = sortNames(Array.from(new Set(configuredBranches)));
-  const defaultBranch = branches[0] || 'main';
-  return { branches: branches.length > 0 ? branches : [defaultBranch], defaultBranch };
+  const orderedBranches = branches.filter(branch => branch !== defaultBranch);
+  return { branches: branches.length > 0 ? [defaultBranch, ...orderedBranches] : [defaultBranch], defaultBranch };
 }
 
 /**

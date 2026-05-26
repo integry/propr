@@ -1,8 +1,9 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
+import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import { ensureAuthenticated } from '../packages/api/auth.ts';
-import { demoModeReadOnlyMiddleware } from '../packages/api/demoMode.ts';
+import { demoModeReadOnlyMiddleware, DEMO_MODE_ACCESS_TOKEN } from '../packages/api/demoMode.ts';
 
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 
@@ -34,7 +35,9 @@ test('demo mode attaches a synthetic user without OAuth', async () => {
   app.use('/api', ensureAuthenticated);
   app.get('/api/auth/user', (req, res) => res.json(req.user));
 
-  const response = await fetchFromApp(app, '/api/auth/user');
+  const response = await fetchFromApp(app, '/api/auth/user', {
+    headers: { Authorization: 'Bearer real-token' }
+  });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     id: 'demo',
@@ -42,7 +45,7 @@ test('demo mode attaches a synthetic user without OAuth', async () => {
     displayName: 'Demo User',
     email: null,
     avatarUrl: null,
-    accessToken: 'demo-mode',
+    accessToken: DEMO_MODE_ACCESS_TOKEN,
   });
 });
 
@@ -66,21 +69,7 @@ test('demo mode allows GET requests and blocks mutating requests', async () => {
   });
   assert.equal(postResponse.status, 403);
   assert.deepEqual(await postResponse.json(), {
-    code: 'DEMO_MODE_READ_ONLY',
-    error: 'Demo mode is read-only. Mutating requests are disabled.'
-  });
-});
-
-test('demo mode middleware blocks webhook POST requests outside /api', async () => {
-  process.env.PROPR_DEMO_MODE = 'true';
-  const app = express();
-  app.post('/webhook', demoModeReadOnlyMiddleware);
-
-  const response = await fetchFromApp(app, '/webhook', { method: 'POST', body: '{}' });
-
-  assert.equal(response.status, 403);
-  assert.deepEqual(await response.json(), {
-    code: 'DEMO_MODE_READ_ONLY',
+    code: DEMO_MODE_READ_ONLY_CODE,
     error: 'Demo mode is read-only. Mutating requests are disabled.'
   });
 });
