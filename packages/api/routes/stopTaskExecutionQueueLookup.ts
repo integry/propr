@@ -9,6 +9,7 @@ import type { QueueJobData } from './stopTaskExecutionContext.js';
 
 const TRACKED_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const QUEUE_SCAN_PAGE_SIZE = 500;
+const QUEUE_SCAN_MAX_JOBS = 20000;
 
 export async function findQueueJobByTaskIdScan(
   queue: Awaited<ReturnType<typeof getIssueQueue>>,
@@ -34,6 +35,16 @@ export async function findQueueJobByTaskIdScan(
 
       if (jobs.length < QUEUE_SCAN_PAGE_SIZE) {
         break;
+      }
+
+      if (scannedJobs >= QUEUE_SCAN_MAX_JOBS) {
+        logger.warn({
+          taskReferenceCandidates: uniqueCandidates,
+          scannedJobs,
+          maxJobs: QUEUE_SCAN_MAX_JOBS,
+          durationMs: Date.now() - startedAt,
+        }, 'Stopping fallback queued task-id scan after reaching scan limit');
+        return null;
       }
 
       start += jobs.length;

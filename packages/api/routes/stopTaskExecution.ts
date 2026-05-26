@@ -177,7 +177,7 @@ export async function stopTaskExecution(
     queueStateAfterFailure: preparedStop.queueStateAfterFailure,
     createError: (status, body) => new StopTaskExecutionError(status, body),
   });
-  if (cancellationRequested && requireVerifiedStop) {
+  if (cancellationRequested) {
     await persistPendingCancellationRequest({
       redisClient,
       context,
@@ -212,7 +212,7 @@ export async function stopTaskExecution(
     deps,
   });
 
-  const shouldFinalizeCancellation = stopVerified || cancellationRequested;
+  const shouldFinalizeCancellation = stopVerified;
   if (shouldFinalizeCancellation) {
     await pushStopConversationMessage(redisClient, context.taskId, {
       type: 'system',

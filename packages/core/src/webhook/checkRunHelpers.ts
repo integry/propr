@@ -639,6 +639,7 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
 const TRACKED_PR_QUEUE_STATES = ['waiting', 'active', 'delayed', 'paused', 'prioritized', 'waiting-children'] as const;
 const TRACKED_PR_QUEUE_STATE_SET = new Set<string>(TRACKED_PR_QUEUE_STATES);
 const PR_QUEUE_SCAN_PAGE_SIZE = 1000;
+const PR_QUEUE_SCAN_MAX_JOBS = 20000;
 
 export interface PRTaskActivity {
     taskId: string;
@@ -686,6 +687,7 @@ export async function getActiveTasksForPR(
             prNumber,
             taskMap,
             taskAliases,
+            log,
         });
 
         const activeTasksQuery = database('tasks')
@@ -730,6 +732,7 @@ async function addQueuedPrJobsFromLiveQueueScan(params: {
     prNumber: number;
     taskMap: Map<string, PRTaskActivity>;
     taskAliases: Map<string, string>;
+    log: Pick<typeof logger, 'info' | 'warn'>;
 }): Promise<void> {
     const {
         queue,
@@ -737,11 +740,14 @@ async function addQueuedPrJobsFromLiveQueueScan(params: {
         prNumber,
         taskMap,
         taskAliases,
+        log,
     } = params;
+    let scannedJobs = 0;
     for (const trackedQueueState of TRACKED_PR_QUEUE_STATES) {
         let start = 0;
         let jobs = await queue.getJobs([trackedQueueState], start, start + PR_QUEUE_SCAN_PAGE_SIZE - 1);
         while (jobs.length > 0) {
+            scannedJobs += jobs.length;
             for (const job of jobs) {
                 const jobData = job.data as unknown as Record<string, unknown>;
                 if (getRepositoryFromJobData(jobData) !== repository || getPrNumberFromJobData(jobData) !== prNumber) {
@@ -763,6 +769,15 @@ async function addQueuedPrJobsFromLiveQueueScan(params: {
             start += jobs.length;
             if (jobs.length < PR_QUEUE_SCAN_PAGE_SIZE) {
                 break;
+            }
+            if (scannedJobs >= PR_QUEUE_SCAN_MAX_JOBS) {
+                log.warn({
+                    repository,
+                    prNumber,
+                    scannedJobs,
+                    maxJobs: PR_QUEUE_SCAN_MAX_JOBS,
+                }, 'Stopping PR queue scan after reaching scan limit');
+                return;
             }
             jobs = await queue.getJobs([trackedQueueState], start, start + PR_QUEUE_SCAN_PAGE_SIZE - 1);
         }

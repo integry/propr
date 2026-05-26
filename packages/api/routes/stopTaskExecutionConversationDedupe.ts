@@ -85,12 +85,6 @@ export async function releaseConversationMessageFingerprintReservation(
 function buildConversationMessageFingerprint(message: Record<string, unknown>): string {
   const messageWithoutTimestamp = { ...message };
   delete messageWithoutTimestamp.timestamp;
-  const metadata = messageWithoutTimestamp.metadata;
-  if (isMergedPullRequestCancellationMetadata(metadata)) {
-    const normalizedMetadata = { ...metadata };
-    delete normalizedMetadata.cancellationRequestId;
-    messageWithoutTimestamp.metadata = normalizedMetadata;
-  }
   return JSON.stringify(sortRecord(messageWithoutTimestamp));
 }
 
@@ -125,16 +119,6 @@ function getConversationMessageRequestId(message: Record<string, unknown>): stri
 }
 
 function getConversationMessageDedupeIdentity(message: Record<string, unknown>): string {
-  if (isMergedPullRequestCancellationMetadata(message.metadata)) {
-    return 'reason:pull_request_merged';
-  }
-
   const requestId = getConversationMessageRequestId(message);
   return requestId !== null ? `request:${requestId}` : `fingerprint:${buildConversationMessageFingerprint(message)}`;
-}
-
-function isMergedPullRequestCancellationMetadata(metadata: unknown): metadata is Record<string, unknown> {
-  return metadata !== null
-    && typeof metadata === 'object'
-    && (metadata as Record<string, unknown>).reasonCode === 'pull_request_merged';
 }
