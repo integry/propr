@@ -50,7 +50,7 @@ export async function persistMergedCancellationFailures(params: {
   }
 }
 
-export function buildMergedCancellationFailureKey(
+function buildMergedCancellationFailureKey(
   repository: string,
   prNumber: number,
   correlationId: string,
@@ -60,7 +60,7 @@ export function buildMergedCancellationFailureKey(
   return `webhook:merged-pr-cancellation:${repositoryKey}:${correlationHash}`;
 }
 
-export function buildLatestMergedCancellationFailureKey(
+function buildLatestMergedCancellationFailureKey(
   repository: string,
   prNumber: number,
 ): string {

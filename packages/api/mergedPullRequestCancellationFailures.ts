@@ -35,6 +35,7 @@ export function buildUnverifiedStopFailure(
     message: 'Stop request was recorded; worker or queue-state confirmation is still pending.',
     currentState,
     queueState,
+    stopRequested: true,
   };
 }
 

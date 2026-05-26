@@ -31,6 +31,7 @@ export interface MergeTaskCancellationDeps {
 
 interface MergeTaskActivity {
   taskId: string;
+  state?: string;
 }
 
 export interface MergeTaskCancellationFailure {
@@ -39,6 +40,7 @@ export interface MergeTaskCancellationFailure {
   message: string;
   currentState: string | null;
   queueState: string | null;
+  stopRequested?: boolean;
 }
 
 const MERGE_TASK_STOP_CONCURRENCY = 5;
@@ -88,7 +90,12 @@ export async function cancelMergedPullRequestTasks(
 
   const initialTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
   if (initialTasks.length === 0) {
-    throwIfMergedStatePersistenceFailed(mergedStateError);
+    logMergedStatePersistenceWarning(mergedStateError, {
+      correlationId,
+      repository,
+      prNumber,
+      log,
+    });
     log.info({ correlationId, repository, prNumber }, 'No active PR tasks to cancel after merge');
     return;
   }
@@ -121,7 +128,12 @@ export async function cancelMergedPullRequestTasks(
     remainingTasks = await loadStoppablePrTasks(loadActiveTasks, repository, prNumber, log);
     clearResolvedFailures(failuresByTaskId, remainingTasks);
     if (remainingTasks.length === 0) {
-      throwIfMergedStatePersistenceFailed(mergedStateError);
+      logMergedStatePersistenceWarning(mergedStateError, {
+        correlationId,
+        repository,
+        prNumber,
+        log,
+      });
       return;
     }
 
@@ -151,8 +163,15 @@ export async function cancelMergedPullRequestTasks(
     failures,
     log,
   });
-  if (failures.length > 0) {
-    throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${errorMessage}`);
+  logMergedStatePersistenceWarning(mergedStateError, {
+    correlationId,
+    repository,
+    prNumber,
+    log,
+  });
+  const blockingFailures = failures.filter((failure) => failure.stopRequested !== true);
+  if (blockingFailures.length > 0) {
+    throw new Error(`Failed to cancel ${blockingFailures.length} merged PR task(s): ${formatMergedTaskCancellationWarning(blockingFailures)}`);
   }
 }
 
@@ -221,10 +240,22 @@ async function persistMergedStateBestEffort(params: {
   }
 }
 
-function throwIfMergedStatePersistenceFailed(error: Error | null): void {
-  if (error) {
-    throw error;
+function logMergedStatePersistenceWarning(error: Error | null, params: {
+  correlationId: string;
+  repository: string;
+  prNumber: number;
+  log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+}): void {
+  if (!error) {
+    return;
   }
+
+  params.log.warn({
+    correlationId: params.correlationId,
+    repository: params.repository,
+    prNumber: params.prNumber,
+    error: error.message,
+  }, 'Merged PR gate persistence failed; cancellation webhook will not be failed after best-effort task cancellation');
 }
 
 async function stopMergeTasks(params: {
@@ -261,8 +292,7 @@ async function stopMergeTasks(params: {
           requestedBy: 'system',
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
-          forceQueueScan: true,
-          requireVerifiedStop: true,
+          forceQueueScan: shouldForceQueueScanForMergeTask(task),
         });
         if (!result.stopVerified) {
           const failure = buildUnverifiedStopFailure(task.taskId, result.currentState, result.queueState);
@@ -359,6 +389,17 @@ function buildFinalFailures(
 
 function dedupeTasks<T extends { taskId: string }>(tasks: T[]): T[] {
   return [...new Map(tasks.map((task) => [task.taskId, task])).values()];
+}
+
+function shouldForceQueueScanForMergeTask(task: MergeTaskActivity): boolean {
+  return task.state !== undefined && [
+    'waiting',
+    'active',
+    'delayed',
+    'paused',
+    'prioritized',
+    'waiting-children',
+  ].includes(task.state);
 }
 
 function buildTaskCancellation(

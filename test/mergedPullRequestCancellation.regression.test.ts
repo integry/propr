@@ -124,7 +124,7 @@ test('cancelMergedPullRequestTasks waits until abort-only worker stops disappear
   assert.deepEqual(stopCalls, ['task-1']);
 });
 
-test('cancelMergedPullRequestTasks rejects after recording pending abort-only stops that stay active', async () => {
+test('cancelMergedPullRequestTasks records pending abort-only stops that stay active without failing the webhook', async () => {
   process.env.NODE_ENV = 'test';
   const { cancelMergedPullRequestTasks } = await import('../packages/api/mergedPullRequestCancellation.ts');
   const markMergedCalls: Array<{ repository: string; prNumber: number }> = [];
@@ -132,41 +132,38 @@ test('cancelMergedPullRequestTasks rejects after recording pending abort-only st
   const stopCalls: string[] = [];
 
   const persistedWarnings: string[] = [];
-  await assert.rejects(
-    cancelMergedPullRequestTasks(
-      {
-        action: 'closed',
-        repository: { full_name: 'acme/widgets' },
-        pull_request: { number: 42, merged: true },
+  await cancelMergedPullRequestTasks(
+    {
+      action: 'closed',
+      repository: { full_name: 'acme/widgets' },
+      pull_request: { number: 42, merged: true },
+    },
+    'corr-1',
+    {
+      redisClient: {
+        async set(key: string) {
+          persistedWarnings.push(key);
+          return 'OK';
+        },
+      } as never,
+      markPullRequestMerged: async (_redisClient, repository, prNumber) => {
+        markMergedCalls.push({ repository, prNumber });
       },
-      'corr-1',
-      {
-        redisClient: {
-          async set(key: string) {
-            persistedWarnings.push(key);
-            return 'OK';
-          },
-        } as never,
-        markPullRequestMerged: async (_redisClient, repository, prNumber) => {
-          markMergedCalls.push({ repository, prNumber });
-        },
-        getActiveTasksForPR: async () => {
-          loadActiveTasksCalls.push(['task-1']);
-          return [{ taskId: 'task-1', state: 'claude_execution' }];
-        },
-        stopTaskExecution: async (taskId) => {
-          stopCalls.push(taskId);
-          return createStopResult();
-        },
-        recheckDelayMs: 0,
-        log: {
-          info: () => {},
-          warn: () => {},
-          error: () => {},
-        },
+      getActiveTasksForPR: async () => {
+        loadActiveTasksCalls.push(['task-1']);
+        return [{ taskId: 'task-1', state: 'claude_execution' }];
       },
-    ),
-    /Failed to cancel 1 merged PR task/,
+      stopTaskExecution: async (taskId) => {
+        stopCalls.push(taskId);
+        return createStopResult();
+      },
+      recheckDelayMs: 0,
+      log: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      },
+    },
   );
 
   assert.deepEqual(stopCalls, ['task-1', 'task-1', 'task-1']);

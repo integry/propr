@@ -4,7 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '@propr/core';
 import { loadStopTaskContext, normalizeTaskId, type TaskState } from './stopTaskExecutionContext.js';
-import { stopTaskExecution, isStopTaskExecutionError } from './stopTaskExecution.js';
+import { stopTaskExecution, isStopTaskExecutionError, StopTaskExecutionError } from './stopTaskExecution.js';
 import type { StopTaskExecutionResult } from './stopTaskExecution.js';
 import { validateTaskId, validateTailParam } from './validation.js';
 
@@ -92,8 +92,15 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
           timeout: 10000,
           maxBuffer: 10 * 1024 * 1024,
         });
+        if (stderr.trim().length > 0) {
+          logger.warn({
+            taskId: req.params.taskId,
+            containerId: containerMetadata.containerId,
+            stderr,
+          }, 'Docker logs command wrote stderr; omitting it from task log response');
+        }
         res.setHeader('Content-Type', 'text/plain');
-        res.send(`${stdout}${stderr}`);
+        res.send(stdout);
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -119,10 +126,9 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         ? req.user.username
         : 'user';
       const executeStopTask = deps.stopTaskExecution ?? stopTaskExecution;
-      const result = await executeStopTask(req.params.taskId, {
+      const result = await stopTaskWithFallbackQueueScan(executeStopTask, req.params.taskId, {
         redisClient,
         requestedBy,
-        forceQueueScan: true,
       });
       if (result.cancellationRequested && !result.stopVerified) {
         res.status(202);
@@ -139,6 +145,34 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
   }
 
   return { getDockerInfo, getDockerLogs, stopTask };
+}
+
+async function stopTaskWithFallbackQueueScan(
+  executeStopTask: typeof stopTaskExecution,
+  taskId: string,
+  options: Parameters<typeof stopTaskExecution>[1],
+): Promise<StopTaskExecutionResult> {
+  try {
+    return await executeStopTask(taskId, {
+      ...options,
+      forceQueueScan: false,
+    });
+  } catch (error) {
+    if (!isTaskNotFoundStopError(error)) {
+      throw error;
+    }
+
+    return await executeStopTask(taskId, {
+      ...options,
+      forceQueueScan: true,
+    });
+  }
+}
+
+function isTaskNotFoundStopError(error: unknown): error is StopTaskExecutionError {
+  return isStopTaskExecutionError(error)
+    && error.status === 404
+    && error.body.error === 'Task not found';
 }
 
 async function loadDockerContainerMetadata(
