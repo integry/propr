@@ -109,7 +109,35 @@ describe('cancelMergedPullRequestTasks', () => {
       mockStopTaskExecution.mock.calls[0].arguments[1].cancellation.message,
       'Task cancelled because pull request integry/propr#1463 was merged.',
     );
-    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].forceQueueScan, false);
+    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].forceQueueScan, true);
+  });
+
+  test('force-scans stop lookup for queue-scanned PR jobs whose BullMQ id differs from task id', async () => {
+    const redisClient = createRedisClient();
+    let lookupCount = 0;
+    mockGetActiveTasksForPR.mock.mockImplementation(async () => {
+      lookupCount += 1;
+      return lookupCount === 1 ? [{ taskId: 'owner-repo-1463', state: 'waiting' }] : [];
+    });
+    mockStopTaskExecution.mock.mockImplementation(async (taskId: string, options: { forceQueueScan?: boolean }) => {
+      if (taskId === 'owner-repo-1463' && options.forceQueueScan !== true) {
+        throw new Error('Task not found without queue scan');
+      }
+      return createStopResult(taskId, { jobRemoved: true, queueState: 'removed_before_start' });
+    });
+
+    await cancelMergedPullRequestTasks(createMergedPrPayload(), 'test-correlation-id', {
+      redisClient,
+      markPullRequestMerged: mockMarkPullRequestMerged,
+      getActiveTasksForPR: mockGetActiveTasksForPR,
+      stopTaskExecution: mockStopTaskExecution,
+      recheckDelayMs: 0,
+      log: mockLogger,
+    });
+
+    assert.equal(mockStopTaskExecution.mock.calls.length, 1);
+    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[0], 'owner-repo-1463');
+    assert.equal(mockStopTaskExecution.mock.calls[0].arguments[1].forceQueueScan, true);
   });
 
   test('does nothing for unmerged PR closes', async () => {

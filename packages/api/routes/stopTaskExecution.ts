@@ -347,6 +347,7 @@ async function prepareContextForStop(params: {
   let persistedStopOutcomeDuringStop = false;
 
   if (queueRemovalShouldPrecedeAbort) {
+    context = await ensureContextTaskStateForCancellation(context, deps);
     ({ jobRemoved, queueStateAfterFailure, persistedStopOutcomeDuringStop } = await removeQueuedJobAfterStateCreation({
       context,
       activity,
@@ -362,10 +363,6 @@ async function prepareContextForStop(params: {
     jobRemoved,
     queueStateAfterFailure,
   });
-  if (queueRemovalShouldPrecedeAbort && (jobRemoved || abortSignalArmed)) {
-    context = await ensureContextTaskStateForCancellation(context, deps);
-  }
-
   return {
     context,
     jobRemoved,

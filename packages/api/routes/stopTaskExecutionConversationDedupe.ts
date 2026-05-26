@@ -10,7 +10,7 @@ type RedisConversationClient = {
 
 const RECENT_DUPLICATE_MESSAGE_LIMIT = 100;
 const CONVERSATION_MESSAGE_DEDUPE_KEY_PREFIX = 'conversation:stop-message-dedupe';
-const CONVERSATION_MESSAGE_DEDUPE_TTL_SECONDS = 24 * 60 * 60;
+const CONVERSATION_MESSAGE_DEDUPE_TTL_SECONDS = 10 * 60;
 
 export async function hasDuplicateRecentConversationMessage(
   redisClient: RedisConversationClient,

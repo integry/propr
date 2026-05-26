@@ -40,7 +40,7 @@ interface MergeTaskCancellationFailure {
 
 const MERGE_TASK_STOP_CONCURRENCY = 5;
 const MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS = 30;
-const MERGE_TASK_RECHECK_DELAYS_MS = [1000, 3000, 5000] as const;
+const MERGE_TASK_RECHECK_DELAYS_MS = [250, 750, 1500] as const;
 const MERGE_CANCELLATION_REASON_CODE = 'pull_request_merged';
 const MAX_FAILURE_DETAILS_IN_ERROR = 10;
 
@@ -188,7 +188,7 @@ async function stopMergeTasks(params: {
           requestedBy: 'system',
           cancellation: taskCancellation,
           containerStopTimeoutSeconds: MERGE_TASK_CONTAINER_STOP_TIMEOUT_SECONDS,
-          forceQueueScan: false,
+          forceQueueScan: true,
           requireVerifiedStop: false,
         });
         if (!result.stopVerified) {
@@ -299,13 +299,14 @@ function buildTaskCancellation(
 }
 
 function buildMergeTaskCancellationFailure(taskId: string, error: unknown): MergeTaskCancellationFailure {
-  if (error instanceof StopTaskExecutionError) {
+  const stopError = getStopTaskExecutionError(error);
+  if (stopError) {
     return {
       taskId,
-      status: error.status,
-      message: error.message,
-      currentState: getStopErrorState(error.body, 'currentState'),
-      queueState: getStopErrorState(error.body, 'queueState'),
+      status: stopError.status,
+      message: stopError.message,
+      currentState: getStopErrorState(stopError.body, 'currentState'),
+      queueState: getStopErrorState(stopError.body, 'queueState'),
     };
   }
 
@@ -315,6 +316,31 @@ function buildMergeTaskCancellationFailure(taskId: string, error: unknown): Merg
     message: error instanceof Error ? error.message : String(error),
     currentState: null,
     queueState: null,
+  };
+}
+
+function getStopTaskExecutionError(error: unknown): {
+  status: number;
+  body: Record<string, unknown>;
+  message: string;
+} | null {
+  if (error instanceof StopTaskExecutionError) {
+    return error;
+  }
+
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  const record = error as Record<string, unknown>;
+  if (typeof record.status !== 'number' || !record.body || typeof record.body !== 'object') {
+    return null;
+  }
+
+  return {
+    status: record.status,
+    body: record.body as Record<string, unknown>,
+    message: typeof record.message === 'string' ? record.message : 'Task stop failed',
   };
 }
 

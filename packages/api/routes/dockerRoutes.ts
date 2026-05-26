@@ -14,6 +14,15 @@ interface DockerRoutesDeps {
   stopTaskExecution?: typeof stopTaskExecution;
 }
 
+interface DockerContainerState {
+  Status?: string;
+  Running?: boolean;
+  ExitCode?: number;
+  Error?: string;
+  StartedAt?: string;
+  FinishedAt?: string;
+}
+
 const execFileAsync = promisify(execFile);
 
 export function createDockerRoutes(deps: DockerRoutesDeps) {
@@ -209,15 +218,16 @@ function getDockerContainerMetadata(
 
 async function getContainerInfo(containerId: string, containerName?: string): Promise<Record<string, unknown>> {
   try {
-    const { stdout } = await execFileAsync('docker', ['inspect', '--format', '{{.State.Running}}', containerId], {
+    const { stdout } = await execFileAsync('docker', ['inspect', '--format', '{{json .State}}', containerId], {
       encoding: 'utf8',
       timeout: 5000,
     });
-    const isRunning = stdout.trim() === 'true';
+    const state = parseDockerContainerState(stdout);
     return {
       id: containerId,
       name: containerName ?? null,
-      status: isRunning ? 'running' : 'stopped',
+      status: formatDockerContainerStatus(state),
+      state,
       logsAvailable: true,
     };
   } catch (error) {
@@ -233,6 +243,28 @@ async function getContainerInfo(containerId: string, containerName?: string): Pr
       error: `Failed to get container info: ${(error as Error).message}`,
     };
   }
+}
+
+function parseDockerContainerState(stdout: string): DockerContainerState {
+  try {
+    const parsed = JSON.parse(stdout.trim()) as DockerContainerState;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function formatDockerContainerStatus(state: DockerContainerState): string {
+  if (state.Running === true) {
+    return 'running';
+  }
+
+  const status = typeof state.Status === 'string' && state.Status.length > 0 ? state.Status : 'stopped';
+  if (typeof state.ExitCode === 'number' && status === 'exited') {
+    return `${status} (code ${state.ExitCode})`;
+  }
+
+  return status;
 }
 
 function getErrorLogFields(error: unknown): {

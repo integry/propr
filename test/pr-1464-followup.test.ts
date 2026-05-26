@@ -562,6 +562,66 @@ test('ensureTaskStateForCancellation reconstructs queue-only PR jobs from reposi
   }]);
 });
 
+test('ensureTaskStateForCancellation continues when an existing task has a different job id', async () => {
+  const createdStates: string[] = [];
+  const insertChain = {
+    onConflict() {
+      return {
+        async ignore() {},
+      };
+    },
+  };
+  const taskQuery = {
+    insert() {
+      return insertChain;
+    },
+    where() {
+      return {
+        andWhere() {
+          return this;
+        },
+        async update() {
+          return 0;
+        },
+      };
+    },
+    select() {
+      return {
+        where() {
+          return {
+            async first() {
+              return { task_id: 'queue-existing-task', job_id: 'legacy-job-id' };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const state = await ensureTaskStateForCancellation('queue-existing-task', null, {
+    id: 'pr-comments-batch-owner-repo-42-456',
+    name: 'processPullRequestComment',
+    data: {
+      repository: 'owner/repo',
+      prNumber: 42,
+    },
+  } as never, {
+    getStateManager: () => ({
+      async getTaskState() {
+        return null;
+      },
+      async createTaskState(taskId: string) {
+        createdStates.push(taskId);
+        return { history: [{ state: 'pending' }] };
+      },
+    }) as never,
+    db: (() => taskQuery) as never,
+  });
+
+  assert.deepEqual(state, { history: [{ state: 'pending' }] });
+  assert.deepEqual(createdStates, ['queue-existing-task']);
+});
+
 test('loadStopTaskContext fallback scan matches raw queue job ids before normalization', async () => {
   const rawJobId = 'issue-owner-repo-42-123';
   const queueJob = {

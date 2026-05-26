@@ -361,7 +361,19 @@ async function createTaskStateFromQueueJob(
       initial_job_data: initialJobData,
     });
   if (updatedRows === 0) {
-    throw new Error(`Queued task cancellation could not link persisted task ${taskId} to queue job ${queueJobId}`);
+    const existingTask = await database('tasks')
+      .select('task_id', 'job_id')
+      .where({ task_id: taskId })
+      .first() as { task_id: string; job_id: string | null } | undefined;
+    if (!existingTask) {
+      throw new Error(`Queued task cancellation could not link persisted task ${taskId} to queue job ${queueJobId}`);
+    }
+
+    logger.warn({
+      taskId,
+      queueJobId,
+      existingJobId: existingTask.job_id,
+    }, 'Continuing queued cancellation for task with a different persisted job id');
   }
 
   return taskState;
