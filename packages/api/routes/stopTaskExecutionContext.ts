@@ -127,7 +127,7 @@ export async function ensureTaskStateForCancellation(
   state: TaskState | null,
   queueJob: Job<QueueJobData> | null,
   deps: StopTaskStateDeps,
-): Promise<TaskStateData | null> {
+): Promise<TaskState | null> {
   if (state || !queueJob) {
     return state;
   }
