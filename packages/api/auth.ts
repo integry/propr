@@ -18,6 +18,12 @@ interface GitHubUser {
     tokenExpiresAt?: number;
 }
 
+let authDemoModeAtStartup: boolean | null = null;
+
+function getAuthDemoMode(): boolean {
+    return authDemoModeAtStartup ?? isDemoMode();
+}
+
 function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
     if (!redirectTo) return undefined;
     try {
@@ -74,6 +80,7 @@ declare global {
 
 export function setupAuth(app: Express): void {
     const demoModeAtStartup = isDemoMode();
+    authDemoModeAtStartup = demoModeAtStartup;
     const requiredEnvVars = demoModeAtStartup
         ? ['FRONTEND_URL']
         : ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL'];
@@ -402,7 +409,7 @@ export async function refreshGitHubTokenIfNeeded(req: Request, force: boolean = 
 }
 
 export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {
-    if (isDemoMode()) {
+    if (getAuthDemoMode()) {
         res.set('X-ProPR-Demo-Mode', 'true');
         if (req.headers.authorization?.startsWith('Bearer ')) {
             res.status(403).json({

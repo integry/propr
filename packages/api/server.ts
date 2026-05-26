@@ -195,6 +195,14 @@ function createDemoRedisClient(): RedisClientType {
   const strings = new Map<string, string>();
   const lists = new Map<string, string[]>();
   const sets = new Map<string, Set<string>>();
+  const listRange = (list: string[], start: number, stop: number): string[] => {
+    const normalizedStart = start < 0 ? list.length + start : start;
+    const normalizedStop = stop < 0 ? list.length + stop : stop;
+    const from = Math.max(normalizedStart, 0);
+    const to = Math.min(normalizedStop, list.length - 1);
+    if (from > to || from >= list.length || to < 0) return [];
+    return list.slice(from, to + 1);
+  };
   return {
     connect: async () => undefined,
     quit: async () => 'OK',
@@ -217,10 +225,10 @@ function createDemoRedisClient(): RedisClientType {
     },
     lTrim: async (key: string, start: number, stop: number) => {
       const list = lists.get(key) ?? [];
-      lists.set(key, list.slice(start, stop + 1));
+      lists.set(key, listRange(list, start, stop));
       return 'OK';
     },
-    lRange: async (key: string, start: number, stop: number) => (lists.get(key) ?? []).slice(start, stop + 1),
+    lRange: async (key: string, start: number, stop: number) => listRange(lists.get(key) ?? [], start, stop),
     sMembers: async (key: string) => Array.from(sets.get(key) ?? []),
     sCard: async (key: string) => (sets.get(key) ?? new Set()).size,
   } as unknown as RedisClientType;
@@ -340,7 +348,7 @@ function setupRoutes(): void {
 function setupWebhookRoute(): void {
   if (demoMode) {
     app.post('/webhook', (_req: Request, res: Response) => {
-      res.status(204).send();
+      res.status(403).send('Webhook processing is disabled in demo mode.');
     });
     console.log('[webhook] Webhook endpoint disabled in demo mode');
     return;

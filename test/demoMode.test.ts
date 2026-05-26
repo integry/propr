@@ -35,12 +35,11 @@ test('demo mode attaches a synthetic user without OAuth', async () => {
   app.use('/api', ensureAuthenticated);
   app.get('/api/auth/user', (req, res) => res.json(req.user));
 
-  const response = await fetchFromApp(app, '/api/auth/user', {
-    headers: { Authorization: 'Bearer real-token' }
-  });
+  const response = await fetchFromApp(app, '/api/auth/user');
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     id: 'demo',
+    login: 'demo',
     username: 'demo',
     displayName: 'Demo User',
     email: null,

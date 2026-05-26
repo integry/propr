@@ -20,13 +20,8 @@ export function getDemoUser(): Express.User {
   };
 }
 
-function isDemoModeMetadataRequest(req: Request): boolean {
-  return req.method.toUpperCase() === 'GET' &&
-    (req.path === '/auth/demo-mode' || req.originalUrl === '/api/auth/demo-mode');
-}
-
 export function demoModeReadOnlyMiddleware(req: Request, res: Response, next: NextFunction): void {
-  if (!isDemoMode() || !MUTATING_METHODS.has(req.method.toUpperCase()) || isDemoModeMetadataRequest(req)) {
+  if (!isDemoMode() || !MUTATING_METHODS.has(req.method.toUpperCase())) {
     next();
     return;
   }
