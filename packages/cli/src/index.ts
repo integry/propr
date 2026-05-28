@@ -14,16 +14,16 @@ import {
   createTodoCommand,
   createStatusCommand,
   createQueueCommand,
+  createInitCommand,
 } from "./commands/index.js";
 
 // Re-export configuration module for programmatic use
 export {
   ConfigManager,
   createConfigManager,
-  CLIConfig,
-  ConfigKey,
   DEFAULT_CONFIG,
 } from "./config/index.js";
+export type { CLIConfig, ConfigKey } from "./config/index.js";
 
 // Re-export API module for programmatic use
 export {
@@ -39,6 +39,8 @@ export {
   NetworkError,
   TimeoutError,
   createApiError,
+} from "./api/index.js";
+export type {
   HttpMethod,
   RequestOptions,
   ApiClientOptions,
@@ -50,15 +52,17 @@ export {
 // Re-export utilities module for programmatic use
 export {
   resolveProject,
-  ProjectOptions,
   ProjectResolutionError,
   formatOutput,
   printOutput,
   readJsonInput,
   validateJsonFields,
   isPlainObject,
-  FormatOutputOptions,
   JsonInputError,
+} from "./utils/index.js";
+export type {
+  ProjectOptions,
+  FormatOutputOptions,
 } from "./utils/index.js";
 
 // Load environment variables
@@ -80,6 +84,7 @@ This CLI provides commands to manage plans, tasks, repositories, and agents.
   .addHelpText("after", `
 Quick Start:
   $ propr remote <url>              Set the backend API URL
+  $ propr init                      Scaffold .propr repo setup files
   $ propr login <token>             Authenticate with GitHub
   $ propr use <owner/repo>          Set default project
   $ propr plan list                 View available implementation plans
@@ -101,6 +106,7 @@ Examples:
 
 Command Groups:
   Configuration:  remote, use, login, logout
+  Local Setup:    init
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
   Tasks:          task [list|get|stop|delete|revert]
@@ -285,6 +291,7 @@ Example:
   });
 
 // Register command groups
+program.addCommand(createInitCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createIssueCommand());
 program.addCommand(createTaskCommand());

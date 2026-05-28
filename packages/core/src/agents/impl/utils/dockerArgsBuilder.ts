@@ -11,6 +11,7 @@ import fs from 'fs';
 import logger from '../../../utils/logger.js';
 import { AgentConfig } from '../../types.js';
 import { resolveConfigPath } from '../../../config/configManager.js';
+import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 
 /**
  * Parameters for building Docker arguments.
@@ -151,5 +152,5 @@ export function buildDockerArgs(
         agentAlias: config.alias
     }, 'Docker args built for Claude agent');
 
-    return dockerArgs;
+    return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, config.type);
 }

@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PR_NUMBER=$1
+PR_HAS_DEMO_LABEL="false"
 
 if [ -z "$PR_NUMBER" ]; then
   echo "Usage: $0 <pr_number>"
@@ -70,6 +71,11 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPOSITORY" ]; then
     PR_BRANCH=$(echo "$PR_INFO" | jq -r '.head.ref')
     PR_SHA=$(echo "$PR_INFO" | jq -r '.head.sha')
     PR_CLONE_URL=$(echo "$PR_INFO" | jq -r '.head.repo.clone_url')
+    PR_HAS_DEMO_LABEL=$(printf '%s' "$PR_INFO" | jq -r 'if any(.labels[]?; ((.name // "") | ascii_downcase) == "demo") then "true" else "false" end' 2>/dev/null || echo "false")
+
+    if [ "$PR_HAS_DEMO_LABEL" = "true" ]; then
+        echo "PR has demo label; enabling PROPR_DEMO_MODE"
+    fi
 
     if [ "$PR_BRANCH" = "null" ] || [ -z "$PR_BRANCH" ]; then
         echo "Warning: Could not get PR branch, using current code"
@@ -123,6 +129,21 @@ fi
 
 echo "Using compose command: $DOCKER_COMPOSE"
 
+set_env_var() {
+    env_file=$1
+    env_key=$2
+    env_value=$3
+
+    touch "$env_file"
+    tmp_file="${env_file}.tmp.$$"
+    if grep -q "^${env_key}=" "$env_file"; then
+        sed "s|^${env_key}=.*|${env_key}=${env_value}|" "$env_file" > "$tmp_file"
+        mv "$tmp_file" "$env_file"
+    else
+        printf '\n%s=%s\n' "$env_key" "$env_value" >> "$env_file"
+    fi
+}
+
 # 3. Determine the env file to use (staging .env provides base config)
 # When running inside a container, STAGING_ENV_FILE may point to a host path
 # that doesn't exist inside the container. We need to check multiple locations.
@@ -154,6 +175,23 @@ else
     echo "  Checked: $REPO_ROOT/.env"
     # Don't pass --env-file at all when no env file exists
     ENV_FILE_ARG=""
+fi
+
+# Docker Compose env_file entries are relative to the PR checkout, so keep the
+# checkout .env in sync with the selected staging env and apply PR-specific vars.
+PREVIEW_ENV_FILE="$REPO_ROOT/.env"
+if [ -n "$ENV_FILE" ] && [ "$ENV_FILE" != "$PREVIEW_ENV_FILE" ]; then
+    cp "$ENV_FILE" "$PREVIEW_ENV_FILE"
+fi
+
+if [ "$PR_HAS_DEMO_LABEL" = "true" ]; then
+    set_env_var "$PREVIEW_ENV_FILE" "PROPR_DEMO_MODE" "true"
+fi
+
+if [ -f "$PREVIEW_ENV_FILE" ]; then
+    ENV_FILE="$PREVIEW_ENV_FILE"
+    ENV_FILE_ARG="--env-file $ENV_FILE"
+    echo "Using preview env file: $ENV_FILE"
 fi
 
 # 4. Deploy using the main compose file

@@ -1,6 +1,7 @@
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,
@@ -297,7 +298,7 @@ export class GeminiAgent implements Agent {
         }
         else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Gemini agent will use default'); }
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Gemini agent');
-        return dockerArgs;
+        return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'gemini');
     }
 
     /** Handles an assistant message event, updating current and last complete assistant messages. */

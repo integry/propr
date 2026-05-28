@@ -3,6 +3,7 @@ import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,
@@ -375,6 +376,6 @@ export class CodexAgent implements Agent {
         }
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Codex agent');
 
-        return dockerArgs;
+        return wrapDockerRunArgsWithRepoSetup(dockerArgs, dockerImage, 'codex');
     }
 }

@@ -85,8 +85,8 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
-                defaultModel: 'gpt-5.4'
+                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+                defaultModel: 'gpt-5.5'
             }
         }
     ];
@@ -140,7 +140,7 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     await t.test('Step 2: resolves codex alias to default model', async () => {
         const result = await resolveLlmLabel('codex');
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
-        assert.strictEqual(result.model, 'gpt-5.4', 'Should use codex default model');
+        assert.strictEqual(result.model, 'gpt-5.5', 'Should use codex default model');
     });
 
     await t.test('Step 3: resolves agent prefix match (e.g., gemini-flash)', async () => {
@@ -516,8 +516,8 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
-                defaultModel: 'gpt-5.4'
+                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+                defaultModel: 'gpt-5.5'
             }
         }
     ];
@@ -619,7 +619,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         // codex -> default enabled Codex agent/model
         const codexResults = await resolveReviewModels(['codex']);
         assert.strictEqual(codexResults[0].agentAlias, 'codex');
-        assert.strictEqual(codexResults[0].model, 'gpt-5.4');
+        assert.strictEqual(codexResults[0].model, 'gpt-5.5');
     });
 
     await t.test('assignments include display-friendly labels', async () => {
@@ -639,7 +639,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         assert.strictEqual(geminiAssignment?.displayLabel, 'Gemini 2.5 Pro');
 
         const codexAssignment = results.find(r => r.agentAlias === 'codex');
-        assert.strictEqual(codexAssignment?.displayLabel, 'GPT-5.4');
+        assert.strictEqual(codexAssignment?.displayLabel, 'GPT-5.5');
     });
 
     await t.test('ReviewAssignment has correct shape', async () => {

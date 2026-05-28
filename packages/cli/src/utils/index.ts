@@ -6,9 +6,9 @@
 
 export {
   resolveProject,
-  ProjectOptions,
   ProjectResolutionError,
 } from "./resolveProject.js";
+export type { ProjectOptions } from "./resolveProject.js";
 
 export {
   formatOutput,
@@ -16,6 +16,6 @@ export {
   readJsonInput,
   validateJsonFields,
   isPlainObject,
-  FormatOutputOptions,
   JsonInputError,
 } from "./io.js";
+export type { FormatOutputOptions } from "./io.js";

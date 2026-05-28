@@ -16,6 +16,7 @@ interface GitHubUser {
     accessToken?: string;
     refreshToken?: string;
     tokenExpiresAt?: number;
+    githubAuthInvalid?: boolean;
 }
 interface AllowedRedirectHost {
     host: string;
@@ -78,6 +79,7 @@ declare global {
             accessToken?: string;
             refreshToken?: string;
             tokenExpiresAt?: number;
+            githubAuthInvalid?: boolean;
         }
     }
 }
@@ -324,13 +326,54 @@ async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
 // Time buffer before token expiration to trigger proactive refresh (5 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
+function isUnrecoverableRefreshError(error?: string): boolean {
+    return error === 'bad_refresh_token' || error === 'invalid_grant';
+}
+
+async function markGitHubSessionReauthRequired(req: Request, reason: string): Promise<void> {
+    const user = req.user;
+    if (!user) return;
+
+    user.githubAuthInvalid = true;
+    user.accessToken = '';
+    delete user.refreshToken;
+    delete user.tokenExpiresAt;
+
+    await new Promise<void>((resolve) => {
+        req.session.save((err) => {
+            if (err) {
+                console.error('Error saving session after marking GitHub auth invalid:', err);
+            } else {
+                console.warn(`Marked GitHub OAuth session for user ${user.username} as requiring re-authentication (${reason})`);
+            }
+            resolve();
+        });
+    });
+}
+
+async function clearSessionForReauth(req: Request): Promise<void> {
+    await new Promise<void>((resolve) => {
+        req.logout((logoutErr) => {
+            if (logoutErr) {
+                console.error('Error during logout after GitHub auth invalidation:', logoutErr);
+            }
+            req.session.destroy((destroyErr) => {
+                if (destroyErr) {
+                    console.error('Error destroying session after GitHub auth invalidation:', destroyErr);
+                }
+                resolve();
+            });
+        });
+    });
+}
+
 /**
  * Refreshes the GitHub OAuth token if it's within 5 minutes of expiration.
  * Returns true if the token was refreshed successfully, false otherwise.
  */
 export async function refreshGitHubTokenIfNeeded(req: Request, force: boolean = false): Promise<boolean> {
     const user = req.user;
-    if (!user || !user.refreshToken) {
+    if (!user || user.githubAuthInvalid || !user.refreshToken) {
         return false;
     }
 
@@ -374,6 +417,9 @@ export async function refreshGitHubTokenIfNeeded(req: Request, force: boolean = 
 
         if (data.error) {
             console.error(`GitHub token refresh error: ${data.error} - ${data.error_description}`);
+            if (isUnrecoverableRefreshError(data.error)) {
+                await markGitHubSessionReauthRequired(req, data.error);
+            }
             return false;
         }
 
@@ -422,6 +468,16 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
 
     // Session-based auth (Passport)
     if (req.isAuthenticated()) {
+        if (req.user?.githubAuthInvalid) {
+            await clearSessionForReauth(req);
+            res.status(401).json({
+                error: 'GitHub authentication expired',
+                code: 'GITHUB_REAUTH_REQUIRED',
+                message: 'Your GitHub session has expired. Please log in again.'
+            });
+            return;
+        }
+
         // Proactively refresh token in background if needed
         // Don't block the request, let it continue while refresh happens
         refreshGitHubTokenIfNeeded(req).catch((err) => {

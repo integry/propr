@@ -9,6 +9,7 @@ import {
     type CommentJobData, type UnprocessedComment, type WorkerStateManager,
 } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
+import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -123,12 +124,14 @@ export interface PromptOptions {
     pullRequestNumber: number; combinedCommentBody: string; commentHistory: string;
     originalTaskSpec: string; worktreeInfo: WorktreeInfo;
     repoOwner: string; repoName: string; commentCount: number;
+    commandMode?: string;
     /** Formatted section of AI review comments gathered for /fix */
     reviewCommentsSection?: string;
 }
 
 export function buildPrompt(options: PromptOptions): string {
-    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, reviewCommentsSection } = options;
+    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, commandMode, reviewCommentsSection } = options;
+    const environmentRepairInstructions = getFixEnvironmentRepairInstructions(commandMode);
     return `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
 
 **New Request${commentCount > 1 ? 's' : ''}:**
@@ -143,6 +146,7 @@ ${commentHistory}${originalTaskSpec}
 - DO NOT commit your changes - the system will handle the commit for you
 - DO NOT create a new pull request
 - The repository is ${repoOwner}/${repoName}
+${environmentRepairInstructions}
 
 **Context:**
 - This is a follow-up to an existing pull request #${pullRequestNumber}.
