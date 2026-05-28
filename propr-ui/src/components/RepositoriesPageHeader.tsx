@@ -8,6 +8,7 @@ interface RepositoriesPageHeaderProps {
   showHiddenRepos: boolean;
   onToggleShowHidden: () => void;
   hiddenCount: number;
+  isReadOnly?: boolean;
 }
 
 export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
@@ -16,6 +17,7 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
   showHiddenRepos,
   onToggleShowHidden,
   hiddenCount,
+  isReadOnly = false,
 }) => {
   return (
     <div className="flex-shrink-0 bg-white">
@@ -29,6 +31,7 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
                 type="checkbox"
                 checked={showHiddenRepos}
                 onChange={onToggleShowHidden}
+                disabled={isReadOnly}
                 className="w-3.5 h-3.5 rounded border-slate-300 text-teal-500 focus:ring-teal-500/20"
               />
               <EyeOff className="w-3 h-3" />
@@ -37,7 +40,9 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
           )}
           <button
             onClick={onAddRepository}
-            className="px-3 py-1.5 text-xs font-medium rounded border transition-colors border-slate-300 text-slate-700 hover:bg-slate-50 hover:border-slate-400"
+            disabled={isReadOnly}
+            title={isReadOnly ? 'Demo mode is read-only' : 'Add Repository'}
+            className="px-3 py-1.5 text-xs font-medium rounded border transition-colors border-slate-300 text-slate-700 hover:bg-slate-50 hover:border-slate-400 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             + Add Repository
           </button>
@@ -59,6 +64,7 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
                       type="checkbox"
                       checked={showHiddenRepos}
                       onChange={onToggleShowHidden}
+                      disabled={isReadOnly}
                       className="w-3.5 h-3.5 rounded border-slate-300 text-teal-500 focus:ring-teal-500/20"
                     />
                     <EyeOff className="w-3 h-3" />
@@ -67,7 +73,9 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
                 )}
                 <button
                   onClick={onAddRepository}
-                  className="px-3 py-1.5 text-xs font-medium rounded border transition-colors border-slate-300 text-slate-700 hover:bg-slate-50 hover:border-slate-400"
+                  disabled={isReadOnly}
+                  title={isReadOnly ? 'Demo mode is read-only' : 'Add Repository'}
+                  className="px-3 py-1.5 text-xs font-medium rounded border transition-colors border-slate-300 text-slate-700 hover:bg-slate-50 hover:border-slate-400 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   + Add Repository
                 </button>

@@ -15,15 +15,27 @@ import LoginPage from './pages/LoginPage'
 import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
+import { useDemoMode } from './contexts/DemoModeContext'
+import { DemoModeProvider } from './contexts/DemoModeProvider'
+import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
 import { getCurrentUser } from './api/proprApi'
 
-const App: React.FC = () => {
+const LoadingSpinner: React.FC = () => (
+  <div className="flex h-screen w-full items-center justify-center bg-gray-50">
+    <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
+  </div>
+);
+
+const AppContent: React.FC = () => {
+  const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
   // Auth check state - start loading unless already on login page
   const [isLoading, setIsLoading] = useState(window.location.pathname !== '/login');
 
   // Perform initial auth check
   useEffect(() => {
+    if (isDemoModeLoading) return;
+
     const checkSession = async () => {
       // Don't check if we are already on login page
       if (window.location.pathname === '/login') {
@@ -46,119 +58,125 @@ const App: React.FC = () => {
     };
 
     checkSession();
-  }, []);
+  }, [isDemoModeLoading]);
 
 
   // Render spinner while checking auth
-  if (isLoading) {
-    return (
-      <div className="flex h-screen w-full items-center justify-center bg-gray-50">
-        <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
-      </div>
-    );
-  }
+  if (isDemoModeLoading || isLoading) return <LoadingSpinner />;
 
   return (
-    <SocketProvider>
-      <ToastProvider>
-        <Router>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/revert" element={<RevertPage />} />
-          <Route
-            path="/"
-            element={
-              <Layout>
-                <Dashboard />
-              </Layout>
-            }
-          />
-          <Route
-            path="/repositories"
-            element={
-              <Layout>
-                <RepositoriesPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/tasks"
-            element={
-              <Layout>
-                <TasksPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/tasks/:taskId"
-            element={
-              <Layout>
-                <TasksPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/studio/new"
-            element={
-              <Layout>
-                <PlanStudioPage isNew />
-              </Layout>
-            }
-          />
-          <Route
-            path="/studio/:draftId"
-            element={
-              <Layout>
-                <PlanStudioPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/plans"
-            element={
-              <Layout>
-                <PlansPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/ai-agents"
-            element={
-              <Layout>
-                <AiAgentsPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <Layout>
-                <SettingsPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/summaries/:owner/:repo"
-            element={
-              <Layout>
-                <SummaryBrowserPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/llm-logs"
-            element={
-              <Layout>
-                <LlmLogsPage />
-              </Layout>
-            }
-          />
-        </Routes>
-        </Router>
-      </ToastProvider>
-    </SocketProvider>
+      <SocketProvider disabled={isDemoMode}>
+        <ToastProvider>
+          <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
+            <DemoModeBanner />
+            <div className="min-h-0 flex-1">
+              <Router>
+              <Routes>
+                <Route path="/login" element={<LoginPage />} />
+                <Route path="/revert" element={<RevertPage />} />
+                <Route
+                  path="/"
+                  element={
+                    <Layout>
+                      <Dashboard />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/repositories"
+                  element={
+                    <Layout>
+                      <RepositoriesPage />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/tasks"
+                  element={
+                    <Layout>
+                      <TasksPage />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/tasks/:taskId"
+                  element={
+                    <Layout>
+                      <TasksPage />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/studio/new"
+                  element={
+                    <Layout>
+                      <PlanStudioPage isNew />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/studio/:draftId"
+                  element={
+                    <Layout>
+                      <PlanStudioPage />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/plans"
+                  element={
+                    <Layout>
+                      <PlansPage />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/ai-agents"
+                  element={
+                    <Layout>
+                      <AiAgentsPage />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/settings"
+                  element={
+                    <Layout>
+                      <SettingsPage />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/summaries/:owner/:repo"
+                  element={
+                    <Layout>
+                      <SummaryBrowserPage />
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/llm-logs"
+                  element={
+                    <Layout>
+                      <LlmLogsPage />
+                    </Layout>
+                  }
+                />
+              </Routes>
+              </Router>
+            </div>
+          </div>
+        </ToastProvider>
+      </SocketProvider>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <DemoModeProvider>
+      <AppContent />
+    </DemoModeProvider>
   )
 }
 
 export default App
-

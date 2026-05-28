@@ -6,6 +6,8 @@ import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import { RequestError } from '@octokit/request-error';
 import { refreshGitHubTokenIfNeeded } from '../auth.js';
+import { isDemoMode } from '../demoMode.js';
+import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
@@ -96,6 +98,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
   async function getRepos(req: Request, res: Response): Promise<void> {
     try {
+      if (isDemoMode()) {
+        res.json({ repos: await loadDemoConfiguredRepoNames() });
+        return;
+      }
+
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
       if (!accessToken) {
@@ -145,6 +152,16 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
       if (!owner || !repo) {
         res.status(400).json({ error: 'Owner and repo are required' });
+        return;
+      }
+
+      if (isDemoMode()) {
+        const metadata = await loadDemoRepositoryMetadata(`${owner}/${repo}`);
+        if (!metadata) {
+          res.status(404).json({ error: 'Repository is not configured in demo mode' });
+          return;
+        }
+        res.json({ branches: metadata.branches, defaultBranch: metadata.defaultBranch });
         return;
       }
 

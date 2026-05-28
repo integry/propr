@@ -160,6 +160,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   const hasSelectedSuggestions = selectedSuggestions.length > 0;
 
   const handleCreatePlanFromSelected = useCallback(() => {
+    if (disabled) return;
     const prompt = selectedSuggestions
       .map((suggestion, index) => `${index + 1}. ${suggestion.title}\n   ${suggestion.description}`)
       .join('\n\n');
@@ -170,10 +171,10 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
         initialRepository: repositoryId,
       },
     });
-  }, [selectedSuggestions, navigate, repositoryId]);
+  }, [disabled, selectedSuggestions, navigate, repositoryId]);
 
   const handleSaveToTodos = useCallback(async () => {
-    if (!repositoryId || selectedSuggestions.length === 0) return;
+    if (!repositoryId || selectedSuggestions.length === 0 || disabled) return;
 
     setIsSavingTodos(true);
     try {
@@ -195,7 +196,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
     } finally {
       setIsSavingTodos(false);
     }
-  }, [repositoryId, selectedSuggestions, onTodosSaved]);
+  }, [disabled, repositoryId, selectedSuggestions, onTodosSaved]);
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
@@ -275,6 +276,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
           onCreatePlan={handleCreatePlanFromSelected}
           onSaveToTodos={handleSaveToTodos}
           isSavingTodos={isSavingTodos}
+          disabled={disabled}
         />
       ) : (
         <GenerateButton

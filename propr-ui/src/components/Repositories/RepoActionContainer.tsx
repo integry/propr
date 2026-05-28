@@ -14,6 +14,7 @@ import {
   PersistedChatMessage
 } from '../../api/repoChatApi';
 import { generateRepoImprovements } from '../../api/repoImprovementsApi';
+import { useDemoMode } from '../../contexts/DemoModeContext';
 
 type ActionTab = 'chat' | 'improve' | 'browse' | 'todos';
 
@@ -53,6 +54,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const { isDemoMode } = useDemoMode();
 
   // Switch tab when initialTab changes (e.g. from navigation state)
   useEffect(() => {
@@ -93,6 +95,9 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
   const handleSendMessage = useCallback(async (message: string, model: string, contextLevel: number): Promise<ChatResponse> => {
     if (!selectedRepo) {
       throw new Error('No repository selected');
+    }
+    if (isDemoMode) {
+      throw new Error('Demo mode is read-only. Repository chat is disabled.');
     }
 
     const branch = selectedRepo.baseBranch || 'HEAD';
@@ -159,11 +164,11 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
       }
       throw error;
     }
-  }, [selectedRepo, chatHistory]);
+  }, [chatHistory, isDemoMode, selectedRepo]);
 
   // Handle deleting a single message
   const handleDeleteMessage = useCallback(async (messageId: string) => {
-    if (!selectedRepo) return;
+    if (!selectedRepo || isDemoMode) return;
 
     // Optimistically remove from local state
     setChatMessages((prev) => prev.filter((msg) => msg.id !== messageId));
@@ -175,11 +180,11 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
       console.error('Failed to delete message:', error);
       // Could restore the message on error, but for simplicity we'll just log
     }
-  }, [selectedRepo]);
+  }, [isDemoMode, selectedRepo]);
 
   // Handle clearing all messages
   const handleClearMessages = useCallback(async () => {
-    if (!selectedRepo) return;
+    if (!selectedRepo || isDemoMode) return;
 
     // Optimistically clear local state
     setChatMessages([]);
@@ -190,7 +195,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
     } catch (error) {
       console.error('Failed to clear messages:', error);
     }
-  }, [selectedRepo]);
+  }, [isDemoMode, selectedRepo]);
 
   const handleToggleSuggestion = useCallback((index: number) => {
     setSuggestions((prev) =>
@@ -260,7 +265,8 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
             onDeleteMessage={handleDeleteMessage}
             onClearMessages={handleClearMessages}
             repositoryName={selectedRepo.alias || selectedRepo.name}
-            disabled={isLoadingMessages}
+            disabled={isLoadingMessages || isDemoMode}
+            placeholder={isDemoMode ? 'Demo mode is read-only' : undefined}
           />
         )}
         {activeTab === 'improve' && (
@@ -276,6 +282,9 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
               model: string;
               contextLevel: number;
             }): Promise<GenerateSuggestionsResult | void> => {
+              if (isDemoMode) {
+                throw new Error('Demo mode is read-only. Repository improvements are disabled.');
+              }
               const branch = selectedRepo.baseBranch || 'HEAD';
               const response = await generateRepoImprovements({
                 repository: selectedRepo.name,
@@ -313,6 +322,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
                 };
               }
             }}
+            disabled={isDemoMode}
           />
         )}
         {activeTab === 'browse' && (() => {
@@ -323,6 +333,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
           <RepoTodosPanel
             repositoryName={selectedRepo.alias || selectedRepo.name}
             repositoryId={selectedRepo.name}
+            disabled={isDemoMode}
           />
         )}
       </div>

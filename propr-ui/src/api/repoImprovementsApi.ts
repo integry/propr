@@ -1,5 +1,5 @@
 // Repository Improvements API
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 import { ImprovementCategory } from '../components/Repositories/RepoImprovementsPanel.types';
 
 /**
@@ -68,7 +68,7 @@ export interface GenerateRepoImprovementsResponse {
 export const generateRepoImprovements = async (
   request: GenerateRepoImprovementsRequest
 ): Promise<GenerateRepoImprovementsResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/repos/improvements`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/repos/improvements`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),

@@ -8,9 +8,10 @@ import { getPlannerSettings, savePlannerSettings } from '../hooks/usePlannerSett
 interface QuickAddTodoProps {
   externalOpen?: boolean;
   onExternalOpenHandled?: () => void;
+  disabled?: boolean;
 }
 
-const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpenHandled }) => {
+const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpenHandled, disabled = false }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
@@ -66,11 +67,11 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
 
   // Handle external open trigger (keyboard shortcut)
   useEffect(() => {
-    if (externalOpen && !isOpen) {
+    if (externalOpen && !isOpen && !disabled) {
       setIsOpen(true);
       onExternalOpenHandled?.();
     }
-  }, [externalOpen, isOpen, onExternalOpenHandled]);
+  }, [disabled, externalOpen, isOpen, onExternalOpenHandled]);
 
   // Click outside to close
   useEffect(() => {
@@ -123,7 +124,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
   };
 
   const handleSubmit = async () => {
-    if (!content.trim() || !selectedRepo || isSubmitting) return;
+    if (!content.trim() || !selectedRepo || isSubmitting || disabled) return;
     setIsSubmitting(true);
     try {
       await createTodo({
@@ -156,10 +157,13 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
       {/* Ghost Button Trigger */}
       <button
         onClick={() => {
+          if (disabled) return;
           setIsOpen(!isOpen);
           if (isOpen) resetForm();
         }}
-        className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
+        disabled={disabled}
+        title={disabled ? 'Demo mode is read-only' : 'Quick add to-do'}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Quick add to-do"
       >
         <ListPlus className="w-4 h-4" />
@@ -271,7 +275,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
                 </button>
                 <button
                   onClick={handleSubmit}
-                  disabled={!content.trim() || !selectedRepo || isSubmitting}
+                  disabled={!content.trim() || !selectedRepo || isSubmitting || disabled}
                   className="px-3 py-1 bg-teal-600 text-white text-xs font-medium hover:bg-teal-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Add To-Do

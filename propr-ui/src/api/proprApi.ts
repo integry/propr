@@ -1,5 +1,31 @@
 // API for fetching system data from backend
+import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+
+export interface DemoModeStatus {
+  demoMode: boolean;
+}
+
+export class DemoModeReadOnlyError extends Error {
+  readonly code = DEMO_MODE_READ_ONLY_CODE;
+
+  constructor(message = 'Demo mode is read-only. Write and AI execution actions are disabled.') {
+    super(message);
+    this.name = 'DemoModeReadOnlyError';
+  }
+}
+
+export const isDemoModeReadOnlyError = (error: unknown): error is DemoModeReadOnlyError =>
+  error instanceof DemoModeReadOnlyError || (
+    error instanceof Error &&
+    'code' in error &&
+    (error as { code?: unknown }).code === DEMO_MODE_READ_ONLY_CODE
+  );
+
+export const apiFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  return fetch(input, init);
+};
 
 // Re-export all types for backward compatibility
 export * from './proprTypes';
@@ -7,9 +33,7 @@ export * from './proprTypes';
 import type {
   SystemStatus, StatusResponse, TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
   GetTasksOptions, MonitoredRepo, RepoConfigResponse, RepoBranchesResponse,
-  StopExecutionResponse, DeleteTaskResponse, AgentConfig, RevertParams,
-  RevertPreviewResponse, SummarizationSettings, TriggerReindexAllResponse, PostFollowupResponse,
-  SystemSettings
+  StopExecutionResponse, DeleteTaskResponse, SystemSettings
 } from './proprTypes';
 
 export type { UserRepoPreferences } from './userRepoPreferencesApi';
@@ -20,12 +44,28 @@ export const handleApiResponse = async (response: Response): Promise<Response> =
     window.location.href = '/login';
     throw new Error('Authentication required');
   }
+  if (response.status === 403 || response.status === 405) {
+    let data: { code?: string; error?: string } | null = null;
+    try {
+      data = await response.clone().json() as { code?: string; error?: string };
+    } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
+    if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
+      throw new DemoModeReadOnlyError(data.error);
+    }
+    if (data?.error) throw new Error(data.error);
+  }
   if (!response.ok) throw new Error(`API request failed: ${response.status}`);
   return response;
 };
 
+export const getDemoModeStatus = async (): Promise<DemoModeStatus> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/auth/demo-mode`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export const getSystemStatus = async (): Promise<SystemStatus> => {
-  const response = await fetch(`${API_BASE_URL}/api/status`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/status`, { credentials: 'include' });
   await handleApiResponse(response);
   const data: StatusResponse = await response.json();
   const workers: { id: number; status: string }[] = [];
@@ -41,8 +81,8 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
 
 export const getQueueStats = async (): Promise<QueueStats> => {
   const [queueResponse, generatingPlansResponse] = await Promise.all([
-    fetch(`${API_BASE_URL}/api/queue/stats`, { credentials: 'include' }),
-    fetch(`${API_BASE_URL}/api/stats/generating-plans`, { credentials: 'include' }).catch(() => null)
+    apiFetch(`${API_BASE_URL}/api/queue/stats`, { credentials: 'include' }),
+    apiFetch(`${API_BASE_URL}/api/stats/generating-plans`, { credentials: 'include' }).catch(() => null)
   ]);
   await handleApiResponse(queueResponse);
   const queueStats: QueueStats = await queueResponse.json();
@@ -69,38 +109,38 @@ export const getTasks = async (
   if (options.search) params.append('search', options.search);
   if (options.forReview) params.append('forReview', 'true');
   if (options.excludeMerged) params.append('excludeMerged', 'true');
-  const response = await fetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const getTaskHistory = async (taskId: string): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/history`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${taskId}/history`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const getTaskAnalysis = async (taskId: string): Promise<TaskAnalysisResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/analysis`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${taskId}/analysis`, { credentials: 'include' });
   if (response.status === 202) return { analysis: null, message: 'Analysis pending...' };
   await handleApiResponse(response);
   return response.json();
 };
 
 export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/live-details`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${taskId}/live-details`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const getRepoConfig = async (): Promise<RepoConfigResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/repos`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updateRepoConfig = async (repos: MonitoredRepo[]): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/repos`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repos_to_monitor: repos }), credentials: 'include'
   });
@@ -109,25 +149,25 @@ export const updateRepoConfig = async (repos: MonitoredRepo[]): Promise<unknown>
 };
 
 export const getAvailableGithubRepos = async (): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/github/repos`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/github/repos`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const getRepoBranches = async (owner: string, repo: string): Promise<RepoBranchesResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const getSettings = async (): Promise<SystemSettings> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/settings`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updateSettings = async (settings: Record<string, unknown>): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/settings`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ settings }), credentials: 'include'
   });
@@ -136,13 +176,13 @@ export const updateSettings = async (settings: Record<string, unknown>): Promise
 };
 
 export const getFollowupKeywords = async (): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/followup-keywords`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-keywords`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updateFollowupKeywords = async (keywords: string[]): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/followup-keywords`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-keywords`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ followup_keywords: keywords }), credentials: 'include'
   });
@@ -151,13 +191,13 @@ export const updateFollowupKeywords = async (keywords: string[]): Promise<unknow
 };
 
 export const getFollowupIgnoreKeywords = async (): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updateFollowupIgnoreKeywords = async (keywords: string[]): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ followup_ignore_keywords: keywords }), credentials: 'include'
   });
@@ -166,31 +206,31 @@ export const updateFollowupIgnoreKeywords = async (keywords: string[]): Promise<
 };
 
 export const fetchPrompt = async (promptPath: string): Promise<string> => {
-  const response = await fetch(`${API_BASE_URL}${promptPath}`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}${promptPath}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.text();
 };
 
 export const fetchLogFiles = async (logsPath: string): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}${logsPath}`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}${logsPath}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const fetchLogFile = async (logFilePath: string): Promise<string> => {
-  const response = await fetch(`${API_BASE_URL}${logFilePath}`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}${logFilePath}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.text();
 };
 
 export const getPrLabel = async (): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/pr-label`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/pr-label`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updatePrLabel = async (prLabel: string): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/pr-label`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/pr-label`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pr_label: prLabel }), credentials: 'include'
   });
@@ -199,13 +239,13 @@ export const updatePrLabel = async (prLabel: string): Promise<unknown> => {
 };
 
 export const getAiPrimaryTag = async (): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/ai-primary-tag`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/ai-primary-tag`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updateAiPrimaryTag = async (aiPrimaryTag: string): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/ai-primary-tag`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/ai-primary-tag`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ai_primary_tag: aiPrimaryTag }), credentials: 'include'
   });
@@ -214,13 +254,13 @@ export const updateAiPrimaryTag = async (aiPrimaryTag: string): Promise<unknown>
 };
 
 export const getPrimaryProcessingLabels = async (): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/primary-processing-labels`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/primary-processing-labels`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updatePrimaryProcessingLabels = async (primaryLabels: string[]): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/primary-processing-labels`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/primary-processing-labels`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ primary_processing_labels: primaryLabels }), credentials: 'include'
   });
@@ -229,14 +269,14 @@ export const updatePrimaryProcessingLabels = async (primaryLabels: string[]): Pr
 };
 
 export const stopTaskExecution = async (taskId: string): Promise<StopExecutionResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/stop`, { method: 'POST', credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${taskId}/stop`, { method: 'POST', credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const deleteTask = async (taskId: string, force?: boolean): Promise<void> => {
   const url = force ? `${API_BASE_URL}/api/tasks/${taskId}?force=true` : `${API_BASE_URL}/api/tasks/${taskId}`;
-  const response = await fetch(url, { method: 'DELETE', credentials: 'include' });
+  const response = await apiFetch(url, { method: 'DELETE', credentials: 'include' });
   if (response.status === 204) return;
   if (response.status === 400) {
     const data: DeleteTaskResponse = await response.json();
@@ -246,7 +286,7 @@ export const deleteTask = async (taskId: string, force?: boolean): Promise<void>
 };
 
 export const getCurrentUser = async (): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
@@ -275,13 +315,13 @@ export interface AgentConfig {
 }
 
 export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/agents`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/agents`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agents }), credentials: 'include'
   });

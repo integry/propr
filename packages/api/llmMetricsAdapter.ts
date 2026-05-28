@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis';
+import { isDemoMode } from './demoMode.js';
 
 // Redis configuration
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
@@ -11,7 +12,31 @@ const connectionOptions = {
     enableReadyCheck: false,
 };
 
-const metricsRedis = new Redis(connectionOptions);
+let metricsRedis: Redis | null = null;
+
+function getMetricsRedis(): Redis | null {
+    if (isDemoMode()) return null;
+    metricsRedis ??= new Redis(connectionOptions);
+    return metricsRedis;
+}
+
+async function getRedisString(key: string): Promise<string | null> {
+    const redis = getMetricsRedis();
+    if (!redis) return null;
+    return redis.get(key);
+}
+
+async function getRedisSetMembers(key: string): Promise<string[]> {
+    const redis = getMetricsRedis();
+    if (!redis) return [];
+    return redis.smembers(key);
+}
+
+async function getRedisListRange(key: string, start: number, stop: number): Promise<string[]> {
+    const redis = getMetricsRedis();
+    if (!redis) return [];
+    return redis.lrange(key, start, stop);
+}
 
 interface ModelMetrics {
     totalRequests: number;
@@ -66,20 +91,20 @@ async function getTotalMetrics(): Promise<{
     totalTurns: number;
     totalExecutionTimeMs: number;
 }> {
-    const totalSuccessful = parseInt(await metricsRedis.get('llm:metrics:total:successful') || '0');
-    const totalFailed = parseInt(await metricsRedis.get('llm:metrics:total:failed') || '0');
-    const totalCostUsd = parseFloat(await metricsRedis.get('llm:metrics:total:costUsd') || '0');
-    const totalTurns = parseInt(await metricsRedis.get('llm:metrics:total:turns') || '0');
-    const totalExecutionTimeMs = parseInt(await metricsRedis.get('llm:metrics:total:executionTimeMs') || '0');
+    const totalSuccessful = parseInt(await getRedisString('llm:metrics:total:successful') || '0');
+    const totalFailed = parseInt(await getRedisString('llm:metrics:total:failed') || '0');
+    const totalCostUsd = parseFloat(await getRedisString('llm:metrics:total:costUsd') || '0');
+    const totalTurns = parseInt(await getRedisString('llm:metrics:total:turns') || '0');
+    const totalExecutionTimeMs = parseInt(await getRedisString('llm:metrics:total:executionTimeMs') || '0');
     return { totalSuccessful, totalFailed, totalCostUsd, totalTurns, totalExecutionTimeMs };
 }
 
 async function getModelMetrics(model: string): Promise<ModelMetrics> {
-    const modelSuccessful = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:successful`) || '0');
-    const modelFailed = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:failed`) || '0');
-    const modelCostUsd = parseFloat(await metricsRedis.get(`llm:metrics:model:${model}:costUsd`) || '0');
-    const modelTurns = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:turns`) || '0');
-    const modelExecutionTimeMs = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:executionTimeMs`) || '0');
+    const modelSuccessful = parseInt(await getRedisString(`llm:metrics:model:${model}:successful`) || '0');
+    const modelFailed = parseInt(await getRedisString(`llm:metrics:model:${model}:failed`) || '0');
+    const modelCostUsd = parseFloat(await getRedisString(`llm:metrics:model:${model}:costUsd`) || '0');
+    const modelTurns = parseInt(await getRedisString(`llm:metrics:model:${model}:turns`) || '0');
+    const modelExecutionTimeMs = parseInt(await getRedisString(`llm:metrics:model:${model}:executionTimeMs`) || '0');
     const modelTotal = modelSuccessful + modelFailed;
     return {
         totalRequests: modelTotal,
@@ -95,9 +120,9 @@ async function getModelMetrics(model: string): Promise<ModelMetrics> {
 }
 
 async function getDailyMetric(dateKey: string): Promise<DailyMetric> {
-    const daySuccessful = parseInt(await metricsRedis.get(`llm:metrics:daily:${dateKey}:successful`) || '0');
-    const dayFailed = parseInt(await metricsRedis.get(`llm:metrics:daily:${dateKey}:failed`) || '0');
-    const dayCostUsd = parseFloat(await metricsRedis.get(`llm:metrics:daily:${dateKey}:costUsd`) || '0');
+    const daySuccessful = parseInt(await getRedisString(`llm:metrics:daily:${dateKey}:successful`) || '0');
+    const dayFailed = parseInt(await getRedisString(`llm:metrics:daily:${dateKey}:failed`) || '0');
+    const dayCostUsd = parseFloat(await getRedisString(`llm:metrics:daily:${dateKey}:costUsd`) || '0');
     return {
         date: dateKey,
         successful: daySuccessful,
@@ -126,7 +151,7 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
         const avgTurnsPerRequest = totalRequests > 0 ? totals.totalTurns / totalRequests : 0;
         const avgExecutionTimeSec = totalRequests > 0 ? (totals.totalExecutionTimeMs / totalRequests) / 1000 : 0;
 
-        const modelsUsed = await metricsRedis.smembers('llm:metrics:models:used');
+        const modelsUsed = await getRedisSetMembers('llm:metrics:models:used');
         const modelMetrics: Record<string, ModelMetrics> = {};
         for (const model of modelsUsed) {
             modelMetrics[model] = await getModelMetrics(model);
@@ -141,7 +166,7 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
             dailyMetrics.push(await getDailyMetric(dateKey));
         }
 
-        const highCostAlerts = await metricsRedis.lrange('llm:metrics:alerts:highcost', 0, 9);
+        const highCostAlerts = await getRedisListRange('llm:metrics:alerts:highcost', 0, 9);
         const parsedAlerts = parseHighCostAlerts(highCostAlerts);
 
         return {
@@ -175,7 +200,7 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
 export async function getLLMMetricsByCorrelationId(correlationId: string): Promise<LLMMetricsDetail | null> {
     try {
         const metricsKey = `llm:metrics:${correlationId}`;
-        const metricsData = await metricsRedis.get(metricsKey);
+        const metricsData = await getRedisString(metricsKey);
         
         if (metricsData) {
             return JSON.parse(metricsData) as LLMMetricsDetail;

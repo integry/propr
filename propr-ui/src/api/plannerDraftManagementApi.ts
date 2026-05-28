@@ -1,4 +1,4 @@
-import { handleApiResponse, API_BASE_URL } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 import type { PlannerDraft } from './plannerTypes';
 
 export interface ReviseDraftResponse {
@@ -14,7 +14,7 @@ export interface ReviseDraftResponse {
  * This allows the user to iterate on a plan even after execution.
  */
 export const reviseDraft = async (draftId: string): Promise<ReviseDraftResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/revise`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/revise`, {
     method: 'POST',
     credentials: 'include'
   });
@@ -32,7 +32,7 @@ export interface PauseResumeResponse {
  * but the next pending issue won't be automatically triggered.
  */
 export const pauseDraft = async (draftId: string): Promise<PauseResumeResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/pause`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/pause`, {
     method: 'POST',
     credentials: 'include'
   });
@@ -44,7 +44,7 @@ export const pauseDraft = async (draftId: string): Promise<PauseResumeResponse> 
  * Resume plan execution. After resuming, pending issues can be triggered again.
  */
 export const resumeDraft = async (draftId: string): Promise<PauseResumeResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/resume`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/resume`, {
     method: 'POST',
     credentials: 'include'
   });
@@ -58,7 +58,7 @@ export const resumeDraft = async (draftId: string): Promise<PauseResumeResponse>
  * The plan_json is cleared but context_config (settings) are preserved.
  */
 export const resetDraftToSetup = async (draftId: string): Promise<PlannerDraft> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/reset-to-setup`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/reset-to-setup`, {
     method: 'POST',
     credentials: 'include'
   });
@@ -71,7 +71,7 @@ export const resetDraftToSetup = async (draftId: string): Promise<PlannerDraft> 
  * Sets an abort signal in Redis and resets the draft status to 'draft'.
  */
 export const abortGeneration = async (draftId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/abort`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/abort`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId }),
@@ -85,7 +85,7 @@ export const abortGeneration = async (draftId: string): Promise<void> => {
  * Sets an abort signal in Redis and resets the draft status to 'review'.
  */
 export const abortRefinement = async (draftId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/abort-refinement`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/abort-refinement`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId }),
@@ -118,7 +118,7 @@ export const validateContextRepository = async (
   repository: string,
   branch?: string
 ): Promise<ValidateContextRepositoryResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/validate-context-repository`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/validate-context-repository`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repository, branch }),

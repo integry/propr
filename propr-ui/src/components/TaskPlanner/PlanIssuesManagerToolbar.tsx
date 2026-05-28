@@ -90,7 +90,7 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
           <AgentModelSelector
             agents={agents} selectedAgent={globalAgent} selectedModel={globalModel}
             onAgentChange={handleGlobalAgentChange} onModelChange={handleGlobalModelChange}
-            disabled={applyingGlobal} compact isMulti={globalIsMulti}
+            disabled={applyingGlobal || disableImplementation} compact isMulti={globalIsMulti}
             onMultiToggle={handleGlobalMultiToggle} selectedModels={globalSelectedModels}
             onMultiModelChange={handleGlobalMultiModelChange}
             onMultiConfirm={handleApplyToAll} autoOpenMultiDropdown
@@ -114,25 +114,25 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
         <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">PR Options</span>
         <div className="flex flex-wrap items-center gap-3 sm:gap-6">
           <label className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none" title="Automatically merges the PR when all CI checks pass">
-            <input type="checkbox" checked={autoMerge || false} onChange={(e) => onAutoMergeChange?.(e.target.checked)} className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer" />
+            <input type="checkbox" checked={autoMerge || false} onChange={(e) => onAutoMergeChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed" />
             <ArrowDownToLine size={14} className="text-slate-500 hidden sm:block" />
             <span>Auto-merge <span className="hidden sm:inline">if checks pass</span></span>
             <Info size={14} className="text-slate-400 hover:text-slate-600 transition-colors" />
           </label>
           {tasks.length >= 2 && (
             <label className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none" title="Creates an overarching PR that aggregates all individual task PRs">
-              <input type="checkbox" checked={useEpic || false} onChange={(e) => onUseEpicChange?.(e.target.checked)} className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer" />
+              <input type="checkbox" checked={useEpic || false} onChange={(e) => onUseEpicChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed" />
               <Layers size={14} className="text-slate-500 hidden sm:block" />
               <span>Epic PR</span>
               <Info size={14} className="text-slate-400 hover:text-slate-600 transition-colors" />
             </label>
           )}
           <label className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none" title="Automatically run ultrafix after the PR is opened">
-            <input type="checkbox" checked={runUltrafix || false} onChange={(e) => onRunUltrafixChange?.(e.target.checked)} className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer" />
+            <input type="checkbox" checked={runUltrafix || false} onChange={(e) => onRunUltrafixChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed" />
             <span>Run ultrafix after PR</span>
           </label>
           <UltrafixSettingsControls
-            enabled={ultrafixEnabled}
+            enabled={ultrafixEnabled && !disableImplementation}
             goal={ultrafixGoal}
             maxCycles={ultrafixMaxCycles}
             onGoalChange={(value) => onUltrafixGoalChange?.(value)}

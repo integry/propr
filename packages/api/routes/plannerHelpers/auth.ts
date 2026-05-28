@@ -5,6 +5,7 @@
 import { Response } from 'express';
 import { Knex } from 'knex';
 import { getGitHubInstallationToken } from '@propr/core';
+import { isDemoMode } from '../../demoMode.js';
 import type { DbCheck, DbCheckResult, HandlerFunction, OwnershipResult } from './types.js';
 
 export function checkDbAndAuth(
@@ -42,8 +43,7 @@ export async function verifyDraftOwnership(
   userId: string,
   selectFields: string[] = ['user_id']
 ): Promise<OwnershipResult> {
-  // Always include user_id for ownership verification
-  const fieldsWithUserId = selectFields.includes('user_id') ? selectFields : ['user_id', ...selectFields];
+  const fieldsWithUserId = Array.from(new Set(['user_id', ...selectFields]));
   const existing = await db('task_drafts')
     .select(...fieldsWithUserId)
     .where({ draft_id: draftId })
@@ -53,7 +53,7 @@ export async function verifyDraftOwnership(
     return { authorized: false, error: 'Draft not found', status: 404 };
   }
 
-  if (existing.user_id !== userId) {
+  if (!isDemoMode() && existing.user_id !== userId) {
     return { authorized: false, error: 'Unauthorized', status: 403 };
   }
 

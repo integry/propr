@@ -13,6 +13,7 @@ const selectedBadgeColors: Record<AgentType, string> = {
 
 interface ChatPanelProps {
   agents: AgentConfig[];
+  disabled?: boolean;
 }
 
 interface Message {
@@ -32,7 +33,7 @@ interface AgentModelOption {
   key: string; // unique key: agentId:modelId
 }
 
-const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
+const ChatPanel: React.FC<ChatPanelProps> = ({ agents, disabled = false }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
@@ -72,7 +73,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim() || selectedKeys.length === 0) return;
+    if (!input.trim() || selectedKeys.length === 0 || disabled) return;
 
     const userMsg: Message = { role: 'user', content: input, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
@@ -265,13 +266,13 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isLoading || selectedKeys.length === 0}
+            disabled={isLoading || selectedKeys.length === 0 || disabled}
           />
           {/* Keyboard shortcut hint */}
           <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>
           <button
             onClick={handleSend}
-            disabled={isLoading || !input.trim() || selectedKeys.length === 0}
+            disabled={isLoading || !input.trim() || selectedKeys.length === 0 || disabled}
             className="p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
           >
             <Send size={16} />

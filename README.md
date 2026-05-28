@@ -541,4 +541,4 @@ When contributing to this project:
 4. Use the structured logger for all output
 5. Handle errors consistently
 
-<!-- CI trigger -->
+<!-- CI trigger: 2026-05-28 -->

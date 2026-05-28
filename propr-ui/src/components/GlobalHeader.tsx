@@ -21,10 +21,11 @@ interface GlobalHeaderProps {
   onLogout: () => void;
   onMenuToggle: () => void;
   MenuIcon: React.FC<{ className?: string }>;
+  isDemoMode?: boolean;
 }
 
 // Main GlobalHeader Component
-const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon }) => {
+const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false }) => {
   const navigate = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
@@ -42,8 +43,9 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
 
   // Handle new plan navigation
   const handleNewPlan = useCallback(() => {
+    if (isDemoMode) return;
     navigate('/studio/new');
-  }, [navigate]);
+  }, [isDemoMode, navigate]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -114,10 +116,13 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         <QuickAddTodo
           externalOpen={quickAddOpen}
           onExternalOpenHandled={() => setQuickAddOpen(false)}
+          disabled={isDemoMode}
         />
         <button
           onClick={handleNewPlan}
-          className="flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors"
+          disabled={isDemoMode}
+          title={isDemoMode ? 'Demo mode is read-only' : 'New Plan'}
+          className="flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
         >
           <ScrollText className="w-4 h-4" />
           <span>New Plan</span>
@@ -127,8 +132,10 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       {/* Mobile New Plan Button */}
       <button
         onClick={handleNewPlan}
-        className="md:hidden flex items-center px-4 bg-teal-600 text-white hover:bg-teal-700 transition-colors"
+        disabled={isDemoMode}
+        className="md:hidden flex items-center px-4 bg-teal-600 text-white hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
         aria-label="New Plan"
+        title={isDemoMode ? 'Demo mode is read-only' : 'New Plan'}
       >
         <ScrollText className="w-5 h-5" />
       </button>
