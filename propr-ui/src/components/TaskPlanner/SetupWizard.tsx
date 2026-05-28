@@ -79,7 +79,7 @@ function getGenerateDisabledState(props: SetupWizardContentProps, promptTrimmed:
 const shouldShowPreviewProgress = (isGenerating: boolean, isMobile: boolean) => !isGenerating || !isMobile;
 
 const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
-  const { isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo, fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers, autoResize, textareaRef, fileInputRef, error, branchError, initialConfiguredBaseBranch, handleRepoChangeInEditMode, handleFileInputChange, handleExportContext, handleGenerate, agents, availableRepos, previewTrace } = props;
+  const { isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo, fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers, autoResize, textareaRef, fileInputRef, error, branchError, isCreating, initialConfiguredBaseBranch, handleRepoChangeInEditMode, handleFileInputChange, handleExportContext, handleGenerate, agents, availableRepos, previewTrace } = props;
   const { isDemoMode } = useDemoMode();
   const modeValues = getContentModeValues({ isNewMode, draft, repoLoader, newModeBranches, repoInfo, initialConfiguredBaseBranch, handleRepoChangeInEditMode });
   const promptTrimmed = config.prompt.trim();

@@ -67,7 +67,7 @@ const AppContent: React.FC = () => {
   return (
       <SocketProvider disabled={isDemoMode}>
         <ToastProvider>
-          <div className="flex h-screen flex-col">
+          <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
             <DemoModeBanner />
             <div className="min-h-0 flex-1">
               <Router>

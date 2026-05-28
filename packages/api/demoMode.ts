@@ -39,9 +39,9 @@ export function demoModeReadOnlyMiddleware(req: Request, res: Response, next: Ne
     return;
   }
 
-  res.status(403).json({
+  res.status(405).json({
     code: DEMO_MODE_READ_ONLY_CODE,
-    error: 'Demo mode is read-only. Mutating requests are disabled.'
+    error: 'Demo mode is read-only. Changes are not allowed.'
   });
 }
 

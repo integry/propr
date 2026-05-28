@@ -1,10 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import { apiFetch, getDemoModeStatus, setDemoModeEnabled } from './proprApi';
+import { apiFetch, getDemoModeStatus, handleApiResponse } from './proprApi';
 
 describe('demo mode API helpers', () => {
   afterEach(() => {
-    setDemoModeEnabled(false);
     vi.restoreAllMocks();
   });
 
@@ -20,19 +19,32 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/demo-mode', { credentials: 'include' });
   });
 
-  it('blocks mutating API calls locally after demo mode is detected', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
-    setDemoModeEnabled(true);
+  it('sends mutating API calls so the backend can reject demo writes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 405 }));
 
-    await expect(apiFetch('/api/planner/generate', { method: 'POST' })).rejects.toMatchObject({
-      code: DEMO_MODE_READ_ONLY_CODE,
+    await expect(apiFetch('/api/planner/generate', { method: 'POST' })).resolves.toMatchObject({
+      status: 405,
     });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('converts demo read-only 405 responses into a clear error', async () => {
+    const response = new Response(JSON.stringify({
+      code: DEMO_MODE_READ_ONLY_CODE,
+      error: 'Demo mode is read-only. Changes are not allowed.',
+    }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await expect(handleApiResponse(response)).rejects.toMatchObject({
+      code: DEMO_MODE_READ_ONLY_CODE,
+      message: 'Demo mode is read-only. Changes are not allowed.',
+    });
   });
 
   it('continues to allow GET requests in demo mode', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
-    setDemoModeEnabled(true);
 
     await apiFetch('/api/tasks', { credentials: 'include' });
     expect(fetchMock).toHaveBeenCalledOnce();

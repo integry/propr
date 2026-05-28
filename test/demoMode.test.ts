@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import { ensureAuthenticated } from '../packages/api/auth.ts';
-import { demoModeReadOnlyMiddleware, DEMO_MODE_ACCESS_TOKEN, resetConfiguredDemoMode } from '../packages/api/demoMode.ts';
+import { demoModeReadOnlyMiddleware, resetConfiguredDemoMode } from '../packages/api/demoMode.ts';
 
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 
@@ -45,7 +45,6 @@ test('demo mode attaches a synthetic user without OAuth', async () => {
     displayName: 'Demo User',
     email: null,
     avatarUrl: null,
-    accessToken: DEMO_MODE_ACCESS_TOKEN,
   });
 });
 
@@ -67,9 +66,9 @@ test('demo mode allows GET requests and blocks mutating requests', async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'blocked' }),
   });
-  assert.equal(postResponse.status, 403);
+  assert.equal(postResponse.status, 405);
   assert.deepEqual(await postResponse.json(), {
     code: DEMO_MODE_READ_ONLY_CODE,
-    error: 'Demo mode is read-only. Mutating requests are disabled.'
+    error: 'Demo mode is read-only. Changes are not allowed.'
   });
 });

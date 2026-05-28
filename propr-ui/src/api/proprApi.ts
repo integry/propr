@@ -2,16 +2,10 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
-const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-let demoModeEnabled = false;
 
 export interface DemoModeStatus {
   demoMode: boolean;
 }
-
-export const setDemoModeEnabled = (enabled: boolean): void => {
-  demoModeEnabled = enabled;
-};
 
 export class DemoModeReadOnlyError extends Error {
   readonly code = DEMO_MODE_READ_ONLY_CODE;
@@ -29,20 +23,7 @@ export const isDemoModeReadOnlyError = (error: unknown): error is DemoModeReadOn
     (error as { code?: unknown }).code === DEMO_MODE_READ_ONLY_CODE
   );
 
-const getRequestMethod = (input: RequestInfo | URL, init?: RequestInit): string => {
-  if (init?.method) return init.method.toUpperCase();
-  if (typeof Request !== 'undefined' && input instanceof Request) return input.method.toUpperCase();
-  return 'GET';
-};
-
-export const assertWritableInDemoMode = (method = 'POST'): void => {
-  if (demoModeEnabled && MUTATING_METHODS.has(method.toUpperCase())) {
-    throw new DemoModeReadOnlyError();
-  }
-};
-
 export const apiFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  assertWritableInDemoMode(getRequestMethod(input, init));
   return fetch(input, init);
 };
 
@@ -63,11 +44,11 @@ export const handleApiResponse = async (response: Response): Promise<Response> =
     window.location.href = '/login';
     throw new Error('Authentication required');
   }
-  if (response.status === 403) {
+  if (response.status === 403 || response.status === 405) {
     let data: { code?: string; error?: string } | null = null;
     try {
       data = await response.clone().json() as { code?: string; error?: string };
-    } catch { /* Preserve the generic status fallback for malformed 403 bodies. */ }
+    } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
     if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
       throw new DemoModeReadOnlyError(data.error);
     }

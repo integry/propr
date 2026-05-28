@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { getDemoModeStatus, setDemoModeEnabled } from '../api/proprApi';
+import { getDemoModeStatus } from '../api/proprApi';
 import { DemoModeContext } from './DemoModeContext';
 
 export const DemoModeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -13,12 +13,10 @@ export const DemoModeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       .then((status) => {
         if (cancelled) return;
         setIsDemoMode(status.demoMode);
-        setDemoModeEnabled(status.demoMode);
       })
       .catch(() => {
         if (cancelled) return;
         setIsDemoMode(false);
-        setDemoModeEnabled(false);
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);

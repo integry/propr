@@ -89,10 +89,10 @@ test('demoModeReadOnlyMiddleware rejects mutating requests in demo mode', () => 
   demoModeReadOnlyMiddleware({ method: 'POST' } as Request, response, (() => { nextCalled = true; }) as NextFunction);
 
   assert.equal(nextCalled, false);
-  assert.equal(statusCode, 403);
+  assert.equal(statusCode, 405);
   assert.deepEqual(payload, {
     code: DEMO_MODE_READ_ONLY_CODE,
-    error: 'Demo mode is read-only. Mutating requests are disabled.'
+    error: 'Demo mode is read-only. Changes are not allowed.'
   });
 });
 
@@ -106,10 +106,10 @@ test('demoModeReadOnlyMiddleware blocks auth metadata mutations', () => {
     (() => { assert.fail('next should not be called'); }) as NextFunction
   );
 
-  assert.equal(status(), 403);
+  assert.equal(status(), 405);
   assert.deepEqual(body(), {
     code: DEMO_MODE_READ_ONLY_CODE,
-    error: 'Demo mode is read-only. Mutating requests are disabled.'
+    error: 'Demo mode is read-only. Changes are not allowed.'
   });
 });
 
@@ -134,10 +134,10 @@ test('configured demo mode keeps auth and middleware on the same startup value',
 
   const { response, status, body } = createJsonResponse();
   demoModeReadOnlyMiddleware({ method: 'POST' } as Request, response, (() => { assert.fail('next should not be called'); }) as NextFunction);
-  assert.equal(status(), 403);
+  assert.equal(status(), 405);
   assert.deepEqual(body(), {
     code: DEMO_MODE_READ_ONLY_CODE,
-    error: 'Demo mode is read-only. Mutating requests are disabled.'
+    error: 'Demo mode is read-only. Changes are not allowed.'
   });
 });
 
@@ -204,7 +204,7 @@ test('demo Express GET routes work with the in-memory Redis facade', async () =>
   assert.equal((await activityResponse.json() as Array<{ description: string }>)[0].description, 'Demo activity');
 
   const blockedResponse = await fetchFromApp(app, '/api/activity', { method: 'POST' });
-  assert.equal(blockedResponse.status, 403);
+  assert.equal(blockedResponse.status, 405);
 });
 
 test('ensureAuthenticated attaches the synthetic demo user', async () => {

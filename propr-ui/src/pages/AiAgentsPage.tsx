@@ -61,7 +61,10 @@ const AiAgentsPage: React.FC = () => {
   // Callback for Add Agent button in the header
   const [showAddModal, setShowAddModal] = useState(false);
   const handleAddAgentClick = useCallback(() => {
-    if (isDemoMode) return;
+    if (isDemoMode) {
+      setAgentsError('Demo mode is read-only. Agent configuration cannot be changed.');
+      return;
+    }
     setShowAddModal(true);
   }, [isDemoMode]);
 
@@ -138,6 +141,7 @@ const AiAgentsPage: React.FC = () => {
                 showAddModal={showAddModal}
                 onCloseAddModal={handleCloseModal}
                 onAddClick={handleAddAgentClick}
+                readOnly={isDemoMode}
               />
             </div>
           </div>
@@ -199,6 +203,7 @@ const AiAgentsPage: React.FC = () => {
                   showAddModal={showAddModal}
                   onCloseAddModal={handleCloseModal}
                   onAddClick={handleAddAgentClick}
+                  readOnly={isDemoMode}
                 />
               </div>
             </div>
