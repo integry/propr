@@ -23,12 +23,13 @@ import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 interface GitHubToken { token: string }
 
 async function verifyNoConflictMarkers(worktreeInfo: WorktreeInfo, pullRequestNumber: number, correlatedLogger: Logger): Promise<void> {
-    const { execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
     try {
-        const grepResult = execSync(
-            `grep -rn "^<<<<<<<\\|^=======\\|^>>>>>>>" --include="*" . 2>/dev/null || true`,
-            { cwd: worktreeInfo.worktreePath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
-        ).trim();
+        const grepResult = execFileSync('git', ['grep', '-n', '-I', '-E', '^(<<<<<<<|=======|>>>>>>>)', '--'], {
+            cwd: worktreeInfo.worktreePath,
+            encoding: 'utf-8',
+            maxBuffer: 10 * 1024 * 1024,
+        }).trim();
 
         if (grepResult) {
             const markerLines = grepResult.split('\n').filter(line => line.length > 0);
@@ -40,6 +41,7 @@ async function verifyNoConflictMarkers(worktreeInfo: WorktreeInfo, pullRequestNu
             throw new Error(`Agent failed to resolve all merge conflicts. ${markerLines.length} conflict marker(s) still present in files.`);
         }
     } catch (grepError) {
+        if ((grepError as { status?: number }).status === 1) return;
         if ((grepError as Error).message?.includes('Agent failed to resolve')) throw grepError;
         correlatedLogger.warn({ error: (grepError as Error).message }, 'Failed to verify conflict markers, continuing');
     }

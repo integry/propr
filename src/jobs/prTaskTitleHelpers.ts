@@ -83,7 +83,7 @@ export function buildPrTaskTitle(options: {
     return `${WORKFLOW_LABELS[options.workflow]} PR #${options.pullRequestNumber}: ${title}`;
 }
 
-export function buildDeterministicPrTaskSubtitle(workflow: PrTaskWorkflow): string {
+export function buildDeterministicPrTaskSubtitle(workflow: PrTaskWorkflow, branches?: { baseBranch?: string; headBranch?: string }): string {
     switch (workflow) {
         case 'fix':
             return 'Fix requested without additional context.';
@@ -92,6 +92,7 @@ export function buildDeterministicPrTaskSubtitle(workflow: PrTaskWorkflow): stri
         case 'ultrafix':
             return 'Ultrafix cycle requested without additional context.';
         case 'merge':
+            if (branches?.baseBranch && branches?.headBranch) return `Merging ${branches.baseBranch} into ${branches.headBranch}`;
             return 'Merge conflict resolution requested without conflict details.';
         case 'followup':
         default:
@@ -363,12 +364,18 @@ export function selectFallbackSummaryLine(context: string): string {
         .find(line => line && !isFallbackContextHeader(line)) || '';
 }
 
+function scoreConflictDiff(diff: string): number {
+    return (diff.includes('<<<<<<<') ? 8 : 0) + (diff.includes('diff --cc') || diff.includes('diff --combined') ? 4 : 0)
+        + (diff.includes('@@@') ? 3 : 0) + (diff.includes('@@') ? 1 : 0) + Math.min(diff.length, 2000) / 2000;
+}
+
 export async function getConflictDiffForTitle(worktreePath: string, conflictedFiles?: string[]): Promise<string> {
     if (!conflictedFiles || conflictedFiles.length === 0) return '';
     const { execFile } = await import('child_process');
     const { promisify } = await import('util');
     const execFileAsync = promisify(execFile);
 
+    let bestDiff = '';
     for (const args of [
         ['diff', '--merge', '--', ...conflictedFiles],
         ['diff', '--', ...conflictedFiles],
@@ -381,10 +388,10 @@ export async function getConflictDiffForTitle(worktreePath: string, conflictedFi
                 maxBuffer: 2 * 1024 * 1024,
             });
             const filtered = filterDiffToFiles(String(stdout), conflictedFiles);
-            if (filtered.trim()) return filtered;
+            if (filtered.trim() && scoreConflictDiff(filtered) > scoreConflictDiff(bestDiff)) bestDiff = filtered;
         } catch {
             // Try the next diff mode; git versions and conflict states differ here.
         }
     }
-    return '';
+    return bestDiff;
 }

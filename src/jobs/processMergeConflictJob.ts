@@ -184,31 +184,19 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         }
 
         if (prInfo && (mergeResult.conflictedFiles?.length ?? 0) > 0) {
-            const conflictDiff = await getConflictDiffForTitle(worktreeInfo.worktreePath, mergeResult.conflictedFiles);
-            const titleContext = buildPrTaskTitleContext({
-                workflow: 'merge',
-                pullRequestNumber,
-                prTitle: prInfo.prTitle,
-                mergeConflictDiff: conflictDiff,
-            });
-            const fallbackSubtitle = buildDeterministicPrTaskSubtitle('merge');
-            const subtitle = titleContext.hasMeaningfulContext
-                ? await generateSummaryTitle({
-                    combinedCommentBody: '',
-                    titleContext: titleContext.context,
-                    fallbackSubtitle,
-                    worktreeInfo,
-                    githubToken,
-                    pullRequestNumber,
-                    prTitle: prInfo.prTitle,
-                    workflowLabel: 'Merge',
-                    repoOwner,
-                    repoName,
-                    correlationId,
-                    taskId,
-                    correlatedLogger,
-                })
-                : fallbackSubtitle;
+            const fallbackSubtitle = buildDeterministicPrTaskSubtitle('merge', { baseBranch, headBranch });
+            let subtitle = fallbackSubtitle;
+            try {
+                const conflictDiff = await getConflictDiffForTitle(worktreeInfo.worktreePath, mergeResult.conflictedFiles);
+                const titleContext = buildPrTaskTitleContext({ workflow: 'merge', pullRequestNumber, prTitle: prInfo.prTitle, mergeConflictDiff: conflictDiff });
+                subtitle = titleContext.hasMeaningfulContext ? await generateSummaryTitle({
+                    combinedCommentBody: '', titleContext: titleContext.context, fallbackSubtitle, worktreeInfo, githubToken,
+                    pullRequestNumber, prTitle: prInfo.prTitle, workflowLabel: 'Merge', repoOwner, repoName,
+                    correlationId, taskId, correlatedLogger,
+                }) : fallbackSubtitle;
+            } catch (subtitleError) {
+                correlatedLogger.warn({ taskId, error: (subtitleError as Error).message }, 'Failed to generate merge task subtitle from conflict diff');
+            }
             try {
                 await updateMergeTaskWithKnownPRInfo({
                     stateManager,

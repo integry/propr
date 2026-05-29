@@ -138,7 +138,13 @@ export async function resolvePRCommentModelName(llm: string | null | undefined):
         try {
             const registry = AgentRegistry.getInstance();
             await registry.ensureInitialized();
-            modelName = registry.getDefaultAgent()?.config.defaultModel || modelName;
+            const settings = await loadSettings();
+            const configuredAgent = settings.default_agent_alias
+                ? registry.getAgentByAlias(settings.default_agent_alias as string)
+                : null;
+            modelName = configuredAgent?.config.enabled
+                ? configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME
+                : registry.getDefaultAgent()?.config.defaultModel || modelName;
         } catch {
             // Keep the configured default if the registry is unavailable.
         }
