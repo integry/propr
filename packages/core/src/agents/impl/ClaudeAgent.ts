@@ -268,7 +268,7 @@ export class ClaudeAgent implements Agent {
         prompt: string,
         options?: AnalyzeOptions
     ): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -302,7 +302,7 @@ export class ClaudeAgent implements Agent {
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'claude',
                 async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: 1800000,
+                    timeout: timeoutMs ?? 1800000,
                     stdinData: analysisPrompt,
                     taskId
                 })

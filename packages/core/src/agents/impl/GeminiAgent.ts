@@ -151,7 +151,7 @@ export class GeminiAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs } = options || {};
         const startTime = Date.now();
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Gemini agent...');
         const effectiveModel = model || 'gemini-2.5-flash';
@@ -164,7 +164,7 @@ export class GeminiAgent implements Agent {
             // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'gemini',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId })
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData, taskId })
             );
             const executionTimeMs = Date.now() - startTime;
 

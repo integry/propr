@@ -25,6 +25,7 @@ import {
     getConflictDiffForTitle,
     buildPrTaskTitle,
     buildPrTaskTitleContext,
+    buildPrTaskTitleContextHistoryMetadata,
 } from './prTaskTitleHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
 
@@ -123,7 +124,7 @@ async function updateMergeTaskBeforeLocalMerge(options: {
     try {
         await updateMergeTaskWithKnownPRInfo({
             stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch,
-            correlatedLogger, redisClient, prTitle: prInfo.prTitle, linkedIssueNumber: prInfo.linkedIssueNumber,
+            correlatedLogger, prTitle: prInfo.prTitle, linkedIssueNumber: prInfo.linkedIssueNumber,
             title: buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle: prInfo.prTitle }),
             subtitle: buildDeterministicPrTaskSubtitle('merge', { baseBranch, headBranch }),
         });
@@ -191,6 +192,7 @@ async function updateMergeTaskAfterLocalMerge(options: {
 
     const fallbackSubtitle = buildDeterministicPrTaskSubtitle('merge', { baseBranch, headBranch });
     let subtitle = fallbackSubtitle;
+    let titleContextMetadata: Record<string, unknown> | undefined;
     if (hasConflictedFiles) {
         try {
             const conflictDiff = await getConflictDiffForTitle(worktreeInfo.worktreePath, mergeResult.conflictedFiles);
@@ -202,6 +204,7 @@ async function updateMergeTaskAfterLocalMerge(options: {
                 prDescription,
                 mergeConflictDiff: conflictDiff,
             });
+            titleContextMetadata = buildPrTaskTitleContextHistoryMetadata(titleContext);
             subtitle = titleContext.hasMeaningfulContext ? await generateSummaryTitle({
                 combinedCommentBody: '', titleContext: titleContext.context, fallbackSubtitle, worktreeInfo, githubToken,
                 pullRequestNumber, prTitle: mergeTitleInfo.prTitle, workflowLabel: 'Merge', repoOwner, repoName,
@@ -214,10 +217,11 @@ async function updateMergeTaskAfterLocalMerge(options: {
     try {
         await updateMergeTaskWithKnownPRInfo({
             stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch,
-            correlatedLogger, redisClient, prTitle: mergeTitleInfo.prTitle,
+            correlatedLogger, prTitle: mergeTitleInfo.prTitle,
             linkedIssueNumber: mergeTitleInfo.linkedIssueNumber,
             title: buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle: mergeTitleInfo.prTitle }),
             subtitle,
+            titleContextMetadata,
         });
     } catch (titleError) {
         correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to update merge task subtitle from conflict diff');

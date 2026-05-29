@@ -17,7 +17,14 @@ import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAg
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
-import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle, buildPrTaskTitleContext, getPrTaskWorkflowLabel, resolvePrTaskWorkflow } from './prTaskTitleHelpers.js';
+import {
+    buildDeterministicPrTaskSubtitle,
+    buildPrTaskTitle,
+    buildPrTaskTitleContext,
+    buildPrTaskTitleContextHistoryMetadata,
+    getPrTaskWorkflowLabel,
+    resolvePrTaskWorkflow,
+} from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 
 export interface ReviewAssignment {
@@ -377,6 +384,9 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = titleContext.hasMeaningfulContext ? summaryTitle : fallbackSubtitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
+    await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
+        titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
+    });
 
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();

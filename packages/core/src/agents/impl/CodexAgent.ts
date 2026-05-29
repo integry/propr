@@ -158,7 +158,7 @@ export class CodexAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
@@ -182,7 +182,7 @@ export class CodexAgent implements Agent {
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
                 async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: 1800000, stdinData: analysisPrompt, taskId
+                    timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId
                 })
             );
 

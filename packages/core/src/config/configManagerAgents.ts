@@ -100,6 +100,22 @@ function addMissingSupportedModels(agent: AgentConfig, models: string[], logMess
     return true;
 }
 
+function removeDeprecatedSupportedModels(agent: AgentConfig): boolean {
+    if (!agent.supportedModels) {
+        return false;
+    }
+
+    const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
+    const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
+    if (removedModels.length === 0) {
+        return false;
+    }
+
+    agent.supportedModels = validModels;
+    logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
+    return true;
+}
+
 /**
  * Migrates agent configurations to include CLI version fields and new models.
  */
@@ -137,15 +153,7 @@ export async function migrateAgentConfigs(): Promise<boolean> {
                 }
             }
 
-            if (agent.supportedModels) {
-                const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
-                const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
-                if (removedModels.length > 0) {
-                    agent.supportedModels = validModels;
-                    migrated = true;
-                    logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
-                }
-            }
+            migrated = removeDeprecatedSupportedModels(agent) || migrated;
         }
 
         if (migrated) {

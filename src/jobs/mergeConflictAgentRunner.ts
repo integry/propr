@@ -21,6 +21,12 @@ import {
 import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import type { GitHubToken } from './githubTypes.js';
 
+const MAX_CONFLICT_MARKER_SCAN_BYTES = 1024 * 1024;
+const MERGE_AGENT_COMMIT_AUTHOR = {
+    name: process.env.PROPR_AGENT_COMMIT_AUTHOR_NAME || 'ProPR Agent',
+    email: process.env.PROPR_AGENT_COMMIT_AUTHOR_EMAIL || 'propr-agent@integry.com',
+};
+
 async function buildMergeCompletionHistoryMetadata(options: {
     stateManager: WorkerStateManager;
     taskId: string;
@@ -70,17 +76,17 @@ async function verifyNoConflictMarkers(worktreeInfo: WorktreeInfo, pullRequestNu
         const trackedAndUntracked = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
             cwd: worktreeInfo.worktreePath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024,
         });
-        const ignored = execFileSync('git', ['ls-files', '-z', '--others', '--ignored', '--exclude-standard'], {
-            cwd: worktreeInfo.worktreePath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024,
-        });
-        const filePaths = new Set(`${trackedAndUntracked}\0${ignored}`.split('\0').filter(Boolean));
+        const filePaths = new Set(trackedAndUntracked.split('\0').filter(Boolean));
         const markerLines: string[] = [];
 
         for (const filePath of filePaths) {
             const absolutePath = join(worktreeInfo.worktreePath, filePath);
             try {
-                if (!statSync(absolutePath).isFile()) continue;
-                const lines = readFileSync(absolutePath, 'utf8').split(/\r?\n/);
+                const stats = statSync(absolutePath);
+                if (!stats.isFile() || stats.size > MAX_CONFLICT_MARKER_SCAN_BYTES) continue;
+                const buffer = readFileSync(absolutePath);
+                if (buffer.includes(0)) continue;
+                const lines = buffer.toString('utf8').split(/\r?\n/);
                 lines.forEach((line, index) => {
                     if (/^(<<<<<<<|=======|>>>>>>>)($|\s)/.test(line)) {
                         markerLines.push(`${filePath}:${index + 1}:${line}`);
@@ -140,6 +146,7 @@ export async function handleMergeWithAgent(options: {
     correlatedLogger.info({
         agentAlias: resolvedAlias, agentType: agent.config.type, model: resolvedModel, pullRequestNumber, conflictedFiles,
     }, 'Executing merge conflict resolution with agent');
+    const wasCleanMerge = !conflictedFiles || conflictedFiles.length === 0;
 
     const agentResult = await agent.executeTask({
         worktreePath: worktreeInfo.worktreePath,
@@ -167,16 +174,16 @@ export async function handleMergeWithAgent(options: {
     await verifyNoConflictMarkers(worktreeInfo, pullRequestNumber, correlatedLogger);
     const commitMessage = buildMergeConflictCommitMessage({
         baseBranch, headBranch: branchName, pullRequestNumber, conflictedFiles,
-        model: claudeResult.model || resolvedModel, wasCleanMerge: false,
+        model: claudeResult.model || resolvedModel, wasCleanMerge,
     });
-    const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Resolve merge conflicts' });
+    const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, MERGE_AGENT_COMMIT_AUTHOR, { issueNumber: pullRequestNumber, issueTitle: wasCleanMerge ? 'Verify clean merge' : 'Resolve merge conflicts' });
     await pushBranch(worktreeInfo.worktreePath, branchName, { repoUrl, authToken: githubToken.token });
 
     const { simpleGit } = await import('simple-git');
     const finalCommitHash = commitResult?.commitHash || (await simpleGit({ baseDir: worktreeInfo.worktreePath }).revparse(['HEAD'])).trim();
     const taskUrl = `${process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev'}/tasks/${taskId}`;
     const comment = buildMergeConflictComment({
-        wasCleanMerge: !conflictedFiles || conflictedFiles.length === 0,
+        wasCleanMerge,
         commitHash: finalCommitHash, baseBranch, headBranch: branchName, conflictedFiles,
         resolutionSummary: claudeResult.summary, model: claudeResult.model || resolvedModel,
         executionTimeMs: claudeResult.executionTime, taskUrl,

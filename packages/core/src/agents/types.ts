@@ -108,6 +108,8 @@ export interface AnalyzeOptions {
     repository?: string;
     /** Additional metadata to include in logs */
     metadata?: Record<string, unknown>;
+    /** Optional timeout for lightweight analysis execution. */
+    timeoutMs?: number;
 }
 
 export interface AgentExecutionResult {
@@ -181,4 +183,3 @@ export const CONTAINER_CONFIG_PATHS: Record<AgentType, string> = {
     codex: '/home/node/.codex',
     gemini: '/home/node/.gemini'
 };
-

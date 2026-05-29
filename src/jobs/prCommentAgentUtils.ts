@@ -1,7 +1,7 @@
 import type { Logger } from 'pino';
 import { AgentRegistry, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
 import { getDefaultModel, loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
-import type { ClaudeCodeResponse } from '@propr/core';
+import type { AnalysisResult, ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { createSessionIdCallbackForPR, createContainerIdCallbackForPR } from './prCommentJobHelpers.js';
@@ -35,7 +35,8 @@ interface SummaryTitleOptions {
     titleGenerationTimeoutMs?: number;
 }
 
-type TitleAnalysisOptions = Parameters<typeof runLightweightLLMAnalysis>[0] & { timeoutMs?: number };
+type TitleAnalysisOptions = Parameters<typeof runLightweightLLMAnalysis>[0];
+type TitleAnalysisOptionsWithoutWorktree = Omit<TitleAnalysisOptions, 'worktreePath'>;
 
 function sanitizeGeneratedSubtitle(value: string, fallbackSubtitle: string): string {
     const cleaned = value.replace(/\s+/g, ' ').trim();
@@ -79,6 +80,61 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
     });
 }
 
+async function runWorktreeFreeTitleAnalysis(options: TitleAnalysisOptions, correlatedLogger: Logger): Promise<string> {
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const resolution = options.model === 'haiku'
+        ? await resolveDefaultAgentAndModel(registry, correlatedLogger)
+        : await resolveLlmLabel(options.model);
+    const agentAlias = 'resolvedAlias' in resolution ? resolution.resolvedAlias : resolution.agentAlias;
+    const model = 'resolvedModel' in resolution ? resolution.resolvedModel : resolution.model;
+    const agent = registry.getAgentByAlias(agentAlias);
+    if (!agent) throw new Error(`Agent not found for alias: ${agentAlias}`);
+
+    const repository = `${options.issueRef.repoOwner}/${options.issueRef.repoName}`;
+    const result: AnalysisResult = await agent.analyze(options.prompt, {
+        model,
+        taskId: options.taskId,
+        taskNumber: options.issueRef.number,
+        prNumber: options.prNumber,
+        executionType: options.executionType,
+        correlationId: options.correlationId,
+        repository,
+        metadata: options.metadata,
+        timeoutMs: options.timeoutMs,
+    });
+
+    if (!result.success) {
+        throw new Error(result.error || 'Agent title analysis failed');
+    }
+    return result.response;
+}
+
+function runTitleAnalysis(options: {
+    analysisOptions: TitleAnalysisOptionsWithoutWorktree;
+    analysisRunner?: typeof runLightweightLLMAnalysis;
+    worktreeInfo?: WorktreeInfo;
+    correlatedLogger: Logger;
+}): Promise<string> {
+    if (options.analysisRunner) {
+        return options.analysisRunner({
+            ...options.analysisOptions,
+            worktreePath: options.worktreeInfo?.worktreePath || '',
+        });
+    }
+    if (options.worktreeInfo?.worktreePath) {
+        return runLightweightLLMAnalysis({
+            ...options.analysisOptions,
+            worktreePath: options.worktreeInfo.worktreePath,
+        });
+    }
+    return runWorktreeFreeTitleAnalysis({
+        ...options.analysisOptions,
+        worktreePath: '',
+    }, options.correlatedLogger);
+}
+
 export async function generateSummaryTitle(options: SummaryTitleOptions): Promise<string> {
     const { combinedCommentBody, titleContext, fallbackSubtitle, worktreeInfo, githubToken, pullRequestNumber, prTitle, workflowLabel, repoOwner, repoName, correlationId, taskId, correlatedLogger } = options;
     const contextToSummarize = (titleContext !== undefined ? titleContext : combinedCommentBody || '').trim();
@@ -95,12 +151,10 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
         const configuredModel = summarizationSettings.agent_alias?.trim();
         const model = configuredModel || 'haiku';
         const timeoutMs = options.titleGenerationTimeoutMs ?? TITLE_GENERATION_TIMEOUT_MS;
-        const analysisRunner = options.analysisRunner || runLightweightLLMAnalysis;
-        const analysisOptions: TitleAnalysisOptions = {
+        const analysisOptions: TitleAnalysisOptionsWithoutWorktree = {
             prompt: `${summaryRequest}\n\nYour output must be ONLY the summary string itself, with no other text.`,
             model,
             correlationId,
-            worktreePath: worktreeInfo?.worktreePath || process.cwd(),
             githubToken: githubToken.token,
             issueRef: { number: pullRequestNumber, repoOwner, repoName },
             taskId,
@@ -112,10 +166,13 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
             },
             timeoutMs,
         };
-        const titlePromise = analysisRunner(analysisOptions);
-        const title = await (options.analysisRunner
-            ? withTimeout(titlePromise, timeoutMs, 'PR task title generation')
-            : titlePromise);
+        const titlePromise = runTitleAnalysis({
+            analysisOptions,
+            analysisRunner: options.analysisRunner,
+            worktreeInfo,
+            correlatedLogger,
+        });
+        const title = await withTimeout(titlePromise, timeoutMs, 'PR task title generation');
         const sanitizedTitle = sanitizeGeneratedSubtitle(title, deterministicFallback);
         correlatedLogger.info({ taskId, summaryTitle: sanitizedTitle }, 'Generated AI summary for PR task subtitle');
         return sanitizedTitle;

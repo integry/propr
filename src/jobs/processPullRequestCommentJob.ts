@@ -35,6 +35,7 @@ import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
     buildPrTaskTitleContext,
+    buildPrTaskTitleContextHistoryMetadata,
     getPrTaskWorkflowLabel,
     resolvePrTaskWorkflow,
 } from './prTaskTitleHelpers.js';
@@ -310,6 +311,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = summaryTitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
+    await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
+        titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
+    });
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection });
 

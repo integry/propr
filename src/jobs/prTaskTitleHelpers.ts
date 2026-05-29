@@ -35,6 +35,16 @@ export interface TitleContextResult {
     includedMergeConflictDiff: boolean;
 }
 
+export function buildPrTaskTitleContextHistoryMetadata(result: TitleContextResult): Record<string, unknown> {
+    return {
+        hasMeaningfulContext: result.hasMeaningfulContext,
+        usefulRecentCommentCount: result.usefulRecentCommentCount,
+        includedPrDescription: result.includedPrDescription,
+        includedReviewFeedback: result.includedReviewFeedback,
+        includedMergeConflictDiff: result.includedMergeConflictDiff,
+    };
+}
+
 const WORKFLOW_LABELS: Record<PrTaskWorkflow, string> = {
     followup: 'Follow-up',
     fix: 'Fix',

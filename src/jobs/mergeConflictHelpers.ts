@@ -3,7 +3,7 @@ import type { WorktreeInfo } from '@propr/core';
 import type { AutoResolveContext } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
-import { db } from '@propr/core';
+import { db, TaskStates } from '@propr/core';
 import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle } from './prTaskTitleHelpers.js';
 
 /**
@@ -263,13 +263,13 @@ export async function updateMergeTaskWithKnownPRInfo(options: {
     baseBranch: string;
     headBranch: string;
     correlatedLogger: Logger;
-    redisClient: { setex: (key: string, ttl: number, value: string) => Promise<unknown> };
     prTitle: string;
     linkedIssueNumber: number | null;
     title?: string;
     subtitle?: string;
+    titleContextMetadata?: Record<string, unknown>;
 }): Promise<void> {
-    const { stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient, prTitle, linkedIssueNumber } = options;
+    const { stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, prTitle, linkedIssueNumber } = options;
     const taskTitle = options.title || buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle });
     const taskSubtitle = options.subtitle || buildDeterministicPrTaskSubtitle('merge', { baseBranch, headBranch });
     if (linkedIssueNumber) {
@@ -286,14 +286,14 @@ export async function updateMergeTaskWithKnownPRInfo(options: {
         }),
     });
 
-    const state = await stateManager.getTaskState(taskId);
-    if (state) {
-        state.issueRef = {
-            ...state.issueRef,
-            pullRequestNumber, title: taskTitle, subtitle: taskSubtitle,
-            ...(linkedIssueNumber && { issueNumber: linkedIssueNumber }),
-        };
-        await redisClient.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
+    await stateManager.updateIssueRef(taskId, {
+        pullRequestNumber, title: taskTitle, subtitle: taskSubtitle,
+        ...(linkedIssueNumber && { issueNumber: linkedIssueNumber }),
+    });
+    if (options.titleContextMetadata) {
+        await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
+            titleContext: options.titleContextMetadata,
+        });
     }
 
     correlatedLogger.info({ taskId, prTitle, taskTitle, linkedIssueNumber }, 'Updated merge task with PR title and linked issue');
