@@ -26,7 +26,7 @@ GHCR_PREFIX="${GHCR_PREFIX:-propr-}"   # GHCR uses flat namespace: propr-app ins
 
 VERSION="$(node -p "require('./package.json').version")"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
-VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-$(node -e "const fs = require('node:fs'); const source = fs.readFileSync('packages/core/src/agents/version/types.ts', 'utf8'); const match = source.match(/vibe:\\s*'([^']+)'/); if (!match) process.exit(1); console.log(match[1]);")}"
+VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-$(node -e "const fs = require('node:fs'); const source = fs.readFileSync('packages/core/src/agents/version/types.ts', 'utf8'); const block = source.match(/AGENT_DEFAULT_VERSIONS[^=]*=[\\s\\S]*?};/); const match = block?.[0].match(/\\bvibe:\\s*'([^']+)'/); if (!match) process.exit(1); console.log(match[1]);")}"
 
 # --- Arg parsing --------------------------------------------------------------
 PUSH=false

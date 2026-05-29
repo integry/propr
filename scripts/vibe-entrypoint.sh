@@ -27,13 +27,43 @@ configure_active_model() {
 
     mkdir -p "$RUNTIME_VIBE_HOME"
     touch "$RUNTIME_VIBE_HOME/config.toml"
+    escaped_model="$(toml_escape_string "$VIBE_ACTIVE_MODEL")"
+    active_model_line="active_model = \"${escaped_model}\""
     if grep -q '^[[:space:]]*active_model[[:space:]]*=' "$RUNTIME_VIBE_HOME/config.toml"; then
-        sed -i "s|^[[:space:]]*active_model[[:space:]]*=.*|active_model = \"${VIBE_ACTIVE_MODEL}\"|" "$RUNTIME_VIBE_HOME/config.toml"
+        replace_active_model_line "$RUNTIME_VIBE_HOME/config.toml" "$active_model_line"
     else
-        printf '\nactive_model = "%s"\n' "$VIBE_ACTIVE_MODEL" >> "$RUNTIME_VIBE_HOME/config.toml"
+        printf '\n%s\n' "$active_model_line" >> "$RUNTIME_VIBE_HOME/config.toml"
     fi
     chown node:node "$RUNTIME_VIBE_HOME/config.toml" 2>/dev/null || true
     echo "Configured Vibe active model override" >&2
+}
+
+toml_escape_string() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\n'/\\n}"
+    printf '%s' "$value"
+}
+
+replace_active_model_line() {
+    local config_file="$1"
+    local replacement="$2"
+    local tmp_file
+    local replaced=false
+    tmp_file="$(mktemp)"
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$replaced" = false ] && printf '%s\n' "$line" | grep -q '^[[:space:]]*active_model[[:space:]]*='; then
+            printf '%s\n' "$replacement" >> "$tmp_file"
+            replaced=true
+        else
+            printf '%s\n' "$line" >> "$tmp_file"
+        fi
+    done < "$config_file"
+
+    mv "$tmp_file" "$config_file"
 }
 
 format_command_for_log() {

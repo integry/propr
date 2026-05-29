@@ -13,9 +13,11 @@ import {
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import { parseVibeOutput } from './utils/vibeOutputParser.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
+export { parseVibeOutput } from './utils/vibeOutputParser.js';
 
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
@@ -23,44 +25,16 @@ const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
 const CONTAINER_PROMPT_PATH = '/tmp/propr-vibe-prompt.md';
 const PROMPT_CACHE_DIR = '/tmp/git-processor/propr-cache/vibe-prompts';
 
-interface VibeJsonOutput {
-    type?: string;
-    session_id?: string;
-    sessionId?: string;
-    model?: string;
-    result?: string;
-    response?: string;
-    output?: string;
-    text?: string;
-    error?: string;
-    usage?: {
-        input_tokens?: number;
-        output_tokens?: number;
-    };
-    token_usage?: {
-        input_tokens?: number;
-        output_tokens?: number;
-    };
-}
-
 interface VibeDockerArgsParams {
     worktreePath: string;
     githubToken: string;
     modelName?: string;
-    prompt: string;
+    promptPath: string;
     issueNumber: number;
     taskId?: string;
     executionType?: string;
     maxTurns?: number;
     mode?: 'execute' | 'analysis';
-}
-
-interface ParsedVibeOutput {
-    sessionId?: string;
-    model?: string;
-    summary?: string;
-    error?: string;
-    tokenUsage?: { input_tokens?: number; output_tokens?: number };
 }
 
 export class VibeAgent implements Agent {
@@ -94,27 +68,30 @@ export class VibeAgent implements Agent {
             const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = this.buildDockerArgs({
-                worktreePath,
-                githubToken,
-                modelName: effectiveModel,
-                prompt,
-                issueNumber: issueRef.number,
-                taskId
-            });
+            const promptPath = this.writePromptFile(prompt, taskId);
 
-            const { result, usageMetrics } = await executeWithUsageTracking(
-                'vibe',
-                async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: this.timeoutMs,
-                    cwd: worktreePath,
-                    onSessionId,
-                    onContainerId,
+            const { result, usageMetrics } = await this.runWithPromptCleanup(promptPath, () => {
+                const dockerArgs = this.buildDockerArgs({
                     worktreePath,
-                    taskId,
-                    streamToRedis: true
-                })
-            );
+                    githubToken,
+                    modelName: effectiveModel,
+                    promptPath,
+                    issueNumber: issueRef.number,
+                    taskId
+                });
+                return executeWithUsageTracking(
+                    'vibe',
+                    async () => executeDockerCommand('docker', dockerArgs, {
+                        timeout: this.timeoutMs,
+                        cwd: worktreePath,
+                        onSessionId,
+                        onContainerId,
+                        worktreePath,
+                        taskId,
+                        streamToRedis: true
+                    })
+                );
+            });
 
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseVibeOutput(result.stdout);
@@ -193,22 +170,25 @@ export class VibeAgent implements Agent {
 
         try {
             const analysisWorkspace = this.ensureAnalysisWorkspace();
-            const dockerArgs = this.buildDockerArgs({
-                worktreePath: analysisWorkspace,
-                githubToken: process.env.GITHUB_TOKEN || '',
-                modelName: effectiveModel,
-                prompt: analysisPrompt,
-                issueNumber: 0,
-                taskId,
-                executionType,
-                maxTurns: 5,
-                mode: 'analysis'
-            });
+            const promptPath = this.writePromptFile(analysisPrompt, taskId);
 
-            const { result, usageMetrics } = await executeWithUsageTracking(
-                'vibe',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, taskId })
-            );
+            const { result, usageMetrics } = await this.runWithPromptCleanup(promptPath, () => {
+                const dockerArgs = this.buildDockerArgs({
+                    worktreePath: analysisWorkspace,
+                    githubToken: process.env.GITHUB_TOKEN || '',
+                    modelName: effectiveModel,
+                    promptPath,
+                    issueNumber: 0,
+                    taskId,
+                    executionType,
+                    maxTurns: 5,
+                    mode: 'analysis'
+                });
+                return executeWithUsageTracking(
+                    'vibe',
+                    async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, taskId })
+                );
+            });
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseVibeOutput(result.stdout);
             const analysisText = (parsedOutput.summary || '').trim();
@@ -289,12 +269,29 @@ export class VibeAgent implements Agent {
         fs.mkdirSync(PROMPT_CACHE_DIR, { recursive: true, mode: 0o700 });
         const safeTaskId = taskId?.replace(/[^a-zA-Z0-9_-]/g, '').slice(-32) || Date.now().toString(36);
         const promptPath = path.join(PROMPT_CACHE_DIR, `${safeTaskId}-${Date.now().toString(36)}.md`);
-        fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o600 });
+        fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o644 });
+        fs.chmodSync(promptPath, 0o644);
         return promptPath;
     }
 
+    private cleanupPromptFile(promptPath: string): void {
+        try {
+            fs.unlinkSync(promptPath);
+        } catch (error) {
+            logger.warn({ promptPath, error: (error as Error).message }, 'Failed to clean up Vibe prompt file');
+        }
+    }
+
+    private async runWithPromptCleanup<T>(promptPath: string, run: () => Promise<T>): Promise<T> {
+        try {
+            return await run();
+        } finally {
+            this.cleanupPromptFile(promptPath);
+        }
+    }
+
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
-        const { worktreePath, githubToken, modelName, prompt, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute' } = params;
+        const { worktreePath, githubToken, modelName, promptPath, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute' } = params;
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
         const envVars: string[] = [];
         if (this.config.envVars) {
@@ -310,10 +307,10 @@ export class VibeAgent implements Agent {
         envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
 
         const timestamp = Date.now().toString(36);
-        const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
-        const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
-        const containerName = `${this.config.alias || 'vibe'}-${taskType}-${shortTaskId}`;
-        const promptPath = this.writePromptFile(prompt, taskId);
+        const shortTaskId = this.sanitizeDockerNamePart(taskId?.slice(-8), timestamp);
+        const taskType = this.sanitizeDockerNamePart(executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), 'task');
+        const alias = this.sanitizeDockerNamePart(this.config.alias, 'vibe');
+        const containerName = `${alias}-${taskType}-${shortTaskId}`.slice(0, 128);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const promptInstruction = `Read the full task prompt from @${CONTAINER_PROMPT_PATH} and follow it exactly.`;
         const agentArgs = mode === 'analysis'
@@ -337,64 +334,12 @@ export class VibeAgent implements Agent {
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'vibe');
     }
 
+    private sanitizeDockerNamePart(value: string | undefined, fallback: string): string {
+        const sanitized = value?.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').replace(/[^a-zA-Z0-9]+$/, '');
+        return sanitized || fallback;
+    }
+
     private formatUsageMetrics(usageMetrics: UsageTrackingMetrics | null | undefined) {
         return formatUsageMetrics(usageMetrics);
     }
-}
-
-function flattenJsonValue(value: unknown): VibeJsonOutput[] {
-    if (Array.isArray(value)) {
-        return value.flatMap(item => flattenJsonValue(item));
-    }
-    if (value && typeof value === 'object') {
-        return [value as VibeJsonOutput];
-    }
-    return [];
-}
-
-function tryParseJson(text: string): VibeJsonOutput[] {
-    try {
-        return flattenJsonValue(JSON.parse(text));
-    } catch {
-        return [];
-    }
-}
-
-function parseJsonObjects(output: string): VibeJsonOutput[] {
-    const trimmed = output.trim();
-    const wholeDocument = trimmed ? tryParseJson(trimmed) : [];
-    if (wholeDocument.length > 0) {
-        return wholeDocument;
-    }
-    return output
-        .split('\n')
-        .map(line => line.trim())
-        .filter(Boolean)
-        .flatMap(line => tryParseJson(line));
-}
-
-function pickText(event: VibeJsonOutput): string | undefined {
-    return event.result || event.response || event.output || event.text;
-}
-
-export function parseVibeOutput(output: string): ParsedVibeOutput {
-    const jsonObjects = parseJsonObjects(output);
-    if (jsonObjects.length === 0) {
-        const summary = output.trim();
-        return { summary: summary || undefined };
-    }
-
-    const textEvent = [...jsonObjects].reverse().find(event => pickText(event));
-    const sessionEvent = [...jsonObjects].reverse().find(event => event.session_id || event.sessionId);
-    const modelEvent = [...jsonObjects].reverse().find(event => event.model);
-    const usageEvent = [...jsonObjects].reverse().find(event => event.usage || event.token_usage);
-    const errorEvent = jsonObjects.find(event => event.error || event.type === 'error');
-
-    return {
-        sessionId: sessionEvent?.session_id || sessionEvent?.sessionId,
-        model: modelEvent?.model,
-        summary: textEvent ? pickText(textEvent) : output.trim() || undefined,
-        error: errorEvent ? (errorEvent.error || 'Vibe reported an error') : undefined,
-        tokenUsage: usageEvent?.usage || usageEvent?.token_usage
-    };
 }

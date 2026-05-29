@@ -46,6 +46,13 @@ export async function getLatestPyPiVersion(packageName: string): Promise<string>
     return info.info.version;
 }
 
+function getLatestUploadTime(files: Array<{ upload_time_iso_8601?: string }>): string {
+    return files.reduce((latest, file) => {
+        const uploadTime = file.upload_time_iso_8601 || '';
+        return uploadTime > latest ? uploadTime : latest;
+    }, '');
+}
+
 export async function getRecentPyPiVersions(
     packageName: string,
     limit: number = 10
@@ -54,7 +61,7 @@ export async function getRecentPyPiVersions(
     return Object.entries(info.releases)
         .map(([version, files]) => ({
             version,
-            publishedAt: files[0]?.upload_time_iso_8601 || ''
+            publishedAt: getLatestUploadTime(files)
         }))
         .filter(release => release.publishedAt)
         .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
