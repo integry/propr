@@ -12,16 +12,31 @@ else
     echo "GitHub token detected (using environment variable)" >&2
 fi
 
-mkdir -p /home/node/.config/opencode /home/node/.local/share/opencode
+opencode_config_dir="${OPENCODE_CONFIG_DIR:-${OPENCODE_CONFIG_PATH:-/home/node/.config/opencode}}"
+opencode_legacy_config_dir="${OPENCODE_LEGACY_CONFIG_DIR:-${OPENCODE_LEGACY_CONFIG_PATH:-/home/node/.opencode}}"
+opencode_data_dir="${XDG_DATA_HOME:-/home/node/.local/share}/opencode"
 
-if [ -d "/home/node/.config/opencode" ]; then
-    echo "OpenCode config directory mounted" >&2
+if [ ! -d "$opencode_config_dir" ] && [ -d "$opencode_legacy_config_dir" ]; then
+    echo "Using legacy OpenCode config directory at $opencode_legacy_config_dir" >&2
+    mkdir -p "$(dirname "$opencode_config_dir")"
+    ln -s "$opencode_legacy_config_dir" "$opencode_config_dir" 2>/dev/null || true
+fi
+
+if [ -d "$opencode_config_dir" ]; then
+    echo "OpenCode config directory available at $opencode_config_dir" >&2
+    mkdir -p "$opencode_data_dir"
     if [ "$(id -u)" = "0" ]; then
-        chown -R node:node /home/node/.config/opencode /home/node/.local/share/opencode 2>/dev/null || true
-        chmod -R u+rw /home/node/.config/opencode /home/node/.local/share/opencode 2>/dev/null || true
+        chown -R node:node "$opencode_data_dir" 2>/dev/null || true
+        chmod -R u+rw "$opencode_data_dir" 2>/dev/null || true
+        echo "Skipping OpenCode config ownership changes to avoid mutating host bind mounts" >&2
     fi
 else
-    echo "WARNING: OpenCode config directory not mounted at /home/node/.config/opencode" >&2
+    echo "WARNING: OpenCode config directory not mounted at $opencode_config_dir" >&2
+    mkdir -p "$opencode_config_dir" "$opencode_data_dir"
+    if [ "$(id -u)" = "0" ]; then
+        chown -R node:node "$opencode_config_dir" "$opencode_data_dir" 2>/dev/null || true
+        chmod -R u+rw "$opencode_config_dir" "$opencode_data_dir" 2>/dev/null || true
+    fi
 fi
 
 git config --global --add safe.directory '*' 2>/dev/null || echo "Git safe directory config already set" >&2

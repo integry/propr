@@ -69,6 +69,11 @@ should_build() {
   for s in "${SELECTED[@]}"; do
     [[ "$s" == "$1" ]] && return 0
   done
+  if [[ "$1" == "agent-base" ]]; then
+    for s in "${SELECTED[@]}"; do
+      [[ "$s" == agent-* && "$s" != "agent-base" ]] && return 0
+    done
+  fi
   return 1
 }
 

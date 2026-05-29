@@ -59,6 +59,8 @@ services:
       - ~/.claude:/root/.claude
       - ~/.gemini:/root/.gemini
       - ~/.codex:/root/.codex
+      - ~/.opencode:/root/.opencode
+      - ~/.config/opencode:/root/.config/opencode
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
     env_file:
@@ -83,6 +85,8 @@ services:
       - /tmp/git-processor:/tmp/git-processor:ro
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - ~/.codex:/root/.codex:ro
+      - ~/.opencode:/root/.opencode:ro
+      - ~/.config/opencode:/root/.config/opencode:ro
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
@@ -107,6 +111,8 @@ services:
       - ~/.claude:/root/.claude:ro
       - ~/.gemini:/root/.gemini:ro
       - ~/.codex:/root/.codex:ro
+      - ~/.opencode:/root/.opencode:ro
+      - ~/.config/opencode:/root/.config/opencode:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
     env_file:
@@ -153,6 +159,8 @@ services:
     volumes:
       - ~/.claude:/root/.claude:ro
       - ~/.codex:/root/.codex:ro
+      - ~/.opencode:/root/.opencode:ro
+      - ~/.config/opencode:/root/.config/opencode:ro
       - ./data:/usr/src/app/data
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
