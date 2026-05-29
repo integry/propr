@@ -23,10 +23,11 @@ const AGENT_LABELS: Record<AgentType, string> = {
   claude: 'Claude',
   codex: 'Codex (OpenAI)',
   gemini: 'Gemini',
+  opencode: 'OpenCode',
 };
 
 // Agent order for display
-const AGENT_ORDER: AgentType[] = ['claude', 'gemini', 'codex'];
+const AGENT_ORDER: AgentType[] = ['claude', 'gemini', 'codex', 'opencode'];
 
 /**
  * Converts a model ID to agent:model format for proper routing.

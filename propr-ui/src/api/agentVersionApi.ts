@@ -4,7 +4,7 @@
 
 import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
-export type AgentType = 'claude' | 'codex' | 'gemini';
+export type AgentType = 'claude' | 'codex' | 'gemini' | 'opencode';
 export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 
 export interface AvailableTag {

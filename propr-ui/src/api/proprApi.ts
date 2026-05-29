@@ -299,7 +299,7 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 
 export interface AgentConfig {
   id: string;
-  type: 'claude' | 'codex' | 'gemini';
+  type: 'claude' | 'codex' | 'gemini' | 'opencode';
   alias: string;
   enabled: boolean;
   dockerImage: string;

@@ -229,7 +229,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           <div>
             <label className="block text-gray-700 mb-1.5 font-medium text-sm">Agent Type</label>
             <div className="inline-flex bg-gray-100 rounded-full p-1">
-              {(['claude', 'codex', 'gemini'] as AgentType[]).map(type => (
+              {(['claude', 'codex', 'gemini', 'opencode'] as AgentType[]).map(type => (
                 <button
                   key={type}
                   type="button"
