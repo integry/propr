@@ -12,8 +12,8 @@ else
     echo "GitHub token detected (using environment variable)" >&2
 fi
 
-opencode_config_dir="${OPENCODE_CONFIG_DIR:-/home/node/.config/opencode}"
-opencode_legacy_config_dir="/home/node/.opencode"
+opencode_config_dir="${OPENCODE_CONFIG_DIR:-${OPENCODE_CONFIG_PATH:-/home/node/.config/opencode}}"
+opencode_legacy_config_dir="${OPENCODE_LEGACY_CONFIG_DIR:-${OPENCODE_LEGACY_CONFIG_PATH:-/home/node/.opencode}}"
 opencode_data_dir="${XDG_DATA_HOME:-/home/node/.local/share}/opencode"
 
 if [ ! -d "$opencode_config_dir" ] && [ -d "$opencode_legacy_config_dir" ]; then
@@ -26,13 +26,17 @@ if [ -d "$opencode_config_dir" ]; then
     echo "OpenCode config directory available at $opencode_config_dir" >&2
     mkdir -p "$opencode_data_dir"
     if [ "$(id -u)" = "0" ]; then
-        chown -R node:node "$opencode_config_dir" "$opencode_data_dir" 2>/dev/null || true
-        [ -d "$opencode_legacy_config_dir" ] && chown -R node:node "$opencode_legacy_config_dir" 2>/dev/null || true
-        chmod -R u+rw "$opencode_config_dir" "$opencode_data_dir" 2>/dev/null || true
+        chown -R node:node "$opencode_data_dir" 2>/dev/null || true
+        chmod -R u+rw "$opencode_data_dir" 2>/dev/null || true
+        echo "Skipping OpenCode config ownership changes to avoid mutating host bind mounts" >&2
     fi
 else
     echo "WARNING: OpenCode config directory not mounted at $opencode_config_dir" >&2
     mkdir -p "$opencode_config_dir" "$opencode_data_dir"
+    if [ "$(id -u)" = "0" ]; then
+        chown -R node:node "$opencode_config_dir" "$opencode_data_dir" 2>/dev/null || true
+        chmod -R u+rw "$opencode_config_dir" "$opencode_data_dir" 2>/dev/null || true
+    fi
 fi
 
 git config --global --add safe.directory '*' 2>/dev/null || echo "Git safe directory config already set" >&2

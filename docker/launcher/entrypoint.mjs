@@ -47,7 +47,8 @@ const DOCS_ENABLED = process.env.DOCS_ENABLED === 'true';
 const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR;
 const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR;
 const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR;
-const HOST_OPENCODE_DIR = process.env.HOST_OPENCODE_DIR;
+const HOST_OPENCODE_LEGACY_DIR = process.env.HOST_OPENCODE_LEGACY_DIR;
+const HOST_OPENCODE_XDG_DIR = process.env.HOST_OPENCODE_XDG_DIR || process.env.HOST_OPENCODE_DIR;
 
 // For each agent, mount the host credentials at the same path on both sides
 // (HOST:HOST) and set *_CONFIG_PATH env vars to that path. When the worker/api
@@ -69,9 +70,15 @@ function agentCredentialArgs() {
         args.push('-v', `${HOST_GEMINI_DIR}:${HOST_GEMINI_DIR}`);
         args.push('-e', `GEMINI_CONFIG_PATH=${HOST_GEMINI_DIR}`);
     }
-    if (HOST_OPENCODE_DIR) {
-        args.push('-v', `${HOST_OPENCODE_DIR}:${HOST_OPENCODE_DIR}`);
-        args.push('-e', `OPENCODE_CONFIG_PATH=${HOST_OPENCODE_DIR}`);
+    if (HOST_OPENCODE_LEGACY_DIR) {
+        args.push('-v', `${HOST_OPENCODE_LEGACY_DIR}:${HOST_OPENCODE_LEGACY_DIR}`);
+        args.push('-e', `OPENCODE_LEGACY_CONFIG_PATH=${HOST_OPENCODE_LEGACY_DIR}`);
+    }
+    if (HOST_OPENCODE_XDG_DIR) {
+        args.push('-v', `${HOST_OPENCODE_XDG_DIR}:${HOST_OPENCODE_XDG_DIR}`);
+        args.push('-e', `OPENCODE_CONFIG_PATH=${HOST_OPENCODE_XDG_DIR}`);
+    } else if (HOST_OPENCODE_LEGACY_DIR) {
+        args.push('-e', `OPENCODE_CONFIG_PATH=${HOST_OPENCODE_LEGACY_DIR}`);
     }
     return args;
 }
