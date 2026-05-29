@@ -18,7 +18,7 @@ interface SummaryTitleOptions {
     combinedCommentBody: string;
     titleContext?: string;
     fallbackSubtitle?: string;
-    worktreeInfo: WorktreeInfo;
+    worktreeInfo?: WorktreeInfo;
     githubToken: GitHubToken;
     pullRequestNumber: number;
     prTitle?: string;
@@ -67,7 +67,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
             prompt: `${summaryRequest}\n\nYour output must be ONLY the summary string itself, with no other text.`,
             model,
             correlationId,
-            worktreePath: worktreeInfo.worktreePath,
+            worktreePath: worktreeInfo?.worktreePath || process.cwd(),
             githubToken: githubToken.token,
             issueRef: { number: pullRequestNumber, repoOwner, repoName },
             taskId,
@@ -79,12 +79,12 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
             }
         });
         const sanitizedTitle = sanitizeGeneratedSubtitle(title, deterministicFallback);
-        correlatedLogger.info({ taskId, summaryTitle: sanitizedTitle }, 'Generated AI summary for follow-up task');
+        correlatedLogger.info({ taskId, summaryTitle: sanitizedTitle }, 'Generated AI summary for PR task subtitle');
         return sanitizedTitle;
     } catch (summaryError) {
         correlatedLogger.warn({ taskId, error: (summaryError as Error).message }, 'Failed to generate AI summary, falling back to truncation.');
         if (contextToSummarize) {
-            const firstLine = selectFallbackSummaryLine(contextToSummarize).replace(/[^a-zA-Z0-9 ]/g, '').trim();
+            const firstLine = selectFallbackSummaryLine(contextToSummarize).replace(/\s+/g, ' ').trim();
             if (!firstLine) return deterministicFallback;
             const prefix = workflowLabel || 'Follow-up';
             return `${prefix}: ${firstLine.substring(0, 75)}${firstLine.length > 75 ? '...' : ''}`;
@@ -93,7 +93,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
     }
 }
 
-async function resolveDefaultAgentAndModel(
+export async function resolveDefaultAgentAndModel(
     registry: AgentRegistry,
     correlatedLogger: Logger
 ): Promise<{ resolvedAlias: string; resolvedModel: string }> {

@@ -1,16 +1,28 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import { execFile } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 
 import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
     buildPrTaskTitleContext,
     filterDiffToFiles,
+    getConflictDiffForTitle,
     hasMeaningfulTitleText,
     resolvePrTaskWorkflow,
     selectRecentUsefulPrComments,
     selectFallbackSummaryLine,
 } from '../src/jobs/prTaskTitleHelpers.js';
+
+const execFileAsync = promisify(execFile);
+
+async function git(cwd: string, args: string[]): Promise<void> {
+    await execFileAsync('git', args, { cwd });
+}
 
 describe('prTaskTitleHelpers titles', () => {
     test('builds command-aware PR titles', () => {
@@ -30,6 +42,17 @@ describe('prTaskTitleHelpers titles', () => {
             buildPrTaskTitle({ workflow: 'merge', pullRequestNumber: 123, prTitle: 'Resolve auth middleware conflicts' }),
             'Merge PR #123: Resolve auth middleware conflicts',
         );
+    });
+
+    test('caps long PR titles in task titles', () => {
+        const title = buildPrTaskTitle({
+            workflow: 'fix',
+            pullRequestNumber: 123,
+            prTitle: 'A'.repeat(180),
+        });
+
+        assert.ok(title.endsWith('...'));
+        assert.ok(title.length < 170);
     });
 
     test('resolves ultrafix workflow from metadata even when the concrete step is fix or review', () => {
@@ -92,6 +115,20 @@ describe('prTaskTitleHelpers context selection', () => {
         ], { limit: 2 });
         assert.deepStrictEqual(selected.map(comment => comment.id), [3]);
     });
+
+    test('filters generated check comments from bot context', () => {
+        const selected = selectRecentUsefulPrComments([
+            {
+                id: 6,
+                body: '### Checks Failed\nLinting or build errors were detected.\n\nView Logs',
+                created_at: '2026-05-29T08:06:00Z',
+                user: { login: 'github-actions[bot]', type: 'Bot' },
+            },
+            comments[2],
+        ], { limit: 2 });
+        assert.deepStrictEqual(selected.map(comment => comment.id), [3]);
+    });
+
 
     test('falls back to PR description when fewer than two useful recent comments exist', () => {
         const result = buildPrTaskTitleContext({
@@ -256,5 +293,63 @@ describe('prTaskTitleHelpers merge conflict diff context', () => {
 
         assert.strictEqual(filterDiffToFiles(diff, ['src/conflict.ts']), diff);
         assert.strictEqual(filterDiffToFiles(diff, ['src/other.ts']), '');
+    });
+
+    test('matches git diff blocks by either side of the header and later patch headers', () => {
+        const diff = [
+            'diff --git a/src/old-name.ts b/src/new-name.ts',
+            'similarity index 88%',
+            'rename from src/old-name.ts',
+            'rename to src/new-name.ts',
+            '--- a/src/old-name.ts',
+            '+++ b/src/new-name.ts',
+            '@@ -1 +1 @@',
+            '-old',
+            '+new',
+            'diff --git a/src/unrelated.ts b/src/unrelated.ts',
+            'index 111..222 100644',
+            '--- a/src/conflict.ts',
+            '+++ b/src/conflict.ts',
+            '@@ -1 +1 @@',
+            '-conflict old',
+            '+conflict new',
+        ].join('\n');
+
+        const renamed = filterDiffToFiles(diff, ['src/old-name.ts']);
+        assert.ok(renamed.includes('rename from src/old-name.ts'));
+        assert.ok(!renamed.includes('src/conflict.ts'));
+
+        const patchHeaderOnly = filterDiffToFiles(diff, ['src/conflict.ts']);
+        assert.ok(patchHeaderOnly.includes('diff --git a/src/unrelated.ts b/src/unrelated.ts'));
+        assert.ok(!patchHeaderOnly.includes('rename from src/old-name.ts'));
+    });
+
+    test('reads unresolved merge conflict diff before conflicts are resolved', async () => {
+        const repo = await mkdtemp(join(tmpdir(), 'propr-conflict-diff-'));
+        try {
+            await git(repo, ['init']);
+            await git(repo, ['config', 'user.email', 'test@example.com']);
+            await git(repo, ['config', 'user.name', 'ProPR Test']);
+            await git(repo, ['branch', '-M', 'main']);
+            await mkdir(join(repo, 'src'));
+            await writeFile(join(repo, 'src/conflict.ts'), 'export const value = "base";\n');
+            await git(repo, ['add', 'src/conflict.ts']);
+            await git(repo, ['commit', '-m', 'base']);
+            await git(repo, ['checkout', '-b', 'feature']);
+            await writeFile(join(repo, 'src/conflict.ts'), 'export const value = "feature";\n');
+            await git(repo, ['commit', '-am', 'feature change']);
+            await git(repo, ['checkout', 'main']);
+            await writeFile(join(repo, 'src/conflict.ts'), 'export const value = "main";\n');
+            await git(repo, ['commit', '-am', 'main change']);
+            await git(repo, ['checkout', 'feature']);
+
+            await assert.rejects(execFileAsync('git', ['merge', 'main'], { cwd: repo }));
+            const conflictDiff = await getConflictDiffForTitle(repo, ['src/conflict.ts']);
+
+            assert.ok(conflictDiff.includes('src/conflict.ts'));
+            assert.ok(conflictDiff.includes('<<<<<<<') || conflictDiff.includes('feature') || conflictDiff.includes('main'));
+        } finally {
+            await rm(repo, { recursive: true, force: true });
+        }
     });
 });

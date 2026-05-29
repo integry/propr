@@ -8,20 +8,17 @@ import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError, loadPrReviewModel } from '@propr/core';
+import { loadPrReviewModel } from '@propr/core';
 import { fetchLinkedIssueContext, buildCommentHistory, updateTaskTitleForPR } from './prCommentJobHelpers.js';
 import { buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
-import { generateSummaryTitle } from './prCommentAgentUtils.js';
-import { createTitleGenerationWorktree } from './prCommentTitleWorktree.js';
+import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
 import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle, buildPrTaskTitleContext, resolvePrTaskWorkflow } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
-
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 export interface ReviewAssignment {
     agentAlias: string;
@@ -86,39 +83,6 @@ export interface JobResult {
     reviewsPosted?: number;
     reviewsFailed?: number;
     [key: string]: unknown;
-}
-
-async function resolveDefaultAgentAndModel(
-    registry: AgentRegistry,
-    correlatedLogger: Logger
-): Promise<{ resolvedAlias: string; resolvedModel: string }> {
-    try {
-        const settings = await loadSettings();
-        if (settings.default_agent_alias) {
-            const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
-            if (configuredAgent && configuredAgent.config.enabled) {
-                const resolvedAlias = settings.default_agent_alias as string;
-                const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
-                if (!resolvedModel) {
-                    throw new NoDefaultModelConfiguredError();
-                }
-                correlatedLogger.debug({ configuredDefaultAgent: resolvedAlias, defaultModel: resolvedModel }, 'Using default agent from settings');
-                return { resolvedAlias, resolvedModel };
-            }
-        }
-    } catch (settingsError) {
-        if (settingsError instanceof NoDefaultModelConfiguredError) throw settingsError;
-        correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
-    }
-
-    const defaultAgent = registry.getDefaultAgent();
-    const resolvedAlias = defaultAgent?.config.alias || 'claude';
-    const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
-    if (!resolvedModel) {
-        throw new NoDefaultModelConfiguredError();
-    }
-    correlatedLogger.debug({ fallbackAgent: resolvedAlias, fallbackModel: resolvedModel }, 'Using fallback default agent');
-    return { resolvedAlias, resolvedModel };
 }
 
 export async function resolveReviewAssignments(
@@ -400,15 +364,9 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     let summaryTitle = fallbackSubtitle;
     if (titleContext.hasMeaningfulContext) {
         try {
-            const titleWorktree = await createTitleGenerationWorktree({
-                repoOwner, repoName, pullRequestNumber, branchName: prData!.data.head.ref,
-                githubToken: githubToken.token, purpose: 'review-title', correlatedLogger,
-            });
-            state.localRepoPath = titleWorktree.localRepoPath;
-            state.worktreeInfo = titleWorktree.worktreeInfo;
             summaryTitle = await generateSummaryTitle({
                 combinedCommentBody, titleContext: titleContext.context, fallbackSubtitle,
-                worktreeInfo: titleWorktree.worktreeInfo, githubToken,
+                githubToken,
                 pullRequestNumber, prTitle: prData!.data.title, workflowLabel: 'Review',
                 repoOwner, repoName, correlationId, taskId, correlatedLogger,
             });

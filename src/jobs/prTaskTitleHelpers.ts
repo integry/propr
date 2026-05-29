@@ -39,6 +39,8 @@ const WORKFLOW_LABELS: Record<PrTaskWorkflow, string> = {
     merge: 'Merge',
 };
 
+const MAX_PR_TITLE_IN_TASK_TITLE = 140;
+
 const PROPR_GENERATED_PATTERNS = [
     'Starting work on follow-up changes',
     'Starting AI Code Review',
@@ -48,6 +50,13 @@ const PROPR_GENERATED_PATTERNS = [
     'Auto-merged',
     'Failed to apply follow-up changes',
     'Failed to resolve merge conflicts',
+];
+
+const NOISY_BOT_PATTERNS = [
+    '### Checks Failed',
+    'Linting or build errors were detected.',
+    'View Logs',
+    'View Workflow',
 ];
 
 function compactWhitespace(value: string): string {
@@ -70,7 +79,7 @@ export function buildPrTaskTitle(options: {
     pullRequestNumber: number;
     prTitle: string | null | undefined;
 }): string {
-    const title = compactWhitespace(options.prTitle || '') || 'Untitled pull request';
+    const title = truncate(compactWhitespace(options.prTitle || '') || 'Untitled pull request', MAX_PR_TITLE_IN_TASK_TITLE);
     return `${WORKFLOW_LABELS[options.workflow]} PR #${options.pullRequestNumber}: ${title}`;
 }
 
@@ -124,6 +133,9 @@ export function isUsefulTitleComment(comment: TitleComment): boolean {
     const authorType = comment.user?.type;
     const author = comment.user?.login || comment.author || '';
     if (authorType === 'Bot' && author.toLowerCase().includes('propr')) return false;
+    if (authorType === 'Bot' && NOISY_BOT_PATTERNS.some(pattern => lowerBody.includes(pattern.toLowerCase()))) {
+        return false;
+    }
     return !PROPR_GENERATED_PATTERNS.some(pattern => lowerBody.includes(pattern.toLowerCase()));
 }
 
@@ -261,17 +273,17 @@ function splitDiffHeaderArgs(value: string): string[] {
     return args;
 }
 
-function diffBlockPath(header: string): string | null {
+function diffBlockPaths(header: string): string[] {
     const gitHeader = header.match(/^diff --git\s+(.+)$/);
     if (gitHeader) {
         const paths = splitDiffHeaderArgs(gitHeader[1]);
-        return paths.length >= 2 ? normalizeDiffPath(paths[1]) : null;
+        return paths.slice(0, 2).map(normalizeDiffPath);
     }
 
     const combinedHeader = header.match(/^diff --(?:cc|combined)\s+(.+)$/);
-    if (combinedHeader) return normalizeDiffPath(combinedHeader[1]);
+    if (combinedHeader) return [normalizeDiffPath(combinedHeader[1])];
 
-    return null;
+    return [];
 }
 
 function diffPatchPath(line: string): string | null {
@@ -302,10 +314,11 @@ export function filterDiffToFiles(diff: string, filePaths: string[]): string {
             sawDiffHeader = true;
             if (current.length > 0 && includeCurrent) blocks.push(current.join('\n'));
             current = [line];
-            const path = diffBlockPath(line);
-            includeCurrent = path !== null && wanted.has(path);
+            includeCurrent = diffBlockPaths(line).some(path => wanted.has(path));
         } else if (current.length > 0) {
             current.push(line);
+            const patchPath = diffPatchPath(line);
+            if (patchPath !== null && wanted.has(patchPath)) includeCurrent = true;
         }
     }
 
@@ -355,14 +368,23 @@ export async function getConflictDiffForTitle(worktreePath: string, conflictedFi
     const { execFile } = await import('child_process');
     const { promisify } = await import('util');
     const execFileAsync = promisify(execFile);
-    try {
-        const { stdout } = await execFileAsync('git', ['diff', '--cc', '--', ...conflictedFiles], {
-            cwd: worktreePath,
-            encoding: 'utf8',
-            maxBuffer: 2 * 1024 * 1024,
-        });
-        return filterDiffToFiles(String(stdout), conflictedFiles);
-    } catch {
-        return '';
+
+    for (const args of [
+        ['diff', '--merge', '--', ...conflictedFiles],
+        ['diff', '--', ...conflictedFiles],
+        ['diff', '--cc', '--', ...conflictedFiles],
+    ]) {
+        try {
+            const { stdout } = await execFileAsync('git', args, {
+                cwd: worktreePath,
+                encoding: 'utf8',
+                maxBuffer: 2 * 1024 * 1024,
+            });
+            const filtered = filterDiffToFiles(String(stdout), conflictedFiles);
+            if (filtered.trim()) return filtered;
+        } catch {
+            // Try the next diff mode; git versions and conflict states differ here.
+        }
     }
+    return '';
 }

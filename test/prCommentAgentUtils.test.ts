@@ -62,14 +62,14 @@ describe('generateSummaryTitle fallback behavior', () => {
                 'Task: Fix PR #123: Add OAuth refresh handling',
                 '',
                 'Review feedback to address:',
-                'Handle null refresh tokens before persisting the session.',
+                'Handle null refresh tokens in src/auth.ts before calling persistSession().',
             ].join('\n'),
             analysisRunner: async () => {
                 throw new Error('LLM unavailable');
             },
         }));
 
-        assert.strictEqual(title, 'Fix: Handle null refresh tokens before persisting the session');
+        assert.strictEqual(title, 'Fix: Handle null refresh tokens in src/auth.ts before calling persistSession().');
     });
 
     test('records workflow-specific title generation metadata', async () => {

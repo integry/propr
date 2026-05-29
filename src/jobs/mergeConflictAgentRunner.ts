@@ -7,9 +7,6 @@ import {
     createLogFiles,
     db,
     getAuthenticatedOctokit,
-    getDefaultModel,
-    loadSettings,
-    NoDefaultModelConfiguredError,
     pushBranch,
     recordLLMMetrics,
 } from '@propr/core';
@@ -21,37 +18,9 @@ import {
     buildMergeConflictComment,
     buildMergeConflictCommitMessage,
 } from './mergeConflictHelpers.js';
-
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
+import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 
 interface GitHubToken { token: string }
-
-async function resolveDefaultAgentAndModel(
-    registry: AgentRegistry,
-    correlatedLogger: Logger
-): Promise<{ resolvedAlias: string; resolvedModel: string }> {
-    try {
-        const settings = await loadSettings();
-        if (settings.default_agent_alias) {
-            const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
-            if (configuredAgent && configuredAgent.config.enabled) {
-                const resolvedAlias = settings.default_agent_alias as string;
-                const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
-                if (!resolvedModel) throw new NoDefaultModelConfiguredError();
-                return { resolvedAlias, resolvedModel };
-            }
-        }
-    } catch (settingsError) {
-        if (settingsError instanceof NoDefaultModelConfiguredError) throw settingsError;
-        correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
-    }
-
-    const defaultAgent = registry.getDefaultAgent();
-    const resolvedAlias = defaultAgent?.config.alias || 'claude';
-    const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
-    if (!resolvedModel) throw new NoDefaultModelConfiguredError();
-    return { resolvedAlias, resolvedModel };
-}
 
 async function verifyNoConflictMarkers(worktreeInfo: WorktreeInfo, pullRequestNumber: number, correlatedLogger: Logger): Promise<void> {
     const { execSync } = await import('child_process');
