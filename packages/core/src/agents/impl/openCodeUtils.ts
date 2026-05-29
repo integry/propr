@@ -6,7 +6,7 @@ import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../cl
 import type { AgentConfig, TokenUsage } from '../types.js';
 
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
-const OPEN_CODE_TEXT_EVENT_TYPES = new Set(['text', 'delta', 'completion']);
+const OPEN_CODE_TEXT_EVENT_TYPES = new Set(['text', 'delta', 'completion', 'reasoning']);
 const OPEN_CODE_TOOL_EVENT_TYPES = new Set(['tool_use', 'tool_result', 'tool', 'tool_call', 'tool_response']);
 
 export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
@@ -37,6 +37,16 @@ interface OpenCodePart extends OpenCodeTextContainer {
     type?: string;
     messageID?: string;
     sessionID?: string;
+    callID?: string;
+    tokens?: OpenCodeUsage;
+    state?: {
+        status?: string;
+        input?: Record<string, unknown>;
+        output?: string;
+        error?: unknown;
+        metadata?: { output?: string; exit?: number; [key: string]: unknown };
+        title?: string;
+    };
     tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
     output?: string; result?: string; status?: string; id?: string; tool_id?: string;
 }
@@ -231,7 +241,8 @@ function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): vo
     for (const usage of [
         normalizeOpenCodeUsage(event.usage),
         normalizeOpenCodeUsage(event.stats),
-        normalizeOpenCodeUsage(event.tokens)
+        normalizeOpenCodeUsage(event.tokens),
+        normalizeOpenCodeUsage(event.part?.tokens)
     ]) {
         if (usage) mergeOpenCodeUsageByMax(topLevelUsage, usage);
     }
@@ -272,6 +283,7 @@ export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknow
 function hasOpenCodeEventPayload(event: { sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; response?: unknown; text?: unknown; content?: unknown; delta?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }, type: string | undefined, message: { role?: unknown; parts?: unknown[] } | null): boolean {
     const hasOpenCodeIdentity = Boolean(event.sessionID || event.sessionId || event.session_id);
     const hasUsage = hasOpenCodeResultUsage(event, type, hasOpenCodeIdentity);
+    const hasNestedUsage = hasOpenCodeNestedUsage(event);
     const hasAssistantText = message?.role === 'assistant' && hasOpenCodeTextField(event.message as { text?: unknown; content?: unknown; delta?: unknown });
     const hasResponseText = hasOpenCodeIdentity && isOpenCodeTextContainer(event.response);
     const checks = [
@@ -283,7 +295,7 @@ function hasOpenCodeEventPayload(event: { sessionID?: unknown; sessionId?: unkno
         Boolean(type && OPEN_CODE_TEXT_EVENT_TYPES.has(type) && hasOpenCodeTextField(event)),
         Boolean(hasOpenCodeIdentity && type && OPEN_CODE_TOOL_EVENT_TYPES.has(type)),
         Boolean(type === 'result' && hasUsage),
-        Boolean(hasOpenCodeIdentity && hasUsage)
+        Boolean(hasOpenCodeIdentity && (hasUsage || hasNestedUsage))
     ];
     return checks.some(Boolean);
 }
@@ -292,6 +304,19 @@ function hasOpenCodeResultUsage(event: { usage?: OpenCodeUsage; stats?: OpenCode
     const usage = normalizeOpenCodeUsage(event.usage) || normalizeOpenCodeUsage(event.tokens);
     if (usage || type !== 'result') return Boolean(usage);
     return hasOpenCodeIdentity && Boolean(normalizeOpenCodeUsage(event.stats));
+}
+
+function hasOpenCodeNestedUsage(event: { message?: unknown; response?: unknown }): boolean {
+    return Boolean(
+        normalizeOpenCodeUsage(getOpenCodeNestedUsage(event.message))
+        || normalizeOpenCodeUsage(getOpenCodeNestedUsage(event.response))
+    );
+}
+
+function getOpenCodeNestedUsage(value: unknown): OpenCodeUsage | undefined {
+    if (!value || typeof value !== 'object' || !('usage' in value)) return undefined;
+    const usage = (value as { usage?: unknown }).usage;
+    return usage && typeof usage === 'object' ? usage as OpenCodeUsage : undefined;
 }
 
 function isOpenCodeTextContainer(value: unknown): value is { text?: unknown; content?: unknown; delta?: unknown } { return Boolean(value && typeof value === 'object' && hasOpenCodeTextField(value as { text?: unknown; content?: unknown; delta?: unknown })); }
@@ -304,8 +329,10 @@ export function normalizeOpenCodeUsage(usage: OpenCodeUsage | undefined): Normal
     if (!usage) return undefined;
     const inputTokens = firstNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'input', 'prompt']);
     const outputTokens = firstNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens', 'output', 'completion']);
-    const cacheCreationTokens = firstNumber(usage, ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cacheCreationTokens']);
-    const cacheReadTokens = firstNumber(usage, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cached_input_tokens', 'cachedInputTokens', 'cacheReadTokens']);
+    const cacheCreationTokens = firstNumber(usage, ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cacheCreationTokens', 'cache_write', 'cacheWrite'])
+        ?? nestedNumber(usage, 'cache', ['write']);
+    const cacheReadTokens = firstNumber(usage, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cached_input_tokens', 'cachedInputTokens', 'cacheReadTokens', 'cache_read', 'cacheRead'])
+        ?? nestedNumber(usage, 'cache', ['read']);
     const normalized: NormalizedOpenCodeUsage = {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
@@ -322,6 +349,12 @@ function firstNumber(source: OpenCodeUsage, keys: string[]): number | undefined 
         if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
     }
     return undefined;
+}
+
+function nestedNumber(source: OpenCodeUsage, objectKey: string, keys: string[]): number | undefined {
+    const nested = source[objectKey];
+    if (!nested || typeof nested !== 'object') return undefined;
+    return firstNumber(nested as OpenCodeUsage, keys);
 }
 
 function mergeOpenCodeUsageByMax(target: TokenUsage, usage: NormalizedOpenCodeUsage): void {
@@ -412,7 +445,7 @@ function addPartsText(textParts: string[], parts?: OpenCodePart[]): void {
 function addPartText(textParts: string[], part?: OpenCodePart): void {
     if (!part) return;
     const partType = part.type?.toLowerCase();
-    if (partType && !['text', 'assistant_text', 'message', 'completion'].includes(partType)) return;
+    if (partType && !['text', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return;
     addTextContainer(textParts, part);
 }
 
@@ -429,7 +462,7 @@ function addTextContainer(textParts: string[], container?: OpenCodeTextContainer
 
 function isAssistantTextEvent(event: OpenCodeEvent): boolean {
     const type = event.type?.toLowerCase();
-    return !!type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(type);
+    return !!type && ['text', 'assistant', 'message', 'delta', 'completion', 'reasoning'].includes(type);
 }
 
 function extractOpenCodeError(event: OpenCodeEvent): string {

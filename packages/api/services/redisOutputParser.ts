@@ -241,6 +241,15 @@ function processOpenCodeEvent(
 
 interface OpenCodeRedisPart {
   type?: string; text?: string; content?: unknown; delta?: string;
+  callID?: string;
+  tokens?: Record<string, unknown>;
+  state?: {
+    status?: string;
+    input?: Record<string, unknown>;
+    output?: string;
+    error?: unknown;
+    metadata?: { output?: string; exit?: number };
+  };
   tool?: string; tool_name?: string; name?: string;
   input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
   output?: string; result?: string; status?: string; id?: string; tool_id?: string;
@@ -273,7 +282,7 @@ function extractOpenCodeAssistantText(event: Parameters<typeof processOpenCodeEv
 function addOpenCodeTextPart(parts: string[], part?: { type?: string; text?: string; content?: unknown; delta?: string }): void {
   if (!part) return;
   const partType = part.type?.toLowerCase();
-  if (partType && !['text', 'assistant_text', 'message', 'completion'].includes(partType)) return;
+  if (partType && !['text', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return;
   addOpenCodeTextContainer(parts, part);
 }
 
@@ -297,6 +306,7 @@ function buildOpenCodeRedisEventUsage(event: Parameters<typeof processOpenCodeEv
   mergeOpenCodeRedisUsageByMax(topLevelUsage, event.usage);
   mergeOpenCodeRedisUsageByMax(topLevelUsage, event.stats);
   mergeOpenCodeRedisUsageByMax(topLevelUsage, event.tokens);
+  mergeOpenCodeRedisUsageByMax(topLevelUsage, event.part?.tokens);
   mergeOpenCodeRedisUsageByMax(nestedUsage, event.message?.usage);
   mergeOpenCodeRedisUsageByMax(nestedUsage, event.response?.usage);
   return hasRedisTokenUsage(topLevelUsage) || hasRedisTokenUsage(nestedUsage)
@@ -342,7 +352,7 @@ function hasOpenCodeSessionId(event: Parameters<typeof processOpenCodeEvent>[0])
 function extractOpenCodeToolEvents(event: Parameters<typeof processOpenCodeEvent>[0], timestamp: string): ConversationEvent[] {
   if (!hasOpenCodeSessionId(event)) return [];
   const events: ConversationEvent[] = [];
-  appendOpenCodeToolEvent(events, event, timestamp);
+  if (!event.part) appendOpenCodeToolEvent(events, event, timestamp);
   appendOpenCodeToolEvent(events, event.part, timestamp);
   for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp);
   return events;
@@ -351,13 +361,34 @@ function extractOpenCodeToolEvents(event: Parameters<typeof processOpenCodeEvent
 function appendOpenCodeToolEvent(events: ConversationEvent[], source: (Parameters<typeof processOpenCodeEvent>[0] | OpenCodeRedisPart) | undefined, timestamp: string): void {
   if (!source?.type) return;
   const type = source.type.toLowerCase();
+  const sourceWithState = source as OpenCodeRedisPart;
   if (['tool_use', 'tool', 'tool_call'].includes(type)) {
-    events.push({ type: 'tool_use' as const, toolName: source.tool_name || source.tool || source.name, input: source.parameters || source.input || source.args, id: source.tool_id || source.id, timestamp });
+    events.push({ type: 'tool_use' as const, toolName: source.tool_name || source.tool || source.name, input: source.parameters || source.input || source.args || sourceWithState.state?.input, id: source.tool_id || sourceWithState.callID || source.id, timestamp });
+    if (type === 'tool' && sourceWithState.state && ['completed', 'error'].includes(sourceWithState.state.status ?? '')) {
+      events.push({ type: 'tool_result' as const, toolUseId: source.tool_id || sourceWithState.callID || source.id, result: truncateContent(extractOpenCodeToolResult(sourceWithState)), isError: isOpenCodeToolStateError(sourceWithState), timestamp });
+    }
     return;
   }
   if (['tool_result', 'tool_response'].includes(type)) {
     events.push({ type: 'tool_result' as const, toolUseId: source.tool_id || source.id, result: truncateContent(source.output || source.result), isError: source.status === 'error', timestamp });
   }
+}
+
+function extractOpenCodeToolResult(source: OpenCodeRedisPart): string {
+  const state = source.state;
+  if (!state) return source.output || source.result || '';
+  if (typeof state.output === 'string') return state.output;
+  if (typeof state.metadata?.output === 'string') return state.metadata.output;
+  if (typeof state.error === 'string') return state.error;
+  if (state.error && typeof state.error === 'object' && 'message' in state.error && typeof state.error.message === 'string') {
+    return state.error.message;
+  }
+  return source.output || source.result || '';
+}
+
+function isOpenCodeToolStateError(source: OpenCodeRedisPart): boolean {
+  if (source.state?.status === 'error' || source.status === 'error') return true;
+  return typeof source.state?.metadata?.exit === 'number' && source.state.metadata.exit !== 0;
 }
 
 function joinOpenCodeTextGroups(first: string[], second: string[]): string {
