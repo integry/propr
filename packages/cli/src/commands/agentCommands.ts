@@ -91,7 +91,7 @@ function displayAgentsTable(agents: AgentConfig[]): void {
  * Validates that the agent type is valid.
  */
 function isValidAgentType(type: string): type is AgentType {
-  return ["claude", "codex", "gemini"].includes(type.toLowerCase());
+  return ["claude", "codex", "gemini", "opencode"].includes(type.toLowerCase());
 }
 
 /**

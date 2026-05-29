@@ -8,7 +8,7 @@ import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js'
  */
 export interface AgentConfig {
     id: string;             // UUID v4
-    type: 'claude' | 'codex' | 'gemini';
+    type: 'claude' | 'codex' | 'gemini' | 'opencode';
     alias: string;          // Human-readable ID (e.g., 'claude-prod', 'codex-beta')
     enabled: boolean;
 
@@ -179,6 +179,6 @@ export type AgentType = AgentConfig['type'];
 export const CONTAINER_CONFIG_PATHS: Record<AgentType, string> = {
     claude: '/home/node/.claude',
     codex: '/home/node/.codex',
-    gemini: '/home/node/.gemini'
+    gemini: '/home/node/.gemini',
+    opencode: '/home/node/.config/opencode'
 };
-

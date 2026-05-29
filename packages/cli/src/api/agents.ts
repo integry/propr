@@ -10,7 +10,7 @@ import { ApiClient, createApiClient } from "./index.js";
 /**
  * Agent type identifier.
  */
-export type AgentType = "claude" | "codex" | "gemini";
+export type AgentType = "claude" | "codex" | "gemini" | "opencode";
 
 /**
  * Configuration for a specific agent instance.
@@ -22,7 +22,7 @@ export interface AgentConfig {
   id: string;
 
   /**
-   * The agent type (claude, codex, or gemini).
+   * The agent type.
    */
   type: AgentType;
 
@@ -87,7 +87,7 @@ export interface AddAgentOptions {
   alias: string;
 
   /**
-   * The agent type (claude, codex, or gemini).
+   * The agent type.
    */
   type: AgentType;
 
@@ -273,6 +273,8 @@ function getDefaultDockerImage(type: AgentType): string {
       return "codex-code-processor:latest";
     case "gemini":
       return "gemini-code-processor:latest";
+    case "opencode":
+      return "opencode-cli:latest";
     default:
       return `${type}-code-processor:latest`;
   }
@@ -292,6 +294,8 @@ function getDefaultConfigPath(type: AgentType): string {
       return "/root/.codex";
     case "gemini":
       return "/root/.gemini";
+    case "opencode":
+      return "/root/.opencode";
     default:
       return `/root/.${type}`;
   }

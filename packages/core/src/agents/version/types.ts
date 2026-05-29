@@ -14,7 +14,8 @@ export type { CliVersionType } from '../../config/configManager.js';
 export const AGENT_NPM_PACKAGES: Record<AgentType, string> = {
     claude: '@anthropic-ai/claude-code',
     codex: '@openai/codex',
-    gemini: '@google/gemini-cli'
+    gemini: '@google/gemini-cli',
+    opencode: 'opencode-ai'
 } as const;
 
 /**
@@ -24,7 +25,8 @@ export const AGENT_NPM_PACKAGES: Record<AgentType, string> = {
 export const AGENT_NPM_TAGS: Record<AgentType, string[]> = {
     claude: ['stable', 'latest', 'next'],
     codex: ['latest', 'alpha'],
-    gemini: ['latest', 'preview']
+    gemini: ['latest', 'preview'],
+    opencode: ['latest', 'beta', 'dev']
 };
 
 /**
@@ -34,7 +36,8 @@ export const AGENT_NPM_TAGS: Record<AgentType, string[]> = {
 export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     claude: '2.1.85',
     codex: '0.133.0',
-    gemini: '0.35.1'
+    gemini: '0.35.1',
+    opencode: '1.15.12'
 };
 
 /**
@@ -57,6 +60,13 @@ export const DOCKER_CONTENT_FILES: Record<AgentType, string[]> = {
     gemini: [
         'Dockerfile.gemini',
         'scripts/gemini-entrypoint.sh',
+        'scripts/init-firewall.sh',
+        'scripts/gh-wrapper.sh'
+    ],
+    opencode: [
+        'Dockerfile.opencode',
+        'scripts/opencode-entrypoint.sh',
+        'scripts/opencode-run.sh',
         'scripts/init-firewall.sh',
         'scripts/gh-wrapper.sh'
     ]

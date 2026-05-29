@@ -56,6 +56,7 @@ IMAGES=(
   "agent-claude|Dockerfile.claude|."
   "agent-codex|Dockerfile.codex|."
   "agent-gemini|Dockerfile.gemini|."
+  "agent-opencode|Dockerfile.opencode|."
 )
 
 should_build() {
@@ -100,6 +101,7 @@ write_manifest() {
     "agent-claude": "$DOCKERHUB_NS/agent-claude:$VERSION",
     "agent-codex": "$DOCKERHUB_NS/agent-codex:$VERSION",
     "agent-gemini": "$DOCKERHUB_NS/agent-gemini:$VERSION",
+    "agent-opencode": "$DOCKERHUB_NS/agent-opencode:$VERSION",
     "redis": "redis:7-alpine"
   }
 }
@@ -126,7 +128,7 @@ build_image() {
   fi
 
   # Agent images extend propr/agent-base — pin to this build's version.
-  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini ]]; then
+  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini || "$name" == agent-opencode ]]; then
     build_args+=("--build-arg" "BASE_TAG=$VERSION")
   fi
 

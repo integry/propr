@@ -38,7 +38,8 @@ export class ExecutionAbortedError extends Error {
 const AGENT_DOCKERFILES: Record<string, string> = {
     'claude': 'Dockerfile.claude',
     'codex': 'Dockerfile.codex',
-    'gemini': 'Dockerfile.gemini'
+    'gemini': 'Dockerfile.gemini',
+    'opencode': 'Dockerfile.opencode'
 };
 
 // Default project root - can be overridden via environment variable
@@ -433,7 +434,8 @@ export async function ensureVersionedAgentImage(
     const imageNames: Record<string, string> = {
         claude: 'propr-claude',
         codex: 'propr-codex',
-        gemini: 'propr-gemini'
+        gemini: 'propr-gemini',
+        opencode: 'propr-opencode'
     };
 
     const imageName = imageNames[agentType];

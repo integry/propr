@@ -16,7 +16,7 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
  */
 export interface AgentConfig {
     id: string;
-    type: 'claude' | 'codex' | 'gemini';
+    type: 'claude' | 'codex' | 'gemini' | 'opencode';
     alias: string;
     enabled: boolean;
     dockerImage: string;
@@ -36,7 +36,8 @@ export interface AgentConfig {
 export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
     claude: '~/.claude',
     codex: '~/.codex',
-    gemini: '~/.gemini'
+    gemini: '~/.gemini',
+    opencode: '~/.opencode'
 };
 
 /**
@@ -79,7 +80,8 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
 const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
     claude: '2.1.85',
     codex: AGENT_DEFAULT_VERSIONS.codex,
-    gemini: '0.35.1'
+    gemini: '0.35.1',
+    opencode: AGENT_DEFAULT_VERSIONS.opencode
 };
 
 const CLAUDE_46_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];

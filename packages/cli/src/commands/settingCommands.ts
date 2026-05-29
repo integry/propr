@@ -39,7 +39,7 @@ function formatValue(value: unknown): string {
  * Gets a human-readable description for a setting key.
  */
 function getSettingDescription(key: SettingKey): string {
-  const descriptions: Record<SettingKey, string> = {
+  const descriptions: Partial<Record<SettingKey, string>> = {
     worker_concurrency: "Number of concurrent workers for processing tasks",
     github_user_whitelist: "GitHub usernames allowed to use the system",
     analysis_model_fast: "Model for fast analysis operations",
@@ -227,7 +227,7 @@ Examples:
           process.exit(1);
         }
 
-        let parsedValue: number | string | string[];
+        let parsedValue: number | string | string[] | boolean;
         try {
           parsedValue = parseSettingValue(key, value);
         } catch (parseError) {

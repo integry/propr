@@ -16,6 +16,11 @@ export interface ModelInfo {
   minAgentVersion?: string; // Minimum Claude Code version that supports this model (e.g., "2.1.45")
 }
 
+export interface AgentDisplayInfo {
+  label: string;
+  order: number;
+}
+
 // Claude models (newest first within each tier, then by capability: Opus > Sonnet > Haiku)
 // 4.6 models require newer Claude Code versions; 4.5 models work with older versions
 export const CLAUDE_MODELS: ModelInfo[] = [
@@ -50,20 +55,21 @@ export const GEMINI_MODELS: ModelInfo[] = [
 ];
 
 // OpenCode Go models. IDs use OpenCode config syntax: provider/model.
+// Context limits are sourced from models.dev's opencode-go provider metadata.
 export const OPENCODE_MODELS: ModelInfo[] = [
-  { id: 'opencode-go/glm-5.1', name: 'GLM-5.1', shortName: 'GLM-5.1', shortAlias: 'glm51', githubLabel: 'llm-opencode-glm51', contextWindow: '200K', maxTokens: 200000, openRouterId: 'z-ai/glm-5.1' },
-  { id: 'opencode-go/glm-5', name: 'GLM-5', shortName: 'GLM-5', shortAlias: 'glm5', githubLabel: 'llm-opencode-glm5', contextWindow: '200K', maxTokens: 200000, openRouterId: 'z-ai/glm-5' },
-  { id: 'opencode-go/kimi-k2.6', name: 'Kimi K2.6', shortName: 'Kimi K2.6', shortAlias: 'kimi-k26', githubLabel: 'llm-opencode-kimi-k26', contextWindow: '200K', maxTokens: 200000, openRouterId: 'moonshotai/kimi-k2.6' },
-  { id: 'opencode-go/kimi-k2.5', name: 'Kimi K2.5', shortName: 'Kimi K2.5', shortAlias: 'kimi-k25', githubLabel: 'llm-opencode-kimi-k25', contextWindow: '200K', maxTokens: 200000, openRouterId: 'moonshotai/kimi-k2.5' },
-  { id: 'opencode-go/deepseek-v4-pro', name: 'DeepSeek V4 Pro', shortName: 'DeepSeek V4 Pro', shortAlias: 'deepseek-v4-pro', githubLabel: 'llm-opencode-deepseek-v4-pro', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4-pro' },
-  { id: 'opencode-go/deepseek-v4-flash', name: 'DeepSeek V4 Flash', shortName: 'DeepSeek V4 Flash', shortAlias: 'deepseek-v4-flash', githubLabel: 'llm-opencode-deepseek-v4-flash', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4-flash' },
-  { id: 'opencode-go/qwen3.7-max', name: 'Qwen3.7 Max', shortName: 'Qwen3.7 Max', shortAlias: 'qwen37-max', githubLabel: 'llm-opencode-qwen37-max', contextWindow: '200K', maxTokens: 200000, openRouterId: 'qwen/qwen3.7-max' },
-  { id: 'opencode-go/qwen3.6-plus', name: 'Qwen3.6 Plus', shortName: 'Qwen3.6 Plus', shortAlias: 'qwen36-plus', githubLabel: 'llm-opencode-qwen36-plus', contextWindow: '200K', maxTokens: 200000, openRouterId: 'qwen/qwen3.6-plus' },
-  { id: 'opencode-go/qwen3.5-plus', name: 'Qwen3.5 Plus', shortName: 'Qwen3.5 Plus', shortAlias: 'qwen35-plus', githubLabel: 'llm-opencode-qwen35-plus', contextWindow: '200K', maxTokens: 200000, openRouterId: 'qwen/qwen3.5-plus' },
-  { id: 'opencode-go/minimax-m2.7', name: 'MiniMax M2.7', shortName: 'MiniMax M2.7', shortAlias: 'minimax-m27', githubLabel: 'llm-opencode-minimax-m27', contextWindow: '200K', maxTokens: 200000, openRouterId: 'minimax/minimax-m2.7' },
-  { id: 'opencode-go/minimax-m2.5', name: 'MiniMax M2.5', shortName: 'MiniMax M2.5', shortAlias: 'minimax-m25', githubLabel: 'llm-opencode-minimax-m25', contextWindow: '200K', maxTokens: 200000, openRouterId: 'minimax/minimax-m2.5' },
-  { id: 'opencode-go/mimo-v2.5-pro', name: 'MiMo-V2.5-Pro', shortName: 'MiMo Pro', shortAlias: 'mimo-v25-pro', githubLabel: 'llm-opencode-mimo-v25-pro', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.5-pro' },
-  { id: 'opencode-go/mimo-v2.5', name: 'MiMo-V2.5', shortName: 'MiMo', shortAlias: 'mimo-v25', githubLabel: 'llm-opencode-mimo-v25', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.5' },
+  { id: 'opencode-go/glm-5.1', name: 'GLM-5.1', shortName: 'GLM-5.1', shortAlias: 'glm51', githubLabel: 'llm-opencode-glm51', contextWindow: '203K', maxTokens: 202752, openRouterId: 'z-ai/glm-5.1' },
+  { id: 'opencode-go/glm-5', name: 'GLM-5', shortName: 'GLM-5', shortAlias: 'glm5', githubLabel: 'llm-opencode-glm5', contextWindow: '203K', maxTokens: 202752, openRouterId: 'z-ai/glm-5' },
+  { id: 'opencode-go/kimi-k2.6', name: 'Kimi K2.6', shortName: 'Kimi K2.6', shortAlias: 'kimi-k26', githubLabel: 'llm-opencode-kimi-k26', contextWindow: '262K', maxTokens: 262144, openRouterId: 'moonshotai/kimi-k2.6' },
+  { id: 'opencode-go/kimi-k2.5', name: 'Kimi K2.5', shortName: 'Kimi K2.5', shortAlias: 'kimi-k25', githubLabel: 'llm-opencode-kimi-k25', contextWindow: '262K', maxTokens: 262144, openRouterId: 'moonshotai/kimi-k2.5' },
+  { id: 'opencode-go/deepseek-v4-pro', name: 'DeepSeek V4 Pro', shortName: 'DeepSeek V4 Pro', shortAlias: 'deepseek-v4-pro', githubLabel: 'llm-opencode-deepseek-v4-pro', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'deepseek/deepseek-v4-pro' },
+  { id: 'opencode-go/deepseek-v4-flash', name: 'DeepSeek V4 Flash', shortName: 'DeepSeek V4 Flash', shortAlias: 'deepseek-v4-flash', githubLabel: 'llm-opencode-deepseek-v4-flash', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'deepseek/deepseek-v4-flash' },
+  { id: 'opencode-go/qwen3.7-max', name: 'Qwen3.7 Max', shortName: 'Qwen3.7 Max', shortAlias: 'qwen37-max', githubLabel: 'llm-opencode-qwen37-max', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'qwen/qwen3.7-max' },
+  { id: 'opencode-go/qwen3.6-plus', name: 'Qwen3.6 Plus', shortName: 'Qwen3.6 Plus', shortAlias: 'qwen36-plus', githubLabel: 'llm-opencode-qwen36-plus', contextWindow: '262K', maxTokens: 262144, openRouterId: 'qwen/qwen3.6-plus' },
+  { id: 'opencode-go/qwen3.5-plus', name: 'Qwen3.5 Plus', shortName: 'Qwen3.5 Plus', shortAlias: 'qwen35-plus', githubLabel: 'llm-opencode-qwen35-plus', contextWindow: '262K', maxTokens: 262144, openRouterId: 'qwen/qwen3.5-plus-20260420' },
+  { id: 'opencode-go/minimax-m2.7', name: 'MiniMax M2.7', shortName: 'MiniMax M2.7', shortAlias: 'minimax-m27', githubLabel: 'llm-opencode-minimax-m27', contextWindow: '205K', maxTokens: 204800, openRouterId: 'minimax/minimax-m2.7' },
+  { id: 'opencode-go/minimax-m2.5', name: 'MiniMax M2.5', shortName: 'MiniMax M2.5', shortAlias: 'minimax-m25', githubLabel: 'llm-opencode-minimax-m25', contextWindow: '205K', maxTokens: 204800, openRouterId: 'minimax/minimax-m2.5' },
+  { id: 'opencode-go/mimo-v2.5-pro', name: 'MiMo-V2.5-Pro', shortName: 'MiMo Pro', shortAlias: 'mimo-v25-pro', githubLabel: 'llm-opencode-mimo-v25-pro', contextWindow: '1M', maxTokens: 1048576, openRouterId: 'xiaomi/mimo-v2.5-pro' },
+  { id: 'opencode-go/mimo-v2.5', name: 'MiMo-V2.5', shortName: 'MiMo', shortAlias: 'mimo-v25', githubLabel: 'llm-opencode-mimo-v25', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'xiaomi/mimo-v2.5' },
 ];
 
 // All models combined
@@ -76,6 +82,16 @@ export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
   gemini: GEMINI_MODELS,
   opencode: OPENCODE_MODELS,
 };
+
+export const AGENT_DISPLAY: Record<AgentType, AgentDisplayInfo> = {
+  claude: { label: 'Claude', order: 10 },
+  gemini: { label: 'Gemini', order: 20 },
+  codex: { label: 'Codex (OpenAI)', order: 30 },
+  opencode: { label: 'OpenCode', order: 40 },
+};
+
+export const AGENT_DISPLAY_ORDER: AgentType[] = (Object.keys(AGENT_DISPLAY) as AgentType[])
+  .sort((a, b) => AGENT_DISPLAY[a].order - AGENT_DISPLAY[b].order);
 
 // Lookup map for all models by ID
 export const MODEL_INFO_MAP: Record<string, ModelInfo> = {};
@@ -128,7 +144,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: OPENCODE_MODELS.map(m => m.id),
     defaultAlias: 'opencode',
     npmPackage: 'opencode-ai',
-    defaultCliVersion: 'latest'
+    defaultCliVersion: '1.15.12'
   }
 };
 

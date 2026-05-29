@@ -156,7 +156,8 @@ export function generateImageTag(agentType: AgentType, cliVersion: string, conte
     const imageNames: Record<AgentType, string> = {
         claude: 'propr-claude',
         codex: 'propr-codex',
-        gemini: 'propr-gemini'
+        gemini: 'propr-gemini',
+        opencode: 'propr-opencode'
     };
 
     const imageName = imageNames[agentType];

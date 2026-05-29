@@ -1,6 +1,6 @@
 import React from 'react';
 import { Cpu, Layers } from 'lucide-react';
-import { AGENT_MODELS, ModelInfo, AgentType } from '../../config/modelDefinitions';
+import { AGENT_MODELS, AGENT_DISPLAY, AGENT_DISPLAY_ORDER, ModelInfo, AgentType } from '../../config/modelDefinitions';
 
 // Context level configuration
 type ContextLevelType = 'focused' | 'expanded' | 'fullscan';
@@ -17,17 +17,6 @@ const CONTEXT_LEVELS: ContextLevelOption[] = [
   { type: 'expanded', label: 'Expanded', value: 50, description: 'Balanced' },
   { type: 'fullscan', label: 'Full Scan', value: 90, description: 'Comprehensive' },
 ];
-
-// Agent display names for optgroup labels
-const AGENT_LABELS: Record<AgentType, string> = {
-  claude: 'Claude',
-  codex: 'Codex (OpenAI)',
-  gemini: 'Gemini',
-  opencode: 'OpenCode',
-};
-
-// Agent order for display
-const AGENT_ORDER: AgentType[] = ['claude', 'gemini', 'codex', 'opencode'];
 
 /**
  * Converts a model ID to agent:model format for proper routing.
@@ -81,7 +70,7 @@ export interface ModelContextSelectorProps {
  * Compact selector component for model and context level.
  * Used in Chat and Improvements panels.
  *
- * Models are grouped by agent (Claude, Gemini, Codex) and the selected value
+ * Models are grouped by agent and the selected value
  * uses the agent:model format for proper routing to the correct LLM backend.
  */
 const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
@@ -141,8 +130,8 @@ const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
             disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-gray-300'
           }`}
         >
-          {AGENT_ORDER.map((agentType) => (
-            <optgroup key={agentType} label={AGENT_LABELS[agentType]}>
+          {AGENT_DISPLAY_ORDER.map((agentType) => (
+            <optgroup key={agentType} label={AGENT_DISPLAY[agentType].label}>
               {AGENT_MODELS[agentType].map((model: ModelInfo) => (
                 <option key={model.id} value={getAgentModelFormat(agentType, model.id)}>
                   {model.shortName}

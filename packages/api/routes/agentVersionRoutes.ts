@@ -17,6 +17,8 @@ import {
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
+const VALID_AGENT_TYPES = ['claude', 'codex', 'gemini', 'opencode'];
+
 /**
  * Creates the agent version management routes.
  */
@@ -30,7 +32,7 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -118,7 +120,7 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -161,7 +163,7 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -191,7 +193,7 @@ export function createAgentVersionRoutes() {
             const { agentType, versionType, versionSpec } = req.body;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -224,7 +226,7 @@ export function createAgentVersionRoutes() {
             const { versionType, versionSpec } = req.query;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -272,7 +274,8 @@ function getImageName(agentType: string): string {
     const imageNames: Record<string, string> = {
         claude: 'claude-code-processor',
         codex: 'codex-cli',
-        gemini: 'gemini-cli'
+        gemini: 'gemini-cli',
+        opencode: 'opencode-cli'
     };
     return imageNames[agentType] || agentType;
 }

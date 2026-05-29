@@ -49,8 +49,8 @@ for entry in \
   fi
 done
 
-# @openai/codex and @google/gemini-cli are installed only in the agent
-# images (not in root node_modules). Reference their Apache-2.0 license.
+# @openai/codex, @google/gemini-cli, and opencode-ai are installed only in
+# the agent images (not in root node_modules). Reference their licenses.
 cat >> "$OUT" <<'EOF'
 ## @openai/codex (installed in propr/agent-codex image)
 
@@ -61,6 +61,11 @@ Source: https://github.com/openai/codex
 
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/google-gemini/gemini-cli
+
+## opencode-ai (installed in propr/agent-opencode image)
+
+Licensed under the MIT License.
+Source: https://github.com/sst/opencode
 
 ---
 

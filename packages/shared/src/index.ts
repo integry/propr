@@ -1,6 +1,7 @@
 // Export all model definitions
 export {
   type AgentType,
+  type AgentDisplayInfo,
   type ModelInfo,
   CLAUDE_MODELS,
   CODEX_MODELS,
@@ -8,6 +9,8 @@ export {
   OPENCODE_MODELS,
   ALL_MODELS,
   AGENT_MODELS,
+  AGENT_DISPLAY,
+  AGENT_DISPLAY_ORDER,
   MODEL_INFO_MAP,
   MODEL_SHORT_NAMES,
   AGENT_DEFAULTS,
