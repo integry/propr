@@ -53,11 +53,15 @@ export async function resolveVersion(
                 }
                 return resolvePyPiVersionSpec(packageName, versionSpec);
             case 'specific':
-            case 'custom':
                 if (!versionSpec) {
                     throw new Error('Version spec required');
                 }
                 return resolvePyPiVersionSpec(packageName, versionSpec);
+            case 'custom':
+                if (!versionSpec) {
+                    throw new Error('Version spec required');
+                }
+                return versionSpec.trim();
             default:
                 logger.warn({ agentType, versionType }, 'Unknown version type, using default');
                 return AGENT_DEFAULT_VERSIONS[agentType];

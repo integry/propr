@@ -26,6 +26,7 @@ GHCR_PREFIX="${GHCR_PREFIX:-propr-}"   # GHCR uses flat namespace: propr-app ins
 
 VERSION="$(node -p "require('./package.json').version")"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
+VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-$(node -e "const fs = require('node:fs'); const source = fs.readFileSync('packages/core/src/agents/version/types.ts', 'utf8'); const match = source.match(/vibe:\\s*'([^']+)'/); if (!match) process.exit(1); console.log(match[1]);")}"
 
 # --- Arg parsing --------------------------------------------------------------
 PUSH=false
@@ -130,6 +131,9 @@ build_image() {
   # Agent images extend propr/agent-base — pin to this build's version.
   if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini || "$name" == agent-vibe ]]; then
     build_args+=("--build-arg" "BASE_TAG=$VERSION")
+  fi
+  if [[ "$name" == agent-vibe ]]; then
+    build_args+=("--build-arg" "CLI_VERSION=$VIBE_CLI_VERSION")
   fi
 
   echo ""

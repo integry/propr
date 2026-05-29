@@ -274,7 +274,7 @@ function getDefaultDockerImage(type: AgentType): string {
     case "gemini":
       return "gemini-code-processor:latest";
     case "vibe":
-      return "vibe-cli:latest";
+      return "propr/agent-vibe:latest";
     default:
       return `${type}-code-processor:latest`;
   }

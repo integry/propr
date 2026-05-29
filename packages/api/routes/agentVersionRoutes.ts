@@ -279,7 +279,7 @@ function getImageName(agentType: string): string {
         claude: 'claude-code-processor',
         codex: 'codex-cli',
         gemini: 'gemini-cli',
-        vibe: 'vibe-cli'
+        vibe: 'propr-vibe'
     };
     return imageNames[agentType] || agentType;
 }

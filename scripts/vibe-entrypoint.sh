@@ -7,6 +7,66 @@ set -e
 
 echo "Skipping firewall setup (would require --privileged Docker flag)" >&2
 
+SOURCE_VIBE_HOME="${VIBE_SOURCE_HOME:-/home/node/.vibe}"
+RUNTIME_VIBE_HOME="${VIBE_RUNTIME_HOME:-/tmp/propr-vibe-home}"
+export VIBE_HOME="$RUNTIME_VIBE_HOME"
+
+copy_vibe_home() {
+    mkdir -p "$RUNTIME_VIBE_HOME"
+    if [ -d "$SOURCE_VIBE_HOME" ] && [ "$SOURCE_VIBE_HOME" != "$RUNTIME_VIBE_HOME" ]; then
+        cp -a "$SOURCE_VIBE_HOME"/. "$RUNTIME_VIBE_HOME"/ 2>/dev/null || true
+    fi
+    chown -R node:node "$RUNTIME_VIBE_HOME" 2>/dev/null || true
+    chmod -R u+rw "$RUNTIME_VIBE_HOME" 2>/dev/null || true
+}
+
+configure_active_model() {
+    if [ -z "${VIBE_ACTIVE_MODEL:-}" ]; then
+        return
+    fi
+
+    mkdir -p "$RUNTIME_VIBE_HOME"
+    touch "$RUNTIME_VIBE_HOME/config.toml"
+    if grep -q '^[[:space:]]*active_model[[:space:]]*=' "$RUNTIME_VIBE_HOME/config.toml"; then
+        sed -i "s|^[[:space:]]*active_model[[:space:]]*=.*|active_model = \"${VIBE_ACTIVE_MODEL}\"|" "$RUNTIME_VIBE_HOME/config.toml"
+    else
+        printf '\nactive_model = "%s"\n' "$VIBE_ACTIVE_MODEL" >> "$RUNTIME_VIBE_HOME/config.toml"
+    fi
+    chown node:node "$RUNTIME_VIBE_HOME/config.toml" 2>/dev/null || true
+    echo "Configured Vibe active model override" >&2
+}
+
+format_command_for_log() {
+    if [ $# -eq 0 ]; then
+        return
+    fi
+
+    local executable="$1"
+    shift
+    local redacted=()
+    local redact_next=false
+    for arg in "$@"; do
+        if [ "$redact_next" = true ]; then
+            redacted+=("<redacted>")
+            redact_next=false
+            continue
+        fi
+        case "$arg" in
+            --prompt)
+                redacted+=("$arg")
+                redact_next=true
+                ;;
+            --prompt=*)
+                redacted+=("--prompt=<redacted>")
+                ;;
+            *)
+                redacted+=("$arg")
+                ;;
+        esac
+    done
+    echo "$executable ${redacted[*]}" >&2
+}
+
 if [ -z "$GH_TOKEN" ]; then
     echo "Warning: GH_TOKEN environment variable not set" >&2
     echo "GitHub operations may fail" >&2
@@ -15,29 +75,28 @@ else
     echo "GitHub CLI will use GH_TOKEN environment variable for authentication" >&2
 fi
 
-if [ -d "/home/node/.vibe" ]; then
+if [ -d "$SOURCE_VIBE_HOME" ]; then
     echo "Vibe config directory mounted" >&2
 
-    if command -v sudo >/dev/null 2>&1; then
-        echo "Fixing ownership of Vibe config files..." >&2
-        sudo chown -R node:node /home/node/.vibe 2>/dev/null || echo "Could not change ownership" >&2
-        sudo chmod -R u+rw /home/node/.vibe 2>/dev/null || true
-    fi
+    copy_vibe_home
+    configure_active_model
 
     for dir in logs sessions skills; do
-        if [ ! -d "/home/node/.vibe/$dir" ]; then
-            echo "Creating missing directory: /home/node/.vibe/$dir" >&2
-            mkdir -p "/home/node/.vibe/$dir" 2>/dev/null || echo "Could not create $dir (permission issue)" >&2
+        if [ ! -d "$RUNTIME_VIBE_HOME/$dir" ]; then
+            echo "Creating missing directory: $RUNTIME_VIBE_HOME/$dir" >&2
+            mkdir -p "$RUNTIME_VIBE_HOME/$dir" 2>/dev/null || echo "Could not create $dir (permission issue)" >&2
         fi
     done
 else
-    echo "WARNING: Vibe config directory not mounted at /home/node/.vibe" >&2
+    echo "WARNING: Vibe config directory not mounted at $SOURCE_VIBE_HOME" >&2
+    copy_vibe_home
+    configure_active_model
 fi
 
-if [ ! -f "/home/node/.vibe/config.toml" ]; then
+if [ ! -f "$RUNTIME_VIBE_HOME/config.toml" ]; then
     echo "Warning: Vibe config.toml not found" >&2
     echo "Ensure Vibe config directory is properly mounted, or set MISTRAL_API_KEY" >&2
-    echo "Expected path: /home/node/.vibe/config.toml" >&2
+    echo "Expected path: $RUNTIME_VIBE_HOME/config.toml" >&2
 else
     echo "Vibe configuration found" >&2
 fi
@@ -68,11 +127,19 @@ if [ -d "/home/node/workspace" ]; then
 fi
 
 if [ $# -gt 0 ]; then
-    echo "Executing command: $@" >&2
+    echo -n "Executing command: " >&2
+    format_command_for_log "$@"
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2
         cd /home/node/workspace
-        exec sudo -E -u node -H "$@"
+        if command -v sudo >/dev/null 2>&1; then
+            exec sudo -E -u node -H "$@"
+        fi
+        if command -v su-exec >/dev/null 2>&1; then
+            exec su-exec node "$@"
+        fi
+        echo "Cannot switch to node user: sudo or su-exec is required" >&2
+        exit 127
     else
         exec "$@"
     fi

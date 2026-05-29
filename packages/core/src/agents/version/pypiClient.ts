@@ -9,12 +9,36 @@ export interface PyPiPackageInfo {
     releases: Record<string, Array<{ upload_time_iso_8601?: string }>>;
 }
 
+const PYPI_REQUEST_TIMEOUT_MS = 10000;
+const PYPI_CACHE_TTL_MS = 300000;
+const packageInfoCache = new Map<string, { expiresAt: number; info: PyPiPackageInfo }>();
+
 async function getPackageInfo(packageName: string): Promise<PyPiPackageInfo> {
-    const response = await fetch(`https://pypi.org/pypi/${encodeURIComponent(packageName)}/json`);
-    if (!response.ok) {
-        throw new Error(`PyPI request failed for ${packageName}: ${response.status} ${response.statusText}`);
+    const cached = packageInfoCache.get(packageName);
+    if (cached && cached.expiresAt > Date.now()) {
+        return cached.info;
     }
-    return response.json() as Promise<PyPiPackageInfo>;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PYPI_REQUEST_TIMEOUT_MS);
+    try {
+        const response = await fetch(`https://pypi.org/pypi/${encodeURIComponent(packageName)}/json`, {
+            signal: controller.signal
+        });
+        if (!response.ok) {
+            throw new Error(`PyPI request failed for ${packageName}: ${response.status} ${response.statusText}`);
+        }
+        const info = await response.json() as PyPiPackageInfo;
+        packageInfoCache.set(packageName, { expiresAt: Date.now() + PYPI_CACHE_TTL_MS, info });
+        return info;
+    } catch (error) {
+        if ((error as Error).name === 'AbortError') {
+            throw new Error(`PyPI request timed out for ${packageName}`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+    }
 }
 
 export async function getLatestPyPiVersion(packageName: string): Promise<string> {

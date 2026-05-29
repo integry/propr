@@ -8,10 +8,10 @@
 ARG BASE_TAG
 FROM propr/agent-base:${BASE_TAG}
 
-ARG CLI_VERSION=latest
+ARG CLI_VERSION=2.12.1
 
 USER root
-RUN apk add --no-cache python3 py3-pip
+RUN apk add --no-cache python3 py3-pip sudo
 ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
