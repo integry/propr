@@ -155,7 +155,7 @@ describe('OpenCode API routes', () => {
             agentType: 'opencode',
             images: [{
                 tag: '1.15.12-abc123',
-                fullName: 'propr/agent-opencode:1.15.12-abc123'
+                fullName: 'propr-opencode:1.15.12-abc123'
             }]
         });
     });

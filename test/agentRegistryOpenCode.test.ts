@@ -84,6 +84,10 @@ test('AgentRegistry registers enabled OpenCode configs by alias', async () => {
     assert.ok(agent instanceof OpenCodeAgent);
     assert.strictEqual(agent.config.type, 'opencode');
     assert.strictEqual(agent.config.alias, 'opencode');
+    assert.ok(
+        registry.getAllAgents().some(registeredAgent => registeredAgent instanceof OpenCodeAgent),
+        'AgentRegistry factory should construct an OpenCodeAgent from an OpenCode config'
+    );
 });
 
 test('AgentRegistry keeps default Claude fallback when no agents are configured', async () => {

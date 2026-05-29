@@ -1,6 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { addAgent, AGENT_TYPES } from "../packages/cli/src/api/agents.js";
+import { createAgentCommand } from "../packages/cli/src/commands/agentCommands.js";
 import type { ApiClient } from "../packages/cli/src/api/client.js";
 import type { ApiResponse } from "../packages/cli/src/api/types.js";
 
@@ -15,6 +16,14 @@ function response<T>(data: T): ApiResponse<T> {
 describe("CLI OpenCode agent support", () => {
   test("includes opencode in the supported agent type list", () => {
     assert.ok(AGENT_TYPES.includes("opencode"));
+  });
+
+  test("agent add command validation metadata includes OpenCode", () => {
+    const agentCommand = createAgentCommand();
+    const addCommand = agentCommand.commands.find((command) => command.name() === "add");
+
+    assert.ok(addCommand);
+    assert.match(addCommand.helpInformation(), /Agent type \(claude, codex, gemini, opencode\)/);
   });
 
   test("addAgent applies OpenCode Docker image and config path defaults", async () => {
