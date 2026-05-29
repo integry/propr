@@ -56,6 +56,17 @@ function titleGenerationTaskKind(workflowLabel?: string): string {
     return `pr-${workflow}-title-generation`;
 }
 
+function buildFallbackGeneratedSubtitle(workflowLabel: string | undefined, firstLine: string): string {
+    const prefix = workflowLabel || 'Follow-up';
+    const clipped = `${firstLine.substring(0, 75)}${firstLine.length > 75 ? '...' : ''}`;
+    const lowerClipped = clipped.toLowerCase();
+    const lowerPrefix = prefix.toLowerCase();
+    if (lowerClipped === lowerPrefix || lowerClipped.startsWith(`${lowerPrefix}:`) || lowerClipped.startsWith(`${lowerPrefix} `)) {
+        return clipped;
+    }
+    return `${prefix}: ${clipped}`;
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -105,8 +116,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
         if (contextToSummarize) {
             const firstLine = selectFallbackSummaryLine(contextToSummarize).replace(/\s+/g, ' ').trim();
             if (!firstLine) return deterministicFallback;
-            const prefix = workflowLabel || 'Follow-up';
-            return `${prefix}: ${firstLine.substring(0, 75)}${firstLine.length > 75 ? '...' : ''}`;
+            return buildFallbackGeneratedSubtitle(workflowLabel, firstLine);
         }
         return deterministicFallback;
     }

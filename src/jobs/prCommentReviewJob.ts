@@ -276,7 +276,7 @@ async function fetchReviewContext(
 ) {
     const { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger } = params;
     const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
-    const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const commentsByTime = [...allComments].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
     const commentHistory = buildCommentHistory(commentsByTime, prData, correlationId);
 

@@ -107,4 +107,15 @@ describe('generateSummaryTitle fallback behavior', () => {
 
         assert.strictEqual(title, 'Fix: Handle refresh token expiry quickly.');
     });
+
+    test('does not duplicate workflow wording in fallback subtitles', async () => {
+        const title = await generateSummaryTitle(baseOptions({
+            titleContext: 'Review feedback to address:\nFix broken auth refresh handling.',
+            analysisRunner: async () => {
+                throw new Error('LLM unavailable');
+            },
+        }));
+
+        assert.strictEqual(title, 'Fix broken auth refresh handling.');
+    });
 });

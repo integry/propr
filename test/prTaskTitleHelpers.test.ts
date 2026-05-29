@@ -156,6 +156,43 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.deepStrictEqual(selected.map(comment => comment.id), [3]);
     });
 
+    test('does not mutate caller comment ordering while selecting recent comments', () => {
+        const input = [comments[0], comments[2]];
+        selectRecentUsefulPrComments(input, { limit: 2 });
+        assert.deepStrictEqual(input.map(comment => comment.id), [1, 3]);
+    });
+
+    test('strips markdown details, logs, hidden html, and quoted text from recent comments', () => {
+        const result = buildPrTaskTitleContext({
+            workflow: 'fix',
+            pullRequestNumber: 123,
+            prTitle: 'Add OAuth refresh handling',
+            recentComments: [{
+                id: 10,
+                body: [
+                    '<!-- hidden bot metadata -->',
+                    'Please fix the retry loop after token expiry.',
+                    '',
+                    '> quoted prior discussion should not dominate',
+                    '<details>',
+                    '<summary>View Logs</summary>',
+                    'npm test failed with thousands of noisy lines',
+                    '</details>',
+                    '```',
+                    'stack trace line',
+                    '```',
+                ].join('\n'),
+                created_at: '2026-05-29T08:09:00Z',
+                user: { login: 'alice', type: 'User' },
+            }],
+        });
+
+        assert.ok(result.context.includes('Please fix the retry loop after token expiry.'));
+        assert.ok(!result.context.includes('hidden bot metadata'));
+        assert.ok(!result.context.includes('quoted prior discussion'));
+        assert.ok(!result.context.includes('npm test failed'));
+        assert.ok(!result.context.includes('stack trace line'));
+    });
 
     test('falls back to PR description when fewer than two useful recent comments exist', () => {
         const result = buildPrTaskTitleContext({
@@ -377,6 +414,25 @@ describe('prTaskTitleHelpers merge conflict diff context', () => {
 
         const filtered = filterDiffToFiles(diff, ['src/auth flow.ts']);
         assert.ok(filtered.includes('"b/src/auth flow.ts"'));
+        assert.ok(!filtered.includes('src/unrelated.ts'));
+    });
+
+    test('keeps combined diff blocks when a tabbed header and patch path reference a conflicting file', () => {
+        const diff = [
+            'diff --cc\t',
+            'index aaa,bbb..ccc',
+            '--- a/src/conflict.ts',
+            '+++ b/src/conflict.ts',
+            '@@@ -1,1 -1,1 +1,1 @@@',
+            '++resolved conflict',
+            'diff --cc\tsrc/unrelated.ts',
+            'index ddd,eee..fff',
+            '@@@ -1,1 -1,1 +1,1 @@@',
+            '++unrelated',
+        ].join('\n');
+
+        const filtered = filterDiffToFiles(diff, ['src/conflict.ts']);
+        assert.ok(filtered.includes('src/conflict.ts'));
         assert.ok(!filtered.includes('src/unrelated.ts'));
     });
 

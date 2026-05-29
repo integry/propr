@@ -105,6 +105,31 @@ async function handleMergeJobError(error: Error, options: {
     return { status: 'failed', reason: 'merge_conflict_resolution_failed' };
 }
 
+async function updateMergeTaskBeforeLocalMerge(options: {
+    prInfo: { prTitle: string; linkedIssueNumber: number | null } | undefined;
+    stateManager: WorkerStateManager;
+    taskId: string;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    baseBranch: string;
+    headBranch: string;
+    correlatedLogger: Logger;
+}): Promise<void> {
+    const { prInfo, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger } = options;
+    if (!prInfo) return;
+    try {
+        await updateMergeTaskWithKnownPRInfo({
+            stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch,
+            correlatedLogger, redisClient, prTitle: prInfo.prTitle, linkedIssueNumber: prInfo.linkedIssueNumber,
+            title: buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle: prInfo.prTitle }),
+            subtitle: buildDeterministicPrTaskSubtitle('merge', { baseBranch, headBranch }),
+        });
+    } catch (titleError) {
+        correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to update merge task title before local merge');
+    }
+}
+
 /**
  * Processes a merge conflict resolution job.
  * This job:
@@ -162,6 +187,9 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         } catch (prError) {
             correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR info for merge task');
         }
+        await updateMergeTaskBeforeLocalMerge({
+            prInfo, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger,
+        });
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting merge conflict resolution' });
         await ensureGitRepository(correlatedLogger);

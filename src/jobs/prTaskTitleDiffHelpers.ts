@@ -78,6 +78,10 @@ function blockReferencesWantedFile(lines: string[], wanted: Set<string>): boolea
     });
 }
 
+function isDiffBlockHeader(line: string): boolean {
+    return /^diff --(?:git|cc|combined)\s/.test(line);
+}
+
 export function filterDiffToFiles(diff: string, filePaths: string[]): string {
     const wanted = new Set(filePaths.map(normalizeDiffPath));
     if (wanted.size === 0 || !diff.trim()) return '';
@@ -86,16 +90,22 @@ export function filterDiffToFiles(diff: string, filePaths: string[]): string {
     const blocks: string[] = [];
     let current: string[] = [];
     let includeCurrent = false;
+    let currentHeaderPaths: string[] = [];
     let sawDiffHeader = false;
 
     for (const line of lines) {
-        if (line.startsWith('diff --git ') || line.startsWith('diff --cc ') || line.startsWith('diff --combined ')) {
+        if (isDiffBlockHeader(line)) {
             sawDiffHeader = true;
             if (current.length > 0 && includeCurrent) blocks.push(current.join('\n'));
             current = [line];
-            includeCurrent = diffBlockPaths(line).some(path => wanted.has(path));
+            currentHeaderPaths = diffBlockPaths(line);
+            includeCurrent = currentHeaderPaths.some(path => wanted.has(path));
         } else if (current.length > 0) {
             current.push(line);
+            const patchPath = diffPatchPath(line);
+            if (!includeCurrent && currentHeaderPaths.length === 0 && patchPath && wanted.has(patchPath)) {
+                includeCurrent = true;
+            }
         }
     }
 

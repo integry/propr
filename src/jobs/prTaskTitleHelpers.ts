@@ -91,6 +91,19 @@ function truncate(value: string, maxLength = 1200): string {
     return value.length > maxLength ? `${value.substring(0, maxLength)}...` : value;
 }
 
+function cleanMarkdownForTitleContext(value: string | null | undefined): string {
+    return stripHtmlComments(value || '')
+        .replace(/<details\b[\s\S]*?<\/details>/gi, '')
+        .replace(/```[\s\S]*?```/g, '')
+        .replace(/~~~[\s\S]*?~~~/g, '')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('>'))
+        .filter(line => !/^(<summary\b|<\/summary>|view logs|view workflow)$/i.test(line))
+        .join('\n')
+        .trim();
+}
+
 function isLikelyReviewModelSelector(value: string): boolean {
     const text = compactWhitespace(value).toLowerCase();
     if (!text || /\s/.test(text)) return false;
@@ -155,8 +168,9 @@ export function hasMeaningfulTitleText(value: string | null | undefined): boolea
 }
 
 export function isUsefulTitleComment(comment: TitleComment): boolean {
-    if (!hasMeaningfulTitleText(comment.body || '')) return false;
-    const body = compactWhitespace(comment.body || '');
+    const cleanedBody = cleanMarkdownForTitleContext(comment.body);
+    if (!hasMeaningfulTitleText(cleanedBody)) return false;
+    const body = compactWhitespace(cleanedBody);
     const lowerBody = body.toLowerCase();
 
     const authorType = comment.user?.type;
@@ -189,7 +203,7 @@ export function selectRecentUsefulPrComments(
 function formatComment(comment: TitleComment): string {
     const author = comment.user?.login || comment.author || 'unknown';
     const kind = comment.pull_request_review_id ? 'review comment' : 'PR comment';
-    return `- @${author} (${kind}): ${truncate((comment.body || '').trim())}`;
+    return `- @${author} (${kind}): ${truncate(cleanMarkdownForTitleContext(comment.body))}`;
 }
 
 function stripHtmlComments(value: string): string {
