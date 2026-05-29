@@ -418,7 +418,7 @@ function parseLine(line: string, state: ParseState): void {
     const event = JSON.parse(line);
     const timestamp = normalizeEventTimestamp(event.timestamp);
 
-    // Try Codex event processing first
+    if (shouldProcessOpenCodeBeforeCodex(event) && processOpenCodeEvent(event, timestamp, state)) return;
     if (!processCodexEvent(event, timestamp, state)) {
       if (!processOpenCodeEvent(event, timestamp, state)) {
         processGeminiEvent(event, timestamp, state);
@@ -431,6 +431,10 @@ function parseLine(line: string, state: ParseState): void {
 
 function normalizeEventTimestamp(timestamp: unknown): string {
   return normalizeOpenCodeTimestamp(timestamp, new Date().toISOString());
+}
+
+function shouldProcessOpenCodeBeforeCodex(event: Parameters<typeof processOpenCodeEvent>[0]): boolean {
+  return hasOpenCodeSessionId(event) && isOpenCodeEvent(event);
 }
 
 /**

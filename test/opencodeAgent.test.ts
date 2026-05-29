@@ -148,6 +148,19 @@ describe('OpenCodeAgent JSONL parsing', () => {
         });
     });
 
+    test('normalizes token usage from numeric strings', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'result', sessionID: 'session-a', usage: { input_tokens: '100', output_tokens: '25', cache_creation_input_tokens: '5', cache_read_input_tokens: '10' } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 100,
+            output_tokens: 25,
+            cache_creation_input_tokens: 5,
+            cache_read_input_tokens: 10
+        });
+    });
+
     test('aggregates per-message token usage', () => {
         const parsed = parseOutput([
             JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'first', usage: { input_tokens: 10, output_tokens: 2 } } }),

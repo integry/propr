@@ -1691,6 +1691,33 @@ describe('config route follow-up helpers', () => {
         ]);
     });
 
+    test('parseStoredOutputContent detects OpenCode after initial metadata lines', () => {
+        const parsed = parseStoredOutputContent([
+            '{"event":"metadata","source":"worker"}',
+            '{"type":"text","text":"OpenCode says hi","timestamp":"2026-05-05T00:00:00.000Z"}',
+        ].join('\n'));
+
+        assert.strictEqual(parsed.format, 'opencode');
+        assert.deepStrictEqual(parsed.parsed?.events, [
+            { type: 'thought', content: 'OpenCode says hi', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('parseStoredOutputContent lets strong OpenCode lines override generic envelopes', () => {
+        const parsed = parseStoredOutputContent([
+            '{"type":"message","message":{"content":"generic"}}',
+            '{"type":"result","sessionID":"session-a","usage":{"input_tokens":18,"output_tokens":5,"cache_read_input_tokens":4}}',
+        ].join('\n'));
+
+        assert.strictEqual(parsed.format, 'opencode');
+        assert.deepStrictEqual(parsed.parsed?.tokenUsage, {
+            input_tokens: 18,
+            output_tokens: 5,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 4,
+        });
+    });
+
     test('parseStoredOutputContent keeps ambiguous result-only usage output on the Codex path', () => {
         const parsed = parseStoredOutputContent('{"type":"result","usage":{"input_tokens":10,"output_tokens":3}}\n');
 
@@ -1851,6 +1878,19 @@ describe('config route follow-up helpers', () => {
             input_tokens: 18,
             output_tokens: 5,
             cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 4,
+        });
+    });
+
+    test('parseRedisOutput preserves OpenCode numeric-string token usage', () => {
+        const result = parseRedisOutput([
+            '{"type":"result","sessionID":"session-a","usage":{"input_tokens":"18","output_tokens":"5","cache_creation_input_tokens":"2","cache_read_input_tokens":"4"}}',
+        ]);
+
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 18,
+            output_tokens: 5,
+            cache_creation_input_tokens: 2,
             cache_read_input_tokens: 4,
         });
     });

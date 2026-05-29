@@ -245,18 +245,19 @@ function parseStoredOutputForFormat(output: string, format: StoredOutputFormat):
   return null;
 }
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
-  const firstLine = output.split('\n').map(line => line.trim()).find(line => line.length > 0);
-  if (!firstLine) return 'unknown';
-  try {
-    const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
-    if (isClaudeStoredOutputLine(parsed)) return 'claude';
-    if (isStrongOpenCodeStoredOutputLine(parsed)) return 'opencode';
-    if (isCodexStoredOutputLine(parsed)) return 'codex';
-    if (isOpenCodeStoredOutputLine(parsed)) return 'opencode';
-    return 'unknown';
-  } catch {
-    return 'unknown';
+  let detectedFormat: StoredOutputFormat = 'unknown';
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as StoredExecutionOutputLine;
+      if (isClaudeStoredOutputLine(parsed)) return 'claude';
+      if (isStrongOpenCodeStoredOutputLine(parsed)) return 'opencode';
+      const format = isCodexStoredOutputLine(parsed) ? 'codex' : isOpenCodeStoredOutputLine(parsed) ? 'opencode' : 'unknown';
+      if (format === 'opencode') return format;
+      if (detectedFormat === 'unknown') detectedFormat = format;
+    } catch { continue; }
   }
+  return detectedFormat;
 }
 function isStrongOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean { return Boolean(parsed.sessionID && isOpenCodeStoredOutputLine(parsed)); }
 function isOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {

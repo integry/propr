@@ -317,6 +317,7 @@ function firstNumber(source: OpenCodeUsage, keys: string[]): number | undefined 
     for (const key of keys) {
         const value = source[key];
         if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
     }
     return undefined;
 }
