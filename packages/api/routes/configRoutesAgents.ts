@@ -17,6 +17,7 @@ interface AgentsRoutesDeps {
   redisClient: RedisClientType;
   publishConfigUpdate: (subtype: string) => Promise<void>;
   logActivityHelper: (description: string, idSuffix: string, type: string, username?: string) => Promise<void>;
+  applyAgentsUpdateFn?: (params: ApplyAgentsUpdateParams) => Promise<{ status: number; body: Record<string, unknown> }>;
 }
 interface AgentConfigStore {
   loadAgents: typeof configManager.loadAgents;
@@ -365,7 +366,7 @@ export async function applyAgentsUpdate({
 }
 
 export function createAgentsRoutes(deps: AgentsRoutesDeps) {
-  const { redisClient, publishConfigUpdate, logActivityHelper } = deps;
+  const { redisClient, publishConfigUpdate, logActivityHelper, applyAgentsUpdateFn = applyAgentsUpdate } = deps;
   async function getAgents(_req: Request, res: Response): Promise<void> {
     try {
       res.json({ agents: await configManager.loadAgents() });
@@ -391,7 +392,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
 
     // Agent updates share the settings lock because they may also rewrite default_agent_alias.
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
-      return applyAgentsUpdate({ agents: req.body.agents, processedAgents: prepared.processedAgents, username: req.user?.username, publishConfigUpdate, logActivityHelper, lock });
+      return applyAgentsUpdateFn({ agents: req.body.agents, processedAgents: prepared.processedAgents, username: req.user?.username, publishConfigUpdate, logActivityHelper, lock });
     });
 
     res.status(result.status).json(result.body);

@@ -4,6 +4,7 @@ import * as configManager from '@propr/core';
 import type { Knex } from 'knex';
 export { validateAgentsConfig, normalizeAgentsConfig } from './configAgentValidation.js';
 export { extractSettingSaves, type LabeledSaveDescriptor, type SettingSaveName } from './configSettings.js';
+export { queueResummarizationForAllRepos } from './indexingQueueHelpers.js';
 
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
 export const SPECIALIZED_SETTING_NAMES = [

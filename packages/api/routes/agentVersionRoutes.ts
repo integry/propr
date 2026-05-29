@@ -21,10 +21,41 @@ import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
 const VALID_AGENT_TYPES: readonly string[] = AGENT_TYPES;
 
+interface AgentVersionRouteDeps {
+    getAvailableVersions?: typeof getAvailableVersions;
+    resolveVersion?: typeof resolveVersion;
+    ensureVersionedAgentImage?: typeof ensureVersionedAgentImage;
+    cleanupUnusedAgentImages?: typeof cleanupUnusedAgentImages;
+    listAgentImages?: typeof listAgentImages;
+    loadAgents?: typeof loadAgents;
+}
+
+type AgentTypeValidationResult = { ok: true; agentType: AgentType } | { ok: false; error: string };
+
+function validateAgentType(agentType: unknown): AgentTypeValidationResult {
+    if (typeof agentType === 'string' && VALID_AGENT_TYPES.includes(agentType)) {
+        return { ok: true, agentType: agentType as AgentType };
+    }
+    return {
+        ok: false,
+        error: `Invalid agent type '${String(agentType)}'. Must be one of: ${VALID_AGENT_TYPES.join(', ')}`
+    };
+}
+
 /**
  * Creates the agent version management routes.
  */
-export function createAgentVersionRoutes() {
+export function createAgentVersionRoutes(deps: AgentVersionRouteDeps = {}) {
+    const versionService = {
+        getAvailableVersions,
+        resolveVersion,
+        ensureVersionedAgentImage,
+        cleanupUnusedAgentImages,
+        listAgentImages,
+        loadAgents,
+        ...deps
+    };
+
     /**
      * GET /api/agents/versions/:agentType
      * Returns available versions for an agent type including npm tags and recent versions.
@@ -33,13 +64,13 @@ export function createAgentVersionRoutes() {
         try {
             const { agentType } = req.params;
 
-            // Validate agent type
-            if (!VALID_AGENT_TYPES.includes(agentType)) {
-                res.status(400).json({ error: `Invalid agent type: ${agentType}` });
+            const validation = validateAgentType(agentType);
+            if (!validation.ok) {
+                res.status(400).json({ error: validation.error });
                 return;
             }
 
-            const versions = await getAvailableVersions(agentType as AgentType);
+            const versions = await versionService.getAvailableVersions(validation.agentType);
             res.json(versions);
         } catch (error) {
             const err = error as Error;
@@ -61,7 +92,7 @@ export function createAgentVersionRoutes() {
             const { cliVersionType, cliVersion } = req.body;
 
             // Load agents to find the one we're building for
-            const agents = await loadAgents();
+            const agents = await versionService.loadAgents();
             const agent = agents.find((a: AgentConfig) => a.id === agentId);
 
             if (!agent) {
@@ -77,7 +108,7 @@ export function createAgentVersionRoutes() {
 
             let resolvedVersion: string;
             try {
-                resolvedVersion = await resolveVersion(agentType, effectiveVersionType, effectiveVersionSpec);
+                resolvedVersion = await versionService.resolveVersion(agentType, effectiveVersionType, effectiveVersionSpec);
             } catch (resolveError) {
                 res.status(400).json({
                     error: 'Failed to resolve version',
@@ -90,7 +121,7 @@ export function createAgentVersionRoutes() {
             const contentHash = computeContentHash(agentType);
 
             // Build the image
-            const result = await ensureVersionedAgentImage(agentType, resolvedVersion, contentHash);
+            const result = await versionService.ensureVersionedAgentImage(agentType, resolvedVersion, contentHash);
 
             if (result.success) {
                 res.json({
@@ -121,28 +152,29 @@ export function createAgentVersionRoutes() {
         try {
             const { agentType } = req.params;
 
-            // Validate agent type
-            if (!VALID_AGENT_TYPES.includes(agentType)) {
-                res.status(400).json({ error: `Invalid agent type: ${agentType}` });
+            const validation = validateAgentType(agentType);
+            if (!validation.ok) {
+                res.status(400).json({ error: validation.error });
                 return;
             }
+            const type = validation.agentType;
 
             // Get all agent configs to determine which versions are in use
-            const agents = await loadAgents();
+            const agents = await versionService.loadAgents();
             const versionsInUse = new Set<string>();
 
             // Add default version
-            versionsInUse.add(AGENT_DEFAULT_VERSIONS[agentType as AgentType]);
+            versionsInUse.add(AGENT_DEFAULT_VERSIONS[type]);
 
             // Add resolved versions from configs
             for (const agent of agents) {
-                if (agent.type === agentType && agent.cliVersionResolved) {
+                if (agent.type === type && agent.cliVersionResolved) {
                     versionsInUse.add(agent.cliVersionResolved);
                 }
             }
 
             // Perform cleanup
-            const deletedCount = await cleanupUnusedAgentImages(agentType, versionsInUse);
+            const deletedCount = await versionService.cleanupUnusedAgentImages(type, versionsInUse);
 
             res.json({
                 success: true,
@@ -164,19 +196,20 @@ export function createAgentVersionRoutes() {
         try {
             const { agentType } = req.params;
 
-            // Validate agent type
-            if (!VALID_AGENT_TYPES.includes(agentType)) {
-                res.status(400).json({ error: `Invalid agent type: ${agentType}` });
+            const validation = validateAgentType(agentType);
+            if (!validation.ok) {
+                res.status(400).json({ error: validation.error });
                 return;
             }
+            const type = validation.agentType;
 
-            const tags = await listAgentImages(agentType);
+            const tags = await versionService.listAgentImages(type);
 
             res.json({
-                agentType,
+                agentType: type,
                 images: tags.map((tag: string) => ({
                     tag,
-                    fullName: `${getImageName(agentType)}:${tag}`
+                    fullName: `${getImageName(type)}:${tag}`
                 }))
             });
         } catch (error) {
@@ -194,20 +227,21 @@ export function createAgentVersionRoutes() {
         try {
             const { agentType, versionType, versionSpec } = req.body;
 
-            // Validate agent type
-            if (!VALID_AGENT_TYPES.includes(agentType)) {
-                res.status(400).json({ error: `Invalid agent type: ${agentType}` });
+            const validation = validateAgentType(agentType);
+            if (!validation.ok) {
+                res.status(400).json({ error: validation.error });
                 return;
             }
+            const type = validation.agentType;
 
-            const resolved = await resolveVersion(
-                agentType as AgentType,
+            const resolved = await versionService.resolveVersion(
+                type,
                 versionType as CliVersionType,
                 versionSpec
             );
 
             res.json({
-                agentType,
+                agentType: type,
                 versionType,
                 versionSpec,
                 resolved
@@ -227,17 +261,17 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
             const { versionType, versionSpec } = req.query;
 
-            // Validate agent type
-            if (!VALID_AGENT_TYPES.includes(agentType)) {
-                res.status(400).json({ error: `Invalid agent type: ${agentType}` });
+            const validation = validateAgentType(agentType);
+            if (!validation.ok) {
+                res.status(400).json({ error: validation.error });
                 return;
             }
 
-            const type = agentType as AgentType;
+            const type = validation.agentType;
             const effectiveVersionType = (versionType as CliVersionType) || 'default';
 
             // Resolve version
-            const resolved = await resolveVersion(type, effectiveVersionType, versionSpec as string);
+            const resolved = await versionService.resolveVersion(type, effectiveVersionType, versionSpec as string);
 
             // Compute content hash
             const contentHash = computeContentHash(type);
@@ -246,7 +280,7 @@ export function createAgentVersionRoutes() {
             const imageTag = generateImageTag(type, resolved, contentHash);
 
             res.json({
-                agentType,
+                agentType: type,
                 versionType: effectiveVersionType,
                 versionSpec: versionSpec || null,
                 resolvedVersion: resolved,
