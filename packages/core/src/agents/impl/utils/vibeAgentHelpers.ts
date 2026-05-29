@@ -1,5 +1,3 @@
-import path from 'path';
-import logger from '../../../utils/logger.js';
 import { parseVibeOutput } from './vibeOutputParser.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -21,7 +19,7 @@ export function getParsedVibeError(parsedOutput: ReturnType<typeof parseVibeOutp
     if (parsedOutput.error) {
         return parsedOutput.error;
     }
-    return parsedOutput.incomplete ? 'Vibe output did not include a final response event' : undefined;
+    return undefined;
 }
 
 export function isSuccessfulVibeResult(exitCode: number | null, parsedOutput: ReturnType<typeof parseVibeOutput>): boolean {
@@ -52,25 +50,67 @@ export function getForwardedVibeEnvVars(envVars: Record<string, string> | undefi
     return { dockerArgs, skipped };
 }
 
-export function getHostVibePromptPath(
-    promptPath: string,
-    containerPromptDir: string,
-    hostPromptDir: string | undefined,
-    hostCacheMounted: boolean
-): string {
-    if (!hostPromptDir) return promptPath;
-    const resolvedHostPromptDir = path.resolve(hostPromptDir);
-    if (resolvedHostPromptDir === containerPromptDir) return promptPath;
-    if (!hostCacheMounted) {
-        logger.warn({ promptPath, containerPromptDir, hostPromptDir }, 'Vibe host prompt cache translation is not marked as mounted; using container path for Docker mount');
-        return promptPath;
+export function splitVibeCliArgs(input: string): string[] {
+    const args: string[] = [];
+    let current = '';
+    let quote: '"' | "'" | null = null;
+    let escaping = false;
+    let hasToken = false;
+
+    for (const char of input) {
+        if (escaping) {
+            current += char;
+            escaping = false;
+            hasToken = true;
+            continue;
+        }
+
+        if (char === '\\') {
+            escaping = true;
+            hasToken = true;
+            continue;
+        }
+
+        if (quote) {
+            if (char === quote) {
+                quote = null;
+            } else {
+                current += char;
+            }
+            hasToken = true;
+            continue;
+        }
+
+        if (char === '"' || char === "'") {
+            quote = char;
+            hasToken = true;
+            continue;
+        }
+
+        if (/\s/.test(char)) {
+            if (hasToken) {
+                args.push(current);
+                current = '';
+                hasToken = false;
+            }
+            continue;
+        }
+
+        current += char;
+        hasToken = true;
     }
 
-    const resolvedPromptPath = path.resolve(promptPath);
-    const relativePromptPath = path.relative(containerPromptDir, resolvedPromptPath);
-    if (relativePromptPath.startsWith('..') || path.isAbsolute(relativePromptPath)) {
-        logger.warn({ promptPath, containerPromptDir, hostPromptDir }, 'Vibe prompt path is outside configured prompt cache; using container path for Docker mount');
-        return promptPath;
+    if (escaping) {
+        current += '\\';
     }
-    return path.join(resolvedHostPromptDir, relativePromptPath);
+
+    if (quote) {
+        throw new Error('Invalid VIBE_CLI_ARGS: unmatched quote');
+    }
+
+    if (hasToken) {
+        args.push(current);
+    }
+
+    return args;
 }

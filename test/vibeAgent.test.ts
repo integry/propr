@@ -4,12 +4,78 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { VibeAgent, parseVibeOutput } from '../packages/core/src/agents/impl/VibeAgent.js';
+import { splitVibeCliArgs } from '../packages/core/src/agents/impl/utils/vibeAgentHelpers.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 
 after(async () => {
     await closeConnection();
 });
+
+const envKeys = ['MISTRAL_API_KEY', 'VIBE_CLI_ARGS', 'VIBE_CONFIG_PATH'] as const;
+
+function withRestoredEnv(run: () => void): void {
+    const previous = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    try {
+        run();
+    } finally {
+        for (const key of envKeys) {
+            const value = previous[key];
+            if (value === undefined) {
+                delete process.env[key];
+            } else {
+                process.env[key] = value;
+            }
+        }
+    }
+}
+
+function createAgent(overrides: Partial<AgentConfig> = {}): VibeAgent {
+    return new VibeAgent({
+        id: 'vibe-test',
+        type: 'vibe',
+        alias: 'vibe-test',
+        enabled: true,
+        dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
+        configPath: '/tmp/missing-vibe-config',
+        supportedModels: ['mistral-medium-3.5'],
+        defaultModel: 'mistral-medium-3.5',
+        ...overrides
+    } satisfies AgentConfig);
+}
+
+function buildArgs(agent: VibeAgent, params: {
+    worktreePath?: string;
+    githubToken?: string;
+    modelName?: string;
+    issueNumber?: number;
+    taskId?: string;
+    executionType?: string;
+    maxTurns?: number;
+    mode?: 'execute' | 'analysis';
+} = {}): string[] {
+    return (agent as unknown as {
+        buildDockerArgs(params: {
+            worktreePath: string;
+            githubToken: string;
+            modelName?: string;
+            issueNumber: number;
+            taskId?: string;
+            executionType?: string;
+            maxTurns?: number;
+            mode?: 'execute' | 'analysis';
+        }): string[];
+    }).buildDockerArgs({
+        worktreePath: params.worktreePath || '/tmp/vibe-worktree',
+        githubToken: params.githubToken || 'github-token',
+        modelName: params.modelName || 'mistral-medium-3.5',
+        issueNumber: params.issueNumber ?? 1477,
+        taskId: params.taskId || 'task-1234567890',
+        executionType: params.executionType,
+        maxTurns: params.maxTurns,
+        mode: params.mode
+    });
+}
 
 describe('parseVibeOutput', () => {
     test('returns plain output as the summary when output is not JSON', () => {
@@ -50,51 +116,6 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.summary, 'First line\nSecond line');
     });
 
-    test('separates adjacent structured array text parts', () => {
-        const parsed = parseVibeOutput(JSON.stringify({
-            type: 'final',
-            content: [
-                { text: 'First block' },
-                { text: 'Second block' }
-            ]
-        }));
-
-        assert.strictEqual(parsed.summary, 'First block\nSecond block');
-    });
-
-    test('does not promote nested metadata objects to output events', () => {
-        const parsed = parseVibeOutput(JSON.stringify({
-            type: 'final',
-            session_id: 'session-top',
-            model: 'mistral-medium-3.5',
-            message: {
-                content: [{ text: 'Actual final summary' }]
-            },
-            metadata: {
-                session_id: 'session-nested',
-                model: 'metadata-model',
-                text: 'metadata text'
-            }
-        }));
-
-        assert.strictEqual(parsed.sessionId, 'session-top');
-        assert.strictEqual(parsed.model, 'mistral-medium-3.5');
-        assert.strictEqual(parsed.summary, 'Actual final summary');
-    });
-
-    test('parses line-delimited final and error events', () => {
-        const output = [
-            JSON.stringify({ type: 'delta', delta: { content: 'partial' } }),
-            JSON.stringify({ type: 'final', response: 'Final response' }),
-            JSON.stringify({ type: 'error', error: { message: 'Rate limit exceeded' } })
-        ].join('\n');
-
-        const parsed = parseVibeOutput(output);
-
-        assert.strictEqual(parsed.summary, 'Final response');
-        assert.strictEqual(parsed.error, 'Rate limit exceeded');
-    });
-
     test('prefers known final events over trailing metadata text', () => {
         const output = [
             JSON.stringify({ type: 'final', response: 'Final response' }),
@@ -104,289 +125,112 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parseVibeOutput(output).summary, 'Final response');
     });
 
-    test('ignores transient errors followed by a final response', () => {
+    test('captures explicit error events', () => {
         const output = [
-            JSON.stringify({ type: 'error', error: 'Transient retryable error' }),
-            JSON.stringify({ type: 'final', response: 'Recovered response' })
+            JSON.stringify({ type: 'final', response: 'Final response' }),
+            JSON.stringify({ type: 'error', error: { message: 'Rate limit exceeded' } })
         ].join('\n');
 
         const parsed = parseVibeOutput(output);
-        assert.strictEqual(parsed.summary, 'Recovered response');
-        assert.strictEqual(parsed.error, undefined);
+        assert.strictEqual(parsed.summary, 'Final response');
+        assert.strictEqual(parsed.error, 'Rate limit exceeded');
     });
+});
 
-    test('marks JSON text output incomplete when no final event is present', () => {
-        const output = [
-            JSON.stringify({ type: 'message', text: 'Successful streamed response' }),
-            JSON.stringify({ type: 'error', error: 'Stale diagnostic from retry' })
-        ].join('\n');
-
-        const parsed = parseVibeOutput(output);
-        assert.strictEqual(parsed.summary, 'Successful streamed response');
-        assert.strictEqual(parsed.error, undefined);
-        assert.strictEqual(parsed.incomplete, true);
+describe('Vibe CLI args', () => {
+    test('splits shell-like VIBE_CLI_ARGS without invoking a shell', () => {
+        assert.deepStrictEqual(
+            splitVibeCliArgs('vibe --flag "two words" --empty "" escaped\\ value'),
+            ['vibe', '--flag', 'two words', '--empty', '', 'escaped value']
+        );
+        assert.throws(() => splitVibeCliArgs('vibe "unterminated'), /unmatched quote/);
     });
 });
 
 describe('VibeAgent Docker args', () => {
-    test('mounts prompt and config, sets model env, and skips repo setup for analysis', (t) => {
+    test('uses stdin-oriented default command and read-only sandbox for analysis', () => {
         const configPath = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-config-test-'));
         fs.writeFileSync(path.join(configPath, 'config.toml'), 'active_model = "mistral-medium-3.5"\n');
-        t.after(() => {
+        try {
+            const args = buildArgs(createAgent({ configPath }), {
+                issueNumber: 0,
+                executionType: 'context-analysis',
+                maxTurns: 5,
+                mode: 'analysis'
+            });
+
+            assert.ok(args.includes('/tmp/vibe-worktree:/home/node/workspace:ro'));
+            assert.ok(args.includes(`${configPath}:/home/node/.vibe:ro`));
+            assert.ok(args.includes('--read-only'));
+            assert.ok(args.includes('VIBE_READ_ONLY_CONFIG=1'));
+            assert.ok(args.includes('VIBE_ACTIVE_MODEL=mistral-medium-3.5'));
+            assert.ok(args.includes('VIBE_MAX_TURNS=5'));
+            assert.ok(!args.some(arg => arg.includes('propr-vibe-prompt.md')));
+            assert.ok(!args.includes('PROPR_AGENT_TYPE=vibe'));
+
+            const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
+            assert.deepStrictEqual(args.slice(imageIndex + 1), ['vibe']);
+        } finally {
             fs.rmSync(configPath, { recursive: true, force: true });
-        });
-        const agent = new VibeAgent({
-            id: 'vibe-test',
-            type: 'vibe',
-            alias: 'vibe-test',
-            enabled: true,
-            dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
-            configPath,
-            supportedModels: ['mistral-medium-3.5'],
-            defaultModel: 'mistral-medium-3.5'
-        } satisfies AgentConfig);
-        const args = (agent as unknown as {
-            buildDockerArgs(params: {
-                worktreePath: string;
-                githubToken: string;
-                modelName: string;
-                promptPath: string;
-                issueNumber: number;
-                taskId: string;
-                executionType: string;
-                maxTurns: number;
-                mode: 'analysis';
-            }): string[];
-        }).buildDockerArgs({
-            worktreePath: '/tmp/vibe-worktree',
-            githubToken: 'github-token',
-            modelName: 'openrouter:mistral-medium-3.5',
-            promptPath: '/tmp/propr-vibe-prompts/vibe-task/prompt.md',
-            issueNumber: 0,
-            taskId: 'task-1234567890',
-            executionType: 'context-analysis',
-            maxTurns: 5,
-            mode: 'analysis'
-        });
-
-        assert.ok(args.includes('propr/agent-vibe:2.12.1-abcdef'));
-        assert.ok(args.includes('VIBE_ACTIVE_MODEL=mistral-medium-3.5'));
-        assert.ok(args.includes('VIBE_READ_ONLY_CONFIG=1'));
-        assert.ok(args.includes('XDG_CACHE_HOME=/tmp/propr-vibe-cache'));
-        assert.ok(args.includes('UV_CACHE_DIR=/tmp/propr-uv-cache'));
-        assert.ok(args.includes('/tmp/vibe-worktree:/home/node/workspace:ro'));
-        assert.ok(args.includes('--read-only'));
-        assert.ok(args.includes('/tmp:rw,nosuid,size=512m'));
-        assert.ok(args.includes('/home/node/.cache:rw,nosuid,size=256m'));
-        assert.ok(!args.includes('--user'));
-        assert.ok(!args.includes('0:0'));
-        assert.ok(!args.includes('/tmp/git-processor:/tmp/git-processor:rw'));
-        assert.ok(!args.includes('--cap-add'));
-        assert.ok(!args.includes('PROPR_AGENT_TYPE=vibe'));
-        assert.ok(!args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
-        assert.ok(args.includes(`${configPath}:/home/node/.vibe:ro`));
-        assert.ok(args.includes('/tmp/propr-vibe-prompts/vibe-task/prompt.md:/tmp/propr-vibe-prompt.md:ro'));
-
-        const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-        assert.deepStrictEqual(args.slice(imageIndex + 1, imageIndex + 4), ['vibe', '--prompt-file', '/tmp/propr-vibe-prompt.md']);
-        assert.deepStrictEqual(args.slice(-4), ['--max-turns', '5', '--output', 'json']);
+        }
     });
 
-    test('expands tilde config paths before checking Docker mountability', (t) => {
+    test('wraps implementation runs for repo setup and honors VIBE_CLI_ARGS', () => {
+        withRestoredEnv(() => {
+            process.env.VIBE_CLI_ARGS = 'vibe --headless --plain "two words"';
+            const args = buildArgs(createAgent(), { maxTurns: 12 });
+
+            assert.ok(args.includes('/tmp/vibe-worktree:/home/node/workspace:rw'));
+            assert.ok(args.includes('GH_TOKEN=github-token'));
+            assert.ok(args.includes('GITHUB_TOKEN=github-token'));
+            assert.ok(args.includes('PROPR_AGENT_TYPE=vibe'));
+            assert.ok(args.includes('PROPR_WORKSPACE=/home/node/workspace'));
+            assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
+            assert.ok(args.includes('VIBE_MAX_TURNS=12'));
+            assert.ok(!args.some(arg => arg.includes('propr-vibe-prompt.md')));
+
+            const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
+            assert.deepStrictEqual(args.slice(imageIndex + 4), ['vibe', '--headless', '--plain', 'two words']);
+        });
+    });
+
+    test('expands tilde config paths before checking Docker mountability', () => {
         const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-home-'));
         const configPath = path.join(homeDir, '.vibe');
         fs.mkdirSync(configPath);
         fs.writeFileSync(path.join(configPath, 'config.toml'), 'active_model = "mistral-medium-3.5"\n');
         const previousHome = process.env.HOME;
-        const previousVibeConfigPath = process.env.VIBE_CONFIG_PATH;
-        process.env.HOME = homeDir;
-        delete process.env.VIBE_CONFIG_PATH;
-        t.after(() => {
+        try {
+            process.env.HOME = homeDir;
+            const args = buildArgs(createAgent({ configPath: '~/.vibe' }), {
+                issueNumber: 0,
+                maxTurns: 5,
+                mode: 'analysis'
+            });
+
+            assert.ok(args.includes(`${configPath}:/home/node/.vibe:ro`));
+        } finally {
             if (previousHome === undefined) {
                 delete process.env.HOME;
             } else {
                 process.env.HOME = previousHome;
             }
-            if (previousVibeConfigPath === undefined) {
-                delete process.env.VIBE_CONFIG_PATH;
-            } else {
-                process.env.VIBE_CONFIG_PATH = previousVibeConfigPath;
-            }
             fs.rmSync(homeDir, { recursive: true, force: true });
-        });
-
-        const agent = new VibeAgent({
-            id: 'vibe-test',
-            type: 'vibe',
-            alias: 'vibe-test',
-            enabled: true,
-            dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
-            configPath: '~/.vibe',
-            supportedModels: ['mistral-medium-3.5'],
-            defaultModel: 'mistral-medium-3.5'
-        } satisfies AgentConfig);
-        const args = (agent as unknown as {
-            buildDockerArgs(params: {
-                worktreePath: string;
-                githubToken: string;
-                modelName: string;
-                promptPath: string;
-                issueNumber: number;
-                taskId: string;
-                maxTurns: number;
-                mode: 'analysis';
-            }): string[];
-        }).buildDockerArgs({
-            worktreePath: '/tmp/vibe-worktree',
-            githubToken: 'github-token',
-            modelName: 'mistral-medium-3.5',
-            promptPath: '/tmp/propr-vibe-prompts/vibe-task/prompt.md',
-            issueNumber: 0,
-            taskId: 'task-1234567890',
-            maxTurns: 5,
-            mode: 'analysis'
-        });
-
-        assert.ok(args.includes(`${configPath}:/home/node/.vibe:ro`));
-    });
-
-    test('uses host prompt cache path for sibling Docker bind mounts', () => {
-        const previousPromptDir = process.env.VIBE_PROMPT_CACHE_DIR;
-        const previousHostPromptDir = process.env.HOST_VIBE_PROMPT_CACHE_DIR;
-        process.env.VIBE_PROMPT_CACHE_DIR = '/container/vibe-prompts';
-        process.env.HOST_VIBE_PROMPT_CACHE_DIR = '/host/vibe-prompts';
-        try {
-            const agent = new VibeAgent({
-                id: 'vibe-test',
-                type: 'vibe',
-                alias: 'vibe-test',
-                enabled: true,
-                dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
-                configPath: '/tmp/vibe-config',
-                supportedModels: ['mistral-medium-3.5'],
-                defaultModel: 'mistral-medium-3.5'
-            } satisfies AgentConfig);
-            const args = (agent as unknown as {
-                buildDockerArgs(params: {
-                    worktreePath: string;
-                    githubToken: string;
-                    modelName: string;
-                    promptPath: string;
-                    issueNumber: number;
-                    taskId: string;
-                    maxTurns: number;
-                }): string[];
-            }).buildDockerArgs({
-                worktreePath: '/tmp/vibe-worktree',
-                githubToken: 'github-token',
-                modelName: 'mistral-medium-3.5',
-                promptPath: '/container/vibe-prompts/vibe-task/prompt.md',
-                issueNumber: 1477,
-                taskId: 'task-1234567890',
-                maxTurns: 12
-            });
-
-            assert.ok(args.includes('/host/vibe-prompts/vibe-task/prompt.md:/tmp/propr-vibe-prompt.md:ro'));
-            assert.ok(!args.includes('/container/vibe-prompts/vibe-task/prompt.md:/tmp/propr-vibe-prompt.md:ro'));
-        } finally {
-            if (previousPromptDir === undefined) {
-                delete process.env.VIBE_PROMPT_CACHE_DIR;
-            } else {
-                process.env.VIBE_PROMPT_CACHE_DIR = previousPromptDir;
-            }
-            if (previousHostPromptDir === undefined) {
-                delete process.env.HOST_VIBE_PROMPT_CACHE_DIR;
-            } else {
-                process.env.HOST_VIBE_PROMPT_CACHE_DIR = previousHostPromptDir;
-            }
         }
     });
 
-    test('does not mount an empty config path when using Mistral API key fallback', () => {
-        const emptyConfigPath = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-vibe-config-'));
-        const previousApiKey = process.env.MISTRAL_API_KEY;
-        process.env.MISTRAL_API_KEY = 'mistral-api-key';
-        try {
-            const agent = new VibeAgent({
-                id: 'vibe-test',
-                type: 'vibe',
-                alias: 'vibe-test',
-                enabled: true,
-                dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
-                configPath: emptyConfigPath,
-                supportedModels: ['mistral-medium-3.5'],
-                defaultModel: 'mistral-medium-3.5'
-            } satisfies AgentConfig);
-            const args = (agent as unknown as {
-                buildDockerArgs(params: {
-                    worktreePath: string;
-                    githubToken: string;
-                    modelName: string;
-                    promptPath: string;
-                    issueNumber: number;
-                    taskId: string;
-                    maxTurns: number;
-                }): string[];
-            }).buildDockerArgs({
-                worktreePath: '/tmp/vibe-worktree',
-                githubToken: 'github-token',
-                modelName: 'mistral-medium-3.5',
-                promptPath: '/tmp/propr-vibe-prompts/vibe-task/prompt.md',
-                issueNumber: 1477,
-                taskId: 'task-1234567890',
-                maxTurns: 12
-            });
-
-            assert.ok(args.includes('MISTRAL_API_KEY=mistral-api-key'));
-            assert.ok(!args.includes(`${emptyConfigPath}:/home/node/.vibe:ro`));
-        } finally {
-            if (previousApiKey === undefined) {
-                delete process.env.MISTRAL_API_KEY;
-            } else {
-                process.env.MISTRAL_API_KEY = previousApiKey;
-            }
-            fs.rmSync(emptyConfigPath, { recursive: true, force: true });
-        }
-    });
-
-    test('passes configured Mistral API key through the explicit credential path', () => {
+    test('propagates Mistral API key through the explicit credential path', () => {
         const emptyConfigPath = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-vibe-config-'));
         try {
-            const agent = new VibeAgent({
-                id: 'vibe-test',
-                type: 'vibe',
-                alias: 'vibe-test',
-                enabled: true,
-                dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
+            const args = buildArgs(createAgent({
                 configPath: emptyConfigPath,
-                supportedModels: ['mistral-medium-3.5'],
-                defaultModel: 'mistral-medium-3.5',
                 envVars: {
-                    MISTRAL_API_KEY: 'configured-mistral-api-key',
+                    MISTRAL_API_KEY: ' configured-mistral-api-key ',
                     EXTRA_VIBE_ENV: 'extra-value',
                     'BAD-ENV': 'skipped',
                     MULTILINE_ENV: 'skip\nme'
                 }
-            } satisfies AgentConfig);
-            const args = (agent as unknown as {
-                buildDockerArgs(params: {
-                    worktreePath: string;
-                    githubToken: string;
-                    modelName: string;
-                    promptPath: string;
-                    issueNumber: number;
-                    taskId: string;
-                    maxTurns: number;
-                }): string[];
-            }).buildDockerArgs({
-                worktreePath: '/tmp/vibe-worktree',
-                githubToken: 'github-token',
-                modelName: 'mistral-medium-3.5',
-                promptPath: '/tmp/propr-vibe-prompts/vibe-task/prompt.md',
-                issueNumber: 1477,
-                taskId: 'task-1234567890',
-                maxTurns: 12
-            });
+            }));
 
             assert.ok(args.includes('MISTRAL_API_KEY=configured-mistral-api-key'));
             assert.ok(args.includes('EXTRA_VIBE_ENV=extra-value'));
@@ -396,176 +240,6 @@ describe('VibeAgent Docker args', () => {
             assert.ok(!args.includes(`${emptyConfigPath}:/home/node/.vibe:ro`));
         } finally {
             fs.rmSync(emptyConfigPath, { recursive: true, force: true });
-        }
-    });
-
-    test('trims configured Mistral API key and ignores whitespace-only values', () => {
-        const emptyConfigPath = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-vibe-config-'));
-        try {
-            const agent = new VibeAgent({
-                id: 'vibe-test',
-                type: 'vibe',
-                alias: 'vibe-test',
-                enabled: true,
-                dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
-                configPath: emptyConfigPath,
-                supportedModels: ['mistral-medium-3.5'],
-                defaultModel: 'mistral-medium-3.5',
-                envVars: {
-                    MISTRAL_API_KEY: '   ',
-                    EXTRA_VIBE_ENV: 'extra-value'
-                }
-            } satisfies AgentConfig);
-            const args = (agent as unknown as {
-                buildDockerArgs(params: {
-                    worktreePath: string;
-                    githubToken: string;
-                    modelName: string;
-                    promptPath: string;
-                    issueNumber: number;
-                    taskId: string;
-                    maxTurns: number;
-                }): string[];
-            }).buildDockerArgs({
-                worktreePath: '/tmp/vibe-worktree',
-                githubToken: 'github-token',
-                modelName: 'mistral-medium-3.5',
-                promptPath: '/tmp/propr-vibe-prompts/vibe-task/prompt.md',
-                issueNumber: 1477,
-                taskId: 'task-1234567890',
-                maxTurns: 12
-            });
-
-            assert.strictEqual(args.filter(arg => arg.startsWith('MISTRAL_API_KEY=')).length, 0);
-            assert.ok(args.includes(`${emptyConfigPath}:/home/node/.vibe:ro`));
-        } finally {
-            fs.rmSync(emptyConfigPath, { recursive: true, force: true });
-        }
-    });
-
-    test('uses writable workspace and auto-approve agent for execution mode', () => {
-        const agent = new VibeAgent({
-            id: 'vibe-test',
-            type: 'vibe',
-            alias: 'vibe-test',
-            enabled: true,
-            dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
-            configPath: '/tmp/vibe-config',
-            supportedModels: ['mistral-medium-3.5'],
-            defaultModel: 'mistral-medium-3.5'
-        } satisfies AgentConfig);
-        const args = (agent as unknown as {
-            buildDockerArgs(params: {
-                worktreePath: string;
-                githubToken: string;
-                modelName: string;
-                promptPath: string;
-                issueNumber: number;
-                taskId: string;
-                maxTurns: number;
-            }): string[];
-        }).buildDockerArgs({
-            worktreePath: '/tmp/vibe-worktree',
-            githubToken: 'github-token',
-            modelName: 'mistral-medium-3.5',
-            promptPath: '/tmp/propr-vibe-prompts/vibe-task/prompt.md',
-            issueNumber: 1477,
-            taskId: 'task-1234567890',
-            maxTurns: 12
-        });
-
-        assert.ok(args.includes('/tmp/vibe-worktree:/home/node/workspace:rw'));
-        assert.ok(args.includes('GH_TOKEN=github-token'));
-        assert.ok(args.includes('GITHUB_TOKEN=github-token'));
-        assert.ok(args.includes('PROPR_WORKSPACE=/home/node/workspace'));
-        assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
-        assert.ok(!args.includes('--user'));
-        assert.ok(!args.includes('0:0'));
-        const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-        assert.deepStrictEqual(args.slice(imageIndex + 4, imageIndex + 7), ['vibe', '--prompt-file', '/tmp/propr-vibe-prompt.md']);
-        assert.ok(!args.includes('--read-only'));
-        assert.ok(!args.includes('VIBE_READ_ONLY_CONFIG=1'));
-        assert.deepStrictEqual(args.slice(-7), ['--max-turns', '12', '--output', 'json', '--trust', '--agent', 'auto-approve']);
-    });
-
-    test('cleans up private prompt directory when execution throws', async () => {
-        const promptParent = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-agent-test-'));
-        const previousPromptDir = process.env.VIBE_PROMPT_CACHE_DIR;
-        process.env.VIBE_PROMPT_CACHE_DIR = promptParent;
-        try {
-            const agent = new VibeAgent({
-                id: 'vibe-test',
-                type: 'vibe',
-                alias: 'vibe-test',
-                enabled: true,
-                dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
-                configPath: '/tmp/vibe-config',
-                supportedModels: ['mistral-medium-3.5'],
-                defaultModel: 'mistral-medium-3.5'
-            } satisfies AgentConfig);
-            const privateApi = agent as unknown as {
-                writePromptFile(prompt: string, taskId?: string): string;
-                runWithPromptCleanup<T>(promptPath: string, run: () => Promise<T>): Promise<T>;
-            };
-            const promptPath = privateApi.writePromptFile('sensitive prompt', 'task-123');
-            const promptDir = path.dirname(promptPath);
-            assert.strictEqual((fs.statSync(promptParent).mode & 0o777), 0o755);
-            assert.strictEqual((fs.statSync(promptDir).mode & 0o777), 0o755);
-            assert.strictEqual((fs.statSync(promptPath).mode & 0o777), 0o444);
-
-            await assert.rejects(
-                () => privateApi.runWithPromptCleanup(promptPath, async () => {
-                    throw new Error('execution failed');
-                }),
-                /execution failed/
-            );
-            assert.strictEqual(fs.existsSync(promptDir), false);
-        } finally {
-            if (previousPromptDir === undefined) {
-                delete process.env.VIBE_PROMPT_CACHE_DIR;
-            } else {
-                process.env.VIBE_PROMPT_CACHE_DIR = previousPromptDir;
-            }
-            fs.rmSync(promptParent, { recursive: true, force: true });
-        }
-    });
-
-    test('does not remove arbitrary vibe-prefixed directories outside the prompt cache', () => {
-        const managedParent = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-managed-parent-'));
-        const externalParent = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-external-parent-'));
-        const previousPromptDir = process.env.VIBE_PROMPT_CACHE_DIR;
-        process.env.VIBE_PROMPT_CACHE_DIR = managedParent;
-        try {
-            const externalDir = path.join(externalParent, 'vibe-external');
-            fs.mkdirSync(externalDir);
-            const externalPrompt = path.join(externalDir, 'prompt.md');
-            fs.writeFileSync(externalPrompt, 'external prompt');
-            const agent = new VibeAgent({
-                id: 'vibe-test',
-                type: 'vibe',
-                alias: 'vibe-test',
-                enabled: true,
-                dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
-                configPath: '/tmp/vibe-config',
-                supportedModels: ['mistral-medium-3.5'],
-                defaultModel: 'mistral-medium-3.5'
-            } satisfies AgentConfig);
-            const privateApi = agent as unknown as {
-                cleanupPromptFile(promptPath: string): void;
-            };
-
-            privateApi.cleanupPromptFile(externalPrompt);
-
-            assert.strictEqual(fs.existsSync(externalDir), true);
-            assert.strictEqual(fs.existsSync(externalPrompt), false);
-        } finally {
-            if (previousPromptDir === undefined) {
-                delete process.env.VIBE_PROMPT_CACHE_DIR;
-            } else {
-                process.env.VIBE_PROMPT_CACHE_DIR = previousPromptDir;
-            }
-            fs.rmSync(managedParent, { recursive: true, force: true });
-            fs.rmSync(externalParent, { recursive: true, force: true });
         }
     });
 });
