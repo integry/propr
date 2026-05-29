@@ -98,3 +98,17 @@ test('auth redirect allowlist rejects invalid URLs and non-http protocols', asyn
   const protocolResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=ftp%3A%2F%2Fapp.example.com%2Fplans');
   assert.equal(protocolResponse.headers.get('location'), 'https://app.example.com/');
 });
+
+test('auth redirect allowlist ignores malformed additional host entries', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'https://app.example.com';
+  process.env.AUTH_REDIRECT_ALLOWED_HOSTS = 'https://bad host, *.valid.example.com';
+  const app = express();
+  setupAuth(app);
+
+  const malformedResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Fbad%2520host%2Fplans');
+  assert.equal(malformedResponse.headers.get('location'), 'https://app.example.com/');
+
+  const validResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Fpr.valid.example.com%2Fplans');
+  assert.equal(validResponse.headers.get('location'), 'https://pr.valid.example.com/plans');
+});

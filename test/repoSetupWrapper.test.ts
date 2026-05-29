@@ -52,6 +52,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
 
         const imageIndex = wrapped.indexOf('propr/agent-vibe:latest');
         assert.strictEqual(wrapped[imageIndex + 3], '/home/node/vibe-entrypoint.sh');
+        assert.deepStrictEqual(wrapped.slice(imageIndex + 4), ['vibe', '--prompt', 'Analyze the codebase']);
     });
 
     test('throws when the configured docker image cannot be found', () => {

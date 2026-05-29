@@ -27,6 +27,7 @@ interface ParsedVibeOutput {
     model?: string;
     summary?: string;
     error?: string;
+    incomplete?: boolean;
     tokenUsage?: { input_tokens?: number; output_tokens?: number };
 }
 
@@ -165,6 +166,7 @@ export function parseVibeOutput(output: string): ParsedVibeOutput {
         model: modelEvent?.model,
         summary: textEvent ? pickText(textEvent.event) : output.trim() || undefined,
         error,
+        incomplete: textEvent ? !textEvent.isFinal : undefined,
         tokenUsage: usageEvent?.usage || usageEvent?.token_usage
     };
 }

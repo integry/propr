@@ -51,18 +51,62 @@ const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR;
 
 function envFileValue(name) {
     if (!existsSync(ENV_FILE_LOCAL)) return undefined;
-    const prefix = `${name}=`;
     for (const rawLine of readFileSync(ENV_FILE_LOCAL, 'utf8').split(/\r?\n/)) {
-        const line = rawLine.trim();
-        if (!line || line.startsWith('#') || !line.startsWith(prefix)) continue;
-        const value = line.slice(prefix.length).trim();
-        if (!value) return undefined;
-        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-            return value.slice(1, -1);
-        }
-        return value;
+        const parsed = parseEnvAssignment(rawLine);
+        if (parsed?.name === name) return parsed.value || undefined;
     }
     return undefined;
+}
+
+function parseEnvAssignment(rawLine) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) return null;
+    const assignment = line.startsWith('export ') ? line.slice(7).trimStart() : line;
+    const equalsIndex = assignment.indexOf('=');
+    if (equalsIndex <= 0) return null;
+
+    const name = assignment.slice(0, equalsIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return null;
+
+    const valueSource = assignment.slice(equalsIndex + 1).trimStart();
+    return { name, value: expandEnvValue(parseEnvValue(valueSource)) };
+}
+
+function parseEnvValue(valueSource) {
+    if (!valueSource) return '';
+    const quote = valueSource[0];
+    if (quote === '"' || quote === "'") {
+        let value = '';
+        for (let index = 1; index < valueSource.length; index += 1) {
+            const char = valueSource[index];
+            if (char === quote) return quote === '"' ? unescapeDoubleQuotedEnv(value) : value;
+            if (quote === '"' && char === '\\' && index + 1 < valueSource.length) {
+                value += char + valueSource[index + 1];
+                index += 1;
+            } else {
+                value += char;
+            }
+        }
+        return quote === '"' ? unescapeDoubleQuotedEnv(value) : value;
+    }
+
+    return valueSource.replace(/\s+#.*$/, '').trimEnd();
+}
+
+function unescapeDoubleQuotedEnv(value) {
+    return value.replace(/\\([\\nrt"$`])/g, (_match, escaped) => {
+        if (escaped === 'n') return '\n';
+        if (escaped === 'r') return '\r';
+        if (escaped === 't') return '\t';
+        return escaped;
+    });
+}
+
+function expandEnvValue(value) {
+    return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, bare) => {
+        const key = braced || bare;
+        return process.env[key] ?? '';
+    });
 }
 
 const VIBE_PROMPT_CACHE_DIR = process.env.VIBE_PROMPT_CACHE_DIR

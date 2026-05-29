@@ -37,7 +37,7 @@ export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
     claude: '~/.claude',
     codex: '~/.codex',
     gemini: '~/.gemini',
-    vibe: '/root/.vibe'
+    vibe: '~/.vibe'
 };
 
 /**

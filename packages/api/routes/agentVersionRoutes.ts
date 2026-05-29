@@ -17,12 +17,12 @@ import {
     loadAgents
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
+import { AGENT_TYPES } from '@propr/shared';
 
-const VALID_AGENT_TYPES: AgentType[] = ['claude', 'codex', 'gemini', 'vibe'];
 const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
 
 function isValidAgentType(agentType: string): agentType is AgentType {
-    return VALID_AGENT_TYPES.includes(agentType as AgentType);
+    return AGENT_TYPES.includes(agentType as AgentType);
 }
 
 function isValidCliVersionType(versionType: unknown): versionType is CliVersionType {

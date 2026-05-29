@@ -47,6 +47,22 @@ describe('pypiClient', () => {
         ]);
     });
 
+    test('sorts recent versions by parsed upload timestamps', async () => {
+        mockPyPiResponse({
+            info: { version: '2.12.1' },
+            releases: {
+                '2.12.1': [{ upload_time_iso_8601: '2026-01-03T00:00:00.000000+00:00' }],
+                '2.12.0': [{ upload_time_iso_8601: 'not-a-date' }],
+                '2.11.0': [{ upload_time_iso_8601: '2026-01-02T19:00:00.000000-05:00' }]
+            }
+        });
+
+        assert.deepStrictEqual(await getRecentPyPiVersions('mistral-vibe-date-sort-test', 10), [
+            { version: '2.12.1', publishedAt: '2026-01-03T00:00:00.000000+00:00' },
+            { version: '2.11.0', publishedAt: '2026-01-02T19:00:00.000000-05:00' }
+        ]);
+    });
+
     test('rejects missing and fully yanked specific versions', async () => {
         mockPyPiResponse({
             info: { version: '2.12.1' },
@@ -97,6 +113,13 @@ describe('pypiClient', () => {
         await assert.rejects(
             () => resolveVersion('vibe', 'custom', '   '),
             /Version spec required/
+        );
+    });
+
+    test('rejects custom Vibe versions that are not safe semantic versions', async () => {
+        await assert.rejects(
+            () => resolveVersion('vibe', 'custom', '2.12.1:bad tag'),
+            /Invalid custom version/
         );
     });
 

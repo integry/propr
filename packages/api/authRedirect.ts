@@ -1,15 +1,34 @@
 import type { AllowedRedirectHost } from './authTypes.js';
 
+function isValidHostname(hostname: string): boolean {
+    if (!hostname || hostname.length > 253 || hostname.includes('..')) return false;
+    if (hostname === 'localhost') return true;
+    return hostname
+        .split('.')
+        .every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+}
+
+function parseHostname(value: string): string | null {
+    try {
+        const hostname = new URL(value).hostname.replace(/^\./, '');
+        return isValidHostname(hostname) ? hostname : null;
+    } catch {
+        try {
+            const hostname = new URL(`https://${value}`).hostname.replace(/^\./, '');
+            return isValidHostname(hostname) ? hostname : null;
+        } catch {
+            return null;
+        }
+    }
+}
+
 function parseAllowedRedirectHost(value: string, includeSubdomainsByDefault = false): AllowedRedirectHost | null {
     const trimmed = value.trim();
     if (!trimmed) return null;
     const includeSubdomains = includeSubdomainsByDefault || trimmed.startsWith('.') || trimmed.startsWith('*.') || trimmed.startsWith('https://*.') || trimmed.startsWith('http://*.');
     const normalized = trimmed.replace(/^(https?:\/\/)\*\./, '$1').replace(/^\*\./, '');
-    try {
-        return { host: new URL(normalized).hostname.replace(/^\./, ''), includeSubdomains };
-    } catch {
-        return { host: normalized.replace(/^\./, ''), includeSubdomains };
-    }
+    const host = parseHostname(normalized);
+    return host ? { host, includeSubdomains } : null;
 }
 
 function getAllowedRedirectHosts(): AllowedRedirectHost[] {

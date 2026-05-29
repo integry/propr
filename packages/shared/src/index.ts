@@ -1,6 +1,7 @@
 // Export all model definitions
 export {
   type AgentType,
+  AGENT_TYPES,
   type ModelInfo,
   CLAUDE_MODELS,
   CODEX_MODELS,

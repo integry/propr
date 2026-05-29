@@ -28,6 +28,18 @@ import {
 } from './pypiClient.js';
 
 const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
+const PYPI_CUSTOM_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-._][0-9A-Za-z]+)*$/;
+
+function validatePyPiCustomVersion(versionSpec: string, packageName: string): string {
+    const trimmedVersionSpec = versionSpec.trim();
+    if (!trimmedVersionSpec) {
+        throw new Error('Version spec required');
+    }
+    if (!PYPI_CUSTOM_VERSION_PATTERN.test(trimmedVersionSpec)) {
+        throw new Error(`Invalid custom version '${versionSpec}' for PyPI-backed package ${packageName}`);
+    }
+    return trimmedVersionSpec;
+}
 
 /**
  * Resolves a version specification to an actual semver version.
@@ -65,13 +77,7 @@ export async function resolveVersion(
                 if (!versionSpec) {
                     throw new Error('Version spec required');
                 }
-                {
-                    const trimmedVersionSpec = versionSpec.trim();
-                    if (!trimmedVersionSpec) {
-                        throw new Error('Version spec required');
-                    }
-                    return trimmedVersionSpec;
-                }
+                return validatePyPiCustomVersion(versionSpec, packageName);
             default:
                 logger.warn({ agentType, versionType }, 'Unknown version type, using default');
                 return AGENT_DEFAULT_VERSIONS[agentType];

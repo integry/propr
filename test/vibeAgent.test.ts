@@ -124,6 +124,7 @@ describe('parseVibeOutput', () => {
         const parsed = parseVibeOutput(output);
         assert.strictEqual(parsed.summary, 'Successful streamed response');
         assert.strictEqual(parsed.error, undefined);
+        assert.strictEqual(parsed.incomplete, true);
     });
 });
 
@@ -172,6 +173,7 @@ describe('VibeAgent Docker args', () => {
         assert.ok(args.includes('PROPR_AGENT_TYPE=vibe'));
         assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
         assert.ok(args.includes('VIBE_ACTIVE_MODEL=mistral-medium-3.5'));
+        assert.ok(args.includes('VIBE_READ_ONLY_CONFIG=1'));
         assert.ok(args.includes('/tmp/vibe-worktree:/home/node/workspace:ro'));
         assert.ok(args.includes('--read-only'));
         assert.ok(args.includes('/tmp:rw,nosuid,size=256m'));
@@ -183,6 +185,7 @@ describe('VibeAgent Docker args', () => {
 
         const imageIndex = args.indexOf('propr-vibe:2.12.1-abcdef');
         assert.strictEqual(args[imageIndex + 3], '/home/node/vibe-entrypoint.sh');
+        assert.deepStrictEqual(args.slice(imageIndex + 4, imageIndex + 7), ['vibe', '--prompt', 'Read the full task prompt from @/tmp/propr-vibe-prompt.md and follow it exactly.']);
         assert.deepStrictEqual(args.slice(-4), ['--max-turns', '5', '--output', 'json']);
     });
 
@@ -331,6 +334,50 @@ describe('VibeAgent Docker args', () => {
         }
     });
 
+    test('trims configured Mistral API key and ignores whitespace-only values', () => {
+        const emptyConfigPath = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-vibe-config-'));
+        try {
+            const agent = new VibeAgent({
+                id: 'vibe-test',
+                type: 'vibe',
+                alias: 'vibe-test',
+                enabled: true,
+                dockerImage: 'propr-vibe:2.12.1-abcdef',
+                configPath: emptyConfigPath,
+                supportedModels: ['mistral-medium-3.5'],
+                defaultModel: 'mistral-medium-3.5',
+                envVars: {
+                    MISTRAL_API_KEY: '   ',
+                    EXTRA_VIBE_ENV: 'extra-value'
+                }
+            } satisfies AgentConfig);
+            const args = (agent as unknown as {
+                buildDockerArgs(params: {
+                    worktreePath: string;
+                    githubToken: string;
+                    modelName: string;
+                    promptPath: string;
+                    issueNumber: number;
+                    taskId: string;
+                    maxTurns: number;
+                }): string[];
+            }).buildDockerArgs({
+                worktreePath: '/tmp/vibe-worktree',
+                githubToken: 'github-token',
+                modelName: 'mistral-medium-3.5',
+                promptPath: '/tmp/propr-vibe-prompts/vibe-task/prompt.md',
+                issueNumber: 1477,
+                taskId: 'task-1234567890',
+                maxTurns: 12
+            });
+
+            assert.strictEqual(args.filter(arg => arg.startsWith('MISTRAL_API_KEY=')).length, 0);
+            assert.ok(args.includes(`${emptyConfigPath}:/home/node/.vibe:ro`));
+        } finally {
+            fs.rmSync(emptyConfigPath, { recursive: true, force: true });
+        }
+    });
+
     test('uses writable workspace and auto-approve agent for execution mode', () => {
         const agent = new VibeAgent({
             id: 'vibe-test',
@@ -367,7 +414,10 @@ describe('VibeAgent Docker args', () => {
         assert.ok(args.includes('GITHUB_TOKEN=github-token'));
         assert.ok(args.includes('PROPR_WORKSPACE=/home/node/workspace'));
         assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
+        const imageIndex = args.indexOf('propr-vibe:2.12.1-abcdef');
+        assert.deepStrictEqual(args.slice(imageIndex + 4, imageIndex + 7), ['vibe', '--prompt', 'Read the full task prompt from @/tmp/propr-vibe-prompt.md and follow it exactly.']);
         assert.ok(!args.includes('--read-only'));
+        assert.ok(!args.includes('VIBE_READ_ONLY_CONFIG=1'));
         assert.deepStrictEqual(args.slice(-7), ['--max-turns', '12', '--output', 'json', '--trust', '--agent', 'auto-approve']);
     });
 

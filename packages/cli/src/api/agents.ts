@@ -37,7 +37,7 @@ export interface AgentConfig {
   enabled: boolean;
 
   /**
-   * Docker image for the agent (e.g., 'claude-code-processor:latest').
+   * Docker image for the agent (e.g., 'propr-claude:latest').
    */
   dockerImage: string;
 
@@ -268,13 +268,13 @@ export async function deleteAgent(
 function getDefaultDockerImage(type: AgentType): string {
   switch (type) {
     case "claude":
-      return "claude-code-processor:latest";
+      return "propr-claude:latest";
     case "codex":
-      return "codex-code-processor:latest";
+      return "propr-codex:latest";
     case "gemini":
-      return "gemini-code-processor:latest";
+      return "propr-gemini:latest";
     case "vibe":
-      return "propr/agent-vibe:latest";
+      return "propr-vibe:latest";
     default:
       return `${type}-code-processor:latest`;
   }
@@ -289,14 +289,14 @@ function getDefaultDockerImage(type: AgentType): string {
 function getDefaultConfigPath(type: AgentType): string {
   switch (type) {
     case "claude":
-      return "/root/.claude";
+      return "~/.claude";
     case "codex":
-      return "/root/.codex";
+      return "~/.codex";
     case "gemini":
-      return "/root/.gemini";
+      return "~/.gemini";
     case "vibe":
-      return "/root/.vibe";
+      return "~/.vibe";
     default:
-      return `/root/.${type}`;
+      return `~/.${type}`;
   }
 }

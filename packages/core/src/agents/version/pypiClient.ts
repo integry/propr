@@ -57,8 +57,12 @@ function getActiveFiles(files: Array<{ upload_time_iso_8601?: string; yanked?: b
 function getLatestUploadTime(files: Array<{ upload_time_iso_8601?: string; yanked?: boolean }>): string {
     return files.reduce((latest, file) => {
         const uploadTime = file.upload_time_iso_8601 || '';
-        return uploadTime > latest ? uploadTime : latest;
-    }, '');
+        const timestamp = Date.parse(uploadTime);
+        if (!uploadTime || Number.isNaN(timestamp)) {
+            return latest;
+        }
+        return timestamp > latest.timestamp ? { value: uploadTime, timestamp } : latest;
+    }, { value: '', timestamp: Number.NEGATIVE_INFINITY }).value;
 }
 
 export async function getRecentPyPiVersions(
@@ -69,7 +73,7 @@ export async function getRecentPyPiVersions(
     return Object.entries(info.releases)
         .map(([version, files]) => ({ version, publishedAt: getLatestUploadTime(getActiveFiles(files)) }))
         .filter(release => release.publishedAt)
-        .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+        .sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))
         .slice(0, limit);
 }
 

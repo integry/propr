@@ -9,12 +9,18 @@ echo "Skipping firewall setup (would require --privileged Docker flag)" >&2
 
 SOURCE_VIBE_HOME="${VIBE_SOURCE_HOME:-/home/node/.vibe}"
 RUNTIME_VIBE_HOME="${VIBE_RUNTIME_HOME:-/tmp/propr-vibe-home}"
+VIBE_READ_ONLY_CONFIG="${VIBE_READ_ONLY_CONFIG:-0}"
 export VIBE_HOME="$RUNTIME_VIBE_HOME"
 
 copy_vibe_home() {
     mkdir -p "$RUNTIME_VIBE_HOME"
     if [ -d "$SOURCE_VIBE_HOME" ] && [ "$SOURCE_VIBE_HOME" != "$RUNTIME_VIBE_HOME" ]; then
-        cp -a "$SOURCE_VIBE_HOME"/. "$RUNTIME_VIBE_HOME"/ 2>/dev/null || true
+        if [ "$VIBE_READ_ONLY_CONFIG" = "1" ] && [ -f "$SOURCE_VIBE_HOME/config.toml" ]; then
+            ln -sf "$SOURCE_VIBE_HOME/config.toml" "$RUNTIME_VIBE_HOME/config.toml"
+            echo "Linked read-only Vibe config for analysis mode" >&2
+        elif [ "$VIBE_READ_ONLY_CONFIG" != "1" ]; then
+            cp -a "$SOURCE_VIBE_HOME"/. "$RUNTIME_VIBE_HOME"/ 2>/dev/null || true
+        fi
     fi
     chown -R node:node "$RUNTIME_VIBE_HOME" 2>/dev/null || true
     chmod -R u+rw "$RUNTIME_VIBE_HOME" 2>/dev/null || true
@@ -22,6 +28,11 @@ copy_vibe_home() {
 
 configure_active_model() {
     if [ -z "${VIBE_ACTIVE_MODEL:-}" ]; then
+        return
+    fi
+
+    if [ "$VIBE_READ_ONLY_CONFIG" = "1" ] && [ -f "$RUNTIME_VIBE_HOME/config.toml" ]; then
+        echo "Skipping Vibe active model config mutation in read-only analysis mode" >&2
         return
     fi
 

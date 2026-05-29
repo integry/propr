@@ -3,6 +3,7 @@
 // Both backend (packages/core) and frontend (propr-ui) import from this package
 
 export type AgentType = 'claude' | 'codex' | 'gemini' | 'vibe';
+export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'gemini', 'vibe'];
 
 export interface ModelInfo {
   id: string;
@@ -89,7 +90,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
   defaultCliVersion: string;
 }> = {
   claude: {
-    dockerImage: 'claude-code-processor:latest',
+    dockerImage: 'propr-claude:latest',
     configPath: '~/.claude',
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
@@ -97,7 +98,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '2.1.85'
   },
   codex: {
-    dockerImage: 'codex-cli:latest',
+    dockerImage: 'propr-codex:latest',
     configPath: '~/.codex',
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
@@ -105,7 +106,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '0.133.0'
   },
   gemini: {
-    dockerImage: 'gemini-cli:latest',
+    dockerImage: 'propr-gemini:latest',
     configPath: '~/.gemini',
     defaultModels: GEMINI_MODELS.map(m => m.id),
     defaultAlias: 'gemini',
@@ -113,8 +114,8 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '0.35.1'
   },
   vibe: {
-    dockerImage: 'propr/agent-vibe:latest',
-    configPath: '/root/.vibe',
+    dockerImage: 'propr-vibe:latest',
+    configPath: '~/.vibe',
     defaultModels: VIBE_MODELS.map(m => m.id),
     defaultAlias: 'vibe',
     npmPackage: 'mistral-vibe',

@@ -14,6 +14,7 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import { parseVibeOutput } from './utils/vibeOutputParser.js';
+import { getAnalysisSandboxArgs, getParsedVibeError, isSuccessfulVibeResult, sanitizeDockerNamePart } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
@@ -98,10 +99,12 @@ export class VibeAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseVibeOutput(result.stdout);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
+            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
+            const parsedError = getParsedVibeError(parsedOutput);
             if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);
 
             const response: AgentExecutionResult = {
-                success: result.exitCode === 0 && !parsedOutput.error,
+                success,
                 executionTimeMs,
                 logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
                 exitCode: result.exitCode,
@@ -112,7 +115,7 @@ export class VibeAgent implements Agent {
                 summary: parsedOutput.summary,
                 prompt,
                 sessionId: parsedOutput.sessionId,
-                error: parsedOutput.error,
+                error: parsedError,
                 tokenUsage: parsedOutput.tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
             };
@@ -124,7 +127,7 @@ export class VibeAgent implements Agent {
                 executionTimeMs,
                 success: response.success,
                 tokenUsage: parsedOutput.tokenUsage,
-                error: response.success ? undefined : (parsedOutput.error || result.stderr || 'Execution failed'),
+                error: response.success ? undefined : (response.error || result.stderr || 'Execution failed'),
                 sessionId: parsedOutput.sessionId,
                 draftId: taskId,
                 repository,
@@ -139,7 +142,7 @@ export class VibeAgent implements Agent {
                 logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Vibe agent execution succeeded');
                 verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
             } else {
-                logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias, error: parsedOutput.error }, 'Vibe agent execution failed');
+                logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias, error: response.error }, 'Vibe agent execution failed');
             }
 
             return response;
@@ -194,8 +197,9 @@ export class VibeAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseVibeOutput(result.stdout);
             const analysisText = (parsedOutput.summary || '').trim();
+            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
 
-            if (result.exitCode === 0 && !parsedOutput.error && analysisText) {
+            if (success && analysisText) {
                 const usage = this.formatUsageMetrics(usageMetrics);
                 await persistLlmLog(createLlmLogFromAnalysis({
                     executionType: (executionType || 'other') as ExecutionType,
@@ -224,7 +228,7 @@ export class VibeAgent implements Agent {
                 };
             }
 
-            const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
+            const errorMsg = getParsedVibeError(parsedOutput) || result.stderr || 'No result returned';
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}` };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
@@ -348,18 +352,19 @@ export class VibeAgent implements Agent {
         }
     }
 
-    private getAnalysisSandboxArgs(mode: VibeDockerArgsParams['mode']): string[] {
-        if (mode !== 'analysis') {
-            return [];
+    private getMistralApiKey(): string | undefined {
+        const processApiKey = process.env.MISTRAL_API_KEY?.trim();
+        if (processApiKey) {
+            return processApiKey;
         }
-
-        return ['--read-only', '--tmpfs', '/tmp:rw,nosuid,size=256m'];
+        const configuredApiKey = this.config.envVars?.MISTRAL_API_KEY?.trim();
+        return configuredApiKey || undefined;
     }
 
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
         const { worktreePath, githubToken, modelName, promptPath, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute' } = params;
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
-        const mistralApiKey = process.env.MISTRAL_API_KEY || this.config.envVars?.MISTRAL_API_KEY;
+        const mistralApiKey = this.getMistralApiKey();
         const shouldMountConfig = this.canMountConfigPath(configPath)
             && (!mistralApiKey || this.hasVibeConfigFile(configPath));
         const configMountArgs = shouldMountConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
@@ -380,14 +385,17 @@ export class VibeAgent implements Agent {
             envVars.push('-e', `VIBE_ACTIVE_MODEL=${cleanModelName}`);
         }
         envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
+        if (mode === 'analysis') {
+            envVars.push('-e', 'VIBE_READ_ONLY_CONFIG=1');
+        }
 
         const timestamp = Date.now().toString(36);
-        const shortTaskId = this.sanitizeDockerNamePart(taskId?.slice(-8), timestamp);
-        const taskType = this.sanitizeDockerNamePart(executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), 'task');
-        const alias = this.sanitizeDockerNamePart(this.config.alias, 'vibe');
+        const shortTaskId = sanitizeDockerNamePart(taskId?.slice(-8), timestamp);
+        const taskType = sanitizeDockerNamePart(executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), 'task');
+        const alias = sanitizeDockerNamePart(this.config.alias, 'vibe');
         const containerName = `${alias}-${taskType}-${shortTaskId}`.slice(0, 128);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
-        const analysisSandboxArgs = this.getAnalysisSandboxArgs(mode);
+        const analysisSandboxArgs = getAnalysisSandboxArgs(mode);
         const promptInstruction = `Read the full task prompt from @${CONTAINER_PROMPT_PATH} and follow it exactly.`;
         const agentArgs = mode === 'analysis' ? [] : ['--trust', '--agent', 'auto-approve'];
         const dockerArgs: string[] = [
@@ -417,11 +425,6 @@ export class VibeAgent implements Agent {
             workspaceMountMode
         }, 'Docker args built for Vibe agent');
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'vibe');
-    }
-
-    private sanitizeDockerNamePart(value: string | undefined, fallback: string): string {
-        const sanitized = value?.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').replace(/[^a-zA-Z0-9]+$/, '');
-        return sanitized || fallback;
     }
 
     private formatUsageMetrics(usageMetrics: UsageTrackingMetrics | null | undefined) {
