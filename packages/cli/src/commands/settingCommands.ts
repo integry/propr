@@ -39,15 +39,21 @@ function formatValue(value: unknown): string {
  * Gets a human-readable description for a setting key.
  */
 function getSettingDescription(key: SettingKey): string {
-  const descriptions: Partial<Record<SettingKey, string>> = {
+  const descriptions: Record<SettingKey, string> = {
+    default_agent_alias: "Alias of the default implementation agent",
     worker_concurrency: "Number of concurrent workers for processing tasks",
     github_user_whitelist: "GitHub usernames allowed to use the system",
     analysis_model_fast: "Model for fast analysis operations",
     planner_context_model: "Model for planner context generation",
     planner_generation_model: "Model for planner generation",
     auto_followup_score_threshold: "Score threshold (0-9) for auto-followup",
+    auto_resolve_merge_conflicts: "Automatically resolve merge conflicts",
+    pr_review_model: "Model for full PR reviews",
+    ultrafix_rating_goal: "Target quality rating for ultrafix cycles",
+    ultrafix_max_cycles: "Maximum number of ultrafix cycles",
+    ultrafix_pause_seconds: "Pause duration between ultrafix cycles",
   };
-  return descriptions[key] || key;
+  return descriptions[key];
 }
 
 /**

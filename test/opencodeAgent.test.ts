@@ -1,10 +1,11 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 
-after(() => {
-    process.exit(0);
+after(async () => {
+    await closeConnection();
 });
 
 function createAgent(): OpenCodeAgent {
@@ -61,6 +62,40 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(parsed.summary, 'first second');
         assert.strictEqual(parsed.modelUsed, 'opencode-go/kimi-k2.6');
     });
+
+    test('does not duplicate text when message and event-level content match', () => {
+        const parsed = parseOutput(createAgent(), [
+            JSON.stringify({ type: 'message', content: 'duplicate', message: { role: 'assistant', content: 'duplicate' } })
+        ].join('\n'));
+
+        assert.strictEqual(parsed.summary, 'duplicate');
+    });
+
+    test('recognizes mixed-case error event types and error payloads', () => {
+        const parsed = parseOutput(createAgent(), [
+            JSON.stringify({ type: 'Message', message: { role: 'assistant', model: 'initial/model', content: 'partial' } }),
+            JSON.stringify({ type: 'ERROR', model: 'final/model', error: { data: { message: 'rate limited' } } })
+        ].join('\n'));
+
+        assert.strictEqual(parsed.summary, 'partial');
+        assert.strictEqual(parsed.error, 'rate limited');
+        assert.strictEqual(parsed.modelUsed, 'final/model');
+    });
+
+    test('uses non-json stdout as fallback text', () => {
+        const parsed = parseOutput(createAgent(), 'plain response\n');
+
+        assert.strictEqual(parsed.summary, 'plain response');
+    });
+
+    test('handles empty output', () => {
+        const parsed = parseOutput(createAgent(), '');
+
+        assert.strictEqual(parsed.summary, undefined);
+        assert.strictEqual(parsed.modelUsed, undefined);
+        assert.strictEqual(parsed.sessionId, undefined);
+        assert.strictEqual(parsed.error, undefined);
+    });
 });
 
 describe('OpenCodeAgent Docker args', () => {
@@ -73,5 +108,6 @@ describe('OpenCodeAgent Docker args', () => {
         assert.strictEqual(qualifiedArgs[qualifiedArgs.indexOf('--model') + 1], 'provider:model');
         assert.ok(routedArgs.includes('--name'));
         assert.match(routedArgs[routedArgs.indexOf('--name') + 1], /^open-code-test-issue-42-12345678$/);
+        assert.ok(routedArgs.includes('--dangerously-skip-permissions'));
     });
 });

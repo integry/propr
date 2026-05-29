@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
+import { AGENT_IMAGE_NAMES } from '../../agents/constants.js';
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
 
@@ -431,14 +432,7 @@ export async function ensureVersionedAgentImage(
     const dockerfile = path.join(basePath, dockerfileName);
 
     // Generate image tag
-    const imageNames: Record<string, string> = {
-        claude: 'propr-claude',
-        codex: 'propr-codex',
-        gemini: 'propr-gemini',
-        opencode: 'propr-opencode'
-    };
-
-    const imageName = imageNames[agentType];
+    const imageName = AGENT_IMAGE_NAMES[agentType as keyof typeof AGENT_IMAGE_NAMES];
     if (!imageName) {
         return {
             success: false,

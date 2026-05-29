@@ -195,7 +195,7 @@ export {
     runLightweightLLMAnalysis,
     UsageLimitError
 } from './claude/claudeService.js';
-export { OpenCodeAgent } from './agents/impl/OpenCodeAgent.js';
+export { AGENT_TYPES, AGENT_IMAGE_NAMES, DEFAULT_AGENT_DOCKER_IMAGES } from './agents/constants.js';
 export type {
     ExecuteClaudeCodeOptions,
     ClaudeCodeResponse,

@@ -10,7 +10,8 @@ import {
     computeContentHash,
     generateImageTag,
     AGENT_DEFAULT_VERSIONS,
-    AGENT_DISPLAY_ORDER,
+    AGENT_IMAGE_NAMES,
+    AGENT_TYPES,
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
     listAgentImages,
@@ -18,7 +19,7 @@ import {
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
-const VALID_AGENT_TYPES: readonly string[] = AGENT_DISPLAY_ORDER;
+const VALID_AGENT_TYPES: readonly string[] = AGENT_TYPES;
 
 /**
  * Creates the agent version management routes.
@@ -272,11 +273,5 @@ export function createAgentVersionRoutes() {
  * Helper to get the Docker image name for an agent type.
  */
 function getImageName(agentType: string): string {
-    const imageNames: Record<string, string> = {
-        claude: 'propr-claude',
-        codex: 'propr-codex',
-        gemini: 'propr-gemini',
-        opencode: 'propr-opencode'
-    };
-    return imageNames[agentType] || agentType;
+    return AGENT_IMAGE_NAMES[agentType as AgentType] || agentType;
 }

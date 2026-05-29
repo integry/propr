@@ -1,12 +1,6 @@
 import logger from '../../utils/logger.js';
+import { AGENT_IMAGE_NAMES } from '../../agents/constants.js';
 import { executeDockerCommand } from './dockerExecutor.js';
-
-const AGENT_IMAGE_NAMES: Record<string, string> = {
-    claude: 'propr-claude',
-    codex: 'propr-codex',
-    gemini: 'propr-gemini',
-    opencode: 'propr-opencode'
-};
 
 /**
  * Lists all Docker images for a specific agent type.
@@ -15,7 +9,7 @@ const AGENT_IMAGE_NAMES: Record<string, string> = {
  * @returns Array of image tags (e.g., ['2.1.77-a3f2b1', '2.1.76-b4c3d2'])
  */
 export async function listAgentImages(agentType: string): Promise<string[]> {
-    const imageName = AGENT_IMAGE_NAMES[agentType];
+    const imageName = AGENT_IMAGE_NAMES[agentType as keyof typeof AGENT_IMAGE_NAMES];
     if (!imageName) {
         return [];
     }
@@ -49,7 +43,7 @@ export async function cleanupUnusedAgentImages(
     agentType: string,
     versionsInUse?: Set<string>
 ): Promise<number> {
-    const imageName = AGENT_IMAGE_NAMES[agentType];
+    const imageName = AGENT_IMAGE_NAMES[agentType as keyof typeof AGENT_IMAGE_NAMES];
     if (!imageName) {
         return 0;
     }

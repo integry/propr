@@ -268,15 +268,15 @@ export async function deleteAgent(
 function getDefaultDockerImage(type: AgentType): string {
   switch (type) {
     case "claude":
-      return "claude-code-processor:latest";
+      return "propr-claude:latest";
     case "codex":
-      return "codex-code-processor:latest";
+      return "propr-codex:latest";
     case "gemini":
-      return "gemini-code-processor:latest";
+      return "propr-gemini:latest";
     case "opencode":
       return "propr-opencode:latest";
     default:
-      return `${type}-code-processor:latest`;
+      return `propr-${type}:latest`;
   }
 }
 

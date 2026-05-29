@@ -6,7 +6,7 @@
 ARG BASE_TAG
 FROM propr/agent-base:${BASE_TAG}
 
-ARG CLI_VERSION=1.15.12
+ARG CLI_VERSION=latest
 
 USER root
 RUN apk add --no-cache su-exec \
@@ -21,8 +21,10 @@ RUN git config --global user.name "ProPR OpenCode Bot" \
 
 COPY --chown=node:node scripts/opencode-entrypoint.sh /home/node/opencode-entrypoint.sh
 COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
+COPY --chown=node:node scripts/init-firewall.sh /usr/local/bin/init-firewall
+COPY --chown=node:node scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
 USER root
-RUN chmod +x /home/node/opencode-entrypoint.sh /usr/local/bin/opencode-run
+RUN chmod +x /home/node/opencode-entrypoint.sh /usr/local/bin/opencode-run /usr/local/bin/init-firewall /usr/local/bin/gh-wrapper
 USER node
 
 ENTRYPOINT ["/home/node/opencode-entrypoint.sh"]

@@ -115,7 +115,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
   defaultCliVersion: string;
 }> = {
   claude: {
-    dockerImage: 'claude-code-processor:latest',
+    dockerImage: 'propr-claude:latest',
     configPath: '~/.claude',
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
@@ -123,7 +123,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '2.1.85'
   },
   codex: {
-    dockerImage: 'codex-cli:latest',
+    dockerImage: 'propr-codex:latest',
     configPath: '~/.codex',
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
@@ -131,7 +131,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '0.133.0'
   },
   gemini: {
-    dockerImage: 'gemini-cli:latest',
+    dockerImage: 'propr-gemini:latest',
     configPath: '~/.gemini',
     defaultModels: GEMINI_MODELS.map(m => m.id),
     defaultAlias: 'gemini',
