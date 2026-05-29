@@ -6,18 +6,26 @@ import { createClient, type RedisClientType } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 
-interface GitHubUser {
-    id: string;
-    login?: string;
-    username: string;
-    displayName: string;
-    email: string | null;
-    avatarUrl: string | null;
-    accessToken?: string;
-    refreshToken?: string;
-    tokenExpiresAt?: number;
-    githubAuthInvalid?: boolean;
+declare global {
+    // eslint-disable-next-line @typescript-eslint/no-namespace
+    namespace Express {
+        interface User {
+            id: string;
+            login?: string;
+            username: string;
+            displayName: string;
+            email: string | null;
+            avatarUrl: string | null;
+            accessToken?: string;
+            refreshToken?: string;
+            tokenExpiresAt?: number;
+            githubAuthInvalid?: boolean;
+        }
+    }
 }
+
+type GitHubUser = Express.User;
+
 interface AllowedRedirectHost {
     host: string;
     includeSubdomains: boolean;
@@ -64,24 +72,6 @@ function isAllowedRedirectHost(hostname: string): boolean {
     return getAllowedRedirectHosts().some(({ host, includeSubdomains }) =>
         hostname === host || (includeSubdomains && hostname.endsWith(`.${host}`))
     );
-}
-
-declare global {
-    // eslint-disable-next-line @typescript-eslint/no-namespace
-    namespace Express {
-        interface User {
-            id: string;
-            login?: string;
-            username: string;
-            displayName: string;
-            email: string | null;
-            avatarUrl: string | null;
-            accessToken?: string;
-            refreshToken?: string;
-            tokenExpiresAt?: number;
-            githubAuthInvalid?: boolean;
-        }
-    }
 }
 
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
