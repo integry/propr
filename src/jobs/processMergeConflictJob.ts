@@ -33,9 +33,9 @@ import {
 import { generateSummaryTitle } from './prCommentAgentUtils.js';
 import {
     buildDeterministicPrTaskSubtitle,
+    getConflictDiffForTitle,
     buildPrTaskTitle,
     buildPrTaskTitleContext,
-    filterDiffToFiles,
 } from './prTaskTitleHelpers.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
@@ -48,23 +48,6 @@ const redisClient = new Redis({
 });
 
 interface GitHubToken { token: string }
-
-async function getConflictDiffForTitle(worktreePath: string, conflictedFiles?: string[]): Promise<string> {
-    if (!conflictedFiles || conflictedFiles.length === 0) return '';
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
-    try {
-        const { stdout } = await execFileAsync('git', ['diff', '--cc', '--', ...conflictedFiles], {
-            cwd: worktreePath,
-            encoding: 'utf8',
-            maxBuffer: 2 * 1024 * 1024,
-        });
-        return filterDiffToFiles(String(stdout), conflictedFiles);
-    } catch {
-        return '';
-    }
-}
 
 /**
  * Resolves the default agent and model from settings, with fallback to registry default.

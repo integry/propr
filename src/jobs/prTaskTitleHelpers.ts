@@ -236,3 +236,20 @@ export function filterDiffToFiles(diff: string, filePaths: string[]): string {
     if (current.length > 0 && includeCurrent) blocks.push(current.join('\n'));
     return blocks.join('\n');
 }
+
+export async function getConflictDiffForTitle(worktreePath: string, conflictedFiles?: string[]): Promise<string> {
+    if (!conflictedFiles || conflictedFiles.length === 0) return '';
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+    try {
+        const { stdout } = await execFileAsync('git', ['diff', '--cc', '--', ...conflictedFiles], {
+            cwd: worktreePath,
+            encoding: 'utf8',
+            maxBuffer: 2 * 1024 * 1024,
+        });
+        return filterDiffToFiles(String(stdout), conflictedFiles);
+    } catch {
+        return '';
+    }
+}

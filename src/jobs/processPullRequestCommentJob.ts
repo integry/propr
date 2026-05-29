@@ -5,7 +5,7 @@ import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
-import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitChanges, pushBranch } from '@propr/core';
+import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
 import { createLogFiles } from '@propr/core';
@@ -14,23 +14,24 @@ import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, db, NoDefaultModelConfiguredError } from '@propr/core';
+import { getDefaultModel, NoDefaultModelConfiguredError } from '@propr/core';
 import { loadPrimaryProcessingLabels } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
-    buildCommentHistory, updateTaskTitleForPR, buildCompletionComment
+    buildCommentHistory, updateTaskTitleForPR
 } from './prCommentJobHelpers.js';
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
-    buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
+    buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
     handleJobError, cleanupJob, toClaudeResult
 } from './prCommentJobUtils.js';
 import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
-import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
+import { gatherUnprocessedReviewComments } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
-import { handleUltrafixContinuation, resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
+import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
+import { handlePostExecution } from './prCommentPostExecution.js';
 import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
@@ -205,15 +206,6 @@ function checkTerminalStateAfterExecution(currentState: { state: string } | null
     }
 }
 
-interface UndoContextParams {
-    commitResult: Awaited<ReturnType<typeof commitChanges>>;
-    unprocessedComments: UnprocessedComment[];
-    repoOwner: string;
-    repoName: string;
-    pullRequestNumber: number;
-    branchName: string;
-}
-
 function getWebUiUrl(): string {
     return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
 }
@@ -226,87 +218,6 @@ function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: 
         ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id) + '✓').join(', ')}_`
         : '';
     return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}`;
-}
-
-interface PostExecutionParams {
-    state: ProcessingState;
-    job: Job<CommentJobData>;
-    taskId: string;
-    stateManager: WorkerStateManager;
-    context: PRJobContext;
-    unprocessedReviewComments: AIReviewComment[];
-    llm: string | null | undefined;
-}
-
-async function commitAndPush(
-    state: ProcessingState,
-    issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number },
-    llm: string | null | undefined
-) {
-    const changesSummary = state.claudeResult!.summary || state.claudeResult!.finalResult?.result || '';
-    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: issueRef.pullRequestNumber, claudeResult: state.claudeResult!, llm, authorsText: state.authorsText });
-    const commitResult = await commitChanges(state.worktreeInfo!.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: issueRef.pullRequestNumber, issueTitle: 'Follow-up changes' });
-
-    if (commitResult) {
-        const repoUrl = getRepoUrl({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
-        const githubToken = await state.octokit!.auth({ type: "installation" }) as GitHubToken;
-        await pushBranch(state.worktreeInfo!.worktreePath, state.worktreeInfo!.branchName, { repoUrl, authToken: githubToken.token });
-    }
-
-    return { commitResult, changesSummary, commitMessage };
-}
-
-async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string }> {
-    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm } = params;
-    const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
-
-    if (!state.claudeResult!.success) throw new Error(`Agent execution failed: ${state.claudeResult!.error || 'Unknown error'}`);
-
-    const { commitResult, changesSummary, commitMessage } = await commitAndPush(state, { repoOwner, repoName, pullRequestNumber }, llm);
-
-    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo!.branchName });
-    const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
-    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult!);
-    const completionComment = await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
-    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
-
-    if (unprocessedReviewComments.length > 0) {
-        await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger });
-    }
-
-    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
-
-    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
-        historyMetadata: {
-            commandMode: job.data.commandMode || 'default',
-            githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
-            ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
-            ...ultrafixHistoryMeta,
-        }
-    });
-
-    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
-    return { commitHash: commitResult?.commitHash };
-}
-
-async function persistCommitHash(taskId: string, commitHash: string | undefined, correlatedLogger: Logger): Promise<void> {
-    if (!commitHash) return;
-    try {
-        await db('tasks')
-            .where({ task_id: taskId })
-            .update({ commit_hash: commitHash });
-        correlatedLogger.info({ taskId, commitHash }, 'Saved commit hash to tasks table');
-    } catch (dbError) {
-        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
-    }
-}
-
-function buildUndoContext(params: UndoContextParams) {
-    const { commitResult, unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName } = params;
-    const instructionCommentId = unprocessedComments.length > 0 ? unprocessedComments[0].id : 0;
-    if (!commitResult || !instructionCommentId) return undefined;
-    return { repoOwner, repoName, prNumber: pullRequestNumber, branchName, instructionCommentId };
 }
 
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
@@ -426,7 +337,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
 
     const postResult = await handlePostExecution(
-        { state, job, taskId, stateManager, context, unprocessedReviewComments, llm },
+        { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient },
         taskUrl,
     );
 
