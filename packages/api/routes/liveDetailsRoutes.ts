@@ -250,13 +250,15 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   try {
     const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
     if (isClaudeStoredOutputLine(parsed)) return 'claude';
-    if (isOpenCodeStoredOutputLine(parsed)) return 'opencode';
+    if (isStrongOpenCodeStoredOutputLine(parsed)) return 'opencode';
     if (isCodexStoredOutputLine(parsed)) return 'codex';
+    if (isOpenCodeStoredOutputLine(parsed)) return 'opencode';
     return 'unknown';
   } catch {
     return 'unknown';
   }
 }
+function isStrongOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean { return Boolean(parsed.sessionID && isOpenCodeStoredOutputLine(parsed)); }
 function isOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
   return isOpenCodeJsonlEvent(parsed);
 }

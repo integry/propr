@@ -71,6 +71,14 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(parsed.summary, 'duplicate');
     });
 
+    test('does not treat user-owned top-level parts as assistant text', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', part: { type: 'text', text: 'hidden' }, message: { role: 'user', content: 'user text' } })
+        ].join('\n'));
+
+        assert.strictEqual(parsed.summary, undefined);
+    });
+
     test('recognizes mixed-case error event types and error payloads', () => {
         const parsed = parseOutput([
             JSON.stringify({ type: 'Message', message: { role: 'assistant', model: 'initial/model', content: 'partial' } }),
@@ -166,6 +174,19 @@ describe('OpenCodeAgent JSONL parsing', () => {
         });
     });
 
+    test('sums increasing per-event top-level usage outside result snapshots', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', usage: { input_tokens: 10, output_tokens: 2 } }),
+            JSON.stringify({ type: 'message', sessionID: 'session-a', usage: { input_tokens: 18, output_tokens: 5, cache_read_input_tokens: 4 } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 28,
+            output_tokens: 7,
+            cache_read_input_tokens: 4
+        });
+    });
+
     test('does not double count final top-level usage after nested usage', () => {
         const parsed = parseOutput([
             JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'first', usage: { input_tokens: 10, output_tokens: 2 } } }),
@@ -183,10 +204,12 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionId: 'generic-session', message: { content: 'hello' } }), false);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', session_id: 'generic-session', message: { content: 'hello' } }), false);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', message: { parts: [] } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionID: 'session-a' }), false);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionId: 'session-a', message: { role: 'assistant', content: 'hello' } }), true);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'text', text: 'OpenCode text' }), true);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', usage: { input_tokens: 10 } }), true);
-        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', stats: { input_tokens: 10 } }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', stats: { input_tokens: 10 } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', sessionID: 'session-a', stats: { input_tokens: 10 } }), true);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'tool_use', stats: { input_tokens: 10 } }), false);
     });
 
@@ -194,6 +217,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(normalizeOpenCodeTimestamp(1714867200, 'fallback'), '2024-05-05T00:00:00.000Z');
         assert.strictEqual(normalizeOpenCodeTimestamp(1714867200000, 'fallback'), '2024-05-05T00:00:00.000Z');
         assert.strictEqual(normalizeOpenCodeTimestamp(Number.NaN, 'fallback'), 'fallback');
+        assert.strictEqual(normalizeOpenCodeTimestamp('not-a-date', 'fallback'), 'fallback');
     });
 });
 

@@ -15,13 +15,14 @@ interface ParseState {
   events: ConversationEvent[];
   todos: TodoItem[];
   tokenUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number };
-  lastOpenCodeTopLevelUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
+  lastOpenCodeCumulativeTopLevelUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
   pendingAssistantMessage: string;
 }
 
 interface OpenCodeRedisEventUsage {
   topLevel: ParseState['tokenUsage'];
   nested: ParseState['tokenUsage'];
+  cumulative: boolean;
 }
 
 /** Max content length for truncation */
@@ -116,6 +117,11 @@ function processCodexEvent(
     state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
     return true;
   }
+  if (event.type === 'result' && event.usage) {
+    state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
+    state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
+    return true;
+  }
   return false;
 }
 
@@ -176,10 +182,21 @@ function processOpenCodeEvent(
     sessionID?: string;
     sessionId?: string;
     session_id?: string;
-    part?: { type?: string; text?: string; content?: unknown; delta?: string };
-    parts?: Array<{ type?: string; text?: string; content?: unknown; delta?: string }>;
-    message?: { role?: string; content?: unknown; text?: string; delta?: string; parts?: Array<{ type?: string; text?: string; content?: unknown; delta?: string }>; usage?: Record<string, unknown> };
+    part?: OpenCodeRedisPart;
+    parts?: OpenCodeRedisPart[];
+    message?: { role?: string; content?: unknown; text?: string; delta?: string; parts?: OpenCodeRedisPart[]; usage?: Record<string, unknown> };
     response?: { content?: unknown; text?: string; delta?: string; usage?: Record<string, unknown> };
+    tool?: string;
+    tool_name?: string;
+    name?: string;
+    input?: Record<string, unknown>;
+    parameters?: Record<string, unknown>;
+    args?: Record<string, unknown>;
+    output?: string;
+    result?: string;
+    status?: string;
+    id?: string;
+    tool_id?: string;
     error?: string | { message?: string; name?: string; data?: { message?: string } };
     usage?: Record<string, unknown>;
     stats?: Record<string, unknown>;
@@ -209,10 +226,22 @@ function processOpenCodeEvent(
       timestamp
     });
   }
+  const toolEvents = extractOpenCodeToolEvents(event, timestamp);
+  if (toolEvents.length) {
+    flushPendingMessage(state, timestamp);
+    state.events.push(...toolEvents);
+  }
 
   const eventUsage = buildOpenCodeRedisEventUsage(event);
   if (eventUsage) addOpenCodeRedisUsage(state, eventUsage);
   return true;
+}
+
+interface OpenCodeRedisPart {
+  type?: string; text?: string; content?: unknown; delta?: string;
+  tool?: string; tool_name?: string; name?: string;
+  input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
+  output?: string; result?: string; status?: string; id?: string; tool_id?: string;
 }
 
 function isOpenCodeEvent(event: Parameters<typeof processOpenCodeEvent>[0]): boolean {
@@ -220,20 +249,22 @@ function isOpenCodeEvent(event: Parameters<typeof processOpenCodeEvent>[0]): boo
 }
 
 function extractOpenCodeAssistantText(event: Parameters<typeof processOpenCodeEvent>[0]): string {
-  const parts: string[] = [];
-  addOpenCodeTextPart(parts, event.part);
-  for (const part of event.parts || []) addOpenCodeTextPart(parts, part);
+  if (event.message?.role && event.message.role !== 'assistant') return '';
+  const topLevelParts: string[] = [];
+  addOpenCodeTextPart(topLevelParts, event.part);
+  for (const part of event.parts || []) addOpenCodeTextPart(topLevelParts, part);
+  const messageParts: string[] = [];
   if (event.message?.role === 'assistant') {
     if (event.message.parts?.length) {
-      for (const part of event.message.parts) addOpenCodeTextPart(parts, part);
+      for (const part of event.message.parts) addOpenCodeTextPart(messageParts, part);
     } else {
-      addOpenCodeTextContainer(parts, event.message);
+      addOpenCodeTextContainer(messageParts, event.message);
     }
   }
-  if (!parts.length && event.type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(event.type.toLowerCase())) {
-    addOpenCodeTextContainer(parts, event as { text?: string; content?: unknown; delta?: string });
+  if (!topLevelParts.length && !messageParts.length && event.type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(event.type.toLowerCase())) {
+    addOpenCodeTextContainer(topLevelParts, event as { text?: string; content?: unknown; delta?: string });
   }
-  return parts.join('');
+  return joinOpenCodeTextGroups(topLevelParts, messageParts);
 }
 
 function addOpenCodeTextPart(parts: string[], part?: { type?: string; text?: string; content?: unknown; delta?: string }): void {
@@ -268,7 +299,7 @@ function buildOpenCodeRedisEventUsage(event: Parameters<typeof processOpenCodeEv
   mergeOpenCodeRedisUsageByMax(nestedUsage, event.message?.usage);
   mergeOpenCodeRedisUsageByMax(nestedUsage, event.response?.usage);
   return hasRedisTokenUsage(topLevelUsage) || hasRedisTokenUsage(nestedUsage)
-    ? { topLevel: topLevelUsage, nested: nestedUsage }
+    ? { topLevel: topLevelUsage, nested: nestedUsage, cumulative: event.type?.toLowerCase() === 'result' }
     : null;
 }
 
@@ -293,14 +324,47 @@ function mergeOpenCodeRedisUsageByMax(target: ParseState['tokenUsage'], usage?: 
 function addOpenCodeRedisUsage(state: ParseState, usage: OpenCodeRedisEventUsage): void {
   if (hasRedisTokenUsage(usage.nested)) addRedisTokenUsage(state.tokenUsage, usage.nested);
   if (hasRedisTokenUsage(usage.topLevel)) {
-    const previousUsage = state.lastOpenCodeTopLevelUsage;
-    if ((previousUsage && isCumulativeRedisUsageSnapshot(usage.topLevel, previousUsage)) || (!previousUsage && hasRedisTokenUsage(state.tokenUsage))) {
+    const previousUsage = state.lastOpenCodeCumulativeTopLevelUsage;
+    if (usage.cumulative || isCumulativeRedisUsageSnapshot(usage.topLevel, previousUsage)) {
       mergeRedisTokenUsageByMax(state.tokenUsage, usage.topLevel);
+      state.lastOpenCodeCumulativeTopLevelUsage = usage.topLevel;
     } else {
       addRedisTokenUsage(state.tokenUsage, usage.topLevel);
     }
-    state.lastOpenCodeTopLevelUsage = usage.topLevel;
   }
+}
+
+function hasOpenCodeSessionId(event: Parameters<typeof processOpenCodeEvent>[0]): boolean {
+  return Boolean(event.sessionID || event.sessionId || event.session_id);
+}
+
+function extractOpenCodeToolEvents(event: Parameters<typeof processOpenCodeEvent>[0], timestamp: string): ConversationEvent[] {
+  if (!hasOpenCodeSessionId(event)) return [];
+  const events: ConversationEvent[] = [];
+  appendOpenCodeToolEvent(events, event, timestamp);
+  appendOpenCodeToolEvent(events, event.part, timestamp);
+  for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp);
+  return events;
+}
+
+function appendOpenCodeToolEvent(events: ConversationEvent[], source: (Parameters<typeof processOpenCodeEvent>[0] | OpenCodeRedisPart) | undefined, timestamp: string): void {
+  if (!source?.type) return;
+  const type = source.type.toLowerCase();
+  if (['tool_use', 'tool', 'tool_call'].includes(type)) {
+    events.push({ type: 'tool_use' as const, toolName: source.tool_name || source.tool || source.name, input: source.parameters || source.input || source.args, id: source.tool_id || source.id, timestamp });
+    return;
+  }
+  if (['tool_result', 'tool_response'].includes(type)) {
+    events.push({ type: 'tool_result' as const, toolUseId: source.tool_id || source.id, result: truncateContent(source.output || source.result), isError: source.status === 'error', timestamp });
+  }
+}
+
+function joinOpenCodeTextGroups(first: string[], second: string[]): string {
+  const firstText = first.join('');
+  const secondText = second.join('');
+  if (!firstText) return secondText;
+  if (!secondText || firstText === secondText) return firstText;
+  return `${firstText}${secondText}`;
 }
 
 function addRedisTokenUsage(target: ParseState['tokenUsage'], usage: ParseState['tokenUsage']): ParseState['tokenUsage'] {
@@ -377,7 +441,7 @@ export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
     events: [],
     todos: [],
     tokenUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
-    lastOpenCodeTopLevelUsage: null,
+    lastOpenCodeCumulativeTopLevelUsage: null,
     pendingAssistantMessage: ''
   };
 

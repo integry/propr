@@ -1652,6 +1652,36 @@ describe('config route follow-up helpers', () => {
         ]);
     });
 
+    test('parseOpenCodeOutputToConversationResult avoids duplicate top-level and message text', () => {
+        const result = parseOpenCodeOutputToConversationResult(
+            '{"type":"message","sessionID":"session-a","part":{"type":"text","text":"Duplicated"},"message":{"role":"assistant","content":"Duplicated"}}\n'
+        );
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'Duplicated', timestamp: result?.events[0].timestamp },
+        ]);
+    });
+
+    test('parseOpenCodeOutputToConversationResult does not treat user parts as assistant text', () => {
+        const result = parseOpenCodeOutputToConversationResult(
+            '{"type":"message","sessionID":"session-a","part":{"type":"text","text":"hidden"},"message":{"role":"user","content":"user text"}}\n'
+        );
+
+        assert.strictEqual(result, null);
+    });
+
+    test('parseOpenCodeOutputToConversationResult preserves tool events', () => {
+        const result = parseOpenCodeOutputToConversationResult([
+            '{"type":"tool_use","sessionID":"session-a","tool_name":"Shell","tool_id":"tool-1","parameters":{"command":"npm test"},"timestamp":"2026-05-05T00:00:00.000Z"}',
+            '{"type":"tool_result","sessionID":"session-a","tool_id":"tool-1","output":"passed","status":"success","timestamp":"2026-05-05T00:00:01.000Z"}',
+        ].join('\n'));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'tool_use', toolName: 'Shell', input: { command: 'npm test' }, id: 'tool-1', timestamp: '2026-05-05T00:00:00.000Z' },
+            { type: 'tool_result', toolUseId: 'tool-1', result: 'passed', isError: false, timestamp: '2026-05-05T00:00:01.000Z' },
+        ]);
+    });
+
     test('parseStoredOutputContent parses strongly identified OpenCode output', () => {
         const parsed = parseStoredOutputContent('{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"OpenCode says hi"}}\n');
 
@@ -1661,10 +1691,10 @@ describe('config route follow-up helpers', () => {
         ]);
     });
 
-    test('parseStoredOutputContent parses OpenCode result-only usage output', () => {
+    test('parseStoredOutputContent keeps ambiguous result-only usage output on the Codex path', () => {
         const parsed = parseStoredOutputContent('{"type":"result","usage":{"input_tokens":10,"output_tokens":3}}\n');
 
-        assert.strictEqual(parsed.format, 'opencode');
+        assert.strictEqual(parsed.format, 'codex');
         assert.deepStrictEqual(parsed.parsed?.tokenUsage, {
             input_tokens: 10,
             output_tokens: 3,
@@ -1813,13 +1843,27 @@ describe('config route follow-up helpers', () => {
 
     test('parseRedisOutput does not overcount cumulative OpenCode usage snapshots', () => {
         const result = parseRedisOutput([
-            '{"type":"message","sessionID":"session-a","usage":{"input_tokens":10,"output_tokens":2}}',
-            '{"type":"message","sessionID":"session-a","usage":{"input_tokens":18,"output_tokens":5,"cache_read_input_tokens":4}}',
+            '{"type":"result","sessionID":"session-a","usage":{"input_tokens":10,"output_tokens":2}}',
+            '{"type":"result","sessionID":"session-a","usage":{"input_tokens":18,"output_tokens":5,"cache_read_input_tokens":4}}',
         ]);
 
         assert.deepStrictEqual(result.tokenUsage, {
             input_tokens: 18,
             output_tokens: 5,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 4,
+        });
+    });
+
+    test('parseRedisOutput sums increasing per-event OpenCode usage outside result snapshots', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","usage":{"input_tokens":10,"output_tokens":2}}',
+            '{"type":"message","sessionID":"session-a","usage":{"input_tokens":18,"output_tokens":5,"cache_read_input_tokens":4}}',
+        ]);
+
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 28,
+            output_tokens: 7,
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 4,
         });
@@ -1840,7 +1884,7 @@ describe('config route follow-up helpers', () => {
         });
     });
 
-    test('parseRedisOutput parses OpenCode result-only usage without a session ID', () => {
+    test('parseRedisOutput keeps ambiguous result-only usage without a session ID on the Codex path', () => {
         const result = parseRedisOutput([
             '{"type":"result","usage":{"input_tokens":10,"output_tokens":3}}',
         ]);
@@ -1874,6 +1918,53 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(result.tokenUsage, null);
     });
 
+    test('parseRedisOutput leaves Gemini result stats on the Gemini path', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","role":"assistant","delta":true,"content":"Gemini "}',
+            '{"type":"message","role":"assistant","delta":true,"content":"done"}',
+            '{"type":"result","stats":{"input_tokens":10,"output_tokens":3}}',
+        ]);
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'thought', content: 'Gemini done', timestamp: result.events[0].timestamp },
+        ]);
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 10,
+            output_tokens: 3,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
+    });
+
+    test('parseRedisOutput preserves OpenCode tool events with session IDs', () => {
+        const result = parseRedisOutput([
+            '{"type":"tool_use","sessionID":"session-a","tool_name":"Shell","tool_id":"tool-1","parameters":{"command":"npm test"}}',
+            '{"type":"tool_result","sessionID":"session-a","tool_id":"tool-1","output":"passed","status":"success"}',
+        ]);
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'tool_use', toolName: 'Shell', input: { command: 'npm test' }, id: 'tool-1', timestamp: result.events[0].timestamp },
+            { type: 'tool_result', toolUseId: 'tool-1', result: 'passed', isError: false, timestamp: result.events[1].timestamp },
+        ]);
+    });
+
+    test('parseRedisOutput ignores sessionID-only OpenCode envelopes', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a"}',
+        ]);
+
+        assert.deepStrictEqual(result.events, []);
+        assert.strictEqual(result.tokenUsage, null);
+    });
+
+    test('parseRedisOutput does not treat user OpenCode parts as assistant text', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","part":{"type":"text","text":"hidden"},"message":{"role":"user","content":"user text"}}',
+        ]);
+
+        assert.deepStrictEqual(result.events, []);
+    });
+
     test('parseRedisOutput normalizes numeric OpenCode timestamps to strings', () => {
         const result = parseRedisOutput([
             '{"type":"message","sessionID":"session-a","timestamp":1777939200000,"message":{"role":"assistant","content":"hi"}}',
@@ -1887,6 +1978,16 @@ describe('config route follow-up helpers', () => {
     test('parseRedisOutput avoids duplicate OpenCode aggregate and part text', () => {
         const result = parseRedisOutput([
             '{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"Duplicated","parts":[{"type":"text","text":"Duplicated"}]}}',
+        ]);
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'thought', content: 'Duplicated', timestamp: result.events[0].timestamp },
+        ]);
+    });
+
+    test('parseRedisOutput avoids duplicate OpenCode top-level and message text', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","part":{"type":"text","text":"Duplicated"},"message":{"role":"assistant","content":"Duplicated"}}',
         ]);
 
         assert.deepStrictEqual(result.events, [

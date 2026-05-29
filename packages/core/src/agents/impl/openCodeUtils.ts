@@ -6,17 +6,10 @@ import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../cl
 import type { AgentConfig, TokenUsage } from '../types.js';
 
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
+const OPEN_CODE_TEXT_EVENT_TYPES = new Set(['text', 'delta', 'completion']);
+const OPEN_CODE_TOOL_EVENT_TYPES = new Set(['tool_use', 'tool_result', 'tool', 'tool_call', 'tool_response']);
 
-export interface BuildOpenCodePromptOptions {
-    customPrompt?: string;
-    issueRef: IssueRef;
-    branchName?: string;
-    modelName?: string;
-    issueDetails?: IssueDetails;
-    isRetry?: boolean;
-    retryReason?: string;
-    systemPrompt?: string;
-}
+export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
 
 export interface OpenCodeEvent {
     type?: string; timestamp?: number | string;
@@ -25,6 +18,8 @@ export interface OpenCodeEvent {
     message?: OpenCodeMessage;
     error?: { name?: string; data?: { message?: string }; message?: string } | string;
     model?: string; text?: string; content?: unknown; delta?: string;
+    tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
+    output?: string; result?: string; status?: string; id?: string; tool_id?: string;
     response?: OpenCodeTextContainer;
     usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage;
 }
@@ -36,17 +31,14 @@ interface OpenCodeTextContainer {
 
 export type OpenCodeUsage = Record<string, unknown>;
 
-export interface NormalizedOpenCodeUsage {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-}
+export interface NormalizedOpenCodeUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; }
 
 interface OpenCodePart extends OpenCodeTextContainer {
     type?: string;
     messageID?: string;
     sessionID?: string;
+    tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
+    output?: string; result?: string; status?: string; id?: string; tool_id?: string;
 }
 
 interface OpenCodeMessage extends OpenCodeTextContainer {
@@ -55,21 +47,14 @@ interface OpenCodeMessage extends OpenCodeTextContainer {
     parts?: OpenCodePart[];
 }
 
-export interface ParsedOpenCodeOutput {
-    sessionId?: string;
-    modelUsed?: string;
-    summary?: string;
-    error?: string;
-    tokenUsage?: TokenUsage;
-    conversationLog: OpenCodeEvent[];
-}
+export interface ParsedOpenCodeOutput { sessionId?: string; modelUsed?: string; summary?: string; error?: string; tokenUsage?: TokenUsage; conversationLog: OpenCodeEvent[]; }
 
 interface OpenCodeParseState {
     sessionId?: string;
     modelUsed?: string;
     error?: string;
     tokenUsage: TokenUsage;
-    lastTopLevelUsage?: TokenUsage;
+    lastCumulativeTopLevelUsage?: TokenUsage;
     streamTextParts: string[];
     assistantMessages: string[];
 }
@@ -256,12 +241,15 @@ function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): vo
     }
     if (hasOpenCodeTokenUsage(nestedUsage)) addOpenCodeUsage(state.tokenUsage, nestedUsage);
     if (hasOpenCodeTokenUsage(topLevelUsage)) {
-        if (isCumulativeOpenCodeUsageSnapshot(topLevelUsage, state.lastTopLevelUsage) || (!state.lastTopLevelUsage && hasOpenCodeTokenUsage(state.tokenUsage))) {
+        if (isOpenCodeCumulativeUsageEvent(event)) {
             mergeOpenCodeUsageByMax(state.tokenUsage, topLevelUsage);
+            state.lastCumulativeTopLevelUsage = topLevelUsage;
+        } else if (isCumulativeOpenCodeUsageSnapshot(topLevelUsage, state.lastCumulativeTopLevelUsage)) {
+            mergeOpenCodeUsageByMax(state.tokenUsage, topLevelUsage);
+            state.lastCumulativeTopLevelUsage = topLevelUsage;
         } else {
             addOpenCodeUsage(state.tokenUsage, topLevelUsage);
         }
-        state.lastTopLevelUsage = topLevelUsage;
     }
 }
 
@@ -272,7 +260,7 @@ export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknow
         : null;
     const hasOpenCodePayload = hasOpenCodeEventPayload(event, type, message);
     return Boolean(
-        event.sessionID
+        (event.sessionID && hasOpenCodePayload)
         || (event.sessionId && message?.role === 'assistant')
         || (event.session_id && hasOpenCodePayload)
         || hasOpenCodePayload
@@ -284,15 +272,30 @@ function hasOpenCodeEventPayload(
     type: string | undefined,
     message: { role?: unknown; parts?: unknown[] } | null
 ): boolean {
-    const hasUsage = hasOpenCodeResultUsage(event);
+    const hasOpenCodeIdentity = Boolean(event.sessionID || event.sessionId);
+    const hasUsage = hasOpenCodeResultUsage(event, type, hasOpenCodeIdentity);
     const hasAssistantText = message?.role === 'assistant' && hasOpenCodeTextField(event.message as { text?: unknown; content?: unknown; delta?: unknown });
-    const hasTopLevelText = Boolean(type && ['text', 'delta', 'completion'].includes(type) && hasOpenCodeTextField(event));
-    return Boolean(event.part || event.parts?.length || message?.parts?.length || hasAssistantText || hasTopLevelText
-        || (type === 'result' && hasUsage) || ((event.sessionID || event.sessionId) && hasUsage));
+    const checks = [
+        Boolean(event.part),
+        Boolean(event.parts?.length),
+        Boolean(message?.parts?.length),
+        hasAssistantText,
+        Boolean(type && OPEN_CODE_TEXT_EVENT_TYPES.has(type) && hasOpenCodeTextField(event)),
+        Boolean(hasOpenCodeIdentity && type && OPEN_CODE_TOOL_EVENT_TYPES.has(type)),
+        Boolean(type === 'result' && hasUsage),
+        Boolean(hasOpenCodeIdentity && hasUsage)
+    ];
+    return checks.some(Boolean);
 }
 
-function hasOpenCodeResultUsage(event: { usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }): boolean {
-    return Boolean(normalizeOpenCodeUsage(event.usage) || normalizeOpenCodeUsage(event.stats) || normalizeOpenCodeUsage(event.tokens));
+function hasOpenCodeResultUsage(event: { usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }, type?: string, hasOpenCodeIdentity = false): boolean {
+    const usage = normalizeOpenCodeUsage(event.usage) || normalizeOpenCodeUsage(event.tokens);
+    if (usage || type !== 'result') return Boolean(usage);
+    return hasOpenCodeIdentity && Boolean(normalizeOpenCodeUsage(event.stats));
+}
+
+function isOpenCodeCumulativeUsageEvent(event: OpenCodeEvent): boolean {
+    return event.type?.toLowerCase() === 'result';
 }
 
 export function normalizeOpenCodeUsage(usage: OpenCodeUsage | undefined): NormalizedOpenCodeUsage | undefined {
@@ -373,6 +376,9 @@ function buildOpenCodeSummary(state: OpenCodeParseState): string | undefined {
 }
 
 function extractOpenCodeText(event: OpenCodeEvent): ExtractedOpenCodeText {
+    if (event.message?.role && event.message.role !== 'assistant') {
+        return { streamParts: [] };
+    }
     const streamParts: string[] = [];
     const messageParts: string[] = [];
     addPartText(streamParts, event.part);

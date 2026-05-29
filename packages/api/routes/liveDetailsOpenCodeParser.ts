@@ -42,6 +42,11 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
       flushPendingAssistantMessage(eventTimestamp);
       events.push({ type: 'tool_result', result: extractOpenCodeEventError(event), isError: true, timestamp: eventTimestamp });
     }
+    const toolEvents = extractOpenCodeToolEvents(event, eventTimestamp);
+    if (toolEvents.length) {
+      flushPendingAssistantMessage(eventTimestamp);
+      events.push(...toolEvents);
+    }
   }
   flushPendingAssistantMessage(timestamp);
   if (!hasAssistantMessageEvents && parsed.summary) events.push({ type: 'thought', content: parsed.summary, timestamp });
@@ -57,18 +62,19 @@ function getOpenCodeEventTimestamp(event: OpenCodeEvent, fallback: string): stri
 }
 
 function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
+  if (event.message?.role && event.message.role !== 'assistant') return null;
   const topLevelPartsText = joinOpenCodePartsText([
     ...(event.part ? [event.part] : []),
     ...(event.parts ?? []),
   ], false);
-  if (topLevelPartsText) return topLevelPartsText;
   const message = event.message;
+  let messageText = '';
   if (message?.role === 'assistant') {
-    const text = message.parts?.length
+    messageText = message.parts?.length
       ? joinOpenCodePartsText(message.parts)
       : joinOpenCodeTextValues([message.text, message.delta, message.content]);
-    return text || null;
   }
+  if (topLevelPartsText || messageText) return joinOpenCodeTextGroups(topLevelPartsText, messageText) || null;
   if (!event.type || !['text', 'delta', 'completion'].includes(event.type.toLowerCase())) return null;
   const text = joinOpenCodeTextValues([event.text, event.delta, event.content], !isOpenCodeStreamingTextEvent(event));
   return text || null;
@@ -89,11 +95,54 @@ function joinOpenCodePartsText(parts: Array<{ type?: string; text?: string; delt
 }
 
 function joinOpenCodeTextValues(values: unknown[], trim = true): string {
-  const text = values.filter((value): value is string => typeof value === 'string' && value.length > 0).join('');
+  const added = new Set<string>();
+  const text = values.filter((value): value is string => {
+    if (typeof value !== 'string' || value.length === 0 || added.has(value)) return false;
+    added.add(value);
+    return true;
+  }).join('');
   return trim ? text.trim() : text;
+}
+
+function joinOpenCodeTextGroups(first: string, second: string): string {
+  if (!first) return second;
+  if (!second || first === second) return first;
+  return `${first}${second}`;
 }
 
 function extractOpenCodeEventError(event: OpenCodeEvent): string {
   if (typeof event.error === 'string') return event.error;
   return event.error?.data?.message || event.error?.message || event.error?.name || 'OpenCode execution failed';
+}
+
+function extractOpenCodeToolEvents(event: OpenCodeEvent, timestamp: string): Array<Record<string, unknown>> {
+  const events: Array<Record<string, unknown>> = [];
+  appendOpenCodeToolEvent(events, event, timestamp);
+  appendOpenCodeToolEvent(events, event.part, timestamp);
+  for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp);
+  return events;
+}
+
+function appendOpenCodeToolEvent(events: Array<Record<string, unknown>>, source: OpenCodeEvent['part'] | OpenCodeEvent | undefined, timestamp: string): void {
+  if (!source?.type) return;
+  const type = source.type.toLowerCase();
+  if (['tool_use', 'tool', 'tool_call'].includes(type)) {
+    events.push({
+      type: 'tool_use',
+      toolName: source.tool_name || source.tool || source.name,
+      input: source.parameters || source.input || source.args,
+      id: source.tool_id || source.id,
+      timestamp
+    });
+    return;
+  }
+  if (['tool_result', 'tool_response'].includes(type)) {
+    events.push({
+      type: 'tool_result',
+      toolUseId: source.tool_id || source.id,
+      result: source.output || source.result,
+      isError: source.status === 'error',
+      timestamp
+    });
+  }
 }
