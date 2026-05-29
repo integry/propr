@@ -290,8 +290,13 @@ export class VibeAgent implements Agent {
 
     private cleanupPromptFile(promptPath: string): void {
         const promptDir = path.dirname(promptPath);
+        const promptParentDir = path.resolve(this.getPromptParentDir());
+        const resolvedPromptDir = path.resolve(promptDir);
+        const isManagedPromptPath = path.basename(promptPath) === 'prompt.md'
+            && path.basename(resolvedPromptDir).startsWith('vibe-')
+            && path.dirname(resolvedPromptDir) === promptParentDir;
         try {
-            if (path.basename(promptDir).startsWith('vibe-')) {
+            if (isManagedPromptPath) {
                 fs.rmSync(promptDir, { recursive: true, force: true });
                 return;
             }
@@ -309,9 +314,29 @@ export class VibeAgent implements Agent {
         }
     }
 
+    private canMountConfigPath(configPath: string): boolean {
+        try {
+            return fs.existsSync(configPath) && fs.statSync(configPath).isDirectory();
+        } catch {
+            return false;
+        }
+    }
+
+    private hasVibeConfigFile(configPath: string): boolean {
+        try {
+            return fs.existsSync(path.join(configPath, 'config.toml'));
+        } catch {
+            return false;
+        }
+    }
+
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
         const { worktreePath, githubToken, modelName, promptPath, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute' } = params;
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
+        const mistralApiKey = process.env.MISTRAL_API_KEY || this.config.envVars?.MISTRAL_API_KEY;
+        const shouldMountConfig = this.canMountConfigPath(configPath)
+            && (!mistralApiKey || this.hasVibeConfigFile(configPath));
+        const configMountArgs = shouldMountConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
         const envVars: string[] = [];
         if (this.config.envVars) {
             for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`);
@@ -332,13 +357,11 @@ export class VibeAgent implements Agent {
         const containerName = `${alias}-${taskType}-${shortTaskId}`.slice(0, 128);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const promptInstruction = `Read the full task prompt from @${CONTAINER_PROMPT_PATH} and follow it exactly.`;
-        const agentArgs = mode === 'analysis'
-            ? ['--agent', 'plan']
-            : ['--trust', '--agent', 'auto-approve'];
+        const agentArgs = mode === 'analysis' ? [] : ['--trust', '--agent', 'auto-approve'];
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge', '--user', `${CONTAINER_NODE_UID}:${CONTAINER_NODE_GID}`,
             '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
-            '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`,
+            ...configMountArgs,
             '-v', `${promptPath}:${CONTAINER_PROMPT_PATH}:ro`,
             '-e', `GH_TOKEN=${githubToken}`,
             '-e', `GITHUB_TOKEN=${githubToken}`,
@@ -354,7 +377,7 @@ export class VibeAgent implements Agent {
             mode,
             dockerImage: this.config.dockerImage,
             configPath,
-            configPathExists: fs.existsSync(configPath),
+            configPathMounted: shouldMountConfig,
             promptPath,
             promptPathExists: fs.existsSync(promptPath),
             workspaceMountMode

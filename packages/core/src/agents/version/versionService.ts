@@ -65,7 +65,13 @@ export async function resolveVersion(
                 if (!versionSpec) {
                     throw new Error('Version spec required');
                 }
-                return versionSpec.trim();
+                {
+                    const trimmedVersionSpec = versionSpec.trim();
+                    if (!trimmedVersionSpec) {
+                        throw new Error('Version spec required');
+                    }
+                    return trimmedVersionSpec;
+                }
             default:
                 logger.warn({ agentType, versionType }, 'Unknown version type, using default');
                 return AGENT_DEFAULT_VERSIONS[agentType];

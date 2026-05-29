@@ -63,6 +63,19 @@ function parseJsonObjects(output: string): VibeJsonOutput[] {
         .flatMap(line => tryParseJson(line));
 }
 
+function joinTextParts(parts: string[]): string {
+    return parts.reduce((combined, part) => {
+        if (!combined) {
+            return part;
+        }
+        if (!part) {
+            return combined;
+        }
+        const hasBoundaryWhitespace = /\s$/.test(combined) || /^\s/.test(part);
+        return hasBoundaryWhitespace ? `${combined}${part}` : `${combined}\n${part}`;
+    }, '');
+}
+
 function textFromValue(value: unknown, depth = 0): string | undefined {
     if (depth > 8) {
         return undefined;
@@ -72,7 +85,7 @@ function textFromValue(value: unknown, depth = 0): string | undefined {
     }
     if (Array.isArray(value)) {
         const parts = value.map(item => textFromValue(item, depth + 1)).filter((text): text is string => Boolean(text));
-        return parts.length > 0 ? parts.join('') : undefined;
+        return parts.length > 0 ? joinTextParts(parts) : undefined;
     }
     if (value && typeof value === 'object') {
         return pickText(value as VibeJsonOutput, depth + 1);

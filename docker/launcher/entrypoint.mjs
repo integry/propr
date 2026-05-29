@@ -49,6 +49,29 @@ const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR;
 const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR;
 const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR;
 
+function envFileValue(name) {
+    if (!existsSync(ENV_FILE_LOCAL)) return undefined;
+    const prefix = `${name}=`;
+    for (const rawLine of readFileSync(ENV_FILE_LOCAL, 'utf8').split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#') || !line.startsWith(prefix)) continue;
+        const value = line.slice(prefix.length).trim();
+        if (!value) return undefined;
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            return value.slice(1, -1);
+        }
+        return value;
+    }
+    return undefined;
+}
+
+const VIBE_PROMPT_CACHE_DIR = process.env.VIBE_PROMPT_CACHE_DIR
+    || envFileValue('VIBE_PROMPT_CACHE_DIR')
+    || '/tmp/propr-vibe-prompts';
+const HOST_VIBE_PROMPT_CACHE_DIR = process.env.HOST_VIBE_PROMPT_CACHE_DIR
+    || envFileValue('HOST_VIBE_PROMPT_CACHE_DIR')
+    || VIBE_PROMPT_CACHE_DIR;
+
 // For each agent, mount the host credentials at the same path on both sides
 // (HOST:HOST) and set *_CONFIG_PATH env vars to that path. When the worker/api
 // then spawns an agent container, it passes -v <CONFIG_PATH>:/agent/path, and
@@ -74,6 +97,13 @@ function agentCredentialArgs() {
         args.push('-e', `VIBE_CONFIG_PATH=${HOST_VIBE_DIR}`);
     }
     return args;
+}
+
+function vibePromptCacheArgs() {
+    return [
+        '-v', `${HOST_VIBE_PROMPT_CACHE_DIR}:${VIBE_PROMPT_CACHE_DIR}`,
+        '-e', `VIBE_PROMPT_CACHE_DIR=${VIBE_PROMPT_CACHE_DIR}`,
+    ];
 }
 
 // Track containers we start so we can stop them on shutdown.
@@ -172,6 +202,22 @@ function startRedis() {
     dockerRunDetached(name, args);
 }
 
+function ensureVibePromptCacheDir() {
+    console.log(`  · preparing Vibe prompt cache ${HOST_VIBE_PROMPT_CACHE_DIR}`);
+    const res = docker([
+        'run', '--rm',
+        '-v', `${HOST_VIBE_PROMPT_CACHE_DIR}:${VIBE_PROMPT_CACHE_DIR}`,
+        manifest.images.app,
+        'sh', '-c',
+        'mkdir -p "$1" && chown 1000:1000 "$1" && chmod 700 "$1"',
+        'sh',
+        VIBE_PROMPT_CACHE_DIR,
+    ], { capture: true });
+    if (res.status !== 0) {
+        throw new Error(`Failed to prepare Vibe prompt cache: ${res.stderr}`);
+    }
+}
+
 function appContainer(name, command, extraArgs = []) {
     const baseArgs = [
         // --env-file is resolved by the docker CLI (inside launcher container).
@@ -196,17 +242,23 @@ function startApp() {
     ]);
 
     const creds = agentCredentialArgs();
+    const vibePrompts = vibePromptCacheArgs();
+    ensureVibePromptCacheDir();
 
     removeIfExists(`${STACK}-worker`);
     appContainer(`${STACK}-worker`, ['dist/src/worker.js'], [
         '-v', `${HOST_REPOS}:/usr/src/app/repos`,
         '-v', '/tmp/claude-logs:/tmp/claude-logs',
         '--ulimit', 'nofile=65536:65536',
+        ...vibePrompts,
         ...creds,
     ]);
 
     removeIfExists(`${STACK}-analysis-worker`);
-    appContainer(`${STACK}-analysis-worker`, ['dist/src/analysis_worker.js'], [...creds]);
+    appContainer(`${STACK}-analysis-worker`, ['dist/src/analysis_worker.js'], [
+        ...vibePrompts,
+        ...creds,
+    ]);
 
     removeIfExists(`${STACK}-indexing-worker`);
     appContainer(`${STACK}-indexing-worker`, ['dist/src/indexing_worker.js'], [
@@ -222,6 +274,7 @@ function startApp() {
         '-v', `${ENV_FILE}:/usr/src/app/.env:ro`,
         '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
         '--ulimit', 'nofile=65536:65536',
+        ...vibePrompts,
         ...creds,
         '-e', `API_PUBLIC_URL=${process.env.API_PUBLIC_URL || `http://localhost:${API_PORT}`}`,
         '-e', `FRONTEND_URL=${process.env.FRONTEND_URL || `http://localhost:${UI_PORT}`}`,

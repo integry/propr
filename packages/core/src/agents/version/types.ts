@@ -47,7 +47,7 @@ export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
     claude: 'propr-claude',
     codex: 'propr-codex',
     gemini: 'propr-gemini',
-    vibe: 'propr-vibe'
+    vibe: 'propr/agent-vibe'
 };
 
 /**

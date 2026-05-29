@@ -13,6 +13,10 @@ const PYPI_REQUEST_TIMEOUT_MS = 10000;
 const PYPI_CACHE_TTL_MS = 300000;
 const packageInfoCache = new Map<string, { expiresAt: number; info: PyPiPackageInfo }>();
 
+export function clearPyPiPackageInfoCache(): void {
+    packageInfoCache.clear();
+}
+
 async function getPackageInfo(packageName: string): Promise<PyPiPackageInfo> {
     const cached = packageInfoCache.get(packageName);
     if (cached && cached.expiresAt > Date.now()) {

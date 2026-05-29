@@ -1,16 +1,19 @@
 import { afterEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert';
 import {
+    clearPyPiPackageInfoCache,
     getLatestPyPiVersion,
     getRecentPyPiVersions,
     resolvePyPiVersionSpec
 } from '../packages/core/src/agents/version/pypiClient.js';
 import {
+    generateImageTag,
     getAvailableVersions,
     resolveVersion
 } from '../packages/core/src/agents/version/versionService.js';
 
 afterEach(() => {
+    clearPyPiPackageInfoCache();
     mock.restoreAll();
 });
 
@@ -88,6 +91,17 @@ describe('pypiClient', () => {
             () => resolveVersion('vibe', 'tag', 'beta'),
             /Unknown tag 'beta'/
         );
+    });
+
+    test('rejects empty custom Vibe versions after trimming', async () => {
+        await assert.rejects(
+            () => resolveVersion('vibe', 'custom', '   '),
+            /Version spec required/
+        );
+    });
+
+    test('generates Vibe versioned tags in the published image namespace', () => {
+        assert.strictEqual(generateImageTag('vibe', '2.12.1', 'abcdef'), 'propr/agent-vibe:2.12.1-abcdef');
     });
 
     test('returns Vibe available versions in API-facing shape', async () => {
