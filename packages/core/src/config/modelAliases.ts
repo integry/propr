@@ -122,6 +122,7 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
  * - Claude: prefer Opus, then Sonnet (skip Haiku)
  * - Gemini: prefer Pro models (skip Flash)
  * - Codex (OpenAI): prefer GPT (skip mini/spark variants)
+ * - OpenCode: prefer the configured Kimi default
  */
 function getPreferredModelForAgent(config: AgentConfig): string | null {
     const models = config.supportedModels;
@@ -152,6 +153,11 @@ function getPreferredModelForAgent(config: AgentConfig): string | null {
                 !lowerModels[i].includes('spark')
             );
             if (gpt) return gpt;
+            break;
+        }
+        case 'opencode': {
+            const kimi = models.find(model => model.toLowerCase() === 'opencode-go/kimi-k2.6');
+            if (kimi) return kimi;
             break;
         }
     }
@@ -319,6 +325,12 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         if (lowerLabel.startsWith(aliasLower + '-')) {
             const modelPart = label.substring(aliasLower.length + 1); // e.g., "pro" from "gemini-pro"
             const matchedModel = findMatchingModel(modelPart, agent.config);
+            if (!matchedModel && agent.config.type === 'opencode') {
+                return {
+                    agentAlias: agent.config.alias,
+                    model: label
+                };
+            }
             return {
                 agentAlias: agent.config.alias,
                 model: matchedModel || agent.config.defaultModel || getPreferredModelForAgent(agent.config) || agent.config.supportedModels[0]
@@ -349,7 +361,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
  */
 function getAgentTypeFromModel(modelId: string): 'claude' | 'codex' | 'gemini' | 'opencode' {
     const lowerModel = modelId.toLowerCase();
-    if (lowerModel.startsWith('opencode-go/')) return 'opencode';
+    if (lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:')) return 'opencode';
     if (lowerModel.startsWith('gemini')) return 'gemini';
     if (lowerModel.startsWith('claude')) return 'claude';
     if (lowerModel.startsWith('gpt') || lowerModel.includes('codex')) return 'codex';

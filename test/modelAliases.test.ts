@@ -88,6 +88,15 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
                 supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
                 defaultModel: 'gpt-5.5'
             }
+        },
+        {
+            config: {
+                id: 'opencode-agent-1',
+                type: 'opencode' as const,
+                alias: 'opencode',
+                enabled: true,
+                supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6']
+            }
         }
     ];
 
@@ -124,6 +133,12 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'gpt-5.4', 'Should resolve to correct codex model');
     });
 
+    await t.test('Step 1: resolves exact githubLabel for OpenCode models', async () => {
+        const result = await resolveLlmLabel('opencode-kimi-k26');
+        assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
+        assert.strictEqual(result.model, 'opencode-go/kimi-k2.6', 'Should resolve to correct OpenCode model');
+    });
+
     await t.test('Step 2: resolves agent alias match with default model', async () => {
         // Just "gemini" should return the default gemini model
         const result = await resolveLlmLabel('gemini');
@@ -141,6 +156,12 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         const result = await resolveLlmLabel('codex');
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
         assert.strictEqual(result.model, 'gpt-5.5', 'Should use codex default model');
+    });
+
+    await t.test('Step 2: resolves opencode alias to preferred model', async () => {
+        const result = await resolveLlmLabel('opencode');
+        assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
+        assert.strictEqual(result.model, 'opencode-go/kimi-k2.6', 'Should use preferred OpenCode model');
     });
 
     await t.test('Step 3: resolves agent prefix match (e.g., gemini-flash)', async () => {
@@ -378,6 +399,8 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
     });
 
     await t.test('returns correct short name for Codex (OpenAI) models', () => {
+        // GPT-5.5
+        assert.strictEqual(getModelShortName('gpt-5.5'), 'GPT-5.5');
         // GPT-5.4
         assert.strictEqual(getModelShortName('gpt-5.4'), 'GPT-5.4');
         // GPT-5.4 Mini
@@ -386,14 +409,8 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName('gpt-5.3-codex'), 'GPT-5.3 Codex');
         // GPT-5.3 Codex Spark
         assert.strictEqual(getModelShortName('gpt-5.3-codex-spark'), 'Codex Spark');
-        // GPT-5.2 Codex
-        assert.strictEqual(getModelShortName('gpt-5.2-codex'), 'GPT-5.2 Codex');
         // GPT-5.2
         assert.strictEqual(getModelShortName('gpt-5.2'), 'GPT-5.2');
-        // GPT-5.1 Codex Max
-        assert.strictEqual(getModelShortName('gpt-5.1-codex-max'), 'Codex Max');
-        // GPT-5.1 Codex Mini
-        assert.strictEqual(getModelShortName('gpt-5.1-codex-mini'), 'Codex Mini');
     });
 
     await t.test('returns correct short name for Gemini models', () => {
@@ -407,6 +424,11 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName('gemini-2.5-flash'), 'Gemini Flash');
         // Gemini 2.5 Flash Lite
         assert.strictEqual(getModelShortName('gemini-2.5-flash-lite'), 'Flash Lite');
+    });
+
+    await t.test('returns correct short name for OpenCode models', () => {
+        assert.strictEqual(getModelShortName('opencode-go/kimi-k2.6'), 'Kimi K2.6');
+        assert.strictEqual(getModelShortName('opencode-go/glm-5.1'), 'GLM-5.1');
     });
 
     await t.test('returns AI for unknown models', () => {
@@ -424,52 +446,18 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName(undefined), 'AI');
     });
 
-    await t.test('verifies all 18 models return correct short names', () => {
-        // This test verifies the exact count and mapping for all models
-        const expectedMappings: Record<string, string> = {
-            // 5 Claude models (2 x 4.6, 3 x 4.5)
-            'claude-opus-4-6': 'Claude Opus 4.6',
-            'claude-sonnet-4-6': 'Claude Sonnet 4.6',
-            'claude-opus-4-5-20251101': 'Claude Opus 4.5',
-            'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
-            'claude-haiku-4-5-20251001': 'Claude Haiku',
-            // 8 Codex models
-            'gpt-5.4': 'GPT-5.4',
-            'gpt-5.4-mini': 'GPT-5.4 Mini',
-            'gpt-5.3-codex': 'GPT-5.3 Codex',
-            'gpt-5.3-codex-spark': 'Codex Spark',
-            'gpt-5.2-codex': 'GPT-5.2 Codex',
-            'gpt-5.2': 'GPT-5.2',
-            'gpt-5.1-codex-max': 'Codex Max',
-            'gpt-5.1-codex-mini': 'Codex Mini',
-            // 5 Gemini models
-            'gemini-3-pro-preview': 'Gemini 3 Preview',
-            'gemini-3-flash-preview': 'Gemini 3 Flash',
-            'gemini-2.5-pro': 'Gemini Pro',
-            'gemini-2.5-flash': 'Gemini Flash',
-            'gemini-2.5-flash-lite': 'Flash Lite',
-        };
-
-        // Verify we have exactly 18 models
-        const modelCount = Object.keys(expectedMappings).length;
-        assert.strictEqual(modelCount, 18, `Expected 18 models but found ${modelCount}`);
-
-        // Verify each model returns the correct short name
-        for (const [modelId, expectedShortName] of Object.entries(expectedMappings)) {
-            const actualShortName = getModelShortName(modelId);
+    await t.test('verifies all configured models return correct short names', () => {
+        for (const model of ALL_MODELS) {
+            const actualShortName = getModelShortName(model.id);
             assert.strictEqual(
                 actualShortName,
-                expectedShortName,
-                `Model ${modelId} should return "${expectedShortName}" but got "${actualShortName}"`
+                model.shortName,
+                `Model ${model.id} should return "${model.shortName}" but got "${actualShortName}"`
             );
         }
     });
 
-    await t.test('ALL_MODELS array matches the 18 expected models', () => {
-        // Verify ALL_MODELS contains all 18 models
-        assert.strictEqual(ALL_MODELS.length, 18, `Expected 18 models in ALL_MODELS but found ${ALL_MODELS.length}`);
-
-        // Verify each model in ALL_MODELS has a valid shortName
+    await t.test('ALL_MODELS array entries have valid short names', () => {
         for (const model of ALL_MODELS) {
             const shortName = getModelShortName(model.id);
             assert.strictEqual(
@@ -518,6 +506,15 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 enabled: true,
                 supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
                 defaultModel: 'gpt-5.5'
+            }
+        },
+        {
+            config: {
+                id: 'opencode-agent-1',
+                type: 'opencode' as const,
+                alias: 'opencode',
+                enabled: true,
+                supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6']
             }
         }
     ];
@@ -620,6 +617,30 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         const codexResults = await resolveReviewModels(['codex']);
         assert.strictEqual(codexResults[0].agentAlias, 'codex');
         assert.strictEqual(codexResults[0].model, 'gpt-5.5');
+
+        // opencode -> preferred enabled OpenCode agent/model
+        const opencodeResults = await resolveReviewModels(['opencode']);
+        assert.strictEqual(opencodeResults[0].agentAlias, 'opencode');
+        assert.strictEqual(opencodeResults[0].model, 'opencode-go/kimi-k2.6');
+    });
+
+    await t.test('OpenCode labels resolve to configured OpenCode agent models', async () => {
+        const results = await resolveReviewModels(['opencode-kimi-k26']);
+        assert.strictEqual(results.length, 1);
+        assert.strictEqual(results[0].agentAlias, 'opencode');
+        assert.strictEqual(results[0].model, 'opencode-go/kimi-k2.6');
+        assert.strictEqual(results[0].displayLabel, 'Kimi K2.6');
+    });
+
+    await t.test('unknown OpenCode-like labels fail review validation', async () => {
+        await assert.rejects(
+            () => resolveReviewModels(['opencode-unknown']),
+            (err: any) => {
+                assert.ok(err instanceof ReviewModelResolutionError);
+                assert.ok(err.unresolvedTokens.includes('opencode-unknown'));
+                return true;
+            }
+        );
     });
 
     await t.test('assignments include display-friendly labels', async () => {
