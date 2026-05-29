@@ -1,6 +1,6 @@
 import { test, after, mock, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, resolveLlmLabel, ALL_MODELS, findMatchingModel, getModelShortName, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from '@propr/core';
+import { resolveModelAlias, getDefaultModel, getPreferredModelForAgent, MODEL_ALIASES, resolveLlmLabel, ALL_MODELS, findMatchingModel, getModelShortName, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from '@propr/core';
 import type { ReviewAssignment } from '@propr/core';
 import { AgentRegistry } from '@propr/core';
 import type { AgentConfig } from '@propr/core';
@@ -95,7 +95,7 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
                 type: 'opencode' as const,
                 alias: 'opencode',
                 enabled: true,
-                supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6']
+                supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode:kimi-k2.6']
             }
         }
     ];
@@ -107,6 +107,11 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     const originalGetAllAgents = registry.getAllAgents.bind(registry);
     const originalGetDefaultAgent = registry.getDefaultAgent.bind(registry);
     const originalEnsureInitialized = registry.ensureInitialized.bind(registry);
+    t.after(() => {
+        registry.getAllAgents = originalGetAllAgents;
+        registry.getDefaultAgent = originalGetDefaultAgent;
+        registry.ensureInitialized = originalEnsureInitialized;
+    });
 
     // Apply mocks
     registry.getAllAgents = () => mockAgentConfigs as any;
@@ -137,6 +142,12 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         const result = await resolveLlmLabel('opencode-kimi-k26');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
         assert.strictEqual(result.model, 'opencode-go/kimi-k2.6', 'Should resolve to correct OpenCode model');
+    });
+
+    await t.test('Step 1: resolves routed OpenCode model IDs without stripping the route prefix', async () => {
+        const result = await resolveLlmLabel('opencode:kimi-k2.6');
+        assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
+        assert.strictEqual(result.model, 'opencode:kimi-k2.6', 'Should preserve routed OpenCode model ID');
     });
 
     await t.test('Step 2: resolves agent alias match with default model', async () => {
@@ -202,6 +213,12 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'custom-unknown-model', 'Should use label as model name');
     });
 
+    await t.test('does not pair unknown OpenCode-like labels with the OpenCode agent', async () => {
+        const result = await resolveLlmLabel('opencode-unknown');
+        assert.strictEqual(result.agentAlias, 'claude', 'Should fall back to default agent');
+        assert.strictEqual(result.model, 'opencode-unknown', 'Should preserve unresolved label for validation');
+    });
+
     await t.test('returns correct agent type for each resolution path', async () => {
         // Test that each resolution path returns the proper agentAlias
 
@@ -243,11 +260,6 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(typeof result.agentAlias, 'string', 'agentAlias should be a string');
         assert.strictEqual(typeof result.model, 'string', 'model should be a string');
     });
-
-    // Restore original methods after tests
-    registry.getAllAgents = originalGetAllAgents;
-    registry.getDefaultAgent = originalGetDefaultAgent;
-    registry.ensureInitialized = originalEnsureInitialized;
 });
 
 test('findMatchingModel - matches string to internal model IDs', async (t) => {
@@ -387,6 +399,20 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
     });
 });
 
+test('getPreferredModelForAgent - OpenCode model preference', async (t) => {
+    await t.test('prefers routed Kimi models when canonical Kimi is not configured', () => {
+        const config: AgentConfig = {
+            id: 'opencode-agent-routed',
+            type: 'opencode',
+            alias: 'opencode',
+            enabled: true,
+            supportedModels: ['opencode-go/glm-5.1', 'opencode:moonshotai/kimi-k2.6']
+        };
+
+        assert.strictEqual(getPreferredModelForAgent(config), 'opencode:moonshotai/kimi-k2.6');
+    });
+});
+
 test('getModelShortName - returns short display names for PR titles', async (t) => {
     await t.test('returns correct short name for Claude models', () => {
         // Claude 4.6 models
@@ -514,7 +540,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'opencode' as const,
                 alias: 'opencode',
                 enabled: true,
-                supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6']
+                supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode:kimi-k2.6']
             }
         }
     ];
@@ -526,6 +552,12 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
     const originalGetDefaultAgent = registry.getDefaultAgent.bind(registry);
     const originalEnsureInitialized = registry.ensureInitialized.bind(registry);
     const originalGetAgentByAlias = registry.getAgentByAlias.bind(registry);
+    t.after(() => {
+        registry.getAllAgents = originalGetAllAgents;
+        registry.getDefaultAgent = originalGetDefaultAgent;
+        registry.ensureInitialized = originalEnsureInitialized;
+        registry.getAgentByAlias = originalGetAgentByAlias;
+    });
 
     registry.getAllAgents = () => mockAgentConfigs as any;
     registry.getDefaultAgent = () => mockAgentConfigs[0] as any;
@@ -632,6 +664,13 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         assert.strictEqual(results[0].displayLabel, 'Kimi K2.6');
     });
 
+    await t.test('routed OpenCode model IDs resolve through /review validation', async () => {
+        const results = await resolveReviewModels(['opencode:kimi-k2.6']);
+        assert.strictEqual(results.length, 1);
+        assert.strictEqual(results[0].agentAlias, 'opencode');
+        assert.strictEqual(results[0].model, 'opencode:kimi-k2.6');
+    });
+
     await t.test('unknown OpenCode-like labels fail review validation', async () => {
         await assert.rejects(
             () => resolveReviewModels(['opencode-unknown']),
@@ -674,12 +713,6 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         assert.strictEqual(typeof assignment.model, 'string');
         assert.strictEqual(typeof assignment.displayLabel, 'string');
     });
-
-    // Restore original methods
-    registry.getAllAgents = originalGetAllAgents;
-    registry.getDefaultAgent = originalGetDefaultAgent;
-    registry.ensureInitialized = originalEnsureInitialized;
-    registry.getAgentByAlias = originalGetAgentByAlias;
 });
 
 // Force exit due to module-level initialization in @propr/core
