@@ -21,8 +21,9 @@ RUN if [ "$CLI_VERSION" = "latest" ]; then \
     else \
       uv tool install "mistral-vibe==${CLI_VERSION}"; \
     fi
-RUN vibe --version
+RUN chmod -R a+rX /opt/uv && chmod a+rx /usr/local/bin/vibe
 USER node
+RUN vibe --version
 
 RUN git config --global user.name "ProPR Vibe Bot" \
     && git config --global user.email "vibe-bot@propr.dev" \

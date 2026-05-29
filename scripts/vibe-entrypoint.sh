@@ -108,6 +108,46 @@ format_command_for_log() {
     echo "$executable ${redacted[*]}" >&2
 }
 
+expand_vibe_prompt_file_args() {
+    EXPANDED_VIBE_ARGS=()
+    if [ $# -eq 0 ] || [ "$1" != "vibe" ]; then
+        EXPANDED_VIBE_ARGS=("$@")
+        return
+    fi
+
+    EXPANDED_VIBE_ARGS=("$1")
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --prompt-file)
+                if [ $# -lt 2 ]; then
+                    echo "Missing value for --prompt-file" >&2
+                    exit 2
+                fi
+                if [ ! -f "$2" ]; then
+                    echo "Prompt file not found: $2" >&2
+                    exit 2
+                fi
+                EXPANDED_VIBE_ARGS+=("--prompt" "$(cat "$2")")
+                shift 2
+                ;;
+            --prompt-file=*)
+                prompt_file="${1#--prompt-file=}"
+                if [ ! -f "$prompt_file" ]; then
+                    echo "Prompt file not found: $prompt_file" >&2
+                    exit 2
+                fi
+                EXPANDED_VIBE_ARGS+=("--prompt" "$(cat "$prompt_file")")
+                shift
+                ;;
+            *)
+                EXPANDED_VIBE_ARGS+=("$1")
+                shift
+                ;;
+        esac
+    done
+}
+
 if [ -z "$GH_TOKEN" ]; then
     echo "Warning: GH_TOKEN environment variable not set" >&2
     echo "GitHub operations may fail" >&2
@@ -168,6 +208,8 @@ if [ -d "/home/node/workspace" ]; then
 fi
 
 if [ $# -gt 0 ]; then
+    expand_vibe_prompt_file_args "$@"
+    set -- "${EXPANDED_VIBE_ARGS[@]}"
     echo -n "Executing command: " >&2
     format_command_for_log "$@"
     if [ "$(id -u)" = "0" ]; then

@@ -14,7 +14,7 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import { parseVibeOutput } from './utils/vibeOutputParser.js';
-import { getAnalysisSandboxArgs, getParsedVibeError, isSuccessfulVibeResult, sanitizeDockerNamePart } from './utils/vibeAgentHelpers.js';
+import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, getParsedVibeError, isSuccessfulVibeResult, sanitizeDockerNamePart } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
@@ -367,14 +367,11 @@ export class VibeAgent implements Agent {
             && (!mistralApiKey || this.hasVibeConfigFile(configPath));
         const configMountArgs = shouldMountConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
         const hostPromptPath = this.getHostPromptPath(promptPath);
-        const envVars: string[] = [];
-        if (this.config.envVars) {
-            for (const [key, value] of Object.entries(this.config.envVars)) {
-                if (key !== 'MISTRAL_API_KEY') {
-                    envVars.push('-e', `${key}=${value}`);
-                }
-            }
+        const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
+        for (const envVar of forwardedEnvVars.skipped) {
+            logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
         }
+        const envVars = forwardedEnvVars.dockerArgs;
         if (mistralApiKey) {
             envVars.push('-e', `MISTRAL_API_KEY=${mistralApiKey}`);
         }
@@ -389,6 +386,11 @@ export class VibeAgent implements Agent {
             envVars.push('-e', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config');
             envVars.push('-e', 'XDG_DATA_HOME=/tmp/propr-vibe-data');
             envVars.push('-e', 'UV_CACHE_DIR=/tmp/propr-uv-cache');
+            envVars.push('-e', 'HOME=/tmp/propr-vibe-home');
+            envVars.push('-e', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home');
+            envVars.push('-e', 'XDG_STATE_HOME=/tmp/propr-vibe-state');
+            envVars.push('-e', 'PIP_CACHE_DIR=/tmp/propr-pip-cache');
+            envVars.push('-e', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache');
         }
 
         const timestamp = Date.now().toString(36);
@@ -398,7 +400,6 @@ export class VibeAgent implements Agent {
         const containerName = `${alias}-${taskType}-${shortTaskId}`.slice(0, 128);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const analysisSandboxArgs = getAnalysisSandboxArgs(mode);
-        const promptInstruction = `Read the full task prompt from @${CONTAINER_PROMPT_PATH} and follow it exactly.`;
         const agentArgs = mode === 'analysis' ? [] : ['--trust', '--agent', 'auto-approve'];
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
@@ -411,7 +412,7 @@ export class VibeAgent implements Agent {
             ...envVars,
             '-w', '/home/node/workspace',
             this.config.dockerImage,
-            'vibe', '--prompt', promptInstruction, '--max-turns', String(maxTurns), '--output', 'json', ...agentArgs
+            'vibe', '--prompt-file', CONTAINER_PROMPT_PATH, '--max-turns', String(maxTurns), '--output', 'json', ...agentArgs
         ];
 
         logger.info({

@@ -186,6 +186,8 @@ function latestTagFor(imageTag) {
 
 function tagAgentLatest(key, imageTag) {
     if (!key.startsWith('agent-')) return;
+    // Keep existing configs that reference propr/agent-*:latest working when
+    // the launcher manifest pins exact agent image versions.
     const latestTag = latestTagFor(imageTag);
     if (!latestTag || latestTag === imageTag) return;
     const res = docker(['tag', imageTag, latestTag], { capture: true });
@@ -227,6 +229,10 @@ function pullImages() {
             tagAgentLatest(key, tag);
             continue;
         }
+        if (key.startsWith('agent-')) {
+            console.log(`  · ${tag} (agent image skipped; workers pull or build on demand)`);
+            continue;
+        }
         console.log(`  · ${tag}`);
         docker(['pull', tag]);
         tagAgentLatest(key, tag);
@@ -253,6 +259,16 @@ function validateEnv() {
         || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', VIBE_PROMPT_CACHE_DIR, { containerPath: true });
     if (invalidVibePromptPath) {
         console.error(`ERROR: ${invalidVibePromptPath}`);
+        process.exit(1);
+    }
+    const invalidCredentialPath = [
+        ['HOST_CLAUDE_DIR', HOST_CLAUDE_DIR],
+        ['HOST_CODEX_DIR', HOST_CODEX_DIR],
+        ['HOST_GEMINI_DIR', HOST_GEMINI_DIR],
+        ['HOST_VIBE_DIR', HOST_VIBE_DIR],
+    ].map(([name, value]) => value ? validateDockerBindPath(name, value) : null).find(Boolean);
+    if (invalidCredentialPath) {
+        console.error(`ERROR: ${invalidCredentialPath}`);
         process.exit(1);
     }
 }

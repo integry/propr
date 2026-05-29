@@ -188,8 +188,66 @@ describe('VibeAgent Docker args', () => {
         assert.ok(args.includes('/tmp/propr-vibe-prompts/vibe-task/prompt.md:/tmp/propr-vibe-prompt.md:ro'));
 
         const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-        assert.deepStrictEqual(args.slice(imageIndex + 1, imageIndex + 4), ['vibe', '--prompt', 'Read the full task prompt from @/tmp/propr-vibe-prompt.md and follow it exactly.']);
+        assert.deepStrictEqual(args.slice(imageIndex + 1, imageIndex + 4), ['vibe', '--prompt-file', '/tmp/propr-vibe-prompt.md']);
         assert.deepStrictEqual(args.slice(-4), ['--max-turns', '5', '--output', 'json']);
+    });
+
+    test('expands tilde config paths before checking Docker mountability', (t) => {
+        const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-home-'));
+        const configPath = path.join(homeDir, '.vibe');
+        fs.mkdirSync(configPath);
+        fs.writeFileSync(path.join(configPath, 'config.toml'), 'active_model = "mistral-medium-3.5"\n');
+        const previousHome = process.env.HOME;
+        const previousVibeConfigPath = process.env.VIBE_CONFIG_PATH;
+        process.env.HOME = homeDir;
+        delete process.env.VIBE_CONFIG_PATH;
+        t.after(() => {
+            if (previousHome === undefined) {
+                delete process.env.HOME;
+            } else {
+                process.env.HOME = previousHome;
+            }
+            if (previousVibeConfigPath === undefined) {
+                delete process.env.VIBE_CONFIG_PATH;
+            } else {
+                process.env.VIBE_CONFIG_PATH = previousVibeConfigPath;
+            }
+            fs.rmSync(homeDir, { recursive: true, force: true });
+        });
+
+        const agent = new VibeAgent({
+            id: 'vibe-test',
+            type: 'vibe',
+            alias: 'vibe-test',
+            enabled: true,
+            dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
+            configPath: '~/.vibe',
+            supportedModels: ['mistral-medium-3.5'],
+            defaultModel: 'mistral-medium-3.5'
+        } satisfies AgentConfig);
+        const args = (agent as unknown as {
+            buildDockerArgs(params: {
+                worktreePath: string;
+                githubToken: string;
+                modelName: string;
+                promptPath: string;
+                issueNumber: number;
+                taskId: string;
+                maxTurns: number;
+                mode: 'analysis';
+            }): string[];
+        }).buildDockerArgs({
+            worktreePath: '/tmp/vibe-worktree',
+            githubToken: 'github-token',
+            modelName: 'mistral-medium-3.5',
+            promptPath: '/tmp/propr-vibe-prompts/vibe-task/prompt.md',
+            issueNumber: 0,
+            taskId: 'task-1234567890',
+            maxTurns: 5,
+            mode: 'analysis'
+        });
+
+        assert.ok(args.includes(`${configPath}:/home/node/.vibe:ro`));
     });
 
     test('uses host prompt cache path for sibling Docker bind mounts', () => {
@@ -305,7 +363,9 @@ describe('VibeAgent Docker args', () => {
                 defaultModel: 'mistral-medium-3.5',
                 envVars: {
                     MISTRAL_API_KEY: 'configured-mistral-api-key',
-                    EXTRA_VIBE_ENV: 'extra-value'
+                    EXTRA_VIBE_ENV: 'extra-value',
+                    'BAD-ENV': 'skipped',
+                    MULTILINE_ENV: 'skip\nme'
                 }
             } satisfies AgentConfig);
             const args = (agent as unknown as {
@@ -330,6 +390,8 @@ describe('VibeAgent Docker args', () => {
 
             assert.ok(args.includes('MISTRAL_API_KEY=configured-mistral-api-key'));
             assert.ok(args.includes('EXTRA_VIBE_ENV=extra-value'));
+            assert.ok(!args.includes('BAD-ENV=skipped'));
+            assert.ok(!args.includes('MULTILINE_ENV=skip\nme'));
             assert.strictEqual(args.filter(arg => arg.startsWith('MISTRAL_API_KEY=')).length, 1);
             assert.ok(!args.includes(`${emptyConfigPath}:/home/node/.vibe:ro`));
         } finally {
@@ -420,7 +482,7 @@ describe('VibeAgent Docker args', () => {
         assert.ok(!args.includes('--user'));
         assert.ok(!args.includes('0:0'));
         const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-        assert.deepStrictEqual(args.slice(imageIndex + 4, imageIndex + 7), ['vibe', '--prompt', 'Read the full task prompt from @/tmp/propr-vibe-prompt.md and follow it exactly.']);
+        assert.deepStrictEqual(args.slice(imageIndex + 4, imageIndex + 7), ['vibe', '--prompt-file', '/tmp/propr-vibe-prompt.md']);
         assert.ok(!args.includes('--read-only'));
         assert.ok(!args.includes('VIBE_READ_ONLY_CONFIG=1'));
         assert.deepStrictEqual(args.slice(-7), ['--max-turns', '12', '--output', 'json', '--trust', '--agent', 'auto-approve']);

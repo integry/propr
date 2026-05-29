@@ -59,6 +59,18 @@ test('auth redirect allowlist permits subdomains only for explicit wildcard-styl
   assert.equal(response.headers.get('location'), 'https://pr-1.preview.example.com/plans');
 });
 
+test('auth redirect allowlist permits leading-dot COOKIE_DOMAIN subdomains', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'https://app.example.org';
+  process.env.COOKIE_DOMAIN = '.example.com';
+  const app = express();
+  setupAuth(app);
+
+  const response = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Fpreview.example.com%2Fplans');
+
+  assert.equal(response.headers.get('location'), 'https://preview.example.com/plans');
+});
+
 test('auth redirect allowlist permits exact additional hosts without permitting their subdomains', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   process.env.FRONTEND_URL = 'https://app.example.com';

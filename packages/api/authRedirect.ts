@@ -15,12 +15,13 @@ function normalizeHostname(hostname: string): string {
 }
 
 function parseHostname(value: string): string | null {
+    const normalizedValue = value.trim().replace(/^(https?:\/\/)\./i, '$1').replace(/^\./, '');
     try {
-        const hostname = normalizeHostname(new URL(value).hostname.replace(/^\./, ''));
+        const hostname = normalizeHostname(new URL(normalizedValue).hostname);
         return isValidHostname(hostname) ? hostname : null;
     } catch {
         try {
-            const hostname = normalizeHostname(new URL(`https://${value}`).hostname.replace(/^\./, ''));
+            const hostname = normalizeHostname(new URL(`https://${normalizedValue}`).hostname);
             return isValidHostname(hostname) ? hostname : null;
         } catch {
             return null;
