@@ -1,10 +1,12 @@
 // Export all model definitions
 export {
   type AgentType,
+  AGENT_TYPES,
   type ModelInfo,
   CLAUDE_MODELS,
   CODEX_MODELS,
   GEMINI_MODELS,
+  VIBE_MODELS,
   ALL_MODELS,
   AGENT_MODELS,
   MODEL_INFO_MAP,

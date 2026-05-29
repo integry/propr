@@ -49,7 +49,7 @@ for entry in \
   fi
 done
 
-# @openai/codex and @google/gemini-cli are installed only in the agent
+# @openai/codex, @google/gemini-cli, and mistral-vibe are installed only in agent
 # images (not in root node_modules). Reference their Apache-2.0 license.
 cat >> "$OUT" <<'EOF'
 ## @openai/codex (installed in propr/agent-codex image)
@@ -61,6 +61,11 @@ Source: https://github.com/openai/codex
 
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/google-gemini/gemini-cli
+
+## mistral-vibe (installed in propr/agent-vibe image)
+
+Licensed under the Apache License, Version 2.0.
+Source: https://github.com/mistralai/mistral-vibe
 
 ---
 

@@ -2,10 +2,12 @@
 // This ensures propr-ui uses the same single source of truth as @propr/core
 export {
   type AgentType,
+  AGENT_TYPES,
   type ModelInfo,
   CLAUDE_MODELS,
   CODEX_MODELS,
   GEMINI_MODELS,
+  VIBE_MODELS,
   ALL_MODELS,
   AGENT_MODELS,
   MODEL_INFO_MAP,

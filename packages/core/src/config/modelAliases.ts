@@ -347,10 +347,11 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
  * Determines the agent type from a model ID.
  * E.g., "gemini-3-flash-preview" -> "gemini", "claude-opus-4-5-20251101" -> "claude"
  */
-function getAgentTypeFromModel(modelId: string): 'claude' | 'codex' | 'gemini' {
+function getAgentTypeFromModel(modelId: string): 'claude' | 'codex' | 'gemini' | 'vibe' {
     const lowerModel = modelId.toLowerCase();
     if (lowerModel.startsWith('gemini')) return 'gemini';
     if (lowerModel.startsWith('claude')) return 'claude';
+    if (lowerModel.startsWith('mistral') || lowerModel.startsWith('devstral') || lowerModel.includes('vibe')) return 'vibe';
     if (lowerModel.startsWith('gpt') || lowerModel.includes('codex')) return 'codex';
     return 'claude'; // Default fallback
 }

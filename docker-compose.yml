@@ -59,8 +59,10 @@ services:
       - ~/.claude:/root/.claude
       - ~/.gemini:/root/.gemini
       - ~/.codex:/root/.codex
+      - ~/.vibe:/root/.vibe
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
     env_file:
       - .env
     depends_on:
@@ -81,8 +83,12 @@ services:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor:ro
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts:rw
       - /tmp/claude-logs:/tmp/claude-logs:ro
+      - ~/.claude:/root/.claude:ro
+      - ~/.gemini:/root/.gemini:ro
       - ~/.codex:/root/.codex:ro
+      - ~/.vibe:/root/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
@@ -107,6 +113,7 @@ services:
       - ~/.claude:/root/.claude:ro
       - ~/.gemini:/root/.gemini:ro
       - ~/.codex:/root/.codex:ro
+      - ~/.vibe:/root/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
     env_file:
@@ -152,11 +159,14 @@ services:
       - '${API_PORT:-4000}:4000'
     volumes:
       - ~/.claude:/root/.claude:ro
+      - ~/.gemini:/root/.gemini:ro
       - ~/.codex:/root/.codex:ro
+      - ~/.vibe:/root/.vibe:ro
       - ./data:/usr/src/app/data
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/git-processor:/tmp/git-processor
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
       # Worktrees directory for PR branch checkouts
       - /tmp/pr-worktrees:/tmp/pr-worktrees
       # Mount the env file - uses STAGING_ENV_FILE if set, defaults to ./.env

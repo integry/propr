@@ -3,6 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
+import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from '../../agents/version/types.js';
+import { getDockerTagComponent } from '../../agents/version/versionService.js';
+import type { AgentType } from '../../agents/types.js';
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
 
@@ -14,8 +17,7 @@ export interface DockerCommandOptions {
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
 
-const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest';
-
+const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'propr/agent-claude:latest';
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
 
@@ -38,12 +40,23 @@ export class ExecutionAbortedError extends Error {
 const AGENT_DOCKERFILES: Record<string, string> = {
     'claude': 'Dockerfile.claude',
     'codex': 'Dockerfile.codex',
-    'gemini': 'Dockerfile.gemini'
+    'gemini': 'Dockerfile.gemini',
+    'vibe': 'Dockerfile.vibe'
 };
 
 // Default project root - can be overridden via environment variable
 // In Docker container, the app root is /usr/src/app but cwd may be /usr/src/app/packages/api
 const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
+function getAgentBaseTag(): string { return process.env.AGENT_BASE_TAG || process.env.PROPR_AGENT_BASE_TAG || process.env.PROPR_IMAGE_VERSION || '1.0.0'; }
+
+function getAgentBuildArgs(agentType: string, dockerImage: string): string[] {
+    const buildArgs = ['--build-arg', `BASE_TAG=${getAgentBaseTag()}`];
+    if (!(agentType in AGENT_DEFAULT_VERSIONS)) return buildArgs;
+    const fallbackVersion = AGENT_DEFAULT_VERSIONS[agentType as AgentType];
+    const imageTag = dockerImage.includes(':') ? dockerImage.split(':').pop() : undefined;
+    const cliVersion = !imageTag || imageTag === 'latest' ? fallbackVersion : imageTag.split('-')[0] || fallbackVersion;
+    return [...buildArgs, '--build-arg', `CLI_VERSION=${cliVersion}`];
+}
 
 async function checkAbortSignal(taskId: string): Promise<boolean> {
     try {
@@ -325,7 +338,7 @@ export async function buildClaudeDockerImage(): Promise<boolean> {
  * This is called when agents are registered to ensure their images are ready.
  *
  * @param agentType - The type of agent ('claude', 'codex', 'gemini')
- * @param dockerImage - The expected Docker image name (e.g., 'propr-codex:latest')
+ * @param dockerImage - The expected Docker image name (e.g., 'propr/agent-codex:latest')
  * @returns true if image exists or was built successfully, false otherwise
  */
 export async function ensureAgentDockerImage(agentType: string, dockerImage: string): Promise<boolean> {
@@ -373,6 +386,7 @@ export async function ensureAgentDockerImage(agentType: string, dockerImage: str
         const buildResult = await executeDockerCommand('docker', [
             'build',
             '-f', dockerfile,
+            ...getAgentBuildArgs(agentType, dockerImage),
             '-t', dockerImage,
             '.'
         ], { timeout: 600000 });
@@ -430,13 +444,7 @@ export async function ensureVersionedAgentImage(
     const dockerfile = path.join(basePath, dockerfileName);
 
     // Generate image tag
-    const imageNames: Record<string, string> = {
-        claude: 'propr-claude',
-        codex: 'propr-codex',
-        gemini: 'propr-gemini'
-    };
-
-    const imageName = imageNames[agentType];
+    const imageName = AGENT_IMAGE_NAMES[agentType as AgentType];
     if (!imageName) {
         return {
             success: false,
@@ -445,7 +453,7 @@ export async function ensureVersionedAgentImage(
         };
     }
 
-    const imageTag = `${imageName}:${cliVersion}-${contentHash}`;
+    const imageTag = `${imageName}:${getDockerTagComponent(cliVersion)}-${contentHash}`;
 
     logger.info({ agentType, imageTag, cliVersion, contentHash, dockerfile }, 'Ensuring versioned agent Docker image exists...');
 
@@ -467,7 +475,7 @@ export async function ensureVersionedAgentImage(
             'build',
             '-f', dockerfile,
             '--build-arg', `CLI_VERSION=${cliVersion}`,
-            '--build-arg', 'BASE_TAG=latest',
+            '--build-arg', `BASE_TAG=${getAgentBaseTag()}`,
             '-t', imageTag,
             basePath
         ], {

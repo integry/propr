@@ -10,7 +10,7 @@ import { ApiClient, createApiClient } from "./index.js";
 /**
  * Agent type identifier.
  */
-export type AgentType = "claude" | "codex" | "gemini";
+export type AgentType = "claude" | "codex" | "gemini" | "vibe";
 
 /**
  * Configuration for a specific agent instance.
@@ -22,7 +22,7 @@ export interface AgentConfig {
   id: string;
 
   /**
-   * The agent type (claude, codex, or gemini).
+   * The agent type (claude, codex, gemini, or vibe).
    */
   type: AgentType;
 
@@ -37,7 +37,7 @@ export interface AgentConfig {
   enabled: boolean;
 
   /**
-   * Docker image for the agent (e.g., 'claude-code-processor:latest').
+   * Docker image for the agent (e.g., 'propr/agent-claude:latest').
    */
   dockerImage: string;
 
@@ -87,7 +87,7 @@ export interface AddAgentOptions {
   alias: string;
 
   /**
-   * The agent type (claude, codex, or gemini).
+   * The agent type (claude, codex, gemini, or vibe).
    */
   type: AgentType;
 
@@ -268,11 +268,13 @@ export async function deleteAgent(
 function getDefaultDockerImage(type: AgentType): string {
   switch (type) {
     case "claude":
-      return "claude-code-processor:latest";
+      return "propr/agent-claude:latest";
     case "codex":
-      return "codex-code-processor:latest";
+      return "propr/agent-codex:latest";
     case "gemini":
-      return "gemini-code-processor:latest";
+      return "propr/agent-gemini:latest";
+    case "vibe":
+      return "propr/agent-vibe:latest";
     default:
       return `${type}-code-processor:latest`;
   }
@@ -287,12 +289,14 @@ function getDefaultDockerImage(type: AgentType): string {
 function getDefaultConfigPath(type: AgentType): string {
   switch (type) {
     case "claude":
-      return "/root/.claude";
+      return "~/.claude";
     case "codex":
-      return "/root/.codex";
+      return "~/.codex";
     case "gemini":
-      return "/root/.gemini";
+      return "~/.gemini";
+    case "vibe":
+      return "~/.vibe";
     default:
-      return `/root/.${type}`;
+      return `~/.${type}`;
   }
 }

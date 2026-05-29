@@ -2,87 +2,12 @@ import passport from 'passport';
 import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
 import session from 'express-session';
 import { RedisStore } from 'connect-redis';
-import { createClient, type RedisClientType } from 'redis';
+import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
+import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
-
-interface GitHubUser {
-    id: string;
-    login?: string;
-    username: string;
-    displayName: string;
-    email: string | null;
-    avatarUrl: string | null;
-    accessToken?: string;
-    refreshToken?: string;
-    tokenExpiresAt?: number;
-    githubAuthInvalid?: boolean;
-}
-interface AllowedRedirectHost {
-    host: string;
-    includeSubdomains: boolean;
-}
-
-function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
-    if (!redirectTo) return undefined;
-    try {
-        const url = new URL(redirectTo);
-        if ((url.protocol === 'https:' || url.protocol === 'http:') && isAllowedRedirectHost(url.hostname)) return redirectTo;
-    } catch {
-        // Invalid URL, ignore
-    }
-    return undefined;
-}
-
-function parseAllowedRedirectHost(value: string, includeSubdomainsByDefault = false): AllowedRedirectHost | null {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const includeSubdomains = includeSubdomainsByDefault || trimmed.startsWith('.') || trimmed.startsWith('*.') || trimmed.startsWith('https://*.') || trimmed.startsWith('http://*.');
-    const normalized = trimmed.replace(/^(https?:\/\/)\*\./, '$1').replace(/^\*\./, '');
-    try {
-        return { host: new URL(normalized).hostname.replace(/^\./, ''), includeSubdomains };
-    } catch {
-        return { host: normalized.replace(/^\./, ''), includeSubdomains };
-    }
-}
-
-function getAllowedRedirectHosts(): AllowedRedirectHost[] {
-    const hosts = [
-        process.env.FRONTEND_URL ? parseAllowedRedirectHost(process.env.FRONTEND_URL) : null,
-        process.env.COOKIE_DOMAIN ? parseAllowedRedirectHost(process.env.COOKIE_DOMAIN, process.env.COOKIE_DOMAIN.trim().startsWith('.')) : null,
-        ...(process.env.AUTH_REDIRECT_ALLOWED_HOSTS || '').split(',').map(value => parseAllowedRedirectHost(value))
-    ].filter((value): value is AllowedRedirectHost => Boolean(value));
-    const uniqueHosts = new Map<string, AllowedRedirectHost>();
-    for (const host of hosts) {
-        const existing = uniqueHosts.get(host.host);
-        uniqueHosts.set(host.host, { host: host.host, includeSubdomains: host.includeSubdomains || existing?.includeSubdomains === true });
-    }
-    return Array.from(uniqueHosts.values());
-}
-
-function isAllowedRedirectHost(hostname: string): boolean {
-    return getAllowedRedirectHosts().some(({ host, includeSubdomains }) =>
-        hostname === host || (includeSubdomains && hostname.endsWith(`.${host}`))
-    );
-}
-
-declare global {
-    // eslint-disable-next-line @typescript-eslint/no-namespace
-    namespace Express {
-        interface User {
-            id: string;
-            login?: string;
-            username: string;
-            displayName: string;
-            email: string | null;
-            avatarUrl: string | null;
-            accessToken?: string;
-            refreshToken?: string;
-            tokenExpiresAt?: number;
-            githubAuthInvalid?: boolean;
-        }
-    }
-}
+import { getValidatedRedirectTo } from './authRedirect.js';
+import type { GitHubUser } from './authTypes.js';
 
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
     configureDemoMode(demoModeAtStartup);
@@ -99,19 +24,14 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
         const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
         const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
-        const redisClient = createClient({
-            url: `redis://${sessionRedisHost}:${sessionRedisPort}`
-        });
+        const redisClient = createClient({ url: `redis://${sessionRedisHost}:${sessionRedisPort}` });
         redisClient.on('error', (err) => {
             console.error('Session Redis Client Error', err);
         });
         redisClient.connect().catch(console.error);
 
         // Use Redis store for sessions to share across subdomains
-        const redisStore = new RedisStore({
-            client: redisClient,
-            prefix: 'propr:session:'
-        });
+        const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
 
         app.use(session({
             store: redisStore,
@@ -144,17 +64,15 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
             console.log('User authenticated:', profile.username);
 
             // Calculate token expiration time (expires_in is in seconds)
-            const tokenExpiresAt = params.expires_in
-                ? Date.now() + (params.expires_in * 1000)
-                : undefined;
+            const tokenExpiresAt = params.expires_in ? Date.now() + (params.expires_in * 1000) : undefined;
 
             const user: GitHubUser = {
                 id: profile.id,
                 login: profile.username || '',
                 username: profile.username || '',
                 displayName: profile.displayName,
-                email: profile.emails && profile.emails[0] ? profile.emails[0].value : null,
-                avatarUrl: profile.photos && profile.photos[0] ? profile.photos[0].value : null,
+                email: profile.emails?.[0]?.value || null,
+                avatarUrl: profile.photos?.[0]?.value || null,
                 accessToken: accessToken,
                 refreshToken: refreshToken || undefined,
                 tokenExpiresAt: tokenExpiresAt
@@ -240,87 +158,6 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         res.json({ demoMode: demoModeAtStartup });
     });
 
-}
-
-/**
- * Redis client used for caching Bearer token validations.
- * Initialized lazily on first Bearer token request.
- */
-let tokenCacheClient: RedisClientType | null = null;
-
-async function getTokenCacheClient(): Promise<RedisClientType> {
-    if (!tokenCacheClient) {
-        const redisHost = process.env.REDIS_HOST || '127.0.0.1';
-        const redisPort = process.env.REDIS_PORT || '6379';
-        tokenCacheClient = createClient({ url: `redis://${redisHost}:${redisPort}` }) as RedisClientType;
-        tokenCacheClient.on('error', (err) => {
-            console.error('Token Cache Redis Client Error', err);
-        });
-        await tokenCacheClient.connect();
-    }
-    return tokenCacheClient;
-}
-
-const TOKEN_CACHE_PREFIX = 'propr:bearer:';
-const TOKEN_CACHE_TTL_SECONDS = 300; // 5 minutes
-
-/**
- * Validates a GitHub token by calling the GitHub API and caches the result in Redis.
- * Returns the GitHub user profile if valid, or null if invalid.
- */
-async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
-    try {
-        const redis = await getTokenCacheClient();
-
-        // Check cache first
-        const cached = await redis.get(`${TOKEN_CACHE_PREFIX}${token}`);
-        if (cached) {
-            return JSON.parse(cached) as GitHubUser;
-        }
-
-        // Validate against GitHub API
-        const response = await fetch('https://api.github.com/user', {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'ProPR-CLI',
-            },
-        });
-
-        if (!response.ok) {
-            return null;
-        }
-
-        const profile = await response.json() as {
-            id: number;
-            login: string;
-            name: string | null;
-            email: string | null;
-            avatar_url: string | null;
-        };
-
-        const user: GitHubUser = {
-            id: String(profile.id),
-            login: profile.login,
-            username: profile.login,
-            displayName: profile.name || profile.login,
-            email: profile.email,
-            avatarUrl: profile.avatar_url,
-            accessToken: token,
-        };
-
-        // Cache for 5 minutes
-        await redis.set(
-            `${TOKEN_CACHE_PREFIX}${token}`,
-            JSON.stringify(user),
-            { EX: TOKEN_CACHE_TTL_SECONDS }
-        );
-
-        return user;
-    } catch (error) {
-        console.error('Bearer token validation error:', error);
-        return null;
-    }
 }
 
 // Time buffer before token expiration to trigger proactive refresh (5 minutes)
@@ -470,11 +307,7 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
     if (req.isAuthenticated()) {
         if (req.user?.githubAuthInvalid) {
             await clearSessionForReauth(req);
-            res.status(401).json({
-                error: 'GitHub authentication expired',
-                code: 'GITHUB_REAUTH_REQUIRED',
-                message: 'Your GitHub session has expired. Please log in again.'
-            });
+            res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
             return;
         }
 

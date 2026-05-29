@@ -10,7 +10,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -42,11 +42,72 @@ const DOCS_ENABLED = process.env.DOCS_ENABLED === 'true';
 
 // Host paths for per-CLI credential directories. Launcher is in a container
 // and can't read the host's $HOME, so the invoker must pass these in. The
-// worker and api containers mount them so the spawned claude/codex/gemini
+// worker and api containers mount them so the spawned claude/codex/gemini/vibe
 // agent containers can find the user's login state.
 const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR;
 const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR;
 const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR;
+const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR;
+
+function envFileValue(name) {
+    if (!existsSync(ENV_FILE_LOCAL)) return undefined;
+    for (const rawLine of readFileSync(ENV_FILE_LOCAL, 'utf8').split(/\r?\n/)) {
+        const parsed = parseEnvAssignment(rawLine);
+        if (parsed?.name === name) return parsed.value || undefined;
+    }
+    return undefined;
+}
+
+function parseEnvAssignment(rawLine) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) return null;
+    const assignment = line.startsWith('export ') ? line.slice(7).trimStart() : line;
+    const equalsIndex = assignment.indexOf('=');
+    if (equalsIndex <= 0) return null;
+
+    const name = assignment.slice(0, equalsIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return null;
+
+    const valueSource = assignment.slice(equalsIndex + 1).trimStart();
+    return { name, value: parseEnvValue(valueSource) };
+}
+
+function parseEnvValue(valueSource) {
+    if (!valueSource) return '';
+    const quote = valueSource[0];
+    if (quote === '"' || quote === "'") {
+        let value = '';
+        for (let index = 1; index < valueSource.length; index += 1) {
+            const char = valueSource[index];
+            if (char === quote) return quote === '"' ? unescapeDoubleQuotedEnv(value) : value;
+            if (quote === '"' && char === '\\' && index + 1 < valueSource.length) {
+                value += char + valueSource[index + 1];
+                index += 1;
+            } else {
+                value += char;
+            }
+        }
+        return quote === '"' ? unescapeDoubleQuotedEnv(value) : value;
+    }
+
+    return valueSource.replace(/\s+#.*$/, '').trimEnd();
+}
+
+function unescapeDoubleQuotedEnv(value) {
+    return value.replace(/\\([\\nrt"$`])/g, (_match, escaped) => {
+        if (escaped === 'n') return '\n';
+        if (escaped === 'r') return '\r';
+        if (escaped === 't') return '\t';
+        return escaped;
+    });
+}
+
+const VIBE_PROMPT_CACHE_DIR = process.env.VIBE_PROMPT_CACHE_DIR
+    || envFileValue('VIBE_PROMPT_CACHE_DIR')
+    || '/tmp/propr-vibe-prompts';
+const HOST_VIBE_PROMPT_CACHE_DIR = process.env.HOST_VIBE_PROMPT_CACHE_DIR
+    || envFileValue('HOST_VIBE_PROMPT_CACHE_DIR')
+    || VIBE_PROMPT_CACHE_DIR;
 
 // For each agent, mount the host credentials at the same path on both sides
 // (HOST:HOST) and set *_CONFIG_PATH env vars to that path. When the worker/api
@@ -68,7 +129,30 @@ function agentCredentialArgs() {
         args.push('-v', `${HOST_GEMINI_DIR}:${HOST_GEMINI_DIR}`);
         args.push('-e', `GEMINI_CONFIG_PATH=${HOST_GEMINI_DIR}`);
     }
+    if (HOST_VIBE_DIR) {
+        args.push('-v', `${HOST_VIBE_DIR}:${HOST_VIBE_DIR}`);
+        args.push('-e', `VIBE_CONFIG_PATH=${HOST_VIBE_DIR}`);
+    }
     return args;
+}
+
+function vibePromptCacheArgs() {
+    return [
+        '-v', `${HOST_VIBE_PROMPT_CACHE_DIR}:${VIBE_PROMPT_CACHE_DIR}`,
+        '-e', `VIBE_PROMPT_CACHE_DIR=${VIBE_PROMPT_CACHE_DIR}`,
+        '-e', `HOST_VIBE_PROMPT_CACHE_DIR=${HOST_VIBE_PROMPT_CACHE_DIR}`,
+        '-e', 'VIBE_PROMPT_CACHE_HOST_MOUNTED=1',
+    ];
+}
+
+function validateDockerBindPath(name, value, { containerPath = false } = {}) {
+    if (!value || !isAbsolute(value) || value.includes('~') || /[\0\r\n]/.test(value)) {
+        return `${name} must be an absolute path without '~' or control characters`;
+    }
+    if (!containerPath && value.includes(':')) {
+        return `${name} cannot contain ':' because it is used in a Docker bind mount`;
+    }
+    return null;
 }
 
 // Track containers we start so we can stop them on shutdown.
@@ -95,6 +179,24 @@ function dockerRunDetached(name, args) {
     console.log(`  ✓ started ${name}`);
 }
 
+function latestTagFor(imageTag) {
+    const slashIndex = imageTag.lastIndexOf('/');
+    const tagIndex = imageTag.lastIndexOf(':');
+    return tagIndex > slashIndex ? `${imageTag.slice(0, tagIndex)}:latest` : null;
+}
+
+function tagAgentLatest(key, imageTag) {
+    if (!key.startsWith('agent-')) return;
+    // Keep existing configs that reference propr/agent-*:latest working when
+    // the launcher manifest pins exact agent image versions.
+    const latestTag = latestTagFor(imageTag);
+    if (!latestTag || latestTag === imageTag) return;
+    const res = docker(['tag', imageTag, latestTag], { capture: true });
+    if (res.status !== 0) {
+        throw new Error(`Failed to tag ${imageTag} as ${latestTag}: ${res.stderr}`);
+    }
+}
+
 function containerExists(name) {
     const res = docker(['ps', '-a', '--filter', `name=^${name}$`, '--format', '{{.Names}}'], { capture: true });
     return res.stdout.trim() === name;
@@ -118,8 +220,6 @@ function ensureNetwork() {
 function pullImages() {
     console.log('\npulling images…');
     for (const [key, tag] of Object.entries(manifest.images)) {
-        // Skip agent images — workers pull them on demand.
-        if (key.startsWith('agent-')) continue;
         if (key === 'docs' && !DOCS_ENABLED) continue;
 
         // If the image is already present locally, skip the pull — supports
@@ -127,10 +227,16 @@ function pullImages() {
         const local = docker(['images', '-q', tag], { capture: true });
         if (local.stdout.trim()) {
             console.log(`  · ${tag} (local)`);
+            tagAgentLatest(key, tag);
             continue;
         }
         console.log(`  · ${tag}`);
-        docker(['pull', tag]);
+        const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
+        if (key.startsWith('agent-') && pulled.status !== 0) {
+            console.log(`  · ${tag} (pull failed; workers pull or build on demand)`);
+            continue;
+        }
+        tagAgentLatest(key, tag);
     }
 }
 
@@ -148,6 +254,22 @@ function validateEnv() {
     if (!existsSync(ENV_FILE_LOCAL)) {
         console.error(`ERROR: launcher cannot read the env file at ${ENV_FILE_LOCAL}.`);
         console.error(`Mount your .env into the launcher too: -v ${ENV_FILE}:${ENV_FILE_LOCAL}:ro`);
+        process.exit(1);
+    }
+    const invalidVibePromptPath = validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', HOST_VIBE_PROMPT_CACHE_DIR)
+        || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', VIBE_PROMPT_CACHE_DIR, { containerPath: true });
+    if (invalidVibePromptPath) {
+        console.error(`ERROR: ${invalidVibePromptPath}`);
+        process.exit(1);
+    }
+    const invalidCredentialPath = [
+        ['HOST_CLAUDE_DIR', HOST_CLAUDE_DIR],
+        ['HOST_CODEX_DIR', HOST_CODEX_DIR],
+        ['HOST_GEMINI_DIR', HOST_GEMINI_DIR],
+        ['HOST_VIBE_DIR', HOST_VIBE_DIR],
+    ].map(([name, value]) => value ? validateDockerBindPath(name, value) : null).find(Boolean);
+    if (invalidCredentialPath) {
+        console.error(`ERROR: ${invalidCredentialPath}`);
         process.exit(1);
     }
 }
@@ -191,17 +313,22 @@ function startApp() {
     ]);
 
     const creds = agentCredentialArgs();
+    const vibePrompts = vibePromptCacheArgs();
 
     removeIfExists(`${STACK}-worker`);
     appContainer(`${STACK}-worker`, ['dist/src/worker.js'], [
         '-v', `${HOST_REPOS}:/usr/src/app/repos`,
         '-v', '/tmp/claude-logs:/tmp/claude-logs',
         '--ulimit', 'nofile=65536:65536',
+        ...vibePrompts,
         ...creds,
     ]);
 
     removeIfExists(`${STACK}-analysis-worker`);
-    appContainer(`${STACK}-analysis-worker`, ['dist/src/analysis_worker.js'], [...creds]);
+    appContainer(`${STACK}-analysis-worker`, ['dist/src/analysis_worker.js'], [
+        ...vibePrompts,
+        ...creds,
+    ]);
 
     removeIfExists(`${STACK}-indexing-worker`);
     appContainer(`${STACK}-indexing-worker`, ['dist/src/indexing_worker.js'], [
@@ -217,6 +344,7 @@ function startApp() {
         '-v', `${ENV_FILE}:/usr/src/app/.env:ro`,
         '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
         '--ulimit', 'nofile=65536:65536',
+        ...vibePrompts,
         ...creds,
         '-e', `API_PUBLIC_URL=${process.env.API_PUBLIC_URL || `http://localhost:${API_PORT}`}`,
         '-e', `FRONTEND_URL=${process.env.FRONTEND_URL || `http://localhost:${UI_PORT}`}`,

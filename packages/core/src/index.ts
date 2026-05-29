@@ -63,7 +63,7 @@ export { getPlanIssueDefaultSelection } from './config/planIssueDefaultSelection
 export type { PlanIssueSelectionAgent } from './config/planIssueDefaultSelection.js';
 export { resolveModelAlias, getDefaultModel, getPreferredModelForAgent, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, resolveLlmLabel, getOpenRouterId, resolveCustomLabel, getAllCustomLabels, findMatchingModel, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from './config/modelAliases.js';
 export type { LlmLabelResolution, ReviewAssignment } from './config/modelAliases.js';
-export { CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS, ALL_MODELS, AGENT_MODELS, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
+export { CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS, VIBE_MODELS, ALL_MODELS, AGENT_MODELS, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
 export type { AgentType as ModelAgentType, ModelInfo } from './config/modelDefinitions.js';
 export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL, MIN_CONTEXT_LEVEL, MAX_CONTEXT_LEVEL, EFFECTIVE_MAX_RATIO, MODEL_LIMITS } from './config/modelLimits.js';
 export type { ContextLevel } from './config/modelLimits.js';
@@ -245,6 +245,7 @@ export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { GeminiAgent } from './agents/impl/GeminiAgent.js';
+export { VibeAgent } from './agents/impl/VibeAgent.js';
 export type {
     Agent,
     AgentConfig,
@@ -255,7 +256,7 @@ export type {
     AnalysisResult,
     AnalyzeOptions
 } from './agents/types.js';
-export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
+export { AGENT_TYPES, CONTAINER_CONFIG_PATHS } from './agents/types.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, migrateAgentConfigs } from './config/configManager.js';
 
 // Agent version management

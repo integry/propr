@@ -38,6 +38,11 @@ Source: https://github.com/openai/codex
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/google-gemini/gemini-cli
 
+## mistral-vibe (installed in propr/agent-vibe image)
+
+Licensed under the Apache License, Version 2.0.
+Source: https://github.com/mistralai/mistral-vibe
+
 ---
 
 ## Apache License 2.0 (full text)
