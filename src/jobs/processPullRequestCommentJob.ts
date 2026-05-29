@@ -31,6 +31,12 @@ import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUt
 import { gatherUnprocessedReviewComments, markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { handleUltrafixContinuation, resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
+import {
+    buildDeterministicPrTaskSubtitle,
+    buildPrTaskTitle,
+    buildPrTaskTitleContext,
+    resolvePrTaskWorkflow,
+} from './prTaskTitleHelpers.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
@@ -362,8 +368,37 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         ? await localizeContentImages(linkedIssueResult.context, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: linkedIssueResult.bodyHtml, issueOrPrId: pullRequestNumber })
         : linkedIssueResult.context;
 
-    const summaryTitle = await generateSummaryTitle({ combinedCommentBody: localizedCombinedCommentBody, worktreeInfo: state.worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger });
-    job.data.title = `Followup: ${prData!.data.title}`;
+    const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
+    const instructionText = workflow === 'followup'
+        ? localizedCombinedCommentBody
+        : job.data.commandInstructions;
+    const titleContext = buildPrTaskTitleContext({
+        workflow,
+        pullRequestNumber,
+        prTitle: prData!.data.title,
+        instructionText,
+        recentComments: allComments,
+        prDescription: prData!.data.body,
+        reviewFeedback: reviewCommentsSection,
+        excludeCommentIds: state.unprocessedComments.map(comment => comment.id),
+    });
+    const fallbackSubtitle = buildDeterministicPrTaskSubtitle(workflow);
+    const summaryTitle = await generateSummaryTitle({
+        combinedCommentBody: localizedCombinedCommentBody,
+        titleContext: titleContext.context,
+        fallbackSubtitle,
+        worktreeInfo: state.worktreeInfo,
+        githubToken,
+        pullRequestNumber,
+        prTitle: prData!.data.title,
+        workflowLabel: workflow === 'followup' ? 'Follow-up' : workflow[0].toUpperCase() + workflow.slice(1),
+        repoOwner,
+        repoName,
+        correlationId,
+        taskId,
+        correlatedLogger,
+    });
+    job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = summaryTitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
 

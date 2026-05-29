@@ -21,6 +21,12 @@ import { buildReviewComment, buildReviewErrorComment } from './reviewCommentForm
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import {
+    buildDeterministicPrTaskSubtitle,
+    buildPrTaskTitle,
+    buildPrTaskTitleContext,
+    resolvePrTaskWorkflow,
+} from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
@@ -327,7 +333,7 @@ async function fetchReviewContext(
     const fileContents = formatFileContents(fileContentsMap);
     correlatedLogger.info({ pullRequestNumber, filesWithContent: fileContentsMap.size, contentLength: fileContents.length }, 'Fetched full file contents');
 
-    return { commentHistory, linkedIssueResult, prDiff, fileContents };
+    return { allComments, commentHistory, linkedIssueResult, prDiff, fileContents };
 }
 
 async function handleUltrafixContinuation(
@@ -380,7 +386,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         historyMetadata: { commandMode: 'review' }
     });
 
-    const { commentHistory, linkedIssueResult, prDiff, fileContents } = await fetchReviewContext(
+    const { allComments, commentHistory, linkedIssueResult, prDiff, fileContents } = await fetchReviewContext(
         state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger }
     );
 
@@ -398,8 +404,20 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}`,
     });
 
-    job.data.title = `Review: ${prData!.data.title}`;
-    job.data.subtitle = `Code review with ${assignments.map(a => a.label).join(', ')}`;
+    const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
+    const titleContext = buildPrTaskTitleContext({
+        workflow,
+        pullRequestNumber,
+        prTitle: prData!.data.title,
+        instructionText: job.data.commandInstructions,
+        recentComments: allComments,
+        prDescription: prData!.data.body,
+        excludeCommentIds: state.unprocessedComments.map(comment => comment.id),
+    });
+    job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
+    job.data.subtitle = titleContext.hasMeaningfulContext
+        ? `Code review with ${assignments.map(a => a.label).join(', ')} using PR context`
+        : buildDeterministicPrTaskSubtitle(workflow);
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
 
     const registry = AgentRegistry.getInstance();

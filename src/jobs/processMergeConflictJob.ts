@@ -30,6 +30,13 @@ import {
     buildMergeConflictComment,
     updateMergeTaskWithPRInfo,
 } from './mergeConflictHelpers.js';
+import { generateSummaryTitle } from './prCommentAgentUtils.js';
+import {
+    buildDeterministicPrTaskSubtitle,
+    buildPrTaskTitle,
+    buildPrTaskTitleContext,
+    filterDiffToFiles,
+} from './prTaskTitleHelpers.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
@@ -41,6 +48,23 @@ const redisClient = new Redis({
 });
 
 interface GitHubToken { token: string }
+
+async function getConflictDiffForTitle(worktreePath: string, conflictedFiles?: string[]): Promise<string> {
+    if (!conflictedFiles || conflictedFiles.length === 0) return '';
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+    try {
+        const { stdout } = await execFileAsync('git', ['diff', '--cc', '--', ...conflictedFiles], {
+            cwd: worktreePath,
+            encoding: 'utf8',
+            maxBuffer: 2 * 1024 * 1024,
+        });
+        return filterDiffToFiles(String(stdout), conflictedFiles);
+    } catch {
+        return '';
+    }
+}
 
 /**
  * Resolves the default agent and model from settings, with fallback to registry default.
@@ -360,6 +384,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
     let worktreeInfo: WorktreeInfo | undefined;
     let octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null = null;
     let startingCommentId: number | undefined;
+    let prInfo: { prTitle: string; linkedIssueNumber: number | null } | undefined;
 
     try {
         octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
@@ -373,7 +398,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         startingCommentId = (startingComment as { data: { id: number } }).data.id;
 
         try {
-            await updateMergeTaskWithPRInfo({ octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient });
+            prInfo = await updateMergeTaskWithPRInfo({ octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient });
         } catch (prError) {
             correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR info for merge task');
         }
@@ -394,6 +419,50 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
 
         if (mergeResult.outcome === 'failed') {
             throw new Error(`Merge failed: ${mergeResult.error}`);
+        }
+
+        if (prInfo) {
+            const conflictDiff = await getConflictDiffForTitle(worktreeInfo.worktreePath, mergeResult.conflictedFiles);
+            const titleContext = buildPrTaskTitleContext({
+                workflow: 'merge',
+                pullRequestNumber,
+                prTitle: prInfo.prTitle,
+                mergeConflictDiff: conflictDiff,
+            });
+            const fallbackSubtitle = buildDeterministicPrTaskSubtitle('merge');
+            const subtitle = await generateSummaryTitle({
+                combinedCommentBody: '',
+                titleContext: titleContext.context,
+                fallbackSubtitle,
+                worktreeInfo,
+                githubToken,
+                pullRequestNumber,
+                prTitle: prInfo.prTitle,
+                workflowLabel: 'Merge',
+                repoOwner,
+                repoName,
+                correlationId,
+                taskId,
+                correlatedLogger,
+            });
+            try {
+                await updateMergeTaskWithPRInfo({
+                    octokit,
+                    stateManager,
+                    taskId,
+                    pullRequestNumber,
+                    repoOwner,
+                    repoName,
+                    baseBranch,
+                    headBranch,
+                    correlatedLogger,
+                    redisClient,
+                    title: buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle: prInfo.prTitle }),
+                    subtitle,
+                });
+            } catch (titleError) {
+                correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to update merge task subtitle from conflict diff');
+            }
         }
 
         return await handleMergeWithAgent({

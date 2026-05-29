@@ -1,0 +1,238 @@
+export type PrTaskWorkflow = 'followup' | 'fix' | 'review' | 'ultrafix' | 'merge';
+
+export interface TitleComment {
+    id?: number;
+    body?: string | null;
+    created_at?: string;
+    user?: { login?: string; type?: string | null };
+    author?: string;
+    pull_request_review_id?: number;
+}
+
+export interface BuildTitleContextOptions {
+    workflow: PrTaskWorkflow;
+    pullRequestNumber: number;
+    prTitle: string;
+    instructionText?: string | null;
+    recentComments?: TitleComment[];
+    prDescription?: string | null;
+    reviewFeedback?: string | null;
+    mergeConflictDiff?: string | null;
+    excludeCommentIds?: Array<number | undefined>;
+    recentCommentLimit?: number;
+}
+
+export interface TitleContextResult {
+    context: string;
+    hasMeaningfulContext: boolean;
+    usefulRecentCommentCount: number;
+    includedPrDescription: boolean;
+    includedReviewFeedback: boolean;
+    includedMergeConflictDiff: boolean;
+}
+
+const WORKFLOW_LABELS: Record<PrTaskWorkflow, string> = {
+    followup: 'Follow-up',
+    fix: 'Fix',
+    review: 'Review',
+    ultrafix: 'Ultrafix',
+    merge: 'Merge',
+};
+
+const PROPR_GENERATED_PATTERNS = [
+    'Starting work on follow-up changes',
+    'Starting AI Code Review',
+    'AI Code Review Complete',
+    'Resolved merge conflicts',
+    'Auto-resolving merge conflicts',
+    'Auto-merged',
+    'Failed to apply follow-up changes',
+    'Failed to resolve merge conflicts',
+];
+
+function compactWhitespace(value: string): string {
+    return value.replace(/\s+/g, ' ').trim();
+}
+
+function truncate(value: string, maxLength = 1200): string {
+    return value.length > maxLength ? `${value.substring(0, maxLength)}...` : value;
+}
+
+export function buildPrTaskTitle(options: {
+    workflow: PrTaskWorkflow;
+    pullRequestNumber: number;
+    prTitle: string | null | undefined;
+}): string {
+    const title = compactWhitespace(options.prTitle || '') || 'Untitled pull request';
+    return `${WORKFLOW_LABELS[options.workflow]} PR #${options.pullRequestNumber}: ${title}`;
+}
+
+export function buildDeterministicPrTaskSubtitle(workflow: PrTaskWorkflow): string {
+    switch (workflow) {
+        case 'fix':
+            return 'Fix requested without additional context.';
+        case 'review':
+            return 'Review requested without additional context.';
+        case 'ultrafix':
+            return 'Ultrafix cycle requested without additional context.';
+        case 'merge':
+            return 'Merge conflict resolution requested without conflict details.';
+        case 'followup':
+        default:
+            return 'Follow-up requested without additional context.';
+    }
+}
+
+export function resolvePrTaskWorkflow(commandMode: string | undefined, hasUltrafixMeta = false): PrTaskWorkflow {
+    if (hasUltrafixMeta || commandMode === 'ultrafix') return 'ultrafix';
+    if (commandMode === 'fix') return 'fix';
+    if (commandMode === 'review') return 'review';
+    return 'followup';
+}
+
+export function hasMeaningfulTitleText(value: string | null | undefined): boolean {
+    const raw = (value || '').trim();
+    const text = compactWhitespace(raw);
+    if (!text) return false;
+
+    const firstNewline = raw.indexOf('\n');
+    const firstLine = (firstNewline === -1 ? raw : raw.substring(0, firstNewline)).trim();
+    const trailingLines = firstNewline === -1 ? '' : raw.substring(firstNewline + 1).trim();
+    const commandMatch = firstLine.match(/^\/(fix|review|merge|ultrafix)(?:\s+(.*))?$/i);
+    if (!commandMatch) return true;
+
+    const command = commandMatch[1].toLowerCase();
+    const inlineText = (commandMatch[2] || '').trim();
+    if (command === 'fix') return Boolean(inlineText || trailingLines);
+    if (command === 'review' || command === 'ultrafix') return Boolean(trailingLines);
+    return false;
+}
+
+export function isUsefulTitleComment(comment: TitleComment): boolean {
+    if (!hasMeaningfulTitleText(comment.body || '')) return false;
+    const body = compactWhitespace(comment.body || '');
+
+    const authorType = comment.user?.type;
+    const author = comment.user?.login || comment.author || '';
+    if (authorType === 'Bot' && author.includes('propr')) return false;
+    return !PROPR_GENERATED_PATTERNS.some(pattern => body.includes(pattern));
+}
+
+export function selectRecentUsefulPrComments(
+    comments: TitleComment[] | undefined,
+    options: { limit?: number; excludeCommentIds?: Array<number | undefined> } = {},
+): TitleComment[] {
+    const excluded = new Set((options.excludeCommentIds || []).filter((id): id is number => typeof id === 'number'));
+    const limit = options.limit ?? 2;
+    return [...(comments || [])]
+        .filter(comment => !excluded.has(comment.id ?? -1))
+        .filter(isUsefulTitleComment)
+        .sort((a, b) => {
+            const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+            const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+            return bTime - aTime;
+        })
+        .slice(0, limit);
+}
+
+function formatComment(comment: TitleComment): string {
+    const author = comment.user?.login || comment.author || 'unknown';
+    const kind = comment.pull_request_review_id ? 'review comment' : 'PR comment';
+    return `- @${author} (${kind}): ${truncate((comment.body || '').trim())}`;
+}
+
+export function buildPrTaskTitleContext(options: BuildTitleContextOptions): TitleContextResult {
+    const recentCommentLimit = options.recentCommentLimit ?? 2;
+    const usefulRecentComments = selectRecentUsefulPrComments(options.recentComments, {
+        limit: recentCommentLimit,
+        excludeCommentIds: options.excludeCommentIds,
+    });
+    const sections: string[] = [];
+
+    if (hasMeaningfulTitleText(options.instructionText)) {
+        sections.push(`User instructions:\n${truncate(options.instructionText!.trim())}`);
+    }
+
+    if (usefulRecentComments.length > 0) {
+        sections.push(`Recent useful PR comments (newest first):\n${usefulRecentComments.map(formatComment).join('\n')}`);
+    }
+
+    const includePrDescription = usefulRecentComments.length < recentCommentLimit && hasMeaningfulTitleText(options.prDescription);
+    if (includePrDescription) {
+        sections.push(`PR description fallback:\n${truncate(options.prDescription!.trim())}`);
+    }
+
+    const includeReviewFeedback = hasMeaningfulTitleText(options.reviewFeedback);
+    if (includeReviewFeedback) {
+        sections.push(`Review feedback to address:\n${truncate(options.reviewFeedback!.trim(), 1800)}`);
+    }
+
+    const includeMergeConflictDiff = hasMeaningfulTitleText(options.mergeConflictDiff);
+    if (includeMergeConflictDiff) {
+        sections.push(`Merge conflict diff for conflicting files only:\n${truncate(options.mergeConflictDiff!.trim(), 4000)}`);
+    }
+
+    if (sections.length === 0) {
+        return {
+            context: '',
+            hasMeaningfulContext: false,
+            usefulRecentCommentCount: 0,
+            includedPrDescription: false,
+            includedReviewFeedback: false,
+            includedMergeConflictDiff: false,
+        };
+    }
+
+    const title = buildPrTaskTitle({
+        workflow: options.workflow,
+        pullRequestNumber: options.pullRequestNumber,
+        prTitle: options.prTitle,
+    });
+
+    return {
+        context: `Task: ${title}\n\n${sections.join('\n\n')}`,
+        hasMeaningfulContext: true,
+        usefulRecentCommentCount: usefulRecentComments.length,
+        includedPrDescription: includePrDescription,
+        includedReviewFeedback: includeReviewFeedback,
+        includedMergeConflictDiff: includeMergeConflictDiff,
+    };
+}
+
+function normalizeDiffPath(path: string): string {
+    return path.replace(/^a\//, '').replace(/^b\//, '').trim();
+}
+
+function diffBlockPath(header: string): string | null {
+    const gitHeader = header.match(/^diff --git\s+a\/(.+?)\s+b\/(.+)$/);
+    if (gitHeader) return normalizeDiffPath(gitHeader[2]);
+
+    const combinedHeader = header.match(/^diff --(?:cc|combined)\s+(.+)$/);
+    if (combinedHeader) return normalizeDiffPath(combinedHeader[1]);
+
+    return null;
+}
+
+export function filterDiffToFiles(diff: string, filePaths: string[]): string {
+    const wanted = new Set(filePaths.map(normalizeDiffPath));
+    if (wanted.size === 0 || !diff.trim()) return '';
+
+    const lines = diff.split('\n');
+    const blocks: string[] = [];
+    let current: string[] = [];
+    let includeCurrent = false;
+
+    for (const line of lines) {
+        if (line.startsWith('diff --git ') || line.startsWith('diff --cc ') || line.startsWith('diff --combined ')) {
+            if (current.length > 0 && includeCurrent) blocks.push(current.join('\n'));
+            current = [line];
+            const path = diffBlockPath(line);
+            includeCurrent = path !== null && wanted.has(path);
+        } else if (current.length > 0) {
+            current.push(line);
+        }
+    }
+
+    if (current.length > 0 && includeCurrent) blocks.push(current.join('\n'));
+    return blocks.join('\n');
+}

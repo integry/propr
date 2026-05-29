@@ -4,6 +4,7 @@ import type { AutoResolveContext } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { db } from '@propr/core';
+import { buildPrTaskTitle } from './prTaskTitleHelpers.js';
 
 /**
  * Builds a prompt that instructs the agent to check for and resolve any merge conflicts
@@ -207,7 +208,9 @@ export async function updateMergeTaskWithPRInfo(options: {
     headBranch: string;
     correlatedLogger: Logger;
     redisClient: { setex: (key: string, ttl: number, value: string) => Promise<unknown> };
-}): Promise<void> {
+    title?: string;
+    subtitle?: string;
+}): Promise<{ prTitle: string; linkedIssueNumber: number | null }> {
     const { octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient } = options;
 
     const graphqlResponse = await octokit.graphql<{
@@ -238,8 +241,8 @@ export async function updateMergeTaskWithPRInfo(options: {
     const prTitle = graphqlResponse.repository.pullRequest.title;
     const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
     const linkedIssueNumber = linkedIssues.length > 0 ? linkedIssues[0].number : null;
-    const taskTitle = `Merge: ${prTitle}`;
-    const taskSubtitle = `Merging ${baseBranch} into ${headBranch}`;
+    const taskTitle = options.title || buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle });
+    const taskSubtitle = options.subtitle || `Merging ${baseBranch} into ${headBranch}`;
 
     if (linkedIssueNumber) {
         correlatedLogger.info({ taskId, pullRequestNumber, linkedIssueNumber }, 'Found linked issue via GraphQL for merge task');
@@ -266,4 +269,5 @@ export async function updateMergeTaskWithPRInfo(options: {
     }
 
     correlatedLogger.info({ taskId, prTitle, taskTitle, linkedIssueNumber }, 'Updated merge task with PR title and linked issue');
+    return { prTitle, linkedIssueNumber };
 }

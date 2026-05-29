@@ -14,9 +14,13 @@ interface GitHubToken { token: string }
 
 interface SummaryTitleOptions {
     combinedCommentBody: string;
+    titleContext?: string;
+    fallbackSubtitle?: string;
     worktreeInfo: WorktreeInfo;
     githubToken: GitHubToken;
     pullRequestNumber: number;
+    prTitle?: string;
+    workflowLabel?: string;
     repoOwner: string;
     repoName: string;
     correlationId: string;
@@ -25,9 +29,17 @@ interface SummaryTitleOptions {
 }
 
 export async function generateSummaryTitle(options: SummaryTitleOptions): Promise<string> {
-    const { combinedCommentBody, worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger } = options;
+    const { combinedCommentBody, titleContext, fallbackSubtitle, worktreeInfo, githubToken, pullRequestNumber, prTitle, workflowLabel, repoOwner, repoName, correlationId, taskId, correlatedLogger } = options;
+    const contextToSummarize = (titleContext !== undefined ? titleContext : combinedCommentBody || '').trim();
+    const deterministicFallback = fallbackSubtitle || `Follow-up: PR #${pullRequestNumber}`;
+    if (!contextToSummarize) {
+        return deterministicFallback;
+    }
+
     try {
-        const summaryRequest = `Summarize this change request in one sentence, focusing on the main action: ${combinedCommentBody}`;
+        const workflowText = workflowLabel ? `${workflowLabel} workflow` : 'PR workflow';
+        const prText = prTitle ? `PR #${pullRequestNumber}: ${prTitle}` : `PR #${pullRequestNumber}`;
+        const summaryRequest = `Summarize this ${workflowText} as a concise task subtitle for ${prText}. Focus on the concrete action or discussion context, not the slash command itself.\n\nContext:\n${contextToSummarize}`;
         const summarizationSettings = await loadSummarizationSettings();
         const configuredModel = summarizationSettings.agent_alias?.trim();
         const model = configuredModel || 'haiku';
@@ -50,11 +62,17 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
         return title;
     } catch (summaryError) {
         correlatedLogger.warn({ taskId, error: (summaryError as Error).message }, 'Failed to generate AI summary, falling back to truncation.');
-        if (combinedCommentBody) {
-            const firstLine = combinedCommentBody.split('\n')[0].replace(/[^a-zA-Z0-9 ]/g, '').trim();
-            return "Follow-up: " + firstLine.substring(0, 75) + (firstLine.length > 75 ? '...' : '');
+        if (contextToSummarize) {
+            const firstContentLine = contextToSummarize
+                .split('\n')
+                .map(line => line.trim())
+                .find(line => line && !line.startsWith('Task:'));
+            const firstLine = (firstContentLine || '').replace(/[^a-zA-Z0-9 ]/g, '').trim();
+            if (!firstLine) return deterministicFallback;
+            const prefix = workflowLabel || 'Follow-up';
+            return `${prefix}: ${firstLine.substring(0, 75)}${firstLine.length > 75 ? '...' : ''}`;
         }
-        return `Follow-up: PR #${pullRequestNumber}`;
+        return deterministicFallback;
     }
 }
 
