@@ -76,7 +76,7 @@ function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
       : joinOpenCodeTextValues([message.text, message.delta, message.content]);
   }
   if (topLevelPartsText || messageText || responseText) return joinOpenCodeTextGroups(topLevelPartsText, joinOpenCodeTextGroups(messageText, responseText)) || null;
-  if (!event.type || !['text', 'delta', 'completion'].includes(event.type.toLowerCase())) return null;
+  if (!event.type || !['text', 'delta', 'completion', 'reasoning'].includes(event.type.toLowerCase())) return null;
   const text = joinOpenCodeTextValues([event.text, event.delta, event.content], !isOpenCodeStreamingTextEvent(event));
   return text || null;
 }
@@ -89,7 +89,7 @@ function isOpenCodeStreamingTextEvent(event: OpenCodeEvent): boolean {
 function joinOpenCodePartsText(parts: Array<{ type?: string; text?: string; delta?: string; content?: unknown }>, trim = true): string {
   const values = parts.flatMap(part => {
     const partType = part.type?.toLowerCase();
-    if (partType && !['text', 'assistant_text', 'message', 'completion'].includes(partType)) return [];
+    if (partType && !['text', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return [];
     return [part.text, part.delta, part.content];
   });
   return joinOpenCodeTextValues(values, trim);
@@ -118,7 +118,7 @@ function extractOpenCodeEventError(event: OpenCodeEvent): string {
 
 function extractOpenCodeToolEvents(event: OpenCodeEvent, timestamp: string): Array<Record<string, unknown>> {
   const events: Array<Record<string, unknown>> = [];
-  appendOpenCodeToolEvent(events, event, timestamp);
+  if (!event.part) appendOpenCodeToolEvent(events, event, timestamp);
   appendOpenCodeToolEvent(events, event.part, timestamp);
   for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp);
   return events;
@@ -127,23 +127,94 @@ function extractOpenCodeToolEvents(event: OpenCodeEvent, timestamp: string): Arr
 function appendOpenCodeToolEvent(events: Array<Record<string, unknown>>, source: OpenCodeEvent['part'] | OpenCodeEvent | undefined, timestamp: string): void {
   if (!source?.type) return;
   const type = source.type.toLowerCase();
-  if (['tool_use', 'tool', 'tool_call'].includes(type)) {
-    events.push({
-      type: 'tool_use',
-      toolName: source.tool_name || source.tool || source.name,
-      input: source.parameters || source.input || source.args,
-      id: source.tool_id || source.id,
-      timestamp
-    });
+  const sourceWithState = source as OpenCodeToolSource;
+  if (isOpenCodeToolResultType(type)) {
+    appendOpenCodeToolResultEvent(events, sourceWithState, timestamp);
     return;
   }
-  if (['tool_result', 'tool_response'].includes(type)) {
-    events.push({
-      type: 'tool_result',
-      toolUseId: source.tool_id || source.id,
-      result: source.output || source.result,
-      isError: source.status === 'error',
-      timestamp
-    });
+  if (!isOpenCodeToolUseType(type)) return;
+  events.push(buildOpenCodeToolUseEvent(sourceWithState, timestamp));
+  if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp);
+}
+
+interface OpenCodeToolSource {
+  id?: string;
+  callID?: string;
+  tool_id?: string;
+  tool?: string;
+  tool_name?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
+  args?: Record<string, unknown>;
+  output?: string;
+  result?: string;
+  status?: string;
+  state?: {
+    status?: string;
+    input?: Record<string, unknown>;
+    output?: string;
+    error?: unknown;
+    metadata?: { output?: string; exit?: number };
+  };
+}
+
+function isOpenCodeToolUseType(type: string): boolean {
+  return ['tool_use', 'tool', 'tool_call'].includes(type);
+}
+
+function isOpenCodeToolResultType(type: string): boolean {
+  return ['tool_result', 'tool_response'].includes(type);
+}
+
+function buildOpenCodeToolUseEvent(source: OpenCodeToolSource, timestamp: string): Record<string, unknown> {
+  return {
+    type: 'tool_use',
+    toolName: source.tool_name || source.tool || source.name,
+    input: source.parameters || source.input || source.args || source.state?.input,
+    id: getOpenCodeToolId(source),
+    timestamp
+  };
+}
+
+function appendOpenCodeCompletedToolResult(events: Array<Record<string, unknown>>, source: OpenCodeToolSource, timestamp: string): void {
+  if (!source.state || !['completed', 'error'].includes(source.state.status ?? '')) return;
+  events.push({
+    type: 'tool_result',
+    toolUseId: getOpenCodeToolId(source),
+    result: extractOpenCodeToolResult(source),
+    isError: isOpenCodeToolStateError(source),
+    timestamp
+  });
+}
+
+function appendOpenCodeToolResultEvent(events: Array<Record<string, unknown>>, source: OpenCodeToolSource, timestamp: string): void {
+  events.push({
+    type: 'tool_result',
+    toolUseId: getOpenCodeToolId(source),
+    result: source.output || source.result,
+    isError: source.status === 'error',
+    timestamp
+  });
+}
+
+function getOpenCodeToolId(source: OpenCodeToolSource): string | undefined {
+  return source.tool_id || source.callID || source.id;
+}
+
+function extractOpenCodeToolResult(source: OpenCodeToolSource): string {
+  const state = source.state;
+  if (!state) return source.output || source.result || '';
+  if (typeof state.output === 'string') return state.output;
+  if (typeof state.metadata?.output === 'string') return state.metadata.output;
+  if (typeof state.error === 'string') return state.error;
+  if (state.error && typeof state.error === 'object' && 'message' in state.error && typeof state.error.message === 'string') {
+    return state.error.message;
   }
+  return source.output || source.result || '';
+}
+
+function isOpenCodeToolStateError(source: OpenCodeToolSource): boolean {
+  if (source.state?.status === 'error' || source.status === 'error') return true;
+  return typeof source.state?.metadata?.exit === 'number' && source.state.metadata.exit !== 0;
 }

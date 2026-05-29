@@ -6,16 +6,14 @@ import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../cl
 import type { AgentConfig, TokenUsage } from '../types.js';
 
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
-const OPEN_CODE_TEXT_EVENT_TYPES = new Set(['text', 'delta', 'completion']);
+const OPEN_CODE_TEXT_EVENT_TYPES = new Set(['text', 'delta', 'completion', 'reasoning']);
 const OPEN_CODE_TOOL_EVENT_TYPES = new Set(['tool_use', 'tool_result', 'tool', 'tool_call', 'tool_response']);
 
 export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
 
 export interface OpenCodeEvent {
     type?: string; timestamp?: number | string;
-    sessionID?: string; sessionId?: string; session_id?: string;
-    part?: OpenCodePart; parts?: OpenCodePart[];
-    message?: OpenCodeMessage;
+    sessionID?: string; sessionId?: string; session_id?: string; part?: OpenCodePart; parts?: OpenCodePart[]; message?: OpenCodeMessage;
     error?: { name?: string; data?: { message?: string }; message?: string } | string;
     model?: string; text?: string; content?: unknown; delta?: string;
     tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
@@ -24,77 +22,44 @@ export interface OpenCodeEvent {
     usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage;
 }
 
-interface OpenCodeTextContainer {
-    text?: string; content?: unknown; delta?: string;
-    usage?: OpenCodeUsage;
-}
+interface OpenCodeTextContainer { text?: string; content?: unknown; delta?: string; usage?: OpenCodeUsage; }
 
 export type OpenCodeUsage = Record<string, unknown>;
 
 export interface NormalizedOpenCodeUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; }
 
 interface OpenCodePart extends OpenCodeTextContainer {
-    type?: string;
-    messageID?: string;
-    sessionID?: string;
+    type?: string; messageID?: string; sessionID?: string; callID?: string; tokens?: OpenCodeUsage;
+    state?: {
+        status?: string; input?: Record<string, unknown>; output?: string; error?: unknown; title?: string;
+        metadata?: { output?: string; exit?: number; [key: string]: unknown };
+    };
     tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
     output?: string; result?: string; status?: string; id?: string; tool_id?: string;
 }
 
-interface OpenCodeMessage extends OpenCodeTextContainer {
-    role?: string;
-    model?: string;
-    parts?: OpenCodePart[];
-}
+interface OpenCodeMessage extends OpenCodeTextContainer { role?: string; model?: string; parts?: OpenCodePart[]; }
 
 export interface ParsedOpenCodeOutput { sessionId?: string; modelUsed?: string; summary?: string; error?: string; tokenUsage?: TokenUsage; conversationLog: OpenCodeEvent[]; }
 
 interface OpenCodeParseState {
-    sessionId?: string;
-    modelUsed?: string;
-    error?: string;
-    tokenUsage: TokenUsage;
-    lastCumulativeTopLevelUsage?: TokenUsage;
-    streamTextParts: string[];
-    assistantMessages: string[];
+    sessionId?: string; modelUsed?: string; error?: string; tokenUsage: TokenUsage; lastCumulativeTopLevelUsage?: TokenUsage;
+    streamTextParts: string[]; assistantMessages: string[];
 }
 
-interface ExtractedOpenCodeText {
-    streamParts: string[];
-    assistantMessage?: string;
-}
+interface ExtractedOpenCodeText { streamParts: string[]; assistantMessage?: string; }
 
 export interface OpenCodeDockerArgsParams {
-    config: AgentConfig;
-    worktreePath: string;
-    githubToken: string;
-    modelName?: string;
-    issueNumber: number;
-    taskId?: string;
-    executionType?: string;
-    readOnlyWorkspace?: boolean;
-    allowDangerousPermissions?: boolean;
-    configPath?: string;
+    config: AgentConfig; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number;
+    taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; allowDangerousPermissions?: boolean; configPath?: string;
     ensureConfigPath?: (configPath: string) => void;
 }
 
 export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string {
-    const {
-        customPrompt,
-        issueRef,
-        branchName,
-        modelName,
-        issueDetails,
-        isRetry,
-        retryReason,
-        systemPrompt
-    } = options;
+    const { customPrompt, issueRef, branchName, modelName, issueDetails, isRetry, retryReason, systemPrompt } = options;
 
     const basePrompt = customPrompt || generateClaudePrompt({
-        issueRef,
-        branchName: branchName ?? null,
-        modelName: modelName ?? null,
-        issueDetails: issueDetails ?? null
+        issueRef, branchName: branchName ?? null, modelName: modelName ?? null, issueDetails: issueDetails ?? null
     });
     const systemContext = systemPrompt ? `SYSTEM INSTRUCTIONS:\n${systemPrompt}\n\n---\n\n` : '';
     let prompt = `${systemContext}${basePrompt}
@@ -112,23 +77,14 @@ export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string
         prompt += `\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
     }
 
-    logger.debug({
-        issueNumber: issueRef.number,
-        promptLength: prompt.length,
-        hasSafetyRules: prompt.includes('CRITICAL GIT SAFETY RULES'),
-        isCustomPrompt: !!customPrompt
-    }, 'Generated OpenCode prompt with safety rules');
+    logger.debug({ issueNumber: issueRef.number, promptLength: prompt.length, hasSafetyRules: prompt.includes('CRITICAL GIT SAFETY RULES'), isCustomPrompt: !!customPrompt }, 'Generated OpenCode prompt with safety rules');
 
     return prompt;
 }
 
 export function parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
     const conversationLog: OpenCodeEvent[] = [];
-    const state: OpenCodeParseState = {
-        streamTextParts: [],
-        assistantMessages: [],
-        tokenUsage: {}
-    };
+    const state: OpenCodeParseState = { streamTextParts: [], assistantMessages: [], tokenUsage: {} };
 
     for (const line of output.split('\n')) {
         if (!line.trim()) continue;
@@ -142,31 +98,13 @@ export function parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
         }
     }
 
-    return {
-        sessionId: state.sessionId,
-        modelUsed: state.modelUsed,
-        summary: buildOpenCodeSummary(state),
-        error: state.error,
-        tokenUsage: hasOpenCodeTokenUsage(state.tokenUsage) ? state.tokenUsage : undefined,
-        conversationLog
-    };
+    return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: buildOpenCodeSummary(state), error: state.error, tokenUsage: hasOpenCodeTokenUsage(state.tokenUsage) ? state.tokenUsage : undefined, conversationLog };
 }
 
 export const parseOpenCodeStreamOutput = parseOpenCodeJsonl;
 
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
-    const {
-        config,
-        worktreePath,
-        githubToken,
-        modelName,
-        issueNumber,
-        taskId,
-        executionType,
-        readOnlyWorkspace,
-        allowDangerousPermissions = true,
-        ensureConfigPath = ensureDirectory
-    } = params;
+    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, allowDangerousPermissions = true, ensureConfigPath = ensureDirectory } = params;
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     ensureConfigPath(configPath);
     const envVars = buildEnvVars(config);
@@ -231,7 +169,8 @@ function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): vo
     for (const usage of [
         normalizeOpenCodeUsage(event.usage),
         normalizeOpenCodeUsage(event.stats),
-        normalizeOpenCodeUsage(event.tokens)
+        normalizeOpenCodeUsage(event.tokens),
+        normalizeOpenCodeUsage(event.part?.tokens)
     ]) {
         if (usage) mergeOpenCodeUsageByMax(topLevelUsage, usage);
     }
@@ -272,6 +211,7 @@ export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknow
 function hasOpenCodeEventPayload(event: { sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; response?: unknown; text?: unknown; content?: unknown; delta?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }, type: string | undefined, message: { role?: unknown; parts?: unknown[] } | null): boolean {
     const hasOpenCodeIdentity = Boolean(event.sessionID || event.sessionId || event.session_id);
     const hasUsage = hasOpenCodeResultUsage(event, type, hasOpenCodeIdentity);
+    const hasNestedUsage = hasOpenCodeNestedUsage(event);
     const hasAssistantText = message?.role === 'assistant' && hasOpenCodeTextField(event.message as { text?: unknown; content?: unknown; delta?: unknown });
     const hasResponseText = hasOpenCodeIdentity && isOpenCodeTextContainer(event.response);
     const checks = [
@@ -283,7 +223,7 @@ function hasOpenCodeEventPayload(event: { sessionID?: unknown; sessionId?: unkno
         Boolean(type && OPEN_CODE_TEXT_EVENT_TYPES.has(type) && hasOpenCodeTextField(event)),
         Boolean(hasOpenCodeIdentity && type && OPEN_CODE_TOOL_EVENT_TYPES.has(type)),
         Boolean(type === 'result' && hasUsage),
-        Boolean(hasOpenCodeIdentity && hasUsage)
+        Boolean(hasOpenCodeIdentity && (hasUsage || hasNestedUsage))
     ];
     return checks.some(Boolean);
 }
@@ -292,6 +232,19 @@ function hasOpenCodeResultUsage(event: { usage?: OpenCodeUsage; stats?: OpenCode
     const usage = normalizeOpenCodeUsage(event.usage) || normalizeOpenCodeUsage(event.tokens);
     if (usage || type !== 'result') return Boolean(usage);
     return hasOpenCodeIdentity && Boolean(normalizeOpenCodeUsage(event.stats));
+}
+
+function hasOpenCodeNestedUsage(event: { message?: unknown; response?: unknown }): boolean {
+    return Boolean(
+        normalizeOpenCodeUsage(getOpenCodeNestedUsage(event.message))
+        || normalizeOpenCodeUsage(getOpenCodeNestedUsage(event.response))
+    );
+}
+
+function getOpenCodeNestedUsage(value: unknown): OpenCodeUsage | undefined {
+    if (!value || typeof value !== 'object' || !('usage' in value)) return undefined;
+    const usage = (value as { usage?: unknown }).usage;
+    return usage && typeof usage === 'object' ? usage as OpenCodeUsage : undefined;
 }
 
 function isOpenCodeTextContainer(value: unknown): value is { text?: unknown; content?: unknown; delta?: unknown } { return Boolean(value && typeof value === 'object' && hasOpenCodeTextField(value as { text?: unknown; content?: unknown; delta?: unknown })); }
@@ -304,8 +257,10 @@ export function normalizeOpenCodeUsage(usage: OpenCodeUsage | undefined): Normal
     if (!usage) return undefined;
     const inputTokens = firstNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'input', 'prompt']);
     const outputTokens = firstNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens', 'output', 'completion']);
-    const cacheCreationTokens = firstNumber(usage, ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cacheCreationTokens']);
-    const cacheReadTokens = firstNumber(usage, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cached_input_tokens', 'cachedInputTokens', 'cacheReadTokens']);
+    const cacheCreationTokens = firstNumber(usage, ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cacheCreationTokens', 'cache_write', 'cacheWrite'])
+        ?? nestedNumber(usage, 'cache', ['write']);
+    const cacheReadTokens = firstNumber(usage, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cached_input_tokens', 'cachedInputTokens', 'cacheReadTokens', 'cache_read', 'cacheRead'])
+        ?? nestedNumber(usage, 'cache', ['read']);
     const normalized: NormalizedOpenCodeUsage = {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
@@ -322,6 +277,12 @@ function firstNumber(source: OpenCodeUsage, keys: string[]): number | undefined 
         if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
     }
     return undefined;
+}
+
+function nestedNumber(source: OpenCodeUsage, objectKey: string, keys: string[]): number | undefined {
+    const nested = source[objectKey];
+    if (!nested || typeof nested !== 'object') return undefined;
+    return firstNumber(nested as OpenCodeUsage, keys);
 }
 
 function mergeOpenCodeUsageByMax(target: TokenUsage, usage: NormalizedOpenCodeUsage): void {
@@ -412,7 +373,7 @@ function addPartsText(textParts: string[], parts?: OpenCodePart[]): void {
 function addPartText(textParts: string[], part?: OpenCodePart): void {
     if (!part) return;
     const partType = part.type?.toLowerCase();
-    if (partType && !['text', 'assistant_text', 'message', 'completion'].includes(partType)) return;
+    if (partType && !['text', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return;
     addTextContainer(textParts, part);
 }
 
@@ -429,7 +390,7 @@ function addTextContainer(textParts: string[], container?: OpenCodeTextContainer
 
 function isAssistantTextEvent(event: OpenCodeEvent): boolean {
     const type = event.type?.toLowerCase();
-    return !!type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(type);
+    return !!type && ['text', 'assistant', 'message', 'delta', 'completion', 'reasoning'].includes(type);
 }
 
 function extractOpenCodeError(event: OpenCodeEvent): string {

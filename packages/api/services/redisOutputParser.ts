@@ -3,11 +3,7 @@ import { isOpenCodeJsonlEvent, normalizeOpenCodeTimestamp, normalizeOpenCodeUsag
 
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
-  events: ConversationEvent[];
-  todos: TodoItem[];
-  currentTask: string | null;
-  tokenUsage: TokenUsageInfo | null;
-  totalEventCount: number;
+  events: ConversationEvent[]; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsageInfo | null; totalEventCount: number;
 }
 
 /** State accumulated while parsing lines */
@@ -20,13 +16,23 @@ interface ParseState {
 }
 
 interface OpenCodeRedisEventUsage {
-  topLevel: ParseState['tokenUsage'];
-  nested: ParseState['tokenUsage'];
-  cumulative: boolean;
+  topLevel: ParseState['tokenUsage']; nested: ParseState['tokenUsage']; cumulative: boolean;
+}
+
+interface OpenCodeRedisEvent {
+  type?: string; timestamp?: string | number; sessionID?: string; sessionId?: string; session_id?: string;
+  part?: OpenCodeRedisPart; parts?: OpenCodeRedisPart[];
+  message?: { role?: string; content?: unknown; text?: string; delta?: string; parts?: OpenCodeRedisPart[]; usage?: Record<string, unknown> };
+  response?: { content?: unknown; text?: string; delta?: string; usage?: Record<string, unknown> };
+  tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
+  output?: string; result?: string; status?: string; id?: string; tool_id?: string; error?: string | { message?: string; name?: string; data?: { message?: string } };
+  usage?: Record<string, unknown>; stats?: Record<string, unknown>; tokens?: Record<string, unknown>;
 }
 
 /** Max content length for truncation */
 const MAX_CONTENT_LENGTH = 2000;
+const OPEN_CODE_TOOL_USE_TYPES = ['tool_use', 'tool', 'tool_call'];
+const OPEN_CODE_TOOL_RESULT_TYPES = ['tool_result', 'tool_response'];
 
 /**
  * Truncate long content strings
@@ -41,11 +47,7 @@ function truncateContent(content: string | undefined): string {
  * Parse todo items array to TodoItem[]
  */
 function parseTodoItems(items: Array<{ text: string; completed: boolean }>): TodoItem[] {
-  return items.map((t, i) => ({
-    id: `todo-${i}`,
-    content: t.text,
-    status: t.completed ? 'completed' as const : 'pending' as const
-  }));
+  return items.map((t, i) => ({ id: `todo-${i}`, content: t.text, status: t.completed ? 'completed' as const : 'pending' as const }));
 }
 
 /**
@@ -65,12 +67,7 @@ function processCodexItem(
     case 'command_execution':
       events.push({ type: 'tool_use' as const, toolName: 'Bash', input: { command: item.command }, timestamp });
       if (item.aggregated_output) {
-        events.push({
-          type: 'tool_result' as const,
-          result: truncateContent(item.aggregated_output),
-          isError: item.exit_code !== 0,
-          timestamp
-        });
+        events.push({ type: 'tool_result' as const, result: truncateContent(item.aggregated_output), isError: item.exit_code !== 0, timestamp });
       }
       break;
     case 'file_change':
@@ -147,23 +144,11 @@ function processGeminiEvent(
   }
   if (event.type === 'tool_use') {
     flushPendingMessage(state, timestamp);
-    state.events.push({
-      type: 'tool_use' as const,
-      toolName: event.tool_name,
-      input: event.parameters as Record<string, unknown> | undefined,
-      id: event.tool_id,
-      timestamp
-    });
+    state.events.push({ type: 'tool_use' as const, toolName: event.tool_name, input: event.parameters as Record<string, unknown> | undefined, id: event.tool_id, timestamp });
     return;
   }
   if (event.type === 'tool_result') {
-    state.events.push({
-      type: 'tool_result' as const,
-      toolUseId: event.tool_id,
-      result: truncateContent(event.output),
-      isError: event.status === 'error',
-      timestamp
-    });
+    state.events.push({ type: 'tool_result' as const, toolUseId: event.tool_id, result: truncateContent(event.output), isError: event.status === 'error', timestamp });
     return;
   }
   if (event.type === 'result' && event.stats) {
@@ -177,32 +162,7 @@ function processGeminiEvent(
  * Process OpenCode JSON stream events.
  */
 function processOpenCodeEvent(
-  event: {
-    type?: string;
-    timestamp?: string | number;
-    sessionID?: string;
-    sessionId?: string;
-    session_id?: string;
-    part?: OpenCodeRedisPart;
-    parts?: OpenCodeRedisPart[];
-    message?: { role?: string; content?: unknown; text?: string; delta?: string; parts?: OpenCodeRedisPart[]; usage?: Record<string, unknown> };
-    response?: { content?: unknown; text?: string; delta?: string; usage?: Record<string, unknown> };
-    tool?: string;
-    tool_name?: string;
-    name?: string;
-    input?: Record<string, unknown>;
-    parameters?: Record<string, unknown>;
-    args?: Record<string, unknown>;
-    output?: string;
-    result?: string;
-    status?: string;
-    id?: string;
-    tool_id?: string;
-    error?: string | { message?: string; name?: string; data?: { message?: string } };
-    usage?: Record<string, unknown>;
-    stats?: Record<string, unknown>;
-    tokens?: Record<string, unknown>;
-  },
+  event: OpenCodeRedisEvent,
   timestamp: string,
   state: ParseState
 ): boolean {
@@ -240,17 +200,20 @@ function processOpenCodeEvent(
 }
 
 interface OpenCodeRedisPart {
-  type?: string; text?: string; content?: unknown; delta?: string;
+  type?: string; text?: string; content?: unknown; delta?: string; callID?: string; tokens?: Record<string, unknown>;
+  state?: { status?: string; input?: Record<string, unknown>; output?: string; error?: unknown; metadata?: { output?: string; exit?: number } };
   tool?: string; tool_name?: string; name?: string;
   input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
   output?: string; result?: string; status?: string; id?: string; tool_id?: string;
 }
 
-function isOpenCodeEvent(event: Parameters<typeof processOpenCodeEvent>[0]): boolean {
+type OpenCodeRedisToolSource = OpenCodeRedisEvent & Pick<OpenCodeRedisPart, 'callID' | 'state'>;
+
+function isOpenCodeEvent(event: OpenCodeRedisEvent): boolean {
   return isOpenCodeJsonlEvent(event);
 }
 
-function extractOpenCodeAssistantText(event: Parameters<typeof processOpenCodeEvent>[0]): string {
+function extractOpenCodeAssistantText(event: OpenCodeRedisEvent): string {
   if (event.message?.role && event.message.role !== 'assistant') return '';
   const topLevelParts: string[] = [];
   addOpenCodeTextPart(topLevelParts, event.part);
@@ -273,7 +236,7 @@ function extractOpenCodeAssistantText(event: Parameters<typeof processOpenCodeEv
 function addOpenCodeTextPart(parts: string[], part?: { type?: string; text?: string; content?: unknown; delta?: string }): void {
   if (!part) return;
   const partType = part.type?.toLowerCase();
-  if (partType && !['text', 'assistant_text', 'message', 'completion'].includes(partType)) return;
+  if (partType && !['text', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return;
   addOpenCodeTextContainer(parts, part);
 }
 
@@ -286,17 +249,18 @@ function addOpenCodeTextContainer(parts: string[], container?: { text?: string; 
   }
 }
 
-function extractOpenCodeError(error: Parameters<typeof processOpenCodeEvent>[0]['error']): string {
+function extractOpenCodeError(error: OpenCodeRedisEvent['error']): string {
   if (typeof error === 'string') return error;
   return error?.data?.message || error?.message || error?.name || 'OpenCode execution failed';
 }
 
-function buildOpenCodeRedisEventUsage(event: Parameters<typeof processOpenCodeEvent>[0]): OpenCodeRedisEventUsage | null {
+function buildOpenCodeRedisEventUsage(event: OpenCodeRedisEvent): OpenCodeRedisEventUsage | null {
   const topLevelUsage = emptyRedisTokenUsage();
   const nestedUsage = emptyRedisTokenUsage();
   mergeOpenCodeRedisUsageByMax(topLevelUsage, event.usage);
   mergeOpenCodeRedisUsageByMax(topLevelUsage, event.stats);
   mergeOpenCodeRedisUsageByMax(topLevelUsage, event.tokens);
+  mergeOpenCodeRedisUsageByMax(topLevelUsage, event.part?.tokens);
   mergeOpenCodeRedisUsageByMax(nestedUsage, event.message?.usage);
   mergeOpenCodeRedisUsageByMax(nestedUsage, event.response?.usage);
   return hasRedisTokenUsage(topLevelUsage) || hasRedisTokenUsage(nestedUsage)
@@ -305,12 +269,7 @@ function buildOpenCodeRedisEventUsage(event: Parameters<typeof processOpenCodeEv
 }
 
 function emptyRedisTokenUsage(): ParseState['tokenUsage'] {
-  return {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0
-  };
+  return { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 }
 
 function mergeOpenCodeRedisUsageByMax(target: ParseState['tokenUsage'], usage?: Record<string, unknown>): void {
@@ -335,29 +294,66 @@ function addOpenCodeRedisUsage(state: ParseState, usage: OpenCodeRedisEventUsage
   }
 }
 
-function hasOpenCodeSessionId(event: Parameters<typeof processOpenCodeEvent>[0]): boolean {
+function hasOpenCodeSessionId(event: OpenCodeRedisEvent): boolean {
   return Boolean(event.sessionID || event.sessionId || event.session_id);
 }
 
-function extractOpenCodeToolEvents(event: Parameters<typeof processOpenCodeEvent>[0], timestamp: string): ConversationEvent[] {
+function extractOpenCodeToolEvents(event: OpenCodeRedisEvent, timestamp: string): ConversationEvent[] {
   if (!hasOpenCodeSessionId(event)) return [];
   const events: ConversationEvent[] = [];
-  appendOpenCodeToolEvent(events, event, timestamp);
+  if (!event.part) appendOpenCodeToolEvent(events, event, timestamp);
   appendOpenCodeToolEvent(events, event.part, timestamp);
   for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp);
   return events;
 }
 
-function appendOpenCodeToolEvent(events: ConversationEvent[], source: (Parameters<typeof processOpenCodeEvent>[0] | OpenCodeRedisPart) | undefined, timestamp: string): void {
+function appendOpenCodeToolEvent(events: ConversationEvent[], source: (OpenCodeRedisEvent | OpenCodeRedisPart) | undefined, timestamp: string): void {
   if (!source?.type) return;
   const type = source.type.toLowerCase();
-  if (['tool_use', 'tool', 'tool_call'].includes(type)) {
-    events.push({ type: 'tool_use' as const, toolName: source.tool_name || source.tool || source.name, input: source.parameters || source.input || source.args, id: source.tool_id || source.id, timestamp });
+  const sourceWithState = source as OpenCodeRedisToolSource;
+  if (isOpenCodeToolResultType(type)) {
+    appendOpenCodeToolResultEvent(events, sourceWithState, timestamp);
     return;
   }
-  if (['tool_result', 'tool_response'].includes(type)) {
-    events.push({ type: 'tool_result' as const, toolUseId: source.tool_id || source.id, result: truncateContent(source.output || source.result), isError: source.status === 'error', timestamp });
+  if (!isOpenCodeToolUseType(type)) return;
+  events.push(buildOpenCodeToolUseEvent(sourceWithState, timestamp));
+  if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp);
+}
+
+function isOpenCodeToolUseType(type: string): boolean { return OPEN_CODE_TOOL_USE_TYPES.includes(type); }
+
+function isOpenCodeToolResultType(type: string): boolean { return OPEN_CODE_TOOL_RESULT_TYPES.includes(type); }
+
+function buildOpenCodeToolUseEvent(source: OpenCodeRedisToolSource, timestamp: string): ConversationEvent {
+  return { type: 'tool_use' as const, toolName: source.tool_name || source.tool || source.name, input: source.parameters || source.input || source.args || source.state?.input, id: getOpenCodeToolId(source), timestamp };
+}
+
+function appendOpenCodeCompletedToolResult(events: ConversationEvent[], source: OpenCodeRedisToolSource, timestamp: string): void {
+  if (!source.state || !['completed', 'error'].includes(source.state.status ?? '')) return;
+  events.push({ type: 'tool_result' as const, toolUseId: getOpenCodeToolId(source), result: truncateContent(extractOpenCodeToolResult(source)), isError: isOpenCodeToolStateError(source), timestamp });
+}
+
+function appendOpenCodeToolResultEvent(events: ConversationEvent[], source: OpenCodeRedisToolSource, timestamp: string): void {
+  events.push({ type: 'tool_result' as const, toolUseId: getOpenCodeToolId(source), result: truncateContent(source.output || source.result), isError: source.status === 'error', timestamp });
+}
+
+function getOpenCodeToolId(source: OpenCodeRedisToolSource): string | undefined { return source.tool_id || source.callID || source.id; }
+
+function extractOpenCodeToolResult(source: OpenCodeRedisToolSource): string {
+  const state = source.state;
+  if (!state) return source.output || source.result || '';
+  if (typeof state.output === 'string') return state.output;
+  if (typeof state.metadata?.output === 'string') return state.metadata.output;
+  if (typeof state.error === 'string') return state.error;
+  if (state.error && typeof state.error === 'object' && 'message' in state.error && typeof state.error.message === 'string') {
+    return state.error.message;
   }
+  return source.output || source.result || '';
+}
+
+function isOpenCodeToolStateError(source: OpenCodeRedisToolSource): boolean {
+  if (source.state?.status === 'error' || source.status === 'error') return true;
+  return typeof source.state?.metadata?.exit === 'number' && source.state.metadata.exit !== 0;
 }
 
 function joinOpenCodeTextGroups(first: string[], second: string[]): string {
@@ -435,7 +431,7 @@ function normalizeEventTimestamp(timestamp: unknown): string {
   return normalizeOpenCodeTimestamp(timestamp, new Date().toISOString());
 }
 
-function shouldProcessOpenCodeBeforeCodex(event: Parameters<typeof processOpenCodeEvent>[0]): boolean {
+function shouldProcessOpenCodeBeforeCodex(event: OpenCodeRedisEvent): boolean {
   return hasOpenCodeSessionId(event) && isOpenCodeEvent(event);
 }
 
@@ -443,14 +439,7 @@ function shouldProcessOpenCodeBeforeCodex(event: Parameters<typeof processOpenCo
  * Parse Redis output (Codex, Gemini, or OpenCode JSONL format)
  */
 export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
-  const state: ParseState = {
-    events: [],
-    todos: [],
-    tokenUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
-    lastOpenCodeCumulativeTopLevelUsage: null,
-    pendingAssistantMessage: '',
-    pendingAssistantTimestamp: null
-  };
+  const state: ParseState = { events: [], todos: [], tokenUsage: emptyRedisTokenUsage(), lastOpenCodeCumulativeTopLevelUsage: null, pendingAssistantMessage: '', pendingAssistantTimestamp: null };
 
   for (const line of lines) {
     parseLine(line, state);
@@ -462,11 +451,5 @@ export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
   const inProgressTask = state.todos.find(t => t.status === 'in_progress');
   const hasTokens = hasRedisTokenUsage(state.tokenUsage);
 
-  return {
-    events: state.events,
-    todos: state.todos,
-    currentTask: inProgressTask ? inProgressTask.content : null,
-    tokenUsage: hasTokens ? state.tokenUsage : null,
-    totalEventCount: state.events.length
-  };
+  return { events: state.events, todos: state.todos, currentTask: inProgressTask ? inProgressTask.content : null, tokenUsage: hasTokens ? state.tokenUsage : null, totalEventCount: state.events.length };
 }
