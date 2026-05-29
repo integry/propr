@@ -12,6 +12,7 @@ import {
     buildPrTaskTitleContext,
     filterDiffToFiles,
     getConflictDiffForTitle,
+    getPrTaskWorkflowLabel,
     hasMeaningfulTitleText,
     resolvePrTaskWorkflow,
     selectRecentUsefulPrComments,
@@ -67,6 +68,13 @@ describe('prTaskTitleHelpers titles', () => {
         assert.strictEqual(hasMeaningfulTitleText('/review security only'), true);
         assert.strictEqual(hasMeaningfulTitleText('/merge'), false);
         assert.strictEqual(hasMeaningfulTitleText('/fix only address security issues'), true);
+        assert.strictEqual(hasMeaningfulTitleText('/ultrafix only fix failing lint'), true);
+    });
+
+    test('uses the ultrafix label when metadata turns review into an ultrafix step', () => {
+        const workflow = resolvePrTaskWorkflow('review', true);
+        assert.strictEqual(workflow, 'ultrafix');
+        assert.strictEqual(getPrTaskWorkflowLabel(workflow), 'Ultrafix');
     });
 });
 
@@ -217,6 +225,16 @@ describe('prTaskTitleHelpers context selection', () => {
 
         assert.strictEqual(line, 'Handle null refresh tokens before persisting the session.');
     });
+
+    test('fallback summary selection skips common structural markdown labels', () => {
+        const line = selectFallbackSummaryLine([
+            'Conflicting Files',
+            '- Resolution Summary',
+            '- Handle conflict markers in src/auth.ts.',
+        ].join('\n'));
+
+        assert.strictEqual(line, 'Handle conflict markers in src/auth.ts.');
+    });
 });
 
 describe('prTaskTitleHelpers merge conflict diff context', () => {
@@ -295,7 +313,7 @@ describe('prTaskTitleHelpers merge conflict diff context', () => {
         assert.strictEqual(filterDiffToFiles(diff, ['src/other.ts']), '');
     });
 
-    test('matches git diff blocks by either side of the header and later patch headers', () => {
+    test('matches git diff blocks by either side of the header without malformed patch-header leakage', () => {
         const diff = [
             'diff --git a/src/old-name.ts b/src/new-name.ts',
             'similarity index 88%',
@@ -319,9 +337,7 @@ describe('prTaskTitleHelpers merge conflict diff context', () => {
         assert.ok(renamed.includes('rename from src/old-name.ts'));
         assert.ok(!renamed.includes('src/conflict.ts'));
 
-        const patchHeaderOnly = filterDiffToFiles(diff, ['src/conflict.ts']);
-        assert.ok(patchHeaderOnly.includes('diff --git a/src/unrelated.ts b/src/unrelated.ts'));
-        assert.ok(!patchHeaderOnly.includes('rename from src/old-name.ts'));
+        assert.strictEqual(filterDiffToFiles(diff, ['src/conflict.ts']), '');
     });
 
     test('reads unresolved merge conflict diff before conflicts are resolved', async () => {

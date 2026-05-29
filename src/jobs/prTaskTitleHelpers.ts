@@ -83,6 +83,10 @@ export function buildPrTaskTitle(options: {
     return `${WORKFLOW_LABELS[options.workflow]} PR #${options.pullRequestNumber}: ${title}`;
 }
 
+export function getPrTaskWorkflowLabel(workflow: PrTaskWorkflow): string {
+    return WORKFLOW_LABELS[workflow];
+}
+
 export function buildDeterministicPrTaskSubtitle(workflow: PrTaskWorkflow, branches?: { baseBranch?: string; headBranch?: string }): string {
     switch (workflow) {
         case 'fix':
@@ -122,7 +126,7 @@ export function hasMeaningfulTitleText(value: string | null | undefined): boolea
     const inlineText = (commandMatch[2] || '').trim();
     if (command === 'fix') return Boolean(inlineText || trailingLines);
     if (command === 'review') return Boolean(trailingLines || (inlineText && !isLikelyReviewModelSelector(inlineText)));
-    if (command === 'ultrafix') return Boolean(trailingLines);
+    if (command === 'ultrafix') return Boolean(inlineText || trailingLines);
     return false;
 }
 
@@ -318,8 +322,6 @@ export function filterDiffToFiles(diff: string, filePaths: string[]): string {
             includeCurrent = diffBlockPaths(line).some(path => wanted.has(path));
         } else if (current.length > 0) {
             current.push(line);
-            const patchPath = diffPatchPath(line);
-            if (patchPath !== null && wanted.has(patchPath)) includeCurrent = true;
         }
     }
 
@@ -333,6 +335,7 @@ export function filterDiffToFiles(diff: string, filePaths: string[]): string {
 function normalizeFallbackSummaryLine(line: string): string {
     return line
         .replace(/^[-*]\s+@\S+\s+\([^)]*\):\s*/, '')
+        .replace(/^[-*]\s+/, '')
         .replace(/^#+\s*/, '')
         .trim();
 }
@@ -345,6 +348,14 @@ function isFallbackContextHeader(line: string): boolean {
         /^PR description fallback:?$/i,
         /^Review feedback to address:?$/i,
         /^Merge conflict diff for conflicting files only:?$/i,
+        /^Conflicting Files:?$/i,
+        /^Known Conflicting Files:?$/i,
+        /^Resolution Summary:?$/i,
+        /^Summary:?$/i,
+        /^Findings:?$/i,
+        /^Review Details:?$/i,
+        /^Overall Evaluation:?$/i,
+        /^Next step:?$/i,
         /^[-*_]{3,}$/,
         /^\*\*AI Review Comments\b/i,
         /^\*\*Review by:\*\*/i,

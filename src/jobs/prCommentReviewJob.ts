@@ -17,7 +17,7 @@ import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAg
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
-import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle, buildPrTaskTitleContext, resolvePrTaskWorkflow } from './prTaskTitleHelpers.js';
+import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle, buildPrTaskTitleContext, getPrTaskWorkflowLabel, resolvePrTaskWorkflow } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 
 export interface ReviewAssignment {
@@ -367,7 +367,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             summaryTitle = await generateSummaryTitle({
                 combinedCommentBody, titleContext: titleContext.context, fallbackSubtitle,
                 githubToken,
-                pullRequestNumber, prTitle: prData!.data.title, workflowLabel: 'Review',
+                pullRequestNumber, prTitle: prData!.data.title, workflowLabel: getPrTaskWorkflowLabel(workflow),
                 repoOwner, repoName, correlationId, taskId, correlatedLogger,
             });
         } catch (titleError) {

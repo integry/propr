@@ -25,7 +25,7 @@ interface GitHubToken { token: string }
 async function verifyNoConflictMarkers(worktreeInfo: WorktreeInfo, pullRequestNumber: number, correlatedLogger: Logger): Promise<void> {
     const { execFileSync } = await import('child_process');
     try {
-        const grepResult = execFileSync('git', ['grep', '-n', '-I', '-E', '^(<<<<<<<|=======|>>>>>>>)', '--'], {
+        const grepResult = execFileSync('git', ['grep', '--untracked', '-n', '-I', '-E', '^(<<<<<<<|=======|>>>>>>>)', '--'], {
             cwd: worktreeInfo.worktreePath,
             encoding: 'utf-8',
             maxBuffer: 10 * 1024 * 1024,

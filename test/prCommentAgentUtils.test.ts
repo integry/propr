@@ -86,4 +86,13 @@ describe('generateSummaryTitle fallback behavior', () => {
         assert.strictEqual(title, 'Resolve lint failures');
         assert.strictEqual(taskKind, 'pr-ultrafix-title-generation');
     });
+
+    test('removes surrounding quotes from generated subtitles', async () => {
+        const title = await generateSummaryTitle(baseOptions({
+            titleContext: 'Review feedback to address:\nHandle refresh token expiry.',
+            analysisRunner: async () => '"Handle refresh token expiry"',
+        }));
+
+        assert.strictEqual(title, 'Handle refresh token expiry');
+    });
 });

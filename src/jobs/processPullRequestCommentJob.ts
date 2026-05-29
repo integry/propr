@@ -35,6 +35,7 @@ import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
     buildPrTaskTitleContext,
+    getPrTaskWorkflowLabel,
     resolvePrTaskWorkflow,
 } from './prTaskTitleHelpers.js';
 
@@ -299,7 +300,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         githubToken,
         pullRequestNumber,
         prTitle: prData!.data.title,
-        workflowLabel: workflow === 'followup' ? 'Follow-up' : workflow[0].toUpperCase() + workflow.slice(1),
+        workflowLabel: getPrTaskWorkflowLabel(workflow),
         repoOwner,
         repoName,
         correlationId,
@@ -348,7 +349,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
-    const modelName = await resolvePRCommentModelName(llm);
+    const modelName = await resolvePRCommentModelName(llm, correlatedLogger);
 
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();

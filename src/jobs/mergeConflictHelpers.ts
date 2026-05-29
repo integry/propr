@@ -4,7 +4,7 @@ import type { AutoResolveContext } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { db } from '@propr/core';
-import { buildPrTaskTitle } from './prTaskTitleHelpers.js';
+import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle } from './prTaskTitleHelpers.js';
 
 /**
  * Builds a prompt that instructs the agent to check for and resolve any merge conflicts
@@ -263,7 +263,7 @@ export async function updateMergeTaskWithKnownPRInfo(options: {
 }): Promise<void> {
     const { stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient, prTitle, linkedIssueNumber } = options;
     const taskTitle = options.title || buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle });
-    const taskSubtitle = options.subtitle || `Merging ${baseBranch} into ${headBranch}`;
+    const taskSubtitle = options.subtitle || buildDeterministicPrTaskSubtitle('merge', { baseBranch, headBranch });
     if (linkedIssueNumber) {
         correlatedLogger.info({ taskId, pullRequestNumber, linkedIssueNumber }, 'Found linked issue for merge task');
     }

@@ -11,6 +11,7 @@ import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 const MAX_GENERATED_SUBTITLE_LENGTH = 140;
+const NOOP_LOGGER = { debug: () => undefined } as unknown as Logger;
 
 interface GitHubToken { token: string }
 
@@ -34,10 +35,14 @@ interface SummaryTitleOptions {
 
 function sanitizeGeneratedSubtitle(value: string, fallbackSubtitle: string): string {
     const cleaned = value.replace(/\s+/g, ' ').trim();
-    if (!cleaned) return fallbackSubtitle;
-    return cleaned.length > MAX_GENERATED_SUBTITLE_LENGTH
-        ? `${cleaned.substring(0, MAX_GENERATED_SUBTITLE_LENGTH - 3).trimEnd()}...`
+    const quote = cleaned[0];
+    const unquoted = quote && quote === cleaned[cleaned.length - 1] && ['"', "'", '`'].includes(quote)
+        ? cleaned.substring(1, cleaned.length - 1).trim()
         : cleaned;
+    if (!unquoted) return fallbackSubtitle;
+    return unquoted.length > MAX_GENERATED_SUBTITLE_LENGTH
+        ? `${unquoted.substring(0, MAX_GENERATED_SUBTITLE_LENGTH - 3).trimEnd()}...`
+        : unquoted;
 }
 
 function titleGenerationTaskKind(workflowLabel?: string): string {
@@ -126,7 +131,7 @@ export async function resolveDefaultAgentAndModel(
     return { resolvedAlias, resolvedModel };
 }
 
-export async function resolvePRCommentModelName(llm: string | null | undefined): Promise<string> {
+export async function resolvePRCommentModelName(llm: string | null | undefined, correlatedLogger: Logger = NOOP_LOGGER): Promise<string> {
     let modelName: string | null = DEFAULT_MODEL_NAME;
     if (llm) {
         try {
@@ -138,13 +143,7 @@ export async function resolvePRCommentModelName(llm: string | null | undefined):
         try {
             const registry = AgentRegistry.getInstance();
             await registry.ensureInitialized();
-            const settings = await loadSettings();
-            const configuredAgent = settings.default_agent_alias
-                ? registry.getAgentByAlias(settings.default_agent_alias as string)
-                : null;
-            modelName = configuredAgent?.config.enabled
-                ? configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME
-                : registry.getDefaultAgent()?.config.defaultModel || modelName;
+            modelName = (await resolveDefaultAgentAndModel(registry, correlatedLogger)).resolvedModel;
         } catch {
             // Keep the configured default if the registry is unavailable.
         }

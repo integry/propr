@@ -33,6 +33,13 @@ interface PostExecutionState {
     startingWorkComment: { data: { id: number; html_url: string } } | null;
 }
 
+interface ReadyPostExecutionState extends PostExecutionState {
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+    worktreeInfo: WorktreeInfo;
+    claudeResult: ClaudeCodeResponse;
+    startingWorkComment: { data: { id: number; html_url: string } };
+}
+
 interface PostExecutionContext {
     pullRequestNumber: number;
     repoOwner: string;
@@ -61,18 +68,18 @@ interface UndoContextParams {
 }
 
 async function commitAndPush(
-    state: PostExecutionState,
+    state: ReadyPostExecutionState,
     issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number },
     llm: string | null | undefined
 ) {
-    const changesSummary = state.claudeResult!.summary || state.claudeResult!.finalResult?.result || '';
-    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: issueRef.pullRequestNumber, claudeResult: state.claudeResult!, llm, authorsText: state.authorsText });
-    const commitResult = await commitChanges(state.worktreeInfo!.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: issueRef.pullRequestNumber, issueTitle: 'Follow-up changes' });
+    const changesSummary = state.claudeResult.summary || state.claudeResult.finalResult?.result || '';
+    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: issueRef.pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
+    const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: issueRef.pullRequestNumber, issueTitle: 'Follow-up changes' });
 
     if (commitResult) {
         const repoUrl = getRepoUrl({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
-        const githubToken = await state.octokit!.auth({ type: "installation" }) as GitHubToken;
-        await pushBranch(state.worktreeInfo!.worktreePath, state.worktreeInfo!.branchName, { repoUrl, authToken: githubToken.token });
+        const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
+        await pushBranch(state.worktreeInfo.worktreePath, state.worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
     }
 
     return { commitResult, changesSummary, commitMessage };
@@ -97,18 +104,26 @@ function buildUndoContext(params: UndoContextParams) {
     return { repoOwner, repoName, prNumber: pullRequestNumber, branchName, instructionCommentId };
 }
 
+function requirePostExecutionState(state: PostExecutionState): asserts state is ReadyPostExecutionState {
+    if (!state.claudeResult) throw new Error('Cannot finish PR comment processing before agent execution completes');
+    if (!state.worktreeInfo) throw new Error('Cannot finish PR comment processing without a worktree');
+    if (!state.octokit) throw new Error('Cannot finish PR comment processing without an authenticated GitHub client');
+    if (!state.startingWorkComment) throw new Error('Cannot finish PR comment processing without a starting work comment');
+}
+
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string }> {
     const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient } = params;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
 
-    if (!state.claudeResult!.success) throw new Error(`Agent execution failed: ${state.claudeResult!.error || 'Unknown error'}`);
+    requirePostExecutionState(state);
+    if (!state.claudeResult.success) throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
 
     const { commitResult, changesSummary, commitMessage } = await commitAndPush(state, { repoOwner, repoName, pullRequestNumber }, llm);
 
-    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo!.branchName });
+    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
     const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
-    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult!);
-    const completionComment = await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
+    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult);
+    const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
 
     if (unprocessedReviewComments.length > 0) {
