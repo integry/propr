@@ -5,6 +5,10 @@ import {
     getRecentPyPiVersions,
     resolvePyPiVersionSpec
 } from '../packages/core/src/agents/version/pypiClient.js';
+import {
+    getAvailableVersions,
+    resolveVersion
+} from '../packages/core/src/agents/version/versionService.js';
 
 afterEach(() => {
     mock.restoreAll();
@@ -65,5 +69,43 @@ describe('pypiClient', () => {
             () => getLatestPyPiVersion('mistral-vibe-timeout-test'),
             /PyPI request timed out/
         );
+    });
+
+    test('resolves Vibe latest tag through the version service', async () => {
+        mockPyPiResponse({
+            info: { version: '2.12.1' },
+            releases: {
+                '2.12.1': [{ upload_time_iso_8601: '2026-01-03T00:00:00Z' }],
+                '2.11.0': [{ upload_time_iso_8601: '2026-01-01T00:00:00Z' }]
+            }
+        });
+
+        assert.strictEqual(await resolveVersion('vibe', 'tag', 'latest'), '2.12.1');
+    });
+
+    test('rejects unsupported PyPI tags through the version service', async () => {
+        await assert.rejects(
+            () => resolveVersion('vibe', 'tag', 'beta'),
+            /Unknown tag 'beta'/
+        );
+    });
+
+    test('returns Vibe available versions in API-facing shape', async () => {
+        mockPyPiResponse({
+            info: { version: '2.12.1' },
+            releases: {
+                '2.12.1': [{ upload_time_iso_8601: '2026-01-03T00:00:00Z' }],
+                '2.11.0': [{ upload_time_iso_8601: '2026-01-01T00:00:00Z' }]
+            }
+        });
+
+        const versions = await getAvailableVersions('vibe');
+        assert.strictEqual(versions.agentType, 'vibe');
+        assert.strictEqual(versions.packageName, 'mistral-vibe');
+        assert.deepStrictEqual(versions.availableTags, [{ tag: 'latest', version: '2.12.1' }]);
+        assert.deepStrictEqual(versions.recentVersions, [
+            { version: '2.12.1', publishedAt: '2026-01-03T00:00:00Z' },
+            { version: '2.11.0', publishedAt: '2026-01-01T00:00:00Z' }
+        ]);
     });
 });

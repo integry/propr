@@ -78,6 +78,17 @@ should_build() {
   return 1
 }
 
+include_agent_base_when_needed() {
+  [[ -z "$ONLY" ]] && return
+  should_build "agent-base" && return
+  for agent_name in agent-claude agent-codex agent-gemini agent-vibe; do
+    if should_build "$agent_name"; then
+      ONLY="agent-base,$ONLY"
+      return
+    fi
+  done
+}
+
 # --- Derive tags --------------------------------------------------------------
 tags_for() {
   local name="$1"
@@ -177,15 +188,7 @@ echo "  push:       $PUSH"
 
 write_manifest
 refresh_notices
-
-if [[ -n "$ONLY" ]] && ! should_build "agent-base"; then
-  for agent_name in agent-claude agent-codex agent-gemini agent-vibe; do
-    if should_build "$agent_name"; then
-      build_image "agent-base" "docker/Dockerfile.agent-base" "."
-      break
-    fi
-  done
-fi
+include_agent_base_when_needed
 
 for entry in "${IMAGES[@]}"; do
   IFS='|' read -r name dockerfile context <<< "$entry"

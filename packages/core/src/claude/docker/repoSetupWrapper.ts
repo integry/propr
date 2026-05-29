@@ -24,7 +24,7 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
     chown node:node "$PROPR_CACHE_DIR" 2>/dev/null || true
 
     echo "Running ProPR repo setup hook: $setup_script" >&2
-    if command -v sudo >/dev/null 2>&1 && id node >/dev/null 2>&1; then
+    if [ "$(id -u)" = "0" ] && command -v sudo >/dev/null 2>&1 && id node >/dev/null 2>&1; then
         cd "$PROPR_WORKSPACE"
         sudo -E -u node -H /bin/bash "$setup_script" </dev/null >&2
     else

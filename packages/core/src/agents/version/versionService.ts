@@ -52,10 +52,10 @@ export async function resolveVersion(
                 if (!versionSpec) {
                     throw new Error('Version spec required for tag type');
                 }
-                if (!AGENT_NPM_TAGS[agentType].includes(versionSpec)) {
+                if (versionSpec !== 'latest' || !AGENT_NPM_TAGS[agentType].includes(versionSpec)) {
                     throw new Error(`Unknown tag '${versionSpec}' for PyPI-backed package ${packageName}`);
                 }
-                return resolvePyPiVersionSpec(packageName, versionSpec);
+                return getLatestPyPiVersion(packageName);
             case 'specific':
                 if (!versionSpec) {
                     throw new Error('Version spec required');

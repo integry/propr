@@ -110,7 +110,7 @@ function classifyVersionResolutionError(error: unknown): { message: string; stat
       || message.startsWith('PyPI request timed out ')) {
     return { message, status: 502 };
   }
-  if (message.startsWith('Version spec required') || message.includes('not found for package')) {
+  if (message.startsWith('Version spec required') || message.startsWith('Unknown tag ') || message.includes('not found for package')) {
     return { message, status: 400 };
   }
   return { message, status: 500 };

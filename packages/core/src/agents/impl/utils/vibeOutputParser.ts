@@ -30,6 +30,8 @@ interface ParsedVibeOutput {
     tokenUsage?: { input_tokens?: number; output_tokens?: number };
 }
 
+const FINAL_EVENT_TYPES = new Set(['final', 'result', 'completed', 'complete', 'response']);
+
 function jsonEventsFromValue(value: unknown): VibeJsonOutput[] {
     if (Array.isArray(value)) {
         return value.flatMap(item => jsonEventsFromValue(item));
@@ -102,6 +104,32 @@ function pickError(event: VibeJsonOutput): string | undefined {
     return event.type === 'error' ? 'Vibe reported an error' : undefined;
 }
 
+function findTextEvent(jsonObjects: VibeJsonOutput[]): { event: VibeJsonOutput; index: number } | undefined {
+    for (let index = jsonObjects.length - 1; index >= 0; index--) {
+        const event = jsonObjects[index];
+        if (event.type !== 'error' && event.type && FINAL_EVENT_TYPES.has(event.type) && pickText(event)) {
+            return { event, index };
+        }
+    }
+    for (let index = jsonObjects.length - 1; index >= 0; index--) {
+        const event = jsonObjects[index];
+        if (event.type !== 'error' && pickText(event)) {
+            return { event, index };
+        }
+    }
+    return undefined;
+}
+
+function findRelevantError(jsonObjects: VibeJsonOutput[], textEventIndex: number): string | undefined {
+    for (let index = jsonObjects.length - 1; index >= 0; index--) {
+        const error = pickError(jsonObjects[index]);
+        if (error && index > textEventIndex) {
+            return error;
+        }
+    }
+    return undefined;
+}
+
 export function parseVibeOutput(output: string): ParsedVibeOutput {
     const jsonObjects = parseJsonObjects(output);
     if (jsonObjects.length === 0) {
@@ -109,16 +137,16 @@ export function parseVibeOutput(output: string): ParsedVibeOutput {
         return { summary: summary || undefined };
     }
 
-    const textEvent = [...jsonObjects].reverse().find(event => event.type !== 'error' && pickText(event));
+    const textEvent = findTextEvent(jsonObjects);
     const sessionEvent = [...jsonObjects].reverse().find(event => event.session_id || event.sessionId);
     const modelEvent = [...jsonObjects].reverse().find(event => event.model);
     const usageEvent = [...jsonObjects].reverse().find(event => event.usage || event.token_usage);
-    const error = jsonObjects.map(event => pickError(event)).find(Boolean);
+    const error = findRelevantError(jsonObjects, textEvent?.index ?? -1);
 
     return {
         sessionId: sessionEvent?.session_id || sessionEvent?.sessionId,
         model: modelEvent?.model,
-        summary: textEvent ? pickText(textEvent) : output.trim() || undefined,
+        summary: textEvent ? pickText(textEvent.event) : output.trim() || undefined,
         error,
         tokenUsage: usageEvent?.usage || usageEvent?.token_usage
     };

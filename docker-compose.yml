@@ -62,6 +62,7 @@ services:
       - ~/.vibe:/root/.vibe
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
     env_file:
       - .env
     depends_on:
@@ -82,7 +83,7 @@ services:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor:ro
-      - /tmp/git-processor/propr-cache/vibe-prompts:/tmp/git-processor/propr-cache/vibe-prompts:rw
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts:rw
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - ~/.claude:/root/.claude:ro
       - ~/.gemini:/root/.gemini:ro
@@ -165,6 +166,7 @@ services:
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/git-processor:/tmp/git-processor
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
       # Worktrees directory for PR branch checkouts
       - /tmp/pr-worktrees:/tmp/pr-worktrees
       # Mount the env file - uses STAGING_ENV_FILE if set, defaults to ./.env

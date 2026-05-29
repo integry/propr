@@ -21,11 +21,11 @@ export { parseVibeOutput } from './utils/vibeOutputParser.js';
 
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
-const DEFAULT_GIT_CLONES_BASE_PATH = '/tmp/git-processor/clones';
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
 const CONTAINER_PROMPT_PATH = '/tmp/propr-vibe-prompt.md';
 const CONTAINER_NODE_UID = 1000;
 const CONTAINER_NODE_GID = 1000;
+const DEFAULT_PROMPT_PARENT_DIR = '/tmp/propr-vibe-prompts';
 
 interface VibeDockerArgsParams {
     worktreePath: string;
@@ -195,7 +195,7 @@ export class VibeAgent implements Agent {
             const parsedOutput = parseVibeOutput(result.stdout);
             const analysisText = (parsedOutput.summary || '').trim();
 
-            if (result.exitCode === 0 && !parsedOutput.error) {
+            if (result.exitCode === 0 && !parsedOutput.error && analysisText) {
                 const usage = this.formatUsageMetrics(usageMetrics);
                 await persistLlmLog(createLlmLogFromAnalysis({
                     executionType: (executionType || 'other') as ExecutionType,
@@ -267,43 +267,37 @@ export class VibeAgent implements Agent {
         return workspace;
     }
 
-    private getPromptCacheDir(): string {
+    private getPromptParentDir(): string {
         if (process.env.VIBE_PROMPT_CACHE_DIR) {
             return process.env.VIBE_PROMPT_CACHE_DIR;
         }
 
-        const cacheRoot = process.env.PROPR_CACHE_DIR || path.join(
-            path.dirname(process.env.GIT_CLONES_BASE_PATH || DEFAULT_GIT_CLONES_BASE_PATH),
-            'propr-cache'
-        );
-        return path.join(cacheRoot, 'vibe-prompts');
+        return DEFAULT_PROMPT_PARENT_DIR;
     }
 
     private writePromptFile(prompt: string, taskId?: string): string {
-        const promptCacheDir = this.getPromptCacheDir();
-        fs.mkdirSync(promptCacheDir, { recursive: true, mode: 0o700 });
-        fs.chmodSync(promptCacheDir, 0o700);
+        const promptParentDir = this.getPromptParentDir();
+        fs.mkdirSync(promptParentDir, { recursive: true, mode: 0o700 });
+        fs.chmodSync(promptParentDir, 0o700);
         const safeTaskId = taskId?.replace(/[^a-zA-Z0-9_-]/g, '').slice(-32) || Date.now().toString(36);
-        const promptPath = path.join(promptCacheDir, `${safeTaskId}-${Date.now().toString(36)}.md`);
-        fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o600 });
-        this.chownPromptForContainer(promptPath);
-        fs.chmodSync(promptPath, 0o600);
+        const promptDir = fs.mkdtempSync(path.join(promptParentDir, `vibe-${safeTaskId}-`));
+        fs.chmodSync(promptDir, 0o700);
+        const promptPath = path.join(promptDir, 'prompt.md');
+        fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o400 });
+        fs.chmodSync(promptPath, 0o444);
         return promptPath;
     }
 
-    private chownPromptForContainer(promptPath: string): void {
-        try {
-            fs.chownSync(promptPath, CONTAINER_NODE_UID, CONTAINER_NODE_GID);
-        } catch (error) {
-            logger.debug({ promptPath, error: (error as Error).message }, 'Could not adjust Vibe prompt ownership');
-        }
-    }
-
     private cleanupPromptFile(promptPath: string): void {
+        const promptDir = path.dirname(promptPath);
         try {
+            if (path.basename(promptDir).startsWith('vibe-')) {
+                fs.rmSync(promptDir, { recursive: true, force: true });
+                return;
+            }
             fs.unlinkSync(promptPath);
         } catch (error) {
-            logger.warn({ promptPath, error: (error as Error).message }, 'Failed to clean up Vibe prompt file');
+            logger.warn({ promptPath, error: (error as Error).message }, 'Failed to clean up Vibe prompt directory');
         }
     }
 
@@ -342,9 +336,8 @@ export class VibeAgent implements Agent {
             ? ['--agent', 'plan']
             : ['--trust', '--agent', 'auto-approve'];
         const dockerArgs: string[] = [
-            'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
+            'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge', '--user', `${CONTAINER_NODE_UID}:${CONTAINER_NODE_GID}`,
             '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
-            '-v', '/tmp/git-processor:/tmp/git-processor:rw',
             '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`,
             '-v', `${promptPath}:${CONTAINER_PROMPT_PATH}:ro`,
             '-e', `GH_TOKEN=${githubToken}`,

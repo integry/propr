@@ -19,9 +19,14 @@ import {
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
 const VALID_AGENT_TYPES: AgentType[] = ['claude', 'codex', 'gemini', 'vibe'];
+const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
 
 function isValidAgentType(agentType: string): agentType is AgentType {
     return VALID_AGENT_TYPES.includes(agentType as AgentType);
+}
+
+function isValidCliVersionType(versionType: unknown): versionType is CliVersionType {
+    return typeof versionType === 'string' && VALID_CLI_VERSION_TYPES.includes(versionType as CliVersionType);
 }
 
 /**
@@ -202,10 +207,14 @@ export function createAgentVersionRoutes() {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
+            if (!isValidCliVersionType(versionType)) {
+                res.status(400).json({ error: `Invalid version type: ${versionType}` });
+                return;
+            }
 
             const resolved = await resolveVersion(
                 agentType,
-                versionType as CliVersionType,
+                versionType,
                 versionSpec
             );
 
@@ -237,7 +246,11 @@ export function createAgentVersionRoutes() {
             }
 
             const type = agentType;
-            const effectiveVersionType = (versionType as CliVersionType) || 'default';
+            const effectiveVersionType = versionType || 'default';
+            if (!isValidCliVersionType(effectiveVersionType)) {
+                res.status(400).json({ error: `Invalid version type: ${effectiveVersionType}` });
+                return;
+            }
 
             // Resolve version
             const resolved = await resolveVersion(type, effectiveVersionType, versionSpec as string);

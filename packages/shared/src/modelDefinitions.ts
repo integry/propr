@@ -113,7 +113,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '0.35.1'
   },
   vibe: {
-    dockerImage: 'propr-vibe:latest',
+    dockerImage: 'propr/agent-vibe:latest',
     configPath: '~/.vibe',
     defaultModels: VIBE_MODELS.map(m => m.id),
     defaultAlias: 'vibe',
