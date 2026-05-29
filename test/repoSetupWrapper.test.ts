@@ -28,6 +28,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
     test('adds setup environment for the selected agent type', () => {
         const wrapped = wrapDockerRunArgsWithRepoSetup([
             'run', '--rm',
+            '-e', 'PROPR_REPO_SETUP=0',
             'propr/agent-gemini:latest',
             'gemini', '--yolo'
         ], 'propr/agent-gemini:latest', 'gemini');
@@ -35,6 +36,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         assert.ok(wrapped.includes('PROPR_AGENT_TYPE=gemini'));
         assert.ok(wrapped.includes('PROPR_WORKSPACE=/home/node/workspace'));
         assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/gemini'));
+        assert.ok(wrapped.includes('PROPR_REPO_SETUP=0'));
 
         const imageIndex = wrapped.indexOf('propr/agent-gemini:latest');
         assert.strictEqual(wrapped[imageIndex + 3], '/home/node/gemini-entrypoint.sh');
@@ -46,4 +48,3 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         ], 'propr/agent-claude:latest', 'claude'), /Docker image 'propr\/agent-claude:latest' was not found/);
     });
 });
-

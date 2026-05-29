@@ -111,6 +111,7 @@ export class ClaudeAgent implements Agent {
             onContainerId,
             githubToken,
             tools,
+            environment,
             taskId,
             prNumber
         } = options;
@@ -156,6 +157,7 @@ export class ClaudeAgent implements Agent {
                 issueNumber: issueRef.number,
                 systemPrompt,
                 tools,
+                environment,
                 taskId
             });
 
