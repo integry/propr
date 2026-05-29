@@ -6,10 +6,11 @@
 ARG BASE_TAG
 FROM propr/agent-base:${BASE_TAG}
 
-ARG CLI_VERSION=latest
+ARG CLI_VERSION=1.15.12
 
 USER root
-RUN npm install -g opencode-ai@${CLI_VERSION}
+RUN apk add --no-cache su-exec \
+    && npm install -g opencode-ai@${CLI_VERSION}
 RUN opencode --version
 USER node
 

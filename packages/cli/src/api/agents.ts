@@ -274,7 +274,7 @@ function getDefaultDockerImage(type: AgentType): string {
     case "gemini":
       return "gemini-code-processor:latest";
     case "opencode":
-      return "opencode-cli:latest";
+      return "propr-opencode:latest";
     default:
       return `${type}-code-processor:latest`;
   }
@@ -295,7 +295,7 @@ function getDefaultConfigPath(type: AgentType): string {
     case "gemini":
       return "/root/.gemini";
     case "opencode":
-      return "/root/.opencode";
+      return "/root/.config/opencode";
     default:
       return `/root/.${type}`;
   }

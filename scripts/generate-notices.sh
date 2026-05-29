@@ -64,7 +64,7 @@ Source: https://github.com/google-gemini/gemini-cli
 
 ## opencode-ai (installed in propr/agent-opencode image)
 
-Licensed under the MIT License.
+Licensed under the MIT License (verified from the published npm package metadata).
 Source: https://github.com/sst/opencode
 
 ---

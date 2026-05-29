@@ -10,6 +10,7 @@ import {
     computeContentHash,
     generateImageTag,
     AGENT_DEFAULT_VERSIONS,
+    AGENT_DISPLAY_ORDER,
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
     listAgentImages,
@@ -17,7 +18,7 @@ import {
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
-const VALID_AGENT_TYPES = ['claude', 'codex', 'gemini', 'opencode'];
+const VALID_AGENT_TYPES: readonly string[] = AGENT_DISPLAY_ORDER;
 
 /**
  * Creates the agent version management routes.
@@ -272,10 +273,10 @@ export function createAgentVersionRoutes() {
  */
 function getImageName(agentType: string): string {
     const imageNames: Record<string, string> = {
-        claude: 'claude-code-processor',
-        codex: 'codex-cli',
-        gemini: 'gemini-cli',
-        opencode: 'opencode-cli'
+        claude: 'propr-claude',
+        codex: 'propr-codex',
+        gemini: 'propr-gemini',
+        opencode: 'propr-opencode'
     };
     return imageNames[agentType] || agentType;
 }

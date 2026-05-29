@@ -2,11 +2,11 @@
 # Entrypoint script for OpenCode CLI execution container.
 # Diagnostic output goes to stderr to keep JSON stdout parseable.
 
-set -e
+set -euo pipefail
 
 echo "Skipping firewall setup (would require --privileged Docker flag)" >&2
 
-if [ -z "$GH_TOKEN" ]; then
+if [ -z "${GH_TOKEN:-}" ]; then
     echo "Warning: GH_TOKEN environment variable not set" >&2
 else
     echo "GitHub token detected (using environment variable)" >&2
@@ -16,9 +16,9 @@ mkdir -p /home/node/.config/opencode /home/node/.local/share/opencode
 
 if [ -d "/home/node/.config/opencode" ]; then
     echo "OpenCode config directory mounted" >&2
-    if command -v sudo >/dev/null 2>&1; then
-        sudo chown -R node:node /home/node/.config/opencode /home/node/.local/share/opencode 2>/dev/null || true
-        sudo chmod -R u+rw /home/node/.config/opencode /home/node/.local/share/opencode 2>/dev/null || true
+    if [ "$(id -u)" = "0" ]; then
+        chown -R node:node /home/node/.config/opencode /home/node/.local/share/opencode 2>/dev/null || true
+        chmod -R u+rw /home/node/.config/opencode /home/node/.local/share/opencode 2>/dev/null || true
     fi
 else
     echo "WARNING: OpenCode config directory not mounted at /home/node/.config/opencode" >&2
@@ -48,7 +48,7 @@ if [ $# -gt 0 ]; then
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2
         cd /home/node/workspace
-        exec sudo -E -u node -H "$@"
+        exec su-exec node "$@"
     else
         exec "$@"
     fi

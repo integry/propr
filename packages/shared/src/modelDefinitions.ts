@@ -55,7 +55,7 @@ export const GEMINI_MODELS: ModelInfo[] = [
 ];
 
 // OpenCode Go models. IDs use OpenCode config syntax: provider/model.
-// Context limits are sourced from models.dev's opencode-go provider metadata.
+// Context limits are manually synced from models.dev's opencode-go provider metadata.
 export const OPENCODE_MODELS: ModelInfo[] = [
   { id: 'opencode-go/glm-5.1', name: 'GLM-5.1', shortName: 'GLM-5.1', shortAlias: 'glm51', githubLabel: 'llm-opencode-glm51', contextWindow: '203K', maxTokens: 202752, openRouterId: 'z-ai/glm-5.1' },
   { id: 'opencode-go/glm-5', name: 'GLM-5', shortName: 'GLM-5', shortAlias: 'glm5', githubLabel: 'llm-opencode-glm5', contextWindow: '203K', maxTokens: 202752, openRouterId: 'z-ai/glm-5' },
@@ -139,8 +139,8 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '0.35.1'
   },
   opencode: {
-    dockerImage: 'opencode-cli:latest',
-    configPath: '~/.opencode',
+    dockerImage: 'propr-opencode:latest',
+    configPath: '~/.config/opencode',
     defaultModels: OPENCODE_MODELS.map(m => m.id),
     defaultAlias: 'opencode',
     npmPackage: 'opencode-ai',

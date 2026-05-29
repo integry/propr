@@ -28,6 +28,7 @@ function formatType(type: string): string {
     claude: "Claude",
     codex: "Codex",
     gemini: "Gemini",
+    opencode: "OpenCode",
   };
   return typeMap[type?.toLowerCase()] || type;
 }
@@ -182,7 +183,7 @@ Examples:
   agent
     .command("add [alias]")
     .description("Add a new AI agent configuration for code implementation")
-    .option("-t, --type <type>", "Agent type (claude, codex, or gemini)")
+    .option("-t, --type <type>", "Agent type (claude, codex, gemini, or opencode)")
     .option("-m, --model <models>", "Comma-separated list of supported models")
     .option("-d, --default-model <model>", "Default model to use (defaults to first model)")
     .option("--docker-image <image>", "Docker image for the agent")
@@ -198,6 +199,7 @@ Agent Types:
   claude    Anthropic Claude models
   codex     OpenAI Codex models
   gemini    Google Gemini models
+  opencode  OpenCode models
 
 JSON File Format:
   {
@@ -297,7 +299,7 @@ Examples:
 
           if (!isValidAgentType(type)) {
             console.error(
-              `Error: Invalid agent type '${type}'. Must be one of: claude, codex, gemini`
+              `Error: Invalid agent type '${type}'. Must be one of: claude, codex, gemini, opencode`
             );
             process.exit(1);
           }

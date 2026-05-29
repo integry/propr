@@ -6,7 +6,7 @@ import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
-import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
@@ -14,7 +14,6 @@ export { UsageLimitError };
 
 const DEFAULT_OPENCODE_TIMEOUT_MS = 3600000;
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
-const CONTAINER_DATA_PATH = '/home/node/.local/share/opencode';
 
 interface OpenCodeEvent {
     type?: string;
@@ -22,9 +21,33 @@ interface OpenCodeEvent {
     sessionID?: string;
     sessionId?: string;
     session_id?: string;
-    part?: { type?: string; text?: string; messageID?: string; sessionID?: string };
+    part?: OpenCodePart;
+    parts?: OpenCodePart[];
+    message?: OpenCodeMessage;
     error?: { name?: string; data?: { message?: string }; message?: string };
     model?: string;
+    text?: string;
+    content?: unknown;
+    delta?: string;
+    response?: OpenCodeTextContainer;
+}
+
+interface OpenCodeTextContainer {
+    text?: string;
+    content?: unknown;
+    delta?: string;
+}
+
+interface OpenCodePart extends OpenCodeTextContainer {
+    type?: string;
+    messageID?: string;
+    sessionID?: string;
+}
+
+interface OpenCodeMessage extends OpenCodeTextContainer {
+    role?: string;
+    model?: string;
+    parts?: OpenCodePart[];
 }
 
 interface ParsedOpenCodeOutput {
@@ -162,6 +185,8 @@ export class OpenCodeAgent implements Agent {
             const err = error as Error;
             logger.error({ agentAlias: this.config.alias, error: err.message, executionTimeMs }, 'OpenCode lightweight analysis failed');
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message };
+        } finally {
+            this.cleanupAnalysisWorkspace(analysisWorkspace);
         }
     }
 
@@ -206,13 +231,49 @@ export class OpenCodeAgent implements Agent {
 
     private applyOpenCodeEvent(event: OpenCodeEvent, state: OpenCodeParseState): void {
         state.sessionId = state.sessionId || event.sessionID || event.sessionId || event.session_id || event.part?.sessionID;
-        state.modelUsed = state.modelUsed || event.model;
-        if (event.type === 'text' && event.part?.text) {
-            state.textParts.push(event.part.text);
-        }
+        state.modelUsed = state.modelUsed || event.model || event.message?.model;
+        state.textParts.push(...this.extractOpenCodeText(event));
         if (event.type === 'error') {
             state.error = this.extractOpenCodeError(event);
         }
+    }
+
+    private extractOpenCodeText(event: OpenCodeEvent): string[] {
+        const textParts: string[] = [];
+        this.addPartText(textParts, event.part);
+        this.addPartsText(textParts, event.parts);
+        if (event.message?.role === 'assistant') {
+            this.addTextContainer(textParts, event.message);
+            this.addPartsText(textParts, event.message.parts);
+        }
+        if (this.isAssistantTextEvent(event)) {
+            this.addTextContainer(textParts, event);
+            this.addTextContainer(textParts, event.response);
+        }
+        return textParts;
+    }
+
+    private addPartsText(textParts: string[], parts?: OpenCodePart[]): void {
+        for (const part of parts || []) this.addPartText(textParts, part);
+    }
+
+    private addPartText(textParts: string[], part?: OpenCodePart): void {
+        if (!part) return;
+        const partType = part.type?.toLowerCase();
+        if (partType && !['text', 'assistant_text', 'message', 'completion'].includes(partType)) return;
+        this.addTextContainer(textParts, part);
+    }
+
+    private addTextContainer(textParts: string[], container?: OpenCodeTextContainer): void {
+        if (!container) return;
+        for (const value of [container.text, container.delta, container.content]) {
+            if (typeof value === 'string' && value.length > 0) textParts.push(value);
+        }
+    }
+
+    private isAssistantTextEvent(event: OpenCodeEvent): boolean {
+        const type = event.type?.toLowerCase();
+        return !!type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(type);
     }
 
     private extractOpenCodeError(event: OpenCodeEvent): string {
@@ -233,7 +294,7 @@ export class OpenCodeAgent implements Agent {
     }): Promise<void> {
         const { response, executionTime, modelUsed, issueRef, taskId, prNumber, isRetry, retryReason, usageMetrics } = opts;
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-        await persistLlmLog(createLlmLogFromAnalysis({
+        await persistLlmLog(createLlmLogFromAgentExecution({
             executionType: 'implementation',
             modelUsed,
             executionTimeMs: executionTime,
@@ -250,19 +311,27 @@ export class OpenCodeAgent implements Agent {
     }
 
     private ensureAnalysisWorkspace(): string {
-        const workspace = '/tmp/opencode-analysis';
+        const workspace = fs.mkdtempSync('/tmp/opencode-analysis-');
         try {
-            if (!fs.existsSync(workspace)) fs.mkdirSync(workspace, { recursive: true });
-            if (!fs.existsSync(`${workspace}/.git`)) {
-                execSync('git init', { cwd: workspace, stdio: 'pipe' });
-                execSync('git config user.email "opencode@propr.dev"', { cwd: workspace, stdio: 'pipe' });
-                execSync('git config user.name "OpenCode Analysis"', { cwd: workspace, stdio: 'pipe' });
-            }
-            execSync(`chown -R 1000:1000 ${workspace}`, { stdio: 'pipe' });
+            const runAsNode = process.getuid?.() === 0;
+            if (runAsNode) fs.chownSync(workspace, 1000, 1000);
+            const execOptions = { cwd: workspace, stdio: 'pipe' as const, ...(runAsNode ? { uid: 1000, gid: 1000 } : {}) };
+            execSync('git init', execOptions);
+            execSync('git config user.email "opencode@propr.dev"', execOptions);
+            execSync('git config user.name "OpenCode Analysis"', execOptions);
         } catch (initError) {
             logger.warn({ error: (initError as Error).message }, 'Failed to initialize OpenCode analysis workspace');
         }
         return workspace;
+    }
+
+    private cleanupAnalysisWorkspace(workspace: string): void {
+        if (!workspace.startsWith('/tmp/opencode-analysis-')) return;
+        try {
+            fs.rmSync(workspace, { recursive: true, force: true });
+        } catch (cleanupError) {
+            logger.warn({ workspace, error: (cleanupError as Error).message }, 'Failed to remove OpenCode analysis workspace');
+        }
     }
 
     private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; taskId?: string; executionType?: string }): string[] {
@@ -275,22 +344,28 @@ export class OpenCodeAgent implements Agent {
         const timestamp = Date.now().toString(36);
         const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
         const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
-        const containerName = `${this.config.alias || 'opencode'}-${taskType}-${shortTaskId}`;
+        const containerName = this.buildContainerName(this.config.alias || 'opencode', taskType, shortTaskId);
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw',
-            '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`, '-v', `${configPath}:${CONTAINER_DATA_PATH}:rw`,
+            '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
             '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
             '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', 'XDG_DATA_HOME=/home/node/.local/share', ...envVars,
             '-w', '/home/node/workspace', this.config.dockerImage, 'opencode-run', '--format', 'json', '--dangerously-skip-permissions'
         ];
 
         if (modelName) {
-            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+            const cleanModelName = modelName.startsWith('opencode:') ? modelName.slice('opencode:'.length) : modelName;
             dockerArgs.push('--model', cleanModelName);
             logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for OpenCode agent');
         }
 
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'opencode');
+    }
+
+    private buildContainerName(alias: string, taskType: string, shortTaskId: string): string {
+        const rawName = `${alias}-${taskType}-${shortTaskId}`;
+        const sanitized = rawName.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 120);
+        return sanitized || `opencode-${Date.now().toString(36)}`;
     }
 }
