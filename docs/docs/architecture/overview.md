@@ -24,8 +24,8 @@ ProPR consists of three main components:
       │ Poll                                          │ Process
       ▼                                               ▼
 ┌─────────────┐                               ┌─────────────┐
-│   GitHub    │                               │   Claude    │
-│   Issues    │                               │    Code     │
+│   GitHub    │                               │ Coding Agent│
+│   Issues    │                               │ Container   │
 └─────────────┘                               └─────────────┘
 ```
 
@@ -33,34 +33,28 @@ ProPR consists of three main components:
 
 ```
 propr/
-├── src/
-│   ├── auth/
-│   │   └── githubAuth.js        # GitHub App authentication
-│   ├── claude/
-│   │   └── claudeService.js     # Claude Code CLI integration & Docker execution
-│   ├── git/
-│   │   └── repoManager.js       # Git operations, worktree management, branch handling
-│   ├── queue/
-│   │   └── taskQueue.js         # BullMQ task queue with Redis
-│   ├── utils/
-│   │   ├── errorHandler.js      # Comprehensive error handling utilities
-│   │   ├── logger.js            # Structured logging with correlation IDs
-│   │   ├── prValidation.js      # PR validation and retry mechanisms
-│   │   ├── retryHandler.js      # Configurable retry logic with exponential backoff
-│   │   ├── workerStateManager.js # Job state management and tracking
-│   │   └── idempotentOps.js     # Idempotent operation utilities
-│   ├── daemon.js                # Multi-model issue detection daemon
-│   ├── worker.js                # 3-phase deterministic job processor
-│   ├── githubService.js         # GitHub API operations and PR management
-│   └── index.js                 # Application entry point
+├── src/                         # Daemon, worker, polling, and job orchestration
+│   ├── daemon.ts                # Issue detection daemon entry point
+│   ├── worker.ts                # Worker entry point
+│   ├── jobs/                    # Issue, PR comment, review, and system task jobs
+│   ├── polling/                 # GitHub issue and PR polling
+│   └── github/                  # GitHub PR and merge operations
+├── packages/
+│   ├── core/                    # Agent registry, agent implementations, shared runtime
+│   ├── api/                     # Dashboard API and webhook routes
+│   ├── cli/                     # ProPR CLI
+│   └── shared/                  # Shared model definitions and types
+├── propr-ui/                    # Frontend package
 ├── scripts/
-│   ├── claude-entrypoint.sh     # Docker entrypoint for secure Claude execution
+│   ├── claude-entrypoint.sh     # Docker entrypoint for Claude execution
+│   ├── opencode-entrypoint.sh   # Docker entrypoint for OpenCode execution
 │   ├── init-firewall.sh         # Security and firewall setup
 │   ├── fix-issue-labels.js      # Manual issue label management utility
 │   └── list-repo-configs.js     # Repository configuration display utility
-├── docs/                        # Technical documentation
-├── test/                        # Comprehensive test suite
+├── docs/                        # Docusaurus documentation site
+├── test/                        # Unit and integration tests
 ├── Dockerfile.claude            # Secure Docker image for Claude execution
+├── Dockerfile.opencode          # Secure Docker image for OpenCode execution
 ├── .env.example                 # Complete environment configuration template
 └── package.json                 # Dependencies and npm scripts
 ```
@@ -73,7 +67,7 @@ The daemon continuously monitors configured GitHub repositories:
 
 1. Polls repositories at configured intervals (default: 60 seconds)
 2. Searches for open issues with configured primary labels (e.g., 'AI', 'propr')
-3. Checks for model-specific labels (e.g., 'llm-claude-sonnet', 'llm-claude-opus')
+3. Checks for model-specific labels (e.g., 'llm-claude-sonnet', 'llm-claude-opus', 'llm-opencode-kimi-k26')
 4. Excludes issues with state labels (processing, done, failed)
 5. Creates job(s) in Redis queue for each detected issue/model combination
 
@@ -81,22 +75,22 @@ The daemon continuously monitors configured GitHub repositories:
 
 Workers pull jobs from the queue and execute a deterministic 3-phase workflow:
 
-#### Phase 1: Pre-Claude Setup (Deterministic)
+#### Phase 1: Pre-Agent Setup (Deterministic)
 - Clone or update repository with latest changes
 - Create isolated git worktree for the issue
 - Generate unique branch name with model identifier
 - Push initial branch to GitHub (prevents timing issues)
 - Add processing label to issue
 
-#### Phase 2: AI Implementation (Claude Focus)
+#### Phase 2: AI Implementation (Agent Focus)
 - Prepare implementation-focused prompt
 - Include complete issue context (description + all comments)
-- Execute Claude Code in secure Docker container
-- Claude analyzes and implements solution
-- Parse Claude's output for implementation details
+- Execute the selected coding agent in a secure Docker container
+- The agent analyzes and implements solution
+- Parse agent output for implementation details
 
-#### Phase 3: Post-Claude Finalization (Deterministic)
-- Commit any changes Claude made
+#### Phase 3: Post-Agent Finalization (Deterministic)
+- Commit any changes the agent made
 - Push changes to GitHub
 - Create pull request via GitHub API
 - Link PR to issue with proper keywords (`Closes #123`)
@@ -122,7 +116,7 @@ Job states are tracked through Redis and GitHub labels:
 
 ### Deterministic Operations
 
-Git operations and GitHub API calls are deterministic and handled by the system, not by Claude. This ensures:
+Git operations and GitHub API calls are deterministic and handled by the system, not by the coding agent. This ensures:
 - Reliable branch creation and management
 - Consistent PR creation process
 - Predictable error handling and recovery
@@ -131,7 +125,7 @@ Git operations and GitHub API calls are deterministic and handled by the system,
 
 Each issue is processed in complete isolation:
 - Separate git worktree per issue
-- Docker container isolation for Claude execution
+- Docker container isolation for coding-agent execution
 - Independent job tracking in Redis
 
 ### Concurrency
@@ -184,7 +178,7 @@ Git worktree created
     ↓
 Branch pushed to GitHub
     ↓
-Claude analyzes and codes
+Selected agent analyzes and codes
     ↓
 Changes committed
     ↓
@@ -208,7 +202,7 @@ ProPR scales horizontally:
 
 Security is built into every layer:
 
-- **Docker isolation** for Claude Code execution
+- **Docker isolation** for coding-agent execution
 - **Network restrictions** in Docker containers
 - **GitHub App permissions** limit access scope
 - **Token-based authentication** with automatic refresh
@@ -220,4 +214,5 @@ Security is built into every layer:
 - [Daemon Architecture](./daemon.md)
 - [Worker Architecture](./worker.md)
 - [Claude Integration](./claude-integration.md)
+- [OpenCode Integration](./opencode-integration.md)
 - [Git Management](./git-management.md)

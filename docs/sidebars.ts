@@ -29,6 +29,7 @@ const sidebars: SidebarsConfig = {
         'architecture/daemon',
         'architecture/worker',
         'architecture/claude-integration',
+        'architecture/opencode-integration',
         'architecture/git-management',
       ],
     },
