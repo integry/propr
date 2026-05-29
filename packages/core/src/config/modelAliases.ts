@@ -348,6 +348,14 @@ function resolveAgentPrefixedLabel(
     return null;
 }
 
+function resolveStaticModelAliasLabel(lowerLabel: string): LlmLabelResolution | null {
+    const model = MODEL_ALIASES[lowerLabel];
+    if (!model) return null;
+
+    const defaultAgent = AgentRegistry.getInstance().getDefaultAgent();
+    return { agentAlias: defaultAgent?.config.alias || 'default', model };
+}
+
 /**
  * Resolves an LLM label (e.g., "gemini-pro", "claude-opus", "codex") to an agent alias and model.
  *
@@ -400,21 +408,13 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         return agentPrefixMatch;
     }
 
-    // Check static MODEL_ALIASES for backwards compatibility
-    if (MODEL_ALIASES[lowerLabel]) {
-        const defaultAgent = registry.getDefaultAgent();
-        return {
-            agentAlias: defaultAgent?.config.alias || 'default',
-            model: MODEL_ALIASES[lowerLabel]
-        };
+    const staticAliasMatch = resolveStaticModelAliasLabel(lowerLabel);
+    if (staticAliasMatch) {
+        return staticAliasMatch;
     }
 
-    // 5. Fall back to default agent with the label as model name
     const defaultAgent = registry.getDefaultAgent();
-    return {
-        agentAlias: defaultAgent?.config.alias || 'default',
-        model: label
-    };
+    return { agentAlias: defaultAgent?.config.alias || 'default', model: label };
 }
 
 /**
@@ -499,6 +499,28 @@ export class ReviewModelResolutionError extends Error {
     }
 }
 
+function getRoutedOpenCodeModelName(modelId: string): string | null {
+    const lowerModel = modelId.toLowerCase();
+    if (!lowerModel.startsWith('opencode:')) return null;
+
+    const routedModel = lowerModel.substring('opencode:'.length);
+    return routedModel.substring(routedModel.lastIndexOf('/') + 1);
+}
+
+function getReviewDisplayLabel(modelId: string): string {
+    const modelInfo = MODEL_INFO_MAP[modelId];
+    if (modelInfo) return modelInfo.name;
+
+    const routedOpenCodeModelName = getRoutedOpenCodeModelName(modelId);
+    if (!routedOpenCodeModelName) return getModelShortName(modelId);
+
+    const routedModelInfo = ALL_MODELS.find(model => {
+        const lowerModelId = model.id.toLowerCase();
+        return isOpenCodeModelId(model.id) && lowerModelId.substring(lowerModelId.lastIndexOf('/') + 1) === routedOpenCodeModelName;
+    });
+    return routedModelInfo?.name || routedOpenCodeModelName;
+}
+
 /**
  * Resolves an array of `/review` model arguments into concrete, deduplicated review assignments.
  *
@@ -523,11 +545,10 @@ async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAss
         if (!defaultAgent) {
             throw new NoDefaultModelConfiguredError();
         }
-        const modelInfo = MODEL_INFO_MAP[defaultModel];
         return [{
             agentAlias: defaultAgent.config.alias,
             model: defaultModel,
-            displayLabel: modelInfo?.name || getModelShortName(defaultModel),
+            displayLabel: getReviewDisplayLabel(defaultModel),
         }];
     }
 
@@ -559,13 +580,7 @@ async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAss
 
         const dedupeKey = `${resolution.agentAlias}:${resolution.model}`.toLowerCase();
         if (!seen.has(dedupeKey)) {
-            const modelInfo = MODEL_INFO_MAP[resolution.model];
-            const displayLabel = modelInfo?.name || getModelShortName(resolution.model);
-            seen.set(dedupeKey, {
-                agentAlias: resolution.agentAlias,
-                model: resolution.model,
-                displayLabel,
-            });
+            seen.set(dedupeKey, { agentAlias: resolution.agentAlias, model: resolution.model, displayLabel: getReviewDisplayLabel(resolution.model) });
         }
     }
 

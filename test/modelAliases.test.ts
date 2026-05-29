@@ -56,7 +56,7 @@ test('Model Aliases Configuration', async (t) => {
 
 });
 
-test('resolveLlmLabel - 5-step model resolution', async (t) => {
+test('resolveLlmLabel - 7-step model resolution', async (t) => {
     // Mock agent configurations for testing
     const mockAgentConfigs = [
         {
@@ -118,27 +118,27 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     registry.getDefaultAgent = () => mockAgentConfigs[0] as any;
     registry.ensureInitialized = async () => { /* no-op for tests */ };
 
-    await t.test('Step 1: resolves exact githubLabel match from modelDefinitions', async () => {
+    await t.test('Step 3: resolves exact githubLabel match from modelDefinitions', async () => {
         // Labels like "claude-opus46" should match the githubLabel "llm-claude-opus46"
         const result = await resolveLlmLabel('claude-opus46');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to claude agent');
         assert.strictEqual(result.model, 'claude-opus-4-6', 'Should resolve to exact model from modelDefinitions');
     });
 
-    await t.test('Step 1: resolves exact githubLabel for gemini models', async () => {
+    await t.test('Step 3: resolves exact githubLabel for gemini models', async () => {
         // "gemini-g3-flash-preview" should match the githubLabel "llm-gemini-g3-flash-preview"
         const result = await resolveLlmLabel('gemini-g3-flash-preview');
         assert.strictEqual(result.agentAlias, 'gemini', 'Should resolve to gemini agent');
         assert.strictEqual(result.model, 'gemini-3-flash-preview', 'Should resolve to correct gemini model');
     });
 
-    await t.test('Step 1: resolves exact githubLabel for codex models', async () => {
+    await t.test('Step 3: resolves exact githubLabel for codex models', async () => {
         const result = await resolveLlmLabel('codex-gpt54');
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
         assert.strictEqual(result.model, 'gpt-5.4', 'Should resolve to correct codex model');
     });
 
-    await t.test('Step 1: resolves exact githubLabel for OpenCode models', async () => {
+    await t.test('Step 3: resolves exact githubLabel for OpenCode models', async () => {
         const result = await resolveLlmLabel('opencode-kimi-k26');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
         assert.strictEqual(result.model, 'opencode-go/kimi-k2.6', 'Should resolve to correct OpenCode model');
@@ -150,64 +150,76 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'opencode:kimi-k2.6', 'Should preserve routed OpenCode model ID');
     });
 
-    await t.test('Step 2: resolves agent alias match with default model', async () => {
+    await t.test('Step 2: resolves explicit agentAlias:modelId labels', async () => {
+        const result = await resolveLlmLabel('claude:claude-opus-4-6');
+        assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to explicit agent alias');
+        assert.strictEqual(result.model, 'claude-opus-4-6', 'Should resolve to explicit supported model');
+    });
+
+    await t.test('Step 7: preserves unsupported routed OpenCode model IDs for validation', async () => {
+        const result = await resolveLlmLabel('opencode:unknown');
+        assert.strictEqual(result.agentAlias, 'claude', 'Should fall back to default agent');
+        assert.strictEqual(result.model, 'opencode:unknown', 'Should not strip the OpenCode route prefix');
+    });
+
+    await t.test('Step 4: resolves agent alias match with default model', async () => {
         // Just "gemini" should return the default gemini model
         const result = await resolveLlmLabel('gemini');
         assert.strictEqual(result.agentAlias, 'gemini', 'Should resolve to gemini agent');
         assert.strictEqual(result.model, 'gemini-2.5-pro', 'Should use default model for agent');
     });
 
-    await t.test('Step 2: resolves claude alias to default model', async () => {
+    await t.test('Step 4: resolves claude alias to default model', async () => {
         const result = await resolveLlmLabel('claude');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to claude agent');
         assert.strictEqual(result.model, 'claude-sonnet-4-6', 'Should use claude default model');
     });
 
-    await t.test('Step 2: resolves codex alias to default model', async () => {
+    await t.test('Step 4: resolves codex alias to default model', async () => {
         const result = await resolveLlmLabel('codex');
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
         assert.strictEqual(result.model, 'gpt-5.5', 'Should use codex default model');
     });
 
-    await t.test('Step 2: resolves opencode alias to preferred model', async () => {
+    await t.test('Step 4: resolves opencode alias to preferred model', async () => {
         const result = await resolveLlmLabel('opencode');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
         assert.strictEqual(result.model, 'opencode-go/kimi-k2.6', 'Should use preferred OpenCode model');
     });
 
-    await t.test('Step 3: resolves agent prefix match (e.g., gemini-flash)', async () => {
+    await t.test('Step 5: resolves agent prefix match (e.g., gemini-flash)', async () => {
         // "gemini-flash" should resolve to gemini agent with flash model
         const result = await resolveLlmLabel('gemini-flash');
         assert.strictEqual(result.agentAlias, 'gemini', 'Should resolve to gemini agent');
         assert.ok(result.model.includes('flash'), 'Should resolve to a flash model');
     });
 
-    await t.test('Step 3: resolves agent prefix match for codex-spark', async () => {
+    await t.test('Step 5: resolves agent prefix match for codex-spark', async () => {
         const result = await resolveLlmLabel('codex-spark');
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
         // spark is shortAlias for gpt-5.3-codex-spark (but may fallback to default if not found in supported)
         assert.ok(result.model, 'Should resolve to a model');
     });
 
-    await t.test('Step 4: resolves static MODEL_ALIASES for backwards compatibility (opus)', async () => {
+    await t.test('Step 6: resolves static MODEL_ALIASES for backwards compatibility (opus)', async () => {
         const result = await resolveLlmLabel('opus');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default (claude) agent');
         assert.strictEqual(result.model, 'claude-opus-4-6', 'Should resolve to claude-opus-4-6 from static aliases');
     });
 
-    await t.test('Step 4: resolves static MODEL_ALIASES for sonnet', async () => {
+    await t.test('Step 6: resolves static MODEL_ALIASES for sonnet', async () => {
         const result = await resolveLlmLabel('sonnet');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default agent');
         assert.strictEqual(result.model, 'claude-sonnet-4-6', 'Should resolve to claude-sonnet-4-6');
     });
 
-    await t.test('Step 4: resolves static MODEL_ALIASES for haiku', async () => {
+    await t.test('Step 6: resolves static MODEL_ALIASES for haiku', async () => {
         const result = await resolveLlmLabel('haiku');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default agent');
         assert.strictEqual(result.model, 'claude-haiku-4-5-20251001', 'Should resolve to claude-haiku-4-5-20251001');
     });
 
-    await t.test('Step 5: falls back to label as model name for unknown labels', async () => {
+    await t.test('Step 7: falls back to label as model name for unknown labels', async () => {
         const result = await resolveLlmLabel('custom-unknown-model');
         assert.strictEqual(result.agentAlias, 'claude', 'Should fall back to default agent');
         assert.strictEqual(result.model, 'custom-unknown-model', 'Should use label as model name');
@@ -222,23 +234,23 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     await t.test('returns correct agent type for each resolution path', async () => {
         // Test that each resolution path returns the proper agentAlias
 
-        // Path 1: githubLabel match - should return agent matching the model
+        // Path 3: githubLabel match - should return agent matching the model
         const path1 = await resolveLlmLabel('claude-sonnet');
         assert.strictEqual(path1.agentAlias, 'claude', 'githubLabel match returns correct agent');
 
-        // Path 2: agent alias match - returns that agent
+        // Path 4: agent alias match - returns that agent
         const path2 = await resolveLlmLabel('gemini');
         assert.strictEqual(path2.agentAlias, 'gemini', 'agent alias match returns correct agent');
 
-        // Path 3: prefix match - returns matching agent
+        // Path 5: prefix match - returns matching agent
         const path3 = await resolveLlmLabel('codex-gpt54');
         assert.strictEqual(path3.agentAlias, 'codex', 'prefix match returns correct agent');
 
-        // Path 4: static alias - returns default agent
+        // Path 6: static alias - returns default agent
         const path4 = await resolveLlmLabel('opus');
         assert.strictEqual(path4.agentAlias, 'claude', 'static alias returns default agent');
 
-        // Path 5: fallback - returns default agent
+        // Path 7: fallback - returns default agent
         const path5 = await resolveLlmLabel('unknown-model');
         assert.strictEqual(path5.agentAlias, 'claude', 'fallback returns default agent');
     });
@@ -669,6 +681,18 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         assert.strictEqual(results.length, 1);
         assert.strictEqual(results[0].agentAlias, 'opencode');
         assert.strictEqual(results[0].model, 'opencode:kimi-k2.6');
+        assert.strictEqual(results[0].displayLabel, 'Kimi K2.6');
+    });
+
+    await t.test('unsupported routed OpenCode model IDs fail review validation', async () => {
+        await assert.rejects(
+            () => resolveReviewModels(['opencode:unknown']),
+            (err: any) => {
+                assert.ok(err instanceof ReviewModelResolutionError);
+                assert.ok(err.unresolvedTokens.includes('opencode:unknown'));
+                return true;
+            }
+        );
     });
 
     await t.test('unknown OpenCode-like labels fail review validation', async () => {
