@@ -82,6 +82,7 @@ services:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor:ro
+      - /tmp/git-processor/propr-cache/vibe-prompts:/tmp/git-processor/propr-cache/vibe-prompts:rw
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - ~/.codex:/root/.codex:ro
       - ~/.vibe:/root/.vibe:ro

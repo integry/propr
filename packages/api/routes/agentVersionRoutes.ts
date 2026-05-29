@@ -10,6 +10,7 @@ import {
     computeContentHash,
     generateImageTag,
     AGENT_DEFAULT_VERSIONS,
+    AGENT_IMAGE_NAMES,
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
     listAgentImages,
@@ -178,7 +179,7 @@ export function createAgentVersionRoutes() {
                 agentType,
                 images: tags.map((tag: string) => ({
                     tag,
-                    fullName: `${getImageName(agentType)}:${tag}`
+                    fullName: `${AGENT_IMAGE_NAMES[agentType]}:${tag}`
                 }))
             });
         } catch (error) {
@@ -269,17 +270,4 @@ export function createAgentVersionRoutes() {
         resolveVersionEndpoint,
         getImageTag
     };
-}
-
-/**
- * Helper to get the Docker image name for an agent type.
- */
-function getImageName(agentType: string): string {
-    const imageNames: Record<string, string> = {
-        claude: 'claude-code-processor',
-        codex: 'codex-cli',
-        gemini: 'gemini-cli',
-        vibe: 'propr-vibe'
-    };
-    return imageNames[agentType] || agentType;
 }

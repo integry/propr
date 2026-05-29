@@ -24,6 +24,8 @@ const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
 const CONTAINER_PROMPT_PATH = '/tmp/propr-vibe-prompt.md';
 const PROMPT_CACHE_DIR = '/tmp/git-processor/propr-cache/vibe-prompts';
+const CONTAINER_NODE_UID = 1000;
+const CONTAINER_NODE_GID = 1000;
 
 interface VibeDockerArgsParams {
     worktreePath: string;
@@ -267,11 +269,21 @@ export class VibeAgent implements Agent {
 
     private writePromptFile(prompt: string, taskId?: string): string {
         fs.mkdirSync(PROMPT_CACHE_DIR, { recursive: true, mode: 0o700 });
+        fs.chmodSync(PROMPT_CACHE_DIR, 0o700);
         const safeTaskId = taskId?.replace(/[^a-zA-Z0-9_-]/g, '').slice(-32) || Date.now().toString(36);
         const promptPath = path.join(PROMPT_CACHE_DIR, `${safeTaskId}-${Date.now().toString(36)}.md`);
-        fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o644 });
-        fs.chmodSync(promptPath, 0o644);
+        fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o600 });
+        this.chownPromptForContainer(promptPath);
+        fs.chmodSync(promptPath, 0o600);
         return promptPath;
+    }
+
+    private chownPromptForContainer(promptPath: string): void {
+        try {
+            fs.chownSync(promptPath, CONTAINER_NODE_UID, CONTAINER_NODE_GID);
+        } catch (error) {
+            logger.debug({ promptPath, error: (error as Error).message }, 'Could not adjust Vibe prompt ownership');
+        }
     }
 
     private cleanupPromptFile(promptPath: string): void {

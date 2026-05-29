@@ -41,6 +41,16 @@ export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
 };
 
 /**
+ * Local Docker repositories used for versioned agent images.
+ */
+export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
+    claude: 'propr-claude',
+    codex: 'propr-codex',
+    gemini: 'propr-gemini',
+    vibe: 'propr-vibe'
+};
+
+/**
  * Files that contribute to the Docker image content hash.
  * When any of these files change, a new image should be built.
  */

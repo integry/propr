@@ -6,7 +6,7 @@ export interface PyPiPackageInfo {
     info: {
         version: string;
     };
-    releases: Record<string, Array<{ upload_time_iso_8601?: string }>>;
+    releases: Record<string, Array<{ upload_time_iso_8601?: string; yanked?: boolean }>>;
 }
 
 const PYPI_REQUEST_TIMEOUT_MS = 10000;
@@ -46,7 +46,11 @@ export async function getLatestPyPiVersion(packageName: string): Promise<string>
     return info.info.version;
 }
 
-function getLatestUploadTime(files: Array<{ upload_time_iso_8601?: string }>): string {
+function getActiveFiles(files: Array<{ upload_time_iso_8601?: string; yanked?: boolean }>): Array<{ upload_time_iso_8601?: string; yanked?: boolean }> {
+    return files.filter(file => !file.yanked);
+}
+
+function getLatestUploadTime(files: Array<{ upload_time_iso_8601?: string; yanked?: boolean }>): string {
     return files.reduce((latest, file) => {
         const uploadTime = file.upload_time_iso_8601 || '';
         return uploadTime > latest ? uploadTime : latest;
@@ -59,10 +63,7 @@ export async function getRecentPyPiVersions(
 ): Promise<Array<{ version: string; publishedAt: string }>> {
     const info = await getPackageInfo(packageName);
     return Object.entries(info.releases)
-        .map(([version, files]) => ({
-            version,
-            publishedAt: getLatestUploadTime(files)
-        }))
+        .map(([version, files]) => ({ version, publishedAt: getLatestUploadTime(getActiveFiles(files)) }))
         .filter(release => release.publishedAt)
         .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
         .slice(0, limit);
@@ -74,7 +75,8 @@ export async function resolvePyPiVersionSpec(packageName: string, versionSpec: s
     }
 
     const info = await getPackageInfo(packageName);
-    if (!info.releases[versionSpec]) {
+    const activeFiles = getActiveFiles(info.releases[versionSpec] || []);
+    if (activeFiles.length === 0) {
         throw new Error(`Version '${versionSpec}' not found for package ${packageName}`);
     }
     return versionSpec;

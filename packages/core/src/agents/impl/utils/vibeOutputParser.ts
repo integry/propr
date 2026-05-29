@@ -3,11 +3,15 @@ interface VibeJsonOutput {
     session_id?: string;
     sessionId?: string;
     model?: string;
-    result?: string;
-    response?: string;
-    output?: string;
-    text?: string;
-    error?: string;
+    result?: unknown;
+    response?: unknown;
+    output?: unknown;
+    text?: unknown;
+    content?: unknown;
+    message?: unknown;
+    delta?: unknown;
+    data?: unknown;
+    error?: unknown;
     usage?: {
         input_tokens?: number;
         output_tokens?: number;
@@ -31,7 +35,13 @@ function flattenJsonValue(value: unknown): VibeJsonOutput[] {
         return value.flatMap(item => flattenJsonValue(item));
     }
     if (value && typeof value === 'object') {
-        return [value as VibeJsonOutput];
+        const objectValue = value as Record<string, unknown>;
+        return [
+            objectValue as VibeJsonOutput,
+            ...Object.entries(objectValue)
+                .filter(([key]) => key !== 'error')
+                .flatMap(([, item]) => flattenJsonValue(item))
+        ];
     }
     return [];
 }
@@ -57,8 +67,42 @@ function parseJsonObjects(output: string): VibeJsonOutput[] {
         .flatMap(line => tryParseJson(line));
 }
 
+function textFromValue(value: unknown): string | undefined {
+    if (typeof value === 'string') {
+        return value;
+    }
+    if (Array.isArray(value)) {
+        const parts = value.map(item => textFromValue(item)).filter((text): text is string => Boolean(text));
+        return parts.length > 0 ? parts.join('') : undefined;
+    }
+    if (value && typeof value === 'object') {
+        return pickText(value as VibeJsonOutput);
+    }
+    return undefined;
+}
+
 function pickText(event: VibeJsonOutput): string | undefined {
-    return event.result || event.response || event.output || event.text;
+    return textFromValue(event.result)
+        || textFromValue(event.response)
+        || textFromValue(event.output)
+        || textFromValue(event.text)
+        || textFromValue(event.content)
+        || textFromValue(event.message)
+        || textFromValue(event.delta)
+        || textFromValue(event.data);
+}
+
+function pickError(event: VibeJsonOutput): string | undefined {
+    if (typeof event.error === 'string') {
+        return event.error;
+    }
+    if (event.error && typeof event.error === 'object') {
+        const errorText = pickText(event.error as VibeJsonOutput);
+        if (errorText) {
+            return errorText;
+        }
+    }
+    return event.type === 'error' ? 'Vibe reported an error' : undefined;
 }
 
 export function parseVibeOutput(output: string): ParsedVibeOutput {
@@ -68,17 +112,17 @@ export function parseVibeOutput(output: string): ParsedVibeOutput {
         return { summary: summary || undefined };
     }
 
-    const textEvent = [...jsonObjects].reverse().find(event => pickText(event));
+    const textEvent = [...jsonObjects].reverse().find(event => event.type !== 'error' && pickText(event));
     const sessionEvent = [...jsonObjects].reverse().find(event => event.session_id || event.sessionId);
     const modelEvent = [...jsonObjects].reverse().find(event => event.model);
     const usageEvent = [...jsonObjects].reverse().find(event => event.usage || event.token_usage);
-    const errorEvent = jsonObjects.find(event => event.error || event.type === 'error');
+    const error = jsonObjects.map(event => pickError(event)).find(Boolean);
 
     return {
         sessionId: sessionEvent?.session_id || sessionEvent?.sessionId,
         model: modelEvent?.model,
         summary: textEvent ? pickText(textEvent) : output.trim() || undefined,
-        error: errorEvent ? (errorEvent.error || 'Vibe reported an error') : undefined,
+        error,
         tokenUsage: usageEvent?.usage || usageEvent?.token_usage
     };
 }

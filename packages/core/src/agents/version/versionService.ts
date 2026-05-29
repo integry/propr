@@ -13,6 +13,7 @@ import {
     AGENT_NPM_PACKAGES,
     AGENT_NPM_TAGS,
     AGENT_DEFAULT_VERSIONS,
+    AGENT_IMAGE_NAMES,
     DOCKER_CONTENT_FILES
 } from './types.js';
 import {
@@ -50,6 +51,9 @@ export async function resolveVersion(
             case 'tag':
                 if (!versionSpec) {
                     throw new Error('Version spec required for tag type');
+                }
+                if (!AGENT_NPM_TAGS[agentType].includes(versionSpec)) {
+                    throw new Error(`Unknown tag '${versionSpec}' for PyPI-backed package ${packageName}`);
                 }
                 return resolvePyPiVersionSpec(packageName, versionSpec);
             case 'specific':
@@ -203,14 +207,7 @@ export function computeContentHash(agentType: AgentType, basePath: string = PROJ
  * @returns Docker image tag (e.g., 'propr-claude:2.1.77-a3f2b1')
  */
 export function generateImageTag(agentType: AgentType, cliVersion: string, contentHash: string): string {
-    const imageNames: Record<AgentType, string> = {
-        claude: 'propr-claude',
-        codex: 'propr-codex',
-        gemini: 'propr-gemini',
-        vibe: 'propr-vibe'
-    };
-
-    const imageName = imageNames[agentType];
+    const imageName = AGENT_IMAGE_NAMES[agentType];
     return `${imageName}:${cliVersion}-${contentHash}`;
 }
 
@@ -245,6 +242,7 @@ export {
     AGENT_NPM_PACKAGES,
     AGENT_NPM_TAGS,
     AGENT_DEFAULT_VERSIONS,
+    AGENT_IMAGE_NAMES,
     DOCKER_CONTENT_FILES
 };
 
