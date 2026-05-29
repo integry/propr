@@ -2,7 +2,7 @@
 // This file provides a single source of truth for model information
 // Both backend (packages/core) and frontend (propr-ui) import from this package
 
-export type AgentType = 'claude' | 'codex' | 'gemini';
+export type AgentType = 'claude' | 'codex' | 'gemini' | 'vibe';
 
 export interface ModelInfo {
   id: string;
@@ -49,14 +49,22 @@ export const GEMINI_MODELS: ModelInfo[] = [
   { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', shortName: 'Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-gemini-flash-lite', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-flash-lite' },
 ];
 
+// Mistral Vibe coding models
+export const VIBE_MODELS: ModelInfo[] = [
+  { id: 'mistral-medium-3.5', name: 'Mistral Medium 3.5', shortName: 'Mistral Medium 3.5', shortAlias: 'medium35', githubLabel: 'llm-vibe-medium35', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/mistral-medium-3.5' },
+  { id: 'devstral-2512', name: 'Devstral 2', shortName: 'Devstral 2', shortAlias: 'devstral2', githubLabel: 'llm-vibe-devstral2', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/devstral-2' },
+  { id: 'devstral-small-latest', name: 'Devstral Small 2', shortName: 'Devstral Small', shortAlias: 'devstral-small', githubLabel: 'llm-vibe-devstral-small', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/devstral-small-latest' },
+];
+
 // All models combined
-export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS];
+export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS, ...VIBE_MODELS];
 
 // Map of agent types to their models
 export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
   claude: CLAUDE_MODELS,
   codex: CODEX_MODELS,
   gemini: GEMINI_MODELS,
+  vibe: VIBE_MODELS,
 };
 
 // Lookup map for all models by ID
@@ -103,6 +111,14 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultAlias: 'gemini',
     npmPackage: '@google/gemini-cli',
     defaultCliVersion: '0.35.1'
+  },
+  vibe: {
+    dockerImage: 'vibe-cli:latest',
+    configPath: '~/.vibe',
+    defaultModels: VIBE_MODELS.map(m => m.id),
+    defaultAlias: 'vibe',
+    npmPackage: 'mistral-vibe',
+    defaultCliVersion: '2.12.1'
   }
 };
 
@@ -110,5 +126,6 @@ export const AGENT_DEFAULTS: Record<AgentType, {
 export const typeBadgeColors: Record<AgentType, string> = {
   claude: 'bg-orange-100 text-orange-800 border-orange-300',
   codex: 'bg-green-100 text-green-800 border-green-300',
-  gemini: 'bg-blue-100 text-blue-800 border-blue-300'
+  gemini: 'bg-blue-100 text-blue-800 border-blue-300',
+  vibe: 'bg-pink-100 text-pink-800 border-pink-300'
 };

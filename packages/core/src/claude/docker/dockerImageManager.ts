@@ -4,7 +4,8 @@ import { executeDockerCommand } from './dockerExecutor.js';
 const AGENT_IMAGE_NAMES: Record<string, string> = {
     claude: 'propr-claude',
     codex: 'propr-codex',
-    gemini: 'propr-gemini'
+    gemini: 'propr-gemini',
+    vibe: 'propr-vibe'
 };
 
 /**

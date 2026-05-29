@@ -3,7 +3,8 @@ import type { AgentType } from '../../agents/types.js';
 const ENTRYPOINT_PATHS: Record<AgentType, string> = {
     claude: '/home/node/claude-entrypoint.sh',
     codex: '/home/node/codex-entrypoint.sh',
-    gemini: '/home/node/gemini-entrypoint.sh'
+    gemini: '/home/node/gemini-entrypoint.sh',
+    vibe: '/home/node/vibe-entrypoint.sh'
 };
 
 const WORKSPACE_PATH = '/home/node/workspace';

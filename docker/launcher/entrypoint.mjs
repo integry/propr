@@ -42,11 +42,12 @@ const DOCS_ENABLED = process.env.DOCS_ENABLED === 'true';
 
 // Host paths for per-CLI credential directories. Launcher is in a container
 // and can't read the host's $HOME, so the invoker must pass these in. The
-// worker and api containers mount them so the spawned claude/codex/gemini
+// worker and api containers mount them so the spawned claude/codex/gemini/vibe
 // agent containers can find the user's login state.
 const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR;
 const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR;
 const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR;
+const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR;
 
 // For each agent, mount the host credentials at the same path on both sides
 // (HOST:HOST) and set *_CONFIG_PATH env vars to that path. When the worker/api
@@ -67,6 +68,10 @@ function agentCredentialArgs() {
     if (HOST_GEMINI_DIR) {
         args.push('-v', `${HOST_GEMINI_DIR}:${HOST_GEMINI_DIR}`);
         args.push('-e', `GEMINI_CONFIG_PATH=${HOST_GEMINI_DIR}`);
+    }
+    if (HOST_VIBE_DIR) {
+        args.push('-v', `${HOST_VIBE_DIR}:${HOST_VIBE_DIR}`);
+        args.push('-e', `VIBE_CONFIG_PATH=${HOST_VIBE_DIR}`);
     }
     return args;
 }

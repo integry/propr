@@ -17,6 +17,12 @@ import {
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
+const VALID_AGENT_TYPES: AgentType[] = ['claude', 'codex', 'gemini', 'vibe'];
+
+function isValidAgentType(agentType: string): agentType is AgentType {
+    return VALID_AGENT_TYPES.includes(agentType as AgentType);
+}
+
 /**
  * Creates the agent version management routes.
  */
@@ -30,12 +36,12 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!isValidAgentType(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
 
-            const versions = await getAvailableVersions(agentType as AgentType);
+            const versions = await getAvailableVersions(agentType);
             res.json(versions);
         } catch (error) {
             const err = error as Error;
@@ -118,7 +124,7 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!isValidAgentType(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -128,7 +134,7 @@ export function createAgentVersionRoutes() {
             const versionsInUse = new Set<string>();
 
             // Add default version
-            versionsInUse.add(AGENT_DEFAULT_VERSIONS[agentType as AgentType]);
+            versionsInUse.add(AGENT_DEFAULT_VERSIONS[agentType]);
 
             // Add resolved versions from configs
             for (const agent of agents) {
@@ -161,7 +167,7 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!isValidAgentType(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -191,13 +197,13 @@ export function createAgentVersionRoutes() {
             const { agentType, versionType, versionSpec } = req.body;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!isValidAgentType(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
 
             const resolved = await resolveVersion(
-                agentType as AgentType,
+                agentType,
                 versionType as CliVersionType,
                 versionSpec
             );
@@ -224,12 +230,12 @@ export function createAgentVersionRoutes() {
             const { versionType, versionSpec } = req.query;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!isValidAgentType(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
 
-            const type = agentType as AgentType;
+            const type = agentType;
             const effectiveVersionType = (versionType as CliVersionType) || 'default';
 
             // Resolve version
@@ -272,7 +278,8 @@ function getImageName(agentType: string): string {
     const imageNames: Record<string, string> = {
         claude: 'claude-code-processor',
         codex: 'codex-cli',
-        gemini: 'gemini-cli'
+        gemini: 'gemini-cli',
+        vibe: 'vibe-cli'
     };
     return imageNames[agentType] || agentType;
 }

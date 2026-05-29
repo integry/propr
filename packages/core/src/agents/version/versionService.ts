@@ -20,6 +20,13 @@ import {
     getRecentVersions,
     resolveVersionSpec
 } from './npmClient.js';
+import {
+    getLatestPyPiVersion,
+    getRecentPyPiVersions,
+    resolvePyPiVersionSpec
+} from './pypiClient.js';
+
+const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
 
 /**
  * Resolves a version specification to an actual semver version.
@@ -35,6 +42,27 @@ export async function resolveVersion(
     versionSpec?: string
 ): Promise<string> {
     const packageName = AGENT_NPM_PACKAGES[agentType];
+
+    if (PYPI_AGENT_TYPES.has(agentType)) {
+        switch (versionType) {
+            case 'default':
+                return AGENT_DEFAULT_VERSIONS[agentType];
+            case 'tag':
+                if (!versionSpec) {
+                    throw new Error('Version spec required for tag type');
+                }
+                return resolvePyPiVersionSpec(packageName, versionSpec);
+            case 'specific':
+            case 'custom':
+                if (!versionSpec) {
+                    throw new Error('Version spec required');
+                }
+                return resolvePyPiVersionSpec(packageName, versionSpec);
+            default:
+                logger.warn({ agentType, versionType }, 'Unknown version type, using default');
+                return AGENT_DEFAULT_VERSIONS[agentType];
+        }
+    }
 
     switch (versionType) {
         case 'default':
@@ -73,6 +101,24 @@ export async function getAvailableVersions(agentType: AgentType): Promise<Availa
     const tagNames = AGENT_NPM_TAGS[agentType];
 
     try {
+        if (PYPI_AGENT_TYPES.has(agentType)) {
+            const [latestVersion, recentVersions] = await Promise.all([
+                getLatestPyPiVersion(packageName),
+                getRecentPyPiVersions(packageName, 10)
+            ]);
+
+            return {
+                agentType,
+                packageName,
+                defaultVersion,
+                availableTags: tagNames.map(tag => ({
+                    tag,
+                    version: tag === 'latest' ? latestVersion : defaultVersion
+                })),
+                recentVersions
+            };
+        }
+
         // Fetch tags and recent versions in parallel
         const [distTags, recentVersions] = await Promise.all([
             getDistTags(packageName),
@@ -156,7 +202,8 @@ export function generateImageTag(agentType: AgentType, cliVersion: string, conte
     const imageNames: Record<AgentType, string> = {
         claude: 'propr-claude',
         codex: 'propr-codex',
-        gemini: 'propr-gemini'
+        gemini: 'propr-gemini',
+        vibe: 'propr-vibe'
     };
 
     const imageName = imageNames[agentType];

@@ -1,0 +1,36 @@
+# Mistral Vibe agent image. Extends propr/agent-base (alpine + common tooling).
+# The CLI is installed at build time through uv and exercised with --version as
+# a smoke test so install regressions fail the build.
+
+# BASE_TAG must match the exact version of propr/agent-base built alongside
+# this agent image. scripts/build-images.sh passes it automatically; a direct
+# `docker build` must pass --build-arg BASE_TAG=<version>.
+ARG BASE_TAG
+FROM propr/agent-base:${BASE_TAG}
+
+ARG CLI_VERSION=latest
+
+USER root
+RUN apk add --no-cache python3 py3-pip
+ENV UV_TOOL_DIR=/opt/uv/tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
+RUN if [ "$CLI_VERSION" = "latest" ]; then \
+      uv tool install mistral-vibe; \
+    else \
+      uv tool install "mistral-vibe==${CLI_VERSION}"; \
+    fi
+RUN vibe --version
+USER node
+
+RUN git config --global user.name "ProPR Vibe Bot" \
+    && git config --global user.email "vibe-bot@propr.dev" \
+    && git config --global init.defaultBranch main \
+    && git config --global --add safe.directory '*'
+
+COPY --chown=node:node scripts/vibe-entrypoint.sh /home/node/vibe-entrypoint.sh
+USER root
+RUN chmod +x /home/node/vibe-entrypoint.sh
+USER node
+
+ENTRYPOINT ["/home/node/vibe-entrypoint.sh"]

@@ -40,10 +40,23 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         assert.strictEqual(wrapped[imageIndex + 3], '/home/node/gemini-entrypoint.sh');
     });
 
+    test('maps Vibe to the Vibe entrypoint', () => {
+        const wrapped = wrapDockerRunArgsWithRepoSetup([
+            'run', '--rm',
+            'propr/agent-vibe:latest',
+            'vibe', '--prompt', 'Analyze the codebase'
+        ], 'propr/agent-vibe:latest', 'vibe');
+
+        assert.ok(wrapped.includes('PROPR_AGENT_TYPE=vibe'));
+        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
+
+        const imageIndex = wrapped.indexOf('propr/agent-vibe:latest');
+        assert.strictEqual(wrapped[imageIndex + 3], '/home/node/vibe-entrypoint.sh');
+    });
+
     test('throws when the configured docker image cannot be found', () => {
         assert.throws(() => wrapDockerRunArgsWithRepoSetup([
             'run', '--rm', 'other-image:latest', 'claude'
         ], 'propr/agent-claude:latest', 'claude'), /Docker image 'propr\/agent-claude:latest' was not found/);
     });
 });
-

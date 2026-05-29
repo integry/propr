@@ -9,6 +9,7 @@
     "agent-claude": "propr/agent-claude:1.0.0",
     "agent-codex": "propr/agent-codex:1.0.0",
     "agent-gemini": "propr/agent-gemini:1.0.0",
+    "agent-vibe": "propr/agent-vibe:1.0.0",
     "redis": "redis:7-alpine"
   }
 }

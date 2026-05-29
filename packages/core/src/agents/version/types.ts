@@ -9,22 +9,24 @@ import type { AgentType } from '../types.js';
 export type { CliVersionType } from '../../config/configManager.js';
 
 /**
- * NPM package names for each agent type.
+ * Package names for each agent CLI.
  */
 export const AGENT_NPM_PACKAGES: Record<AgentType, string> = {
     claude: '@anthropic-ai/claude-code',
     codex: '@openai/codex',
-    gemini: '@google/gemini-cli'
+    gemini: '@google/gemini-cli',
+    vibe: 'mistral-vibe'
 } as const;
 
 /**
- * Available npm dist-tags for each agent type.
+ * Available package tags for each agent type.
  * These are the common tags that can be selected in the UI.
  */
 export const AGENT_NPM_TAGS: Record<AgentType, string[]> = {
     claude: ['stable', 'latest', 'next'],
     codex: ['latest', 'alpha'],
-    gemini: ['latest', 'preview']
+    gemini: ['latest', 'preview'],
+    vibe: ['latest']
 };
 
 /**
@@ -34,7 +36,8 @@ export const AGENT_NPM_TAGS: Record<AgentType, string[]> = {
 export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     claude: '2.1.85',
     codex: '0.133.0',
-    gemini: '0.35.1'
+    gemini: '0.35.1',
+    vibe: '2.12.1'
 };
 
 /**
@@ -57,6 +60,12 @@ export const DOCKER_CONTENT_FILES: Record<AgentType, string[]> = {
     gemini: [
         'Dockerfile.gemini',
         'scripts/gemini-entrypoint.sh',
+        'scripts/init-firewall.sh',
+        'scripts/gh-wrapper.sh'
+    ],
+    vibe: [
+        'Dockerfile.vibe',
+        'scripts/vibe-entrypoint.sh',
         'scripts/init-firewall.sh',
         'scripts/gh-wrapper.sh'
     ]

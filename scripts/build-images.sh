@@ -56,6 +56,7 @@ IMAGES=(
   "agent-claude|Dockerfile.claude|."
   "agent-codex|Dockerfile.codex|."
   "agent-gemini|Dockerfile.gemini|."
+  "agent-vibe|Dockerfile.vibe|."
 )
 
 should_build() {
@@ -100,6 +101,7 @@ write_manifest() {
     "agent-claude": "$DOCKERHUB_NS/agent-claude:$VERSION",
     "agent-codex": "$DOCKERHUB_NS/agent-codex:$VERSION",
     "agent-gemini": "$DOCKERHUB_NS/agent-gemini:$VERSION",
+    "agent-vibe": "$DOCKERHUB_NS/agent-vibe:$VERSION",
     "redis": "redis:7-alpine"
   }
 }
@@ -126,7 +128,7 @@ build_image() {
   fi
 
   # Agent images extend propr/agent-base — pin to this build's version.
-  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini ]]; then
+  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini || "$name" == agent-vibe ]]; then
     build_args+=("--build-arg" "BASE_TAG=$VERSION")
   fi
 
@@ -162,6 +164,15 @@ echo "  push:       $PUSH"
 
 write_manifest
 refresh_notices
+
+if [[ -n "$ONLY" ]] && ! should_build "agent-base"; then
+  for agent_name in agent-claude agent-codex agent-gemini agent-vibe; do
+    if should_build "$agent_name"; then
+      build_image "agent-base" "docker/Dockerfile.agent-base" "."
+      break
+    fi
+  done
+fi
 
 for entry in "${IMAGES[@]}"; do
   IFS='|' read -r name dockerfile context <<< "$entry"

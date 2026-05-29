@@ -1,5 +1,5 @@
 import path from 'path';
-import { MODEL_INFO_MAP } from '@propr/shared';
+import { AGENT_DEFAULTS, MODEL_INFO_MAP } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 import { AGENT_DEFAULT_VERSIONS } from '../agents/version/types.js';
@@ -16,7 +16,7 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
  */
 export interface AgentConfig {
     id: string;
-    type: 'claude' | 'codex' | 'gemini';
+    type: 'claude' | 'codex' | 'gemini' | 'vibe';
     alias: string;
     enabled: boolean;
     dockerImage: string;
@@ -36,7 +36,8 @@ export interface AgentConfig {
 export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
     claude: '~/.claude',
     codex: '~/.codex',
-    gemini: '~/.gemini'
+    gemini: '~/.gemini',
+    vibe: '~/.vibe'
 };
 
 /**
@@ -79,7 +80,8 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
 const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
     claude: '2.1.85',
     codex: AGENT_DEFAULT_VERSIONS.codex,
-    gemini: '0.35.1'
+    gemini: '0.35.1',
+    vibe: AGENT_DEFAULT_VERSIONS.vibe
 };
 
 const CLAUDE_46_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];
@@ -94,11 +96,39 @@ export async function migrateAgentConfigs(): Promise<boolean> {
         let migrated = false;
 
         for (const agent of agents) {
+            const defaults = AGENT_DEFAULTS[agent.type];
+
             if (!agent.cliVersionType) {
                 agent.cliVersionType = 'default';
                 agent.cliVersionResolved = DEFAULT_CLI_VERSIONS[agent.type];
                 migrated = true;
                 logger.info({ agentAlias: agent.alias, type: agent.type }, 'Migrated agent to default CLI version');
+            }
+
+            if (defaults) {
+                if (!agent.configPath) {
+                    agent.configPath = defaults.configPath;
+                    migrated = true;
+                    logger.info({ agentAlias: agent.alias, configPath: agent.configPath }, 'Added missing agent config path');
+                }
+
+                if (!agent.dockerImage) {
+                    agent.dockerImage = defaults.dockerImage;
+                    migrated = true;
+                    logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Added missing agent Docker image');
+                }
+
+                if (!agent.supportedModels || agent.supportedModels.length === 0) {
+                    agent.supportedModels = [...defaults.defaultModels];
+                    migrated = true;
+                    logger.info({ agentAlias: agent.alias, supportedModels: agent.supportedModels }, 'Added default agent models');
+                }
+
+                if (!agent.defaultModel && agent.supportedModels.length > 0) {
+                    agent.defaultModel = agent.supportedModels[0];
+                    migrated = true;
+                    logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Added default agent model');
+                }
             }
 
             if (agent.type === 'claude' && agent.supportedModels) {
