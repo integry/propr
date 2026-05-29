@@ -246,6 +246,7 @@ export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { GeminiAgent } from './agents/impl/GeminiAgent.js';
+export { OpenCodeAgent } from './agents/impl/OpenCodeAgent.js';
 export type {
     Agent,
     AgentConfig,
