@@ -6,10 +6,10 @@
 # Requires:
 #   - propr/launcher:latest and propr/app:latest built locally
 #     (npm run images:build)
-#   - Agent images pulled or built locally (propr/agent-{claude,codex,gemini})
+#   - Agent images pulled or built locally
 #   - `gh auth login` or PROPR_E2E_TOKEN
 #   - Mounted agent credentials on the host ($HOME/.claude, /.codex, /.gemini
-#     as applicable for the tests being run)
+#     /.opencode as applicable for the tests being run)
 #
 # Env:
 #   PROPR_E2E_REPO   (default: integry/propr-test)
@@ -126,6 +126,8 @@ LAUNCHER_ARGS=(
 [ -d "$HOME/.claude" ] && LAUNCHER_ARGS+=(-e "HOST_CLAUDE_DIR=$HOME/.claude")
 [ -d "$HOME/.codex" ]  && LAUNCHER_ARGS+=(-e "HOST_CODEX_DIR=$HOME/.codex")
 [ -d "$HOME/.gemini" ] && LAUNCHER_ARGS+=(-e "HOST_GEMINI_DIR=$HOME/.gemini")
+[ -d "$HOME/.opencode" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_DIR=$HOME/.opencode")
+[ -d "$HOME/.config/opencode" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_DIR=$HOME/.config/opencode")
 
 LAUNCHER_ARGS+=("$LAUNCHER_TAG")
 
@@ -159,7 +161,7 @@ probe=$(curl -s -o /dev/null -w '%{http_code}' \
 echo "✓ authenticated"
 
 # Bootstrap test configuration the tests assume:
-#   - three agents (claude/codex/gemini) with cheap/fast models
+#   - agents with cheap/fast models
 #   - test repo registered
 #   - summarization enabled so indexing works
 api() {

@@ -1,11 +1,11 @@
 # Shared base for propr/agent-* images.
 #
-# Contains everything common to Claude / Codex / Gemini agent containers:
+# Contains everything common to Claude / Codex / Gemini / OpenCode agent containers:
 # system tools, GitHub CLI, firewall script, gh wrapper, third-party notices.
 # Each concrete agent image extends this with one `npm install -g` and its
 # own entrypoint.
 #
-# Alpine (musl) has been verified to boot all three CLIs (claude, codex, gemini
+# Alpine (musl) has been verified to boot the agent CLIs (claude, codex, gemini
 # with coreutils providing GNU env). See git history for the empirical test.
 #
 # Build:
