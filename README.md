@@ -1,22 +1,22 @@
 # ProPR - Automated GitHub Issue Processor
 
-A production-ready automated system that monitors GitHub issues, uses Anthropic's Claude Code to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
+A production-ready automated system that monitors GitHub issues, uses configurable coding agents such as Claude Code and OpenCode to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
 
 ## Features
 
 ### ✅ Complete End-to-End Automation
 - **Issue Detection**: Automatic monitoring of GitHub repositories for AI-eligible issues
 - **Multiple Primary Labels**: Support for multiple trigger labels (e.g., 'AI', 'propr') with dynamic state label generation
-- **Model-Specific Processing**: Support for multiple Claude models (sonnet, opus) with dedicated job queues
+- **Model-Specific Processing**: Support for multiple coding agents and models with dedicated job queues
 - **Deterministic Git Workflow**: Reliable 3-phase workflow separating AI implementation from git operations
 - **Automatic PR Creation**: Direct GitHub API integration with proper issue linking
 - **Quality Assurance**: Comprehensive validation and retry mechanisms
 
 ### ✅ Advanced Multi-Model Support
-- **Model-Specific Enqueueing**: Separate job queues for different Claude models based on issue labels
+- **Model-Specific Enqueueing**: Separate job queues for different agent/model selections based on issue labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels (`llm-claude-sonnet`, `llm-claude-opus`)
+- **Model Selection**: Automatic model detection from issue labels (`llm-claude-sonnet`, `llm-claude-opus`, `opencode-kimi-k26`)
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -24,14 +24,14 @@ A production-ready automated system that monitors GitHub issues, uses Anthropic'
 - **Authentication Handling**: Seamless private repository access with token-based authentication
 - **Branch Management**: Automatic creation, pushing, and cleanup of feature branches
 
-### ✅ Intelligent Claude Integration
-- **Implementation-Focused Prompts**: Claude focuses solely on code implementation, not git operations
+### ✅ Intelligent Agent Integration
+- **Implementation-Focused Prompts**: AI agents focus solely on code implementation, not git operations
 - **Context-Aware Processing**: Reads both issue descriptions and all comments for complete context
 - **Docker Isolation**: Secure containerized execution environment with network restrictions
 - **Output Parsing**: Intelligent extraction of implementation details and commit messages
 
 ### ✅ Production-Ready Reliability
-- **Deterministic 3-Phase Workflow**: Pre-Claude setup → AI implementation → Post-Claude finalization
+- **Deterministic 3-Phase Workflow**: Pre-agent setup → AI implementation → post-agent finalization
 - **Error Recovery**: Comprehensive retry mechanisms with exponential backoff
 - **GitHub API Integration**: Direct API calls with timing fixes and proper error handling
 - **State Management**: Redis-based job state tracking with correlation IDs for debugging
@@ -48,10 +48,10 @@ A production-ready automated system that monitors GitHub issues, uses Anthropic'
 
 - **Node.js 18+** - Runtime environment
 - **GitHub App** - Created with appropriate permissions (see setup below)
-- **Claude Subscription** - Anthropic Claude account with API access
+- **AI Agent Credentials** - Configure at least one coding agent. Claude requires your Anthropic/Claude credentials; OpenCode requires your own OpenCode Go or provider API keys.
 - **Redis Server** - For task queue management (v6.0+ recommended)
 - **Git 2.25+** - For worktree support and modern git operations
-- **Docker** - For secure Claude Code execution environment
+- **Docker** - For secure coding-agent execution environments
 - **Disk Space** - Sufficient space for repository clones and worktrees (minimum 10GB recommended)
 
 ## Setup
@@ -132,7 +132,11 @@ git --version
 git worktree --help
 ```
 
-### 4. Claude Code Setup
+### 4. Coding Agent Setup
+
+Configure one or more implementation agents. Each agent needs its own CLI credentials and Docker image.
+
+#### Claude Code
 
 For Claude Code CLI integration:
 
@@ -178,6 +182,43 @@ For Claude Code CLI integration:
    GIT_OPERATION_MAX_RETRIES=3
    ```
 
+#### OpenCode
+
+For OpenCode CLI integration:
+
+1. **Install OpenCode CLI globally:**
+   ```bash
+   curl -fsSL https://opencode.ai/install | bash
+   # or: npm install -g opencode-ai
+   ```
+
+2. **Initialize local OpenCode directories:**
+   ```bash
+   mkdir -p ~/.config/opencode ~/.opencode
+   opencode --version
+   ```
+
+   OpenCode's current config path is `~/.config/opencode`. ProPR also supports the legacy `~/.opencode` path for existing deployments.
+
+3. **Authenticate OpenCode with your provider keys:**
+   ```bash
+   opencode auth login
+   ```
+
+   OpenCode stores provider credentials in `~/.local/share/opencode/auth.json` and can also load provider keys from environment variables or a project `.env` file. Make sure the same credentials are available to the ProPR worker and agent container. OpenCode Go is optional. You can use an OpenCode Go model such as `opencode-go/kimi-k2.6`, or configure any other provider supported by OpenCode. In all cases, operators must supply their own OpenCode/provider API keys.
+
+4. **Configure an OpenCode agent in ProPR:**
+   ```bash
+   propr agent add opencode \
+     -t opencode \
+     -m opencode-go/kimi-k2.6 \
+     -d opencode-go/kimi-k2.6 \
+     --docker-image propr/agent-opencode:latest \
+     --config-path ~/.config/opencode
+   ```
+
+   If you keep OpenCode credentials in environment variables instead of config files, add them to the agent configuration through the API/UI deployment flow used by your installation.
+
 ### 5. Installation
 
 ```bash
@@ -191,8 +232,8 @@ propr/
 ├── src/
 │   ├── auth/
 │   │   └── githubAuth.js        # GitHub App authentication
-│   ├── claude/
-│   │   └── claudeService.js     # Claude Code CLI integration & Docker execution
+│   ├── agents/
+│   │   └── AgentRegistry.ts     # Coding agent selection and execution dispatch
 │   ├── git/
 │   │   └── repoManager.js       # Git operations, worktree management, branch handling
 │   ├── queue/
@@ -210,6 +251,7 @@ propr/
 │   └── index.js                 # Application entry point
 ├── scripts/
 │   ├── claude-entrypoint.sh     # Docker entrypoint for secure Claude execution
+│   ├── opencode-entrypoint.sh   # Docker entrypoint for secure OpenCode execution
 │   ├── init-firewall.sh         # Security and firewall setup
 │   ├── fix-issue-labels.js      # Manual issue label management utility
 │   └── list-repo-configs.js     # Repository configuration display utility
@@ -222,6 +264,7 @@ propr/
 │   ├── worker.modelSpecific.test.js  # Multi-model processing tests
 │   └── repoManager.modelSpecific.test.js # Git worktree isolation tests
 ├── Dockerfile.claude                 # Secure Docker image for Claude execution
+├── Dockerfile.opencode               # Secure Docker image for OpenCode execution
 ├── .env.example                      # Complete environment configuration template
 └── package.json                      # Dependencies and npm scripts
 ```
@@ -282,9 +325,9 @@ npm run worker & npm run worker
 ```
 
 The worker will:
-- **Phase 1 (Pre-Claude Setup)**: Pull jobs from queue, update base branch, create isolated git worktree, push initial branch to GitHub
-- **Phase 2 (AI Implementation)**: Execute Claude Code with implementation-focused prompts in secure Docker environment
-- **Phase 3 (Post-Claude Finalization)**: Commit any changes, push to GitHub, create pull request with automatic issue linking
+- **Phase 1 (Pre-Agent Setup)**: Pull jobs from queue, update base branch, create isolated git worktree, push initial branch to GitHub
+- **Phase 2 (AI Implementation)**: Execute the selected coding agent with implementation-focused prompts in a secure Docker environment
+- **Phase 3 (Post-Agent Finalization)**: Commit any changes, push to GitHub, create pull request with automatic issue linking
 - Handle multiple models concurrently with model-specific delays to prevent conflicts
 - Provide comprehensive error handling and retry mechanisms
 
@@ -336,6 +379,8 @@ docker run --rm \
   -e HOST_CLAUDE_DIR=$HOME/.claude \
   -e HOST_CODEX_DIR=$HOME/.codex \
   -e HOST_GEMINI_DIR=$HOME/.gemini \
+  -e HOST_OPENCODE_LEGACY_DIR=$HOME/.opencode \
+  -e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode \
   propr/launcher:latest
 ```
 
@@ -358,6 +403,7 @@ via the mounted docker socket. See `.env.example` for required configuration.
 | `propr/agent-claude` | Claude Code execution container | ~315 MB |
 | `propr/agent-codex` | OpenAI Codex execution container | ~470 MB |
 | `propr/agent-gemini` | Google Gemini CLI execution container | ~380 MB |
+| `propr/agent-opencode` | OpenCode CLI execution container | ~330 MB |
 
 Images are also mirrored to `ghcr.io/proprdev/propr-*` (no rate limits for
 unauthenticated pulls).
@@ -400,8 +446,9 @@ quick validation.
 Bundled third-party software attributions are preserved inside each image at
 `/usr/share/licenses/propr/`. See `NOTICE` and `THIRD_PARTY_LICENSES.md` in
 the repo root for the offline copies. End users must supply their own API
-credentials for Anthropic, OpenAI, and/or Google and accept those providers'
-terms of service independently.
+credentials for Anthropic, OpenAI, Google, OpenCode Go, and/or any other
+provider configured through OpenCode, and accept those providers' terms of
+service independently.
 
 ## Docker Compose Setup (development)
 
@@ -483,24 +530,25 @@ npm test
 ## Workflow Overview
 
 ### Issue Labels for Model Selection
-Add labels to GitHub issues to specify which Claude model(s) should process them:
+Add labels to GitHub issues to specify which agent/model(s) should process them:
 - `llm-claude-sonnet` - Use Claude Sonnet model
 - `llm-claude-opus` - Use Claude Opus model
-- Both labels can be used together for multi-model processing
+- `opencode-kimi-k26` - Use the configured OpenCode Kimi K2.6 model
+- Multiple labels can be used together for multi-model processing
 
 ### Deterministic 3-Phase Processing
-1. **Pre-Claude Setup** (Deterministic)
+1. **Pre-Agent Setup** (Deterministic)
    - Repository cloning/updating with latest changes
    - Isolated git worktree creation with unique model-specific branch names
    - Initial branch push to GitHub (eliminates timing issues)
 
-2. **AI Implementation** (Claude Focus)
+2. **AI Implementation** (Agent Focus)
    - Implementation-only prompts (no git operations)
    - Complete issue and comment context analysis
    - Code implementation in isolated environment
 
-3. **Post-Claude Finalization** (Deterministic)
-   - Automatic commit of any changes Claude made
+3. **Post-Agent Finalization** (Deterministic)
+   - Automatic commit of any changes the agent made
    - Branch push and PR creation via GitHub API
    - Proper issue linking with keywords (`Closes #123` or `Addresses #123`)
    - Label management and cleanup

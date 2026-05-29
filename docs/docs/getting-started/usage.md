@@ -29,7 +29,7 @@ The daemon continuously:
 - Polls configured repositories at the specified interval
 - Searches for open issues with configured primary labels (e.g., 'AI', 'propr')
 - Excludes issues already being processed or completed
-- Detects model-specific labels to determine which Claude models to use
+- Detects model-specific labels to determine which agent/model pairs to use
 - Adds detected issues to the appropriate task queue(s)
 
 ### Resetting Queue State
@@ -82,44 +82,58 @@ npm run worker & npm run worker
 
 Each worker executes a deterministic 3-phase workflow:
 
-#### Phase 1: Pre-Claude Setup
+#### Phase 1: Pre-Agent Setup
 - Pull job from Redis queue
 - Update base branch with latest changes
 - Create isolated git worktree
 - Push initial branch to GitHub (prevents timing issues)
 
 #### Phase 2: AI Implementation
-- Execute Claude Code in secure Docker environment
-- Claude analyzes issue and comments
+- Execute the selected coding agent in a secure Docker environment
+- The agent analyzes issue details and comments
 - Implements solution with focus on code, not git operations
 
-#### Phase 3: Post-Claude Finalization
-- Commit any changes Claude made
+#### Phase 3: Post-Agent Finalization
+- Commit any changes the agent made
 - Push changes to GitHub
 - Create pull request via GitHub API
 - Link PR to original issue with proper keywords
 - Update issue labels
 
-## Issue Labels for Model Selection
+## Issue Labels for Agent and Model Selection
 
-Add labels to GitHub issues to specify which Claude model(s) should process them:
+Add labels to GitHub issues to specify which agent/model(s) should process them:
 
 - `llm-claude-sonnet` - Use Claude Sonnet model
 - `llm-claude-opus` - Use Claude Opus model
-- Both labels can be added for multi-model processing
+- `opencode-kimi-k26` - Use an OpenCode agent configured for `opencode-go/kimi-k2.6`
+- Multiple labels can be added for multi-model processing
 
 ### Example: Multi-Model Processing
 
 ```
 Issue #123
-Labels: AI, llm-claude-sonnet, llm-claude-opus
+Labels: AI, llm-claude-sonnet, opencode-kimi-k26
 ```
 
 This issue will be processed twice:
 1. Once by Claude Sonnet (creates branch `ai-fix/123-...-sonnet-...`)
-2. Once by Claude Opus (creates branch `ai-fix/123-...-opus-...`)
+2. Once by OpenCode Kimi K2.6 (creates branch `ai-fix/123-...-kimi-k26-...`)
 
 Each model creates its own branch and pull request.
+
+## Operating OpenCode Agents
+
+Before assigning work to OpenCode, verify the OpenCode agent exists and has credentials:
+
+```bash
+propr agent list
+opencode auth list
+```
+
+An OpenCode agent usually points at `~/.config/opencode` and uses models such as `opencode-go/kimi-k2.6`. OpenCode Go is optional; you can also configure OpenCode with another provider and add that provider/model ID to the ProPR agent's supported models.
+
+OpenCode/provider API keys are operator-owned. If a worker fails with authentication errors, run `opencode auth login` on the host or update the provider credentials used by the OpenCode agent, then retry the task.
 
 ## Docker Compose Usage
 

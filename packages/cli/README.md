@@ -119,6 +119,7 @@ Implement GitHub issues from plans using AI agents.
 propr issue implement <draft-id>/<issue-number>              # Trigger implementation
 propr issue implement <draft-id>/1 --wait                    # Wait for completion
 propr issue implement <draft-id>/1 -a claude -m model-name   # Use specific agent/model
+propr issue implement <draft-id>/1 -a opencode -m opencode-go/kimi-k2.6
 propr issue implement <draft-id>/1 --epic --auto-merge       # Epic PR + auto-merge
 ```
 
@@ -193,7 +194,7 @@ propr agent list                                         # List configured agent
 propr agent add my-claude -t claude -m model1,model2     # Add an agent
 propr agent add my-agent -t claude -m model -d model     # With default model
 propr agent add test -t gemini -m gemini-pro --disabled   # Add in disabled state
-propr agent add opencode -t opencode -m opencode-go/kimi-k2.6
+propr agent add opencode -t opencode -m opencode-go/kimi-k2.6 -d opencode-go/kimi-k2.6 --config-path ~/.config/opencode
 propr agent add --file agent-config.json                 # From JSON file
 cat config.json | propr agent add --file -               # From stdin
 propr agent delete my-agent                              # Delete (with confirmation)
@@ -201,6 +202,16 @@ propr agent delete my-agent --force                      # Delete without confir
 ```
 
 **Agent types:** `claude`, `codex`, `gemini`, `opencode`
+
+For OpenCode agents, install and authenticate OpenCode on the host before adding the agent:
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+mkdir -p ~/.config/opencode ~/.opencode
+opencode auth login
+```
+
+OpenCode Go is optional. The example model `opencode-go/kimi-k2.6` uses OpenCode Go, but you can configure other providers through OpenCode and register those provider/model IDs as supported models. You must supply your own OpenCode Go or provider API keys.
 
 **JSON file format** for `--file`:
 
@@ -210,8 +221,8 @@ propr agent delete my-agent --force                      # Delete without confir
   "type": "opencode",
   "models": ["opencode-go/kimi-k2.6"],
   "defaultModel": "opencode-go/kimi-k2.6",
-  "dockerImage": "optional-image",
-  "configPath": "/optional/path",
+  "dockerImage": "propr/agent-opencode:latest",
+  "configPath": "~/.config/opencode",
   "enabled": true
 }
 ```
@@ -399,7 +410,7 @@ propr todo list -p org3/repo3
 
 ## E2E Testing
 
-End-to-end tests run against a live ProPR instance and exercise the full workflow: system health, repo management, todo CRUD, plan lifecycle (create → generate → finalize), and multi-model implementation across all agents (Claude, Gemini, Codex).
+End-to-end tests run against a live ProPR instance and exercise the full workflow: system health, repo management, todo CRUD, plan lifecycle (create → generate → finalize), and multi-model implementation across all agents (Claude, Gemini, Codex, OpenCode).
 
 ### Prerequisites
 
@@ -460,7 +471,7 @@ The report includes:
 
 - **Plans** — ID, name, status, prompt, issues with their agent/model/task assignments
 - **Multi-model parallel results** — all models implementing the same issue simultaneously, with state, duration, tokens, PR number, history entries, and log counts
-- **Single-model results** — grouped by agent (Claude, Gemini, Codex), showing each model's performance on its own issue
+- **Single-model results** — grouped by agent (Claude, Gemini, Codex, OpenCode), showing each model's performance on its own issue
 - **Totals** — models tested, tasks created, completion rate, token usage
 
 ### File Structure

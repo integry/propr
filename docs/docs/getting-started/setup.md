@@ -13,12 +13,12 @@ Before you begin, ensure you have the following installed:
 - **Node.js 18+** - Runtime environment
 - **Redis Server** - For task queue management (v6.0+ recommended)
 - **Git 2.25+** - For worktree support and modern git operations
-- **Docker** - For secure Claude Code execution environment
+- **Docker** - For secure coding-agent execution environments
 - **Disk Space** - Sufficient space for repository clones and worktrees (minimum 10GB recommended)
 
 You'll also need:
 - **GitHub App** - Created with appropriate permissions (see below)
-- **Claude Subscription** - Anthropic Claude account with API access
+- **Coding agent credentials** - At least one configured agent. Claude requires your Anthropic/Claude credentials; OpenCode requires your own OpenCode Go or provider API keys.
 
 ## 1. GitHub App Configuration
 
@@ -128,6 +128,8 @@ git worktree --help
 
 ## 4. Claude Code Setup
 
+Configure this section if you want ProPR to run Claude Code agents.
+
 ### Install Claude Code CLI
 
 Install the Claude Code CLI globally:
@@ -189,7 +191,76 @@ GITHUB_API_MAX_RETRIES=3
 GIT_OPERATION_MAX_RETRIES=3
 ```
 
-## 5. Install Dependencies
+## 5. OpenCode Setup
+
+Configure this section if you want ProPR to run OpenCode agents.
+
+### Install OpenCode CLI
+
+Install the OpenCode CLI on the host so you can authenticate and initialize configuration:
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+# or: npm install -g opencode-ai
+```
+
+### Initialize OpenCode Directories
+
+Create both the current OpenCode config directory and the legacy directory that ProPR supports for compatibility:
+
+```bash
+mkdir -p ~/.config/opencode ~/.opencode
+opencode --version
+```
+
+OpenCode's current user config directory is `~/.config/opencode`. ProPR mounts that path into OpenCode containers at `/home/node/.config/opencode`. Existing deployments that still use `~/.opencode` can keep that directory; ProPR also mounts and links it when configured.
+
+### Authenticate with OpenCode Providers
+
+Run OpenCode's provider login flow:
+
+```bash
+opencode auth login
+```
+
+Select OpenCode Go or another provider and enter your API key. OpenCode Go is optional; it is just one OpenCode provider. You can configure other providers through OpenCode and use their model IDs, as long as the ProPR agent is configured with matching supported models.
+
+Operators must supply their own OpenCode Go or provider API keys. ProPR does not include credentials.
+
+OpenCode stores provider credentials in `~/.local/share/opencode/auth.json` and can also load provider keys from environment variables or a project `.env` file. Make sure the same credentials are available to the ProPR worker and the OpenCode agent container in your deployment.
+
+### Configure an OpenCode Agent
+
+Add an OpenCode agent through the CLI or the Settings UI. This example uses OpenCode Go's Kimi model:
+
+```bash
+propr agent add opencode \
+  -t opencode \
+  -m opencode-go/kimi-k2.6 \
+  -d opencode-go/kimi-k2.6 \
+  --docker-image propr/agent-opencode:latest \
+  --config-path ~/.config/opencode
+```
+
+If you keep provider credentials in environment variables instead of OpenCode config files, use the environment variable names required by your selected OpenCode provider and add them to the agent configuration through the API/UI deployment flow used by your installation.
+
+### Docker and Launcher Mounts
+
+For Docker Compose development, the provided compose files already mount:
+
+```text
+~/.opencode
+~/.config/opencode
+```
+
+For the production launcher, pass host paths explicitly:
+
+```bash
+-e HOST_OPENCODE_LEGACY_DIR=$HOME/.opencode
+-e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode
+```
+
+## 6. Install Dependencies
 
 Install the Node.js dependencies:
 
@@ -197,7 +268,7 @@ Install the Node.js dependencies:
 npm install
 ```
 
-## 6. Redis Setup
+## 7. Redis Setup
 
 Install and start Redis for task queue management.
 
@@ -225,7 +296,7 @@ docker run -d -p 6379:6379 redis:alpine
 
 If using Docker Compose, Redis is automatically included - no separate installation needed.
 
-## 7. Security Configuration
+## 8. Security Configuration
 
 Ensure your private key file has restricted permissions:
 

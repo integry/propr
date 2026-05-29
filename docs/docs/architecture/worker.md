@@ -16,7 +16,7 @@ The worker implements a deterministic 3-phase approach that separates concerns a
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│            Phase 1: Pre-Claude Setup                │
+│            Phase 1: Pre-Agent Setup                 │
 │                  (Deterministic)                     │
 │  - Pull job from queue                              │
 │  - Clone/update repository                          │
@@ -28,16 +28,16 @@ The worker implements a deterministic 3-phase approach that separates concerns a
                         ↓
 ┌─────────────────────────────────────────────────────┐
 │          Phase 2: AI Implementation                  │
-│                (Claude Focus)                        │
+│                (Agent Focus)                         │
 │  - Prepare implementation prompt                    │
 │  - Include complete issue context                   │
-│  - Execute Claude Code in Docker                    │
-│  - Claude analyzes and implements                   │
-│  - Parse Claude's output                            │
+│  - Execute selected agent in Docker                 │
+│  - Agent analyzes and implements                    │
+│  - Parse agent output                               │
 └─────────────────────────────────────────────────────┘
                         ↓
 ┌─────────────────────────────────────────────────────┐
-│       Phase 3: Post-Claude Finalization             │
+│       Phase 3: Post-Agent Finalization              │
 │                  (Deterministic)                     │
 │  - Commit any changes                               │
 │  - Push to GitHub                                   │
@@ -48,11 +48,11 @@ The worker implements a deterministic 3-phase approach that separates concerns a
 └─────────────────────────────────────────────────────┘
 ```
 
-## Phase 1: Pre-Claude Setup
+## Phase 1: Pre-Agent Setup
 
 ### Objectives
 
-Prepare a clean, isolated environment for Claude to work in.
+Prepare a clean, isolated environment for the selected coding agent to work in.
 
 ### Operations
 
@@ -86,7 +86,7 @@ const branchName = generateBranchName({
 
 #### 5. Initial Push
 - Push newly created branch to GitHub
-- Establishes branch existence before Claude runs
+- Establishes branch existence before the agent runs
 - Prevents timing issues with PR creation
 
 #### 6. Label Update
@@ -96,8 +96,8 @@ const branchName = generateBranchName({
 
 ### Why This Phase Matters
 
-By handling all git setup before Claude runs:
-- Claude can focus solely on implementation
+By handling all git setup before the agent runs:
+- The agent can focus solely on implementation
 - Git state is deterministic and predictable
 - Branch already exists on GitHub when needed
 - Timing issues are eliminated
@@ -106,7 +106,7 @@ By handling all git setup before Claude runs:
 
 ### Objectives
 
-Let Claude analyze the issue and implement a solution.
+Let the selected coding agent analyze the issue and implement a solution.
 
 ### Operations
 
@@ -141,10 +141,10 @@ Do NOT worry about git operations, commits, or PRs.
 
 #### 2. Docker Execution
 
-Execute Claude Code in a secure Docker container:
+Execute the selected coding agent in a secure Docker container:
 
 ```javascript
-const result = await claudeService.executeInDocker({
+const result = await agent.executeTask({
   prompt: prompt,
   workspacePath: worktreePath,
   timeout: CLAUDE_TIMEOUT_MS,
@@ -152,9 +152,9 @@ const result = await claudeService.executeInDocker({
 });
 ```
 
-#### 3. Claude Processing
+#### 3. Agent Processing
 
-Claude:
+The selected agent:
 - Reads issue details and comments
 - Searches codebase to understand context
 - Analyzes the problem
@@ -163,24 +163,24 @@ Claude:
 
 #### 4. Output Parsing
 
-Parse Claude's output to extract:
+Parse agent output to extract:
 - Implementation summary
 - Files changed
 - Any error messages or warnings
 
 ### Security Isolation
 
-Claude runs in a Docker container with:
+Agents run in Docker containers with:
 - Isolated filesystem
 - Network restrictions
 - Resource limits
 - Read-only access to sensitive files
 
-## Phase 3: Post-Claude Finalization
+## Phase 3: Post-Agent Finalization
 
 ### Objectives
 
-Commit Claude's changes and create a pull request.
+Commit agent changes and create a pull request.
 
 ### Operations
 
@@ -190,7 +190,7 @@ git status
 git diff
 ```
 
-Check what files Claude modified.
+Check what files the agent modified.
 
 #### 2. Commit Creation
 
@@ -199,8 +199,8 @@ If changes exist:
 git add .
 git commit -m "fix(ai): Resolve issue #123 - Feature implementation
 
-Generated with Claude Code
-Co-Authored-By: Claude <noreply@anthropic.com>"
+Generated with ProPR
+Agent: ${agentAlias}"
 ```
 
 If no changes:
@@ -230,7 +230,7 @@ ${summary}
 
 Closes #${issueNumber}
 
-Generated with Claude Code
+Generated with ProPR
   `
 });
 ```
@@ -319,7 +319,7 @@ const pushed = await retryWithBackoff(
 
 **Recovery**: Retry with clean state, update labels on final failure
 
-#### Claude Failures
+#### Agent Failures
 - Timeout after max turns
 - Docker execution errors
 - Invalid responses
@@ -382,10 +382,11 @@ State is tracked in multiple places:
 # Worker configuration
 WORKER_CONCURRENCY=5
 
-# Claude configuration
+# Agent configuration
 CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
 CLAUDE_TIMEOUT_MS=300000
 CLAUDE_MAX_TURNS=1000
+OPENCODE_TIMEOUT_MS=3600000
 
 # Retry configuration
 GITHUB_API_MAX_RETRIES=3
@@ -427,7 +428,7 @@ Workers perform operations in parallel where possible:
 ### Resource Limits
 
 Set appropriate limits:
-- Claude timeout prevents runaway executions
+- Agent timeout prevents runaway executions
 - Max turns prevents infinite loops
 - Concurrency limit prevents resource exhaustion
 
