@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { AgentConfig } from '../../api/proprApi';
 import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
-import { MODEL_INFO_MAP, typeBadgeColors } from '../../config/modelDefinitions';
+import { type AgentType, MODEL_INFO_MAP, typeBadgeColors } from '../../config/modelDefinitions';
 import { ProviderLogo } from '../../components/ui/ProviderLogo';
 
 // --- Icons ---
@@ -107,6 +107,8 @@ function getModelDisplayName(modelId: string, modelInfo: typeof MODEL_INFO_MAP[s
   return `GPT-${gptMatch[1]}${suffix}`;
 }
 
+const getAgentTypeLabel = (type: AgentType) => type === 'opencode' ? 'OpenCode' : type;
+
 // High-density model row component - tighter padding for density
 const ModelRow: React.FC<{
   modelId: string;
@@ -167,10 +169,10 @@ const AgentCard: React.FC<{
       {/* --- Agent Header: [Icon] [Bold Name] [Brand Badge] ... [Toggle] [Edit] --- */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <ProviderLogo provider={agent.alias} className="w-5 h-5 text-gray-700 flex-shrink-0" />
+          <ProviderLogo provider={agent.type} className="w-5 h-5 text-gray-700 flex-shrink-0" />
           <span className="font-semibold text-gray-900">{agent.alias}</span>
           <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded border capitalize ${typeBadgeColors[agent.type]}`}>
-            {agent.type}
+            {getAgentTypeLabel(agent.type)}
           </span>
           <CodeChip>{agent.configPath}</CodeChip>
         </div>
