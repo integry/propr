@@ -18,6 +18,7 @@ import {
 } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
+import { generateSummaryTitle } from './prCommentAgentUtils.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
@@ -399,25 +400,20 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id)).join(', ')}_`
         : '';
     const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
-    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}`,
-    });
+    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}` });
 
     const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
-    const titleContext = buildPrTaskTitleContext({
-        workflow,
-        pullRequestNumber,
-        prTitle: prData!.data.title,
-        instructionText: job.data.commandInstructions,
-        recentComments: allComments,
-        prDescription: prData!.data.body,
-        excludeCommentIds: state.unprocessedComments.map(comment => comment.id),
+    const titleContext = buildPrTaskTitleContext({ workflow, pullRequestNumber, prTitle: prData!.data.title, instructionText: job.data.commandInstructions, recentComments: allComments, prDescription: prData!.data.body, excludeCommentIds: state.unprocessedComments.map(comment => comment.id) });
+    const fallbackSubtitle = buildDeterministicPrTaskSubtitle(workflow);
+    const githubToken = await state.octokit.auth({ type: "installation" }) as { token: string };
+    const summaryTitle = await generateSummaryTitle({
+        combinedCommentBody, titleContext: titleContext.context, fallbackSubtitle,
+        worktreeInfo: { worktreePath: process.cwd(), branchName: prData!.data.head.ref }, githubToken,
+        pullRequestNumber, prTitle: prData!.data.title, workflowLabel: 'Review',
+        repoOwner, repoName, correlationId, taskId, correlatedLogger,
     });
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
-    job.data.subtitle = titleContext.hasMeaningfulContext
-        ? `Code review with ${assignments.map(a => a.label).join(', ')} using PR context`
-        : buildDeterministicPrTaskSubtitle(workflow);
+    job.data.subtitle = titleContext.hasMeaningfulContext ? summaryTitle : fallbackSubtitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
 
     const registry = AgentRegistry.getInstance();

@@ -9,6 +9,7 @@ import { agentResultToClaudeResponse } from './prCommentJobUtils.js';
 import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
+const MAX_GENERATED_SUBTITLE_LENGTH = 140;
 
 interface GitHubToken { token: string }
 
@@ -26,6 +27,14 @@ interface SummaryTitleOptions {
     correlationId: string;
     taskId: string;
     correlatedLogger: Logger;
+}
+
+function sanitizeGeneratedSubtitle(value: string, fallbackSubtitle: string): string {
+    const cleaned = value.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return fallbackSubtitle;
+    return cleaned.length > MAX_GENERATED_SUBTITLE_LENGTH
+        ? `${cleaned.substring(0, MAX_GENERATED_SUBTITLE_LENGTH - 3).trimEnd()}...`
+        : cleaned;
 }
 
 export async function generateSummaryTitle(options: SummaryTitleOptions): Promise<string> {
@@ -58,8 +67,9 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
                 configuredVia: configuredModel ? 'summarization.agent_alias' : 'fallback'
             }
         });
-        correlatedLogger.info({ taskId, summaryTitle: title }, 'Generated AI summary for follow-up task');
-        return title;
+        const sanitizedTitle = sanitizeGeneratedSubtitle(title, deterministicFallback);
+        correlatedLogger.info({ taskId, summaryTitle: sanitizedTitle }, 'Generated AI summary for follow-up task');
+        return sanitizedTitle;
     } catch (summaryError) {
         correlatedLogger.warn({ taskId, error: (summaryError as Error).message }, 'Failed to generate AI summary, falling back to truncation.');
         if (contextToSummarize) {

@@ -404,7 +404,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
             throw new Error(`Merge failed: ${mergeResult.error}`);
         }
 
-        if (prInfo) {
+        if (prInfo && (mergeResult.conflictedFiles?.length ?? 0) > 0) {
             const conflictDiff = await getConflictDiffForTitle(worktreeInfo.worktreePath, mergeResult.conflictedFiles);
             const titleContext = buildPrTaskTitleContext({
                 workflow: 'merge',

@@ -40,6 +40,7 @@ describe('prTaskTitleHelpers titles', () => {
     test('detects bare slash commands as not meaningful title text', () => {
         assert.strictEqual(hasMeaningfulTitleText('/fix'), false);
         assert.strictEqual(hasMeaningfulTitleText('/review claude-sonnet'), false);
+        assert.strictEqual(hasMeaningfulTitleText('/review security only'), true);
         assert.strictEqual(hasMeaningfulTitleText('/merge'), false);
         assert.strictEqual(hasMeaningfulTitleText('/fix only address security issues'), true);
     });
@@ -78,6 +79,19 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.deepStrictEqual(selected.map(comment => comment.id), [3, 1]);
     });
 
+    test('filters generated comments regardless of pattern casing', () => {
+        const selected = selectRecentUsefulPrComments([
+            {
+                id: 5,
+                body: 'starting work on follow-up changes',
+                created_at: '2026-05-29T08:05:00Z',
+                user: { login: 'propr.dev[bot]', type: 'User' },
+            },
+            comments[2],
+        ], { limit: 2 });
+        assert.deepStrictEqual(selected.map(comment => comment.id), [3]);
+    });
+
     test('falls back to PR description when fewer than two useful recent comments exist', () => {
         const result = buildPrTaskTitleContext({
             workflow: 'review',
@@ -108,6 +122,21 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.ok(result.context.includes('User instructions'));
         assert.ok(result.context.includes('only address security issues'));
         assert.ok(result.context.includes('Recent useful PR comments'));
+    });
+
+    test('does not include PR description fallback when instructions already provide context', () => {
+        const result = buildPrTaskTitleContext({
+            workflow: 'review',
+            pullRequestNumber: 123,
+            prTitle: 'Add OAuth refresh handling',
+            instructionText: '/review security only',
+            recentComments: [],
+            prDescription: 'This PR adds token refresh support for OAuth sessions.',
+        });
+
+        assert.strictEqual(result.includedPrDescription, false);
+        assert.ok(result.context.includes('security only'));
+        assert.ok(!result.context.includes('PR description fallback'));
     });
 
     test('returns no context and a deterministic subtitle can be used when nothing is meaningful', () => {
@@ -176,5 +205,28 @@ describe('prTaskTitleHelpers merge conflict diff context', () => {
         });
         assert.strictEqual(result.includedMergeConflictDiff, true);
         assert.ok(result.context.includes('Merge conflict diff for conflicting files only'));
+    });
+
+    test('filters quoted diff paths with spaces', () => {
+        const diff = [
+            'diff --git "a/src/auth flow.ts" "b/src/auth flow.ts"',
+            'index 111..222 100644',
+            '--- "a/src/auth flow.ts"',
+            '+++ "b/src/auth flow.ts"',
+            '@@ -1 +1 @@',
+            '-old auth',
+            '+new auth',
+            'diff --git a/src/unrelated.ts b/src/unrelated.ts',
+            'index 333..444 100644',
+            '--- a/src/unrelated.ts',
+            '+++ b/src/unrelated.ts',
+            '@@ -1 +1 @@',
+            '-old',
+            '+new',
+        ].join('\n');
+
+        const filtered = filterDiffToFiles(diff, ['src/auth flow.ts']);
+        assert.ok(filtered.includes('"b/src/auth flow.ts"'));
+        assert.ok(!filtered.includes('src/unrelated.ts'));
     });
 });

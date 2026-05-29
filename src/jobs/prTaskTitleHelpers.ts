@@ -58,6 +58,13 @@ function truncate(value: string, maxLength = 1200): string {
     return value.length > maxLength ? `${value.substring(0, maxLength)}...` : value;
 }
 
+function isLikelyReviewModelSelector(value: string): boolean {
+    const text = compactWhitespace(value).toLowerCase();
+    if (!text || /\s/.test(text)) return false;
+    return /^(?:claude|sonnet|opus|haiku|gpt|o[1-9]|codex|gemini|openai|anthropic)(?:[\w.:-]*)?$/.test(text)
+        || /(?:claude|sonnet|opus|haiku|gpt|codex|gemini)/.test(text);
+}
+
 export function buildPrTaskTitle(options: {
     workflow: PrTaskWorkflow;
     pullRequestNumber: number;
@@ -104,18 +111,20 @@ export function hasMeaningfulTitleText(value: string | null | undefined): boolea
     const command = commandMatch[1].toLowerCase();
     const inlineText = (commandMatch[2] || '').trim();
     if (command === 'fix') return Boolean(inlineText || trailingLines);
-    if (command === 'review' || command === 'ultrafix') return Boolean(trailingLines);
+    if (command === 'review') return Boolean(trailingLines || (inlineText && !isLikelyReviewModelSelector(inlineText)));
+    if (command === 'ultrafix') return Boolean(trailingLines);
     return false;
 }
 
 export function isUsefulTitleComment(comment: TitleComment): boolean {
     if (!hasMeaningfulTitleText(comment.body || '')) return false;
     const body = compactWhitespace(comment.body || '');
+    const lowerBody = body.toLowerCase();
 
     const authorType = comment.user?.type;
     const author = comment.user?.login || comment.author || '';
-    if (authorType === 'Bot' && author.includes('propr')) return false;
-    return !PROPR_GENERATED_PATTERNS.some(pattern => body.includes(pattern));
+    if (authorType === 'Bot' && author.toLowerCase().includes('propr')) return false;
+    return !PROPR_GENERATED_PATTERNS.some(pattern => lowerBody.includes(pattern.toLowerCase()));
 }
 
 export function selectRecentUsefulPrComments(
@@ -149,7 +158,8 @@ export function buildPrTaskTitleContext(options: BuildTitleContextOptions): Titl
     });
     const sections: string[] = [];
 
-    if (hasMeaningfulTitleText(options.instructionText)) {
+    const hasMeaningfulInstructions = hasMeaningfulTitleText(options.instructionText);
+    if (hasMeaningfulInstructions) {
         sections.push(`User instructions:\n${truncate(options.instructionText!.trim())}`);
     }
 
@@ -157,7 +167,9 @@ export function buildPrTaskTitleContext(options: BuildTitleContextOptions): Titl
         sections.push(`Recent useful PR comments (newest first):\n${usefulRecentComments.map(formatComment).join('\n')}`);
     }
 
-    const includePrDescription = usefulRecentComments.length < recentCommentLimit && hasMeaningfulTitleText(options.prDescription);
+    const includePrDescription = !hasMeaningfulInstructions
+        && usefulRecentComments.length < recentCommentLimit
+        && hasMeaningfulTitleText(options.prDescription);
     if (includePrDescription) {
         sections.push(`PR description fallback:\n${truncate(options.prDescription!.trim())}`);
     }
@@ -199,13 +211,62 @@ export function buildPrTaskTitleContext(options: BuildTitleContextOptions): Titl
     };
 }
 
+function unquoteDiffPath(path: string): string {
+    const trimmed = path.trim();
+    if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return trimmed;
+    try {
+        return JSON.parse(trimmed) as string;
+    } catch {
+        return trimmed.substring(1, trimmed.length - 1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
+}
+
 function normalizeDiffPath(path: string): string {
-    return path.replace(/^a\//, '').replace(/^b\//, '').trim();
+    return unquoteDiffPath(path).replace(/^a\//, '').replace(/^b\//, '').trim();
+}
+
+function splitDiffHeaderArgs(value: string): string[] {
+    const args: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    let escaping = false;
+
+    for (const char of value) {
+        if (escaping) {
+            current += char;
+            escaping = false;
+            continue;
+        }
+        if (char === '\\' && inQuotes) {
+            current += char;
+            escaping = true;
+            continue;
+        }
+        if (char === '"') {
+            current += char;
+            inQuotes = !inQuotes;
+            continue;
+        }
+        if (/\s/.test(char) && !inQuotes) {
+            if (current) {
+                args.push(current);
+                current = '';
+            }
+            continue;
+        }
+        current += char;
+    }
+
+    if (current) args.push(current);
+    return args;
 }
 
 function diffBlockPath(header: string): string | null {
-    const gitHeader = header.match(/^diff --git\s+a\/(.+?)\s+b\/(.+)$/);
-    if (gitHeader) return normalizeDiffPath(gitHeader[2]);
+    const gitHeader = header.match(/^diff --git\s+(.+)$/);
+    if (gitHeader) {
+        const paths = splitDiffHeaderArgs(gitHeader[1]);
+        return paths.length >= 2 ? normalizeDiffPath(paths[1]) : null;
+    }
 
     const combinedHeader = header.match(/^diff --(?:cc|combined)\s+(.+)$/);
     if (combinedHeader) return normalizeDiffPath(combinedHeader[1]);
