@@ -7,7 +7,7 @@ A production-ready automated system that monitors GitHub issues, runs configured
 ### ✅ Complete End-to-End Automation
 - **Issue Detection**: Automatic monitoring of GitHub repositories for AI-eligible issues
 - **Multiple Primary Labels**: Support for multiple trigger labels (e.g., 'AI', 'propr') with dynamic state label generation
-- **Model-Specific Processing**: Support for multiple Claude, Codex, and Gemini models through configured agents
+- **Model-Specific Processing**: Support for multiple models through configured coding agents
 - **Deterministic Git Workflow**: Reliable 3-phase workflow separating AI implementation from git operations
 - **Automatic PR Creation**: Direct GitHub API integration with proper issue linking
 - **Quality Assurance**: Comprehensive validation and retry mechanisms
@@ -46,15 +46,16 @@ A production-ready automated system that monitors GitHub issues, runs configured
 
 ## Prerequisites
 
-- **Node.js 20+** - Runtime environment
+- **Docker** - Runs the ProPR stack and isolated agent execution containers
 - **GitHub App** - Created with appropriate permissions (see setup below)
-- **Agent credentials** - Credentials for at least one enabled agent, such as Claude, Codex, or Gemini
-- **Redis Server** - For task queue management (v6.0+ recommended)
-- **Git 2.25+** - For worktree support and modern git operations
-- **Docker** - For secure agent execution environments
-- **Disk Space** - Sufficient space for repository clones and worktrees (minimum 10GB recommended)
+- **Agent credentials** - Credentials for at least one enabled coding agent
+- **Disk Space** - Sufficient space for repository clones, worktrees, logs, and application data
+
+Node.js, Redis, Git, and a source checkout are only required when developing ProPR itself. The normal local or server setup uses prebuilt Docker images.
 
 ## Setup
+
+Most users should start ProPR from the prebuilt images. Use the source setup only if you plan to modify the codebase.
 
 ### 1. GitHub App Configuration
 
@@ -73,114 +74,98 @@ Create a GitHub App with the following permissions:
 3. Install the app on your repository
 4. Note down the App ID and Installation ID
 
-### 2. Environment Configuration
+### 2. Local Runtime Directory
 
-1. Copy the example environment file:
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Fill in your credentials and daemon configuration:
-   ```
-   # GitHub App Configuration
-   GH_APP_ID=your_app_id
-   GH_PRIVATE_KEY_PATH=./your-app-private-key.pem
-   GH_INSTALLATION_ID=your_installation_id
-   
-   # Daemon Configuration
-   GITHUB_REPOS_TO_MONITOR=owner/repo1,owner/repo2
-   POLLING_INTERVAL_MS=60000
-   
-   # Issue Detection Configuration
-   PRIMARY_PROCESSING_LABELS=AI,propr
-   # Note: State labels (-processing, -done, -failed-*) are now automatically 
-   # generated based on the specific primary label that triggered processing
-   
-   # PR Comment Monitoring Configuration
-   GITHUB_BOT_USERNAME=your_bot_username
-   GITHUB_USER_WHITELIST=
-   GITHUB_USER_BLACKLIST=
-   
-   # Git Configuration
-   GIT_CLONES_BASE_PATH=/tmp/git-processor/clones
-   GIT_WORKTREES_BASE_PATH=/tmp/git-processor/worktrees
-   GIT_DEFAULT_BRANCH=main
-   GIT_SHALLOW_CLONE_DEPTH=
-   
-   # Repository-Specific Branch Configuration (optional)
-   GIT_DEFAULT_BRANCH_OWNER_REPO=dev
-   ```
-
-3. Place your GitHub App private key file in the project root
-
-### 3. Git Environment Setup
-
-Ensure the worker can access repository storage directories:
+Create a directory for local configuration and persistent data:
 
 ```bash
-# Create directories with appropriate permissions
-sudo mkdir -p /tmp/git-processor/{clones,worktrees}
-sudo chown -R $(whoami) /tmp/git-processor
-chmod 755 /tmp/git-processor
+mkdir -p propr-deploy/{data,logs,repos}
+cd propr-deploy
+```
 
-# Verify Git installation and worktree support
-git --version
-git worktree --help
+Place your GitHub App private key in this directory and restrict its permissions:
+
+```bash
+chmod 600 your-app-private-key.pem
+```
+
+### 3. Environment Configuration
+
+Create a `.env` file for bootstrap credentials and default paths:
+
+```bash
+# GitHub App Configuration
+GH_APP_ID=your_app_id
+GH_PRIVATE_KEY_PATH=/app/config/your-app-private-key.pem
+GH_INSTALLATION_ID=your_installation_id
+
+# Dashboard API and Auth
+DASHBOARD_API_PORT=4000
+FRONTEND_URL=http://localhost:5173
+GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
+GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
+GH_OAUTH_CALLBACK_URL=http://localhost:4000/api/auth/github/callback
+SESSION_SECRET=generate-a-strong-secret-here
+
+# Issue Detection Defaults
+PRIMARY_PROCESSING_LABELS=AI,propr
+
+# PR Comment Monitoring
+GITHUB_BOT_USERNAME=your_bot_username
+GITHUB_USER_WHITELIST=
+GITHUB_USER_BLACKLIST=
+
+# Git Storage Inside The ProPR Containers
+GIT_CLONES_BASE_PATH=/app/repos/clones
+GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
+GIT_DEFAULT_BRANCH=main
+GIT_SHALLOW_CLONE_DEPTH=
+
+# Shared SQLite Database
+DB_FILENAME=/app/data/propr.sqlite
 ```
 
 ### 4. Agent Credential Setup
 
 Configure at least one coding agent before sending real work through the system. The Web UI is the normal place to add enabled agent entries, supported models, default models, Docker images, and credential paths.
 
-For Claude Code CLI integration:
-
-1. **Install Claude Code CLI globally:**
-   ```bash
-   npm install -g @anthropic-ai/claude-code
-   ```
-
-2. **Authenticate with Claude:**
-   ```bash
-   claude login
-   ```
-   This prepares the host Claude configuration directory used by ProPR's default Claude agent configuration.
-
-3. **Install Docker:**
-   The worker uses Docker to run enabled agents in secure, isolated environments.
-   ```bash
-   # Ubuntu/Debian
-   sudo apt-get update
-   sudo apt-get install docker.io
-   sudo usermod -aG docker $USER
-   
-   # macOS (with Homebrew)
-   brew install docker
-   
-   # Verify installation
-   docker --version
-   ```
-
-4. **Configure Claude settings in .env:**
-   ```bash
-   # Claude Code Configuration
-   CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
-   CLAUDE_CONFIG_PATH=~/.claude
-   CLAUDE_MAX_TURNS=1000
-   CLAUDE_TIMEOUT_MS=300000
-   
-   # Worker Configuration
-   WORKER_CONCURRENCY=5
-   
-   # Retry Configuration
-   GITHUB_API_MAX_RETRIES=3
-   GIT_OPERATION_MAX_RETRIES=3
-   ```
-
-### 5. Installation
+Authenticate with the provider CLI for the agents you plan to enable. For example, Claude Code uses:
 
 ```bash
-npm install
+npm install -g @anthropic-ai/claude-code
+claude login
 ```
+
+Use equivalent login and credential setup for Codex or Gemini if those are the agents you plan to enable.
+
+### 5. Start From Prebuilt Images
+
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/.env:/app/.env:ro" \
+  -v "$PWD/your-app-private-key.pem:/app/config/your-app-private-key.pem:ro" \
+  -e PROPR_ENV_FILE="$PWD/.env" \
+  -e PROPR_DATA_DIR="$PWD/data" \
+  -e PROPR_LOGS_DIR="$PWD/logs" \
+  -e PROPR_REPOS_DIR="$PWD/repos" \
+  -e HOST_CLAUDE_DIR="$HOME/.claude" \
+  -e HOST_CODEX_DIR="$HOME/.codex" \
+  -e HOST_GEMINI_DIR="$HOME/.gemini" \
+  propr/launcher:latest
+```
+
+Open the local Web UI at `http://localhost:5173`. For a remote server, use the same image-based flow with server paths and public `FRONTEND_URL` / `GH_OAUTH_CALLBACK_URL` values.
+
+### 6. Source Development Setup
+
+Install dependencies from a source checkout only when you are changing ProPR code:
+
+```bash
+npm ci
+```
+
+For local platform development, use `npm run compose:up` to build and run the stack from source.
 
 ## Project Structure
 
@@ -189,8 +174,10 @@ propr/
 ├── src/
 │   ├── auth/
 │   │   └── githubAuth.js        # GitHub App authentication
+│   ├── agents/
+│   │   └── impl/                # Supported coding agent implementations
 │   ├── claude/
-│   │   └── claudeService.js     # Claude Code CLI integration & Docker execution
+│   │   └── claudeService.js     # Claude Code integration helpers
 │   ├── git/
 │   │   └── repoManager.js       # Git operations, worktree management, branch handling
 │   ├── queue/
@@ -207,7 +194,9 @@ propr/
 │   ├── githubService.js         # GitHub API operations and PR management
 │   └── index.js                 # Application entry point
 ├── scripts/
-│   ├── claude-entrypoint.sh     # Docker entrypoint for secure Claude execution
+│   ├── claude-entrypoint.sh     # Docker entrypoint for Claude execution
+│   ├── codex-entrypoint.sh      # Docker entrypoint for Codex execution
+│   ├── gemini-entrypoint.sh     # Docker entrypoint for Gemini execution
 │   ├── init-firewall.sh         # Security and firewall setup
 │   ├── fix-issue-labels.js      # Manual issue label management utility
 │   └── list-repo-configs.js     # Repository configuration display utility
@@ -219,7 +208,7 @@ propr/
 │   ├── *.test.js                     # Unit and integration tests
 │   ├── worker.modelSpecific.test.js  # Multi-model processing tests
 │   └── repoManager.modelSpecific.test.js # Git worktree isolation tests
-├── Dockerfile.claude                 # Secure Docker image for Claude execution
+├── Dockerfile.claude                 # Docker image for Claude execution
 ├── .env.example                      # Complete environment configuration template
 └── package.json                      # Dependencies and npm scripts
 ```

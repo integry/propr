@@ -1,495 +1,96 @@
 ---
-sidebar_position: 4
+sidebar_position: 5
 ---
 
-# Claude Integration
+# Claude Code Integration
 
-The Claude integration (`src/claude/claudeService.js`) handles secure execution of Claude Code for issue analysis and implementation.
+The Claude Code integration runs Anthropic's Claude Code CLI inside ProPR's worker flow. It is one agent implementation within the broader agent-routing system, alongside other configured coding agents.
+
+This page covers the integration shape. Runtime settings, Docker details, errors, and debugging live in [Claude Code Runtime Reference](./claude-code-runtime.md).
 
 ## Overview
 
-ProPR uses Anthropic's Claude Code CLI to:
-- Analyze GitHub issues and comments
-- Search and understand codebases
-- Implement solutions to problems
-- Generate code changes
+ProPR uses Claude Code to:
 
-The integration is designed to keep Claude focused on implementation while the system handles all git operations.
+- Analyze GitHub issues and PR comments
+- Search and understand codebases
+- Implement requested changes
+- Produce file modifications inside the prepared workspace
+
+ProPR still owns git and GitHub finalization. Claude Code edits files; the worker commits, pushes, creates pull requests, and updates task state.
 
 ## Architecture
 
-```
-┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-│   Worker    │────────▶│   Claude    │────────▶│   Docker    │
-│             │         │   Service   │         │  Container  │
-└─────────────┘         └─────────────┘         └─────────────┘
-      │                       │                        │
-      │ Prompt + Context      │ Execute CLI            │ Isolated
-      ▼                       ▼                        ▼ Environment
-```
+<div className="propr-flow" aria-label="Claude Code integration architecture">
+  <div className="propr-flow__row">
+    <div className="propr-flow__node">
+      <span className="propr-flow__title">Worker</span>
+      <span className="propr-flow__detail">Builds prompt and repository context</span>
+    </div>
+    <div className="propr-flow__arrow">→</div>
+    <div className="propr-flow__node">
+      <span className="propr-flow__title">Claude Code CLI</span>
+      <span className="propr-flow__detail">Runs the selected Claude model</span>
+    </div>
+    <div className="propr-flow__arrow">→</div>
+    <div className="propr-flow__node">
+      <span className="propr-flow__title">Docker Container</span>
+      <span className="propr-flow__detail">Runs Claude Code in an isolated workspace</span>
+    </div>
+  </div>
+</div>
 
-## Claude Code CLI
+## Authentication
 
-### Installation
-
-The Claude Code CLI must be installed globally:
+Claude Code expects a host login state, usually under `~/.claude`. For image-based installs, the launcher can mount that directory into the relevant containers when `HOST_CLAUDE_DIR` is set.
 
 ```bash
 npm install -g @anthropic-ai/claude-code
-```
-
-### Authentication
-
-Authentication is required before use:
-
-```bash
 claude login
 ```
 
-This prepares the host Claude configuration directory used by ProPR. The default Claude agent config path is `~/.claude`.
+This prepares the host Claude Code configuration used by ProPR's default Claude Code setup.
 
-### Non-Interactive Execution
+## Prompt Shape
 
-ProPR runs Claude Code in non-interactive mode:
-- No terminal UI
-- Automatic execution
-- Programmatic result parsing
+The worker prepares a prompt that keeps Claude Code focused on implementation:
 
-## Docker Isolation
+- Issue, plan, or PR follow-up instructions
+- Relevant comments and review feedback
+- Repository and branch context
+- Constraints around scope and expected behavior
+- Direction to modify files rather than perform git operations
 
-### Why Docker?
-
-Claude Code runs in Docker containers for:
-- **Security**: Isolated execution environment
-- **Network control**: Restrict external connections
-- **Resource limits**: Prevent runaway processes
-- **Consistency**: Same environment across workers
-
-### Docker Image
-
-The custom Docker image (`Dockerfile.claude`) includes:
-- Claude Code CLI
-- Git tools
-- Node.js runtime
-- Security restrictions
-
-Build the image:
-
-```bash
-docker build -f Dockerfile.claude -t claude-code-processor:latest .
-```
-
-### Container Configuration
-
-Containers are configured with:
-
-```javascript
-{
-  // Mount worktree as workspace
-  volumes: [
-    `${worktreePath}:/home/node/workspace:rw`,
-    `${claudeConfigPath}:/home/node/.claude:rw`
-  ],
-  
-  // Network restrictions
-  network: 'none', // or 'bridge' if API access needed
-  
-  // Resource limits
-  memory: '4g',
-  cpus: '2',
-  
-  // Security
-  readOnly: false, // Needs write for code changes
-  user: 'root'
-}
-```
-
-### Entrypoint Script
-
-The Docker entrypoint (`scripts/claude-entrypoint.sh`) handles:
-- Environment setup
-- Claude CLI execution
-- Output capture
-- Error handling
-
-## Prompt Engineering
-
-### Prompt Structure
-
-Prompts are carefully crafted to focus Claude on implementation:
-
-```javascript
-const prompt = `
-Please analyze and implement a solution for GitHub issue #${issueNumber}.
-
-**REPOSITORY INFORMATION:**
-- Repository: ${repoOwner}/${repoName}
-- Branch: ${branchName}
-- Model: ${modelName}
-
-**ISSUE DETAILS:**
-Title: ${issueTitle}
-Description:
-${issueBody}
-
-**COMMENTS (${commentCount} total):**
-${comments.map(formatComment).join('\n\n')}
-
-**YOUR FOCUS: IMPLEMENTATION ONLY**
-
-The git workflow is handled automatically. Your job is to:
-1. Understand the problem from the issue and comments
-2. Search the codebase to understand the implementation
-3. Implement the necessary changes
-4. Test your implementation if possible
-
-Do NOT:
-- Worry about git operations (add, commit, push, PR)
-- Use git commands or GitHub CLI for workflow
-- Create documentation unless explicitly requested
-
-The system will automatically:
-- Commit your changes
-- Push to GitHub  
-- Create a pull request
-- Link to the original issue
-
-Focus solely on solving the problem with code.
-`;
-```
-
-### Key Principles
-
-1. **Clear context**: Provide complete issue information
-2. **Focus directive**: Emphasize implementation, not git
-3. **Boundaries**: Explicitly state what Claude should NOT do
-4. **Assurance**: Explain what the system handles automatically
-
-### Anti-Hallucination Measures
-
-To prevent Claude from making incorrect assumptions:
-
-- Include full issue description and all comments
-- Provide repository context
-- Encourage codebase search before implementation
-- Request testing when possible
-
-## Execution Flow
-
-### 1. Preparation
-
-```javascript
-const execution = await claudeService.execute({
-  prompt: prompt,
-  workspacePath: worktreePath,
-  model: modelId,
-  timeout: CLAUDE_TIMEOUT_MS,
-  maxTurns: CLAUDE_MAX_TURNS
-});
-```
-
-### 2. Docker Container Launch
-
-```bash
-docker run \
-  --rm \
-  --network none \
-  -v /path/to/worktree:/home/node/workspace:rw \
-  -v ~/.claude:/home/node/.claude:rw \
-  claude-code-processor:latest \
-  claude chat --no-tui --max-turns 1000 "Your prompt here"
-```
-
-### 3. Claude Processing
-
-Inside the container, Claude:
-1. Receives the prompt
-2. Analyzes the issue
-3. Searches the codebase
-4. Plans the implementation
-5. Makes code changes
-6. Reports completion
-
-### 4. Output Capture
-
-The service captures:
-- Standard output (Claude's responses)
-- Standard error (error messages)
-- Exit code (success/failure)
-- Duration (execution time)
-
-### 5. Result Parsing
-
-Parse Claude's output to extract:
-- Implementation summary
-- Files modified
-- Any warnings or errors
-- Commit message suggestions
+The exact prompt can vary by job type, but the boundary is stable: Claude Code implements; ProPR finalizes.
 
 ## Model Selection
 
-### Available Models
+Claude models are listed through ProPR's shared agent and model configuration. The active list is managed in code and shown in AI Agents in the Web UI.
 
-ProPR's shared model definitions include the Claude models available to the Claude agent. The active list is managed in code and surfaced through AI Agents in the Web UI.
+Labels and slash commands use the configured model IDs, for example:
 
-```javascript
-const MODELS = {
-  sonnet46: 'claude-sonnet-4-6',
-  opus46: 'claude-opus-4-6',
-  sonnet45: 'claude-sonnet-4-5-20250929',
-  opus45: 'claude-opus-4-5-20251101'
-};
+```text
+llm-claude-sonnet46
+llm-claude-opus46
 ```
 
-### Model Configuration
+Check AI Agents in your deployment for the exact model IDs available.
 
-Models are specified via issue labels:
-- `llm-claude-sonnet46` → Claude Sonnet 4.6
-- `llm-claude-opus46` → Claude Opus 4.6
+## Output Handling
 
-Older aliases such as `llm-claude-sonnet` and `llm-claude-opus` may resolve for backward compatibility, but new documentation and labels should use the canonical labels exposed by model definitions and agent settings.
+The integration captures:
 
-### Model Characteristics
+- Standard output
+- Standard error
+- Exit code
+- Duration
+- Parsed implementation summary where available
 
-**Sonnet:**
-- Faster processing
-- Lower cost
-- Good for most issues
+The worker then inspects the workspace for file changes and proceeds through normal finalization.
 
-**Opus:**
-- More thorough analysis
-- Better for complex problems
-- Higher cost
+## Related Pages
 
-## Error Handling
-
-### Timeout Handling
-
-If Claude exceeds the timeout:
-
-```javascript
-if (duration > CLAUDE_TIMEOUT_MS) {
-  throw new Error('Claude execution timed out');
-}
-```
-
-### Max Turns
-
-Limit the number of conversation turns:
-
-```bash
-claude chat --max-turns 1000
-```
-
-Prevents infinite loops and runaway costs.
-
-### Docker Errors
-
-Handle Docker-specific errors:
-- Container creation failures
-- Volume mount issues
-- Network problems
-- Resource exhaustion
-
-### Claude Errors
-
-Handle Claude-specific errors:
-- Authentication failures
-- Model unavailability
-- Rate limiting
-- Invalid responses
-
-## Security Considerations
-
-### Network Isolation
-
-By default, containers have no network access:
-
-```javascript
-network: 'none'
-```
-
-This prevents:
-- Unauthorized API calls
-- Data exfiltration
-- Downloading malicious code
-
-Enable network only if Claude needs external API access:
-
-```javascript
-network: 'bridge'
-```
-
-### Filesystem Isolation
-
-Containers have restricted filesystem access:
-- Read-only config directory
-- Read-write workspace only
-- No access to host filesystem
-
-### Authentication Security
-
-Claude authentication is mounted into the agent container:
-
-```bash
--v ~/.claude:/home/node/.claude:rw
-```
-
-This gives Claude Code access to the host login state expected by the configured agent.
-
-### Resource Limits
-
-Containers have resource limits:
-- Memory limit prevents exhaustion
-- CPU limit prevents monopolization
-- Timeout prevents indefinite execution
-
-## Configuration
-
-### Environment Variables
-
-```bash
-# Claude Code Configuration
-CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
-CLAUDE_CONFIG_PATH=~/.claude
-CLAUDE_MAX_TURNS=1000
-CLAUDE_TIMEOUT_MS=300000
-```
-
-### Docker Configuration
-
-Create `~/.docker/config.json` if needed:
-
-```json
-{
-  "detachKeys": "ctrl-p,ctrl-q"
-}
-```
-
-## Performance Optimization
-
-### Response Streaming
-
-Claude Code streams responses in real-time:
-- Early visibility into progress
-- Ability to detect issues quickly
-- Better user experience for interactive use
-
-### Caching
-
-Docker image layers are cached:
-- Base image cached after first pull
-- Only changed layers rebuilt
-- Faster container startup
-
-### Parallel Execution
-
-Multiple workers can run Claude simultaneously:
-- Each worker has independent container
-- No interference between executions
-- Limited only by system resources
-
-## Monitoring and Debugging
-
-### Logging
-
-The service logs important events:
-
-```javascript
-logger.info('Starting Claude execution', {
-  model: modelId,
-  issueNumber: issueNumber,
-  timeout: CLAUDE_TIMEOUT_MS
-});
-
-logger.info('Claude execution complete', {
-  duration: duration,
-  exitCode: exitCode,
-  outputLength: output.length
-});
-```
-
-### Debug Mode
-
-Enable debug logging for troubleshooting:
-
-```bash
-LOG_LEVEL=debug npm run worker
-```
-
-This shows:
-- Full prompts sent to Claude
-- Complete Claude responses
-- Docker command details
-- Timing information
-
-### Container Inspection
-
-Inspect running containers:
-
-```bash
-# List running containers
-docker ps
-
-# View logs
-docker logs <container-id>
-
-# Inspect container
-docker inspect <container-id>
-```
-
-## Best Practices
-
-1. **Authenticate properly** - Run `claude login` before deploying
-2. **Mount correct paths** - Verify worktree and config paths
-3. **Set appropriate timeouts** - Based on issue complexity
-4. **Limit turns** - Prevent infinite loops
-5. **Use network isolation** - Unless external APIs needed
-6. **Monitor execution time** - Detect performance issues
-7. **Review prompts** - Ensure clear, focused instructions
-8. **Test with both models** - Understand cost/performance tradeoffs
-9. **Handle errors gracefully** - Provide useful feedback
-10. **Clean up containers** - Use `--rm` flag for automatic cleanup
-
-## Troubleshooting
-
-### Authentication Issues
-
-```
-Error: Not authenticated with Claude
-```
-
-**Solution**: Run `claude login` and verify the configured Claude directory, usually `~/.claude`, exists and is mounted into the worker.
-
-### Docker Permission Issues
-
-```
-Error: Permission denied
-```
-
-**Solution**: Add user to docker group:
-```bash
-sudo usermod -aG docker $USER
-```
-
-### Network Issues
-
-```
-Error: Could not connect to Claude API
-```
-
-**Solution**: Enable network if needed:
-```javascript
-network: 'bridge'
-```
-
-### Timeout Issues
-
-```
-Error: Claude execution timed out
-```
-
-**Solution**: Increase timeout or reduce issue complexity:
-```bash
-CLAUDE_TIMEOUT_MS=600000
-```
+- [Agent Routing](../features/agent-routing.md)
+- [Isolated And Safe Execution](../features/execution-safety.md)
+- [Worker Architecture](./worker.md)
+- [Claude Code Runtime Reference](./claude-code-runtime.md)

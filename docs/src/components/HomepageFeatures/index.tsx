@@ -33,7 +33,7 @@ const FeatureList: FeatureItem[] = [
     title: 'Multi-Agent PR Automation',
     description: (
       <>
-        Run repository work through Claude, Codex, and Gemini agents, then
+        Run repository work through supported coding agents, then
         refine pull requests with slash commands and the Ultrafix loop when a
         human wants follow-up help inside GitHub.
       </>

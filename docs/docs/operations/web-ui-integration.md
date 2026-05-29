@@ -4,7 +4,7 @@ This guide explains how ProPR's browser UI fits together with the dashboard API,
 
 ## Overview
 
-ProPR's Web UI is the platform's live operational surface. In this repository:
+ProPR's Web UI is where you configure and monitor the running system. In this repository:
 
 - The frontend lives in `propr-ui/`
 - The dashboard API lives in `packages/api/`
@@ -25,7 +25,7 @@ The backend is responsible for:
 
 - GitHub App authentication, webhooks, and issue or PR automation
 - Queue coordination and worker orchestration
-- Running Claude, Codex, and Gemini agents in isolated execution environments
+- Running supported coding agents in isolated execution environments
 - Persisting operational data in Redis and the shared application database, then exposing it through API endpoints
 
 ## Key API Surfaces

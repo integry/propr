@@ -4,258 +4,42 @@ sidebar_position: 1
 
 # Setup
 
-This guide walks you through bringing ProPR online, then finishing the day-to-day configuration in the Web UI. Most teams should treat environment variables as deployment bootstrap and use the browser UI for repositories, labels, branches, and agent settings.
+Most people should run ProPR from the prebuilt Docker images. You only need source setup if you are changing ProPR itself.
 
-## Prerequisites
+Choose the path that matches what you are doing:
 
-Before you begin, ensure you have the following installed:
+## Local Setup
 
-- **Node.js 20+** - Runtime environment for the application and docs validation
-- **Redis Server** - For task queue management (v6.0+ recommended)
-- **Git 2.25+** - For worktree support and modern git operations
-- **Docker** - For secure agent execution environments
-- **Disk Space** - Sufficient space for repository clones and worktrees (minimum 10GB recommended)
+Use this when you want to run ProPR on your laptop or workstation.
 
-You'll also need:
-- **GitHub App** - Created with appropriate permissions (see below)
-- **Agent credentials** - Credentials for at least one agent you plan to enable, such as Claude, Codex, or Gemini
+[Local Setup](./setup-local.md)
 
-## 1. GitHub App Configuration
+You will create a local runtime directory, add GitHub App credentials, mount your agent credentials, start `propr/launcher:latest`, and open the Web UI at `http://localhost:5173`.
 
-Create a GitHub App with the following permissions:
+## Server Setup
 
-### Repository Permissions
+Use this when ProPR should run on a shared machine or production host.
 
-- **Contents**: Read & Write (for code changes and file operations)
-- **Metadata**: Read (for repository information)
-- **Issues**: Read & Write (for issue management and comments)
-- **Pull Requests**: Read & Write (for PR creation and management)
-- **Actions**: Read (optional, for workflow integration)
+[Server Setup](./setup-server.md)
 
-### Installation Steps
+The flow is the same as local setup, but you use stable server paths, public URLs, TLS through a reverse proxy, and stricter credential access.
 
-1. Go to your GitHub account/organization settings
-2. Navigate to "Developer settings" → "GitHub Apps" → "New GitHub App"
-3. Configure the app with the permissions listed above
-4. Generate and download the private key (`.pem` file)
-5. Install the app on your target repository
-6. Note down the **App ID** and **Installation ID**
+## Source Development Setup
 
-## 2. Bootstrap Environment Configuration
+Use this only when you are changing ProPR code, validating docs, running tests, or building images.
 
-This step is for infrastructure bootstrap, credentials, and default paths. You do not need to keep editing `.env` for normal repository and agent configuration after the UI is up.
+[Source Development Setup](./setup-source.md)
 
-### Create Environment File
+This path uses Node.js, a source checkout, and development Compose or direct service commands.
 
-Copy the example environment file:
+## After Setup
 
-```bash
-cp .env.example .env
-```
+Once ProPR is running:
 
-### Configure GitHub App
+1. Open the Web UI.
+2. Add repositories.
+3. Configure AI Agents and default models.
+4. Review labels and PR behavior.
+5. Run a small test issue or Planner Studio draft.
 
-Fill in your GitHub App credentials:
-
-```bash
-# GitHub App Configuration
-GH_APP_ID=your_app_id
-GH_PRIVATE_KEY_PATH=./your-app-private-key.pem
-GH_INSTALLATION_ID=your_installation_id
-```
-
-### Configure Daemon
-
-Set up the daemon runtime. If you already know the repositories you want to seed on first launch, you can provide them here, but you can also manage monitored repositories later in the Web UI.
-
-```bash
-# Daemon Configuration
-GITHUB_REPOS_TO_MONITOR=owner/repo1,owner/repo2
-POLLING_INTERVAL_MS=60000
-```
-
-### Configure Issue Detection
-
-Define bootstrap label defaults. Most teams can review and adjust these later from the Settings page in the Web UI.
-
-```bash
-# Issue Detection Configuration
-PRIMARY_PROCESSING_LABELS=AI,propr
-```
-
-**Note**: State labels (`-processing`, `-done`, `-failed-*`) are automatically generated based on the primary label that triggered processing.
-
-### Configure Git Operations
-
-Set up git workspace paths:
-
-```bash
-# Git Configuration
-GIT_CLONES_BASE_PATH=/tmp/git-processor/clones
-GIT_WORKTREES_BASE_PATH=/tmp/git-processor/worktrees
-GIT_DEFAULT_BRANCH=main
-GIT_SHALLOW_CLONE_DEPTH=
-
-# Repository-Specific Branch Configuration (optional)
-GIT_DEFAULT_BRANCH_owner_repo=dev
-```
-
-### Configure PR Comment Monitoring
-
-```bash
-# PR Comment Monitoring Configuration
-GITHUB_BOT_USERNAME=your_bot_username
-GITHUB_USER_WHITELIST=
-GITHUB_USER_BLACKLIST=
-```
-
-## 3. Git Environment Setup
-
-Create the required directories with appropriate permissions:
-
-```bash
-# Create directories
-sudo mkdir -p /tmp/git-processor/{clones,worktrees}
-sudo chown -R $(whoami) /tmp/git-processor
-chmod 755 /tmp/git-processor
-
-# Verify Git installation
-git --version
-git worktree --help
-```
-
-## 4. Agent Credential Setup
-
-Configure at least one coding agent before sending real work through the system. The Web UI is the normal place to add enabled agent entries, supported models, default models, Docker images, and credential paths.
-
-The default credential paths are:
-
-- Claude: `~/.claude`
-- Codex: `~/.codex`
-- Gemini: `~/.gemini`
-
-The sections below show Claude as a concrete first-agent example. Use equivalent login and credential setup for Codex or Gemini if those are the agents you plan to enable.
-
-### Install Claude Code CLI
-
-Install the Claude Code CLI globally:
-
-```bash
-npm install -g @anthropic-ai/claude-code
-```
-
-### Authenticate with Claude
-
-Run the authentication command:
-
-```bash
-claude login
-```
-
-This prepares the host Claude configuration directory used by ProPR's default Claude agent configuration.
-
-### Install Docker
-
-The worker uses Docker to run enabled agents in secure, isolated environments.
-
-#### Ubuntu/Debian
-
-```bash
-sudo apt-get update
-sudo apt-get install docker.io
-sudo usermod -aG docker $USER
-```
-
-#### macOS (with Homebrew)
-
-```bash
-brew install docker
-```
-
-#### Verify Installation
-
-```bash
-docker --version
-```
-
-### Configure Agent Runtime Defaults
-
-Add runtime defaults to your `.env` file. For Claude, the default configuration path is `~/.claude`, matching the built-in Claude agent default.
-
-```bash
-# Claude Code Configuration
-CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
-CLAUDE_CONFIG_PATH=~/.claude
-CLAUDE_MAX_TURNS=1000
-CLAUDE_TIMEOUT_MS=300000
-
-# Worker Configuration
-WORKER_CONCURRENCY=5
-
-# Retry Configuration
-GITHUB_API_MAX_RETRIES=3
-GIT_OPERATION_MAX_RETRIES=3
-```
-
-## 5. Install Dependencies
-
-Install the Node.js dependencies:
-
-```bash
-npm ci
-```
-
-If you plan to build or validate the Docusaurus docs site in this repository, use Node.js 20 or newer for the `docs/` workspace as well.
-
-## 6. Redis Setup
-
-Install and start Redis for task queue management.
-
-### macOS
-
-```bash
-brew install redis
-brew services start redis
-```
-
-### Ubuntu/Debian
-
-```bash
-sudo apt-get install redis-server
-sudo systemctl start redis
-```
-
-### Docker
-
-```bash
-docker run -d -p 6379:6379 redis:alpine
-```
-
-### Docker Compose
-
-If using Docker Compose, Redis is automatically included - no separate installation needed.
-
-## 7. Security Configuration
-
-Ensure your private key file has restricted permissions:
-
-```bash
-chmod 600 your-app-private-key.pem
-```
-
-## 8. Complete Configuration In The Web UI
-
-Once the services are running, open the Web UI and finish the product-level setup there.
-
-Recommended first pass:
-
-1. Add your repositories in the Repositories page and confirm the base branch for each one
-2. Open AI Agents and configure the agents, models, and credential paths you want available
-3. Open Settings and review primary processing labels, PR behavior, and planner defaults
-4. Return to the dashboard and verify the system can see repositories, queues, and agent configuration
-
-Use environment variables for deployment concerns such as credentials, filesystem paths, and service wiring. Use the Web UI for the settings your team will change over time.
-
-## Next Steps
-
-Once setup is complete, proceed to the [Usage Guide](./usage.md) for service operation details, or jump straight to the [Planner Studio](./planner-studio.md) and [End-to-End Workflow](./end-to-end-workflow.md) tutorials to start using ProPR through the UI.
+For day-to-day use, see [Daily Use](./usage.md).
