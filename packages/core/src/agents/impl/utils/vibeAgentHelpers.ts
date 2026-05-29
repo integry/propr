@@ -19,6 +19,9 @@ export function getParsedVibeError(parsedOutput: ReturnType<typeof parseVibeOutp
     if (parsedOutput.error) {
         return parsedOutput.error;
     }
+    if (parsedOutput.incomplete) {
+        return 'Vibe output was incomplete: no final response event was emitted';
+    }
     return undefined;
 }
 
@@ -38,7 +41,7 @@ export function getForwardedVibeEnvVars(envVars: Record<string, string> | undefi
     const dockerArgs: string[] = [];
     const skipped: string[] = [];
     for (const [key, value] of Object.entries(envVars || {})) {
-        if (key === 'MISTRAL_API_KEY') {
+        if (key === 'MISTRAL_API_KEY' || key === 'VIBE_CLI_ARGS') {
             continue;
         }
         if (!VALID_ENV_VAR_NAME.test(key) || /[\0\r\n]/.test(value)) {
@@ -105,7 +108,7 @@ export function splitVibeCliArgs(input: string): string[] {
     }
 
     if (quote) {
-        throw new Error('Invalid VIBE_CLI_ARGS: unmatched quote');
+        throw new Error('unmatched quote');
     }
 
     if (hasToken) {

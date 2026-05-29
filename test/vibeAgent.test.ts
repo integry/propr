@@ -4,7 +4,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { VibeAgent, parseVibeOutput } from '../packages/core/src/agents/impl/VibeAgent.js';
-import { splitVibeCliArgs } from '../packages/core/src/agents/impl/utils/vibeAgentHelpers.js';
+import { executeDockerCommand } from '../packages/core/src/claude/docker/dockerExecutor.js';
+import { getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs } from '../packages/core/src/agents/impl/utils/vibeAgentHelpers.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 
@@ -116,6 +117,38 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.summary, 'First line\nSecond line');
     });
 
+    test('separates adjacent structured array text parts', () => {
+        const parsed = parseVibeOutput(JSON.stringify({
+            type: 'final',
+            content: [
+                { text: 'First block' },
+                { text: 'Second block' }
+            ]
+        }));
+
+        assert.strictEqual(parsed.summary, 'First block\nSecond block');
+    });
+
+    test('does not promote nested metadata objects to output events', () => {
+        const parsed = parseVibeOutput(JSON.stringify({
+            type: 'final',
+            session_id: 'session-top',
+            model: 'mistral-medium-3.5',
+            message: {
+                content: [{ text: 'Actual final summary' }]
+            },
+            metadata: {
+                session_id: 'session-nested',
+                model: 'metadata-model',
+                text: 'metadata text'
+            }
+        }));
+
+        assert.strictEqual(parsed.sessionId, 'session-top');
+        assert.strictEqual(parsed.model, 'mistral-medium-3.5');
+        assert.strictEqual(parsed.summary, 'Actual final summary');
+    });
+
     test('prefers known final events over trailing metadata text', () => {
         const output = [
             JSON.stringify({ type: 'final', response: 'Final response' }),
@@ -135,6 +168,30 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.summary, 'Final response');
         assert.strictEqual(parsed.error, 'Rate limit exceeded');
     });
+
+    test('ignores transient errors followed by a final response', () => {
+        const output = [
+            JSON.stringify({ type: 'error', error: 'Transient retryable error' }),
+            JSON.stringify({ type: 'final', response: 'Recovered response' })
+        ].join('\n');
+
+        const parsed = parseVibeOutput(output);
+        assert.strictEqual(parsed.summary, 'Recovered response');
+        assert.strictEqual(parsed.error, undefined);
+    });
+
+    test('marks JSON text output incomplete when no final event is present', () => {
+        const output = [
+            JSON.stringify({ type: 'message', text: 'Successful streamed response' }),
+            JSON.stringify({ type: 'error', error: 'Stale diagnostic from retry' })
+        ].join('\n');
+
+        const parsed = parseVibeOutput(output);
+        assert.strictEqual(parsed.summary, 'Successful streamed response');
+        assert.strictEqual(parsed.error, undefined);
+        assert.strictEqual(parsed.incomplete, true);
+        assert.strictEqual(isSuccessfulVibeResult(0, parsed), false);
+    });
 });
 
 describe('Vibe CLI args', () => {
@@ -145,10 +202,33 @@ describe('Vibe CLI args', () => {
         );
         assert.throws(() => splitVibeCliArgs('vibe "unterminated'), /unmatched quote/);
     });
+
+    test('does not forward VIBE_CLI_ARGS into the container environment', () => {
+        const forwarded = getForwardedVibeEnvVars({
+            VIBE_CLI_ARGS: 'vibe --output json',
+            MISTRAL_API_KEY: 'mistral-key',
+            EXTRA_VIBE_ENV: 'extra-value'
+        });
+
+        assert.deepStrictEqual(forwarded, {
+            dockerArgs: ['-e', 'EXTRA_VIBE_ENV=extra-value'],
+            skipped: []
+        });
+    });
+
+    test('reports which VIBE_CLI_ARGS source is invalid', () => {
+        withRestoredEnv(() => {
+            process.env.VIBE_CLI_ARGS = 'vibe "unterminated';
+            assert.throws(
+                () => buildArgs(createAgent()),
+                /Invalid process\.env\.VIBE_CLI_ARGS: unmatched quote/
+            );
+        });
+    });
 });
 
 describe('VibeAgent Docker args', () => {
-    test('uses stdin-oriented default command and read-only sandbox for analysis', () => {
+    test('uses stdin-oriented structured default command and read-only sandbox for analysis', () => {
         const configPath = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-config-test-'));
         fs.writeFileSync(path.join(configPath, 'config.toml'), 'active_model = "mistral-medium-3.5"\n');
         try {
@@ -169,7 +249,7 @@ describe('VibeAgent Docker args', () => {
             assert.ok(!args.includes('PROPR_AGENT_TYPE=vibe'));
 
             const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-            assert.deepStrictEqual(args.slice(imageIndex + 1), ['vibe']);
+            assert.deepStrictEqual(args.slice(imageIndex + 1), ['vibe', '--max-turns', '5', '--output', 'json']);
         } finally {
             fs.rmSync(configPath, { recursive: true, force: true });
         }
@@ -226,6 +306,7 @@ describe('VibeAgent Docker args', () => {
                 configPath: emptyConfigPath,
                 envVars: {
                     MISTRAL_API_KEY: ' configured-mistral-api-key ',
+                    VIBE_CLI_ARGS: 'vibe --output json',
                     EXTRA_VIBE_ENV: 'extra-value',
                     'BAD-ENV': 'skipped',
                     MULTILINE_ENV: 'skip\nme'
@@ -234,6 +315,7 @@ describe('VibeAgent Docker args', () => {
 
             assert.ok(args.includes('MISTRAL_API_KEY=configured-mistral-api-key'));
             assert.ok(args.includes('EXTRA_VIBE_ENV=extra-value'));
+            assert.ok(!args.includes('VIBE_CLI_ARGS=vibe --output json'));
             assert.ok(!args.includes('BAD-ENV=skipped'));
             assert.ok(!args.includes('MULTILINE_ENV=skip\nme'));
             assert.strictEqual(args.filter(arg => arg.startsWith('MISTRAL_API_KEY=')).length, 1);
@@ -241,5 +323,30 @@ describe('VibeAgent Docker args', () => {
         } finally {
             fs.rmSync(emptyConfigPath, { recursive: true, force: true });
         }
+    });
+
+    test('uses structured output and auto-approval in the default execution command', () => {
+        const args = buildArgs(createAgent(), { maxTurns: 12 });
+
+        const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
+        assert.deepStrictEqual(
+            args.slice(imageIndex + 4),
+            ['vibe', '--max-turns', '12', '--output', 'json', '--trust', '--agent', 'auto-approve']
+        );
+    });
+});
+
+describe('Docker command stdin delivery', () => {
+    test('passes prompt data through stdin', async () => {
+        const result = await executeDockerCommand(process.execPath, [
+            '-e',
+            'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(input));'
+        ], {
+            stdinData: 'prompt from stdin',
+            timeout: 5000
+        });
+
+        assert.strictEqual(result.exitCode, 0);
+        assert.strictEqual(result.stdout, 'prompt from stdin');
     });
 });

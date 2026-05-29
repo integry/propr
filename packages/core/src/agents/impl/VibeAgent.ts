@@ -23,6 +23,7 @@ export { parseVibeOutput } from './utils/vibeOutputParser.js';
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
+const MAX_LLM_LOG_METADATA_TEXT_CHARS = 20000;
 
 interface VibeDockerArgsParams {
     worktreePath: string;
@@ -123,7 +124,7 @@ export class VibeAgent implements Agent {
                 draftId: taskId,
                 repository,
                 agentAlias: this.config.alias,
-                metadata: { isRetry, retryReason, rawOutput: result.stdout, stderr: result.stderr },
+                metadata: this.buildLogMetadata({ isRetry, retryReason }, result),
                 usageMetrics: usage.metrics,
                 usageMetricRecords: usage.records,
                 workRef: buildTaskWorkRef(taskId, issueRef.number, repository, prNumber),
@@ -201,7 +202,7 @@ export class VibeAgent implements Agent {
                     draftId: taskId,
                     correlationId,
                     repository,
-                    metadata: { ...(metadata || {}), rawOutput: result.stdout, stderr: result.stderr },
+                    metadata: this.buildLogMetadata(metadata || {}, result),
                     agentAlias: this.config.alias,
                     usageMetrics: usage.metrics,
                     usageMetricRecords: usage.records,
@@ -230,7 +231,7 @@ export class VibeAgent implements Agent {
                 draftId: taskId,
                 correlationId,
                 repository,
-                metadata: { ...(metadata || {}), rawOutput: result.stdout, stderr: result.stderr },
+                metadata: this.buildLogMetadata(metadata || {}, result),
                 agentAlias: this.config.alias,
                 usageMetrics: usage.metrics,
                 usageMetricRecords: usage.records,
@@ -303,19 +304,50 @@ export class VibeAgent implements Agent {
         return configuredApiKey || undefined;
     }
 
-    private getCliArgs(): string[] {
-        // Vibe does not currently document a stable headless flag set, so keep
-        // the invocation overrideable while defaulting to stdin-driven `vibe`.
-        const configuredArgs = process.env.VIBE_CLI_ARGS ?? this.config.envVars?.VIBE_CLI_ARGS;
+    private getDefaultCliArgs(maxTurns: number, mode: 'execute' | 'analysis'): string[] {
+        const agentArgs = mode === 'analysis' ? [] : ['--trust', '--agent', 'auto-approve'];
+        return ['vibe', '--max-turns', String(maxTurns), '--output', 'json', ...agentArgs];
+    }
+
+    private getCliArgs(maxTurns: number, mode: 'execute' | 'analysis'): string[] {
+        const processArgs = process.env.VIBE_CLI_ARGS;
+        const configArgs = this.config.envVars?.VIBE_CLI_ARGS;
+        const configuredArgs = processArgs ?? configArgs;
+        const source = processArgs !== undefined ? 'process.env.VIBE_CLI_ARGS' : 'config.envVars.VIBE_CLI_ARGS';
         if (!configuredArgs || !configuredArgs.trim()) {
-            return ['vibe'];
+            return this.getDefaultCliArgs(maxTurns, mode);
         }
 
-        const args = splitVibeCliArgs(configuredArgs);
+        let args: string[];
+        try {
+            args = splitVibeCliArgs(configuredArgs);
+        } catch (error) {
+            throw new Error(`Invalid ${source}: ${(error as Error).message}`);
+        }
         if (args.length === 0) {
-            return ['vibe'];
+            return this.getDefaultCliArgs(maxTurns, mode);
         }
         return args;
+    }
+
+    private truncateLogMetadataText(value: string): string {
+        if (value.length <= MAX_LLM_LOG_METADATA_TEXT_CHARS) {
+            return value;
+        }
+        const omitted = value.length - MAX_LLM_LOG_METADATA_TEXT_CHARS;
+        return `${value.slice(0, MAX_LLM_LOG_METADATA_TEXT_CHARS)}\n...[truncated ${omitted} chars]`;
+    }
+
+    private buildLogMetadata(baseMetadata: Record<string, unknown>, result: { stdout: string; stderr: string }): Record<string, unknown> {
+        return {
+            ...baseMetadata,
+            rawOutput: this.truncateLogMetadataText(result.stdout),
+            stderr: this.truncateLogMetadataText(result.stderr),
+            rawOutputLength: result.stdout.length,
+            stderrLength: result.stderr.length,
+            rawOutputTruncated: result.stdout.length > MAX_LLM_LOG_METADATA_TEXT_CHARS,
+            stderrTruncated: result.stderr.length > MAX_LLM_LOG_METADATA_TEXT_CHARS
+        };
     }
 
     private formatLogs(stdout: string, stderr: string): string {
@@ -380,7 +412,7 @@ export class VibeAgent implements Agent {
         const containerName = `${alias}-${taskType}-${shortTaskId}`.slice(0, 128);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const analysisSandboxArgs = getAnalysisSandboxArgs(mode);
-        const cliArgs = this.getCliArgs();
+        const cliArgs = this.getCliArgs(maxTurns, mode);
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...analysisSandboxArgs,
