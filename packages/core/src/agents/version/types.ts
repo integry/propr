@@ -41,13 +41,13 @@ export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
 };
 
 /**
- * Local Docker repositories used for versioned agent images.
+ * Docker repositories used for versioned agent images.
  */
 export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
-    claude: 'propr-claude',
-    codex: 'propr-codex',
-    gemini: 'propr-gemini',
-    vibe: 'propr-vibe'
+    claude: 'propr/agent-claude',
+    codex: 'propr/agent-codex',
+    gemini: 'propr/agent-gemini',
+    vibe: 'propr/agent-vibe'
 };
 
 /**

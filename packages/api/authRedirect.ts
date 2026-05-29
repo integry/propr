@@ -51,11 +51,16 @@ function isAllowedRedirectHost(hostname: string): boolean {
     );
 }
 
+function isLocalHttpRedirectHost(hostname: string): boolean {
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+}
+
 export function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
     if (!redirectTo) return undefined;
     try {
         const url = new URL(redirectTo);
-        if ((url.protocol === 'https:' || url.protocol === 'http:') && isAllowedRedirectHost(url.hostname)) return redirectTo;
+        if (url.protocol === 'https:' && isAllowedRedirectHost(url.hostname)) return redirectTo;
+        if (url.protocol === 'http:' && isLocalHttpRedirectHost(url.hostname) && isAllowedRedirectHost(url.hostname)) return redirectTo;
     } catch {
         // Invalid URL, ignore.
     }

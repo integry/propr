@@ -90,7 +90,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
   defaultCliVersion: string;
 }> = {
   claude: {
-    dockerImage: 'propr-claude:latest',
+    dockerImage: 'propr/agent-claude:latest',
     configPath: '~/.claude',
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
@@ -98,7 +98,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '2.1.85'
   },
   codex: {
-    dockerImage: 'propr-codex:latest',
+    dockerImage: 'propr/agent-codex:latest',
     configPath: '~/.codex',
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
@@ -106,7 +106,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '0.133.0'
   },
   gemini: {
-    dockerImage: 'propr-gemini:latest',
+    dockerImage: 'propr/agent-gemini:latest',
     configPath: '~/.gemini',
     defaultModels: GEMINI_MODELS.map(m => m.id),
     defaultAlias: 'gemini',
@@ -114,7 +114,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultCliVersion: '0.35.1'
   },
   vibe: {
-    dockerImage: 'propr-vibe:latest',
+    dockerImage: 'propr/agent-vibe:latest',
     configPath: '~/.vibe',
     defaultModels: VIBE_MODELS.map(m => m.id),
     defaultAlias: 'vibe',

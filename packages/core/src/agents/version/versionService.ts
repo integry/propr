@@ -28,7 +28,7 @@ import {
 } from './pypiClient.js';
 
 const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
-const PYPI_CUSTOM_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-._][0-9A-Za-z]+)*$/;
+const PYPI_CUSTOM_VERSION_PATTERN = /^(?:[1-9]\d*!){0,1}\d+(?:\.\d+)*(?:(?:a|b|rc)\d*)?(?:\.post\d*)?(?:\.dev\d*)?(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/i;
 
 function validatePyPiCustomVersion(versionSpec: string, packageName: string): string {
     const trimmedVersionSpec = versionSpec.trim();
@@ -77,7 +77,7 @@ export async function resolveVersion(
                 if (!versionSpec) {
                     throw new Error('Version spec required');
                 }
-                return validatePyPiCustomVersion(versionSpec, packageName);
+                return resolvePyPiVersionSpec(packageName, validatePyPiCustomVersion(versionSpec, packageName));
             default:
                 logger.warn({ agentType, versionType }, 'Unknown version type, using default');
                 return AGENT_DEFAULT_VERSIONS[agentType];
@@ -216,7 +216,7 @@ export function computeContentHash(agentType: AgentType, basePath: string = PROJ
  * @param agentType - The agent type
  * @param cliVersion - The CLI version
  * @param contentHash - The content hash (6 chars)
- * @returns Docker image tag (e.g., 'propr-claude:2.1.77-a3f2b1')
+ * @returns Docker image tag (e.g., 'propr/agent-claude:2.1.77-a3f2b1')
  */
 export function generateImageTag(agentType: AgentType, cliVersion: string, contentHash: string): string {
     const imageName = AGENT_IMAGE_NAMES[agentType];

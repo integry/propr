@@ -123,8 +123,19 @@ describe('pypiClient', () => {
         );
     });
 
-    test('generates Vibe versioned tags in the local image namespace', () => {
-        assert.strictEqual(generateImageTag('vibe', '2.12.1', 'abcdef'), 'propr-vibe:2.12.1-abcdef');
+    test('resolves custom Vibe versions against PyPI and accepts PEP 440 suffixes', async () => {
+        mockPyPiResponse({
+            info: { version: '2.12.1' },
+            releases: {
+                '2.12.1rc1': [{ upload_time_iso_8601: '2026-01-03T00:00:00Z' }]
+            }
+        });
+
+        assert.strictEqual(await resolveVersion('vibe', 'custom', '2.12.1rc1'), '2.12.1rc1');
+    });
+
+    test('generates Vibe versioned tags in the agent image namespace', () => {
+        assert.strictEqual(generateImageTag('vibe', '2.12.1', 'abcdef'), 'propr/agent-vibe:2.12.1-abcdef');
     });
 
     test('returns Vibe available versions in API-facing shape', async () => {

@@ -10,7 +10,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -69,7 +69,7 @@ function parseEnvAssignment(rawLine) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return null;
 
     const valueSource = assignment.slice(equalsIndex + 1).trimStart();
-    return { name, value: expandEnvValue(parseEnvValue(valueSource)) };
+    return { name, value: parseEnvValue(valueSource) };
 }
 
 function parseEnvValue(valueSource) {
@@ -99,13 +99,6 @@ function unescapeDoubleQuotedEnv(value) {
         if (escaped === 'r') return '\r';
         if (escaped === 't') return '\t';
         return escaped;
-    });
-}
-
-function expandEnvValue(value) {
-    return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, bare) => {
-        const key = braced || bare;
-        return process.env[key] ?? '';
     });
 }
 
@@ -151,6 +144,16 @@ function vibePromptCacheArgs() {
     ];
 }
 
+function validateDockerBindPath(name, value, { containerPath = false } = {}) {
+    if (!value || !isAbsolute(value) || value.includes('~') || /[\0\r\n]/.test(value)) {
+        return `${name} must be an absolute path without '~' or control characters`;
+    }
+    if (!containerPath && value.includes(':')) {
+        return `${name} cannot contain ':' because it is used in a Docker bind mount`;
+    }
+    return null;
+}
+
 // Track containers we start so we can stop them on shutdown.
 const runningContainers = new Set();
 
@@ -173,6 +176,22 @@ function dockerRunDetached(name, args) {
     }
     runningContainers.add(name);
     console.log(`  ✓ started ${name}`);
+}
+
+function latestTagFor(imageTag) {
+    const slashIndex = imageTag.lastIndexOf('/');
+    const tagIndex = imageTag.lastIndexOf(':');
+    return tagIndex > slashIndex ? `${imageTag.slice(0, tagIndex)}:latest` : null;
+}
+
+function tagAgentLatest(key, imageTag) {
+    if (!key.startsWith('agent-')) return;
+    const latestTag = latestTagFor(imageTag);
+    if (!latestTag || latestTag === imageTag) return;
+    const res = docker(['tag', imageTag, latestTag], { capture: true });
+    if (res.status !== 0) {
+        throw new Error(`Failed to tag ${imageTag} as ${latestTag}: ${res.stderr}`);
+    }
 }
 
 function containerExists(name) {
@@ -198,8 +217,6 @@ function ensureNetwork() {
 function pullImages() {
     console.log('\npulling images…');
     for (const [key, tag] of Object.entries(manifest.images)) {
-        // Skip agent images — workers pull them on demand.
-        if (key.startsWith('agent-')) continue;
         if (key === 'docs' && !DOCS_ENABLED) continue;
 
         // If the image is already present locally, skip the pull — supports
@@ -207,10 +224,12 @@ function pullImages() {
         const local = docker(['images', '-q', tag], { capture: true });
         if (local.stdout.trim()) {
             console.log(`  · ${tag} (local)`);
+            tagAgentLatest(key, tag);
             continue;
         }
         console.log(`  · ${tag}`);
         docker(['pull', tag]);
+        tagAgentLatest(key, tag);
     }
 }
 
@@ -228,6 +247,12 @@ function validateEnv() {
     if (!existsSync(ENV_FILE_LOCAL)) {
         console.error(`ERROR: launcher cannot read the env file at ${ENV_FILE_LOCAL}.`);
         console.error(`Mount your .env into the launcher too: -v ${ENV_FILE}:${ENV_FILE_LOCAL}:ro`);
+        process.exit(1);
+    }
+    const invalidVibePromptPath = validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', HOST_VIBE_PROMPT_CACHE_DIR)
+        || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', VIBE_PROMPT_CACHE_DIR, { containerPath: true });
+    if (invalidVibePromptPath) {
+        console.error(`ERROR: ${invalidVibePromptPath}`);
         process.exit(1);
     }
 }

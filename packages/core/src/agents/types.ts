@@ -13,7 +13,7 @@ export interface AgentConfig {
     enabled: boolean;
 
     // Docker configuration
-    dockerImage: string;    // e.g., 'propr-claude:latest'
+    dockerImage: string;    // e.g., 'propr/agent-claude:latest'
     configPath: string;     // Host path to mount (e.g., '/root/.claude')
 
     // Model configuration

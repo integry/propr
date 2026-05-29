@@ -99,6 +99,20 @@ test('auth redirect allowlist rejects invalid URLs and non-http protocols', asyn
   assert.equal(protocolResponse.headers.get('location'), 'https://app.example.com/');
 });
 
+test('auth redirect allowlist only permits cleartext HTTP for localhost', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'http://localhost:5173';
+  process.env.AUTH_REDIRECT_ALLOWED_HOSTS = 'app.example.com';
+  const app = express();
+  setupAuth(app);
+
+  const localResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=http%3A%2F%2Flocalhost%3A5173%2Fplans');
+  assert.equal(localResponse.headers.get('location'), 'http://localhost:5173/plans');
+
+  const remoteResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=http%3A%2F%2Fapp.example.com%2Fplans');
+  assert.equal(remoteResponse.headers.get('location'), 'http://localhost:5173/');
+});
+
 test('auth redirect allowlist ignores malformed additional host entries', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   process.env.FRONTEND_URL = 'https://app.example.com';

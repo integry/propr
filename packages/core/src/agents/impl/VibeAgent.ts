@@ -24,8 +24,7 @@ const DEFAULT_VIBE_MAX_TURNS = 1000;
 const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
 const CONTAINER_PROMPT_PATH = '/tmp/propr-vibe-prompt.md';
-const CONTAINER_NODE_UID = 1000;
-const CONTAINER_NODE_GID = 1000;
+const CONTAINER_ROOT_USER = '0:0';
 const DEFAULT_PROMPT_PARENT_DIR = '/tmp/propr-vibe-prompts';
 
 interface VibeDockerArgsParams {
@@ -387,6 +386,10 @@ export class VibeAgent implements Agent {
         envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
         if (mode === 'analysis') {
             envVars.push('-e', 'VIBE_READ_ONLY_CONFIG=1');
+            envVars.push('-e', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache');
+            envVars.push('-e', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config');
+            envVars.push('-e', 'XDG_DATA_HOME=/tmp/propr-vibe-data');
+            envVars.push('-e', 'UV_CACHE_DIR=/tmp/propr-uv-cache');
         }
 
         const timestamp = Date.now().toString(36);
@@ -399,7 +402,7 @@ export class VibeAgent implements Agent {
         const promptInstruction = `Read the full task prompt from @${CONTAINER_PROMPT_PATH} and follow it exactly.`;
         const agentArgs = mode === 'analysis' ? [] : ['--trust', '--agent', 'auto-approve'];
         const dockerArgs: string[] = [
-            'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge', '--user', `${CONTAINER_NODE_UID}:${CONTAINER_NODE_GID}`,
+            'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge', '--user', CONTAINER_ROOT_USER,
             ...analysisSandboxArgs,
             '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
             ...configMountArgs,

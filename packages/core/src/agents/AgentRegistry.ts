@@ -234,9 +234,8 @@ export class AgentRegistry {
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
         // Prefer the user-configured dockerImage (pull-first, build fallback).
-        // This matters for production images like propr/agent-claude:latest —
-        // the versioned-build path below tries to build local Dockerfile tags
-        // (propr-claude:2.1.85-<hash>) which only works in dev checkouts.
+        // This matters for production images like propr/agent-claude:latest.
+        // The versioned-build path below only works when Dockerfiles are present.
         if (config.dockerImage && await ensureAgentDockerImage(config.type, config.dockerImage)) {
             return true;
         }
@@ -286,7 +285,7 @@ export class AgentRegistry {
             type: 'claude',
             alias: 'default',
             enabled: true,
-            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest',
+            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || 'propr/agent-claude:latest',
             configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
             supportedModels: [
                 'claude-opus-4-6',

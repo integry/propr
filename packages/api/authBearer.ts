@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { createClient, type RedisClientType } from 'redis';
 import type { GitHubUser } from './authTypes.js';
 
@@ -19,10 +20,15 @@ async function getTokenCacheClient(): Promise<RedisClientType> {
 const TOKEN_CACHE_PREFIX = 'propr:bearer:';
 const TOKEN_CACHE_TTL_SECONDS = 300;
 
+function getTokenCacheKey(token: string): string {
+    return `${TOKEN_CACHE_PREFIX}${crypto.createHash('sha256').update(token).digest('hex')}`;
+}
+
 export async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
     try {
         const redis = await getTokenCacheClient();
-        const cached = await redis.get(`${TOKEN_CACHE_PREFIX}${token}`);
+        const cacheKey = getTokenCacheKey(token);
+        const cached = await redis.get(cacheKey);
         if (cached) {
             return JSON.parse(cached) as GitHubUser;
         }
@@ -55,7 +61,7 @@ export async function validateGitHubToken(token: string): Promise<GitHubUser | n
             accessToken: token,
         };
 
-        await redis.set(`${TOKEN_CACHE_PREFIX}${token}`, JSON.stringify(user), { EX: TOKEN_CACHE_TTL_SECONDS });
+        await redis.set(cacheKey, JSON.stringify(user), { EX: TOKEN_CACHE_TTL_SECONDS });
         return user;
     } catch (error) {
         console.error('Bearer token validation error:', error);

@@ -1,7 +1,16 @@
 import { parseVibeOutput } from './vibeOutputParser.js';
 
 export function getAnalysisSandboxArgs(mode?: 'execute' | 'analysis'): string[] {
-    return mode === 'analysis' ? ['--read-only', '--tmpfs', '/tmp:rw,nosuid,size=256m'] : [];
+    return mode === 'analysis'
+        ? [
+            '--read-only',
+            '--tmpfs', '/tmp:rw,nosuid,size=512m',
+            '--tmpfs', '/home/node/bin:rw,nosuid,size=16m',
+            '--tmpfs', '/home/node/.cache:rw,nosuid,size=256m',
+            '--tmpfs', '/home/node/.config:rw,nosuid,size=64m',
+            '--tmpfs', '/home/node/.local:rw,nosuid,size=128m'
+        ]
+        : [];
 }
 
 export function getParsedVibeError(parsedOutput: ReturnType<typeof parseVibeOutput>): string | undefined {
