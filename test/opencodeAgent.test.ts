@@ -1,7 +1,7 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
-import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, parseOpenCodeJsonl } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.js';
@@ -41,6 +41,12 @@ function buildDockerArgs(agent: OpenCodeAgent, modelName: string): string[] {
 }
 
 describe('OpenCodeAgent JSONL parsing', () => {
+    test('exposes parseOpenCodeStreamOutput as the stream parser alias', () => {
+        const output = JSON.stringify({ type: 'text', text: 'hello from opencode' });
+
+        assert.deepStrictEqual(parseOpenCodeStreamOutput(output), parseOpenCodeJsonl(output));
+    });
+
     test('collects text from original text part events', () => {
         const parsed = parseOutput([
             JSON.stringify({ type: 'text', sessionID: 'session-a', model: 'opencode-go/kimi-k2.6', part: { type: 'text', text: 'hello ' } }),
