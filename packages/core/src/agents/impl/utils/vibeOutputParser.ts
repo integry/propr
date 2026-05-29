@@ -30,25 +30,19 @@ interface ParsedVibeOutput {
     tokenUsage?: { input_tokens?: number; output_tokens?: number };
 }
 
-function flattenJsonValue(value: unknown): VibeJsonOutput[] {
+function jsonEventsFromValue(value: unknown): VibeJsonOutput[] {
     if (Array.isArray(value)) {
-        return value.flatMap(item => flattenJsonValue(item));
+        return value.flatMap(item => jsonEventsFromValue(item));
     }
     if (value && typeof value === 'object') {
-        const objectValue = value as Record<string, unknown>;
-        return [
-            objectValue as VibeJsonOutput,
-            ...Object.entries(objectValue)
-                .filter(([key]) => key !== 'error')
-                .flatMap(([, item]) => flattenJsonValue(item))
-        ];
+        return [value as VibeJsonOutput];
     }
     return [];
 }
 
 function tryParseJson(text: string): VibeJsonOutput[] {
     try {
-        return flattenJsonValue(JSON.parse(text));
+        return jsonEventsFromValue(JSON.parse(text));
     } catch {
         return [];
     }
@@ -67,29 +61,32 @@ function parseJsonObjects(output: string): VibeJsonOutput[] {
         .flatMap(line => tryParseJson(line));
 }
 
-function textFromValue(value: unknown): string | undefined {
+function textFromValue(value: unknown, depth = 0): string | undefined {
+    if (depth > 8) {
+        return undefined;
+    }
     if (typeof value === 'string') {
         return value;
     }
     if (Array.isArray(value)) {
-        const parts = value.map(item => textFromValue(item)).filter((text): text is string => Boolean(text));
+        const parts = value.map(item => textFromValue(item, depth + 1)).filter((text): text is string => Boolean(text));
         return parts.length > 0 ? parts.join('') : undefined;
     }
     if (value && typeof value === 'object') {
-        return pickText(value as VibeJsonOutput);
+        return pickText(value as VibeJsonOutput, depth + 1);
     }
     return undefined;
 }
 
-function pickText(event: VibeJsonOutput): string | undefined {
-    return textFromValue(event.result)
-        || textFromValue(event.response)
-        || textFromValue(event.output)
-        || textFromValue(event.text)
-        || textFromValue(event.content)
-        || textFromValue(event.message)
-        || textFromValue(event.delta)
-        || textFromValue(event.data);
+function pickText(event: VibeJsonOutput, depth = 0): string | undefined {
+    return textFromValue(event.result, depth)
+        || textFromValue(event.response, depth)
+        || textFromValue(event.output, depth)
+        || textFromValue(event.text, depth)
+        || textFromValue(event.content, depth)
+        || textFromValue(event.message, depth)
+        || textFromValue(event.delta, depth)
+        || textFromValue(event.data, depth);
 }
 
 function pickError(event: VibeJsonOutput): string | undefined {

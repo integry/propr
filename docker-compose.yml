@@ -84,6 +84,8 @@ services:
       - /tmp/git-processor:/tmp/git-processor:ro
       - /tmp/git-processor/propr-cache/vibe-prompts:/tmp/git-processor/propr-cache/vibe-prompts:rw
       - /tmp/claude-logs:/tmp/claude-logs:ro
+      - ~/.claude:/root/.claude:ro
+      - ~/.gemini:/root/.gemini:ro
       - ~/.codex:/root/.codex:ro
       - ~/.vibe:/root/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -156,6 +158,7 @@ services:
       - '${API_PORT:-4000}:4000'
     volumes:
       - ~/.claude:/root/.claude:ro
+      - ~/.gemini:/root/.gemini:ro
       - ~/.codex:/root/.codex:ro
       - ~/.vibe:/root/.vibe:ro
       - ./data:/usr/src/app/data

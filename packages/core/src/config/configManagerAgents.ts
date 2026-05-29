@@ -78,9 +78,9 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
 }
 
 const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
-    claude: '2.1.85',
+    claude: AGENT_DEFAULT_VERSIONS.claude,
     codex: AGENT_DEFAULT_VERSIONS.codex,
-    gemini: '0.35.1',
+    gemini: AGENT_DEFAULT_VERSIONS.gemini,
     vibe: AGENT_DEFAULT_VERSIONS.vibe
 };
 

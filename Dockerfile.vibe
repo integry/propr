@@ -9,12 +9,13 @@ ARG BASE_TAG
 FROM propr/agent-base:${BASE_TAG}
 
 ARG CLI_VERSION=2.12.1
+ARG UV_VERSION=0.8.17
 
 USER root
 RUN apk add --no-cache bash python3 py3-pip sudo
 ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin
-RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
+RUN python3 -m pip install --no-cache-dir --break-system-packages "uv==${UV_VERSION}"
 RUN if [ "$CLI_VERSION" = "latest" ]; then \
       uv tool install mistral-vibe; \
     else \

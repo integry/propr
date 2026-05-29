@@ -21,9 +21,9 @@ export { parseVibeOutput } from './utils/vibeOutputParser.js';
 
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
+const DEFAULT_GIT_CLONES_BASE_PATH = '/tmp/git-processor/clones';
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
 const CONTAINER_PROMPT_PATH = '/tmp/propr-vibe-prompt.md';
-const PROMPT_CACHE_DIR = '/tmp/git-processor/propr-cache/vibe-prompts';
 const CONTAINER_NODE_UID = 1000;
 const CONTAINER_NODE_GID = 1000;
 
@@ -267,11 +267,24 @@ export class VibeAgent implements Agent {
         return workspace;
     }
 
+    private getPromptCacheDir(): string {
+        if (process.env.VIBE_PROMPT_CACHE_DIR) {
+            return process.env.VIBE_PROMPT_CACHE_DIR;
+        }
+
+        const cacheRoot = process.env.PROPR_CACHE_DIR || path.join(
+            path.dirname(process.env.GIT_CLONES_BASE_PATH || DEFAULT_GIT_CLONES_BASE_PATH),
+            'propr-cache'
+        );
+        return path.join(cacheRoot, 'vibe-prompts');
+    }
+
     private writePromptFile(prompt: string, taskId?: string): string {
-        fs.mkdirSync(PROMPT_CACHE_DIR, { recursive: true, mode: 0o700 });
-        fs.chmodSync(PROMPT_CACHE_DIR, 0o700);
+        const promptCacheDir = this.getPromptCacheDir();
+        fs.mkdirSync(promptCacheDir, { recursive: true, mode: 0o700 });
+        fs.chmodSync(promptCacheDir, 0o700);
         const safeTaskId = taskId?.replace(/[^a-zA-Z0-9_-]/g, '').slice(-32) || Date.now().toString(36);
-        const promptPath = path.join(PROMPT_CACHE_DIR, `${safeTaskId}-${Date.now().toString(36)}.md`);
+        const promptPath = path.join(promptCacheDir, `${safeTaskId}-${Date.now().toString(36)}.md`);
         fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o600 });
         this.chownPromptForContainer(promptPath);
         fs.chmodSync(promptPath, 0o600);
@@ -342,7 +355,17 @@ export class VibeAgent implements Agent {
             'vibe', '--prompt', promptInstruction, '--max-turns', String(maxTurns), '--output', 'json', ...agentArgs
         ];
 
-        logger.info({ issueNumber, agentAlias: this.config.alias, mode }, 'Docker args built for Vibe agent');
+        logger.info({
+            issueNumber,
+            agentAlias: this.config.alias,
+            mode,
+            dockerImage: this.config.dockerImage,
+            configPath,
+            configPathExists: fs.existsSync(configPath),
+            promptPath,
+            promptPathExists: fs.existsSync(promptPath),
+            workspaceMountMode
+        }, 'Docker args built for Vibe agent');
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'vibe');
     }
 
