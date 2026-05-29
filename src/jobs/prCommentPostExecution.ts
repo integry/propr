@@ -21,8 +21,7 @@ import { buildCommitMessage } from './prCommentJobUtils.js';
 import { markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
-
-interface GitHubToken { token: string }
+import type { GitHubToken } from './githubTypes.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;

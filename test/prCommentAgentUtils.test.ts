@@ -74,17 +74,21 @@ describe('generateSummaryTitle fallback behavior', () => {
 
     test('records workflow-specific title generation metadata', async () => {
         let taskKind: unknown;
+        let timeoutMs: unknown;
         const title = await generateSummaryTitle(baseOptions({
             workflowLabel: 'Ultrafix',
             titleContext: 'Review feedback to address:\nKeep iterating on lint failures.',
+            titleGenerationTimeoutMs: 1234,
             analysisRunner: async options => {
                 taskKind = options.metadata?.taskKind;
+                timeoutMs = options.timeoutMs;
                 return 'Resolve lint failures';
             },
         }));
 
         assert.strictEqual(title, 'Resolve lint failures');
         assert.strictEqual(taskKind, 'pr-ultrafix-title-generation');
+        assert.strictEqual(timeoutMs, 1234);
     });
 
     test('removes surrounding quotes from generated subtitles', async () => {

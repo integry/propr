@@ -47,6 +47,7 @@ export interface ExecuteClaudeCodeOptions {
     onContainerId?: (containerId: string, containerName: string) => void;
     systemPrompt?: string;
     tools?: string;
+    timeoutMs?: number;
 }
 
 export interface ClaudeCodeResponse {
@@ -90,11 +91,12 @@ export interface RunLightweightLLMAnalysisOptions {
     prNumber?: number;
     executionType?: ExecutionType;
     metadata?: Record<string, unknown>;
+    timeoutMs?: number;
 }
 
 /** @deprecated Use AgentRegistry.getDefaultAgent().executeTask() instead. */
 export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Promise<ClaudeCodeResponse> {
-    const { worktreePath, issueRef, githubToken, customPrompt, isRetry = false, retryReason, branchName, modelName, issueDetails, onSessionId, onContainerId } = options;
+    const { worktreePath, issueRef, githubToken, customPrompt, isRetry = false, retryReason, branchName, modelName, issueDetails, onSessionId, onContainerId, timeoutMs } = options;
     const startTime = Date.now();
 
     const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -114,7 +116,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         const { result, usageMetrics } = await executeWithUsageTracking(
             'claude',
             async () => executeDockerCommand('docker', dockerArgs, {
-                timeout: CLAUDE_TIMEOUT_MS,
+                timeout: timeoutMs ?? CLAUDE_TIMEOUT_MS,
                 cwd: worktreePath,
                 onSessionId,
                 onContainerId,
@@ -313,7 +315,7 @@ async function executeClaudeAnalysis(
     resolvedModel: string,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<string> {
-    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, prNumber, executionType = 'other', model } = options;
+    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, prNumber, executionType = 'other', model, timeoutMs } = options;
 
     const claudeResult = await executeClaudeCode({
         worktreePath, issueRef, githubToken,
@@ -321,7 +323,8 @@ async function executeClaudeAnalysis(
         branchName: 'analysis-generation',
         modelName: resolvedModel,
         systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT,
-        tools: LIGHTWEIGHT_TOOLS
+        tools: LIGHTWEIGHT_TOOLS,
+        timeoutMs,
     });
 
     await recordLLMMetrics(buildLlmMetricsPayload(claudeResult, resolvedModel), issueRef, { correlationId, taskId, executionType });

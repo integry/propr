@@ -19,8 +19,7 @@ import {
     buildMergeConflictCommitMessage,
 } from './mergeConflictHelpers.js';
 import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
-
-interface GitHubToken { token: string }
+import type { GitHubToken } from './githubTypes.js';
 
 async function buildMergeCompletionHistoryMetadata(options: {
     stateManager: WorkerStateManager;
@@ -32,7 +31,27 @@ async function buildMergeCompletionHistoryMetadata(options: {
     commitHash: string;
     correlatedLogger: Logger;
 }): Promise<Record<string, unknown>> {
-    const metadata: Record<string, unknown> = {
+    let previousHistoryMetadata: Record<string, unknown> = {};
+
+    try {
+        const state = await options.stateManager.getTaskState(options.taskId);
+        previousHistoryMetadata = [...(state?.history || [])]
+            .reverse()
+            .find(entry => entry.metadata && Object.keys(entry.metadata).length > 0)
+            ?.metadata || {};
+        const issueRef = state?.issueRef as { title?: unknown; subtitle?: unknown; issueNumber?: unknown } | undefined;
+        previousHistoryMetadata = {
+            ...previousHistoryMetadata,
+            ...(typeof issueRef?.title === 'string' && { title: issueRef.title }),
+            ...(typeof issueRef?.subtitle === 'string' && { subtitle: issueRef.subtitle }),
+            ...(typeof issueRef?.issueNumber === 'number' && { issueNumber: issueRef.issueNumber }),
+        };
+    } catch (stateError) {
+        options.correlatedLogger.warn({ taskId: options.taskId, error: (stateError as Error).message }, 'Failed to load merge task metadata for completion history');
+    }
+
+    return {
+        ...previousHistoryMetadata,
         commandMode: 'merge',
         pullRequestNumber: options.pullRequestNumber,
         baseBranch: options.baseBranch,
@@ -40,31 +59,39 @@ async function buildMergeCompletionHistoryMetadata(options: {
         model: options.model,
         commitHash: options.commitHash,
     };
-
-    try {
-        const state = await options.stateManager.getTaskState(options.taskId);
-        const issueRef = state?.issueRef as { title?: unknown; subtitle?: unknown; issueNumber?: unknown } | undefined;
-        if (typeof issueRef?.title === 'string') metadata.title = issueRef.title;
-        if (typeof issueRef?.subtitle === 'string') metadata.subtitle = issueRef.subtitle;
-        if (typeof issueRef?.issueNumber === 'number') metadata.issueNumber = issueRef.issueNumber;
-    } catch (stateError) {
-        options.correlatedLogger.warn({ taskId: options.taskId, error: (stateError as Error).message }, 'Failed to load merge task metadata for completion history');
-    }
-
-    return metadata;
 }
 
 async function verifyNoConflictMarkers(worktreeInfo: WorktreeInfo, pullRequestNumber: number, correlatedLogger: Logger): Promise<void> {
     const { execFileSync } = await import('child_process');
-    try {
-        const grepResult = execFileSync('git', ['grep', '--untracked', '-n', '-I', '-E', '^(<<<<<<<|=======|>>>>>>>)', '--'], {
-            cwd: worktreeInfo.worktreePath,
-            encoding: 'utf-8',
-            maxBuffer: 10 * 1024 * 1024,
-        }).trim();
+    const { readFileSync, statSync } = await import('fs');
+    const { join } = await import('path');
 
-        if (grepResult) {
-            const markerLines = grepResult.split('\n').filter(line => line.length > 0);
+    try {
+        const trackedAndUntracked = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+            cwd: worktreeInfo.worktreePath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024,
+        });
+        const ignored = execFileSync('git', ['ls-files', '-z', '--others', '--ignored', '--exclude-standard'], {
+            cwd: worktreeInfo.worktreePath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024,
+        });
+        const filePaths = new Set(`${trackedAndUntracked}\0${ignored}`.split('\0').filter(Boolean));
+        const markerLines: string[] = [];
+
+        for (const filePath of filePaths) {
+            const absolutePath = join(worktreeInfo.worktreePath, filePath);
+            try {
+                if (!statSync(absolutePath).isFile()) continue;
+                const lines = readFileSync(absolutePath, 'utf8').split(/\r?\n/);
+                lines.forEach((line, index) => {
+                    if (/^(<<<<<<<|=======|>>>>>>>)($|\s)/.test(line)) {
+                        markerLines.push(`${filePath}:${index + 1}:${line}`);
+                    }
+                });
+            } catch {
+                // Ignore files that disappear or cannot be decoded while scanning.
+            }
+        }
+
+        if (markerLines.length > 0) {
             correlatedLogger.error({
                 pullRequestNumber,
                 remainingMarkers: markerLines.length,

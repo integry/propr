@@ -100,8 +100,14 @@ export function filterDiffToFiles(diff: string, filePaths: string[]): string {
             current = [line];
             currentHeaderPaths = diffBlockPaths(line);
             includeCurrent = currentHeaderPaths.some(path => wanted.has(path));
-        } else if (current.length > 0) {
-            current.push(line);
+        } else {
+            if (current.length === 0) {
+                current = [line];
+                currentHeaderPaths = [];
+                includeCurrent = false;
+            } else {
+                current.push(line);
+            }
             const patchPath = diffPatchPath(line);
             if (!includeCurrent && currentHeaderPaths.length === 0 && patchPath && wanted.has(patchPath)) {
                 includeCurrent = true;

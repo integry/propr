@@ -91,11 +91,16 @@ function truncate(value: string, maxLength = 1200): string {
     return value.length > maxLength ? `${value.substring(0, maxLength)}...` : value;
 }
 
+function unwrapFencedCodeBlocks(value: string): string {
+    return value
+        .replace(/```[^\n]*\n?([\s\S]*?)```/g, '\n$1\n')
+        .replace(/~~~[^\n]*\n?([\s\S]*?)~~~/g, '\n$1\n');
+}
+
 function cleanMarkdownForTitleContext(value: string | null | undefined): string {
-    return stripHtmlComments(value || '')
+    return unwrapFencedCodeBlocks(stripHtmlComments(value || '')
         .replace(/<details\b[\s\S]*?<\/details>/gi, '')
-        .replace(/```[\s\S]*?```/g, '')
-        .replace(/~~~[\s\S]*?~~~/g, '')
+    )
         .split('\n')
         .map(line => line.trim())
         .filter(line => line && !line.startsWith('>'))
@@ -224,16 +229,16 @@ function cleanPrDescriptionForTitleContext(value: string | null | undefined): st
     const body = stripHtmlComments(value || '');
     if (!body.trim()) return '';
 
-    for (const paragraph of body.split(/\n{2,}/)) {
-        const cleaned = paragraph
+    const meaningfulParagraphs = body.split(/\n{2,}/)
+        .map(paragraph => paragraph
             .split('\n')
             .map(line => line.trim())
             .filter(line => line && !isPrTemplateNoiseLine(line))
             .join('\n')
-            .trim();
-        if (hasMeaningfulTitleText(cleaned)) return cleaned;
-    }
-    return '';
+            .trim())
+        .filter(hasMeaningfulTitleText);
+
+    return truncate(meaningfulParagraphs.slice(0, 3).join('\n\n'), 1800);
 }
 
 export function buildPrTaskTitleContext(options: BuildTitleContextOptions): TitleContextResult {
@@ -348,7 +353,6 @@ export function selectFallbackSummaryLine(context: string): string {
 
 function selectMergeConflictFallbackLine(context: string): string {
     const files = new Set<string>();
-    let insideConflictMarker = false;
     for (const rawLine of context.split('\n')) {
         const line = rawLine.trim();
         if (line.startsWith('diff --')) {
@@ -356,18 +360,6 @@ function selectMergeConflictFallbackLine(context: string): string {
         }
         const patchPath = diffPatchPath(line);
         if (patchPath) files.add(patchPath);
-
-        if (!line || isFallbackContextHeader(line)) continue;
-        const bodyMatch = line.match(/^[+\- ]+(.+)$/);
-        const body = (bodyMatch ? bodyMatch[1] : line).trim();
-        if (!body) continue;
-        if (/^(<<<<<<<|=======|>>>>>>>)($|\s)/.test(body)) {
-            insideConflictMarker = true;
-            continue;
-        }
-        if (insideConflictMarker) {
-            return normalizeFallbackSummaryLine(body);
-        }
     }
 
     const fileList = [...files].filter(Boolean).slice(0, 3);

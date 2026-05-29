@@ -345,6 +345,16 @@ describe('processMergeConflictJob', () => {
                 subtitle: 'Resolve src/index.ts conflict',
                 issueNumber: 1478,
             },
+            history: [{
+                state: 'claude_execution',
+                timestamp: '2026-05-29T00:00:00.000Z',
+                reason: 'agent completed',
+                metadata: {
+                    sessionId: 'session-123',
+                    conversationId: 'conv-123',
+                    model: 'claude-sonnet-4-20250514',
+                },
+            }],
         }));
 
         await processMergeConflictJob(createMockJob());
@@ -358,6 +368,8 @@ describe('processMergeConflictJob', () => {
         assert.strictEqual(metadata.title, 'Merge PR #42: Resolve auth conflict');
         assert.strictEqual(metadata.subtitle, 'Resolve src/index.ts conflict');
         assert.strictEqual(metadata.issueNumber, 1478);
+        assert.strictEqual(metadata.sessionId, 'session-123');
+        assert.strictEqual(metadata.conversationId, 'conv-123');
         assert.strictEqual(metadata.commitHash, 'abc1234567890');
     });
 
@@ -451,5 +463,16 @@ describe('processMergeConflictJob', () => {
 
         // Worktree should be cleaned up
         assert.strictEqual(mockCleanupWorktree.mock.callCount(), 1);
+        assert.strictEqual(mockCleanupWorktree.mock.calls[0].arguments[3].success, true);
+    });
+
+    test('failed merge: marks cleanup as unsuccessful', async () => {
+        mockMergeResult = { outcome: 'failed' as never, error: 'fatal: merge failed' } as never;
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+
+        await assert.rejects(async () => processMergeConflictJob(createMockJob()));
+
+        assert.strictEqual(mockCleanupWorktree.mock.callCount(), 1);
+        assert.strictEqual(mockCleanupWorktree.mock.calls[0].arguments[3].success, false);
     });
 });

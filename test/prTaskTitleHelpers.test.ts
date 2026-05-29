@@ -162,7 +162,7 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.deepStrictEqual(input.map(comment => comment.id), [1, 3]);
     });
 
-    test('strips markdown details, logs, hidden html, and quoted text from recent comments', () => {
+    test('strips markdown details, logs, hidden html, and quoted text while preserving fenced errors', () => {
         const result = buildPrTaskTitleContext({
             workflow: 'fix',
             pullRequestNumber: 123,
@@ -191,7 +191,7 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.ok(!result.context.includes('hidden bot metadata'));
         assert.ok(!result.context.includes('quoted prior discussion'));
         assert.ok(!result.context.includes('npm test failed'));
-        assert.ok(!result.context.includes('stack trace line'));
+        assert.ok(result.context.includes('stack trace line'));
     });
 
     test('falls back to PR description when fewer than two useful recent comments exist', () => {
@@ -210,7 +210,7 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.ok(result.context.includes('This PR adds token refresh support'));
     });
 
-    test('uses the first meaningful PR description paragraph instead of checklist boilerplate', () => {
+    test('uses meaningful PR description paragraphs instead of checklist boilerplate', () => {
         const result = buildPrTaskTitleContext({
             workflow: 'fix',
             pullRequestNumber: 123,
@@ -224,12 +224,15 @@ describe('prTaskTitleHelpers context selection', () => {
                 '',
                 'The OAuth callback now needs to preserve the refresh token during retry.',
                 '',
+                'It also tightens the session update path for expired credentials.',
+                '',
                 'Closes #100',
             ].join('\n'),
         });
 
         assert.strictEqual(result.includedPrDescription, true);
         assert.ok(result.context.includes('preserve the refresh token'));
+        assert.ok(result.context.includes('expired credentials'));
         assert.ok(!result.context.includes('Added tests'));
         assert.ok(!result.context.includes('Closes #100'));
     });
@@ -316,7 +319,7 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.strictEqual(line, 'Handle conflict markers in src/auth.ts.');
     });
 
-    test('fallback summary selection prefers merge conflict marker body over diff metadata', () => {
+    test('fallback summary selection uses merge conflict file names instead of marker body content', () => {
         const line = selectFallbackSummaryLine([
             'Task: Merge PR #123: Resolve auth conflicts',
             '',
@@ -333,7 +336,7 @@ describe('prTaskTitleHelpers context selection', () => {
             '+>>>>>>> main',
         ].join('\n'));
 
-        assert.strictEqual(line, 'preserve refreshed session tokens');
+        assert.strictEqual(line, 'Conflicts in src/auth.ts');
     });
 
     test('fallback summary selection uses conflicting file names when merge diff has no marker body', () => {
@@ -447,6 +450,30 @@ describe('prTaskTitleHelpers merge conflict diff context', () => {
 
         assert.strictEqual(filterDiffToFiles(diff, ['src/conflict.ts']), diff);
         assert.strictEqual(filterDiffToFiles(diff, ['src/other.ts']), '');
+    });
+
+    test('keeps headerless wanted patches before regular diff blocks', () => {
+        const wantedHeaderless = [
+            'index aaa,bbb..ccc',
+            '--- a/src/conflict.ts',
+            '+++ b/src/conflict.ts',
+            '@@@ -1,1 -1,1 +1,1 @@@',
+            '++resolved conflict',
+        ];
+        const unrelatedBlock = [
+            'diff --git a/src/unrelated.ts b/src/unrelated.ts',
+            'index 111..222 100644',
+            '--- a/src/unrelated.ts',
+            '+++ b/src/unrelated.ts',
+            '@@ -1 +1 @@',
+            '-old',
+            '+new',
+        ];
+        const diff = [...wantedHeaderless, ...unrelatedBlock].join('\n');
+
+        const filtered = filterDiffToFiles(diff, ['src/conflict.ts']);
+        assert.ok(filtered.includes('src/conflict.ts'));
+        assert.ok(!filtered.includes('src/unrelated.ts'));
     });
 
     test('matches git diff blocks by either side of the header without malformed patch-header leakage', () => {

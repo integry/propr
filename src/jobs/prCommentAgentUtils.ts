@@ -8,14 +8,13 @@ import { createSessionIdCallbackForPR, createContainerIdCallbackForPR } from './
 import { agentResultToClaudeResponse } from './prCommentJobUtils.js';
 import { selectFallbackSummaryLine } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
+import type { GitHubToken } from './githubTypes.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 const MAX_GENERATED_SUBTITLE_LENGTH = 140;
 const CONFIGURED_TITLE_GENERATION_TIMEOUT_MS = Number.parseInt(process.env.PR_TASK_TITLE_GENERATION_TIMEOUT_MS || '5000', 10);
 const TITLE_GENERATION_TIMEOUT_MS = Number.isFinite(CONFIGURED_TITLE_GENERATION_TIMEOUT_MS) ? CONFIGURED_TITLE_GENERATION_TIMEOUT_MS : 5000;
 const NOOP_LOGGER = { debug: () => undefined, warn: () => undefined } as unknown as Logger;
-
-interface GitHubToken { token: string }
 
 interface SummaryTitleOptions {
     combinedCommentBody: string;
@@ -35,6 +34,8 @@ interface SummaryTitleOptions {
     summarizationSettingsLoader?: typeof loadSummarizationSettings;
     titleGenerationTimeoutMs?: number;
 }
+
+type TitleAnalysisOptions = Parameters<typeof runLightweightLLMAnalysis>[0] & { timeoutMs?: number };
 
 function sanitizeGeneratedSubtitle(value: string, fallbackSubtitle: string): string {
     const cleaned = value.replace(/\s+/g, ' ').trim();
@@ -93,7 +94,9 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
         const summarizationSettings = await (options.summarizationSettingsLoader || loadSummarizationSettings)();
         const configuredModel = summarizationSettings.agent_alias?.trim();
         const model = configuredModel || 'haiku';
-        const title = await withTimeout((options.analysisRunner || runLightweightLLMAnalysis)({
+        const timeoutMs = options.titleGenerationTimeoutMs ?? TITLE_GENERATION_TIMEOUT_MS;
+        const analysisRunner = options.analysisRunner || runLightweightLLMAnalysis;
+        const analysisOptions: TitleAnalysisOptions = {
             prompt: `${summaryRequest}\n\nYour output must be ONLY the summary string itself, with no other text.`,
             model,
             correlationId,
@@ -106,8 +109,13 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
             metadata: {
                 taskKind: titleGenerationTaskKind(workflowLabel),
                 configuredVia: configuredModel ? 'summarization.agent_alias' : 'fallback'
-            }
-        }), options.titleGenerationTimeoutMs ?? TITLE_GENERATION_TIMEOUT_MS, 'PR task title generation');
+            },
+            timeoutMs,
+        };
+        const titlePromise = analysisRunner(analysisOptions);
+        const title = await (options.analysisRunner
+            ? withTimeout(titlePromise, timeoutMs, 'PR task title generation')
+            : titlePromise);
         const sanitizedTitle = sanitizeGeneratedSubtitle(title, deterministicFallback);
         correlatedLogger.info({ taskId, summaryTitle: sanitizedTitle }, 'Generated AI summary for PR task subtitle');
         return sanitizedTitle;
@@ -162,7 +170,7 @@ export async function resolvePRCommentModelName(llm: string | null | undefined, 
             modelName = (await resolveLlmLabel(llm)).model;
         } catch (labelError) {
             correlatedLogger.warn({ llm, error: (labelError as Error).message }, 'Failed to resolve explicit LLM label for PR comment task state');
-            throw labelError;
+            modelName = DEFAULT_MODEL_NAME || llm;
         }
     } else {
         const registry = AgentRegistry.getInstance();

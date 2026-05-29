@@ -38,6 +38,7 @@ import {
     getPrTaskWorkflowLabel,
     resolvePrTaskWorkflow,
 } from './prTaskTitleHelpers.js';
+import type { GitHubToken } from './githubTypes.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -46,7 +47,6 @@ const redisClient = new Redis({
     enableReadyCheck: false,
 });
 
-interface GitHubToken { token: string }
 interface PRData { data: { head: { ref: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
 interface PRComment { id: number; body: string; body_html?: string; user: { login: string; type?: string }; created_at: string; pull_request_review_id?: number }
 
