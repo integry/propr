@@ -12,6 +12,7 @@ import {
   deleteAgent,
   AgentConfig,
   AgentType,
+  AGENT_TYPES,
 } from "../api/agents.js";
 import {
   printOutput,
@@ -92,7 +93,7 @@ function displayAgentsTable(agents: AgentConfig[]): void {
  * Validates that the agent type is valid.
  */
 function isValidAgentType(type: string): type is AgentType {
-  return ["claude", "codex", "gemini", "opencode"].includes(type.toLowerCase());
+  return AGENT_TYPES.includes(type.toLowerCase() as AgentType);
 }
 
 /**

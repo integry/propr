@@ -151,7 +151,7 @@ export function computeContentHash(agentType: AgentType, basePath: string = PROJ
  * @param agentType - The agent type
  * @param cliVersion - The CLI version
  * @param contentHash - The content hash (6 chars)
- * @returns Docker image tag (e.g., 'propr-claude:2.1.77-a3f2b1')
+ * @returns Docker image tag (e.g., 'propr/agent-claude:2.1.77-a3f2b1')
  */
 export function generateImageTag(agentType: AgentType, cliVersion: string, contentHash: string): string {
     const imageName = AGENT_IMAGE_NAMES[agentType];

@@ -3,67 +3,16 @@ import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
-import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import { buildOpenCodeDockerArgs, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
 
 const DEFAULT_OPENCODE_TIMEOUT_MS = 3600000;
-const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
-
-interface OpenCodeEvent {
-    type?: string;
-    timestamp?: number | string;
-    sessionID?: string;
-    sessionId?: string;
-    session_id?: string;
-    part?: OpenCodePart;
-    parts?: OpenCodePart[];
-    message?: OpenCodeMessage;
-    error?: { name?: string; data?: { message?: string }; message?: string } | string;
-    model?: string;
-    text?: string;
-    content?: unknown;
-    delta?: string;
-    response?: OpenCodeTextContainer;
-}
-
-interface OpenCodeTextContainer {
-    text?: string;
-    content?: unknown;
-    delta?: string;
-}
-
-interface OpenCodePart extends OpenCodeTextContainer {
-    type?: string;
-    messageID?: string;
-    sessionID?: string;
-}
-
-interface OpenCodeMessage extends OpenCodeTextContainer {
-    role?: string;
-    model?: string;
-    parts?: OpenCodePart[];
-}
-
-interface ParsedOpenCodeOutput {
-    sessionId?: string;
-    modelUsed?: string;
-    summary?: string;
-    error?: string;
-    conversationLog: OpenCodeEvent[];
-}
-
-interface OpenCodeParseState {
-    sessionId?: string;
-    modelUsed?: string;
-    error?: string;
-    textParts: string[];
-}
 
 export class OpenCodeAgent implements Agent {
     readonly config: AgentConfig;
@@ -152,9 +101,10 @@ export class OpenCodeAgent implements Agent {
         const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         const analysisWorkspace = this.ensureAnalysisWorkspace();
+        const analysisConfigPath = this.createAnalysisConfigSnapshot();
 
         try {
-            const dockerArgs = this.buildDockerArgs({ worktreePath: analysisWorkspace, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, allowDangerousPermissions: false });
+            const dockerArgs = this.buildDockerArgs({ worktreePath: analysisWorkspace, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, allowDangerousPermissions: false, configPath: analysisConfigPath });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
                 async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData: analysisPrompt, taskId })
@@ -179,6 +129,7 @@ export class OpenCodeAgent implements Agent {
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message };
         } finally {
             this.cleanupAnalysisWorkspace(analysisWorkspace);
+            this.cleanupAnalysisConfigSnapshot(analysisConfigPath);
         }
     }
 
@@ -198,82 +149,7 @@ export class OpenCodeAgent implements Agent {
     }
 
     private parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
-        const conversationLog: OpenCodeEvent[] = [];
-        const state: OpenCodeParseState = { textParts: [] };
-
-        for (const line of output.split('\n')) {
-            if (!line.trim()) continue;
-            try {
-                const event = JSON.parse(line) as OpenCodeEvent;
-                conversationLog.push(event);
-                this.applyOpenCodeEvent(event, state);
-            } catch {
-                logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in OpenCode output');
-                state.textParts.push(line);
-            }
-        }
-
-        return {
-            sessionId: state.sessionId,
-            modelUsed: state.modelUsed,
-            summary: state.textParts.join('').trim() || undefined,
-            error: state.error,
-            conversationLog
-        };
-    }
-
-    private applyOpenCodeEvent(event: OpenCodeEvent, state: OpenCodeParseState): void {
-        state.sessionId = state.sessionId || event.sessionID || event.sessionId || event.session_id || event.part?.sessionID;
-        state.modelUsed = event.message?.model || event.model || state.modelUsed;
-        state.textParts.push(...this.extractOpenCodeText(event));
-        if (event.type?.toLowerCase() === 'error' || event.error) {
-            state.error = this.extractOpenCodeError(event);
-        }
-    }
-
-    private extractOpenCodeText(event: OpenCodeEvent): string[] {
-        const textParts: string[] = [];
-        this.addPartText(textParts, event.part);
-        this.addPartsText(textParts, event.parts);
-        const hasEventParts = Boolean(event.part || event.parts?.length);
-        const assistantMessage = event.message?.role === 'assistant' ? event.message : undefined;
-        if (assistantMessage) {
-            this.addTextContainer(textParts, assistantMessage);
-            this.addPartsText(textParts, assistantMessage.parts);
-        }
-        if (!hasEventParts && !assistantMessage && this.isAssistantTextEvent(event)) {
-            this.addTextContainer(textParts, event);
-            this.addTextContainer(textParts, event.response);
-        }
-        return Array.from(new Set(textParts));
-    }
-
-    private addPartsText(textParts: string[], parts?: OpenCodePart[]): void {
-        for (const part of parts || []) this.addPartText(textParts, part);
-    }
-
-    private addPartText(textParts: string[], part?: OpenCodePart): void {
-        if (!part) return;
-        const partType = part.type?.toLowerCase();
-        if (partType && !['text', 'assistant_text', 'message', 'completion'].includes(partType)) return;
-        this.addTextContainer(textParts, part);
-    }
-
-    private addTextContainer(textParts: string[], container?: OpenCodeTextContainer): void {
-        if (!container) return;
-        for (const value of [container.text, container.delta, container.content]) {
-            if (typeof value === 'string' && value.length > 0) textParts.push(value);
-        }
-    }
-
-    private isAssistantTextEvent(event: OpenCodeEvent): boolean {
-        const type = event.type?.toLowerCase();
-        return !!type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(type);
-    }
-
-    private extractOpenCodeError(event: OpenCodeEvent): string {
-        if (typeof event.error === 'string') return event.error;
-        return event.error?.data?.message || event.error?.message || event.error?.name || 'OpenCode execution failed';
+        return parseOpenCodeJsonl(output);
     }
 
     private async persistExecutionLog(opts: {
@@ -374,43 +250,36 @@ export class OpenCodeAgent implements Agent {
         }
     }
 
-    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; allowDangerousPermissions?: boolean }): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, allowDangerousPermissions = true } = params;
-        const configPath = resolveConfigPath(this.config.configPath);
-        this.ensureHostConfigPath(configPath);
-        const envVars: string[] = [];
-        if (this.config.envVars) {
-            for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`);
+    private createAnalysisConfigSnapshot(): string {
+        const sourceConfigPath = resolveConfigPath(this.config.configPath);
+        const snapshotPath = fs.mkdtempSync('/tmp/opencode-analysis-config-');
+        try {
+            if (fs.existsSync(sourceConfigPath)) {
+                fs.cpSync(sourceConfigPath, snapshotPath, { recursive: true, force: true });
+            }
+            const runAsNode = process.getuid?.() === 0;
+            if (runAsNode) fs.chownSync(snapshotPath, 1000, 1000);
+        } catch (error) {
+            logger.warn({ sourceConfigPath, snapshotPath, agentAlias: this.config.alias, error: (error as Error).message }, 'Failed to copy OpenCode config for analysis');
         }
-        const timestamp = Date.now().toString(36);
-        const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
-        const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
-        const containerName = this.buildContainerName(this.config.alias || 'opencode', taskType, shortTaskId);
-        const workspaceMode = readOnlyWorkspace ? 'ro' : 'rw';
-        const commandArgs = ['opencode-run', '--format', 'json'];
-        if (allowDangerousPermissions) commandArgs.push('--dangerously-skip-permissions');
-        const dockerArgs: string[] = [
-            'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
-            '-v', `${worktreePath}:/home/node/workspace:${workspaceMode}`, '-v', '/tmp/git-processor:/tmp/git-processor:rw',
-            '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
-            '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', 'XDG_DATA_HOME=/home/node/.local/share', ...envVars,
-            '-w', '/home/node/workspace', this.config.dockerImage, ...commandArgs
-        ];
-
-        if (modelName) {
-            const cleanModelName = modelName.startsWith('opencode:') ? modelName.slice('opencode:'.length) : modelName;
-            dockerArgs.push('--model', cleanModelName);
-            logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for OpenCode agent');
-        }
-
-        return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'opencode');
+        return snapshotPath;
     }
 
-    private buildContainerName(alias: string, taskType: string, shortTaskId: string): string {
-        const rawName = `${alias}-${taskType}-${shortTaskId}`;
-        const sanitized = rawName.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 120);
-        return sanitized || `opencode-${Date.now().toString(36)}`;
+    private cleanupAnalysisConfigSnapshot(configPath: string): void {
+        if (!configPath.startsWith('/tmp/opencode-analysis-config-')) return;
+        try {
+            fs.rmSync(configPath, { recursive: true, force: true });
+        } catch (cleanupError) {
+            logger.warn({ configPath, error: (cleanupError as Error).message }, 'Failed to remove OpenCode analysis config snapshot');
+        }
+    }
+
+    private buildDockerArgs(params: Omit<OpenCodeDockerArgsParams, 'config' | 'ensureConfigPath'>): string[] {
+        return buildOpenCodeDockerArgs({
+            ...params,
+            config: this.config,
+            ensureConfigPath: (configPath) => this.ensureHostConfigPath(configPath)
+        });
     }
 
     private ensureHostConfigPath(configPath: string): void {

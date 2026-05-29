@@ -15,7 +15,7 @@ export interface DockerCommandOptions {
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
 
-const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest';
+const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || `${AGENT_IMAGE_NAMES.claude}:latest`;
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
@@ -327,7 +327,7 @@ export async function buildClaudeDockerImage(): Promise<boolean> {
  * This is called when agents are registered to ensure their images are ready.
  *
  * @param agentType - The type of agent ('claude', 'codex', 'gemini')
- * @param dockerImage - The expected Docker image name (e.g., 'propr-codex:latest')
+ * @param dockerImage - The expected Docker image name (e.g., 'propr/agent-codex:latest')
  * @returns true if image exists or was built successfully, false otherwise
  */
 export async function ensureAgentDockerImage(agentType: string, dockerImage: string): Promise<boolean> {

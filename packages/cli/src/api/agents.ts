@@ -10,7 +10,15 @@ import { ApiClient, createApiClient } from "./index.js";
 /**
  * Agent type identifier.
  */
-export type AgentType = "claude" | "codex" | "gemini" | "opencode";
+export const AGENT_TYPES = ["claude", "codex", "gemini", "opencode"] as const;
+export type AgentType = typeof AGENT_TYPES[number];
+
+const DEFAULT_DOCKER_IMAGES: Record<AgentType, string> = {
+  claude: "propr/agent-claude:latest",
+  codex: "propr/agent-codex:latest",
+  gemini: "propr/agent-gemini:latest",
+  opencode: "propr/agent-opencode:latest",
+};
 
 /**
  * Configuration for a specific agent instance.
@@ -266,18 +274,7 @@ export async function deleteAgent(
  * @returns The default Docker image name.
  */
 function getDefaultDockerImage(type: AgentType): string {
-  switch (type) {
-    case "claude":
-      return "propr-claude:latest";
-    case "codex":
-      return "propr-codex:latest";
-    case "gemini":
-      return "propr-gemini:latest";
-    case "opencode":
-      return "propr-opencode:latest";
-    default:
-      return `propr-${type}:latest`;
-  }
+  return DEFAULT_DOCKER_IMAGES[type];
 }
 
 /**
