@@ -152,6 +152,8 @@ export function parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
     };
 }
 
+export const parseOpenCodeStreamOutput = parseOpenCodeJsonl;
+
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
     const {
         config,
