@@ -21,6 +21,8 @@ import {
   JsonInputError,
 } from "../utils/index.js";
 
+const AGENT_TYPE_LIST = AGENT_TYPES.join(", ");
+
 /**
  * Formats an agent type for display.
  */
@@ -184,7 +186,7 @@ Examples:
   agent
     .command("add [alias]")
     .description("Add a new AI agent configuration for code implementation")
-    .option("-t, --type <type>", "Agent type (claude, codex, gemini, or opencode)")
+    .option("-t, --type <type>", `Agent type (${AGENT_TYPE_LIST})`)
     .option("-m, --model <models>", "Comma-separated list of supported models")
     .option("-d, --default-model <model>", "Default model to use (defaults to first model)")
     .option("--docker-image <image>", "Docker image for the agent")
@@ -215,6 +217,7 @@ JSON File Format:
 
 Examples:
   $ propr agent add my-claude -t claude -m claude-sonnet-4-20250514
+  $ propr agent add opencode -t opencode -m opencode-go/kimi-k2.6
   $ propr agent add prod-agent -t claude -m claude-sonnet-4-20250514,claude-opus-4-20250514 -d claude-sonnet-4-20250514
   $ propr agent add test-agent -t gemini -m gemini-pro --disabled
   $ propr agent add --file agent-config.json
@@ -300,7 +303,7 @@ Examples:
 
           if (!isValidAgentType(type)) {
             console.error(
-              `Error: Invalid agent type '${type}'. Must be one of: claude, codex, gemini, opencode`
+              `Error: Invalid agent type '${type}'. Must be one of: ${AGENT_TYPE_LIST}`
             );
             process.exit(1);
           }
