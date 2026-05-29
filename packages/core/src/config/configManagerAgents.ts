@@ -111,13 +111,11 @@ export async function migrateAgentConfigs(): Promise<boolean> {
             }
 
             if (agent.type === 'codex') {
-                if (agent.supportedModels) {
-                    const missingModels = CODEX_55_MODELS.filter(m => !agent.supportedModels.includes(m));
-                    if (missingModels.length > 0) {
-                        agent.supportedModels = [...missingModels, ...agent.supportedModels];
-                        migrated = true;
-                        logger.info({ agentAlias: agent.alias, addedModels: missingModels }, 'Added GPT-5.5 models to Codex agent');
-                    }
+                const missingModels = agent.supportedModels ? CODEX_55_MODELS.filter(m => !agent.supportedModels.includes(m)) : [];
+                if (missingModels.length > 0) {
+                    agent.supportedModels = [...missingModels, ...agent.supportedModels];
+                    migrated = true;
+                    logger.info({ agentAlias: agent.alias, addedModels: missingModels }, 'Added GPT-5.5 models to Codex agent');
                 }
 
                 if (!agent.defaultModel || agent.defaultModel === 'gpt-5.4') {
