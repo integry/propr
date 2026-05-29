@@ -13,9 +13,7 @@ export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: I
 
 export interface OpenCodeEvent {
     type?: string; timestamp?: number | string;
-    sessionID?: string; sessionId?: string; session_id?: string;
-    part?: OpenCodePart; parts?: OpenCodePart[];
-    message?: OpenCodeMessage;
+    sessionID?: string; sessionId?: string; session_id?: string; part?: OpenCodePart; parts?: OpenCodePart[]; message?: OpenCodeMessage;
     error?: { name?: string; data?: { message?: string }; message?: string } | string;
     model?: string; text?: string; content?: unknown; delta?: string;
     tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
@@ -24,87 +22,44 @@ export interface OpenCodeEvent {
     usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage;
 }
 
-interface OpenCodeTextContainer {
-    text?: string; content?: unknown; delta?: string;
-    usage?: OpenCodeUsage;
-}
+interface OpenCodeTextContainer { text?: string; content?: unknown; delta?: string; usage?: OpenCodeUsage; }
 
 export type OpenCodeUsage = Record<string, unknown>;
 
 export interface NormalizedOpenCodeUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; }
 
 interface OpenCodePart extends OpenCodeTextContainer {
-    type?: string;
-    messageID?: string;
-    sessionID?: string;
-    callID?: string;
-    tokens?: OpenCodeUsage;
+    type?: string; messageID?: string; sessionID?: string; callID?: string; tokens?: OpenCodeUsage;
     state?: {
-        status?: string;
-        input?: Record<string, unknown>;
-        output?: string;
-        error?: unknown;
+        status?: string; input?: Record<string, unknown>; output?: string; error?: unknown; title?: string;
         metadata?: { output?: string; exit?: number; [key: string]: unknown };
-        title?: string;
     };
     tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
     output?: string; result?: string; status?: string; id?: string; tool_id?: string;
 }
 
-interface OpenCodeMessage extends OpenCodeTextContainer {
-    role?: string;
-    model?: string;
-    parts?: OpenCodePart[];
-}
+interface OpenCodeMessage extends OpenCodeTextContainer { role?: string; model?: string; parts?: OpenCodePart[]; }
 
 export interface ParsedOpenCodeOutput { sessionId?: string; modelUsed?: string; summary?: string; error?: string; tokenUsage?: TokenUsage; conversationLog: OpenCodeEvent[]; }
 
 interface OpenCodeParseState {
-    sessionId?: string;
-    modelUsed?: string;
-    error?: string;
-    tokenUsage: TokenUsage;
-    lastCumulativeTopLevelUsage?: TokenUsage;
-    streamTextParts: string[];
-    assistantMessages: string[];
+    sessionId?: string; modelUsed?: string; error?: string; tokenUsage: TokenUsage; lastCumulativeTopLevelUsage?: TokenUsage;
+    streamTextParts: string[]; assistantMessages: string[];
 }
 
-interface ExtractedOpenCodeText {
-    streamParts: string[];
-    assistantMessage?: string;
-}
+interface ExtractedOpenCodeText { streamParts: string[]; assistantMessage?: string; }
 
 export interface OpenCodeDockerArgsParams {
-    config: AgentConfig;
-    worktreePath: string;
-    githubToken: string;
-    modelName?: string;
-    issueNumber: number;
-    taskId?: string;
-    executionType?: string;
-    readOnlyWorkspace?: boolean;
-    allowDangerousPermissions?: boolean;
-    configPath?: string;
+    config: AgentConfig; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number;
+    taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; allowDangerousPermissions?: boolean; configPath?: string;
     ensureConfigPath?: (configPath: string) => void;
 }
 
 export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string {
-    const {
-        customPrompt,
-        issueRef,
-        branchName,
-        modelName,
-        issueDetails,
-        isRetry,
-        retryReason,
-        systemPrompt
-    } = options;
+    const { customPrompt, issueRef, branchName, modelName, issueDetails, isRetry, retryReason, systemPrompt } = options;
 
     const basePrompt = customPrompt || generateClaudePrompt({
-        issueRef,
-        branchName: branchName ?? null,
-        modelName: modelName ?? null,
-        issueDetails: issueDetails ?? null
+        issueRef, branchName: branchName ?? null, modelName: modelName ?? null, issueDetails: issueDetails ?? null
     });
     const systemContext = systemPrompt ? `SYSTEM INSTRUCTIONS:\n${systemPrompt}\n\n---\n\n` : '';
     let prompt = `${systemContext}${basePrompt}
@@ -122,23 +77,14 @@ export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string
         prompt += `\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
     }
 
-    logger.debug({
-        issueNumber: issueRef.number,
-        promptLength: prompt.length,
-        hasSafetyRules: prompt.includes('CRITICAL GIT SAFETY RULES'),
-        isCustomPrompt: !!customPrompt
-    }, 'Generated OpenCode prompt with safety rules');
+    logger.debug({ issueNumber: issueRef.number, promptLength: prompt.length, hasSafetyRules: prompt.includes('CRITICAL GIT SAFETY RULES'), isCustomPrompt: !!customPrompt }, 'Generated OpenCode prompt with safety rules');
 
     return prompt;
 }
 
 export function parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
     const conversationLog: OpenCodeEvent[] = [];
-    const state: OpenCodeParseState = {
-        streamTextParts: [],
-        assistantMessages: [],
-        tokenUsage: {}
-    };
+    const state: OpenCodeParseState = { streamTextParts: [], assistantMessages: [], tokenUsage: {} };
 
     for (const line of output.split('\n')) {
         if (!line.trim()) continue;
@@ -152,31 +98,13 @@ export function parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
         }
     }
 
-    return {
-        sessionId: state.sessionId,
-        modelUsed: state.modelUsed,
-        summary: buildOpenCodeSummary(state),
-        error: state.error,
-        tokenUsage: hasOpenCodeTokenUsage(state.tokenUsage) ? state.tokenUsage : undefined,
-        conversationLog
-    };
+    return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: buildOpenCodeSummary(state), error: state.error, tokenUsage: hasOpenCodeTokenUsage(state.tokenUsage) ? state.tokenUsage : undefined, conversationLog };
 }
 
 export const parseOpenCodeStreamOutput = parseOpenCodeJsonl;
 
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
-    const {
-        config,
-        worktreePath,
-        githubToken,
-        modelName,
-        issueNumber,
-        taskId,
-        executionType,
-        readOnlyWorkspace,
-        allowDangerousPermissions = true,
-        ensureConfigPath = ensureDirectory
-    } = params;
+    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, allowDangerousPermissions = true, ensureConfigPath = ensureDirectory } = params;
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     ensureConfigPath(configPath);
     const envVars = buildEnvVars(config);
