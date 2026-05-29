@@ -1629,6 +1629,19 @@ describe('config route follow-up helpers', () => {
         ]);
     });
 
+    test('parseOpenCodeOutputToConversationResult buffers stored delta output', () => {
+        const result = parseOpenCodeOutputToConversationResult([
+            '{"type":"delta","sessionID":"session-a","timestamp":"2026-05-05T00:00:00.000Z","delta":"Hello "}',
+            '{"type":"delta","sessionID":"session-a","timestamp":"2026-05-05T00:00:01.000Z","delta":"world"}',
+            '{"type":"message","sessionID":"session-a","timestamp":"2026-05-05T00:00:02.000Z","message":{"role":"assistant","content":"Done"}}',
+        ].join('\n'));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'Hello world', timestamp: '2026-05-05T00:00:00.000Z' },
+            { type: 'thought', content: 'Done', timestamp: '2026-05-05T00:00:02.000Z' },
+        ]);
+    });
+
     test('parseOpenCodeOutputToConversationResult avoids duplicate aggregate and part text', () => {
         const result = parseOpenCodeOutputToConversationResult(
             '{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"Duplicated","parts":[{"type":"text","text":"Duplicated"}]}}\n'
@@ -1646,6 +1659,18 @@ describe('config route follow-up helpers', () => {
         assert.deepStrictEqual(parsed.parsed?.events, [
             { type: 'thought', content: 'OpenCode says hi', timestamp: parsed.parsed?.events[0].timestamp },
         ]);
+    });
+
+    test('parseStoredOutputContent parses OpenCode result-only usage output', () => {
+        const parsed = parseStoredOutputContent('{"type":"result","usage":{"input_tokens":10,"output_tokens":3}}\n');
+
+        assert.strictEqual(parsed.format, 'opencode');
+        assert.deepStrictEqual(parsed.parsed?.tokenUsage, {
+            input_tokens: 10,
+            output_tokens: 3,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
     });
 
     test('parseStoredOutputContent parses top-level OpenCode text stream output', () => {
@@ -1792,6 +1817,40 @@ describe('config route follow-up helpers', () => {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
         });
+    });
+
+    test('parseRedisOutput parses OpenCode result-only usage without a session ID', () => {
+        const result = parseRedisOutput([
+            '{"type":"result","usage":{"input_tokens":10,"output_tokens":3}}',
+        ]);
+
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 10,
+            output_tokens: 3,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
+    });
+
+    test('parseRedisOutput leaves Gemini tool events with stats on the Gemini path', () => {
+        const result = parseRedisOutput([
+            '{"type":"tool_use","tool_name":"Shell","tool_id":"tool-1","parameters":{"command":"npm test"},"stats":{"input_tokens":10}}',
+        ]);
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'tool_use', toolName: 'Shell', input: { command: 'npm test' }, id: 'tool-1', timestamp: result.events[0].timestamp },
+        ]);
+        assert.strictEqual(result.tokenUsage, null);
+    });
+
+    test('parseRedisOutput normalizes numeric OpenCode timestamps to strings', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","timestamp":1777939200000,"message":{"role":"assistant","content":"hi"}}',
+        ]);
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'thought', content: 'hi', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
     });
 
     test('parseRedisOutput avoids duplicate OpenCode aggregate and part text', () => {

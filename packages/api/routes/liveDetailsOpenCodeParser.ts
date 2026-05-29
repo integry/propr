@@ -16,17 +16,34 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
   const events: Array<Record<string, unknown>> = [];
   const timestamp = new Date().toISOString();
   let hasAssistantMessageEvents = false;
+  let pendingAssistantMessage = '';
+  let pendingAssistantTimestamp: string | null = null;
+  const flushPendingAssistantMessage = (fallbackTimestamp: string): void => {
+    if (!pendingAssistantMessage) return;
+    hasAssistantMessageEvents = true;
+    events.push({ type: 'thought', content: pendingAssistantMessage, timestamp: pendingAssistantTimestamp ?? fallbackTimestamp });
+    pendingAssistantMessage = '';
+    pendingAssistantTimestamp = null;
+  };
   for (const event of parsed.conversationLog) {
     const eventTimestamp = getOpenCodeEventTimestamp(event, timestamp);
     const assistantMessage = extractOpenCodeAssistantMessage(event);
     if (assistantMessage) {
-      hasAssistantMessageEvents = true;
-      events.push({ type: 'thought', content: assistantMessage, timestamp: eventTimestamp });
+      if (isOpenCodeStreamingTextEvent(event)) {
+        pendingAssistantMessage += assistantMessage;
+        pendingAssistantTimestamp ??= eventTimestamp;
+      } else {
+        flushPendingAssistantMessage(eventTimestamp);
+        hasAssistantMessageEvents = true;
+        events.push({ type: 'thought', content: assistantMessage, timestamp: eventTimestamp });
+      }
     }
     if (event.type?.toLowerCase() === 'error' || event.error) {
+      flushPendingAssistantMessage(eventTimestamp);
       events.push({ type: 'tool_result', result: extractOpenCodeEventError(event), isError: true, timestamp: eventTimestamp });
     }
   }
+  flushPendingAssistantMessage(timestamp);
   if (!hasAssistantMessageEvents && parsed.summary) events.push({ type: 'thought', content: parsed.summary, timestamp });
   if (parsed.error && !events.some(event => event.type === 'tool_result' && event.result === parsed.error)) {
     events.push({ type: 'tool_result', result: parsed.error, isError: true, timestamp });
@@ -42,20 +59,40 @@ function getOpenCodeEventTimestamp(event: OpenCodeEvent, fallback: string): stri
 }
 
 function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
+  const topLevelPartsText = joinOpenCodePartsText([
+    ...(event.part ? [event.part] : []),
+    ...(event.parts ?? []),
+  ], false);
+  if (topLevelPartsText) return topLevelPartsText;
   const message = event.message;
   if (message?.role === 'assistant') {
     const text = message.parts?.length
-      ? joinOpenCodeTextValues(message.parts.flatMap(part => [part.text, part.delta, part.content]))
+      ? joinOpenCodePartsText(message.parts)
       : joinOpenCodeTextValues([message.text, message.delta, message.content]);
     return text || null;
   }
   if (!event.type || !['text', 'delta', 'completion'].includes(event.type.toLowerCase())) return null;
-  const text = joinOpenCodeTextValues([event.text, event.delta, event.content]);
+  const text = joinOpenCodeTextValues([event.text, event.delta, event.content], !isOpenCodeStreamingTextEvent(event));
   return text || null;
 }
 
-function joinOpenCodeTextValues(values: unknown[]): string {
-  return values.filter((value): value is string => typeof value === 'string' && value.length > 0).join('').trim();
+function isOpenCodeStreamingTextEvent(event: OpenCodeEvent): boolean {
+  const type = event.type?.toLowerCase();
+  return type === 'delta' || Boolean(event.part || event.parts?.length);
+}
+
+function joinOpenCodePartsText(parts: Array<{ type?: string; text?: string; delta?: string; content?: unknown }>, trim = true): string {
+  const values = parts.flatMap(part => {
+    const partType = part.type?.toLowerCase();
+    if (partType && !['text', 'assistant_text', 'message', 'completion'].includes(partType)) return [];
+    return [part.text, part.delta, part.content];
+  });
+  return joinOpenCodeTextValues(values, trim);
+}
+
+function joinOpenCodeTextValues(values: unknown[], trim = true): string {
+  const text = values.filter((value): value is string => typeof value === 'string' && value.length > 0).join('');
+  return trim ? text.trim() : text;
 }
 
 function extractOpenCodeEventError(event: OpenCodeEvent): string {

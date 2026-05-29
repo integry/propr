@@ -276,7 +276,7 @@ function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): vo
     }
 }
 
-export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; text?: unknown; content?: unknown; delta?: unknown }): boolean {
+export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; text?: unknown; content?: unknown; delta?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }): boolean {
     const type = typeof event.type === 'string' ? event.type.toLowerCase() : undefined;
     const message = event.message && typeof event.message === 'object'
         ? event.message as { role?: unknown; parts?: unknown[] }
@@ -289,7 +289,12 @@ export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknow
         || event.parts?.length
         || message?.parts?.length
         || (type && ['text', 'delta', 'completion'].includes(type) && hasOpenCodeTextField(event))
+        || (type === 'result' && hasOpenCodeResultUsage(event))
     );
+}
+
+function hasOpenCodeResultUsage(event: { usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }): boolean {
+    return Boolean(normalizeOpenCodeUsage(event.usage) || normalizeOpenCodeUsage(event.stats) || normalizeOpenCodeUsage(event.tokens));
 }
 
 export function normalizeOpenCodeUsage(usage: OpenCodeUsage | undefined): NormalizedOpenCodeUsage | undefined {

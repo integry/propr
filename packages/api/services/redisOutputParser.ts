@@ -216,16 +216,7 @@ function processOpenCodeEvent(
 }
 
 function isOpenCodeEvent(event: Parameters<typeof processOpenCodeEvent>[0]): boolean {
-  const type = event.type?.toLowerCase();
-  return Boolean(
-    isOpenCodeJsonlEvent(event)
-    || (type && ['delta', 'text', 'completion'].includes(type))
-    || event.usage
-    || event.stats
-    || event.tokens
-    || event.message?.usage
-    || event.response?.usage
-  );
+  return isOpenCodeJsonlEvent(event);
 }
 
 function extractOpenCodeAssistantText(event: Parameters<typeof processOpenCodeEvent>[0]): string {
@@ -361,7 +352,7 @@ function flushPendingMessage(state: ParseState, timestamp: string): void {
 function parseLine(line: string, state: ParseState): void {
   try {
     const event = JSON.parse(line);
-    const timestamp = event.timestamp || new Date().toISOString();
+    const timestamp = normalizeEventTimestamp(event.timestamp);
 
     // Try Codex event processing first
     if (!processCodexEvent(event, timestamp, state)) {
@@ -372,6 +363,12 @@ function parseLine(line: string, state: ParseState): void {
   } catch {
     // Skip non-JSON lines
   }
+}
+
+function normalizeEventTimestamp(timestamp: unknown): string {
+  if (typeof timestamp === 'string') return timestamp;
+  if (typeof timestamp === 'number') return new Date(timestamp).toISOString();
+  return new Date().toISOString();
 }
 
 /**

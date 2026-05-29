@@ -183,6 +183,9 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', message: { parts: [] } }), false);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionId: 'session-a', message: { role: 'assistant', content: 'hello' } }), true);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'text', text: 'OpenCode text' }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', usage: { input_tokens: 10 } }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', stats: { input_tokens: 10 } }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'tool_use', stats: { input_tokens: 10 } }), false);
     });
 });
 

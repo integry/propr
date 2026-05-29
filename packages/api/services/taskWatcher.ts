@@ -475,7 +475,7 @@ export class TaskWatcherManager {
         const state = JSON.parse(stateData) as {
           history: Array<{ state: string; metadata?: { sessionId?: string } }>
         };
-        const entry = state.history.find(
+        const entry = [...state.history].reverse().find(
           h => LIVE_EXECUTION_STATES.has(h.state) && h.metadata?.sessionId
         );
         if (entry?.metadata?.sessionId) {
