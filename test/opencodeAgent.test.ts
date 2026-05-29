@@ -1,9 +1,9 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
-import { buildOpenCodeDockerArgs, parseOpenCodeJsonl } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
-import type { AgentConfig } from '../packages/core/src/agents/types.js';
+import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.js';
 
 after(async () => {
     await closeConnection();
@@ -23,7 +23,7 @@ function createAgent(): OpenCodeAgent {
     return new OpenCodeAgent(config);
 }
 
-function parseOutput(output: string): { summary?: string; modelUsed?: string; sessionId?: string; error?: string } {
+function parseOutput(output: string): { summary?: string; modelUsed?: string; sessionId?: string; error?: string; tokenUsage?: TokenUsage } {
     return parseOpenCodeJsonl(output);
 }
 
@@ -124,6 +124,36 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(parsed.modelUsed, undefined);
         assert.strictEqual(parsed.sessionId, undefined);
         assert.strictEqual(parsed.error, undefined);
+    });
+
+    test('normalizes token usage from common output shapes', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'result', usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 10 } }),
+            JSON.stringify({ type: 'result', stats: { inputTokens: 90, outputTokens: 30, cacheCreationInputTokens: 5 } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 100,
+            output_tokens: 30,
+            cache_creation_input_tokens: 5,
+            cache_read_input_tokens: 10
+        });
+    });
+});
+
+describe('OpenCodeAgent prompt building', () => {
+    test('includes system instructions, safety rules, and retry context', () => {
+        const prompt = buildOpenCodePrompt({
+            customPrompt: 'Implement the change.',
+            issueRef: { repoOwner: 'integry', repoName: 'propr', number: 1482 },
+            systemPrompt: 'Use the local conventions.',
+            isRetry: true,
+            retryReason: 'tests failed'
+        });
+
+        assert.match(prompt, /SYSTEM INSTRUCTIONS:\nUse the local conventions\./);
+        assert.match(prompt, /CRITICAL GIT SAFETY RULES/);
+        assert.match(prompt, /RETRY CONTEXT/);
     });
 });
 

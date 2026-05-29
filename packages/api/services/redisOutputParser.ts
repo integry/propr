@@ -160,6 +160,125 @@ function processGeminiEvent(
 }
 
 /**
+ * Process OpenCode JSON stream events.
+ */
+function processOpenCodeEvent(
+  event: {
+    type?: string;
+    timestamp?: string | number;
+    sessionID?: string;
+    part?: { type?: string; text?: string; content?: unknown; delta?: string };
+    parts?: Array<{ type?: string; text?: string; content?: unknown; delta?: string }>;
+    message?: { role?: string; content?: unknown; text?: string; delta?: string; parts?: Array<{ type?: string; text?: string; content?: unknown; delta?: string }> };
+    error?: string | { message?: string; name?: string; data?: { message?: string } };
+    usage?: Record<string, unknown>;
+    stats?: Record<string, unknown>;
+    tokens?: Record<string, unknown>;
+  },
+  timestamp: string,
+  state: ParseState
+): boolean {
+  if (!isOpenCodeEvent(event)) return false;
+  const type = event.type?.toLowerCase();
+  const assistantText = extractOpenCodeAssistantText(event);
+  if (assistantText) {
+    if (type === 'delta' || event.part || event.parts?.length) {
+      state.pendingAssistantMessage += assistantText;
+    } else {
+      flushPendingMessage(state, timestamp);
+      state.events.push({ type: 'thought' as const, content: assistantText, timestamp });
+    }
+  }
+
+  if (type === 'error' || event.error) {
+    flushPendingMessage(state, timestamp);
+    state.events.push({
+      type: 'tool_result' as const,
+      result: extractOpenCodeError(event.error),
+      isError: true,
+      timestamp
+    });
+  }
+
+  applyOpenCodeRedisUsage(state, event.usage);
+  applyOpenCodeRedisUsage(state, event.stats);
+  applyOpenCodeRedisUsage(state, event.tokens);
+  return true;
+}
+
+function isOpenCodeEvent(event: Parameters<typeof processOpenCodeEvent>[0]): boolean {
+  const type = event.type?.toLowerCase();
+  return Boolean(
+    event.sessionID
+    || event.part
+    || event.parts?.length
+    || event.message
+    || type === 'delta'
+    || type === 'text'
+    || type === 'completion'
+    || event.usage
+    || event.tokens
+  );
+}
+
+function extractOpenCodeAssistantText(event: Parameters<typeof processOpenCodeEvent>[0]): string {
+  const parts: string[] = [];
+  addOpenCodeTextPart(parts, event.part);
+  for (const part of event.parts || []) addOpenCodeTextPart(parts, part);
+  if (event.message?.role === 'assistant') {
+    addOpenCodeTextContainer(parts, event.message);
+    for (const part of event.message.parts || []) addOpenCodeTextPart(parts, part);
+  }
+  if (!parts.length && event.type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(event.type.toLowerCase())) {
+    addOpenCodeTextContainer(parts, event as { text?: string; content?: unknown; delta?: string });
+  }
+  return parts.join('');
+}
+
+function addOpenCodeTextPart(parts: string[], part?: { type?: string; text?: string; content?: unknown; delta?: string }): void {
+  if (!part) return;
+  const partType = part.type?.toLowerCase();
+  if (partType && !['text', 'assistant_text', 'message', 'completion'].includes(partType)) return;
+  addOpenCodeTextContainer(parts, part);
+}
+
+function addOpenCodeTextContainer(parts: string[], container?: { text?: string; content?: unknown; delta?: string }): void {
+  if (!container) return;
+  const added = new Set<string>();
+  for (const value of [container.text, container.delta, container.content]) {
+    if (typeof value === 'string' && value && !added.has(value)) {
+      parts.push(value);
+      added.add(value);
+    }
+  }
+}
+
+function extractOpenCodeError(error: Parameters<typeof processOpenCodeEvent>[0]['error']): string {
+  if (typeof error === 'string') return error;
+  return error?.data?.message || error?.message || error?.name || 'OpenCode execution failed';
+}
+
+function applyOpenCodeRedisUsage(state: ParseState, usage?: Record<string, unknown>): void {
+  if (!usage) return;
+  const inputTokens = firstUsageNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'input', 'prompt']);
+  const outputTokens = firstUsageNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens', 'output', 'completion']);
+  const cacheCreationTokens = firstUsageNumber(usage, ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cacheCreationTokens']);
+  const cacheReadTokens = firstUsageNumber(usage, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cached_input_tokens', 'cachedInputTokens', 'cacheReadTokens']);
+  state.tokenUsage.input_tokens = Math.max(state.tokenUsage.input_tokens, inputTokens ?? 0);
+  state.tokenUsage.output_tokens = Math.max(state.tokenUsage.output_tokens, outputTokens ?? 0);
+  state.tokenUsage.cache_creation_input_tokens = Math.max(state.tokenUsage.cache_creation_input_tokens, cacheCreationTokens ?? 0);
+  state.tokenUsage.cache_read_input_tokens = Math.max(state.tokenUsage.cache_read_input_tokens, cacheReadTokens ?? 0);
+}
+
+function firstUsageNumber(usage: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = usage[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+/**
  * Flush pending assistant message to events
  */
 function flushPendingMessage(state: ParseState, timestamp: string): void {
@@ -179,8 +298,9 @@ function parseLine(line: string, state: ParseState): void {
 
     // Try Codex event processing first
     if (!processCodexEvent(event, timestamp, state)) {
-      // Fall back to Gemini event processing
-      processGeminiEvent(event, timestamp, state);
+      if (!processOpenCodeEvent(event, timestamp, state)) {
+        processGeminiEvent(event, timestamp, state);
+      }
     }
   } catch {
     // Skip non-JSON lines
@@ -188,7 +308,7 @@ function parseLine(line: string, state: ParseState): void {
 }
 
 /**
- * Parse Redis output (Codex NDJSON or Gemini JSONL format)
+ * Parse Redis output (Codex, Gemini, or OpenCode JSONL format)
  */
 export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
   const state: ParseState = {

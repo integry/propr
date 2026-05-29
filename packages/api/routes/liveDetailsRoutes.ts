@@ -14,6 +14,7 @@ import {
   parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult,
+  parseOpenCodeOutputToConversationResult,
   type ClaudeMessageContent,
   type ClaudeMessageContext,
   type ConversationResult,
@@ -23,7 +24,7 @@ import {
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 interface HistoryEntryWithSessionMetadata { state?: string; metadata?: { sessionId?: string }; }
-const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution']);
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'opencode_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
@@ -151,8 +152,8 @@ export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSes
 interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
 interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
-interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; session_id?: string; conversation_id?: string; item?: unknown; }
-export type StoredOutputFormat = 'claude' | 'codex' | 'unknown';
+interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; sessionID?: string; session_id?: string; conversation_id?: string; item?: unknown; part?: unknown; parts?: unknown[]; }
+export type StoredOutputFormat = 'claude' | 'codex' | 'opencode' | 'unknown';
 export interface ParsedStoredOutput {
   parsed: ConversationResult | null;
   rawFallback: ConversationResult | null;
@@ -219,6 +220,12 @@ export function parseStoredOutputContent(output: string): ParsedStoredOutput {
     const parsed = parseCodexOutputToConversationResult(output);
     return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
   }
+  if (format === 'opencode') {
+    const parsed = parseOpenCodeOutputToConversationResult(output);
+    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
+  }
+  const opencodeParsed = parseOpenCodeOutputToConversationResult(output);
+  if (!isConversationResultEmpty(opencodeParsed)) return { parsed: opencodeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'opencode' };
   const codexParsed = parseCodexOutputToConversationResult(output);
   if (!isConversationResultEmpty(codexParsed)) return { parsed: codexParsed, rawFallback: buildRawOutputConversationResult(output), format: 'codex' };
   const claudeParsed = parseClaudeOutputToConversationResult(output);
@@ -230,6 +237,10 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   if (!firstLine) return 'unknown';
   try {
     const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
+    const type = parsed.type?.toLowerCase();
+    if (parsed.sessionID || parsed.part || parsed.parts || (type === 'message' && typeof parsed.message === 'object' && parsed.message !== null)) {
+      return 'opencode';
+    }
     if (parsed.type === 'message'
       || parsed.type === 'tool_use'
       || parsed.type === 'error'
