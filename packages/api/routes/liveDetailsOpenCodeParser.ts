@@ -128,39 +128,25 @@ function appendOpenCodeToolEvent(events: Array<Record<string, unknown>>, source:
   if (!source?.type) return;
   const type = source.type.toLowerCase();
   const sourceWithState = source as OpenCodeToolSource;
-  if (['tool_use', 'tool', 'tool_call'].includes(type)) {
-    events.push({
-      type: 'tool_use',
-      toolName: source.tool_name || source.tool || source.name,
-      input: source.parameters || source.input || source.args || sourceWithState.state?.input,
-      id: source.tool_id || sourceWithState.callID || source.id,
-      timestamp
-    });
-    if (type === 'tool' && sourceWithState.state && ['completed', 'error'].includes(sourceWithState.state.status ?? '')) {
-      events.push({
-        type: 'tool_result',
-        toolUseId: source.tool_id || sourceWithState.callID || source.id,
-        result: extractOpenCodeToolResult(sourceWithState),
-        isError: isOpenCodeToolStateError(sourceWithState),
-        timestamp
-      });
-    }
+  if (isOpenCodeToolResultType(type)) {
+    appendOpenCodeToolResultEvent(events, sourceWithState, timestamp);
     return;
   }
-  if (['tool_result', 'tool_response'].includes(type)) {
-    events.push({
-      type: 'tool_result',
-      toolUseId: source.tool_id || source.id,
-      result: source.output || source.result,
-      isError: source.status === 'error',
-      timestamp
-    });
-  }
+  if (!isOpenCodeToolUseType(type)) return;
+  events.push(buildOpenCodeToolUseEvent(sourceWithState, timestamp));
+  if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp);
 }
 
 interface OpenCodeToolSource {
   id?: string;
   callID?: string;
+  tool_id?: string;
+  tool?: string;
+  tool_name?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
+  args?: Record<string, unknown>;
   output?: string;
   result?: string;
   status?: string;
@@ -171,6 +157,49 @@ interface OpenCodeToolSource {
     error?: unknown;
     metadata?: { output?: string; exit?: number };
   };
+}
+
+function isOpenCodeToolUseType(type: string): boolean {
+  return ['tool_use', 'tool', 'tool_call'].includes(type);
+}
+
+function isOpenCodeToolResultType(type: string): boolean {
+  return ['tool_result', 'tool_response'].includes(type);
+}
+
+function buildOpenCodeToolUseEvent(source: OpenCodeToolSource, timestamp: string): Record<string, unknown> {
+  return {
+    type: 'tool_use',
+    toolName: source.tool_name || source.tool || source.name,
+    input: source.parameters || source.input || source.args || source.state?.input,
+    id: getOpenCodeToolId(source),
+    timestamp
+  };
+}
+
+function appendOpenCodeCompletedToolResult(events: Array<Record<string, unknown>>, source: OpenCodeToolSource, timestamp: string): void {
+  if (!source.state || !['completed', 'error'].includes(source.state.status ?? '')) return;
+  events.push({
+    type: 'tool_result',
+    toolUseId: getOpenCodeToolId(source),
+    result: extractOpenCodeToolResult(source),
+    isError: isOpenCodeToolStateError(source),
+    timestamp
+  });
+}
+
+function appendOpenCodeToolResultEvent(events: Array<Record<string, unknown>>, source: OpenCodeToolSource, timestamp: string): void {
+  events.push({
+    type: 'tool_result',
+    toolUseId: getOpenCodeToolId(source),
+    result: source.output || source.result,
+    isError: source.status === 'error',
+    timestamp
+  });
+}
+
+function getOpenCodeToolId(source: OpenCodeToolSource): string | undefined {
+  return source.tool_id || source.callID || source.id;
 }
 
 function extractOpenCodeToolResult(source: OpenCodeToolSource): string {
