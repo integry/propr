@@ -1629,12 +1629,35 @@ describe('config route follow-up helpers', () => {
         ]);
     });
 
+    test('parseOpenCodeOutputToConversationResult avoids duplicate aggregate and part text', () => {
+        const result = parseOpenCodeOutputToConversationResult(
+            '{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"Duplicated","parts":[{"type":"text","text":"Duplicated"}]}}\n'
+        );
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'Duplicated', timestamp: result?.events[0].timestamp },
+        ]);
+    });
+
     test('parseStoredOutputContent parses strongly identified OpenCode output', () => {
         const parsed = parseStoredOutputContent('{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"OpenCode says hi"}}\n');
 
         assert.strictEqual(parsed.format, 'opencode');
         assert.deepStrictEqual(parsed.parsed?.events, [
             { type: 'thought', content: 'OpenCode says hi', timestamp: parsed.parsed?.events[0].timestamp },
+        ]);
+    });
+
+    test('parseStoredOutputContent parses top-level OpenCode text stream output', () => {
+        const parsed = parseStoredOutputContent([
+            '{"type":"text","text":"OpenCode top-level","timestamp":"2026-05-05T00:00:00.000Z"}',
+            '{"type":"error","sessionID":"session-a","error":{"message":"boom"},"timestamp":"2026-05-05T00:00:01.000Z"}',
+        ].join('\n'));
+
+        assert.strictEqual(parsed.format, 'opencode');
+        assert.deepStrictEqual(parsed.parsed?.events, [
+            { type: 'thought', content: 'OpenCode top-level', timestamp: '2026-05-05T00:00:00.000Z' },
+            { type: 'tool_result', result: 'boom', isError: true, timestamp: '2026-05-05T00:00:01.000Z' },
         ]);
     });
 
@@ -1697,6 +1720,10 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(detectStoredOutputFormat('{"type":"message","message":{"content":"generic"}}\n'), 'codex');
     });
 
+    test('detectStoredOutputFormat does not treat generic sessionId envelopes as OpenCode', () => {
+        assert.strictEqual(detectStoredOutputFormat('{"type":"message","sessionId":"generic-session","message":{"content":"generic"}}\n'), 'codex');
+    });
+
     test('parseRedisOutput preserves cache-only OpenCode token usage', () => {
         const result = parseRedisOutput([
             '{"type":"message","sessionID":"session-a","usage":{"cache_creation_input_tokens":4,"cache_read_input_tokens":6}}',
@@ -1722,6 +1749,59 @@ describe('config route follow-up helpers', () => {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 4,
         });
+    });
+
+    test('parseRedisOutput reads nested OpenCode token usage', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"hi","usage":{"input_tokens":4,"output_tokens":2}}}',
+            '{"type":"message","sessionID":"session-a","response":{"usage":{"cache_read_input_tokens":3}}}',
+        ]);
+
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 4,
+            output_tokens: 2,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 3,
+        });
+    });
+
+    test('parseRedisOutput does not overcount cumulative OpenCode usage snapshots', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","usage":{"input_tokens":10,"output_tokens":2}}',
+            '{"type":"message","sessionID":"session-a","usage":{"input_tokens":18,"output_tokens":5,"cache_read_input_tokens":4}}',
+        ]);
+
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 18,
+            output_tokens: 5,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 4,
+        });
+    });
+
+    test('parseRedisOutput does not double count final top-level usage after nested usage', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"one","usage":{"input_tokens":10,"output_tokens":2}}}',
+            '{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"two","usage":{"input_tokens":8,"output_tokens":3}}}',
+            '{"type":"result","sessionID":"session-a","usage":{"input_tokens":18,"output_tokens":5}}',
+        ]);
+
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 18,
+            output_tokens: 5,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
+    });
+
+    test('parseRedisOutput avoids duplicate OpenCode aggregate and part text', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"Duplicated","parts":[{"type":"text","text":"Duplicated"}]}}',
+        ]);
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'thought', content: 'Duplicated', timestamp: result.events[0].timestamp },
+        ]);
     });
 
     test('appendClaudeUserMessageEvents omits object content from subagent summaries', () => {

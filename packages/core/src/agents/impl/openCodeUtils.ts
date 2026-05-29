@@ -80,6 +80,7 @@ interface OpenCodeParseState {
     modelUsed?: string;
     error?: string;
     tokenUsage: TokenUsage;
+    lastTopLevelUsage?: TokenUsage;
     streamTextParts: string[];
     assistantMessages: string[];
 }
@@ -249,29 +250,45 @@ function applyOpenCodeModel(event: OpenCodeEvent, state: OpenCodeParseState): vo
 }
 
 function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): void {
-    const eventUsage: TokenUsage = {};
+    const topLevelUsage: TokenUsage = {};
+    const nestedUsage: TokenUsage = {};
     for (const usage of [
         normalizeOpenCodeUsage(event.usage),
         normalizeOpenCodeUsage(event.stats),
-        normalizeOpenCodeUsage(event.tokens),
+        normalizeOpenCodeUsage(event.tokens)
+    ]) {
+        if (usage) mergeOpenCodeUsageByMax(topLevelUsage, usage);
+    }
+    for (const usage of [
         normalizeOpenCodeUsage(event.message?.usage),
         normalizeOpenCodeUsage(event.response?.usage)
     ]) {
-        if (usage) mergeOpenCodeUsageByMax(eventUsage, usage);
+        if (usage) mergeOpenCodeUsageByMax(nestedUsage, usage);
     }
-    if (hasOpenCodeTokenUsage(eventUsage)) addOpenCodeUsage(state.tokenUsage, eventUsage);
+    if (hasOpenCodeTokenUsage(nestedUsage)) addOpenCodeUsage(state.tokenUsage, nestedUsage);
+    if (hasOpenCodeTokenUsage(topLevelUsage)) {
+        if (isCumulativeOpenCodeUsageSnapshot(topLevelUsage, state.lastTopLevelUsage) || (!state.lastTopLevelUsage && hasOpenCodeTokenUsage(state.tokenUsage))) {
+            mergeOpenCodeUsageByMax(state.tokenUsage, topLevelUsage);
+        } else {
+            addOpenCodeUsage(state.tokenUsage, topLevelUsage);
+        }
+        state.lastTopLevelUsage = topLevelUsage;
+    }
 }
 
-export function isOpenCodeJsonlEvent(event: { sessionID?: unknown; sessionId?: unknown; part?: unknown; parts?: unknown[]; message?: unknown }): boolean {
+export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; text?: unknown; content?: unknown; delta?: unknown }): boolean {
+    const type = typeof event.type === 'string' ? event.type.toLowerCase() : undefined;
     const message = event.message && typeof event.message === 'object'
-        ? event.message as { parts?: unknown[] }
+        ? event.message as { role?: unknown; parts?: unknown[] }
         : null;
     return Boolean(
         event.sessionID
-        || event.sessionId
+        || event.session_id
+        || (event.sessionId && message?.role === 'assistant')
         || event.part
         || event.parts?.length
         || message?.parts?.length
+        || (type && ['text', 'delta', 'completion'].includes(type) && hasOpenCodeTextField(event))
     );
 }
 
@@ -305,6 +322,19 @@ function mergeOpenCodeUsageByMax(target: TokenUsage, usage: NormalizedOpenCodeUs
     setTokenUsageField(target, 'cache_read_input_tokens', Math.max(target.cache_read_input_tokens ?? 0, usage.cache_read_input_tokens ?? 0));
 }
 
+function isCumulativeOpenCodeUsageSnapshot(current: TokenUsage, previous?: TokenUsage): boolean {
+    if (!previous || !hasOpenCodeTokenUsage(previous)) return false;
+    const fields: Array<keyof TokenUsage> = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'];
+    let hasIncrease = false;
+    for (const field of fields) {
+        const currentValue = current[field] ?? 0;
+        const previousValue = previous[field] ?? 0;
+        if (currentValue < previousValue) return false;
+        if (currentValue > previousValue) hasIncrease = true;
+    }
+    return hasIncrease;
+}
+
 function addOpenCodeUsage(target: TokenUsage, usage: TokenUsage): void {
     setTokenUsageField(target, 'input_tokens', (target.input_tokens ?? 0) + (usage.input_tokens ?? 0));
     setTokenUsageField(target, 'output_tokens', (target.output_tokens ?? 0) + (usage.output_tokens ?? 0));
@@ -329,6 +359,10 @@ export function hasOpenCodeTokenUsage(usage: TokenUsage | NormalizedOpenCodeUsag
     );
 }
 
+function hasOpenCodeTextField(event: { text?: unknown; content?: unknown; delta?: unknown }): boolean {
+    return typeof event.text === 'string' || typeof event.content === 'string' || typeof event.delta === 'string';
+}
+
 function buildOpenCodeSummary(state: OpenCodeParseState): string | undefined {
     const lastAssistantMessage = state.assistantMessages.at(-1)?.trim();
     if (lastAssistantMessage) return lastAssistantMessage;
@@ -343,8 +377,11 @@ function extractOpenCodeText(event: OpenCodeEvent): ExtractedOpenCodeText {
     const hasEventParts = Boolean(event.part || event.parts?.length);
     const assistantMessage = event.message?.role === 'assistant' ? event.message : undefined;
     if (assistantMessage) {
-        addTextContainer(messageParts, assistantMessage);
-        addPartsText(messageParts, assistantMessage.parts);
+        if (assistantMessage.parts?.length) {
+            addPartsText(messageParts, assistantMessage.parts);
+        } else {
+            addTextContainer(messageParts, assistantMessage);
+        }
     }
     if (!hasEventParts && !assistantMessage && isAssistantTextEvent(event)) {
         addTextContainer(streamParts, event);

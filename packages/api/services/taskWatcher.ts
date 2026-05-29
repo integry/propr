@@ -10,6 +10,8 @@ import { parseConversationFile } from './conversationParser.js';
 import { parseRedisOutput } from './redisOutputParser.js';
 import { loadAgents, resolveConfigPath, type AgentConfig } from '@propr/core';
 
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'opencode_execution']);
+
 /** Active task watcher info */
 export interface TaskWatcherInfo {
   watcher: chokidar.FSWatcher | null;
@@ -474,7 +476,7 @@ export class TaskWatcherManager {
           history: Array<{ state: string; metadata?: { sessionId?: string } }>
         };
         const entry = state.history.find(
-          h => h.state === 'claude_execution' && h.metadata?.sessionId
+          h => LIVE_EXECUTION_STATES.has(h.state) && h.metadata?.sessionId
         );
         if (entry?.metadata?.sessionId) {
           return entry.metadata.sessionId;

@@ -15,7 +15,13 @@ interface ParseState {
   events: ConversationEvent[];
   todos: TodoItem[];
   tokenUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number };
+  lastOpenCodeTopLevelUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
   pendingAssistantMessage: string;
+}
+
+interface OpenCodeRedisEventUsage {
+  topLevel: ParseState['tokenUsage'];
+  nested: ParseState['tokenUsage'];
 }
 
 /** Max content length for truncation */
@@ -168,9 +174,12 @@ function processOpenCodeEvent(
     type?: string;
     timestamp?: string | number;
     sessionID?: string;
+    sessionId?: string;
+    session_id?: string;
     part?: { type?: string; text?: string; content?: unknown; delta?: string };
     parts?: Array<{ type?: string; text?: string; content?: unknown; delta?: string }>;
-    message?: { role?: string; content?: unknown; text?: string; delta?: string; parts?: Array<{ type?: string; text?: string; content?: unknown; delta?: string }> };
+    message?: { role?: string; content?: unknown; text?: string; delta?: string; parts?: Array<{ type?: string; text?: string; content?: unknown; delta?: string }>; usage?: Record<string, unknown> };
+    response?: { content?: unknown; text?: string; delta?: string; usage?: Record<string, unknown> };
     error?: string | { message?: string; name?: string; data?: { message?: string } };
     usage?: Record<string, unknown>;
     stats?: Record<string, unknown>;
@@ -212,7 +221,10 @@ function isOpenCodeEvent(event: Parameters<typeof processOpenCodeEvent>[0]): boo
     isOpenCodeJsonlEvent(event)
     || (type && ['delta', 'text', 'completion'].includes(type))
     || event.usage
+    || event.stats
     || event.tokens
+    || event.message?.usage
+    || event.response?.usage
   );
 }
 
@@ -221,8 +233,11 @@ function extractOpenCodeAssistantText(event: Parameters<typeof processOpenCodeEv
   addOpenCodeTextPart(parts, event.part);
   for (const part of event.parts || []) addOpenCodeTextPart(parts, part);
   if (event.message?.role === 'assistant') {
-    addOpenCodeTextContainer(parts, event.message);
-    for (const part of event.message.parts || []) addOpenCodeTextPart(parts, part);
+    if (event.message.parts?.length) {
+      for (const part of event.message.parts) addOpenCodeTextPart(parts, part);
+    } else {
+      addOpenCodeTextContainer(parts, event.message);
+    }
   }
   if (!parts.length && event.type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(event.type.toLowerCase())) {
     addOpenCodeTextContainer(parts, event as { text?: string; content?: unknown; delta?: string });
@@ -253,17 +268,26 @@ function extractOpenCodeError(error: Parameters<typeof processOpenCodeEvent>[0][
   return error?.data?.message || error?.message || error?.name || 'OpenCode execution failed';
 }
 
-function buildOpenCodeRedisEventUsage(event: Parameters<typeof processOpenCodeEvent>[0]): ParseState['tokenUsage'] | null {
-  const eventUsage: ParseState['tokenUsage'] = {
+function buildOpenCodeRedisEventUsage(event: Parameters<typeof processOpenCodeEvent>[0]): OpenCodeRedisEventUsage | null {
+  const topLevelUsage = emptyRedisTokenUsage();
+  const nestedUsage = emptyRedisTokenUsage();
+  mergeOpenCodeRedisUsageByMax(topLevelUsage, event.usage);
+  mergeOpenCodeRedisUsageByMax(topLevelUsage, event.stats);
+  mergeOpenCodeRedisUsageByMax(topLevelUsage, event.tokens);
+  mergeOpenCodeRedisUsageByMax(nestedUsage, event.message?.usage);
+  mergeOpenCodeRedisUsageByMax(nestedUsage, event.response?.usage);
+  return hasRedisTokenUsage(topLevelUsage) || hasRedisTokenUsage(nestedUsage)
+    ? { topLevel: topLevelUsage, nested: nestedUsage }
+    : null;
+}
+
+function emptyRedisTokenUsage(): ParseState['tokenUsage'] {
+  return {
     input_tokens: 0,
     output_tokens: 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0
   };
-  mergeOpenCodeRedisUsageByMax(eventUsage, event.usage);
-  mergeOpenCodeRedisUsageByMax(eventUsage, event.stats);
-  mergeOpenCodeRedisUsageByMax(eventUsage, event.tokens);
-  return hasRedisTokenUsage(eventUsage) ? eventUsage : null;
 }
 
 function mergeOpenCodeRedisUsageByMax(target: ParseState['tokenUsage'], usage?: Record<string, unknown>): void {
@@ -275,11 +299,43 @@ function mergeOpenCodeRedisUsageByMax(target: ParseState['tokenUsage'], usage?: 
   target.cache_read_input_tokens = Math.max(target.cache_read_input_tokens, normalized.cache_read_input_tokens ?? 0);
 }
 
-function addOpenCodeRedisUsage(state: ParseState, usage: ParseState['tokenUsage']): void {
-  state.tokenUsage.input_tokens += usage.input_tokens;
-  state.tokenUsage.output_tokens += usage.output_tokens;
-  state.tokenUsage.cache_creation_input_tokens += usage.cache_creation_input_tokens;
-  state.tokenUsage.cache_read_input_tokens += usage.cache_read_input_tokens;
+function addOpenCodeRedisUsage(state: ParseState, usage: OpenCodeRedisEventUsage): void {
+  if (hasRedisTokenUsage(usage.nested)) addRedisTokenUsage(state.tokenUsage, usage.nested);
+  if (hasRedisTokenUsage(usage.topLevel)) {
+    const previousUsage = state.lastOpenCodeTopLevelUsage;
+    if ((previousUsage && isCumulativeRedisUsageSnapshot(usage.topLevel, previousUsage)) || (!previousUsage && hasRedisTokenUsage(state.tokenUsage))) {
+      mergeRedisTokenUsageByMax(state.tokenUsage, usage.topLevel);
+    } else {
+      addRedisTokenUsage(state.tokenUsage, usage.topLevel);
+    }
+    state.lastOpenCodeTopLevelUsage = usage.topLevel;
+  }
+}
+
+function addRedisTokenUsage(target: ParseState['tokenUsage'], usage: ParseState['tokenUsage']): ParseState['tokenUsage'] {
+  target.input_tokens += usage.input_tokens;
+  target.output_tokens += usage.output_tokens;
+  target.cache_creation_input_tokens += usage.cache_creation_input_tokens;
+  target.cache_read_input_tokens += usage.cache_read_input_tokens;
+  return target;
+}
+
+function mergeRedisTokenUsageByMax(target: ParseState['tokenUsage'], usage: ParseState['tokenUsage']): void {
+  target.input_tokens = Math.max(target.input_tokens, usage.input_tokens);
+  target.output_tokens = Math.max(target.output_tokens, usage.output_tokens);
+  target.cache_creation_input_tokens = Math.max(target.cache_creation_input_tokens, usage.cache_creation_input_tokens);
+  target.cache_read_input_tokens = Math.max(target.cache_read_input_tokens, usage.cache_read_input_tokens);
+}
+
+function isCumulativeRedisUsageSnapshot(current: ParseState['tokenUsage'], previous: ParseState['tokenUsage'] | null): boolean {
+  if (!previous || !hasRedisTokenUsage(previous)) return false;
+  const fields: Array<keyof ParseState['tokenUsage']> = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'];
+  let hasIncrease = false;
+  for (const field of fields) {
+    if (current[field] < previous[field]) return false;
+    if (current[field] > previous[field]) hasIncrease = true;
+  }
+  return hasIncrease;
 }
 
 function hasRedisTokenUsage(usage: ParseState['tokenUsage']): boolean {
@@ -326,6 +382,7 @@ export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
     events: [],
     todos: [],
     tokenUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    lastOpenCodeTopLevelUsage: null,
     pendingAssistantMessage: ''
   };
 

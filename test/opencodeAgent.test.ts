@@ -1,7 +1,7 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
-import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, parseOpenCodeJsonl } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.js';
 
@@ -150,6 +150,39 @@ describe('OpenCodeAgent JSONL parsing', () => {
             output_tokens: 5,
             cache_read_input_tokens: 4
         });
+    });
+
+    test('does not overcount cumulative top-level usage snapshots', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'result', sessionID: 'session-a', usage: { input_tokens: 10, output_tokens: 2 } }),
+            JSON.stringify({ type: 'result', sessionID: 'session-a', usage: { input_tokens: 18, output_tokens: 5, cache_read_input_tokens: 4 } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 18,
+            output_tokens: 5,
+            cache_read_input_tokens: 4
+        });
+    });
+
+    test('does not double count final top-level usage after nested usage', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'first', usage: { input_tokens: 10, output_tokens: 2 } } }),
+            JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'second', usage: { input_tokens: 8, output_tokens: 3 } } }),
+            JSON.stringify({ type: 'result', sessionID: 'session-a', usage: { input_tokens: 18, output_tokens: 5 } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 18,
+            output_tokens: 5
+        });
+    });
+
+    test('keeps generic stream envelopes out of OpenCode detection', () => {
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionId: 'generic-session', message: { content: 'hello' } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', message: { parts: [] } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionId: 'session-a', message: { role: 'assistant', content: 'hello' } }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'text', text: 'OpenCode text' }), true);
     });
 });
 

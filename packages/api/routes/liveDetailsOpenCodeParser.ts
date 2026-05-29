@@ -43,10 +43,19 @@ function getOpenCodeEventTimestamp(event: OpenCodeEvent, fallback: string): stri
 
 function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
   const message = event.message;
-  if (message?.role !== 'assistant') return null;
-  const values = [message.text, message.delta, message.content, ...(message.parts || []).flatMap(part => [part.text, part.delta, part.content])];
-  const text = values.filter((value): value is string => typeof value === 'string' && value.length > 0).join('').trim();
+  if (message?.role === 'assistant') {
+    const text = message.parts?.length
+      ? joinOpenCodeTextValues(message.parts.flatMap(part => [part.text, part.delta, part.content]))
+      : joinOpenCodeTextValues([message.text, message.delta, message.content]);
+    return text || null;
+  }
+  if (!event.type || !['text', 'delta', 'completion'].includes(event.type.toLowerCase())) return null;
+  const text = joinOpenCodeTextValues([event.text, event.delta, event.content]);
   return text || null;
+}
+
+function joinOpenCodeTextValues(values: unknown[]): string {
+  return values.filter((value): value is string => typeof value === 'string' && value.length > 0).join('').trim();
 }
 
 function extractOpenCodeEventError(event: OpenCodeEvent): string {

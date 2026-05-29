@@ -28,7 +28,7 @@ export class OpenCodeAgent implements Agent {
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
-        let prompt = customPrompt ?? '';
+        let prompt: string | undefined;
 
         logger.info({ issueNumber: issueRef.number, repository: repo, worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason }, isRetry ? 'Starting OpenCode agent execution (RETRY)...' : 'Starting OpenCode agent execution...');
 
@@ -99,8 +99,9 @@ export class OpenCodeAgent implements Agent {
             const executionTime = Date.now() - startTime;
             const err = error as Error;
             logger.error({ issueNumber: issueRef.number, repository: repo, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during OpenCode agent execution');
-            const response: AgentExecutionResult = { success: false, error: err.message, executionTimeMs: executionTime, logs: (error as { stderr?: string }).stderr || err.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: effectiveModel || 'unknown', prompt };
-            await this.persistExecutionLogSafely({ response, executionTime, modelUsed: response.modelUsed, prompt, issueRef, taskId, prNumber, isRetry, retryReason });
+            const persistedPrompt = prompt ?? customPrompt ?? '';
+            const response: AgentExecutionResult = { success: false, error: err.message, executionTimeMs: executionTime, logs: (error as { stderr?: string }).stderr || err.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: effectiveModel || 'unknown', prompt: persistedPrompt };
+            await this.persistExecutionLogSafely({ response, executionTime, modelUsed: response.modelUsed, prompt: persistedPrompt, issueRef, taskId, prNumber, isRetry, retryReason });
             return response;
         }
     }
