@@ -115,7 +115,7 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.error, undefined);
     });
 
-    test('does not fail non-final text output because of a later diagnostic error event', () => {
+    test('marks JSON text output incomplete when no final event is present', () => {
         const output = [
             JSON.stringify({ type: 'message', text: 'Successful streamed response' }),
             JSON.stringify({ type: 'error', error: 'Stale diagnostic from retry' })
@@ -124,12 +124,12 @@ describe('parseVibeOutput', () => {
         const parsed = parseVibeOutput(output);
         assert.strictEqual(parsed.summary, 'Successful streamed response');
         assert.strictEqual(parsed.error, undefined);
-        assert.strictEqual(parsed.incomplete, undefined);
+        assert.strictEqual(parsed.incomplete, true);
     });
 });
 
 describe('VibeAgent Docker args', () => {
-    test('mounts prompt and config, sets model env, and enables repo setup wrapper', (t) => {
+    test('mounts prompt and config, sets model env, and skips repo setup for analysis', (t) => {
         const configPath = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-config-test-'));
         fs.writeFileSync(path.join(configPath, 'config.toml'), 'active_model = "mistral-medium-3.5"\n');
         t.after(() => {
@@ -170,8 +170,6 @@ describe('VibeAgent Docker args', () => {
         });
 
         assert.ok(args.includes('propr/agent-vibe:2.12.1-abcdef'));
-        assert.ok(args.includes('PROPR_AGENT_TYPE=vibe'));
-        assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
         assert.ok(args.includes('VIBE_ACTIVE_MODEL=mistral-medium-3.5'));
         assert.ok(args.includes('VIBE_READ_ONLY_CONFIG=1'));
         assert.ok(args.includes('XDG_CACHE_HOME=/tmp/propr-vibe-cache'));
@@ -180,15 +178,17 @@ describe('VibeAgent Docker args', () => {
         assert.ok(args.includes('--read-only'));
         assert.ok(args.includes('/tmp:rw,nosuid,size=512m'));
         assert.ok(args.includes('/home/node/.cache:rw,nosuid,size=256m'));
-        assert.ok(args.includes('0:0'));
+        assert.ok(!args.includes('--user'));
+        assert.ok(!args.includes('0:0'));
         assert.ok(!args.includes('/tmp/git-processor:/tmp/git-processor:rw'));
         assert.ok(!args.includes('--cap-add'));
+        assert.ok(!args.includes('PROPR_AGENT_TYPE=vibe'));
+        assert.ok(!args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
         assert.ok(args.includes(`${configPath}:/home/node/.vibe:ro`));
         assert.ok(args.includes('/tmp/propr-vibe-prompts/vibe-task/prompt.md:/tmp/propr-vibe-prompt.md:ro'));
 
         const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-        assert.strictEqual(args[imageIndex + 3], '/home/node/vibe-entrypoint.sh');
-        assert.deepStrictEqual(args.slice(imageIndex + 4, imageIndex + 7), ['vibe', '--prompt', 'Read the full task prompt from @/tmp/propr-vibe-prompt.md and follow it exactly.']);
+        assert.deepStrictEqual(args.slice(imageIndex + 1, imageIndex + 4), ['vibe', '--prompt', 'Read the full task prompt from @/tmp/propr-vibe-prompt.md and follow it exactly.']);
         assert.deepStrictEqual(args.slice(-4), ['--max-turns', '5', '--output', 'json']);
     });
 
@@ -417,6 +417,8 @@ describe('VibeAgent Docker args', () => {
         assert.ok(args.includes('GITHUB_TOKEN=github-token'));
         assert.ok(args.includes('PROPR_WORKSPACE=/home/node/workspace'));
         assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
+        assert.ok(!args.includes('--user'));
+        assert.ok(!args.includes('0:0'));
         const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
         assert.deepStrictEqual(args.slice(imageIndex + 4, imageIndex + 7), ['vibe', '--prompt', 'Read the full task prompt from @/tmp/propr-vibe-prompt.md and follow it exactly.']);
         assert.ok(!args.includes('--read-only'));
@@ -445,6 +447,9 @@ describe('VibeAgent Docker args', () => {
             };
             const promptPath = privateApi.writePromptFile('sensitive prompt', 'task-123');
             const promptDir = path.dirname(promptPath);
+            assert.strictEqual((fs.statSync(promptParent).mode & 0o777), 0o755);
+            assert.strictEqual((fs.statSync(promptDir).mode & 0o777), 0o755);
+            assert.strictEqual((fs.statSync(promptPath).mode & 0o777), 0o444);
 
             await assert.rejects(
                 () => privateApi.runWithPromptCleanup(promptPath, async () => {

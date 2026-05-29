@@ -24,7 +24,6 @@ const DEFAULT_VIBE_MAX_TURNS = 1000;
 const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
 const CONTAINER_PROMPT_PATH = '/tmp/propr-vibe-prompt.md';
-const CONTAINER_ROOT_USER = '0:0';
 const DEFAULT_PROMPT_PARENT_DIR = '/tmp/propr-vibe-prompts';
 
 interface VibeDockerArgsParams {
@@ -298,11 +297,11 @@ export class VibeAgent implements Agent {
 
     private writePromptFile(prompt: string, taskId?: string): string {
         const promptParentDir = this.getPromptParentDir();
-        fs.mkdirSync(promptParentDir, { recursive: true, mode: 0o700 });
-        fs.chmodSync(promptParentDir, 0o700);
+        fs.mkdirSync(promptParentDir, { recursive: true, mode: 0o755 });
+        fs.chmodSync(promptParentDir, 0o755);
         const safeTaskId = taskId?.replace(/[^a-zA-Z0-9_-]/g, '').slice(-32) || Date.now().toString(36);
         const promptDir = fs.mkdtempSync(path.join(promptParentDir, `vibe-${safeTaskId}-`));
-        fs.chmodSync(promptDir, 0o700);
+        fs.chmodSync(promptDir, 0o755);
         const promptPath = path.join(promptDir, 'prompt.md');
         fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o400 });
         fs.chmodSync(promptPath, 0o444);
@@ -402,7 +401,7 @@ export class VibeAgent implements Agent {
         const promptInstruction = `Read the full task prompt from @${CONTAINER_PROMPT_PATH} and follow it exactly.`;
         const agentArgs = mode === 'analysis' ? [] : ['--trust', '--agent', 'auto-approve'];
         const dockerArgs: string[] = [
-            'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge', '--user', CONTAINER_ROOT_USER,
+            'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...analysisSandboxArgs,
             '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
             ...configMountArgs,
@@ -427,6 +426,9 @@ export class VibeAgent implements Agent {
             promptPathExists: fs.existsSync(promptPath),
             workspaceMountMode
         }, 'Docker args built for Vibe agent');
+        if (mode === 'analysis') {
+            return dockerArgs;
+        }
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'vibe');
     }
 

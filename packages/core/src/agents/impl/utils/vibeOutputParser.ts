@@ -166,6 +166,7 @@ export function parseVibeOutput(output: string): ParsedVibeOutput {
         model: modelEvent?.model,
         summary: textEvent ? pickText(textEvent.event) : output.trim() || undefined,
         error,
+        incomplete: textEvent ? !textEvent.isFinal : true,
         tokenUsage: usageEvent?.usage || usageEvent?.token_usage
     };
 }

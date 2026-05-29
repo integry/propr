@@ -4,8 +4,8 @@
 
 # BASE_TAG must match the exact version of propr/agent-base built alongside
 # this agent image. scripts/build-images.sh passes it automatically; a direct
-# `docker build` must pass --build-arg BASE_TAG=<version>.
-ARG BASE_TAG
+# `docker build` can override it with --build-arg BASE_TAG=<version>.
+ARG BASE_TAG=1.0.0
 FROM propr/agent-base:${BASE_TAG}
 
 ARG CLI_VERSION=2.12.1

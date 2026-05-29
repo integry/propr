@@ -28,16 +28,13 @@ import {
 } from './pypiClient.js';
 
 const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
-const PYPI_CUSTOM_VERSION_PATTERN = /^(?:[1-9]\d*!){0,1}\d+(?:\.\d+)*(?:(?:a|b|rc)\d*)?(?:\.post\d*)?(?:\.dev\d*)?(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/i;
 
 function validatePyPiCustomVersion(versionSpec: string, packageName: string): string {
     const trimmedVersionSpec = versionSpec.trim();
     if (!trimmedVersionSpec) {
         throw new Error('Version spec required');
     }
-    if (!PYPI_CUSTOM_VERSION_PATTERN.test(trimmedVersionSpec)) {
-        throw new Error(`Invalid custom version '${versionSpec}' for PyPI-backed package ${packageName}`);
-    }
+    logger.debug({ packageName, versionSpec: trimmedVersionSpec }, 'Resolving custom PyPI version');
     return trimmedVersionSpec;
 }
 

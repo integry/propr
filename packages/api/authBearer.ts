@@ -3,18 +3,34 @@ import { createClient, type RedisClientType } from 'redis';
 import type { GitHubUser } from './authTypes.js';
 
 let tokenCacheClient: RedisClientType | null = null;
+let tokenCacheConnectPromise: Promise<RedisClientType> | null = null;
+
+type CachedGitHubUser = Omit<GitHubUser, 'accessToken'>;
 
 async function getTokenCacheClient(): Promise<RedisClientType> {
-    if (!tokenCacheClient) {
+    if (tokenCacheClient?.isOpen) {
+        return tokenCacheClient;
+    }
+    if (!tokenCacheConnectPromise) {
         const redisHost = process.env.REDIS_HOST || '127.0.0.1';
         const redisPort = process.env.REDIS_PORT || '6379';
-        tokenCacheClient = createClient({ url: `redis://${redisHost}:${redisPort}` }) as RedisClientType;
-        tokenCacheClient.on('error', (err) => {
+        const client = createClient({ url: `redis://${redisHost}:${redisPort}` }) as RedisClientType;
+        client.on('error', (err) => {
             console.error('Token Cache Redis Client Error', err);
         });
-        await tokenCacheClient.connect();
+        tokenCacheConnectPromise = client.connect()
+            .then(() => {
+                tokenCacheClient = client;
+                tokenCacheConnectPromise = null;
+                return client;
+            })
+            .catch(error => {
+                tokenCacheClient = null;
+                tokenCacheConnectPromise = null;
+                throw error;
+            });
     }
-    return tokenCacheClient;
+    return tokenCacheConnectPromise;
 }
 
 const TOKEN_CACHE_PREFIX = 'propr:bearer:';
@@ -30,7 +46,7 @@ export async function validateGitHubToken(token: string): Promise<GitHubUser | n
         const cacheKey = getTokenCacheKey(token);
         const cached = await redis.get(cacheKey);
         if (cached) {
-            return JSON.parse(cached) as GitHubUser;
+            return { ...(JSON.parse(cached) as CachedGitHubUser), accessToken: token };
         }
 
         const response = await fetch('https://api.github.com/user', {
@@ -61,7 +77,15 @@ export async function validateGitHubToken(token: string): Promise<GitHubUser | n
             accessToken: token,
         };
 
-        await redis.set(cacheKey, JSON.stringify(user), { EX: TOKEN_CACHE_TTL_SECONDS });
+        const cacheableUser: CachedGitHubUser = {
+            id: user.id,
+            login: user.login,
+            username: user.username,
+            displayName: user.displayName,
+            email: user.email,
+            avatarUrl: user.avatarUrl
+        };
+        await redis.set(cacheKey, JSON.stringify(cacheableUser), { EX: TOKEN_CACHE_TTL_SECONDS });
         return user;
     } catch (error) {
         console.error('Bearer token validation error:', error);

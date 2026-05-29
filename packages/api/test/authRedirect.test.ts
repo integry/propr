@@ -113,6 +113,20 @@ test('auth redirect allowlist only permits cleartext HTTP for localhost', async 
   assert.equal(remoteResponse.headers.get('location'), 'http://localhost:5173/');
 });
 
+test('auth redirect allowlist permits configured local IP literals', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'http://127.0.0.1:5173';
+  process.env.AUTH_REDIRECT_ALLOWED_HOSTS = 'http://[::1]:5173';
+  const app = express();
+  setupAuth(app);
+
+  const ipv4Response = await fetchFromApp(app, '/api/auth/github?redirect_to=http%3A%2F%2F127.0.0.1%3A5173%2Fplans');
+  assert.equal(ipv4Response.headers.get('location'), 'http://127.0.0.1:5173/plans');
+
+  const ipv6Response = await fetchFromApp(app, '/api/auth/github?redirect_to=http%3A%2F%2F%5B%3A%3A1%5D%3A5173%2Fplans');
+  assert.equal(ipv6Response.headers.get('location'), 'http://[::1]:5173/plans');
+});
+
 test('auth redirect allowlist ignores malformed additional host entries', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   process.env.FRONTEND_URL = 'https://app.example.com';

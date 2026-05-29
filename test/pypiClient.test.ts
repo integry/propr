@@ -116,10 +116,26 @@ describe('pypiClient', () => {
         );
     });
 
-    test('rejects custom Vibe versions that are not safe semantic versions', async () => {
+    test('resolves custom Vibe versions through PyPI without prefiltering PEP 440 forms', async () => {
+        mockPyPiResponse({
+            info: { version: '2.12.1' },
+            releases: {
+                '1!2.12.1.post1+local_tag': [{ upload_time_iso_8601: '2026-01-03T00:00:00Z' }]
+            }
+        });
+
+        assert.strictEqual(await resolveVersion('vibe', 'custom', ' 1!2.12.1.post1+local_tag '), '1!2.12.1.post1+local_tag');
+    });
+
+    test('rejects custom Vibe versions only when PyPI cannot resolve them', async () => {
+        mockPyPiResponse({
+            info: { version: '2.12.1' },
+            releases: {}
+        });
+
         await assert.rejects(
             () => resolveVersion('vibe', 'custom', '2.12.1:bad tag'),
-            /Invalid custom version/
+            /Version '2\.12\.1:bad tag' not found/
         );
     });
 

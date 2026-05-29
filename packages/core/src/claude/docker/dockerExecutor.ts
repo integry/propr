@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
-import { AGENT_IMAGE_NAMES } from '../../agents/version/types.js';
+import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from '../../agents/version/types.js';
 import type { AgentType } from '../../agents/types.js';
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
@@ -47,6 +47,17 @@ const AGENT_DOCKERFILES: Record<string, string> = {
 // Default project root - can be overridden via environment variable
 // In Docker container, the app root is /usr/src/app but cwd may be /usr/src/app/packages/api
 const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
+const DEFAULT_AGENT_BASE_TAG = '1.0.0';
+function getAgentBaseTag(): string { return process.env.AGENT_BASE_TAG || process.env.PROPR_AGENT_BASE_TAG || process.env.PROPR_IMAGE_VERSION || DEFAULT_AGENT_BASE_TAG; }
+
+function getAgentBuildArgs(agentType: string, dockerImage: string): string[] {
+    const buildArgs = ['--build-arg', `BASE_TAG=${getAgentBaseTag()}`];
+    if (!(agentType in AGENT_DEFAULT_VERSIONS)) return buildArgs;
+    const fallbackVersion = AGENT_DEFAULT_VERSIONS[agentType as AgentType];
+    const imageTag = dockerImage.includes(':') ? dockerImage.split(':').pop() : undefined;
+    const cliVersion = !imageTag || imageTag === 'latest' ? fallbackVersion : imageTag.split('-')[0] || fallbackVersion;
+    return [...buildArgs, '--build-arg', `CLI_VERSION=${cliVersion}`];
+}
 
 async function checkAbortSignal(taskId: string): Promise<boolean> {
     try {
@@ -376,7 +387,7 @@ export async function ensureAgentDockerImage(agentType: string, dockerImage: str
         const buildResult = await executeDockerCommand('docker', [
             'build',
             '-f', dockerfile,
-            '--build-arg', 'BASE_TAG=latest',
+            ...getAgentBuildArgs(agentType, dockerImage),
             '-t', dockerImage,
             '.'
         ], { timeout: 600000 });
@@ -465,7 +476,7 @@ export async function ensureVersionedAgentImage(
             'build',
             '-f', dockerfile,
             '--build-arg', `CLI_VERSION=${cliVersion}`,
-            '--build-arg', 'BASE_TAG=latest',
+            '--build-arg', `BASE_TAG=${getAgentBaseTag()}`,
             '-t', imageTag,
             basePath
         ], {

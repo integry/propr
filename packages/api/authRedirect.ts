@@ -1,20 +1,26 @@
+import { isIP } from 'net';
 import type { AllowedRedirectHost } from './authTypes.js';
 
 function isValidHostname(hostname: string): boolean {
     if (!hostname || hostname.length > 253 || hostname.includes('..')) return false;
     if (hostname === 'localhost') return true;
+    if (isIP(hostname)) return true;
     return hostname
         .split('.')
         .every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
 }
 
+function normalizeHostname(hostname: string): string {
+    return hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase();
+}
+
 function parseHostname(value: string): string | null {
     try {
-        const hostname = new URL(value).hostname.replace(/^\./, '');
+        const hostname = normalizeHostname(new URL(value).hostname.replace(/^\./, ''));
         return isValidHostname(hostname) ? hostname : null;
     } catch {
         try {
-            const hostname = new URL(`https://${value}`).hostname.replace(/^\./, '');
+            const hostname = normalizeHostname(new URL(`https://${value}`).hostname.replace(/^\./, ''));
             return isValidHostname(hostname) ? hostname : null;
         } catch {
             return null;
@@ -52,15 +58,17 @@ function isAllowedRedirectHost(hostname: string): boolean {
 }
 
 function isLocalHttpRedirectHost(hostname: string): boolean {
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+    const normalized = normalizeHostname(hostname);
+    return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
 }
 
 export function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
     if (!redirectTo) return undefined;
     try {
         const url = new URL(redirectTo);
-        if (url.protocol === 'https:' && isAllowedRedirectHost(url.hostname)) return redirectTo;
-        if (url.protocol === 'http:' && isLocalHttpRedirectHost(url.hostname) && isAllowedRedirectHost(url.hostname)) return redirectTo;
+        const hostname = normalizeHostname(url.hostname);
+        if (url.protocol === 'https:' && isAllowedRedirectHost(hostname)) return url.toString();
+        if (url.protocol === 'http:' && isLocalHttpRedirectHost(hostname) && isAllowedRedirectHost(hostname)) return url.toString();
     } catch {
         // Invalid URL, ignore.
     }
