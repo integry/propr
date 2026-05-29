@@ -1,5 +1,5 @@
 import fs from 'fs-extra';
-import { parseCodexStreamOutput, parseOpenCodeJsonl } from '@propr/core';
+import { parseCodexStreamOutput } from '@propr/core';
 
 export interface TokenUsage {
   input_tokens: number;
@@ -157,18 +157,6 @@ function buildCodexTokenUsage(parsed: ReturnType<typeof parseCodexStreamOutput>)
   };
 }
 
-function buildOpenCodeTokenUsage(parsed: ReturnType<typeof parseOpenCodeJsonl>): TokenUsage | null {
-  if (!parsed.tokenUsage) {
-    return null;
-  }
-
-  return {
-    input_tokens: parsed.tokenUsage.input_tokens ?? 0,
-    output_tokens: parsed.tokenUsage.output_tokens ?? 0,
-    cache_creation_input_tokens: parsed.tokenUsage.cache_creation_input_tokens ?? 0,
-    cache_read_input_tokens: parsed.tokenUsage.cache_read_input_tokens ?? 0
-  };
-}
 function appendAssistantMessageEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
   if (event.type !== 'message' || event.role !== 'assistant' || !event.content) return false;
   events.push({ type: 'thought', content: event.content, timestamp });
@@ -408,20 +396,4 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
 
   const currentTask = deriveCurrentTask(todos);
   return { events, todos, currentTask, tokenUsage: buildCodexTokenUsage(parsed) };
-}
-
-export function parseOpenCodeOutputToConversationResult(output: string): ConversationResult | null {
-  const parsed = parseOpenCodeJsonl(output);
-  const events: Array<Record<string, unknown>> = [];
-  const timestamp = new Date().toISOString();
-
-  if (parsed.summary) {
-    events.push({ type: 'thought', content: parsed.summary, timestamp });
-  }
-  if (parsed.error) {
-    events.push({ type: 'tool_result', result: parsed.error, isError: true, timestamp });
-  }
-
-  const tokenUsage = buildOpenCodeTokenUsage(parsed);
-  return events.length || tokenUsage ? { events, todos: [], currentTask: null, tokenUsage } : null;
 }

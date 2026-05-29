@@ -7,11 +7,13 @@ import { queueResummarizationForAllRepos, withConfigLock } from '../packages/api
 import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { appendClaudeUserMessageEvents, parseClaudeOutputToConversationResult, parseCodexOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
+import { parseOpenCodeOutputToConversationResult } from '../packages/api/routes/liveDetailsOpenCodeParser.ts';
 import {
     detectStoredOutputFormat,
     findLatestHistoryEntryWithSessionId,
     parseStoredOutputContent,
 } from '../packages/api/routes/liveDetailsRoutes.ts';
+import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts';
 
 describe('config route follow-up helpers', () => {
     let currentSettings: Record<string, unknown>;
@@ -1615,6 +1617,27 @@ describe('config route follow-up helpers', () => {
         ]);
     });
 
+    test('parseOpenCodeOutputToConversationResult preserves multiple assistant messages', () => {
+        const result = parseOpenCodeOutputToConversationResult([
+            '{"type":"message","sessionID":"session-a","timestamp":"2026-05-05T00:00:00.000Z","message":{"role":"assistant","content":"First answer"}}',
+            '{"type":"message","sessionID":"session-a","timestamp":"2026-05-05T00:00:02.000Z","message":{"role":"assistant","parts":[{"type":"text","text":"Second "},{"type":"text","text":"answer"}]}}',
+        ].join('\n'));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'First answer', timestamp: '2026-05-05T00:00:00.000Z' },
+            { type: 'thought', content: 'Second answer', timestamp: '2026-05-05T00:00:02.000Z' },
+        ]);
+    });
+
+    test('parseStoredOutputContent parses strongly identified OpenCode output', () => {
+        const parsed = parseStoredOutputContent('{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"OpenCode says hi"}}\n');
+
+        assert.strictEqual(parsed.format, 'opencode');
+        assert.deepStrictEqual(parsed.parsed?.events, [
+            { type: 'thought', content: 'OpenCode says hi', timestamp: parsed.parsed?.events[0].timestamp },
+        ]);
+    });
+
     test('parseCodexOutputToConversationResult preserves token usage without conversation events', () => {
         const result = parseCodexOutputToConversationResult('{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":3,"output_tokens":4}}\n');
 
@@ -1668,6 +1691,37 @@ describe('config route follow-up helpers', () => {
 
     test('detectStoredOutputFormat does not classify message-only JSON as Claude', () => {
         assert.strictEqual(detectStoredOutputFormat('{"message":"plain message"}\n'), 'unknown');
+    });
+
+    test('detectStoredOutputFormat does not treat generic message envelopes as OpenCode', () => {
+        assert.strictEqual(detectStoredOutputFormat('{"type":"message","message":{"content":"generic"}}\n'), 'codex');
+    });
+
+    test('parseRedisOutput preserves cache-only OpenCode token usage', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","usage":{"cache_creation_input_tokens":4,"cache_read_input_tokens":6}}',
+        ]);
+
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 4,
+            cache_read_input_tokens: 6,
+        });
+    });
+
+    test('parseRedisOutput aggregates per-event OpenCode token usage', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","usage":{"input_tokens":3,"output_tokens":1}}',
+            '{"type":"message","sessionID":"session-a","usage":{"input_tokens":2,"cache_read_input_tokens":4}}',
+        ]);
+
+        assert.deepStrictEqual(result.tokenUsage, {
+            input_tokens: 5,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 4,
+        });
     });
 
     test('appendClaudeUserMessageEvents omits object content from subagent summaries', () => {

@@ -45,9 +45,9 @@ interface OpenCodeTextContainer {
     usage?: OpenCodeUsage;
 }
 
-type OpenCodeUsage = Record<string, unknown>;
+export type OpenCodeUsage = Record<string, unknown>;
 
-interface NormalizedOpenCodeUsage {
+export interface NormalizedOpenCodeUsage {
     input_tokens?: number;
     output_tokens?: number;
     cache_creation_input_tokens?: number;
@@ -249,6 +249,7 @@ function applyOpenCodeModel(event: OpenCodeEvent, state: OpenCodeParseState): vo
 }
 
 function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): void {
+    const eventUsage: TokenUsage = {};
     for (const usage of [
         normalizeOpenCodeUsage(event.usage),
         normalizeOpenCodeUsage(event.stats),
@@ -256,11 +257,25 @@ function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): vo
         normalizeOpenCodeUsage(event.message?.usage),
         normalizeOpenCodeUsage(event.response?.usage)
     ]) {
-        if (usage) mergeOpenCodeUsage(state.tokenUsage, usage);
+        if (usage) mergeOpenCodeUsageByMax(eventUsage, usage);
     }
+    if (hasOpenCodeTokenUsage(eventUsage)) addOpenCodeUsage(state.tokenUsage, eventUsage);
 }
 
-function normalizeOpenCodeUsage(usage: OpenCodeUsage | undefined): NormalizedOpenCodeUsage | undefined {
+export function isOpenCodeJsonlEvent(event: { sessionID?: unknown; sessionId?: unknown; part?: unknown; parts?: unknown[]; message?: unknown }): boolean {
+    const message = event.message && typeof event.message === 'object'
+        ? event.message as { parts?: unknown[] }
+        : null;
+    return Boolean(
+        event.sessionID
+        || event.sessionId
+        || event.part
+        || event.parts?.length
+        || message?.parts?.length
+    );
+}
+
+export function normalizeOpenCodeUsage(usage: OpenCodeUsage | undefined): NormalizedOpenCodeUsage | undefined {
     if (!usage) return undefined;
     const inputTokens = firstNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'input', 'prompt']);
     const outputTokens = firstNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens', 'output', 'completion']);
@@ -283,14 +298,29 @@ function firstNumber(source: OpenCodeUsage, keys: string[]): number | undefined 
     return undefined;
 }
 
-function mergeOpenCodeUsage(target: TokenUsage, usage: NormalizedOpenCodeUsage): void {
-    target.input_tokens = Math.max(target.input_tokens ?? 0, usage.input_tokens ?? 0) || undefined;
-    target.output_tokens = Math.max(target.output_tokens ?? 0, usage.output_tokens ?? 0) || undefined;
-    target.cache_creation_input_tokens = Math.max(target.cache_creation_input_tokens ?? 0, usage.cache_creation_input_tokens ?? 0) || undefined;
-    target.cache_read_input_tokens = Math.max(target.cache_read_input_tokens ?? 0, usage.cache_read_input_tokens ?? 0) || undefined;
+function mergeOpenCodeUsageByMax(target: TokenUsage, usage: NormalizedOpenCodeUsage): void {
+    setTokenUsageField(target, 'input_tokens', Math.max(target.input_tokens ?? 0, usage.input_tokens ?? 0));
+    setTokenUsageField(target, 'output_tokens', Math.max(target.output_tokens ?? 0, usage.output_tokens ?? 0));
+    setTokenUsageField(target, 'cache_creation_input_tokens', Math.max(target.cache_creation_input_tokens ?? 0, usage.cache_creation_input_tokens ?? 0));
+    setTokenUsageField(target, 'cache_read_input_tokens', Math.max(target.cache_read_input_tokens ?? 0, usage.cache_read_input_tokens ?? 0));
 }
 
-function hasOpenCodeTokenUsage(usage: TokenUsage | NormalizedOpenCodeUsage): boolean {
+function addOpenCodeUsage(target: TokenUsage, usage: TokenUsage): void {
+    setTokenUsageField(target, 'input_tokens', (target.input_tokens ?? 0) + (usage.input_tokens ?? 0));
+    setTokenUsageField(target, 'output_tokens', (target.output_tokens ?? 0) + (usage.output_tokens ?? 0));
+    setTokenUsageField(target, 'cache_creation_input_tokens', (target.cache_creation_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0));
+    setTokenUsageField(target, 'cache_read_input_tokens', (target.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0));
+}
+
+function setTokenUsageField(target: TokenUsage, key: keyof TokenUsage, value: number): void {
+    if (value > 0) {
+        target[key] = value;
+    } else {
+        delete target[key];
+    }
+}
+
+export function hasOpenCodeTokenUsage(usage: TokenUsage | NormalizedOpenCodeUsage): boolean {
     return Boolean(
         usage.input_tokens
         || usage.output_tokens

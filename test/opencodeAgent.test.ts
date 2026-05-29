@@ -128,8 +128,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
 
     test('normalizes token usage from common output shapes', () => {
         const parsed = parseOutput([
-            JSON.stringify({ type: 'result', usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 10 } }),
-            JSON.stringify({ type: 'result', stats: { inputTokens: 90, outputTokens: 30, cacheCreationInputTokens: 5 } })
+            JSON.stringify({ type: 'result', usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 10 }, stats: { inputTokens: 90, outputTokens: 30, cacheCreationInputTokens: 5 } })
         ].join('\n'));
 
         assert.deepStrictEqual(parsed.tokenUsage, {
@@ -137,6 +136,19 @@ describe('OpenCodeAgent JSONL parsing', () => {
             output_tokens: 30,
             cache_creation_input_tokens: 5,
             cache_read_input_tokens: 10
+        });
+    });
+
+    test('aggregates per-message token usage', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'first', usage: { input_tokens: 10, output_tokens: 2 } } }),
+            JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'second', usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 4 } } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 17,
+            output_tokens: 5,
+            cache_read_input_tokens: 4
         });
     });
 });

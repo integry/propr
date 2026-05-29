@@ -28,7 +28,7 @@ export class OpenCodeAgent implements Agent {
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
-        let prompt = customPrompt;
+        let prompt = customPrompt ?? '';
 
         logger.info({ issueNumber: issueRef.number, repository: repo, worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason }, isRetry ? 'Starting OpenCode agent execution (RETRY)...' : 'Starting OpenCode agent execution...');
 

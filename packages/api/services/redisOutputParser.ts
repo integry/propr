@@ -1,4 +1,5 @@
 import type { ConversationEvent, TodoItem, TokenUsageInfo } from '@propr/shared';
+import { isOpenCodeJsonlEvent, normalizeOpenCodeUsage } from '@propr/core';
 
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
@@ -200,22 +201,16 @@ function processOpenCodeEvent(
     });
   }
 
-  applyOpenCodeRedisUsage(state, event.usage);
-  applyOpenCodeRedisUsage(state, event.stats);
-  applyOpenCodeRedisUsage(state, event.tokens);
+  const eventUsage = buildOpenCodeRedisEventUsage(event);
+  if (eventUsage) addOpenCodeRedisUsage(state, eventUsage);
   return true;
 }
 
 function isOpenCodeEvent(event: Parameters<typeof processOpenCodeEvent>[0]): boolean {
   const type = event.type?.toLowerCase();
   return Boolean(
-    event.sessionID
-    || event.part
-    || event.parts?.length
-    || event.message
-    || type === 'delta'
-    || type === 'text'
-    || type === 'completion'
+    isOpenCodeJsonlEvent(event)
+    || (type && ['delta', 'text', 'completion'].includes(type))
     || event.usage
     || event.tokens
   );
@@ -258,24 +253,40 @@ function extractOpenCodeError(error: Parameters<typeof processOpenCodeEvent>[0][
   return error?.data?.message || error?.message || error?.name || 'OpenCode execution failed';
 }
 
-function applyOpenCodeRedisUsage(state: ParseState, usage?: Record<string, unknown>): void {
-  if (!usage) return;
-  const inputTokens = firstUsageNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'input', 'prompt']);
-  const outputTokens = firstUsageNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens', 'output', 'completion']);
-  const cacheCreationTokens = firstUsageNumber(usage, ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cacheCreationTokens']);
-  const cacheReadTokens = firstUsageNumber(usage, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cached_input_tokens', 'cachedInputTokens', 'cacheReadTokens']);
-  state.tokenUsage.input_tokens = Math.max(state.tokenUsage.input_tokens, inputTokens ?? 0);
-  state.tokenUsage.output_tokens = Math.max(state.tokenUsage.output_tokens, outputTokens ?? 0);
-  state.tokenUsage.cache_creation_input_tokens = Math.max(state.tokenUsage.cache_creation_input_tokens, cacheCreationTokens ?? 0);
-  state.tokenUsage.cache_read_input_tokens = Math.max(state.tokenUsage.cache_read_input_tokens, cacheReadTokens ?? 0);
+function buildOpenCodeRedisEventUsage(event: Parameters<typeof processOpenCodeEvent>[0]): ParseState['tokenUsage'] | null {
+  const eventUsage: ParseState['tokenUsage'] = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0
+  };
+  mergeOpenCodeRedisUsageByMax(eventUsage, event.usage);
+  mergeOpenCodeRedisUsageByMax(eventUsage, event.stats);
+  mergeOpenCodeRedisUsageByMax(eventUsage, event.tokens);
+  return hasRedisTokenUsage(eventUsage) ? eventUsage : null;
 }
 
-function firstUsageNumber(usage: Record<string, unknown>, keys: string[]): number | undefined {
-  for (const key of keys) {
-    const value = usage[key];
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-  }
-  return undefined;
+function mergeOpenCodeRedisUsageByMax(target: ParseState['tokenUsage'], usage?: Record<string, unknown>): void {
+  const normalized = normalizeOpenCodeUsage(usage);
+  if (!normalized) return;
+  target.input_tokens = Math.max(target.input_tokens, normalized.input_tokens ?? 0);
+  target.output_tokens = Math.max(target.output_tokens, normalized.output_tokens ?? 0);
+  target.cache_creation_input_tokens = Math.max(target.cache_creation_input_tokens, normalized.cache_creation_input_tokens ?? 0);
+  target.cache_read_input_tokens = Math.max(target.cache_read_input_tokens, normalized.cache_read_input_tokens ?? 0);
+}
+
+function addOpenCodeRedisUsage(state: ParseState, usage: ParseState['tokenUsage']): void {
+  state.tokenUsage.input_tokens += usage.input_tokens;
+  state.tokenUsage.output_tokens += usage.output_tokens;
+  state.tokenUsage.cache_creation_input_tokens += usage.cache_creation_input_tokens;
+  state.tokenUsage.cache_read_input_tokens += usage.cache_read_input_tokens;
+}
+
+function hasRedisTokenUsage(usage: ParseState['tokenUsage']): boolean {
+  return usage.input_tokens > 0
+    || usage.output_tokens > 0
+    || usage.cache_creation_input_tokens > 0
+    || usage.cache_read_input_tokens > 0;
 }
 
 /**
@@ -326,7 +337,7 @@ export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
   flushPendingMessage(state, new Date().toISOString());
 
   const inProgressTask = state.todos.find(t => t.status === 'in_progress');
-  const hasTokens = state.tokenUsage.input_tokens > 0 || state.tokenUsage.output_tokens > 0;
+  const hasTokens = hasRedisTokenUsage(state.tokenUsage);
 
   return {
     events: state.events,

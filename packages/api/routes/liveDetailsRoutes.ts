@@ -4,6 +4,7 @@ import { Knex } from 'knex';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
+import { isOpenCodeJsonlEvent } from '@propr/core';
 import { validateTaskId } from './validation.js';
 import {
   appendClaudeAssistantMessageEvents,
@@ -14,13 +15,13 @@ import {
   parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult,
-  parseOpenCodeOutputToConversationResult,
   type ClaudeMessageContent,
   type ClaudeMessageContext,
   type ConversationResult,
   type PendingSubagent,
   type TodoItem
 } from './liveDetailsCodexParser.js';
+import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 interface HistoryEntryWithSessionMetadata { state?: string; metadata?: { sessionId?: string }; }
@@ -152,7 +153,7 @@ export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSes
 interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
 interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
-interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; sessionID?: string; session_id?: string; conversation_id?: string; item?: unknown; part?: unknown; parts?: unknown[]; }
+interface StoredExecutionOutputLine { type?: string; role?: string; message?: { parts?: unknown[] } | unknown; sessionID?: string; sessionId?: string; session_id?: string; conversation_id?: string; item?: unknown; part?: unknown; parts?: unknown[]; }
 export type StoredOutputFormat = 'claude' | 'codex' | 'opencode' | 'unknown';
 const CODEX_STORED_OUTPUT_TYPES = new Set([
   'message',
@@ -166,6 +167,7 @@ const CODEX_STORED_OUTPUT_TYPES = new Set([
   'item.completed'
 ]);
 const CLAUDE_STORED_OUTPUT_TYPES = new Set(['assistant', 'user']);
+const STORED_OUTPUT_FALLBACK_ORDER: StoredOutputFormat[] = ['codex', 'claude', 'opencode'];
 export interface ParsedStoredOutput {
   parsed: ConversationResult | null;
   rawFallback: ConversationResult | null;
@@ -224,33 +226,30 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, taskId: 
 export function parseStoredOutputContent(output: string): ParsedStoredOutput {
   if (!output.trim()) return { parsed: null, rawFallback: null, format: 'unknown' };
   const format = detectStoredOutputFormat(output);
-  if (format === 'claude') {
-    const parsed = parseClaudeOutputToConversationResult(output);
-    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
+  const rawFallback = buildRawOutputConversationResult(output);
+  if (format !== 'unknown') return parseStoredOutputWithFormat(output, format, rawFallback);
+  for (const fallbackFormat of STORED_OUTPUT_FALLBACK_ORDER) {
+    const parsed = parseStoredOutputForFormat(output, fallbackFormat);
+    if (!isConversationResultEmpty(parsed)) return { parsed, rawFallback, format: fallbackFormat };
   }
-  if (format === 'codex') {
-    const parsed = parseCodexOutputToConversationResult(output);
-    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
-  }
-  if (format === 'opencode') {
-    const parsed = parseOpenCodeOutputToConversationResult(output);
-    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
-  }
-  const opencodeParsed = parseOpenCodeOutputToConversationResult(output);
-  if (!isConversationResultEmpty(opencodeParsed)) return { parsed: opencodeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'opencode' };
-  const codexParsed = parseCodexOutputToConversationResult(output);
-  if (!isConversationResultEmpty(codexParsed)) return { parsed: codexParsed, rawFallback: buildRawOutputConversationResult(output), format: 'codex' };
-  const claudeParsed = parseClaudeOutputToConversationResult(output);
-  if (!isConversationResultEmpty(claudeParsed)) return { parsed: claudeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'claude' };
-  return { parsed: null, rawFallback: buildRawOutputConversationResult(output), format };
+  return { parsed: null, rawFallback, format };
+}
+function parseStoredOutputWithFormat(output: string, format: StoredOutputFormat, rawFallback: ConversationResult | null): ParsedStoredOutput {
+  const parsed = parseStoredOutputForFormat(output, format);
+  return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback, format };
+}
+function parseStoredOutputForFormat(output: string, format: StoredOutputFormat): ConversationResult | null {
+  if (format === 'claude') return parseClaudeOutputToConversationResult(output);
+  if (format === 'codex') return parseCodexOutputToConversationResult(output);
+  if (format === 'opencode') return parseOpenCodeOutputToConversationResult(output);
+  return null;
 }
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   const firstLine = output.split('\n').map(line => line.trim()).find(line => line.length > 0);
   if (!firstLine) return 'unknown';
   try {
     const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
-    const type = parsed.type?.toLowerCase();
-    if (isOpenCodeStoredOutputLine(parsed, type)) return 'opencode';
+    if (isOpenCodeStoredOutputLine(parsed)) return 'opencode';
     if (isCodexStoredOutputLine(parsed)) return 'codex';
     if (isClaudeStoredOutputLine(parsed)) return 'claude';
     return 'unknown';
@@ -258,9 +257,8 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
     return 'unknown';
   }
 }
-function isOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine, type?: string): boolean {
-  const hasMessageObject = type === 'message' && typeof parsed.message === 'object' && parsed.message !== null;
-  return Boolean(parsed.sessionID || parsed.part || parsed.parts || hasMessageObject);
+function isOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
+  return isOpenCodeJsonlEvent(parsed);
 }
 function isCodexStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
   return Boolean((parsed.type && CODEX_STORED_OUTPUT_TYPES.has(parsed.type)) || parsed.item !== undefined);
