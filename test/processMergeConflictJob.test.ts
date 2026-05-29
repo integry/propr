@@ -177,7 +177,10 @@ await mock.module('@propr/core', {
         recordLLMMetrics: mock.fn(async () => {}),
         issueQueue: { add: mockQueueAdd },
         getDefaultModel: mock.fn(() => 'claude-sonnet-4-20250514'),
+        NoDefaultModelConfiguredError: class NoDefaultModelConfiguredError extends Error { name = 'NoDefaultModelConfiguredError'; },
         loadSettings: mock.fn(async () => mockSettings),
+        loadSummarizationSettings: mock.fn(async () => ({ agent_alias: '' })),
+        runLightweightLLMAnalysis: mock.fn(async () => 'Resolve merge conflicts'),
         db: Object.assign(mock.fn(() => ({ where: mock.fn(() => ({ update: mock.fn(async () => {}) })) })), {
             migrate: { latest: mock.fn(async () => {}) }
         }),
@@ -248,6 +251,7 @@ function resetAllMocks() {
     mockPushBranch.mock.resetCalls();
     mockAgent.executeTask.mock.resetCalls();
     mockConfiguredAgent.executeTask.mock.resetCalls();
+    mockCleanupWorktree.mock.resetCalls();
     mockRedisStore.clear();
     mockSettings = {};
 }
@@ -258,18 +262,19 @@ describe('processMergeConflictJob', () => {
         // Default: clean merge
         mockMergeResult = { outcome: 'clean' as const };
         mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+        mockStateManager.getTaskState.mock.mockImplementation(async () => null);
         mockOctokit.request.mock.mockImplementation(async () => ({ data: { id: 100, html_url: 'https://github.com/test' } }));
     });
 
-    test('clean merge: commits and pushes without invoking agent', async () => {
+    test('clean merge: commits and pushes after agent verification', async () => {
         const job = createMockJob();
         const result = await processMergeConflictJob(job);
 
         assert.strictEqual(result.status, 'complete');
         assert.strictEqual((result as Record<string, unknown>).mergeType, 'clean');
 
-        // Verify agent was NOT called
-        assert.strictEqual(mockAgent.executeTask.mock.callCount(), 0);
+        // Clean merges still run through the agent path for verification and summary generation.
+        assert.strictEqual(mockAgent.executeTask.mock.callCount(), 1);
 
         // Verify commit and push were called
         assert.strictEqual(mockCommitChanges.mock.callCount(), 1);
@@ -329,6 +334,31 @@ describe('processMergeConflictJob', () => {
         assert.ok(patchCall);
         const body = patchCall.arguments[1].body as string;
         assert.ok(body.includes('Resolved merge conflicts'));
+    });
+
+    test('conflict merge: preserves title metadata in completion history', async () => {
+        mockMergeResult = { outcome: 'conflicts' as never, conflictedFiles: ['src/index.ts'] } as never;
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+        mockStateManager.getTaskState.mock.mockImplementation(async () => ({
+            issueRef: {
+                title: 'Merge PR #42: Resolve auth conflict',
+                subtitle: 'Resolve src/index.ts conflict',
+                issueNumber: 1478,
+            },
+        }));
+
+        await processMergeConflictJob(createMockJob());
+
+        const completedCall = mockStateManager.updateTaskState.mock.calls.find(
+            (c: { arguments: [string, string] }) => c.arguments[1] === 'completed'
+        );
+        assert.ok(completedCall, 'Expected completed state update');
+        const metadata = completedCall.arguments[2].historyMetadata as Record<string, unknown>;
+        assert.strictEqual(metadata.commandMode, 'merge');
+        assert.strictEqual(metadata.title, 'Merge PR #42: Resolve auth conflict');
+        assert.strictEqual(metadata.subtitle, 'Resolve src/index.ts conflict');
+        assert.strictEqual(metadata.issueNumber, 1478);
+        assert.strictEqual(metadata.commitHash, 'abc1234567890');
     });
 
     test('records the model from configured default agent in initial task state', async () => {

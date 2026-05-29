@@ -95,4 +95,16 @@ describe('generateSummaryTitle fallback behavior', () => {
 
         assert.strictEqual(title, 'Handle refresh token expiry');
     });
+
+    test('falls back when title generation exceeds the timeout', async () => {
+        const title = await generateSummaryTitle(baseOptions({
+            titleContext: 'Review feedback to address:\nHandle refresh token expiry quickly.',
+            titleGenerationTimeoutMs: 1,
+            analysisRunner: async () => new Promise<string>(resolve => {
+                setTimeout(() => resolve('Too late'), 25);
+            }),
+        }));
+
+        assert.strictEqual(title, 'Fix: Handle refresh token expiry quickly.');
+    });
 });

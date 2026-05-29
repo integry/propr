@@ -1,3 +1,7 @@
+import { diffBlockPaths, diffPatchPath } from './prTaskTitleDiffHelpers.js';
+
+export { filterDiffToFiles, getConflictDiffForTitle } from './prTaskTitleDiffHelpers.js';
+
 export type PrTaskWorkflow = 'followup' | 'fix' | 'review' | 'ultrafix' | 'merge';
 
 export interface TitleComment {
@@ -58,6 +62,25 @@ const NOISY_BOT_PATTERNS = [
     'Linting or build errors were detected.',
     'View Logs',
     'View Workflow',
+    'deployment',
+    'preview deployment',
+    'coverage report',
+    'check run',
+    'workflow run',
+    'build failed',
+    'build succeeded',
+    'all checks',
+];
+
+const COMMON_NOISY_BOT_AUTHORS = [
+    'github-actions[bot]',
+    'vercel[bot]',
+    'netlify[bot]',
+    'codecov[bot]',
+    'renovate[bot]',
+    'dependabot[bot]',
+    'sonarcloud[bot]',
+    'snyk-bot',
 ];
 
 function compactWhitespace(value: string): string {
@@ -139,6 +162,7 @@ export function isUsefulTitleComment(comment: TitleComment): boolean {
     const authorType = comment.user?.type;
     const author = comment.user?.login || comment.author || '';
     if (authorType === 'Bot' && author.toLowerCase().includes('propr')) return false;
+    if (authorType === 'Bot' && COMMON_NOISY_BOT_AUTHORS.includes(author.toLowerCase())) return false;
     if (authorType === 'Bot' && NOISY_BOT_PATTERNS.some(pattern => lowerBody.includes(pattern.toLowerCase()))) {
         return false;
     }
@@ -168,6 +192,36 @@ function formatComment(comment: TitleComment): string {
     return `- @${author} (${kind}): ${truncate((comment.body || '').trim())}`;
 }
 
+function stripHtmlComments(value: string): string {
+    return value.replace(/<!--[\s\S]*?-->/g, '').trim();
+}
+
+function isPrTemplateNoiseLine(line: string): boolean {
+    return [
+        /^#+\s*(checklist|todo|testing checklist|screenshots?|related issues?|linked issues?|how to test|test plan)\s*:?$/i,
+        /^[-*]\s+\[[ xX]\]\s+/,
+        /^(closes|fixes|resolves)\s+#\d+\b/i,
+        /^n\/a$/i,
+        /^none$/i,
+    ].some(pattern => pattern.test(line.trim()));
+}
+
+function cleanPrDescriptionForTitleContext(value: string | null | undefined): string {
+    const body = stripHtmlComments(value || '');
+    if (!body.trim()) return '';
+
+    for (const paragraph of body.split(/\n{2,}/)) {
+        const cleaned = paragraph
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line && !isPrTemplateNoiseLine(line))
+            .join('\n')
+            .trim();
+        if (hasMeaningfulTitleText(cleaned)) return cleaned;
+    }
+    return '';
+}
+
 export function buildPrTaskTitleContext(options: BuildTitleContextOptions): TitleContextResult {
     const recentCommentLimit = options.recentCommentLimit ?? 2;
     const usefulRecentComments = selectRecentUsefulPrComments(options.recentComments, {
@@ -185,11 +239,12 @@ export function buildPrTaskTitleContext(options: BuildTitleContextOptions): Titl
         sections.push(`Recent useful PR comments (newest first):\n${usefulRecentComments.map(formatComment).join('\n')}`);
     }
 
+    const prDescriptionFallback = cleanPrDescriptionForTitleContext(options.prDescription);
     const includePrDescription = !hasMeaningfulInstructions
         && usefulRecentComments.length < recentCommentLimit
-        && hasMeaningfulTitleText(options.prDescription);
+        && hasMeaningfulTitleText(prDescriptionFallback);
     if (includePrDescription) {
-        sections.push(`PR description fallback:\n${truncate(options.prDescription!.trim())}`);
+        sections.push(`PR description fallback:\n${truncate(prDescriptionFallback)}`);
     }
 
     const includeReviewFeedback = hasMeaningfulTitleText(options.reviewFeedback);
@@ -227,110 +282,6 @@ export function buildPrTaskTitleContext(options: BuildTitleContextOptions): Titl
         includedReviewFeedback: includeReviewFeedback,
         includedMergeConflictDiff: includeMergeConflictDiff,
     };
-}
-
-function unquoteDiffPath(path: string): string {
-    const trimmed = path.trim();
-    if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return trimmed;
-    try {
-        return JSON.parse(trimmed) as string;
-    } catch {
-        return trimmed.substring(1, trimmed.length - 1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-    }
-}
-
-function normalizeDiffPath(path: string): string {
-    return unquoteDiffPath(path).replace(/^a\//, '').replace(/^b\//, '').trim();
-}
-
-function splitDiffHeaderArgs(value: string): string[] {
-    const args: string[] = [];
-    let current = '';
-    let inQuotes = false;
-    let escaping = false;
-
-    for (const char of value) {
-        if (escaping) {
-            current += char;
-            escaping = false;
-            continue;
-        }
-        if (char === '\\' && inQuotes) {
-            current += char;
-            escaping = true;
-            continue;
-        }
-        if (char === '"') {
-            current += char;
-            inQuotes = !inQuotes;
-            continue;
-        }
-        if (/\s/.test(char) && !inQuotes) {
-            if (current) {
-                args.push(current);
-                current = '';
-            }
-            continue;
-        }
-        current += char;
-    }
-
-    if (current) args.push(current);
-    return args;
-}
-
-function diffBlockPaths(header: string): string[] {
-    const gitHeader = header.match(/^diff --git\s+(.+)$/);
-    if (gitHeader) {
-        const paths = splitDiffHeaderArgs(gitHeader[1]);
-        return paths.slice(0, 2).map(normalizeDiffPath);
-    }
-
-    const combinedHeader = header.match(/^diff --(?:cc|combined)\s+(.+)$/);
-    if (combinedHeader) return [normalizeDiffPath(combinedHeader[1])];
-
-    return [];
-}
-
-function diffPatchPath(line: string): string | null {
-    const patchHeader = line.match(/^(?:---|\+\+\+)\s+(.+)$/);
-    if (!patchHeader || patchHeader[1] === '/dev/null') return null;
-    return normalizeDiffPath(patchHeader[1]);
-}
-
-function blockReferencesWantedFile(lines: string[], wanted: Set<string>): boolean {
-    return lines.some(line => {
-        const path = diffPatchPath(line);
-        return path !== null && wanted.has(path);
-    });
-}
-
-export function filterDiffToFiles(diff: string, filePaths: string[]): string {
-    const wanted = new Set(filePaths.map(normalizeDiffPath));
-    if (wanted.size === 0 || !diff.trim()) return '';
-
-    const lines = diff.split('\n');
-    const blocks: string[] = [];
-    let current: string[] = [];
-    let includeCurrent = false;
-    let sawDiffHeader = false;
-
-    for (const line of lines) {
-        if (line.startsWith('diff --git ') || line.startsWith('diff --cc ') || line.startsWith('diff --combined ')) {
-            sawDiffHeader = true;
-            if (current.length > 0 && includeCurrent) blocks.push(current.join('\n'));
-            current = [line];
-            includeCurrent = diffBlockPaths(line).some(path => wanted.has(path));
-        } else if (current.length > 0) {
-            current.push(line);
-        }
-    }
-
-    if (current.length > 0 && includeCurrent) blocks.push(current.join('\n'));
-    if (blocks.length === 0 && !sawDiffHeader && blockReferencesWantedFile(lines, wanted)) {
-        return diff;
-    }
-    return blocks.join('\n');
 }
 
 function normalizeFallbackSummaryLine(line: string): string {
@@ -408,36 +359,4 @@ function selectMergeConflictFallbackLine(context: string): string {
     const fileList = [...files].filter(Boolean).slice(0, 3);
     if (fileList.length === 0) return '';
     return `Conflicts in ${fileList.join(', ')}${files.size > fileList.length ? ', ...' : ''}`;
-}
-
-function scoreConflictDiff(diff: string): number {
-    return (diff.includes('<<<<<<<') ? 8 : 0) + (diff.includes('diff --cc') || diff.includes('diff --combined') ? 4 : 0)
-        + (diff.includes('@@@') ? 3 : 0) + (diff.includes('@@') ? 1 : 0) + Math.min(diff.length, 2000) / 2000;
-}
-
-export async function getConflictDiffForTitle(worktreePath: string, conflictedFiles?: string[]): Promise<string> {
-    if (!conflictedFiles || conflictedFiles.length === 0) return '';
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
-
-    let bestDiff = '';
-    for (const args of [
-        ['diff', '--merge', '--', ...conflictedFiles],
-        ['diff', '--', ...conflictedFiles],
-        ['diff', '--cc', '--', ...conflictedFiles],
-    ]) {
-        try {
-            const { stdout } = await execFileAsync('git', args, {
-                cwd: worktreePath,
-                encoding: 'utf8',
-                maxBuffer: 2 * 1024 * 1024,
-            });
-            const filtered = filterDiffToFiles(String(stdout), conflictedFiles);
-            if (filtered.trim() && scoreConflictDiff(filtered) > scoreConflictDiff(bestDiff)) bestDiff = filtered;
-        } catch {
-            // Try the next diff mode; git versions and conflict states differ here.
-        }
-    }
-    return bestDiff;
 }

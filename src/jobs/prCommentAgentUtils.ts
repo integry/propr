@@ -11,6 +11,8 @@ import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 const MAX_GENERATED_SUBTITLE_LENGTH = 140;
+const CONFIGURED_TITLE_GENERATION_TIMEOUT_MS = Number.parseInt(process.env.PR_TASK_TITLE_GENERATION_TIMEOUT_MS || '5000', 10);
+const TITLE_GENERATION_TIMEOUT_MS = Number.isFinite(CONFIGURED_TITLE_GENERATION_TIMEOUT_MS) ? CONFIGURED_TITLE_GENERATION_TIMEOUT_MS : 5000;
 const NOOP_LOGGER = { debug: () => undefined, warn: () => undefined } as unknown as Logger;
 
 interface GitHubToken { token: string }
@@ -31,6 +33,7 @@ interface SummaryTitleOptions {
     correlatedLogger: Logger;
     analysisRunner?: typeof runLightweightLLMAnalysis;
     summarizationSettingsLoader?: typeof loadSummarizationSettings;
+    titleGenerationTimeoutMs?: number;
 }
 
 function sanitizeGeneratedSubtitle(value: string, fallbackSubtitle: string): string {
@@ -53,6 +56,17 @@ function titleGenerationTaskKind(workflowLabel?: string): string {
     return `pr-${workflow}-title-generation`;
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timeout) clearTimeout(timeout);
+    });
+}
+
 export async function generateSummaryTitle(options: SummaryTitleOptions): Promise<string> {
     const { combinedCommentBody, titleContext, fallbackSubtitle, worktreeInfo, githubToken, pullRequestNumber, prTitle, workflowLabel, repoOwner, repoName, correlationId, taskId, correlatedLogger } = options;
     const contextToSummarize = (titleContext !== undefined ? titleContext : combinedCommentBody || '').trim();
@@ -68,7 +82,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
         const summarizationSettings = await (options.summarizationSettingsLoader || loadSummarizationSettings)();
         const configuredModel = summarizationSettings.agent_alias?.trim();
         const model = configuredModel || 'haiku';
-        const title = await (options.analysisRunner || runLightweightLLMAnalysis)({
+        const title = await withTimeout((options.analysisRunner || runLightweightLLMAnalysis)({
             prompt: `${summaryRequest}\n\nYour output must be ONLY the summary string itself, with no other text.`,
             model,
             correlationId,
@@ -82,7 +96,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
                 taskKind: titleGenerationTaskKind(workflowLabel),
                 configuredVia: configuredModel ? 'summarization.agent_alias' : 'fallback'
             }
-        });
+        }), options.titleGenerationTimeoutMs ?? TITLE_GENERATION_TIMEOUT_MS, 'PR task title generation');
         const sanitizedTitle = sanitizeGeneratedSubtitle(title, deterministicFallback);
         correlatedLogger.info({ taskId, summaryTitle: sanitizedTitle }, 'Generated AI summary for PR task subtitle');
         return sanitizedTitle;
@@ -141,13 +155,9 @@ export async function resolvePRCommentModelName(llm: string | null | undefined, 
             throw labelError;
         }
     } else {
-        try {
-            const registry = AgentRegistry.getInstance();
-            await registry.ensureInitialized();
-            modelName = (await resolveDefaultAgentAndModel(registry, correlatedLogger)).resolvedModel;
-        } catch {
-            // Keep the configured default if the registry is unavailable.
-        }
+        const registry = AgentRegistry.getInstance();
+        await registry.ensureInitialized();
+        modelName = (await resolveDefaultAgentAndModel(registry, correlatedLogger)).resolvedModel;
     }
     if (!modelName) throw new NoDefaultModelConfiguredError();
     return modelName;

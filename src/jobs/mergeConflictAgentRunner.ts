@@ -22,6 +22,38 @@ import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 
 interface GitHubToken { token: string }
 
+async function buildMergeCompletionHistoryMetadata(options: {
+    stateManager: WorkerStateManager;
+    taskId: string;
+    pullRequestNumber: number;
+    baseBranch: string;
+    headBranch: string;
+    model: string;
+    commitHash: string;
+    correlatedLogger: Logger;
+}): Promise<Record<string, unknown>> {
+    const metadata: Record<string, unknown> = {
+        commandMode: 'merge',
+        pullRequestNumber: options.pullRequestNumber,
+        baseBranch: options.baseBranch,
+        headBranch: options.headBranch,
+        model: options.model,
+        commitHash: options.commitHash,
+    };
+
+    try {
+        const state = await options.stateManager.getTaskState(options.taskId);
+        const issueRef = state?.issueRef as { title?: unknown; subtitle?: unknown; issueNumber?: unknown } | undefined;
+        if (typeof issueRef?.title === 'string') metadata.title = issueRef.title;
+        if (typeof issueRef?.subtitle === 'string') metadata.subtitle = issueRef.subtitle;
+        if (typeof issueRef?.issueNumber === 'number') metadata.issueNumber = issueRef.issueNumber;
+    } catch (stateError) {
+        options.correlatedLogger.warn({ taskId: options.taskId, error: (stateError as Error).message }, 'Failed to load merge task metadata for completion history');
+    }
+
+    return metadata;
+}
+
 async function verifyNoConflictMarkers(worktreeInfo: WorktreeInfo, pullRequestNumber: number, correlatedLogger: Logger): Promise<void> {
     const { execFileSync } = await import('child_process');
     try {
@@ -128,6 +160,10 @@ export async function handleMergeWithAgent(options: {
     });
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Merge conflict resolution completed successfully', commitHash: finalCommitHash,
+        historyMetadata: await buildMergeCompletionHistoryMetadata({
+            stateManager, taskId, pullRequestNumber, baseBranch, headBranch: branchName,
+            model: claudeResult.model || resolvedModel, commitHash: finalCommitHash, correlatedLogger,
+        }),
     });
     try {
         await db('tasks').where({ task_id: taskId }).update({ commit_hash: finalCommitHash });

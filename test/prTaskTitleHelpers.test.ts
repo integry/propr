@@ -137,6 +137,25 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.deepStrictEqual(selected.map(comment => comment.id), [3]);
     });
 
+    test('filters common deployment and coverage bot comments', () => {
+        const selected = selectRecentUsefulPrComments([
+            {
+                id: 7,
+                body: 'Preview deployment is ready for this pull request.',
+                created_at: '2026-05-29T08:07:00Z',
+                user: { login: 'vercel[bot]', type: 'Bot' },
+            },
+            {
+                id: 8,
+                body: 'Coverage report uploaded for commit abc123.',
+                created_at: '2026-05-29T08:08:00Z',
+                user: { login: 'codecov[bot]', type: 'Bot' },
+            },
+            comments[2],
+        ], { limit: 2 });
+        assert.deepStrictEqual(selected.map(comment => comment.id), [3]);
+    });
+
 
     test('falls back to PR description when fewer than two useful recent comments exist', () => {
         const result = buildPrTaskTitleContext({
@@ -152,6 +171,30 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.strictEqual(result.includedPrDescription, true);
         assert.ok(result.context.includes('The refresh token path still fails after expiry.'));
         assert.ok(result.context.includes('This PR adds token refresh support'));
+    });
+
+    test('uses the first meaningful PR description paragraph instead of checklist boilerplate', () => {
+        const result = buildPrTaskTitleContext({
+            workflow: 'fix',
+            pullRequestNumber: 123,
+            prTitle: 'Add OAuth refresh handling',
+            recentComments: [],
+            prDescription: [
+                '<!-- remove this template before merge -->',
+                '## Checklist',
+                '- [ ] Added tests',
+                '- [x] Updated docs',
+                '',
+                'The OAuth callback now needs to preserve the refresh token during retry.',
+                '',
+                'Closes #100',
+            ].join('\n'),
+        });
+
+        assert.strictEqual(result.includedPrDescription, true);
+        assert.ok(result.context.includes('preserve the refresh token'));
+        assert.ok(!result.context.includes('Added tests'));
+        assert.ok(!result.context.includes('Closes #100'));
     });
 
     test('includes meaningful slash-command instructions with recent PR context', () => {

@@ -134,7 +134,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
     try {
         await stateManager.createTaskState(taskId, {
             number: pullRequestNumber, repoOwner, repoName, modelName,
-            type: 'pr_followup', pullRequestNumber,
+            type: 'merge_conflict', pullRequestNumber,
         } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state');
