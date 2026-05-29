@@ -154,6 +154,18 @@ interface ExecutionDetailRow { event_type: string; event_timestamp: string; cont
 interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
 interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; sessionID?: string; session_id?: string; conversation_id?: string; item?: unknown; part?: unknown; parts?: unknown[]; }
 export type StoredOutputFormat = 'claude' | 'codex' | 'opencode' | 'unknown';
+const CODEX_STORED_OUTPUT_TYPES = new Set([
+  'message',
+  'tool_use',
+  'error',
+  'result',
+  'turn.started',
+  'turn.completed',
+  'item.started',
+  'item.updated',
+  'item.completed'
+]);
+const CLAUDE_STORED_OUTPUT_TYPES = new Set(['assistant', 'user']);
 export interface ParsedStoredOutput {
   parsed: ConversationResult | null;
   rawFallback: ConversationResult | null;
@@ -238,29 +250,23 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   try {
     const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
     const type = parsed.type?.toLowerCase();
-    if (parsed.sessionID || parsed.part || parsed.parts || (type === 'message' && typeof parsed.message === 'object' && parsed.message !== null)) {
-      return 'opencode';
-    }
-    if (parsed.type === 'message'
-      || parsed.type === 'tool_use'
-      || parsed.type === 'error'
-      || parsed.type === 'result'
-      || parsed.type === 'turn.started'
-      || parsed.type === 'turn.completed'
-      || parsed.type === 'item.started'
-      || parsed.type === 'item.updated'
-      || parsed.type === 'item.completed'
-      || parsed.item !== undefined) {
-      return 'codex';
-    }
-
-    if (parsed.type === 'assistant' || parsed.type === 'user' || !!parsed.session_id || !!parsed.conversation_id) {
-      return 'claude';
-    }
+    if (isOpenCodeStoredOutputLine(parsed, type)) return 'opencode';
+    if (isCodexStoredOutputLine(parsed)) return 'codex';
+    if (isClaudeStoredOutputLine(parsed)) return 'claude';
     return 'unknown';
   } catch {
     return 'unknown';
   }
+}
+function isOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine, type?: string): boolean {
+  const hasMessageObject = type === 'message' && typeof parsed.message === 'object' && parsed.message !== null;
+  return Boolean(parsed.sessionID || parsed.part || parsed.parts || hasMessageObject);
+}
+function isCodexStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
+  return Boolean((parsed.type && CODEX_STORED_OUTPUT_TYPES.has(parsed.type)) || parsed.item !== undefined);
+}
+function isClaudeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
+  return Boolean((parsed.type && CLAUDE_STORED_OUTPUT_TYPES.has(parsed.type)) || parsed.session_id || parsed.conversation_id);
 }
 function buildRawOutputConversationResult(output: string): ConversationResult | null {
   const trimmed = output.trim();
