@@ -19,6 +19,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   onSave
 }) => {
   const isEditing = agent !== null;
+  const getAgentTypeLabel = (type: AgentType) => type === 'opencode' ? 'OpenCode' : type;
 
   const [formData, setFormData] = useState<Omit<AgentConfig, 'id'> & { id?: string }>({
     type: 'claude',
@@ -228,7 +229,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           {/* Agent Type - Pill Toggle Style */}
           <div>
             <label className="block text-gray-700 mb-1.5 font-medium text-sm">Agent Type</label>
-            <div className="inline-flex bg-gray-100 rounded-full p-1">
+            <div className="flex flex-wrap gap-1 bg-gray-100 rounded-full p-1 w-fit">
               {AGENT_DISPLAY_ORDER.map(type => (
                 <button
                   key={type}
@@ -240,7 +241,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  {type}
+                  {getAgentTypeLabel(type)}
                 </button>
               ))}
             </div>
