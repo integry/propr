@@ -40,6 +40,7 @@ const WORKFLOW_LABELS: Record<PrTaskWorkflow, string> = {
 };
 
 const MAX_PR_TITLE_IN_TASK_TITLE = 140;
+const MAX_TITLE_CONTEXT_LENGTH = 6000;
 
 const PROPR_GENERATED_PATTERNS = [
     'Starting work on follow-up changes',
@@ -219,7 +220,7 @@ export function buildPrTaskTitleContext(options: BuildTitleContextOptions): Titl
     });
 
     return {
-        context: `Task: ${title}\n\n${sections.join('\n\n')}`,
+        context: truncate(`Task: ${title}\n\n${sections.join('\n\n')}`, MAX_TITLE_CONTEXT_LENGTH),
         hasMeaningfulContext: true,
         usefulRecentCommentCount: usefulRecentComments.length,
         includedPrDescription: includePrDescription,
@@ -369,10 +370,44 @@ function isFallbackContextHeader(line: string): boolean {
 }
 
 export function selectFallbackSummaryLine(context: string): string {
+    if (/^Merge conflict diff for conflicting files only:?$/im.test(context)) {
+        const mergeLine = selectMergeConflictFallbackLine(context);
+        if (mergeLine) return mergeLine;
+    }
+
     return context
         .split('\n')
         .map(line => normalizeFallbackSummaryLine(line.trim()))
         .find(line => line && !isFallbackContextHeader(line)) || '';
+}
+
+function selectMergeConflictFallbackLine(context: string): string {
+    const files = new Set<string>();
+    let insideConflictMarker = false;
+    for (const rawLine of context.split('\n')) {
+        const line = rawLine.trim();
+        if (line.startsWith('diff --')) {
+            diffBlockPaths(line).forEach(path => files.add(path));
+        }
+        const patchPath = diffPatchPath(line);
+        if (patchPath) files.add(patchPath);
+
+        if (!line || isFallbackContextHeader(line)) continue;
+        const bodyMatch = line.match(/^[+\- ]+(.+)$/);
+        const body = (bodyMatch ? bodyMatch[1] : line).trim();
+        if (!body) continue;
+        if (/^(<<<<<<<|=======|>>>>>>>)($|\s)/.test(body)) {
+            insideConflictMarker = true;
+            continue;
+        }
+        if (insideConflictMarker) {
+            return normalizeFallbackSummaryLine(body);
+        }
+    }
+
+    const fileList = [...files].filter(Boolean).slice(0, 3);
+    if (fileList.length === 0) return '';
+    return `Conflicts in ${fileList.join(', ')}${files.size > fileList.length ? ', ...' : ''}`;
 }
 
 function scoreConflictDiff(diff: string): number {

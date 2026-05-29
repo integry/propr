@@ -11,7 +11,7 @@ import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 const MAX_GENERATED_SUBTITLE_LENGTH = 140;
-const NOOP_LOGGER = { debug: () => undefined } as unknown as Logger;
+const NOOP_LOGGER = { debug: () => undefined, warn: () => undefined } as unknown as Logger;
 
 interface GitHubToken { token: string }
 
@@ -136,8 +136,9 @@ export async function resolvePRCommentModelName(llm: string | null | undefined, 
     if (llm) {
         try {
             modelName = (await resolveLlmLabel(llm)).model;
-        } catch {
-            // Keep the configured default if label resolution fails.
+        } catch (labelError) {
+            correlatedLogger.warn({ llm, error: (labelError as Error).message }, 'Failed to resolve explicit LLM label for PR comment task state');
+            throw labelError;
         }
     } else {
         try {

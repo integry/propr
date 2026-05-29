@@ -211,8 +211,18 @@ export async function updateMergeTaskWithPRInfo(options: {
     title?: string;
     subtitle?: string;
 }): Promise<{ prTitle: string; linkedIssueNumber: number | null }> {
-    const { octokit, pullRequestNumber, repoOwner, repoName } = options;
+    const { prTitle, linkedIssueNumber } = await fetchMergeTaskPRInfo(options);
+    await updateMergeTaskWithKnownPRInfo({ ...options, prTitle, linkedIssueNumber });
+    return { prTitle, linkedIssueNumber };
+}
 
+export async function fetchMergeTaskPRInfo(options: {
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+}): Promise<{ prTitle: string; linkedIssueNumber: number | null }> {
+    const { octokit, pullRequestNumber, repoOwner, repoName } = options;
     const graphqlResponse = await octokit.graphql<{
         repository: {
             pullRequest: {
@@ -241,8 +251,6 @@ export async function updateMergeTaskWithPRInfo(options: {
     const prTitle = graphqlResponse.repository.pullRequest.title;
     const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
     const linkedIssueNumber = linkedIssues.length > 0 ? linkedIssues[0].number : null;
-
-    await updateMergeTaskWithKnownPRInfo({ ...options, prTitle, linkedIssueNumber });
     return { prTitle, linkedIssueNumber };
 }
 

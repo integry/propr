@@ -235,6 +235,43 @@ describe('prTaskTitleHelpers context selection', () => {
 
         assert.strictEqual(line, 'Handle conflict markers in src/auth.ts.');
     });
+
+    test('fallback summary selection prefers merge conflict marker body over diff metadata', () => {
+        const line = selectFallbackSummaryLine([
+            'Task: Merge PR #123: Resolve auth conflicts',
+            '',
+            'Merge conflict diff for conflicting files only:',
+            'diff --git a/src/auth.ts b/src/auth.ts',
+            'index 111..222 100644',
+            '--- a/src/auth.ts',
+            '+++ b/src/auth.ts',
+            '@@ -1 +1 @@',
+            '+<<<<<<< HEAD',
+            '+preserve refreshed session tokens',
+            '+=======',
+            '+reuse existing session tokens',
+            '+>>>>>>> main',
+        ].join('\n'));
+
+        assert.strictEqual(line, 'preserve refreshed session tokens');
+    });
+
+    test('fallback summary selection uses conflicting file names when merge diff has no marker body', () => {
+        const line = selectFallbackSummaryLine([
+            'Task: Merge PR #123: Resolve auth conflicts',
+            '',
+            'Merge conflict diff for conflicting files only:',
+            'diff --git a/src/auth.ts b/src/auth.ts',
+            'index 111..222 100644',
+            '--- a/src/auth.ts',
+            '+++ b/src/auth.ts',
+            '@@ -1 +1 @@',
+            '-old',
+            '+new',
+        ].join('\n'));
+
+        assert.strictEqual(line, 'Conflicts in src/auth.ts');
+    });
 });
 
 describe('prTaskTitleHelpers merge conflict diff context', () => {

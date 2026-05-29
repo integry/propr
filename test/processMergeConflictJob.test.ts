@@ -135,12 +135,17 @@ const mockAgent = {
     config: { alias: 'claude', type: 'claude', enabled: true, defaultModel: 'claude-sonnet-4-20250514', dockerImage: 'test' },
     executeTask: mock.fn(async () => mockAgentResult),
 };
+const mockConfiguredAgent = {
+    config: { alias: 'codex', type: 'codex', enabled: true, defaultModel: 'gpt-5.5', dockerImage: 'test' },
+    executeTask: mock.fn(async () => ({ ...mockAgentResult, modelUsed: 'gpt-5.5' })),
+};
+let mockSettings: Record<string, unknown> = {};
 
 const mockRegistry = {
     ensureInitialized: mock.fn(async () => {}),
     getDefaultAgent: mock.fn(() => mockAgent),
-    getAgentByAlias: mock.fn(() => mockAgent),
-    getAllAgents: mock.fn(() => [mockAgent]),
+    getAgentByAlias: mock.fn((alias: string) => alias === 'codex' ? mockConfiguredAgent : mockAgent),
+    getAllAgents: mock.fn(() => [mockAgent, mockConfiguredAgent]),
 };
 
 // Mock @propr/core
@@ -172,7 +177,7 @@ await mock.module('@propr/core', {
         recordLLMMetrics: mock.fn(async () => {}),
         issueQueue: { add: mockQueueAdd },
         getDefaultModel: mock.fn(() => 'claude-sonnet-4-20250514'),
-        loadSettings: mock.fn(async () => ({})),
+        loadSettings: mock.fn(async () => mockSettings),
         db: Object.assign(mock.fn(() => ({ where: mock.fn(() => ({ update: mock.fn(async () => {}) })) })), {
             migrate: { latest: mock.fn(async () => {}) }
         }),
@@ -242,7 +247,9 @@ function resetAllMocks() {
     mockCommitChanges.mock.resetCalls();
     mockPushBranch.mock.resetCalls();
     mockAgent.executeTask.mock.resetCalls();
+    mockConfiguredAgent.executeTask.mock.resetCalls();
     mockRedisStore.clear();
+    mockSettings = {};
 }
 
 describe('processMergeConflictJob', () => {
@@ -322,6 +329,18 @@ describe('processMergeConflictJob', () => {
         assert.ok(patchCall);
         const body = patchCall.arguments[1].body as string;
         assert.ok(body.includes('Resolved merge conflicts'));
+    });
+
+    test('records the model from configured default agent in initial task state', async () => {
+        mockSettings = { default_agent_alias: 'codex' };
+        mockMergeResult = { outcome: 'conflicts' as never, conflictedFiles: ['src/index.ts'] } as never;
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+
+        await processMergeConflictJob(createMockJob());
+
+        const createCall = mockStateManager.createTaskState.mock.calls[0];
+        assert.strictEqual(createCall.arguments[1].modelName, 'gpt-5.5');
+        assert.strictEqual(mockConfiguredAgent.executeTask.mock.callCount(), 1);
     });
 
     test('failed merge: reports error and sets FAILED state', async () => {

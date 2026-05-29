@@ -14,11 +14,11 @@ import { Redis } from 'ioredis';
 import { getDefaultModel, NoDefaultModelConfiguredError } from '@propr/core';
 import { cleanupWorktree } from '@propr/core';
 import {
+    fetchMergeTaskPRInfo,
     updateMergeTaskWithKnownPRInfo,
-    updateMergeTaskWithPRInfo,
 } from './mergeConflictHelpers.js';
 import { handleMergeWithAgent } from './mergeConflictAgentRunner.js';
-import { generateSummaryTitle } from './prCommentAgentUtils.js';
+import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import {
     buildDeterministicPrTaskSubtitle,
     getConflictDiffForTitle,
@@ -56,16 +56,14 @@ async function acquireMergeJobLock(
     return { acquired: true };
 }
 
-async function resolveModelForTask(): Promise<string> {
+async function resolveModelForTask(correlatedLogger: Logger): Promise<string> {
     try {
         const registry = AgentRegistry.getInstance();
         await registry.ensureInitialized();
-        const defaultAgent = registry.getDefaultAgent();
-        if (defaultAgent?.config.defaultModel) {
-            return defaultAgent.config.defaultModel;
-        }
-    } catch {
-        // Keep default
+        return (await resolveDefaultAgentAndModel(registry, correlatedLogger)).resolvedModel;
+    } catch (error) {
+        if (error instanceof NoDefaultModelConfiguredError) throw error;
+        correlatedLogger.debug({ error: (error as Error).message }, 'Failed to resolve default agent model for merge task state');
     }
     if (!DEFAULT_MODEL_NAME) {
         throw new NoDefaultModelConfiguredError();
@@ -131,7 +129,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
     const lockStatus = await acquireMergeJobLock(lockKey, correlationId, job, correlatedLogger);
     if (!lockStatus.acquired) return lockStatus.result;
 
-    const modelName = await resolveModelForTask();
+    const modelName = await resolveModelForTask(correlatedLogger);
 
     try {
         await stateManager.createTaskState(taskId, {
@@ -160,7 +158,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         startingCommentId = (startingComment as { data: { id: number } }).data.id;
 
         try {
-            prInfo = await updateMergeTaskWithPRInfo({ octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient });
+            prInfo = await fetchMergeTaskPRInfo({ octokit, pullRequestNumber, repoOwner, repoName });
         } catch (prError) {
             correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR info for merge task');
         }
@@ -183,19 +181,23 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
             throw new Error(`Merge failed: ${mergeResult.error}`);
         }
 
-        if (prInfo && (mergeResult.conflictedFiles?.length ?? 0) > 0) {
+        const mergeTitleInfo = prInfo ?? { prTitle: 'Untitled pull request', linkedIssueNumber: null };
+        const hasConflictedFiles = (mergeResult.conflictedFiles?.length ?? 0) > 0;
+        if (hasConflictedFiles || prInfo) {
             const fallbackSubtitle = buildDeterministicPrTaskSubtitle('merge', { baseBranch, headBranch });
             let subtitle = fallbackSubtitle;
-            try {
-                const conflictDiff = await getConflictDiffForTitle(worktreeInfo.worktreePath, mergeResult.conflictedFiles);
-                const titleContext = buildPrTaskTitleContext({ workflow: 'merge', pullRequestNumber, prTitle: prInfo.prTitle, mergeConflictDiff: conflictDiff });
-                subtitle = titleContext.hasMeaningfulContext ? await generateSummaryTitle({
-                    combinedCommentBody: '', titleContext: titleContext.context, fallbackSubtitle, worktreeInfo, githubToken,
-                    pullRequestNumber, prTitle: prInfo.prTitle, workflowLabel: 'Merge', repoOwner, repoName,
-                    correlationId, taskId, correlatedLogger,
-                }) : fallbackSubtitle;
-            } catch (subtitleError) {
-                correlatedLogger.warn({ taskId, error: (subtitleError as Error).message }, 'Failed to generate merge task subtitle from conflict diff');
+            if (hasConflictedFiles) {
+                try {
+                    const conflictDiff = await getConflictDiffForTitle(worktreeInfo.worktreePath, mergeResult.conflictedFiles);
+                    const titleContext = buildPrTaskTitleContext({ workflow: 'merge', pullRequestNumber, prTitle: mergeTitleInfo.prTitle, mergeConflictDiff: conflictDiff });
+                    subtitle = titleContext.hasMeaningfulContext ? await generateSummaryTitle({
+                        combinedCommentBody: '', titleContext: titleContext.context, fallbackSubtitle, worktreeInfo, githubToken,
+                        pullRequestNumber, prTitle: mergeTitleInfo.prTitle, workflowLabel: 'Merge', repoOwner, repoName,
+                        correlationId, taskId, correlatedLogger,
+                    }) : fallbackSubtitle;
+                } catch (subtitleError) {
+                    correlatedLogger.warn({ taskId, error: (subtitleError as Error).message }, 'Failed to generate merge task subtitle from conflict diff');
+                }
             }
             try {
                 await updateMergeTaskWithKnownPRInfo({
@@ -208,9 +210,9 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
                     headBranch,
                     correlatedLogger,
                     redisClient,
-                    prTitle: prInfo.prTitle,
-                    linkedIssueNumber: prInfo.linkedIssueNumber,
-                    title: buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle: prInfo.prTitle }),
+                    prTitle: mergeTitleInfo.prTitle,
+                    linkedIssueNumber: mergeTitleInfo.linkedIssueNumber,
+                    title: buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle: mergeTitleInfo.prTitle }),
                     subtitle,
                 });
             } catch (titleError) {
