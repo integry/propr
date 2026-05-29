@@ -19,29 +19,18 @@ export interface BuildOpenCodePromptOptions {
 }
 
 export interface OpenCodeEvent {
-    type?: string;
-    timestamp?: number | string;
-    sessionID?: string;
-    sessionId?: string;
-    session_id?: string;
-    part?: OpenCodePart;
-    parts?: OpenCodePart[];
+    type?: string; timestamp?: number | string;
+    sessionID?: string; sessionId?: string; session_id?: string;
+    part?: OpenCodePart; parts?: OpenCodePart[];
     message?: OpenCodeMessage;
     error?: { name?: string; data?: { message?: string }; message?: string } | string;
-    model?: string;
-    text?: string;
-    content?: unknown;
-    delta?: string;
+    model?: string; text?: string; content?: unknown; delta?: string;
     response?: OpenCodeTextContainer;
-    usage?: OpenCodeUsage;
-    stats?: OpenCodeUsage;
-    tokens?: OpenCodeUsage;
+    usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage;
 }
 
 interface OpenCodeTextContainer {
-    text?: string;
-    content?: unknown;
-    delta?: string;
+    text?: string; content?: unknown; delta?: string;
     usage?: OpenCodeUsage;
 }
 
@@ -281,16 +270,25 @@ export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknow
     const message = event.message && typeof event.message === 'object'
         ? event.message as { role?: unknown; parts?: unknown[] }
         : null;
+    const hasOpenCodePayload = hasOpenCodeEventPayload(event, type, message);
     return Boolean(
         event.sessionID
-        || event.session_id
         || (event.sessionId && message?.role === 'assistant')
-        || event.part
-        || event.parts?.length
-        || message?.parts?.length
-        || (type && ['text', 'delta', 'completion'].includes(type) && hasOpenCodeTextField(event))
-        || (type === 'result' && hasOpenCodeResultUsage(event))
+        || (event.session_id && hasOpenCodePayload)
+        || hasOpenCodePayload
     );
+}
+
+function hasOpenCodeEventPayload(
+    event: { sessionID?: unknown; sessionId?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; text?: unknown; content?: unknown; delta?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage },
+    type: string | undefined,
+    message: { role?: unknown; parts?: unknown[] } | null
+): boolean {
+    const hasUsage = hasOpenCodeResultUsage(event);
+    const hasAssistantText = message?.role === 'assistant' && hasOpenCodeTextField(event.message as { text?: unknown; content?: unknown; delta?: unknown });
+    const hasTopLevelText = Boolean(type && ['text', 'delta', 'completion'].includes(type) && hasOpenCodeTextField(event));
+    return Boolean(event.part || event.parts?.length || message?.parts?.length || hasAssistantText || hasTopLevelText
+        || (type === 'result' && hasUsage) || ((event.sessionID || event.sessionId) && hasUsage));
 }
 
 function hasOpenCodeResultUsage(event: { usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }): boolean {

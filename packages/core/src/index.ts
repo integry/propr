@@ -248,6 +248,7 @@ export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { GeminiAgent } from './agents/impl/GeminiAgent.js';
 export { OpenCodeAgent } from './agents/impl/OpenCodeAgent.js';
 export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl } from './agents/impl/openCodeUtils.js';
+export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
 export type {
     Agent,

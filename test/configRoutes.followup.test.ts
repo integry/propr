@@ -1749,6 +1749,27 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(detectStoredOutputFormat('{"type":"message","sessionId":"generic-session","message":{"content":"generic"}}\n'), 'codex');
     });
 
+    test('parseStoredOutputContent keeps Claude assistant JSONL with session_id on the Claude path', () => {
+        const parsed = parseStoredOutputContent('{"type":"assistant","session_id":"claude-session","message":{"content":[{"type":"text","text":"Claude says hi"}]}}\n');
+
+        assert.strictEqual(parsed.format, 'claude');
+        assert.deepStrictEqual(parsed.parsed?.events, [
+            { type: 'thought', content: 'Claude says hi', timestamp: parsed.parsed?.events[0].timestamp },
+        ]);
+    });
+
+    test('detectStoredOutputFormat does not treat generic session_id envelopes as OpenCode', () => {
+        assert.strictEqual(detectStoredOutputFormat('{"type":"message","session_id":"generic-session","message":{"content":"generic"}}\n'), 'codex');
+    });
+
+    test('parseOpenCodeOutputToConversationResult normalizes Unix-second timestamps', () => {
+        const result = parseOpenCodeOutputToConversationResult('{"type":"text","text":"OpenCode seconds","timestamp":1714867200}\n');
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'OpenCode seconds', timestamp: '2024-05-05T00:00:00.000Z' },
+        ]);
+    });
+
     test('parseRedisOutput preserves cache-only OpenCode token usage', () => {
         const result = parseRedisOutput([
             '{"type":"message","sessionID":"session-a","usage":{"cache_creation_input_tokens":4,"cache_read_input_tokens":6}}',
@@ -1830,6 +1851,16 @@ describe('config route follow-up helpers', () => {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
         });
+    });
+
+    test('parseRedisOutput normalizes Unix-second timestamps', () => {
+        const result = parseRedisOutput([
+            '{"type":"text","text":"OpenCode seconds","timestamp":1714867200}',
+        ]);
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'thought', content: 'OpenCode seconds', timestamp: '2024-05-05T00:00:00.000Z' },
+        ]);
     });
 
     test('parseRedisOutput leaves Gemini tool events with stats on the Gemini path', () => {

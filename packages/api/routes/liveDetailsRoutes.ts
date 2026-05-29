@@ -249,9 +249,9 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   if (!firstLine) return 'unknown';
   try {
     const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
+    if (isClaudeStoredOutputLine(parsed)) return 'claude';
     if (isOpenCodeStoredOutputLine(parsed)) return 'opencode';
     if (isCodexStoredOutputLine(parsed)) return 'codex';
-    if (isClaudeStoredOutputLine(parsed)) return 'claude';
     return 'unknown';
   } catch {
     return 'unknown';
@@ -264,7 +264,7 @@ function isCodexStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
   return Boolean((parsed.type && CODEX_STORED_OUTPUT_TYPES.has(parsed.type)) || parsed.item !== undefined);
 }
 function isClaudeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
-  return Boolean((parsed.type && CLAUDE_STORED_OUTPUT_TYPES.has(parsed.type)) || parsed.session_id || parsed.conversation_id);
+  return Boolean((parsed.type && CLAUDE_STORED_OUTPUT_TYPES.has(parsed.type)) || (parsed.conversation_id && !parsed.type));
 }
 function buildRawOutputConversationResult(output: string): ConversationResult | null {
   const trimmed = output.trim();

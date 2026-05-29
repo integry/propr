@@ -1,4 +1,4 @@
-import { parseOpenCodeJsonl, type OpenCodeEvent } from '@propr/core';
+import { normalizeOpenCodeTimestamp, parseOpenCodeJsonl, type OpenCodeEvent } from '@propr/core';
 import type { ConversationResult, TokenUsage } from './liveDetailsCodexParser.js';
 
 function buildOpenCodeTokenUsage(parsed: ReturnType<typeof parseOpenCodeJsonl>): TokenUsage | null {
@@ -53,9 +53,7 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
 }
 
 function getOpenCodeEventTimestamp(event: OpenCodeEvent, fallback: string): string {
-  if (typeof event.timestamp === 'string') return event.timestamp;
-  if (typeof event.timestamp === 'number') return new Date(event.timestamp).toISOString();
-  return fallback;
+  return normalizeOpenCodeTimestamp(event.timestamp, fallback);
 }
 
 function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {

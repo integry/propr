@@ -1,5 +1,5 @@
 import type { ConversationEvent, TodoItem, TokenUsageInfo } from '@propr/shared';
-import { isOpenCodeJsonlEvent, normalizeOpenCodeUsage } from '@propr/core';
+import { isOpenCodeJsonlEvent, normalizeOpenCodeTimestamp, normalizeOpenCodeUsage } from '@propr/core';
 
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
@@ -366,9 +366,7 @@ function parseLine(line: string, state: ParseState): void {
 }
 
 function normalizeEventTimestamp(timestamp: unknown): string {
-  if (typeof timestamp === 'string') return timestamp;
-  if (typeof timestamp === 'number') return new Date(timestamp).toISOString();
-  return new Date().toISOString();
+  return normalizeOpenCodeTimestamp(timestamp, new Date().toISOString());
 }
 
 /**
