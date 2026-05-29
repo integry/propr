@@ -18,7 +18,8 @@ export * from './taskPlanning/index.js';
 
 // Re-export from planningHelpers for backwards compatibility
 export { BranchNotFoundError, PlanningFailedError, buildFullContext } from './planningHelpers.js';
-export { SmartFileSelection, PreviewStats, PreviewResult, GenerateContextPreviewOptions, generateContextPreview } from './planningHelpers.js';
+export { generateContextPreview } from './planningHelpers.js';
+export type { SmartFileSelection, PreviewStats, PreviewResult, GenerateContextPreviewOptions } from './planningHelpers.js';
 export { checkoutBranch } from './planningHelpers.js';
 export type { Granularity, TaskDraftConfig, ContextRepository } from './planningHelpers.js';
 
