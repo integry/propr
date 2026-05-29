@@ -68,13 +68,14 @@ function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
     ...(event.parts ?? []),
   ], false);
   const message = event.message;
+  const responseText = joinOpenCodeTextValues([event.response?.text, event.response?.delta, event.response?.content]);
   let messageText = '';
   if (message?.role === 'assistant') {
     messageText = message.parts?.length
       ? joinOpenCodePartsText(message.parts)
       : joinOpenCodeTextValues([message.text, message.delta, message.content]);
   }
-  if (topLevelPartsText || messageText) return joinOpenCodeTextGroups(topLevelPartsText, messageText) || null;
+  if (topLevelPartsText || messageText || responseText) return joinOpenCodeTextGroups(topLevelPartsText, joinOpenCodeTextGroups(messageText, responseText)) || null;
   if (!event.type || !['text', 'delta', 'completion'].includes(event.type.toLowerCase())) return null;
   const text = joinOpenCodeTextValues([event.text, event.delta, event.content], !isOpenCodeStreamingTextEvent(event));
   return text || null;

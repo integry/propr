@@ -16,7 +16,7 @@ interface ParseState {
   todos: TodoItem[];
   tokenUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number };
   lastOpenCodeCumulativeTopLevelUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
-  pendingAssistantMessage: string;
+  pendingAssistantMessage: string; pendingAssistantTimestamp: string | null;
 }
 
 interface OpenCodeRedisEventUsage {
@@ -136,6 +136,7 @@ function processGeminiEvent(
   if (event.type === 'message' && event.role === 'assistant') {
     if (event.delta) {
       state.pendingAssistantMessage += event.content || '';
+      if (event.content) state.pendingAssistantTimestamp ??= timestamp;
     } else {
       flushPendingMessage(state, timestamp);
       if (event.content) {
@@ -211,6 +212,7 @@ function processOpenCodeEvent(
   if (assistantText) {
     if (type === 'delta' || event.part || event.parts?.length) {
       state.pendingAssistantMessage += assistantText;
+      state.pendingAssistantTimestamp ??= timestamp;
     } else {
       flushPendingMessage(state, timestamp);
       state.events.push({ type: 'thought' as const, content: assistantText, timestamp });
@@ -264,6 +266,7 @@ function extractOpenCodeAssistantText(event: Parameters<typeof processOpenCodeEv
   if (!topLevelParts.length && !messageParts.length && event.type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(event.type.toLowerCase())) {
     addOpenCodeTextContainer(topLevelParts, event as { text?: string; content?: unknown; delta?: string });
   }
+  if (event.type && ['text', 'assistant', 'message', 'delta', 'completion'].includes(event.type.toLowerCase())) addOpenCodeTextContainer(topLevelParts, event.response);
   return joinOpenCodeTextGroups(topLevelParts, messageParts);
 }
 
@@ -276,11 +279,9 @@ function addOpenCodeTextPart(parts: string[], part?: { type?: string; text?: str
 
 function addOpenCodeTextContainer(parts: string[], container?: { text?: string; content?: unknown; delta?: string }): void {
   if (!container) return;
-  const added = new Set<string>();
   for (const value of [container.text, container.delta, container.content]) {
-    if (typeof value === 'string' && value && !added.has(value)) {
+    if (typeof value === 'string' && value && !parts.includes(value)) {
       parts.push(value);
-      added.add(value);
     }
   }
 }
@@ -405,8 +406,9 @@ function hasRedisTokenUsage(usage: ParseState['tokenUsage']): boolean {
  */
 function flushPendingMessage(state: ParseState, timestamp: string): void {
   if (state.pendingAssistantMessage) {
-    state.events.push({ type: 'thought' as const, content: state.pendingAssistantMessage, timestamp });
+    state.events.push({ type: 'thought' as const, content: state.pendingAssistantMessage, timestamp: state.pendingAssistantTimestamp ?? timestamp });
     state.pendingAssistantMessage = '';
+    state.pendingAssistantTimestamp = null;
   }
 }
 
@@ -446,7 +448,8 @@ export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
     todos: [],
     tokenUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
     lastOpenCodeCumulativeTopLevelUsage: null,
-    pendingAssistantMessage: ''
+    pendingAssistantMessage: '',
+    pendingAssistantTimestamp: null
   };
 
   for (const line of lines) {

@@ -153,7 +153,7 @@ export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSes
 interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
 interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
-interface StoredExecutionOutputLine { type?: string; role?: string; message?: { parts?: unknown[] } | unknown; sessionID?: string; sessionId?: string; session_id?: string; conversation_id?: string; item?: unknown; part?: unknown; parts?: unknown[]; }
+interface StoredExecutionOutputLine { type?: string; role?: string; message?: { parts?: unknown[] } | unknown; response?: unknown; sessionID?: string; sessionId?: string; session_id?: string; conversation_id?: string; item?: unknown; part?: unknown; parts?: unknown[]; }
 export type StoredOutputFormat = 'claude' | 'codex' | 'opencode' | 'unknown';
 const CODEX_STORED_OUTPUT_TYPES = new Set([
   'message',
@@ -167,6 +167,7 @@ const CODEX_STORED_OUTPUT_TYPES = new Set([
   'item.completed'
 ]);
 const CLAUDE_STORED_OUTPUT_TYPES = new Set(['assistant', 'user']);
+// Keep Codex first for unknown streams because its result-only usage envelope overlaps OpenCode.
 const STORED_OUTPUT_FALLBACK_ORDER: StoredOutputFormat[] = ['codex', 'claude', 'opencode'];
 export interface ParsedStoredOutput {
   parsed: ConversationResult | null;
@@ -247,19 +248,18 @@ function parseStoredOutputForFormat(output: string, format: StoredOutputFormat):
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   let detectedFormat: StoredOutputFormat = 'unknown';
   for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const parsed = JSON.parse(line) as StoredExecutionOutputLine;
-      if (isClaudeStoredOutputLine(parsed)) return 'claude';
-      if (isStrongOpenCodeStoredOutputLine(parsed)) return 'opencode';
-      const format = isCodexStoredOutputLine(parsed) ? 'codex' : isOpenCodeStoredOutputLine(parsed) ? 'opencode' : 'unknown';
-      if (format === 'opencode') return format;
-      if (detectedFormat === 'unknown') detectedFormat = format;
-    } catch { continue; }
+    const parsed = parseStoredOutputLine(line);
+    if (!parsed) continue;
+    const immediateFormat = getImmediateStoredOutputFormat(parsed);
+    if (immediateFormat) return immediateFormat;
+    if (detectedFormat === 'unknown') detectedFormat = getDeferredStoredOutputFormat(parsed);
   }
   return detectedFormat;
 }
-function isStrongOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean { return Boolean(parsed.sessionID && isOpenCodeStoredOutputLine(parsed)); }
+function parseStoredOutputLine(line: string): StoredExecutionOutputLine | null { if (!line.trim()) return null; try { return JSON.parse(line) as StoredExecutionOutputLine; } catch { return null; } }
+function getImmediateStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat | null { if (isClaudeStoredOutputLine(parsed)) return 'claude'; if (isStrongOpenCodeStoredOutputLine(parsed)) return 'opencode'; return !isCodexStoredOutputLine(parsed) && isOpenCodeStoredOutputLine(parsed) ? 'opencode' : null; }
+function getDeferredStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat { return isCodexStoredOutputLine(parsed) ? 'codex' : 'unknown'; }
+function isStrongOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean { return Boolean((parsed.sessionID || parsed.session_id) && isOpenCodeStoredOutputLine(parsed)); }
 function isOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
   return isOpenCodeJsonlEvent(parsed);
 }

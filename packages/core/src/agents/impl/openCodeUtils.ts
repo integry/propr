@@ -253,7 +253,7 @@ function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): vo
     }
 }
 
-export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; text?: unknown; content?: unknown; delta?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }): boolean {
+export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; response?: unknown; text?: unknown; content?: unknown; delta?: unknown; tool?: unknown; tool_name?: unknown; name?: unknown; input?: unknown; parameters?: unknown; args?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }): boolean {
     const type = typeof event.type === 'string' ? event.type.toLowerCase() : undefined;
     const message = event.message && typeof event.message === 'object'
         ? event.message as { role?: unknown; parts?: unknown[] }
@@ -267,19 +267,17 @@ export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknow
     );
 }
 
-function hasOpenCodeEventPayload(
-    event: { sessionID?: unknown; sessionId?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; text?: unknown; content?: unknown; delta?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage },
-    type: string | undefined,
-    message: { role?: unknown; parts?: unknown[] } | null
-): boolean {
-    const hasOpenCodeIdentity = Boolean(event.sessionID || event.sessionId);
+function hasOpenCodeEventPayload(event: { sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; response?: unknown; text?: unknown; content?: unknown; delta?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }, type: string | undefined, message: { role?: unknown; parts?: unknown[] } | null): boolean {
+    const hasOpenCodeIdentity = Boolean(event.sessionID || event.sessionId || event.session_id);
     const hasUsage = hasOpenCodeResultUsage(event, type, hasOpenCodeIdentity);
     const hasAssistantText = message?.role === 'assistant' && hasOpenCodeTextField(event.message as { text?: unknown; content?: unknown; delta?: unknown });
+    const hasResponseText = hasOpenCodeIdentity && isOpenCodeTextContainer(event.response);
     const checks = [
         Boolean(event.part),
         Boolean(event.parts?.length),
         Boolean(message?.parts?.length),
         hasAssistantText,
+        hasResponseText,
         Boolean(type && OPEN_CODE_TEXT_EVENT_TYPES.has(type) && hasOpenCodeTextField(event)),
         Boolean(hasOpenCodeIdentity && type && OPEN_CODE_TOOL_EVENT_TYPES.has(type)),
         Boolean(type === 'result' && hasUsage),
@@ -293,6 +291,8 @@ function hasOpenCodeResultUsage(event: { usage?: OpenCodeUsage; stats?: OpenCode
     if (usage || type !== 'result') return Boolean(usage);
     return hasOpenCodeIdentity && Boolean(normalizeOpenCodeUsage(event.stats));
 }
+
+function isOpenCodeTextContainer(value: unknown): value is { text?: unknown; content?: unknown; delta?: unknown } { return Boolean(value && typeof value === 'object' && hasOpenCodeTextField(value as { text?: unknown; content?: unknown; delta?: unknown })); }
 
 function isOpenCodeCumulativeUsageEvent(event: OpenCodeEvent): boolean {
     return event.type?.toLowerCase() === 'result';
@@ -393,7 +393,7 @@ function extractOpenCodeText(event: OpenCodeEvent): ExtractedOpenCodeText {
             addTextContainer(messageParts, assistantMessage);
         }
     }
-    if (!hasEventParts && !assistantMessage && isAssistantTextEvent(event)) {
+    if (!hasEventParts && !assistantMessage && (isAssistantTextEvent(event) || event.response)) {
         addTextContainer(streamParts, event);
         addTextContainer(streamParts, event.response);
     }

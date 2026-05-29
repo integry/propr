@@ -120,6 +120,14 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(parsed.summary, 'once again');
     });
 
+    test('collects assistant text from response containers', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', response: { text: 'response text' } })
+        ].join('\n'));
+
+        assert.strictEqual(parsed.summary, 'response text');
+    });
+
     test('uses non-json stdout as fallback text', () => {
         const parsed = parseOutput('plain response\n');
 
@@ -224,6 +232,9 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', stats: { input_tokens: 10 } }), false);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', sessionID: 'session-a', stats: { input_tokens: 10 } }), true);
         assert.strictEqual(isOpenCodeJsonlEvent({ type: 'tool_use', stats: { input_tokens: 10 } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'tool_use', sessionID: 'session-a', tool_name: 'Shell' }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'tool_use', session_id: 'session-a', tool_name: 'Shell' }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionID: 'session-a', response: { text: 'hello' } }), true);
     });
 
     test('normalizes numeric OpenCode timestamps in seconds and milliseconds', () => {

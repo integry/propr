@@ -1682,6 +1682,16 @@ describe('config route follow-up helpers', () => {
         ]);
     });
 
+    test('parseOpenCodeOutputToConversationResult reads response text containers', () => {
+        const result = parseOpenCodeOutputToConversationResult(
+            '{"type":"message","sessionID":"session-a","response":{"text":"Response text"},"timestamp":"2026-05-05T00:00:00.000Z"}\n'
+        );
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'Response text', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
     test('parseStoredOutputContent parses strongly identified OpenCode output', () => {
         const parsed = parseStoredOutputContent('{"type":"message","sessionID":"session-a","message":{"role":"assistant","content":"OpenCode says hi"}}\n');
 
@@ -1716,6 +1726,17 @@ describe('config route follow-up helpers', () => {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 4,
         });
+    });
+
+    test('parseStoredOutputContent detects OpenCode tool events before Codex fallback', () => {
+        const parsed = parseStoredOutputContent(
+            '{"type":"tool_use","sessionID":"session-a","tool_name":"Shell","tool_id":"tool-1","parameters":{"command":"npm test"},"timestamp":"2026-05-05T00:00:00.000Z"}\n'
+        );
+
+        assert.strictEqual(parsed.format, 'opencode');
+        assert.deepStrictEqual(parsed.parsed?.events, [
+            { type: 'tool_use', toolName: 'Shell', input: { command: 'npm test' }, id: 'tool-1', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
     });
 
     test('parseStoredOutputContent keeps ambiguous result-only usage output on the Codex path', () => {
@@ -1985,6 +2006,29 @@ describe('config route follow-up helpers', () => {
         assert.deepStrictEqual(result.events, [
             { type: 'tool_use', toolName: 'Shell', input: { command: 'npm test' }, id: 'tool-1', timestamp: result.events[0].timestamp },
             { type: 'tool_result', toolUseId: 'tool-1', result: 'passed', isError: false, timestamp: result.events[1].timestamp },
+        ]);
+    });
+
+    test('parseRedisOutput reads OpenCode response text containers', () => {
+        const result = parseRedisOutput([
+            '{"type":"message","sessionID":"session-a","response":{"content":"Redis response"},"timestamp":"2026-05-05T00:00:00.000Z"}',
+        ]);
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'thought', content: 'Redis response', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('parseRedisOutput keeps the first OpenCode delta timestamp when flushing', () => {
+        const result = parseRedisOutput([
+            '{"type":"delta","sessionID":"session-a","delta":"Hello ","timestamp":"2026-05-05T00:00:00.000Z"}',
+            '{"type":"delta","sessionID":"session-a","delta":"world","timestamp":"2026-05-05T00:00:01.000Z"}',
+            '{"type":"tool_use","sessionID":"session-a","tool_name":"Shell","parameters":{"command":"npm test"},"timestamp":"2026-05-05T00:00:02.000Z"}',
+        ]);
+
+        assert.deepStrictEqual(result.events, [
+            { type: 'thought', content: 'Hello world', timestamp: '2026-05-05T00:00:00.000Z' },
+            { type: 'tool_use', toolName: 'Shell', input: { command: 'npm test' }, id: undefined, timestamp: '2026-05-05T00:00:02.000Z' },
         ]);
     });
 
