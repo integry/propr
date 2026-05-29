@@ -114,7 +114,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
   },
   vibe: {
     dockerImage: 'propr/agent-vibe:latest',
-    configPath: '~/.vibe',
+    configPath: '/root/.vibe',
     defaultModels: VIBE_MODELS.map(m => m.id),
     defaultAlias: 'vibe',
     npmPackage: 'mistral-vibe',

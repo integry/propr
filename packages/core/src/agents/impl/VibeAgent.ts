@@ -275,6 +275,24 @@ export class VibeAgent implements Agent {
         return DEFAULT_PROMPT_PARENT_DIR;
     }
 
+    private getHostPromptPath(promptPath: string): string {
+        const containerPromptDir = path.resolve(this.getPromptParentDir());
+        const hostPromptDir = process.env.HOST_VIBE_PROMPT_CACHE_DIR;
+
+        if (!hostPromptDir) {
+            return promptPath;
+        }
+
+        const resolvedPromptPath = path.resolve(promptPath);
+        const relativePromptPath = path.relative(containerPromptDir, resolvedPromptPath);
+        if (relativePromptPath.startsWith('..') || path.isAbsolute(relativePromptPath)) {
+            logger.warn({ promptPath, containerPromptDir, hostPromptDir }, 'Vibe prompt path is outside configured prompt cache; using container path for Docker mount');
+            return promptPath;
+        }
+
+        return path.join(hostPromptDir, relativePromptPath);
+    }
+
     private writePromptFile(prompt: string, taskId?: string): string {
         const promptParentDir = this.getPromptParentDir();
         fs.mkdirSync(promptParentDir, { recursive: true, mode: 0o700 });
@@ -330,6 +348,14 @@ export class VibeAgent implements Agent {
         }
     }
 
+    private getAnalysisSandboxArgs(mode: VibeDockerArgsParams['mode']): string[] {
+        if (mode !== 'analysis') {
+            return [];
+        }
+
+        return ['--read-only', '--tmpfs', '/tmp:rw,nosuid,size=256m'];
+    }
+
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
         const { worktreePath, githubToken, modelName, promptPath, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute' } = params;
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
@@ -337,12 +363,17 @@ export class VibeAgent implements Agent {
         const shouldMountConfig = this.canMountConfigPath(configPath)
             && (!mistralApiKey || this.hasVibeConfigFile(configPath));
         const configMountArgs = shouldMountConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
+        const hostPromptPath = this.getHostPromptPath(promptPath);
         const envVars: string[] = [];
         if (this.config.envVars) {
-            for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`);
+            for (const [key, value] of Object.entries(this.config.envVars)) {
+                if (key !== 'MISTRAL_API_KEY') {
+                    envVars.push('-e', `${key}=${value}`);
+                }
+            }
         }
-        if (process.env.MISTRAL_API_KEY) {
-            envVars.push('-e', `MISTRAL_API_KEY=${process.env.MISTRAL_API_KEY}`);
+        if (mistralApiKey) {
+            envVars.push('-e', `MISTRAL_API_KEY=${mistralApiKey}`);
         }
         if (modelName) {
             const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
@@ -356,13 +387,15 @@ export class VibeAgent implements Agent {
         const alias = this.sanitizeDockerNamePart(this.config.alias, 'vibe');
         const containerName = `${alias}-${taskType}-${shortTaskId}`.slice(0, 128);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
+        const analysisSandboxArgs = this.getAnalysisSandboxArgs(mode);
         const promptInstruction = `Read the full task prompt from @${CONTAINER_PROMPT_PATH} and follow it exactly.`;
         const agentArgs = mode === 'analysis' ? [] : ['--trust', '--agent', 'auto-approve'];
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge', '--user', `${CONTAINER_NODE_UID}:${CONTAINER_NODE_GID}`,
+            ...analysisSandboxArgs,
             '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
             ...configMountArgs,
-            '-v', `${promptPath}:${CONTAINER_PROMPT_PATH}:ro`,
+            '-v', `${hostPromptPath}:${CONTAINER_PROMPT_PATH}:ro`,
             '-e', `GH_TOKEN=${githubToken}`,
             '-e', `GITHUB_TOKEN=${githubToken}`,
             ...envVars,
@@ -379,6 +412,7 @@ export class VibeAgent implements Agent {
             configPath,
             configPathMounted: shouldMountConfig,
             promptPath,
+            hostPromptPath,
             promptPathExists: fs.existsSync(promptPath),
             workspaceMountMode
         }, 'Docker args built for Vibe agent');

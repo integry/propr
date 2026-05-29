@@ -103,6 +103,7 @@ function vibePromptCacheArgs() {
     return [
         '-v', `${HOST_VIBE_PROMPT_CACHE_DIR}:${VIBE_PROMPT_CACHE_DIR}`,
         '-e', `VIBE_PROMPT_CACHE_DIR=${VIBE_PROMPT_CACHE_DIR}`,
+        '-e', `HOST_VIBE_PROMPT_CACHE_DIR=${HOST_VIBE_PROMPT_CACHE_DIR}`,
     ];
 }
 
@@ -202,22 +203,6 @@ function startRedis() {
     dockerRunDetached(name, args);
 }
 
-function ensureVibePromptCacheDir() {
-    console.log(`  · preparing Vibe prompt cache ${HOST_VIBE_PROMPT_CACHE_DIR}`);
-    const res = docker([
-        'run', '--rm',
-        '-v', `${HOST_VIBE_PROMPT_CACHE_DIR}:${VIBE_PROMPT_CACHE_DIR}`,
-        manifest.images.app,
-        'sh', '-c',
-        'mkdir -p "$1" && chown 1000:1000 "$1" && chmod 700 "$1"',
-        'sh',
-        VIBE_PROMPT_CACHE_DIR,
-    ], { capture: true });
-    if (res.status !== 0) {
-        throw new Error(`Failed to prepare Vibe prompt cache: ${res.stderr}`);
-    }
-}
-
 function appContainer(name, command, extraArgs = []) {
     const baseArgs = [
         // --env-file is resolved by the docker CLI (inside launcher container).
@@ -243,7 +228,6 @@ function startApp() {
 
     const creds = agentCredentialArgs();
     const vibePrompts = vibePromptCacheArgs();
-    ensureVibePromptCacheDir();
 
     removeIfExists(`${STACK}-worker`);
     appContainer(`${STACK}-worker`, ['dist/src/worker.js'], [

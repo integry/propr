@@ -11,7 +11,7 @@ export type { CliVersionType } from '../../config/configManager.js';
 /**
  * Package names for each agent CLI.
  */
-export const AGENT_NPM_PACKAGES: Record<AgentType, string> = {
+export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
     claude: '@anthropic-ai/claude-code',
     codex: '@openai/codex',
     gemini: '@google/gemini-cli',
@@ -22,7 +22,7 @@ export const AGENT_NPM_PACKAGES: Record<AgentType, string> = {
  * Available package tags for each agent type.
  * These are the common tags that can be selected in the UI.
  */
-export const AGENT_NPM_TAGS: Record<AgentType, string[]> = {
+export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
     claude: ['stable', 'latest', 'next'],
     codex: ['latest', 'alpha'],
     gemini: ['latest', 'preview'],
@@ -47,7 +47,7 @@ export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
     claude: 'propr-claude',
     codex: 'propr-codex',
     gemini: 'propr-gemini',
-    vibe: 'propr/agent-vibe'
+    vibe: 'propr-vibe'
 };
 
 /**

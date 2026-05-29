@@ -100,8 +100,8 @@ describe('pypiClient', () => {
         );
     });
 
-    test('generates Vibe versioned tags in the published image namespace', () => {
-        assert.strictEqual(generateImageTag('vibe', '2.12.1', 'abcdef'), 'propr/agent-vibe:2.12.1-abcdef');
+    test('generates Vibe versioned tags in the local image namespace', () => {
+        assert.strictEqual(generateImageTag('vibe', '2.12.1', 'abcdef'), 'propr-vibe:2.12.1-abcdef');
     });
 
     test('returns Vibe available versions in API-facing shape', async () => {

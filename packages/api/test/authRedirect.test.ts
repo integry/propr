@@ -58,3 +58,43 @@ test('auth redirect allowlist permits subdomains only for explicit wildcard-styl
 
   assert.equal(response.headers.get('location'), 'https://pr-1.preview.example.com/plans');
 });
+
+test('auth redirect allowlist permits exact additional hosts without permitting their subdomains', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'https://app.example.com';
+  process.env.AUTH_REDIRECT_ALLOWED_HOSTS = 'https://exact.example.net';
+  const app = express();
+  setupAuth(app);
+
+  const exactResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Fexact.example.net%2Fplans');
+  assert.equal(exactResponse.headers.get('location'), 'https://exact.example.net/plans');
+
+  const subdomainResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Fpreview.exact.example.net%2Fplans');
+  assert.equal(subdomainResponse.headers.get('location'), 'https://app.example.com/');
+});
+
+test('auth redirect allowlist permits wildcard entries with protocol prefixes', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'https://app.example.com';
+  process.env.AUTH_REDIRECT_ALLOWED_HOSTS = 'https://*.preview.example.net';
+  const app = express();
+  setupAuth(app);
+
+  const response = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Fpr-2.preview.example.net%2Fplans');
+
+  assert.equal(response.headers.get('location'), 'https://pr-2.preview.example.net/plans');
+});
+
+test('auth redirect allowlist rejects invalid URLs and non-http protocols', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'https://app.example.com';
+  process.env.AUTH_REDIRECT_ALLOWED_HOSTS = '*.preview.example.com';
+  const app = express();
+  setupAuth(app);
+
+  const invalidResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=not-a-url');
+  assert.equal(invalidResponse.headers.get('location'), 'https://app.example.com/');
+
+  const protocolResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=ftp%3A%2F%2Fapp.example.com%2Fplans');
+  assert.equal(protocolResponse.headers.get('location'), 'https://app.example.com/');
+});

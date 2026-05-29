@@ -35,8 +35,6 @@ resolve_vibe_cli_version() {
   fi
 }
 
-VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-$(resolve_vibe_cli_version)}"
-
 # --- Arg parsing --------------------------------------------------------------
 PUSH=false
 PUSH_DH=true
@@ -153,7 +151,8 @@ build_image() {
     build_args+=("--build-arg" "BASE_TAG=$VERSION")
   fi
   if [[ "$name" == agent-vibe ]]; then
-    build_args+=("--build-arg" "CLI_VERSION=$VIBE_CLI_VERSION")
+    local vibe_cli_version="${VIBE_CLI_VERSION:-$(resolve_vibe_cli_version)}"
+    build_args+=("--build-arg" "CLI_VERSION=$vibe_cli_version")
   fi
 
   echo ""

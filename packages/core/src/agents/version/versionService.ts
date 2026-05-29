@@ -10,8 +10,8 @@ import logger from '../../utils/logger.js';
 import type { AgentType } from '../types.js';
 import type { AvailableVersionsResponse, CliVersionType } from './types.js';
 import {
-    AGENT_NPM_PACKAGES,
-    AGENT_NPM_TAGS,
+    AGENT_CLI_PACKAGES,
+    AGENT_CLI_TAGS,
     AGENT_DEFAULT_VERSIONS,
     AGENT_IMAGE_NAMES,
     DOCKER_CONTENT_FILES
@@ -42,7 +42,7 @@ export async function resolveVersion(
     versionType: CliVersionType,
     versionSpec?: string
 ): Promise<string> {
-    const packageName = AGENT_NPM_PACKAGES[agentType];
+    const packageName = AGENT_CLI_PACKAGES[agentType];
 
     if (PYPI_AGENT_TYPES.has(agentType)) {
         switch (versionType) {
@@ -52,7 +52,7 @@ export async function resolveVersion(
                 if (!versionSpec) {
                     throw new Error('Version spec required for tag type');
                 }
-                if (versionSpec !== 'latest' || !AGENT_NPM_TAGS[agentType].includes(versionSpec)) {
+                if (versionSpec !== 'latest' || !AGENT_CLI_TAGS[agentType].includes(versionSpec)) {
                     throw new Error(`Unknown tag '${versionSpec}' for PyPI-backed package ${packageName}`);
                 }
                 return getLatestPyPiVersion(packageName);
@@ -110,9 +110,9 @@ export async function resolveVersion(
  * @returns Available versions response
  */
 export async function getAvailableVersions(agentType: AgentType): Promise<AvailableVersionsResponse> {
-    const packageName = AGENT_NPM_PACKAGES[agentType];
+    const packageName = AGENT_CLI_PACKAGES[agentType];
     const defaultVersion = AGENT_DEFAULT_VERSIONS[agentType];
-    const tagNames = AGENT_NPM_TAGS[agentType];
+    const tagNames = AGENT_CLI_TAGS[agentType];
 
     try {
         if (PYPI_AGENT_TYPES.has(agentType)) {
@@ -245,8 +245,8 @@ export async function getEffectiveCliVersion(
 
 // Re-export types and constants for convenience
 export {
-    AGENT_NPM_PACKAGES,
-    AGENT_NPM_TAGS,
+    AGENT_CLI_PACKAGES,
+    AGENT_CLI_TAGS,
     AGENT_DEFAULT_VERSIONS,
     AGENT_IMAGE_NAMES,
     DOCKER_CONTENT_FILES

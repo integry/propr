@@ -117,26 +117,30 @@ function pickError(event: VibeJsonOutput): string | undefined {
     return event.type === 'error' ? 'Vibe reported an error' : undefined;
 }
 
-function findTextEvent(jsonObjects: VibeJsonOutput[]): { event: VibeJsonOutput; index: number } | undefined {
+function findTextEvent(jsonObjects: VibeJsonOutput[]): { event: VibeJsonOutput; index: number; isFinal: boolean } | undefined {
     for (let index = jsonObjects.length - 1; index >= 0; index--) {
         const event = jsonObjects[index];
         if (event.type !== 'error' && event.type && FINAL_EVENT_TYPES.has(event.type) && pickText(event)) {
-            return { event, index };
+            return { event, index, isFinal: true };
         }
     }
     for (let index = jsonObjects.length - 1; index >= 0; index--) {
         const event = jsonObjects[index];
         if (event.type !== 'error' && pickText(event)) {
-            return { event, index };
+            return { event, index, isFinal: false };
         }
     }
     return undefined;
 }
 
-function findRelevantError(jsonObjects: VibeJsonOutput[], textEventIndex: number): string | undefined {
+function findRelevantError(jsonObjects: VibeJsonOutput[], textEvent?: { index: number; isFinal: boolean }): string | undefined {
+    if (textEvent && !textEvent.isFinal) {
+        return undefined;
+    }
+
     for (let index = jsonObjects.length - 1; index >= 0; index--) {
         const error = pickError(jsonObjects[index]);
-        if (error && index > textEventIndex) {
+        if (error && index > (textEvent?.index ?? -1)) {
             return error;
         }
     }
@@ -154,7 +158,7 @@ export function parseVibeOutput(output: string): ParsedVibeOutput {
     const sessionEvent = [...jsonObjects].reverse().find(event => event.session_id || event.sessionId);
     const modelEvent = [...jsonObjects].reverse().find(event => event.model);
     const usageEvent = [...jsonObjects].reverse().find(event => event.usage || event.token_usage);
-    const error = findRelevantError(jsonObjects, textEvent?.index ?? -1);
+    const error = findRelevantError(jsonObjects, textEvent);
 
     return {
         sessionId: sessionEvent?.session_id || sessionEvent?.sessionId,
