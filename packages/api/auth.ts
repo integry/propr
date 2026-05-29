@@ -18,10 +18,7 @@ interface GitHubUser {
     tokenExpiresAt?: number;
     githubAuthInvalid?: boolean;
 }
-interface AllowedRedirectHost {
-    host: string;
-    includeSubdomains: boolean;
-}
+interface AllowedRedirectHost { host: string; includeSubdomains: boolean; }
 
 function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
     if (!redirectTo) return undefined;
@@ -70,16 +67,9 @@ declare global {
     // eslint-disable-next-line @typescript-eslint/no-namespace
     namespace Express {
         interface User {
-            id: string;
-            login?: string;
-            username: string;
-            displayName: string;
-            email: string | null;
-            avatarUrl: string | null;
-            accessToken?: string;
-            refreshToken?: string;
-            tokenExpiresAt?: number;
-            githubAuthInvalid?: boolean;
+            id: string; login?: string; username: string; displayName: string;
+            email: string | null; avatarUrl: string | null; accessToken?: string;
+            refreshToken?: string; tokenExpiresAt?: number; githubAuthInvalid?: boolean;
         }
     }
 }
