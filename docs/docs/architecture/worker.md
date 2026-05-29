@@ -8,7 +8,7 @@ The worker is the core processing component that executes the deterministic 3-ph
 
 ## Overview
 
-The worker (`src/worker.js`) pulls jobs from the Redis queue and processes them through a reliable, deterministic workflow. Each worker operates independently and can process multiple jobs concurrently.
+The worker (`src/worker.ts` in source, compiled under `dist/`) pulls jobs from the Redis queue and processes them through a reliable, deterministic workflow. Each worker operates independently and can process multiple jobs concurrently.
 
 ## Three-Phase Workflow
 

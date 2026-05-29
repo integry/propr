@@ -209,7 +209,10 @@ For OpenCode agents, install and authenticate OpenCode on the host before adding
 curl -fsSL https://opencode.ai/install | bash
 mkdir -p ~/.config/opencode ~/.opencode
 opencode auth login
+mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
 ```
+
+OpenCode stores `auth.json` under `~/.local/share/opencode`, but ProPR mounts the configured OpenCode config directory into the agent container. When using copied file-based auth, set `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` on the OpenCode agent. Legacy agents can keep `~/.opencode` as their `configPath`; new agents should use `~/.config/opencode`.
 
 OpenCode Go is optional. The example model `opencode-go/kimi-k2.6` uses OpenCode Go, but you can configure other providers through OpenCode and register those provider/model IDs as supported models. You must supply your own OpenCode Go or provider API keys.
 
@@ -223,7 +226,10 @@ OpenCode Go is optional. The example model `opencode-go/kimi-k2.6` uses OpenCode
   "defaultModel": "opencode-go/kimi-k2.6",
   "dockerImage": "propr/agent-opencode:latest",
   "configPath": "~/.config/opencode",
-  "enabled": true
+  "enabled": true,
+  "envVars": {
+    "XDG_DATA_HOME": "/home/node/.config/opencode/xdg-data"
+  }
 }
 ```
 

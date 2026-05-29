@@ -211,6 +211,10 @@ For OpenCode CLI integration:
    - Prefer provider environment variables when your OpenCode provider supports them. Add those variables to the OpenCode agent's `envVars` through your API/UI deployment flow.
    - If you use `opencode auth login`, copy or sync `~/.local/share/opencode/auth.json` to a data directory under the mounted config path, for example `~/.config/opencode/xdg-data/opencode/auth.json`, and set the agent env var `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`.
 
+   ```bash
+   mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
+   ```
+
    OpenCode Go is an optional OpenCode provider/model source, separate from the OpenCode CLI. You can use an OpenCode Go model such as `opencode-go/kimi-k2.6`, or configure any other provider supported by OpenCode. In all cases, operators must supply their own OpenCode/provider API keys.
 
 4. **Configure an OpenCode agent in ProPR:**
@@ -282,7 +286,7 @@ npm run daemon:reset:dev
 
 The daemon will:
 - Poll configured repositories at the specified interval
-- Search for open issues with the AI tag
+- Search for open issues with configured primary labels such as `AI` or `propr`
 - Exclude issues already being processed or completed
 - Add detected issues to the task queue for processing
 
@@ -294,8 +298,8 @@ If jobs get stuck in failed/processing states, use the reset option to clear all
 # Clear all queue data and remove processing labels from issues
 npm run daemon:reset:dev
 
-# Or with direct node command
-node src/daemon.js --reset
+# Or against a production build
+npm run daemon:reset
 ```
 
 This will:
@@ -327,8 +331,8 @@ The worker will:
 
 ### GitHub Authentication
 
-```javascript
-import { getAuthenticatedOctokit } from './src/auth/githubAuth.js';
+```typescript
+import { getAuthenticatedOctokit } from '@propr/core';
 
 const octokit = await getAuthenticatedOctokit();
 // Use octokit for GitHub API operations
@@ -336,8 +340,8 @@ const octokit = await getAuthenticatedOctokit();
 
 ### Logging
 
-```javascript
-import logger from './src/utils/logger.js';
+```typescript
+import { logger } from '@propr/core';
 
 logger.info('Application started');
 logger.error('An error occurred', { error: err });
@@ -346,8 +350,8 @@ logger.debug('Debug information', { data: someData });
 
 ### Configuration
 
-```javascript
-import config from './config/index.js';
+```typescript
+import config from './config/index.ts';
 
 console.log(config.github.appId);
 console.log(config.logging.level);

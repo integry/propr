@@ -100,7 +100,7 @@ GIT_DEFAULT_BRANCH=main
 GIT_SHALLOW_CLONE_DEPTH=
 
 # Repository-Specific Branch Configuration (optional)
-GIT_DEFAULT_BRANCH_owner_repo=dev
+GIT_DEFAULT_BRANCH_OWNER_REPO=dev
 ```
 
 ### Configure PR Comment Monitoring
@@ -235,6 +235,10 @@ OpenCode stores provider credentials in `~/.local/share/opencode/auth.json`, whi
 - Prefer provider environment variables when your selected OpenCode provider supports them. Add those variables to the OpenCode agent's `envVars` through the Settings UI or API.
 - If you use `opencode auth login`, copy or sync `~/.local/share/opencode/auth.json` to `~/.config/opencode/xdg-data/opencode/auth.json`, then set the agent env var `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`.
 
+```bash
+mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
+```
+
 ### Configure an OpenCode Agent
 
 Add an OpenCode agent through the CLI or the Settings UI. This example uses OpenCode Go's Kimi model:
@@ -290,7 +294,7 @@ Install the Node.js dependencies:
 npm install
 ```
 
-## 7. Redis Setup
+## 8. Redis Setup
 
 Install and start Redis for task queue management.
 
@@ -318,7 +322,7 @@ docker run -d -p 6379:6379 redis:alpine
 
 If using Docker Compose, Redis is automatically included - no separate installation needed.
 
-## 8. Security Configuration
+## 9. Security Configuration
 
 Ensure your private key file has restricted permissions:
 

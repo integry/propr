@@ -40,8 +40,8 @@ If jobs get stuck in failed or processing states, use the reset option:
 # Clear all queue data and remove processing labels
 npm run daemon:reset:dev
 
-# Or with direct node command
-node src/daemon.js --reset
+# Or against a production build
+npm run daemon:reset
 ```
 
 This will:
@@ -137,6 +137,10 @@ An OpenCode agent usually points at `~/.config/opencode` and uses models such as
 
 OpenCode/provider API keys are operator-owned. If a worker fails with authentication errors, update the provider env vars on the OpenCode agent, or run `opencode auth login` on the host and sync `~/.local/share/opencode/auth.json` into the mounted config tree, for example `~/.config/opencode/xdg-data/opencode/auth.json`, with `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` set on that agent.
 
+```bash
+mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
+```
+
 ## Docker Compose Usage
 
 Run all services together using Docker Compose:
@@ -165,8 +169,8 @@ npm run compose:build
 
 For programmatic access to GitHub:
 
-```javascript
-import { getAuthenticatedOctokit } from './src/auth/githubAuth.js';
+```typescript
+import { getAuthenticatedOctokit } from '@propr/core';
 
 const octokit = await getAuthenticatedOctokit();
 // Use octokit for GitHub API operations
@@ -176,8 +180,8 @@ const octokit = await getAuthenticatedOctokit();
 
 ProPR uses structured logging with correlation IDs:
 
-```javascript
-import logger from './src/utils/logger.js';
+```typescript
+import { logger } from '@propr/core';
 
 logger.info('Application started');
 logger.error('An error occurred', { error: err });
@@ -188,8 +192,8 @@ logger.debug('Debug information', { data: someData });
 
 Access configuration values:
 
-```javascript
-import config from './config/index.js';
+```typescript
+import config from './config/index.ts';
 
 console.log(config.github.appId);
 console.log(config.logging.level);

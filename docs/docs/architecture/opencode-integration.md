@@ -53,6 +53,10 @@ OpenCode stores provider auth in `~/.local/share/opencode/auth.json`, while the 
 - Passing provider API keys as agent `envVars`.
 - Copying or syncing `~/.local/share/opencode/auth.json` to `~/.config/opencode/xdg-data/opencode/auth.json` and setting `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` in the OpenCode agent `envVars`.
 
+```bash
+mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
+```
+
 ## Agent Configuration
 
 OpenCode agents are normal ProPR agent configs:
