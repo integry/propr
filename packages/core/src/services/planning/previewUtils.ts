@@ -152,10 +152,17 @@ export function calculateAdditionalContextBudget(
   targetTokenLimit: number,
   simulatedTokens: number,
   attachmentTokens: number,
-  smartSummaryTokens: number
+  smartSummaryTokens: number,
+  contextLevel: number = 50
 ): number {
   const targetRepoUsage = simulatedTokens + attachmentTokens + smartSummaryTokens;
   const remainingBudget = targetTokenLimit - targetRepoUsage;
+  if (remainingBudget <= 0) return 0;
+
+  if (contextLevel >= 80) {
+    return Math.min(targetTokenLimit, remainingBudget);
+  }
+
   const minBudget = Math.floor(targetTokenLimit * 0.2);
   const maxBudget = Math.floor(targetTokenLimit * 0.8);
   return Math.max(minBudget, Math.min(maxBudget, remainingBudget));

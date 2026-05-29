@@ -25,6 +25,7 @@ export { UsageLimitError };
 
 const DEFAULT_CODEX_MAX_TURNS = 1000;
 const DEFAULT_CODEX_TIMEOUT_MS = 3600000;
+const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 // Container path for Codex config
 const CONTAINER_CONFIG_PATH = '/home/node/.codex';
@@ -183,7 +184,8 @@ export class CodexAgent implements Agent {
                 'codex',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: 1800000, stdinData: analysisPrompt, taskId
-                })
+                }),
+                ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
 
             const executionTimeMs = Date.now() - startTime;

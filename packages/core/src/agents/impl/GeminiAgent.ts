@@ -20,6 +20,7 @@ import os from 'os';
 export { UsageLimitError };
 
 const DEFAULT_GEMINI_TIMEOUT_MS = 300000;
+const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 // Container path for Gemini config
 const CONTAINER_CONFIG_PATH = '/home/node/.gemini';
@@ -164,7 +165,8 @@ export class GeminiAgent implements Agent {
             // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'gemini',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId })
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId }),
+                ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
             const executionTimeMs = Date.now() - startTime;
 
