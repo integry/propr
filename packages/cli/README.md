@@ -193,22 +193,23 @@ propr agent list                                         # List configured agent
 propr agent add my-claude -t claude -m model1,model2     # Add an agent
 propr agent add my-agent -t claude -m model -d model     # With default model
 propr agent add test -t gemini -m gemini-pro --disabled   # Add in disabled state
+propr agent add opencode -t opencode -m opencode-go/kimi-k2.6
 propr agent add --file agent-config.json                 # From JSON file
 cat config.json | propr agent add --file -               # From stdin
 propr agent delete my-agent                              # Delete (with confirmation)
 propr agent delete my-agent --force                      # Delete without confirmation
 ```
 
-**Agent types:** `claude`, `codex`, `gemini`
+**Agent types:** `claude`, `codex`, `gemini`, `opencode`
 
 **JSON file format** for `--file`:
 
 ```json
 {
-  "alias": "my-agent",
-  "type": "claude",
-  "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
-  "defaultModel": "claude-sonnet-4-20250514",
+  "alias": "opencode",
+  "type": "opencode",
+  "models": ["opencode-go/kimi-k2.6"],
+  "defaultModel": "opencode-go/kimi-k2.6",
   "dockerImage": "optional-image",
   "configPath": "/optional/path",
   "enabled": true
