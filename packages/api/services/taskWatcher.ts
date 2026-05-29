@@ -10,6 +10,8 @@ import { parseConversationFile } from './conversationParser.js';
 import { parseRedisOutput } from './redisOutputParser.js';
 import { loadAgents, resolveConfigPath, type AgentConfig } from '@propr/core';
 
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'opencode_execution']);
+
 /** Active task watcher info */
 export interface TaskWatcherInfo {
   watcher: chokidar.FSWatcher | null;
@@ -53,7 +55,7 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Start watching a task's log for changes (file-based for Claude, Redis-based for Codex)
+   * Start watching a task's log for changes (file-based for Claude, Redis-based for CLI JSON streams)
    */
   async startTaskWatcher(taskId: string): Promise<void> {
     // Check if already watching
@@ -78,13 +80,15 @@ export class TaskWatcherManager {
 
     let conversationPath: string;
     if (agentType === 'codex') {
-      // Codex streams to Redis, use Redis watcher
       console.log(`[TaskWatcher] Codex task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
       await this.startRedisWatcher(taskId);
       return;
     } else if (agentType === 'gemini') {
-      // Gemini streams to Redis, use Redis watcher
       console.log(`[TaskWatcher] Gemini task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
+      await this.startRedisWatcher(taskId);
+      return;
+    } else if (agentType === 'opencode') {
+      console.log(`[TaskWatcher] OpenCode task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
       await this.startRedisWatcher(taskId);
       return;
     } else {
@@ -342,7 +346,7 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Start Redis-based watcher for Codex tasks
+   * Start Redis-based watcher for JSON-streaming agent tasks
    */
   private async startRedisWatcher(taskId: string): Promise<void> {
     console.log(`[TaskWatcher] Starting Redis watcher for task ${taskId}`);
@@ -369,7 +373,7 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Send live update from Redis output (for Codex tasks)
+   * Send live update from Redis output (for JSON-streaming agent tasks)
    */
   private async sendRedisLiveUpdate(taskId: string, isInitial = false): Promise<void> {
     if (!this.deps) return;
@@ -471,8 +475,8 @@ export class TaskWatcherManager {
         const state = JSON.parse(stateData) as {
           history: Array<{ state: string; metadata?: { sessionId?: string } }>
         };
-        const entry = state.history.find(
-          h => h.state === 'claude_execution' && h.metadata?.sessionId
+        const entry = [...state.history].reverse().find(
+          h => LIVE_EXECUTION_STATES.has(h.state) && h.metadata?.sessionId
         );
         if (entry?.metadata?.sessionId) {
           return entry.metadata.sessionId;

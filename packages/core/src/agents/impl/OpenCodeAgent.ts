@@ -7,7 +7,7 @@ import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwners
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
-import { buildOpenCodeDockerArgs, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
@@ -24,16 +24,25 @@ export class OpenCodeAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, taskId, prNumber } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, githubToken, taskId, prNumber } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
-        let prompt = customPrompt;
+        let prompt: string | undefined;
 
         logger.info({ issueNumber: issueRef.number, repository: repo, worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason }, isRetry ? 'Starting OpenCode agent execution (RETRY)...' : 'Starting OpenCode agent execution...');
 
         try {
-            prompt = this.buildPrompt(customPrompt, isRetry, retryReason);
+            prompt = buildOpenCodePrompt({
+                customPrompt,
+                issueRef,
+                branchName,
+                modelName: effectiveModel,
+                issueDetails,
+                isRetry,
+                retryReason,
+                systemPrompt
+            });
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
@@ -56,6 +65,7 @@ export class OpenCodeAgent implements Agent {
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
             const success = result.exitCode === 0 && !parsedOutput.error;
+            const errorText = success ? undefined : (parsedOutput.error || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
             const response: AgentExecutionResult = {
                 success,
                 executionTimeMs: executionTime,
@@ -69,7 +79,8 @@ export class OpenCodeAgent implements Agent {
                 commitMessage: null,
                 summary: parsedOutput.summary,
                 prompt,
-                error: parsedOutput.error,
+                error: errorText,
+                tokenUsage: parsedOutput.tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
             };
 
@@ -88,8 +99,9 @@ export class OpenCodeAgent implements Agent {
             const executionTime = Date.now() - startTime;
             const err = error as Error;
             logger.error({ issueNumber: issueRef.number, repository: repo, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during OpenCode agent execution');
-            const response: AgentExecutionResult = { success: false, error: err.message, executionTimeMs: executionTime, logs: (error as { stderr?: string }).stderr || err.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: effectiveModel || 'unknown', prompt };
-            await this.persistExecutionLogSafely({ response, executionTime, modelUsed: response.modelUsed, prompt, issueRef, taskId, prNumber, isRetry, retryReason });
+            const persistedPrompt = prompt ?? customPrompt ?? '';
+            const response: AgentExecutionResult = { success: false, error: err.message, executionTimeMs: executionTime, logs: (error as { stderr?: string }).stderr || err.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: effectiveModel || 'unknown', prompt: persistedPrompt };
+            await this.persistExecutionLogSafely({ response, executionTime, modelUsed: response.modelUsed, prompt: persistedPrompt, issueRef, taskId, prNumber, isRetry, retryReason });
             return response;
         }
     }
@@ -117,10 +129,10 @@ export class OpenCodeAgent implements Agent {
             const success = result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
 
             const errorMsg = parsedOutput.error || result.stderr || 'No assistant text returned';
-            await this.persistAnalysisLogSafely({ executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, usageMetrics });
+            await this.persistAnalysisLogSafely({ executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
             return success
-                ? { response: analysisText, modelUsed, executionTimeMs, success: true, sessionId: parsedOutput.sessionId }
-                : { response: analysisText, modelUsed, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}` };
+                ? { response: analysisText, modelUsed, executionTimeMs, success: true, sessionId: parsedOutput.sessionId, tokenUsage: parsedOutput.tokenUsage }
+                : { response: analysisText, modelUsed, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}`, tokenUsage: parsedOutput.tokenUsage };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
@@ -141,11 +153,6 @@ export class OpenCodeAgent implements Agent {
             logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'OpenCode health check failed');
             return false;
         }
-    }
-
-    private buildPrompt(prompt: string, isRetry: boolean, retryReason?: string): string {
-        if (!isRetry || !retryReason) return prompt;
-        return `${prompt}\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
     }
 
     private parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
@@ -171,6 +178,7 @@ export class OpenCodeAgent implements Agent {
             modelUsed,
             executionTimeMs: executionTime,
             success: response.success,
+            tokenUsage: response.tokenUsage,
             error: response.success ? undefined : (response.error || 'Execution failed'),
             sessionId: response.sessionId,
             draftId: taskId,
@@ -203,6 +211,7 @@ export class OpenCodeAgent implements Agent {
         metadata?: Record<string, unknown>;
         taskNumber?: number;
         prNumber?: number;
+        tokenUsage?: AgentExecutionResult['tokenUsage'];
         usageMetrics?: UsageTrackingMetrics | null;
     }): Promise<void> {
         try {
@@ -211,6 +220,7 @@ export class OpenCodeAgent implements Agent {
                 modelUsed: opts.modelUsed,
                 executionTimeMs: opts.executionTimeMs,
                 success: opts.success,
+                tokenUsage: opts.tokenUsage,
                 error: opts.success ? undefined : opts.error,
                 sessionId: opts.sessionId,
                 draftId: opts.taskId,

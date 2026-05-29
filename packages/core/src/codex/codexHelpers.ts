@@ -156,6 +156,7 @@ function handleResultEvent(event: CodexEvent, state: ParseState): void {
         state.isError = true;
         state.errorMessage = event.message || 'Unknown error';
     }
+    addCodexTokenUsage(event.usage, state);
 }
 
 function captureEventMetadata(event: CodexEvent, state: ParseState): void {
@@ -167,10 +168,13 @@ function captureEventMetadata(event: CodexEvent, state: ParseState): void {
 
 function handleTurnCompleted(event: CodexEvent, state: ParseState): void {
     state.logs += `[${event.type}]\n`;
-    if (event.usage) {
-        state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
-        state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
-    }
+    addCodexTokenUsage(event.usage, state);
+}
+
+function addCodexTokenUsage(usage: CodexEvent['usage'] | undefined, state: ParseState): void {
+    if (!usage) return;
+    state.tokenUsage.input_tokens += (usage.input_tokens ?? 0) + (usage.cached_input_tokens ?? 0);
+    state.tokenUsage.output_tokens += usage.output_tokens ?? 0;
 }
 
 function handleErrorEvent(event: CodexEvent, state: ParseState): void {

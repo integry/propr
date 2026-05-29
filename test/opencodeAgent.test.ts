@@ -1,9 +1,10 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
-import { buildOpenCodeDockerArgs, parseOpenCodeJsonl } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, parseOpenCodeJsonl } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
-import type { AgentConfig } from '../packages/core/src/agents/types.js';
+import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.js';
 
 after(async () => {
     await closeConnection();
@@ -23,7 +24,7 @@ function createAgent(): OpenCodeAgent {
     return new OpenCodeAgent(config);
 }
 
-function parseOutput(output: string): { summary?: string; modelUsed?: string; sessionId?: string; error?: string } {
+function parseOutput(output: string): { summary?: string; modelUsed?: string; sessionId?: string; error?: string; tokenUsage?: TokenUsage } {
     return parseOpenCodeJsonl(output);
 }
 
@@ -70,6 +71,14 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(parsed.summary, 'duplicate');
     });
 
+    test('does not treat user-owned top-level parts as assistant text', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', part: { type: 'text', text: 'hidden' }, message: { role: 'user', content: 'user text' } })
+        ].join('\n'));
+
+        assert.strictEqual(parsed.summary, undefined);
+    });
+
     test('recognizes mixed-case error event types and error payloads', () => {
         const parsed = parseOutput([
             JSON.stringify({ type: 'Message', message: { role: 'assistant', model: 'initial/model', content: 'partial' } }),
@@ -111,6 +120,14 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(parsed.summary, 'once again');
     });
 
+    test('collects assistant text from response containers', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', response: { text: 'response text' } })
+        ].join('\n'));
+
+        assert.strictEqual(parsed.summary, 'response text');
+    });
+
     test('uses non-json stdout as fallback text', () => {
         const parsed = parseOutput('plain response\n');
 
@@ -124,6 +141,123 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(parsed.modelUsed, undefined);
         assert.strictEqual(parsed.sessionId, undefined);
         assert.strictEqual(parsed.error, undefined);
+    });
+
+    test('normalizes token usage from common output shapes', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'result', usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 10 }, stats: { inputTokens: 90, outputTokens: 30, cacheCreationInputTokens: 5 } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 100,
+            output_tokens: 30,
+            cache_creation_input_tokens: 5,
+            cache_read_input_tokens: 10
+        });
+    });
+
+    test('normalizes token usage from numeric strings', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'result', sessionID: 'session-a', usage: { input_tokens: '100', output_tokens: '25', cache_creation_input_tokens: '5', cache_read_input_tokens: '10' } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 100,
+            output_tokens: 25,
+            cache_creation_input_tokens: 5,
+            cache_read_input_tokens: 10
+        });
+    });
+
+    test('aggregates per-message token usage', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'first', usage: { input_tokens: 10, output_tokens: 2 } } }),
+            JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'second', usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 4 } } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 17,
+            output_tokens: 5,
+            cache_read_input_tokens: 4
+        });
+    });
+
+    test('does not overcount cumulative top-level usage snapshots', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'result', sessionID: 'session-a', usage: { input_tokens: 10, output_tokens: 2 } }),
+            JSON.stringify({ type: 'result', sessionID: 'session-a', usage: { input_tokens: 18, output_tokens: 5, cache_read_input_tokens: 4 } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 18,
+            output_tokens: 5,
+            cache_read_input_tokens: 4
+        });
+    });
+
+    test('sums increasing per-event top-level usage outside result snapshots', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', usage: { input_tokens: 10, output_tokens: 2 } }),
+            JSON.stringify({ type: 'message', sessionID: 'session-a', usage: { input_tokens: 18, output_tokens: 5, cache_read_input_tokens: 4 } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 28,
+            output_tokens: 7,
+            cache_read_input_tokens: 4
+        });
+    });
+
+    test('does not double count final top-level usage after nested usage', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'first', usage: { input_tokens: 10, output_tokens: 2 } } }),
+            JSON.stringify({ type: 'message', sessionID: 'session-a', message: { role: 'assistant', content: 'second', usage: { input_tokens: 8, output_tokens: 3 } } }),
+            JSON.stringify({ type: 'result', sessionID: 'session-a', usage: { input_tokens: 18, output_tokens: 5 } })
+        ].join('\n'));
+
+        assert.deepStrictEqual(parsed.tokenUsage, {
+            input_tokens: 18,
+            output_tokens: 5
+        });
+    });
+
+    test('keeps generic stream envelopes out of OpenCode detection', () => {
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionId: 'generic-session', message: { content: 'hello' } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', session_id: 'generic-session', message: { content: 'hello' } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', message: { parts: [] } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionID: 'session-a' }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionId: 'session-a', message: { role: 'assistant', content: 'hello' } }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'text', text: 'OpenCode text' }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', usage: { input_tokens: 10 } }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', stats: { input_tokens: 10 } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'result', sessionID: 'session-a', stats: { input_tokens: 10 } }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'tool_use', stats: { input_tokens: 10 } }), false);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'tool_use', sessionID: 'session-a', tool_name: 'Shell' }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'tool_use', session_id: 'session-a', tool_name: 'Shell' }), true);
+        assert.strictEqual(isOpenCodeJsonlEvent({ type: 'message', sessionID: 'session-a', response: { text: 'hello' } }), true);
+    });
+
+    test('normalizes numeric OpenCode timestamps in seconds and milliseconds', () => {
+        assert.strictEqual(normalizeOpenCodeTimestamp(1714867200, 'fallback'), '2024-05-05T00:00:00.000Z');
+        assert.strictEqual(normalizeOpenCodeTimestamp(1714867200000, 'fallback'), '2024-05-05T00:00:00.000Z');
+        assert.strictEqual(normalizeOpenCodeTimestamp(Number.NaN, 'fallback'), 'fallback');
+        assert.strictEqual(normalizeOpenCodeTimestamp('not-a-date', 'fallback'), 'fallback');
+    });
+});
+
+describe('OpenCodeAgent prompt building', () => {
+    test('includes system instructions, safety rules, and retry context', () => {
+        const prompt = buildOpenCodePrompt({
+            customPrompt: 'Implement the change.',
+            issueRef: { repoOwner: 'integry', repoName: 'propr', number: 1482 },
+            systemPrompt: 'Use the local conventions.',
+            isRetry: true,
+            retryReason: 'tests failed'
+        });
+
+        assert.match(prompt, /SYSTEM INSTRUCTIONS:\nUse the local conventions\./);
+        assert.match(prompt, /CRITICAL GIT SAFETY RULES/);
+        assert.match(prompt, /RETRY CONTEXT/);
     });
 });
 
