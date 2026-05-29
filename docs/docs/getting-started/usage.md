@@ -106,14 +106,16 @@ Add labels to GitHub issues to specify which agent/model(s) should process them:
 
 - `llm-claude-sonnet` - Use Claude Sonnet model
 - `llm-claude-opus` - Use Claude Opus model
-- `opencode-kimi-k26` - Use an OpenCode agent configured for `opencode-go/kimi-k2.6`
+- `llm-opencode-kimi-k26` - Use an OpenCode agent configured for `opencode-go/kimi-k2.6`
 - Multiple labels can be added for multi-model processing
+
+The default `MODEL_LABEL_PATTERN` is `^llm-(.+)$`. ProPR strips the `llm-` prefix, resolves the remaining label against its model catalog, and then selects an enabled agent that supports that model. For example, `llm-opencode-kimi-k26` maps to `opencode-go/kimi-k2.6`.
 
 ### Example: Multi-Model Processing
 
 ```
 Issue #123
-Labels: AI, llm-claude-sonnet, opencode-kimi-k26
+Labels: AI, llm-claude-sonnet, llm-opencode-kimi-k26
 ```
 
 This issue will be processed twice:
@@ -131,9 +133,9 @@ propr agent list
 opencode auth list
 ```
 
-An OpenCode agent usually points at `~/.config/opencode` and uses models such as `opencode-go/kimi-k2.6`. OpenCode Go is optional; you can also configure OpenCode with another provider and add that provider/model ID to the ProPR agent's supported models.
+An OpenCode agent usually points at `~/.config/opencode` and uses models such as `opencode-go/kimi-k2.6`. OpenCode Go is an optional OpenCode provider/model source, separate from the OpenCode CLI; you can also configure OpenCode with another provider and add that provider/model ID to the ProPR agent's supported models.
 
-OpenCode/provider API keys are operator-owned. If a worker fails with authentication errors, run `opencode auth login` on the host or update the provider credentials used by the OpenCode agent, then retry the task.
+OpenCode/provider API keys are operator-owned. If a worker fails with authentication errors, update the provider env vars on the OpenCode agent, or run `opencode auth login` on the host and sync `~/.local/share/opencode/auth.json` into the mounted config tree, for example `~/.config/opencode/xdg-data/opencode/auth.json`, with `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` set on that agent.
 
 ## Docker Compose Usage
 

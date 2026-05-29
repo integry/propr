@@ -147,8 +147,8 @@ Execute the selected coding agent in a secure Docker container:
 const result = await agent.executeTask({
   prompt: prompt,
   workspacePath: worktreePath,
-  timeout: CLAUDE_TIMEOUT_MS,
-  maxTurns: CLAUDE_MAX_TURNS
+  timeout: agentConfig.timeoutMs,
+  maxTurns: agentConfig.maxTurns
 });
 ```
 

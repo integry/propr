@@ -33,34 +33,26 @@ ProPR consists of three main components:
 
 ```
 propr/
-├── src/
-│   ├── auth/
-│   │   └── githubAuth.js        # GitHub App authentication
-│   ├── agents/
-│   │   └── AgentRegistry.ts     # Agent selection and execution dispatch
-│   ├── git/
-│   │   └── repoManager.js       # Git operations, worktree management, branch handling
-│   ├── queue/
-│   │   └── taskQueue.js         # BullMQ task queue with Redis
-│   ├── utils/
-│   │   ├── errorHandler.js      # Comprehensive error handling utilities
-│   │   ├── logger.js            # Structured logging with correlation IDs
-│   │   ├── prValidation.js      # PR validation and retry mechanisms
-│   │   ├── retryHandler.js      # Configurable retry logic with exponential backoff
-│   │   ├── workerStateManager.js # Job state management and tracking
-│   │   └── idempotentOps.js     # Idempotent operation utilities
-│   ├── daemon.js                # Multi-model issue detection daemon
-│   ├── worker.js                # 3-phase deterministic job processor
-│   ├── githubService.js         # GitHub API operations and PR management
-│   └── index.js                 # Application entry point
+├── src/                         # Daemon, worker, polling, and job orchestration
+│   ├── daemon.ts                # Issue detection daemon entry point
+│   ├── worker.ts                # Worker entry point
+│   ├── jobs/                    # Issue, PR comment, review, and system task jobs
+│   ├── polling/                 # GitHub issue and PR polling
+│   └── github/                  # GitHub PR and merge operations
+├── packages/
+│   ├── core/                    # Agent registry, agent implementations, shared runtime
+│   ├── api/                     # Dashboard API and webhook routes
+│   ├── cli/                     # ProPR CLI
+│   └── shared/                  # Shared model definitions and types
+├── propr-ui/                    # Frontend package
 ├── scripts/
 │   ├── claude-entrypoint.sh     # Docker entrypoint for Claude execution
 │   ├── opencode-entrypoint.sh   # Docker entrypoint for OpenCode execution
 │   ├── init-firewall.sh         # Security and firewall setup
 │   ├── fix-issue-labels.js      # Manual issue label management utility
 │   └── list-repo-configs.js     # Repository configuration display utility
-├── docs/                        # Technical documentation
-├── test/                        # Comprehensive test suite
+├── docs/                        # Docusaurus documentation site
+├── test/                        # Unit and integration tests
 ├── Dockerfile.claude            # Secure Docker image for Claude execution
 ├── Dockerfile.opencode          # Secure Docker image for OpenCode execution
 ├── .env.example                 # Complete environment configuration template
@@ -75,7 +67,7 @@ The daemon continuously monitors configured GitHub repositories:
 
 1. Polls repositories at configured intervals (default: 60 seconds)
 2. Searches for open issues with configured primary labels (e.g., 'AI', 'propr')
-3. Checks for model-specific labels (e.g., 'llm-claude-sonnet', 'llm-claude-opus', 'opencode-kimi-k26')
+3. Checks for model-specific labels (e.g., 'llm-claude-sonnet', 'llm-claude-opus', 'llm-opencode-kimi-k26')
 4. Excludes issues with state labels (processing, done, failed)
 5. Creates job(s) in Redis queue for each detected issue/model combination
 

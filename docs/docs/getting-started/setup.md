@@ -81,11 +81,12 @@ Define which labels trigger processing:
 PRIMARY_PROCESSING_LABELS=AI,propr
 
 # Model-Specific Configuration
-MODEL_LABELS_SONNET=llm-claude-sonnet
-MODEL_LABELS_OPUS=llm-claude-opus
+MODEL_LABEL_PATTERN=^llm-(.+)$
 ```
 
 **Note**: State labels (`-processing`, `-done`, `-failed-*`) are automatically generated based on the primary label that triggered processing.
+
+With the default `MODEL_LABEL_PATTERN`, GitHub labels such as `llm-claude-sonnet`, `llm-claude-opus`, and `llm-opencode-kimi-k26` select models from ProPR's built-in model catalog. `llm-opencode-kimi-k26` resolves to `opencode-go/kimi-k2.6` when an enabled OpenCode agent supports that model.
 
 ### Configure Git Operations
 
@@ -126,7 +127,31 @@ git --version
 git worktree --help
 ```
 
-## 4. Claude Code Setup
+## 4. Docker Setup
+
+The worker uses Docker to run all coding agents in secure, isolated environments.
+
+### Ubuntu/Debian
+
+```bash
+sudo apt-get update
+sudo apt-get install docker.io
+sudo usermod -aG docker $USER
+```
+
+### macOS (with Homebrew)
+
+```bash
+brew install docker
+```
+
+### Verify Installation
+
+```bash
+docker --version
+```
+
+## 5. Claude Code Setup
 
 Configure this section if you want ProPR to run Claude Code agents.
 
@@ -148,30 +173,6 @@ claude login
 
 This generates `~/.config/claude-code/auth.json` needed for non-interactive execution.
 
-### Install Docker
-
-The worker uses Docker to run Claude Code in a secure, isolated environment.
-
-#### Ubuntu/Debian
-
-```bash
-sudo apt-get update
-sudo apt-get install docker.io
-sudo usermod -aG docker $USER
-```
-
-#### macOS (with Homebrew)
-
-```bash
-brew install docker
-```
-
-#### Verify Installation
-
-```bash
-docker --version
-```
-
 ### Configure Claude Settings
 
 Add Claude configuration to your `.env` file:
@@ -191,7 +192,7 @@ GITHUB_API_MAX_RETRIES=3
 GIT_OPERATION_MAX_RETRIES=3
 ```
 
-## 5. OpenCode Setup
+## 6. OpenCode Setup
 
 Configure this section if you want ProPR to run OpenCode agents.
 
@@ -206,14 +207,16 @@ curl -fsSL https://opencode.ai/install | bash
 
 ### Initialize OpenCode Directories
 
-Create both the current OpenCode config directory and the legacy directory that ProPR supports for compatibility:
+Create the current OpenCode config directory. The `xdg-data` subdirectory is used when you want OpenCode `auth.json` to live inside the directory that ProPR mounts into the agent container:
 
 ```bash
-mkdir -p ~/.config/opencode ~/.opencode
+mkdir -p ~/.config/opencode ~/.config/opencode/xdg-data/opencode
 opencode --version
 ```
 
-OpenCode's current user config directory is `~/.config/opencode`. ProPR mounts that path into OpenCode containers at `/home/node/.config/opencode`. Existing deployments that still use `~/.opencode` can keep that directory; ProPR also mounts and links it when configured.
+OpenCode's current user config directory is `~/.config/opencode`. Configure new ProPR agents with `--config-path ~/.config/opencode`; ProPR mounts that path into OpenCode containers at `/home/node/.config/opencode`.
+
+Existing deployments that still use `~/.opencode` can keep that directory by configuring the agent with `--config-path ~/.opencode`. The launcher `HOST_OPENCODE_LEGACY_DIR` option only exposes that host path to the worker/API containers; the saved agent `configPath` still determines which directory is mounted into the OpenCode agent container.
 
 ### Authenticate with OpenCode Providers
 
@@ -223,11 +226,14 @@ Run OpenCode's provider login flow:
 opencode auth login
 ```
 
-Select OpenCode Go or another provider and enter your API key. OpenCode Go is optional; it is just one OpenCode provider. You can configure other providers through OpenCode and use their model IDs, as long as the ProPR agent is configured with matching supported models.
+Select OpenCode Go or another provider and enter your API key. OpenCode Go is optional; it is an OpenCode provider/model source, separate from the OpenCode CLI. You can configure other providers through OpenCode and use their model IDs, as long as the ProPR agent is configured with matching supported models.
 
 Operators must supply their own OpenCode Go or provider API keys. ProPR does not include credentials.
 
-OpenCode stores provider credentials in `~/.local/share/opencode/auth.json` and can also load provider keys from environment variables or a project `.env` file. Make sure the same credentials are available to the ProPR worker and the OpenCode agent container in your deployment.
+OpenCode stores provider credentials in `~/.local/share/opencode/auth.json`, while ProPR mounts only the configured OpenCode config directory into the agent container. Make credentials available to the container in one of these ways:
+
+- Prefer provider environment variables when your selected OpenCode provider supports them. Add those variables to the OpenCode agent's `envVars` through the Settings UI or API.
+- If you use `opencode auth login`, copy or sync `~/.local/share/opencode/auth.json` to `~/.config/opencode/xdg-data/opencode/auth.json`, then set the agent env var `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`.
 
 ### Configure an OpenCode Agent
 
@@ -244,6 +250,18 @@ propr agent add opencode \
 
 If you keep provider credentials in environment variables instead of OpenCode config files, use the environment variable names required by your selected OpenCode provider and add them to the agent configuration through the API/UI deployment flow used by your installation.
 
+If you use the copied `auth.json` path described above, add this env var to the same OpenCode agent config:
+
+```json
+{
+  "envVars": {
+    "XDG_DATA_HOME": "/home/node/.config/opencode/xdg-data"
+  }
+}
+```
+
+GitHub issue labels are matched by `MODEL_LABEL_PATTERN` (default `^llm-(.+)$`) and then resolved against ProPR's model catalog and configured agents. The built-in label `llm-opencode-kimi-k26` maps to `opencode-go/kimi-k2.6` when an enabled OpenCode agent supports that model.
+
 ### Docker and Launcher Mounts
 
 For Docker Compose development, the provided compose files already mount:
@@ -253,6 +271,8 @@ For Docker Compose development, the provided compose files already mount:
 ~/.config/opencode
 ```
 
+Those mounts cover OpenCode config files. They do not mount `~/.local/share/opencode`, so file-based auth still needs the `xdg-data` path and `XDG_DATA_HOME` agent env var described above.
+
 For the production launcher, pass host paths explicitly:
 
 ```bash
@@ -260,7 +280,9 @@ For the production launcher, pass host paths explicitly:
 -e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode
 ```
 
-## 6. Install Dependencies
+Pass `HOST_OPENCODE_LEGACY_DIR` only for agents whose saved `configPath` is `~/.opencode`.
+
+## 7. Install Dependencies
 
 Install the Node.js dependencies:
 

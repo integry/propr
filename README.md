@@ -16,7 +16,7 @@ A production-ready automated system that monitors GitHub issues, uses configurab
 - **Model-Specific Enqueueing**: Separate job queues for different agent/model selections based on issue labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels (`llm-claude-sonnet`, `llm-claude-opus`, `opencode-kimi-k26`)
+- **Model Selection**: Automatic model detection from issue labels (`llm-claude-sonnet`, `llm-claude-opus`, `llm-opencode-kimi-k26`)
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -97,8 +97,7 @@ Create a GitHub App with the following permissions:
    # generated based on the specific primary label that triggered processing
    
    # Model-Specific Configuration
-   MODEL_LABELS_SONNET=llm-claude-sonnet
-   MODEL_LABELS_OPUS=llm-claude-opus
+   MODEL_LABEL_PATTERN=^llm-(.+)$
    
    # PR Comment Monitoring Configuration
    GITHUB_BOT_USERNAME=your_bot_username
@@ -136,6 +135,23 @@ git worktree --help
 
 Configure one or more implementation agents. Each agent needs its own CLI credentials and Docker image.
 
+#### Docker
+
+The worker uses Docker to run all coding agents in secure, isolated environments.
+
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install docker.io
+sudo usermod -aG docker $USER
+
+# macOS (with Homebrew)
+brew install docker
+
+# Verify installation
+docker --version
+```
+
 #### Claude Code
 
 For Claude Code CLI integration:
@@ -151,22 +167,7 @@ For Claude Code CLI integration:
    ```
    This generates `~/.config/claude-code/auth.json` needed for non-interactive execution.
 
-3. **Install Docker:**
-   The worker uses Docker to run Claude Code in a secure, isolated environment.
-   ```bash
-   # Ubuntu/Debian
-   sudo apt-get update
-   sudo apt-get install docker.io
-   sudo usermod -aG docker $USER
-   
-   # macOS (with Homebrew)
-   brew install docker
-   
-   # Verify installation
-   docker --version
-   ```
-
-4. **Configure Claude settings in .env:**
+3. **Configure Claude settings in .env:**
    ```bash
    # Claude Code Configuration
    CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
@@ -194,18 +195,23 @@ For OpenCode CLI integration:
 
 2. **Initialize local OpenCode directories:**
    ```bash
-   mkdir -p ~/.config/opencode ~/.opencode
+   mkdir -p ~/.config/opencode ~/.config/opencode/xdg-data/opencode ~/.opencode
    opencode --version
    ```
 
-   OpenCode's current config path is `~/.config/opencode`. ProPR also supports the legacy `~/.opencode` path for existing deployments.
+   OpenCode's current config path is `~/.config/opencode`. Use that as the agent `--config-path` for new installs. Legacy deployments can keep using `~/.opencode` by configuring the agent with `--config-path ~/.opencode`.
 
 3. **Authenticate OpenCode with your provider keys:**
    ```bash
    opencode auth login
    ```
 
-   OpenCode stores provider credentials in `~/.local/share/opencode/auth.json` and can also load provider keys from environment variables or a project `.env` file. Make sure the same credentials are available to the ProPR worker and agent container. OpenCode Go is optional. You can use an OpenCode Go model such as `opencode-go/kimi-k2.6`, or configure any other provider supported by OpenCode. In all cases, operators must supply their own OpenCode/provider API keys.
+   OpenCode stores provider credentials in `~/.local/share/opencode/auth.json`, while ProPR mounts only the configured OpenCode config directory into the agent container. Make credentials available to the container in one of these ways:
+
+   - Prefer provider environment variables when your OpenCode provider supports them. Add those variables to the OpenCode agent's `envVars` through your API/UI deployment flow.
+   - If you use `opencode auth login`, copy or sync `~/.local/share/opencode/auth.json` to a data directory under the mounted config path, for example `~/.config/opencode/xdg-data/opencode/auth.json`, and set the agent env var `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`.
+
+   OpenCode Go is an optional OpenCode provider/model source, separate from the OpenCode CLI. You can use an OpenCode Go model such as `opencode-go/kimi-k2.6`, or configure any other provider supported by OpenCode. In all cases, operators must supply their own OpenCode/provider API keys.
 
 4. **Configure an OpenCode agent in ProPR:**
    ```bash
@@ -217,7 +223,9 @@ For OpenCode CLI integration:
      --config-path ~/.config/opencode
    ```
 
-   If you keep OpenCode credentials in environment variables instead of config files, add them to the agent configuration through the API/UI deployment flow used by your installation.
+   If you keep OpenCode credentials in environment variables or need the `XDG_DATA_HOME` override shown above, add those env vars to the agent configuration through the API/UI deployment flow used by your installation.
+
+   GitHub issue labels are matched by `MODEL_LABEL_PATTERN` (default `^llm-(.+)$`) and then resolved against ProPR's model catalog and configured agents. The built-in label `llm-opencode-kimi-k26` maps to `opencode-go/kimi-k2.6` when an enabled OpenCode agent supports that model.
 
 ### 5. Installation
 
@@ -229,40 +237,26 @@ npm install
 
 ```
 propr/
-├── src/
-│   ├── auth/
-│   │   └── githubAuth.js        # GitHub App authentication
-│   ├── agents/
-│   │   └── AgentRegistry.ts     # Coding agent selection and execution dispatch
-│   ├── git/
-│   │   └── repoManager.js       # Git operations, worktree management, branch handling
-│   ├── queue/
-│   │   └── taskQueue.js         # BullMQ task queue with Redis
-│   ├── utils/
-│   │   ├── errorHandler.js      # Comprehensive error handling utilities
-│   │   ├── logger.js            # Structured logging with correlation IDs
-│   │   ├── prValidation.js      # PR validation and retry mechanisms
-│   │   ├── retryHandler.js      # Configurable retry logic with exponential backoff
-│   │   ├── workerStateManager.js # Job state management and tracking
-│   │   └── idempotentOps.js     # Idempotent operation utilities
-│   ├── daemon.js                # Multi-model issue detection daemon
-│   ├── worker.js                # 3-phase deterministic job processor
-│   ├── githubService.js         # GitHub API operations and PR management
-│   └── index.js                 # Application entry point
+├── src/                              # Daemon, worker, polling, and job orchestration
+│   ├── daemon.ts                     # Issue detection daemon entry point
+│   ├── worker.ts                     # Worker entry point
+│   ├── jobs/                         # Issue, PR comment, review, and system task jobs
+│   ├── polling/                      # GitHub issue and PR polling
+│   └── github/                       # GitHub PR and merge operations
+├── packages/
+│   ├── core/                         # Agent registry, agent implementations, shared runtime
+│   ├── api/                          # Dashboard API and webhook routes
+│   ├── cli/                          # ProPR CLI
+│   └── shared/                       # Shared model definitions and types
+├── propr-ui/                         # Frontend package
 ├── scripts/
 │   ├── claude-entrypoint.sh     # Docker entrypoint for secure Claude execution
 │   ├── opencode-entrypoint.sh   # Docker entrypoint for secure OpenCode execution
 │   ├── init-firewall.sh         # Security and firewall setup
 │   ├── fix-issue-labels.js      # Manual issue label management utility
 │   └── list-repo-configs.js     # Repository configuration display utility
-├── docs/
-│   ├── AI_PR_REVIEW_GUIDELINES.md    # Guidelines for AI-generated code review
-│   ├── REPOSITORY_BRANCH_CONFIG.md   # Repository configuration documentation
-│   └── SYSTEM_METRICS.md             # System metrics and monitoring guide
-├── test/                             # Comprehensive test suite
-│   ├── *.test.js                     # Unit and integration tests
-│   ├── worker.modelSpecific.test.js  # Multi-model processing tests
-│   └── repoManager.modelSpecific.test.js # Git worktree isolation tests
+├── docs/                             # Docusaurus documentation site
+├── test/                             # Unit and integration tests
 ├── Dockerfile.claude                 # Secure Docker image for Claude execution
 ├── Dockerfile.opencode               # Secure Docker image for OpenCode execution
 ├── .env.example                      # Complete environment configuration template
@@ -379,7 +373,6 @@ docker run --rm \
   -e HOST_CLAUDE_DIR=$HOME/.claude \
   -e HOST_CODEX_DIR=$HOME/.codex \
   -e HOST_GEMINI_DIR=$HOME/.gemini \
-  -e HOST_OPENCODE_LEGACY_DIR=$HOME/.opencode \
   -e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode \
   propr/launcher:latest
 ```
@@ -387,23 +380,25 @@ docker run --rm \
 Paths are passed as host paths (not mounted into the launcher) because the
 launcher uses the host docker daemon via the mounted socket to spawn sibling
 containers — any `-v` values it passes need to resolve on the host.
+Pass `HOST_OPENCODE_LEGACY_DIR=$HOME/.opencode` only for OpenCode agents whose
+saved `configPath` is `~/.opencode`.
 
 The launcher pulls redis + app + ui images on first run and orchestrates them
 via the mounted docker socket. See `.env.example` for required configuration.
 
 ### Images published
 
-| Image | Contents | Size |
-|---|---|---|
-| `propr/launcher` | Orchestrator that spawns the stack | ~170 MB |
-| `propr/app` | Server (daemon / workers / api, command selects role) | ~525 MB |
-| `propr/ui` | Web UI static bundle | ~225 MB |
-| `propr/docs` | Docusaurus site (optional) | ~215 MB |
-| `propr/agent-base` | Shared base for agent images | ~220 MB |
-| `propr/agent-claude` | Claude Code execution container | ~315 MB |
-| `propr/agent-codex` | OpenAI Codex execution container | ~470 MB |
-| `propr/agent-gemini` | Google Gemini CLI execution container | ~380 MB |
-| `propr/agent-opencode` | OpenCode CLI execution container | ~330 MB |
+| Image | Contents |
+|---|---|
+| `propr/launcher` | Orchestrator that spawns the stack |
+| `propr/app` | Server (daemon / workers / api, command selects role) |
+| `propr/ui` | Web UI static bundle |
+| `propr/docs` | Docusaurus site (optional) |
+| `propr/agent-base` | Shared base for agent images |
+| `propr/agent-claude` | Claude Code execution container |
+| `propr/agent-codex` | OpenAI Codex execution container |
+| `propr/agent-gemini` | Google Gemini CLI execution container |
+| `propr/agent-opencode` | OpenCode CLI execution container |
 
 Images are also mirrored to `ghcr.io/proprdev/propr-*` (no rate limits for
 unauthenticated pulls).
@@ -533,7 +528,7 @@ npm test
 Add labels to GitHub issues to specify which agent/model(s) should process them:
 - `llm-claude-sonnet` - Use Claude Sonnet model
 - `llm-claude-opus` - Use Claude Opus model
-- `opencode-kimi-k26` - Use the configured OpenCode Kimi K2.6 model
+- `llm-opencode-kimi-k26` - Use the configured OpenCode Kimi K2.6 model
 - Multiple labels can be used together for multi-model processing
 
 ### Deterministic 3-Phase Processing
