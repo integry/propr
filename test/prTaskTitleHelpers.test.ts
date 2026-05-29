@@ -9,6 +9,7 @@ import {
     hasMeaningfulTitleText,
     resolvePrTaskWorkflow,
     selectRecentUsefulPrComments,
+    selectFallbackSummaryLine,
 } from '../src/jobs/prTaskTitleHelpers.js';
 
 describe('prTaskTitleHelpers titles', () => {
@@ -165,6 +166,20 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.strictEqual(result.includedReviewFeedback, true);
         assert.ok(result.context.includes('Handle null refresh tokens.'));
     });
+
+    test('fallback summary selection skips generated context section labels', () => {
+        const line = selectFallbackSummaryLine([
+            'Task: Fix PR #123: Add OAuth refresh handling',
+            '',
+            'Review feedback to address:',
+            '**AI Review Comments (unprocessed - please address these findings):**',
+            '---',
+            '**Review by:** @propr-dev[bot] (Comment ID: 1)',
+            'Handle null refresh tokens before persisting the session.',
+        ].join('\n'));
+
+        assert.strictEqual(line, 'Handle null refresh tokens before persisting the session.');
+    });
 });
 
 describe('prTaskTitleHelpers merge conflict diff context', () => {
@@ -228,5 +243,18 @@ describe('prTaskTitleHelpers merge conflict diff context', () => {
         const filtered = filterDiffToFiles(diff, ['src/auth flow.ts']);
         assert.ok(filtered.includes('"b/src/auth flow.ts"'));
         assert.ok(!filtered.includes('src/unrelated.ts'));
+    });
+
+    test('keeps a headerless diff when patch headers reference a conflicting file', () => {
+        const diff = [
+            'index aaa,bbb..ccc',
+            '--- a/src/conflict.ts',
+            '+++ b/src/conflict.ts',
+            '@@@ -1,1 -1,1 +1,1 @@@',
+            '++resolved conflict',
+        ].join('\n');
+
+        assert.strictEqual(filterDiffToFiles(diff, ['src/conflict.ts']), diff);
+        assert.strictEqual(filterDiffToFiles(diff, ['src/other.ts']), '');
     });
 });

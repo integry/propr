@@ -9,12 +9,11 @@ import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
 import { createLogFiles } from '@propr/core';
-import { UsageLimitError, AgentRegistry, resolveLlmLabel } from '@propr/core';
+import { UsageLimitError } from '@propr/core';
 import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, NoDefaultModelConfiguredError } from '@propr/core';
 import { loadPrimaryProcessingLabels } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
@@ -27,7 +26,7 @@ import {
 } from './prCommentJobUtils.js';
 import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
-import { generateSummaryTitle, resolveAndExecuteAgent } from './prCommentAgentUtils.js';
+import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { gatherUnprocessedReviewComments } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
@@ -38,8 +37,6 @@ import {
     buildPrTaskTitleContext,
     resolvePrTaskWorkflow,
 } from './prTaskTitleHelpers.js';
-
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -351,31 +348,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
-    // Resolve model name early for task state tracking
-    let modelName: string | null = DEFAULT_MODEL_NAME;
-    if (llm) {
-        try {
-            const resolution = await resolveLlmLabel(llm);
-            modelName = resolution.model;
-        } catch {
-            // Keep default if resolution fails
-        }
-    } else {
-        // No LLM specified - use the default agent's model for accurate tracking
-        try {
-            const registry = AgentRegistry.getInstance();
-            await registry.ensureInitialized();
-            const defaultAgent = registry.getDefaultAgent();
-            if (defaultAgent?.config.defaultModel) {
-                modelName = defaultAgent.config.defaultModel;
-            }
-        } catch {
-            // Keep DEFAULT_MODEL_NAME if registry fails
-        }
-    }
-    if (!modelName) {
-        throw new NoDefaultModelConfiguredError();
-    }
+    const modelName = await resolvePRCommentModelName(llm);
 
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();

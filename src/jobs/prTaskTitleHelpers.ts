@@ -274,6 +274,19 @@ function diffBlockPath(header: string): string | null {
     return null;
 }
 
+function diffPatchPath(line: string): string | null {
+    const patchHeader = line.match(/^(?:---|\+\+\+)\s+(.+)$/);
+    if (!patchHeader || patchHeader[1] === '/dev/null') return null;
+    return normalizeDiffPath(patchHeader[1]);
+}
+
+function blockReferencesWantedFile(lines: string[], wanted: Set<string>): boolean {
+    return lines.some(line => {
+        const path = diffPatchPath(line);
+        return path !== null && wanted.has(path);
+    });
+}
+
 export function filterDiffToFiles(diff: string, filePaths: string[]): string {
     const wanted = new Set(filePaths.map(normalizeDiffPath));
     if (wanted.size === 0 || !diff.trim()) return '';
@@ -282,9 +295,11 @@ export function filterDiffToFiles(diff: string, filePaths: string[]): string {
     const blocks: string[] = [];
     let current: string[] = [];
     let includeCurrent = false;
+    let sawDiffHeader = false;
 
     for (const line of lines) {
         if (line.startsWith('diff --git ') || line.startsWith('diff --cc ') || line.startsWith('diff --combined ')) {
+            sawDiffHeader = true;
             if (current.length > 0 && includeCurrent) blocks.push(current.join('\n'));
             current = [line];
             const path = diffBlockPath(line);
@@ -295,7 +310,44 @@ export function filterDiffToFiles(diff: string, filePaths: string[]): string {
     }
 
     if (current.length > 0 && includeCurrent) blocks.push(current.join('\n'));
+    if (blocks.length === 0 && !sawDiffHeader && blockReferencesWantedFile(lines, wanted)) {
+        return diff;
+    }
     return blocks.join('\n');
+}
+
+function normalizeFallbackSummaryLine(line: string): string {
+    return line
+        .replace(/^[-*]\s+@\S+\s+\([^)]*\):\s*/, '')
+        .replace(/^#+\s*/, '')
+        .trim();
+}
+
+function isFallbackContextHeader(line: string): boolean {
+    return [
+        /^Task:/i,
+        /^User instructions:?$/i,
+        /^Recent useful PR comments\b/i,
+        /^PR description fallback:?$/i,
+        /^Review feedback to address:?$/i,
+        /^Merge conflict diff for conflicting files only:?$/i,
+        /^[-*_]{3,}$/,
+        /^\*\*AI Review Comments\b/i,
+        /^\*\*Review by:\*\*/i,
+        /^AI Code Review\b/i,
+        /^diff --/i,
+        /^index\b/i,
+        /^---\s/,
+        /^\+\+\+\s/,
+        /^@@@?\s/,
+    ].some(pattern => pattern.test(line));
+}
+
+export function selectFallbackSummaryLine(context: string): string {
+    return context
+        .split('\n')
+        .map(line => normalizeFallbackSummaryLine(line.trim()))
+        .find(line => line && !isFallbackContextHeader(line)) || '';
 }
 
 export async function getConflictDiffForTitle(worktreePath: string, conflictedFiles?: string[]): Promise<string> {

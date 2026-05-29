@@ -3,31 +3,22 @@ import type { Job } from 'bullmq';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
+import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
 import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError, loadPrReviewModel } from '@propr/core';
-import {
-    fetchLinkedIssueContext,
-    buildCommentHistory, updateTaskTitleForPR
-} from './prCommentJobHelpers.js';
-import {
-    buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents
-} from './prCommentJobUtils.js';
+import { fetchLinkedIssueContext, buildCommentHistory, updateTaskTitleForPR } from './prCommentJobHelpers.js';
+import { buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
 import { generateSummaryTitle } from './prCommentAgentUtils.js';
+import { createTitleGenerationWorktree } from './prCommentTitleWorktree.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
-import {
-    buildDeterministicPrTaskSubtitle,
-    buildPrTaskTitle,
-    buildPrTaskTitleContext,
-    resolvePrTaskWorkflow,
-} from './prTaskTitleHelpers.js';
+import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle, buildPrTaskTitleContext, resolvePrTaskWorkflow } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
@@ -64,7 +55,7 @@ export interface PRJobContext {
 interface ProcessingState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     localRepoPath: string | undefined;
-    worktreeInfo: unknown;
+    worktreeInfo: WorktreeInfo | undefined;
     claudeResult: unknown;
     authorsText: string;
     unprocessedComments: UnprocessedComment[];
@@ -406,12 +397,25 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const titleContext = buildPrTaskTitleContext({ workflow, pullRequestNumber, prTitle: prData!.data.title, instructionText: job.data.commandInstructions, recentComments: allComments, prDescription: prData!.data.body, excludeCommentIds: state.unprocessedComments.map(comment => comment.id) });
     const fallbackSubtitle = buildDeterministicPrTaskSubtitle(workflow);
     const githubToken = await state.octokit.auth({ type: "installation" }) as { token: string };
-    const summaryTitle = await generateSummaryTitle({
-        combinedCommentBody, titleContext: titleContext.context, fallbackSubtitle,
-        worktreeInfo: { worktreePath: process.cwd(), branchName: prData!.data.head.ref }, githubToken,
-        pullRequestNumber, prTitle: prData!.data.title, workflowLabel: 'Review',
-        repoOwner, repoName, correlationId, taskId, correlatedLogger,
-    });
+    let summaryTitle = fallbackSubtitle;
+    if (titleContext.hasMeaningfulContext) {
+        try {
+            const titleWorktree = await createTitleGenerationWorktree({
+                repoOwner, repoName, pullRequestNumber, branchName: prData!.data.head.ref,
+                githubToken: githubToken.token, purpose: 'review-title', correlatedLogger,
+            });
+            state.localRepoPath = titleWorktree.localRepoPath;
+            state.worktreeInfo = titleWorktree.worktreeInfo;
+            summaryTitle = await generateSummaryTitle({
+                combinedCommentBody, titleContext: titleContext.context, fallbackSubtitle,
+                worktreeInfo: titleWorktree.worktreeInfo, githubToken,
+                pullRequestNumber, prTitle: prData!.data.title, workflowLabel: 'Review',
+                repoOwner, repoName, correlationId, taskId, correlatedLogger,
+            });
+        } catch (titleError) {
+            correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to generate review task subtitle');
+        }
+    }
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = titleContext.hasMeaningfulContext ? summaryTitle : fallbackSubtitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });

@@ -6,6 +6,7 @@ import type { WorkerStateManager } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { createSessionIdCallbackForPR, createContainerIdCallbackForPR } from './prCommentJobHelpers.js';
 import { agentResultToClaudeResponse } from './prCommentJobUtils.js';
+import { selectFallbackSummaryLine } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
@@ -27,6 +28,8 @@ interface SummaryTitleOptions {
     correlationId: string;
     taskId: string;
     correlatedLogger: Logger;
+    analysisRunner?: typeof runLightweightLLMAnalysis;
+    summarizationSettingsLoader?: typeof loadSummarizationSettings;
 }
 
 function sanitizeGeneratedSubtitle(value: string, fallbackSubtitle: string): string {
@@ -35,6 +38,14 @@ function sanitizeGeneratedSubtitle(value: string, fallbackSubtitle: string): str
     return cleaned.length > MAX_GENERATED_SUBTITLE_LENGTH
         ? `${cleaned.substring(0, MAX_GENERATED_SUBTITLE_LENGTH - 3).trimEnd()}...`
         : cleaned;
+}
+
+function titleGenerationTaskKind(workflowLabel?: string): string {
+    const workflow = (workflowLabel || 'workflow')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') || 'workflow';
+    return `pr-${workflow}-title-generation`;
 }
 
 export async function generateSummaryTitle(options: SummaryTitleOptions): Promise<string> {
@@ -49,10 +60,10 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
         const workflowText = workflowLabel ? `${workflowLabel} workflow` : 'PR workflow';
         const prText = prTitle ? `PR #${pullRequestNumber}: ${prTitle}` : `PR #${pullRequestNumber}`;
         const summaryRequest = `Summarize this ${workflowText} as a concise task subtitle for ${prText}. Focus on the concrete action or discussion context, not the slash command itself.\n\nContext:\n${contextToSummarize}`;
-        const summarizationSettings = await loadSummarizationSettings();
+        const summarizationSettings = await (options.summarizationSettingsLoader || loadSummarizationSettings)();
         const configuredModel = summarizationSettings.agent_alias?.trim();
         const model = configuredModel || 'haiku';
-        const title = await runLightweightLLMAnalysis({
+        const title = await (options.analysisRunner || runLightweightLLMAnalysis)({
             prompt: `${summaryRequest}\n\nYour output must be ONLY the summary string itself, with no other text.`,
             model,
             correlationId,
@@ -63,7 +74,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
             prNumber: pullRequestNumber,
             executionType: 'title-generation',
             metadata: {
-                taskKind: 'pr-followup-title-generation',
+                taskKind: titleGenerationTaskKind(workflowLabel),
                 configuredVia: configuredModel ? 'summarization.agent_alias' : 'fallback'
             }
         });
@@ -73,11 +84,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
     } catch (summaryError) {
         correlatedLogger.warn({ taskId, error: (summaryError as Error).message }, 'Failed to generate AI summary, falling back to truncation.');
         if (contextToSummarize) {
-            const firstContentLine = contextToSummarize
-                .split('\n')
-                .map(line => line.trim())
-                .find(line => line && !line.startsWith('Task:'));
-            const firstLine = (firstContentLine || '').replace(/[^a-zA-Z0-9 ]/g, '').trim();
+            const firstLine = selectFallbackSummaryLine(contextToSummarize).replace(/[^a-zA-Z0-9 ]/g, '').trim();
             if (!firstLine) return deterministicFallback;
             const prefix = workflowLabel || 'Follow-up';
             return `${prefix}: ${firstLine.substring(0, 75)}${firstLine.length > 75 ? '...' : ''}`;
@@ -117,6 +124,27 @@ async function resolveDefaultAgentAndModel(
     }
     correlatedLogger.debug({ fallbackAgent: resolvedAlias, fallbackModel: resolvedModel }, 'Using fallback default agent');
     return { resolvedAlias, resolvedModel };
+}
+
+export async function resolvePRCommentModelName(llm: string | null | undefined): Promise<string> {
+    let modelName: string | null = DEFAULT_MODEL_NAME;
+    if (llm) {
+        try {
+            modelName = (await resolveLlmLabel(llm)).model;
+        } catch {
+            // Keep the configured default if label resolution fails.
+        }
+    } else {
+        try {
+            const registry = AgentRegistry.getInstance();
+            await registry.ensureInitialized();
+            modelName = registry.getDefaultAgent()?.config.defaultModel || modelName;
+        } catch {
+            // Keep the configured default if the registry is unavailable.
+        }
+    }
+    if (!modelName) throw new NoDefaultModelConfiguredError();
+    return modelName;
 }
 
 export interface AgentExecutionParams {

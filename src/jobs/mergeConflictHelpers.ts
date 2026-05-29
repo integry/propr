@@ -211,7 +211,7 @@ export async function updateMergeTaskWithPRInfo(options: {
     title?: string;
     subtitle?: string;
 }): Promise<{ prTitle: string; linkedIssueNumber: number | null }> {
-    const { octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient } = options;
+    const { octokit, pullRequestNumber, repoOwner, repoName } = options;
 
     const graphqlResponse = await octokit.graphql<{
         repository: {
@@ -241,11 +241,31 @@ export async function updateMergeTaskWithPRInfo(options: {
     const prTitle = graphqlResponse.repository.pullRequest.title;
     const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
     const linkedIssueNumber = linkedIssues.length > 0 ? linkedIssues[0].number : null;
+
+    await updateMergeTaskWithKnownPRInfo({ ...options, prTitle, linkedIssueNumber });
+    return { prTitle, linkedIssueNumber };
+}
+
+export async function updateMergeTaskWithKnownPRInfo(options: {
+    stateManager: WorkerStateManager;
+    taskId: string;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    baseBranch: string;
+    headBranch: string;
+    correlatedLogger: Logger;
+    redisClient: { setex: (key: string, ttl: number, value: string) => Promise<unknown> };
+    prTitle: string;
+    linkedIssueNumber: number | null;
+    title?: string;
+    subtitle?: string;
+}): Promise<void> {
+    const { stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient, prTitle, linkedIssueNumber } = options;
     const taskTitle = options.title || buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle });
     const taskSubtitle = options.subtitle || `Merging ${baseBranch} into ${headBranch}`;
-
     if (linkedIssueNumber) {
-        correlatedLogger.info({ taskId, pullRequestNumber, linkedIssueNumber }, 'Found linked issue via GraphQL for merge task');
+        correlatedLogger.info({ taskId, pullRequestNumber, linkedIssueNumber }, 'Found linked issue for merge task');
     }
 
     await db('tasks').where({ task_id: taskId }).update({
@@ -269,5 +289,4 @@ export async function updateMergeTaskWithPRInfo(options: {
     }
 
     correlatedLogger.info({ taskId, prTitle, taskTitle, linkedIssueNumber }, 'Updated merge task with PR title and linked issue');
-    return { prTitle, linkedIssueNumber };
 }
