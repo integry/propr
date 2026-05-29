@@ -92,6 +92,25 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(parsed.modelUsed, 'opencode-go/kimi-k2.6');
     });
 
+    test('preserves repeated stream text from separate events', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'delta', delta: 'retry ' }),
+            JSON.stringify({ type: 'delta', delta: 'retry ' }),
+            JSON.stringify({ type: 'delta', delta: 'done' })
+        ].join('\n'));
+
+        assert.strictEqual(parsed.summary, 'retry retry done');
+    });
+
+    test('deduplicates duplicate text fields only within one event container', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'text', text: 'once ', content: 'once ' }),
+            JSON.stringify({ type: 'text', text: 'again' })
+        ].join('\n'));
+
+        assert.strictEqual(parsed.summary, 'once again');
+    });
+
     test('uses non-json stdout as fallback text', () => {
         const parsed = parseOutput('plain response\n');
 
@@ -135,7 +154,7 @@ describe('OpenCodeAgent Docker args', () => {
 
         assert.ok(args.includes('-v'));
         assert.ok(args.includes('/tmp/worktree:/home/node/workspace:ro'));
-        assert.ok(args.includes('/tmp/opencode-analysis-config-test:/home/node/.config/opencode:rw'));
+        assert.ok(args.includes('/tmp/opencode-analysis-config-test:/home/node/.config/opencode:ro'));
         assert.ok(!args.includes('--dangerously-skip-permissions'));
     });
 });

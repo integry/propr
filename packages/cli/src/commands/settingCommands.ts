@@ -56,6 +56,20 @@ function getSettingDescription(key: SettingKey): string {
   return descriptions[key];
 }
 
+function formatSettingKeysHelp(): string {
+  return VALID_SETTING_KEYS
+    .map((key) => `  ${key.padEnd(32)} ${getSettingDescription(key)}`)
+    .join("\n");
+}
+
+function printValidSettingKeys(includeDescriptions = false): void {
+  console.log("Valid setting keys:");
+  for (const validKey of VALID_SETTING_KEYS) {
+    const description = includeDescriptions ? `: ${getSettingDescription(validKey)}` : "";
+    console.log(`  - ${validKey}${description}`);
+  }
+}
+
 /**
  * Displays all settings in a formatted table.
  */
@@ -121,12 +135,7 @@ Examples:
     .option("-j, --json", "Output settings as JSON")
     .addHelpText("after", `
 Valid Setting Keys:
-  worker_concurrency             Number of concurrent workers
-  github_user_whitelist          Allowed GitHub users
-  analysis_model_fast            Fast analysis model
-  planner_context_model          Planner context model
-  planner_generation_model       Planner generation model
-  auto_followup_score_threshold  Auto-followup threshold (0-9)
+${formatSettingKeysHelp()}
 
 Examples:
   $ propr setting get                                 # Show all settings
@@ -143,10 +152,7 @@ Examples:
               if (!isValidSettingKey(options.key)) {
                 console.error(`Error: Invalid setting key: ${options.key}`);
                 console.log("");
-                console.log("Valid setting keys:");
-                for (const validKey of VALID_SETTING_KEYS) {
-                  console.log(`  - ${validKey}`);
-                }
+                printValidSettingKeys();
                 process.exit(1);
               }
               printOutput({ [options.key]: settings[options.key] }, true);
@@ -160,10 +166,7 @@ Examples:
             if (!isValidSettingKey(options.key)) {
               console.error(`Error: Invalid setting key: ${options.key}`);
               console.log("");
-              console.log("Valid setting keys:");
-              for (const validKey of VALID_SETTING_KEYS) {
-                console.log(`  - ${validKey}`);
-              }
+              printValidSettingKeys();
               process.exit(1);
             }
             displaySettingDetail(options.key, settings[options.key]);
@@ -207,12 +210,7 @@ Examples:
       "after",
       `
 Valid setting keys:
-  worker_concurrency           Number of concurrent workers (integer >= 1)
-  github_user_whitelist        Comma-separated list of GitHub usernames
-  analysis_model_fast          Model ID for fast analysis
-  planner_context_model        Model ID for planner context
-  planner_generation_model     Model ID for planner generation
-  auto_followup_score_threshold  Score threshold 0-9 for auto-followup
+${formatSettingKeysHelp()}
 
 Examples:
   $ propr setting update worker_concurrency 10
@@ -226,10 +224,7 @@ Examples:
         if (!isValidSettingKey(key)) {
           console.error(`Error: Invalid setting key: ${key}`);
           console.log("");
-          console.log("Valid setting keys:");
-          for (const validKey of VALID_SETTING_KEYS) {
-            console.log(`  - ${validKey}: ${getSettingDescription(validKey)}`);
-          }
+          printValidSettingKeys(true);
           process.exit(1);
         }
 

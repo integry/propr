@@ -122,12 +122,13 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId);
     const workspaceMode = readOnlyWorkspace ? 'ro' : 'rw';
+    const configMode = readOnlyWorkspace ? 'ro' : 'rw';
     const commandArgs = ['opencode-run', '--format', 'json'];
     if (allowDangerousPermissions) commandArgs.push('--dangerously-skip-permissions');
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
         '-v', `${worktreePath}:/home/node/workspace:${workspaceMode}`, '-v', '/tmp/git-processor:/tmp/git-processor:rw',
-        '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
+        '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
         '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
         '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', 'XDG_DATA_HOME=/home/node/.local/share', ...envVars,
         '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
@@ -192,8 +193,8 @@ function extractOpenCodeText(event: OpenCodeEvent): ExtractedOpenCodeText {
         addTextContainer(streamParts, event.response);
     }
     return {
-        streamParts: Array.from(new Set(streamParts)),
-        assistantMessage: Array.from(new Set(messageParts)).join('') || undefined
+        streamParts,
+        assistantMessage: messageParts.join('') || undefined
     };
 }
 
@@ -210,8 +211,12 @@ function addPartText(textParts: string[], part?: OpenCodePart): void {
 
 function addTextContainer(textParts: string[], container?: OpenCodeTextContainer): void {
     if (!container) return;
+    const valuesAdded = new Set<string>();
     for (const value of [container.text, container.delta, container.content]) {
-        if (typeof value === 'string' && value.length > 0) textParts.push(value);
+        if (typeof value === 'string' && value.length > 0 && !valuesAdded.has(value)) {
+            valuesAdded.add(value);
+            textParts.push(value);
+        }
     }
 }
 

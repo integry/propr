@@ -45,7 +45,7 @@ export interface AgentConfig {
   enabled: boolean;
 
   /**
-   * Docker image for the agent (e.g., 'claude-code-processor:latest').
+   * Docker image for the agent (e.g., 'propr/agent-claude:latest').
    */
   dockerImage: string;
 

@@ -73,7 +73,7 @@ export class OpenCodeAgent implements Agent {
                 usageMetrics: usageMetrics ?? undefined
             };
 
-            await this.persistExecutionLog({ response, executionTime, modelUsed, prompt, issueRef, taskId, prNumber, isRetry, retryReason, usageMetrics });
+            await this.persistExecutionLogSafely({ response, executionTime, modelUsed, prompt, issueRef, taskId, prNumber, isRetry, retryReason, usageMetrics });
 
             if (!response.success) {
                 logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias, error: parsedOutput.error }, 'OpenCode agent execution failed');
@@ -114,9 +114,9 @@ export class OpenCodeAgent implements Agent {
             const analysisText = (parsedOutput.summary || '').trim();
 
             const modelUsed = parsedOutput.modelUsed || effectiveModel;
-            const success = result.exitCode === 0 && !parsedOutput.error;
+            const success = result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
 
-            const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
+            const errorMsg = parsedOutput.error || result.stderr || 'No assistant text returned';
             await this.persistAnalysisLogSafely({ executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, usageMetrics });
             return success
                 ? { response: analysisText, modelUsed, executionTimeMs, success: true, sessionId: parsedOutput.sessionId }
