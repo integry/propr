@@ -4,6 +4,20 @@ import { AGENT_DEFAULTS, AGENT_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS } from '@
 import type { AgentType } from '@propr/shared';
 
 describe('shared model definitions', () => {
+    test('exposes OpenCode in shared agent models and defaults', () => {
+        assert.strictEqual(AGENT_MODELS.opencode, OPENCODE_MODELS);
+        assert.ok(AGENT_MODELS.opencode.length > 0, 'AGENT_MODELS.opencode should not be empty');
+        assert.deepStrictEqual(
+            AGENT_DEFAULTS.opencode.defaultModels,
+            OPENCODE_MODELS.map(model => model.id)
+        );
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultAlias, 'opencode');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.dockerImage, 'propr/agent-opencode:latest');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.configPath, '~/.config/opencode');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.15.12');
+    });
+
     test('every default agent model is present in the shared model catalog', () => {
         for (const [agentType, defaults] of Object.entries(AGENT_DEFAULTS) as Array<[AgentType, typeof AGENT_DEFAULTS[AgentType]]>) {
             const supportedIds = new Set(AGENT_MODELS[agentType].map(model => model.id));

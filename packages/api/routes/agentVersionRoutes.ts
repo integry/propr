@@ -307,5 +307,8 @@ export function createAgentVersionRoutes(deps: AgentVersionRouteDeps = {}) {
  * Helper to get the Docker image name for an agent type.
  */
 function getImageName(agentType: string): string {
+    if (agentType === 'opencode') {
+        return 'propr-opencode';
+    }
     return AGENT_IMAGE_NAMES[agentType as AgentType] || agentType;
 }

@@ -1,5 +1,5 @@
 import logger from '../../utils/logger.js';
-import { AGENT_IMAGE_NAMES } from '../../agents/constants.js';
+import { VERSIONED_AGENT_IMAGE_NAMES } from '../../agents/constants.js';
 import { executeDockerCommand } from './dockerExecutor.js';
 
 /**
@@ -9,7 +9,7 @@ import { executeDockerCommand } from './dockerExecutor.js';
  * @returns Array of image tags (e.g., ['2.1.77-a3f2b1', '2.1.76-b4c3d2'])
  */
 export async function listAgentImages(agentType: string): Promise<string[]> {
-    const imageName = AGENT_IMAGE_NAMES[agentType as keyof typeof AGENT_IMAGE_NAMES];
+    const imageName = VERSIONED_AGENT_IMAGE_NAMES[agentType as keyof typeof VERSIONED_AGENT_IMAGE_NAMES];
     if (!imageName) {
         return [];
     }
@@ -43,7 +43,7 @@ export async function cleanupUnusedAgentImages(
     agentType: string,
     versionsInUse?: Set<string>
 ): Promise<number> {
-    const imageName = AGENT_IMAGE_NAMES[agentType as keyof typeof AGENT_IMAGE_NAMES];
+    const imageName = VERSIONED_AGENT_IMAGE_NAMES[agentType as keyof typeof VERSIONED_AGENT_IMAGE_NAMES];
     if (!imageName) {
         return 0;
     }

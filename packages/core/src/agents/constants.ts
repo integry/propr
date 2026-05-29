@@ -9,6 +9,11 @@ export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
     opencode: 'propr/agent-opencode'
 };
 
+export const VERSIONED_AGENT_IMAGE_NAMES: Record<AgentType, string> = {
+    ...AGENT_IMAGE_NAMES,
+    opencode: 'propr-opencode'
+};
+
 export const DEFAULT_AGENT_DOCKER_IMAGES: Record<AgentType, string> = {
     claude: `${AGENT_IMAGE_NAMES.claude}:latest`,
     codex: `${AGENT_IMAGE_NAMES.codex}:latest`,
