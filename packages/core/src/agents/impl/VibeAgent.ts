@@ -14,7 +14,7 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import { parseVibeOutput } from './utils/vibeOutputParser.js';
-import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, getParsedVibeError, isSuccessfulVibeResult, sanitizeDockerNamePart } from './utils/vibeAgentHelpers.js';
+import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, getHostVibePromptPath, getParsedVibeError, isSuccessfulVibeResult, sanitizeDockerNamePart } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
@@ -277,24 +277,6 @@ export class VibeAgent implements Agent {
         return DEFAULT_PROMPT_PARENT_DIR;
     }
 
-    private getHostPromptPath(promptPath: string): string {
-        const containerPromptDir = path.resolve(this.getPromptParentDir());
-        const hostPromptDir = process.env.HOST_VIBE_PROMPT_CACHE_DIR;
-
-        if (!hostPromptDir) {
-            return promptPath;
-        }
-
-        const resolvedPromptPath = path.resolve(promptPath);
-        const relativePromptPath = path.relative(containerPromptDir, resolvedPromptPath);
-        if (relativePromptPath.startsWith('..') || path.isAbsolute(relativePromptPath)) {
-            logger.warn({ promptPath, containerPromptDir, hostPromptDir }, 'Vibe prompt path is outside configured prompt cache; using container path for Docker mount');
-            return promptPath;
-        }
-
-        return path.join(hostPromptDir, relativePromptPath);
-    }
-
     private writePromptFile(prompt: string, taskId?: string): string {
         const promptParentDir = this.getPromptParentDir();
         fs.mkdirSync(promptParentDir, { recursive: true, mode: 0o755 });
@@ -366,7 +348,12 @@ export class VibeAgent implements Agent {
         const shouldMountConfig = this.canMountConfigPath(configPath)
             && (!mistralApiKey || this.hasVibeConfigFile(configPath));
         const configMountArgs = shouldMountConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
-        const hostPromptPath = this.getHostPromptPath(promptPath);
+        const hostPromptPath = getHostVibePromptPath(
+            promptPath,
+            path.resolve(this.getPromptParentDir()),
+            process.env.HOST_VIBE_PROMPT_CACHE_DIR,
+            process.env.VIBE_PROMPT_CACHE_HOST_MOUNTED === '1'
+        );
         const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
         for (const envVar of forwardedEnvVars.skipped) {
             logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');

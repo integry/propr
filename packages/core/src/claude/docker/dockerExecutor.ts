@@ -4,6 +4,7 @@ import path from 'path';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from '../../agents/version/types.js';
+import { getDockerTagComponent } from '../../agents/version/versionService.js';
 import type { AgentType } from '../../agents/types.js';
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
@@ -17,7 +18,6 @@ export interface DockerCommandOptions {
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
 
 const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'propr/agent-claude:latest';
-
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
 
@@ -47,8 +47,7 @@ const AGENT_DOCKERFILES: Record<string, string> = {
 // Default project root - can be overridden via environment variable
 // In Docker container, the app root is /usr/src/app but cwd may be /usr/src/app/packages/api
 const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
-const DEFAULT_AGENT_BASE_TAG = '1.0.0';
-function getAgentBaseTag(): string { return process.env.AGENT_BASE_TAG || process.env.PROPR_AGENT_BASE_TAG || process.env.PROPR_IMAGE_VERSION || DEFAULT_AGENT_BASE_TAG; }
+function getAgentBaseTag(): string { return process.env.AGENT_BASE_TAG || process.env.PROPR_AGENT_BASE_TAG || process.env.PROPR_IMAGE_VERSION || '1.0.0'; }
 
 function getAgentBuildArgs(agentType: string, dockerImage: string): string[] {
     const buildArgs = ['--build-arg', `BASE_TAG=${getAgentBaseTag()}`];
@@ -454,7 +453,7 @@ export async function ensureVersionedAgentImage(
         };
     }
 
-    const imageTag = `${imageName}:${cliVersion}-${contentHash}`;
+    const imageTag = `${imageName}:${getDockerTagComponent(cliVersion)}-${contentHash}`;
 
     logger.info({ agentType, imageTag, cliVersion, contentHash, dockerfile }, 'Ensuring versioned agent Docker image exists...');
 

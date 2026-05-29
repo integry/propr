@@ -8,7 +8,7 @@ This guide covers deploying ProPR with the Web UI dashboard in a production envi
 - A domain name for your deployment
 - SSL/TLS certificates (recommended)
 - GitHub App configured with proper permissions
-- Anthropic API key for Claude
+- Anthropic API key for Claude, or Mistral API key/config for Vibe agents
 
 ## Environment Configuration
 
@@ -38,6 +38,12 @@ GH_OAUTH_CALLBACK_URL=https://yourdomain.com/api/auth/github/callback
 
 # Claude API
 ANTHROPIC_API_KEY=your-anthropic-api-key
+
+# Optional Mistral Vibe agent support
+MISTRAL_API_KEY=your-mistral-api-key
+HOST_VIBE_DIR=/home/propr/.vibe
+VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
+HOST_VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
 
 # Security
 SESSION_SECRET=generate-a-strong-secret-here

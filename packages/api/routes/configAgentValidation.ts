@@ -1,5 +1,4 @@
-import type { AgentConfig, CliVersionType } from '@propr/core';
-import { AGENT_TYPES } from '@propr/shared';
+import { AGENT_TYPES, type AgentConfig, type CliVersionType } from '@propr/core';
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];

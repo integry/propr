@@ -1,3 +1,5 @@
+import path from 'path';
+import logger from '../../../utils/logger.js';
 import { parseVibeOutput } from './vibeOutputParser.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -48,4 +50,27 @@ export function getForwardedVibeEnvVars(envVars: Record<string, string> | undefi
         dockerArgs.push('-e', `${key}=${value}`);
     }
     return { dockerArgs, skipped };
+}
+
+export function getHostVibePromptPath(
+    promptPath: string,
+    containerPromptDir: string,
+    hostPromptDir: string | undefined,
+    hostCacheMounted: boolean
+): string {
+    if (!hostPromptDir) return promptPath;
+    const resolvedHostPromptDir = path.resolve(hostPromptDir);
+    if (resolvedHostPromptDir === containerPromptDir) return promptPath;
+    if (!hostCacheMounted) {
+        logger.warn({ promptPath, containerPromptDir, hostPromptDir }, 'Vibe host prompt cache translation is not marked as mounted; using container path for Docker mount');
+        return promptPath;
+    }
+
+    const resolvedPromptPath = path.resolve(promptPath);
+    const relativePromptPath = path.relative(containerPromptDir, resolvedPromptPath);
+    if (relativePromptPath.startsWith('..') || path.isAbsolute(relativePromptPath)) {
+        logger.warn({ promptPath, containerPromptDir, hostPromptDir }, 'Vibe prompt path is outside configured prompt cache; using container path for Docker mount');
+        return promptPath;
+    }
+    return path.join(resolvedHostPromptDir, relativePromptPath);
 }

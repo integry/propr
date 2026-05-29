@@ -141,6 +141,7 @@ function vibePromptCacheArgs() {
         '-v', `${HOST_VIBE_PROMPT_CACHE_DIR}:${VIBE_PROMPT_CACHE_DIR}`,
         '-e', `VIBE_PROMPT_CACHE_DIR=${VIBE_PROMPT_CACHE_DIR}`,
         '-e', `HOST_VIBE_PROMPT_CACHE_DIR=${HOST_VIBE_PROMPT_CACHE_DIR}`,
+        '-e', 'VIBE_PROMPT_CACHE_HOST_MOUNTED=1',
     ];
 }
 
@@ -229,12 +230,12 @@ function pullImages() {
             tagAgentLatest(key, tag);
             continue;
         }
-        if (key.startsWith('agent-')) {
-            console.log(`  · ${tag} (agent image skipped; workers pull or build on demand)`);
+        console.log(`  · ${tag}`);
+        const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
+        if (key.startsWith('agent-') && pulled.status !== 0) {
+            console.log(`  · ${tag} (pull failed; workers pull or build on demand)`);
             continue;
         }
-        console.log(`  · ${tag}`);
-        docker(['pull', tag]);
         tagAgentLatest(key, tag);
     }
 }

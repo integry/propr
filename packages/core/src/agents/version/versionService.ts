@@ -34,8 +34,26 @@ function validatePyPiCustomVersion(versionSpec: string, packageName: string): st
     if (!trimmedVersionSpec) {
         throw new Error('Version spec required');
     }
-    logger.debug({ packageName, versionSpec: trimmedVersionSpec }, 'Resolving custom PyPI version');
+    logger.debug({ packageName, versionSpec: trimmedVersionSpec }, 'Using custom PyPI install spec');
     return trimmedVersionSpec;
+}
+
+function resolvePyPiTag(agentType: AgentType, packageName: string, versionSpec: string): Promise<string> | string {
+    if (!AGENT_CLI_TAGS[agentType].includes(versionSpec)) {
+        throw new Error(`Unknown tag '${versionSpec}' for PyPI-backed package ${packageName}`);
+    }
+    return versionSpec === 'latest' ? getLatestPyPiVersion(packageName) : AGENT_DEFAULT_VERSIONS[agentType];
+}
+
+export function getDockerTagComponent(value: string): string {
+    const trimmed = value.trim();
+    const normalized = trimmed.replace(/[^A-Za-z0-9_.-]/g, '-').replace(/^[.-]+/, '').slice(0, 96);
+    const tagBase = normalized || 'custom';
+    if (tagBase === trimmed && tagBase.length <= 96) {
+        return tagBase;
+    }
+    const hash = crypto.createHash('sha256').update(trimmed).digest('hex').slice(0, 12);
+    return `${tagBase.slice(0, 83)}-${hash}`;
 }
 
 /**
@@ -61,10 +79,7 @@ export async function resolveVersion(
                 if (!versionSpec) {
                     throw new Error('Version spec required for tag type');
                 }
-                if (versionSpec !== 'latest' || !AGENT_CLI_TAGS[agentType].includes(versionSpec)) {
-                    throw new Error(`Unknown tag '${versionSpec}' for PyPI-backed package ${packageName}`);
-                }
-                return getLatestPyPiVersion(packageName);
+                return resolvePyPiTag(agentType, packageName, versionSpec);
             case 'specific':
                 if (!versionSpec) {
                     throw new Error('Version spec required');
@@ -74,7 +89,7 @@ export async function resolveVersion(
                 if (!versionSpec) {
                     throw new Error('Version spec required');
                 }
-                return resolvePyPiVersionSpec(packageName, validatePyPiCustomVersion(versionSpec, packageName));
+                return validatePyPiCustomVersion(versionSpec, packageName);
             default:
                 logger.warn({ agentType, versionType }, 'Unknown version type, using default');
                 return AGENT_DEFAULT_VERSIONS[agentType];
@@ -217,7 +232,7 @@ export function computeContentHash(agentType: AgentType, basePath: string = PROJ
  */
 export function generateImageTag(agentType: AgentType, cliVersion: string, contentHash: string): string {
     const imageName = AGENT_IMAGE_NAMES[agentType];
-    return `${imageName}:${cliVersion}-${contentHash}`;
+    return `${imageName}:${getDockerTagComponent(cliVersion)}-${contentHash}`;
 }
 
 /**

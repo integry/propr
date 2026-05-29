@@ -1,6 +1,9 @@
 import { IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
 import type { CliVersionType } from '../config/configManager.js';
 import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js';
+import type { AgentType as SharedAgentType } from '@propr/shared';
+
+export { AGENT_TYPES } from '@propr/shared';
 
 /**
  * Configuration for a specific agent instance.
@@ -8,13 +11,13 @@ import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js'
  */
 export interface AgentConfig {
     id: string;             // UUID v4
-    type: 'claude' | 'codex' | 'gemini' | 'vibe';
+    type: SharedAgentType;
     alias: string;          // Human-readable ID (e.g., 'claude-prod', 'codex-beta')
     enabled: boolean;
 
     // Docker configuration
     dockerImage: string;    // e.g., 'propr/agent-claude:latest'
-    configPath: string;     // Host path to mount (e.g., '/root/.claude')
+    configPath: string;     // Host path or '~' path resolved before Docker bind use
 
     // Model configuration
     supportedModels: string[]; // List of models this agent supports
@@ -170,7 +173,7 @@ export type { IssueRef, IssueDetails };
 /**
  * Agent type identifier.
  */
-export type AgentType = AgentConfig['type'];
+export type AgentType = SharedAgentType;
 
 /**
  * Container config paths for different agent types.

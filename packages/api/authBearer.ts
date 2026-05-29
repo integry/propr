@@ -40,52 +40,69 @@ function getTokenCacheKey(token: string): string {
     return `${TOKEN_CACHE_PREFIX}${crypto.createHash('sha256').update(token).digest('hex')}`;
 }
 
+async function readCachedGitHubUser(token: string): Promise<GitHubUser | null> {
+    const redis = await getTokenCacheClient();
+    const cached = await redis.get(getTokenCacheKey(token));
+    return cached ? { ...(JSON.parse(cached) as CachedGitHubUser), accessToken: token } : null;
+}
+
+async function cacheGitHubUser(token: string, user: GitHubUser): Promise<void> {
+    const redis = await getTokenCacheClient();
+    const cacheableUser: CachedGitHubUser = {
+        id: user.id,
+        login: user.login,
+        username: user.username,
+        displayName: user.displayName,
+        email: user.email,
+        avatarUrl: user.avatarUrl
+    };
+    await redis.set(getTokenCacheKey(token), JSON.stringify(cacheableUser), { EX: TOKEN_CACHE_TTL_SECONDS });
+}
+
+async function fetchGitHubUser(token: string): Promise<GitHubUser | null> {
+    const response = await fetch('https://api.github.com/user', {
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'ProPR-CLI',
+        },
+    });
+    if (!response.ok) {
+        return null;
+    }
+
+    const profile = await response.json() as {
+        id: number;
+        login: string;
+        name: string | null;
+        email: string | null;
+        avatar_url: string | null;
+    };
+    return {
+        id: String(profile.id),
+        login: profile.login,
+        username: profile.login,
+        displayName: profile.name || profile.login,
+        email: profile.email,
+        avatarUrl: profile.avatar_url,
+        accessToken: token,
+    };
+}
+
 export async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
     try {
-        const redis = await getTokenCacheClient();
-        const cacheKey = getTokenCacheKey(token);
-        const cached = await redis.get(cacheKey);
-        if (cached) {
-            return { ...(JSON.parse(cached) as CachedGitHubUser), accessToken: token };
-        }
-
-        const response = await fetch('https://api.github.com/user', {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'ProPR-CLI',
-            },
-        });
-        if (!response.ok) {
+        const cached = await readCachedGitHubUser(token).catch(error => {
+            console.error('Bearer token cache read error:', error);
             return null;
-        }
+        });
+        if (cached) return cached;
 
-        const profile = await response.json() as {
-            id: number;
-            login: string;
-            name: string | null;
-            email: string | null;
-            avatar_url: string | null;
-        };
-        const user: GitHubUser = {
-            id: String(profile.id),
-            login: profile.login,
-            username: profile.login,
-            displayName: profile.name || profile.login,
-            email: profile.email,
-            avatarUrl: profile.avatar_url,
-            accessToken: token,
-        };
+        const user = await fetchGitHubUser(token);
+        if (!user) return null;
 
-        const cacheableUser: CachedGitHubUser = {
-            id: user.id,
-            login: user.login,
-            username: user.username,
-            displayName: user.displayName,
-            email: user.email,
-            avatarUrl: user.avatarUrl
-        };
-        await redis.set(cacheKey, JSON.stringify(cacheableUser), { EX: TOKEN_CACHE_TTL_SECONDS });
+        await cacheGitHubUser(token, user).catch(error => {
+            console.error('Bearer token cache write error:', error);
+        });
         return user;
     } catch (error) {
         console.error('Bearer token validation error:', error);

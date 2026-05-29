@@ -14,10 +14,10 @@ import {
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
     listAgentImages,
-    loadAgents
+    loadAgents,
+    AGENT_TYPES
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
-import { AGENT_TYPES } from '@propr/shared';
 
 const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
 

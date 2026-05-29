@@ -256,7 +256,7 @@ export type {
     AnalysisResult,
     AnalyzeOptions
 } from './agents/types.js';
-export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
+export { AGENT_TYPES, CONTAINER_CONFIG_PATHS } from './agents/types.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, migrateAgentConfigs } from './config/configManager.js';
 
 // Agent version management

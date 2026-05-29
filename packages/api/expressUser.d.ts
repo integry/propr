@@ -1,14 +1,11 @@
-declare namespace Express {
-    interface User {
-        id: string;
-        login?: string;
-        username: string;
-        displayName: string;
-        email: string | null;
-        avatarUrl: string | null;
-        accessToken?: string;
-        refreshToken?: string;
-        tokenExpiresAt?: number;
-        githubAuthInvalid?: boolean;
+import type { GitHubUser } from './authTypes.js';
+
+declare global {
+    namespace Express {
+        interface User extends GitHubUser {
+            githubAuthInvalid?: GitHubUser['githubAuthInvalid'];
+        }
     }
 }
+
+export {};
