@@ -268,6 +268,23 @@ function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }
     return null;
 }
 
+function resolveExplicitAgentModelLabel(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
+    const colonIdx = label.indexOf(':');
+    if (colonIdx <= 0 || colonIdx >= label.length - 1) {
+        return null;
+    }
+
+    const explicitAlias = label.substring(0, colonIdx);
+    const explicitModel = label.substring(colonIdx + 1);
+    const resolvedModel = resolveModelAlias(explicitModel);
+    const agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
+    if (!agent) {
+        return null;
+    }
+
+    return { agentAlias: agent.config.alias, model: resolvedModel };
+}
+
 /**
  * Resolves an LLM label (e.g., "gemini-pro", "claude-opus", "codex") to an agent alias and model.
  *
@@ -288,15 +305,9 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
     const agents = registry.getAllAgents();
 
     // 0. Handle explicit "agentAlias:modelId" format (used by settings UI for pr_review_model)
-    const colonIdx = label.indexOf(':');
-    if (colonIdx > 0 && colonIdx < label.length - 1) {
-        const explicitAlias = label.substring(0, colonIdx);
-        const explicitModel = label.substring(colonIdx + 1);
-        const resolvedModel = resolveModelAlias(explicitModel);
-        const agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
-        if (agent) {
-            return { agentAlias: agent.config.alias, model: resolvedModel };
-        }
+    const explicitLabelMatch = resolveExplicitAgentModelLabel(label, agents);
+    if (explicitLabelMatch) {
+        return explicitLabelMatch;
     }
 
     const lowerLabel = label.toLowerCase();
