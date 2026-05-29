@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { AgentConfig, CliVersionType } from '../../api/proprApi';
-import { AgentType, AGENT_DEFAULTS } from '../../config/modelDefinitions';
+import { AgentType, AGENT_DEFAULTS, AGENT_DISPLAY_ORDER, AGENT_MODELS } from '../../config/modelDefinitions';
 import { getAgentVersions, AvailableVersionsResponse } from '../../api/agentVersionApi';
 import CliVersionSelector from './CliVersionSelector';
 import ModelSelector from './ModelSelector';
@@ -229,7 +229,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           <div>
             <label className="block text-gray-700 mb-1.5 font-medium text-sm">Agent Type</label>
             <div className="inline-flex bg-gray-100 rounded-full p-1">
-              {(['claude', 'codex', 'gemini'] as AgentType[]).map(type => (
+              {AGENT_DISPLAY_ORDER.map(type => (
                 <button
                   key={type}
                   type="button"

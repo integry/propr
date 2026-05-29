@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
+import { AGENT_IMAGE_NAMES } from '../../agents/constants.js';
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
 
@@ -14,7 +15,7 @@ export interface DockerCommandOptions {
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
 
-const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest';
+const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || `${AGENT_IMAGE_NAMES.claude}:latest`;
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
@@ -38,7 +39,8 @@ export class ExecutionAbortedError extends Error {
 const AGENT_DOCKERFILES: Record<string, string> = {
     'claude': 'Dockerfile.claude',
     'codex': 'Dockerfile.codex',
-    'gemini': 'Dockerfile.gemini'
+    'gemini': 'Dockerfile.gemini',
+    'opencode': 'Dockerfile.opencode'
 };
 
 // Default project root - can be overridden via environment variable
@@ -325,7 +327,7 @@ export async function buildClaudeDockerImage(): Promise<boolean> {
  * This is called when agents are registered to ensure their images are ready.
  *
  * @param agentType - The type of agent ('claude', 'codex', 'gemini')
- * @param dockerImage - The expected Docker image name (e.g., 'propr-codex:latest')
+ * @param dockerImage - The expected Docker image name (e.g., 'propr/agent-codex:latest')
  * @returns true if image exists or was built successfully, false otherwise
  */
 export async function ensureAgentDockerImage(agentType: string, dockerImage: string): Promise<boolean> {
@@ -430,13 +432,7 @@ export async function ensureVersionedAgentImage(
     const dockerfile = path.join(basePath, dockerfileName);
 
     // Generate image tag
-    const imageNames: Record<string, string> = {
-        claude: 'propr-claude',
-        codex: 'propr-codex',
-        gemini: 'propr-gemini'
-    };
-
-    const imageName = imageNames[agentType];
+    const imageName = AGENT_IMAGE_NAMES[agentType as keyof typeof AGENT_IMAGE_NAMES];
     if (!imageName) {
         return {
             success: false,

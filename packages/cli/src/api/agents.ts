@@ -10,7 +10,15 @@ import { ApiClient, createApiClient } from "./index.js";
 /**
  * Agent type identifier.
  */
-export type AgentType = "claude" | "codex" | "gemini";
+export const AGENT_TYPES = ["claude", "codex", "gemini", "opencode"] as const;
+export type AgentType = typeof AGENT_TYPES[number];
+
+const DEFAULT_DOCKER_IMAGES: Record<AgentType, string> = {
+  claude: "propr/agent-claude:latest",
+  codex: "propr/agent-codex:latest",
+  gemini: "propr/agent-gemini:latest",
+  opencode: "propr/agent-opencode:latest",
+};
 
 /**
  * Configuration for a specific agent instance.
@@ -22,7 +30,7 @@ export interface AgentConfig {
   id: string;
 
   /**
-   * The agent type (claude, codex, or gemini).
+   * The agent type.
    */
   type: AgentType;
 
@@ -37,7 +45,7 @@ export interface AgentConfig {
   enabled: boolean;
 
   /**
-   * Docker image for the agent (e.g., 'claude-code-processor:latest').
+   * Docker image for the agent (e.g., 'propr/agent-claude:latest').
    */
   dockerImage: string;
 
@@ -87,7 +95,7 @@ export interface AddAgentOptions {
   alias: string;
 
   /**
-   * The agent type (claude, codex, or gemini).
+   * The agent type.
    */
   type: AgentType;
 
@@ -266,16 +274,7 @@ export async function deleteAgent(
  * @returns The default Docker image name.
  */
 function getDefaultDockerImage(type: AgentType): string {
-  switch (type) {
-    case "claude":
-      return "claude-code-processor:latest";
-    case "codex":
-      return "codex-code-processor:latest";
-    case "gemini":
-      return "gemini-code-processor:latest";
-    default:
-      return `${type}-code-processor:latest`;
-  }
+  return DEFAULT_DOCKER_IMAGES[type];
 }
 
 /**
@@ -292,6 +291,8 @@ function getDefaultConfigPath(type: AgentType): string {
       return "/root/.codex";
     case "gemini":
       return "/root/.gemini";
+    case "opencode":
+      return "/root/.config/opencode";
     default:
       return `/root/.${type}`;
   }

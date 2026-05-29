@@ -1,0 +1,31 @@
+# OpenCode agent image. Extends propr/agent-base (alpine + common tooling).
+
+# BASE_TAG must match the exact version of propr/agent-base built alongside
+# this agent image. scripts/build-images.sh passes it automatically; a direct
+# `docker build` must pass --build-arg BASE_TAG=<version>.
+ARG BASE_TAG
+FROM propr/agent-base:${BASE_TAG}
+
+ARG CLI_VERSION=latest
+
+USER root
+RUN apk add --no-cache su-exec \
+    && npm install -g opencode-ai@${CLI_VERSION}
+RUN opencode --version
+RUN opencode run --help 2>&1 | grep -q -- '--file'
+USER node
+
+RUN git config --global user.name "ProPR OpenCode Bot" \
+    && git config --global user.email "opencode-bot@propr.dev" \
+    && git config --global init.defaultBranch main \
+    && git config --global --add safe.directory '*'
+
+COPY --chown=node:node scripts/opencode-entrypoint.sh /home/node/opencode-entrypoint.sh
+COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
+COPY --chown=node:node scripts/init-firewall.sh /usr/local/bin/init-firewall
+COPY --chown=node:node scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
+USER root
+RUN chmod +x /home/node/opencode-entrypoint.sh /usr/local/bin/opencode-run /usr/local/bin/init-firewall /usr/local/bin/gh-wrapper
+USER node
+
+ENTRYPOINT ["/home/node/opencode-entrypoint.sh"]

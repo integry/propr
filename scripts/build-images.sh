@@ -23,6 +23,10 @@ cd "$REPO_ROOT"
 DOCKERHUB_NS="${DOCKERHUB_NS:-propr}"
 GHCR_NS="${GHCR_NS:-ghcr.io/proprdev}"
 GHCR_PREFIX="${GHCR_PREFIX:-propr-}"   # GHCR uses flat namespace: propr-app instead of propr/app
+CLAUDE_CLI_VERSION="${CLAUDE_CLI_VERSION:-2.1.85}"
+CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.133.0}"
+GEMINI_CLI_VERSION="${GEMINI_CLI_VERSION:-0.35.1}"
+OPENCODE_CLI_VERSION="${OPENCODE_CLI_VERSION:-1.15.12}"
 
 VERSION="$(node -p "require('./package.json').version")"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
@@ -56,6 +60,7 @@ IMAGES=(
   "agent-claude|Dockerfile.claude|."
   "agent-codex|Dockerfile.codex|."
   "agent-gemini|Dockerfile.gemini|."
+  "agent-opencode|Dockerfile.opencode|."
 )
 
 should_build() {
@@ -100,6 +105,7 @@ write_manifest() {
     "agent-claude": "$DOCKERHUB_NS/agent-claude:$VERSION",
     "agent-codex": "$DOCKERHUB_NS/agent-codex:$VERSION",
     "agent-gemini": "$DOCKERHUB_NS/agent-gemini:$VERSION",
+    "agent-opencode": "$DOCKERHUB_NS/agent-opencode:$VERSION",
     "redis": "redis:7-alpine"
   }
 }
@@ -126,9 +132,15 @@ build_image() {
   fi
 
   # Agent images extend propr/agent-base — pin to this build's version.
-  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini ]]; then
+  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini || "$name" == agent-opencode ]]; then
     build_args+=("--build-arg" "BASE_TAG=$VERSION")
   fi
+  case "$name" in
+    agent-claude) build_args+=("--build-arg" "CLI_VERSION=$CLAUDE_CLI_VERSION") ;;
+    agent-codex) build_args+=("--build-arg" "CLI_VERSION=$CODEX_CLI_VERSION") ;;
+    agent-gemini) build_args+=("--build-arg" "CLI_VERSION=$GEMINI_CLI_VERSION") ;;
+    agent-opencode) build_args+=("--build-arg" "CLI_VERSION=$OPENCODE_CLI_VERSION") ;;
+  esac
 
   echo ""
   echo "━━━ Building: $name ━━━"

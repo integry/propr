@@ -1,5 +1,6 @@
 // API for fetching system data from backend
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+import type { AgentType } from '../config/modelDefinitions';
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -299,7 +300,7 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 
 export interface AgentConfig {
   id: string;
-  type: 'claude' | 'codex' | 'gemini';
+  type: AgentType;
   alias: string;
   enabled: boolean;
   dockerImage: string;

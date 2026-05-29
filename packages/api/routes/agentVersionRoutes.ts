@@ -10,12 +10,16 @@ import {
     computeContentHash,
     generateImageTag,
     AGENT_DEFAULT_VERSIONS,
+    AGENT_IMAGE_NAMES,
+    AGENT_TYPES,
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
     listAgentImages,
     loadAgents
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
+
+const VALID_AGENT_TYPES: readonly string[] = AGENT_TYPES;
 
 /**
  * Creates the agent version management routes.
@@ -30,7 +34,7 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -118,7 +122,7 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -161,7 +165,7 @@ export function createAgentVersionRoutes() {
             const { agentType } = req.params;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -191,7 +195,7 @@ export function createAgentVersionRoutes() {
             const { agentType, versionType, versionSpec } = req.body;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -224,7 +228,7 @@ export function createAgentVersionRoutes() {
             const { versionType, versionSpec } = req.query;
 
             // Validate agent type
-            if (!['claude', 'codex', 'gemini'].includes(agentType)) {
+            if (!VALID_AGENT_TYPES.includes(agentType)) {
                 res.status(400).json({ error: `Invalid agent type: ${agentType}` });
                 return;
             }
@@ -269,10 +273,5 @@ export function createAgentVersionRoutes() {
  * Helper to get the Docker image name for an agent type.
  */
 function getImageName(agentType: string): string {
-    const imageNames: Record<string, string> = {
-        claude: 'claude-code-processor',
-        codex: 'codex-cli',
-        gemini: 'gemini-cli'
-    };
-    return imageNames[agentType] || agentType;
+    return AGENT_IMAGE_NAMES[agentType as AgentType] || agentType;
 }
