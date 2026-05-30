@@ -60,6 +60,8 @@ export interface AgentTaskOptions {
 
     // Additional options
     tools?: string;
+    /** Per-execution environment variables to inject into the agent container. */
+    environment?: Record<string, string>;
 
     // Task ID for abort signal checking
     taskId?: string;

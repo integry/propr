@@ -246,6 +246,6 @@ export interface AdditionalContextLoadResult {
   additionalContext?: string;
   additionalContextTokens: number;
   additionalContextFiles: number;
-  additionalContextFilesIncluded: Array<{ repository: string; path: string }>;
+  additionalContextFilesIncluded: Array<{ repository: string; path: string; score?: number; reason?: string }>;
   warnings: string[];
 }

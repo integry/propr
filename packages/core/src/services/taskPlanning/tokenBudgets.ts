@@ -2,7 +2,8 @@
  * Token budget calculation for plan generation.
  */
 
-import { CHARS_PER_TOKEN, PlanningFailedError } from '../planningHelpers.js';
+import { PlanningFailedError } from '../planning/planningErrors.js';
+import { CHARS_PER_TOKEN } from '../planning/planningTypes.js';
 import type { TokenBudgetOptions, TokenBudgetResult } from './types.js';
 
 /** Maximum percentage of token budget that attachments can consume */
@@ -14,13 +15,15 @@ const BUDGET_SAFETY_FACTOR = 0.85;
 /** Reserved overhead for system prompts, XML structure, etc. */
 const RESERVED_OVERHEAD_TOKENS = 5000;
 
+const FULL_SCAN_CONTEXT_LEVEL = 80;
+
 /**
  * Calculate token budgets for different context components.
  * Allocates fixed percentages to ensure repomix always gets at least 50% of available space.
  * Applies a safety factor to account for tiktoken estimation variance.
  */
 export function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetResult {
-  const { tokenLimit, attachmentTokens, fullSummaryText, hasContextRepositories, correlatedLogger } = options;
+  const { tokenLimit, contextLevel, attachmentTokens, fullSummaryText, hasContextRepositories, correlatedLogger } = options;
 
   // Apply safety factor to total budget to account for tiktoken-to-Claude variance
   const safeTokenLimit = Math.floor(tokenLimit * BUDGET_SAFETY_FACTOR);
@@ -68,8 +71,23 @@ export function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetR
   correlatedLogger.info({
     totalLimit: tokenLimit, safeTokenLimit, attachmentTokens, effectiveAttachmentTokens, attachmentsCapped,
     rawSummaryCost, summaryCost: summaryTokenCost, summaryTruncated, fileSummaryBudget,
-    smartSummaryBudget, additionalContextBudget, repomixLimit: repomixTokenLimit
+    smartSummaryBudget, additionalContextBudget, repomixLimit: repomixTokenLimit, contextLevel
   }, 'Calculated token budgets');
 
   return { summaryTokenCost, smartSummaryBudget, additionalContextBudget, repomixTokenLimit };
+}
+
+export function calculateEffectiveAdditionalContextBudget(options: {
+  baseBudget: number;
+  repomixBudget: number;
+  repomixTokensUsed: number;
+  tokenLimit: number;
+  contextLevel?: number;
+}): number {
+  const { baseBudget, repomixBudget, repomixTokensUsed, tokenLimit, contextLevel } = options;
+  if (!baseBudget) return 0;
+  if ((contextLevel ?? 0) < FULL_SCAN_CONTEXT_LEVEL) return baseBudget;
+
+  const unusedRepomixBudget = Math.max(0, repomixBudget - repomixTokensUsed);
+  return Math.min(tokenLimit, baseBudget + unusedRepomixBudget);
 }
