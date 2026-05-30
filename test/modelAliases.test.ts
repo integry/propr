@@ -85,7 +85,7 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2'],
                 defaultModel: 'gpt-5.5'
             }
         },
@@ -569,7 +569,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2'],
                 defaultModel: 'gpt-5.5'
             }
         },

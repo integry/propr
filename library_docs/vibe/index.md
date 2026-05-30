@@ -136,7 +136,7 @@ To add a Vibe agent to ProPR:
 ### Via the CLI
 
 ```bash
-propr agent add my-vibe -t vibe -m codestral-latest
+propr agent add my-vibe -t vibe -m devstral-small-latest
 propr agent add vibe-prod -t vibe -m mistral-medium-3.5,devstral-2512 -d mistral-medium-3.5
 ```
 
