@@ -2,7 +2,7 @@ import { extractKeywords, extractKeywordsWithLLM, mergeKeywords } from './releva
 import { mineGitHistory, mineGitHistoryWithLLM, FileScore as GitFileScore, SemanticMiningOptions } from './relevance/gitMiner.js';
 import { scorePaths, FileScore as PathFileScore } from './relevance/pathScorer.js';
 import { scoreSemanticRelevance } from './relevance/semanticScorer.js';
-import type { SemanticFileScore, SemanticScoringOptions } from './relevance/semanticScorer.js';
+import type { SemanticScoringOptions } from './relevance/semanticScorer.js';
 import { Agent } from '../agents/types.js';
 import logger from '../utils/logger.js';
 
