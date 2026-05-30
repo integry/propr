@@ -140,7 +140,8 @@ async function processRepository(
     context: finalContext,
     tokens: contextResult.totalTokens,
     files: contextResult.totalFiles,
-    filePaths: contextResult.includedFiles
+    filePaths: contextResult.includedFiles,
+    fileScores: {}
   };
 }
 
