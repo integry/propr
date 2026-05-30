@@ -195,7 +195,8 @@ export {
     runLightweightLLMAnalysis,
     UsageLimitError
 } from './claude/claudeService.js';
-export { AGENT_TYPES, AGENT_IMAGE_NAMES, VERSIONED_AGENT_IMAGE_NAMES, DEFAULT_AGENT_DOCKER_IMAGES } from './agents/constants.js';
+export { AGENT_TYPES, AGENT_IMAGE_NAMES, VERSIONED_AGENT_IMAGE_NAMES, DEFAULT_AGENT_DOCKER_IMAGES, validateAgentType } from './agents/constants.js';
+export type { AgentTypeValidationResult } from './agents/constants.js';
 export type {
     ExecuteClaudeCodeOptions,
     ClaudeCodeResponse,

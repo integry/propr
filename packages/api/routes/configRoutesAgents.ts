@@ -13,9 +13,13 @@ import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
 import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 
+type ApplyAgentsUpdateBody =
+  | { success: true; agents: AgentConfig[] }
+  | { error: string; success?: never; agents?: never; committed?: boolean; out_of_sync?: boolean };
+
 interface ApplyAgentsUpdateResult {
   status: number;
-  body: { error?: string; success?: boolean; agents?: AgentConfig[]; committed?: boolean; out_of_sync?: boolean };
+  body: ApplyAgentsUpdateBody;
 }
 interface AgentsRoutesDeps {
   redisClient: RedisClientType;
@@ -401,6 +405,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
     });
 
     if (!result || typeof result.status !== 'number' || !result.body) {
+      console.error('applyAgentsUpdate returned unexpected shape — possible bug in withConfigLock or applyFn:', result);
       res.status(500).json({ error: 'Unexpected response from agent configuration update' });
       return;
     }

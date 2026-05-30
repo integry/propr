@@ -386,6 +386,8 @@ WORKER_CONCURRENCY=5
 CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
 CLAUDE_TIMEOUT_MS=300000
 CLAUDE_MAX_TURNS=1000
+# OpenCode tasks run longer because the CLI performs multi-step tool-use
+# loops internally; 1 hour matches the Codex default.
 OPENCODE_TIMEOUT_MS=3600000
 
 # Retry configuration

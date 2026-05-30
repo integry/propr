@@ -11,15 +11,13 @@ import {
     generateImageTag,
     AGENT_DEFAULT_VERSIONS,
     VERSIONED_AGENT_IMAGE_NAMES,
-    AGENT_TYPES,
+    validateAgentType,
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
     listAgentImages,
     loadAgents
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
-
-const VALID_AGENT_TYPES = new Set<string>(AGENT_TYPES);
 
 interface AgentVersionRouteDeps {
     getAvailableVersions?: typeof getAvailableVersions;
@@ -28,18 +26,6 @@ interface AgentVersionRouteDeps {
     cleanupUnusedAgentImages?: typeof cleanupUnusedAgentImages;
     listAgentImages?: typeof listAgentImages;
     loadAgents?: typeof loadAgents;
-}
-
-type AgentTypeValidationResult = { ok: true; agentType: AgentType } | { ok: false; error: string };
-
-function validateAgentType(agentType: unknown): AgentTypeValidationResult {
-    if (typeof agentType === 'string' && VALID_AGENT_TYPES.has(agentType)) {
-        return { ok: true, agentType: agentType as AgentType };
-    }
-    return {
-        ok: false,
-        error: `Invalid agent type '${String(agentType)}'. Must be one of: ${[...VALID_AGENT_TYPES].sort().join(', ')}`
-    };
 }
 
 /**
@@ -303,6 +289,6 @@ export function createAgentVersionRoutes(deps: AgentVersionRouteDeps = {}) {
     };
 }
 
-function getImageName(agentType: string): string {
-    return VERSIONED_AGENT_IMAGE_NAMES[agentType as AgentType] || agentType;
+function getImageName(agentType: AgentType): string {
+    return VERSIONED_AGENT_IMAGE_NAMES[agentType] || agentType;
 }

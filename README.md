@@ -195,7 +195,7 @@ For OpenCode CLI integration:
 
 2. **Initialize local OpenCode directories:**
    ```bash
-   mkdir -p ~/.config/opencode ~/.config/opencode/xdg-data/opencode ~/.opencode
+   mkdir -p ~/.config/opencode ~/.config/opencode/xdg-data/opencode
    opencode --version
    ```
 

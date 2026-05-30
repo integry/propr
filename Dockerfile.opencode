@@ -19,6 +19,8 @@ RUN opencode run --help 2>&1 | grep -q -- '--file' \
     || (echo "ERROR: opencode run does not support --file flag" && exit 1)
 RUN opencode run --help 2>&1 | grep -q -- '--format' \
     || (echo "ERROR: opencode run does not support --format flag" && exit 1)
+RUN opencode run --help 2>&1 | grep -q -- '--model' \
+    || (echo "ERROR: opencode run does not support --model flag" && exit 1)
 
 COPY --chown=node:node scripts/opencode-entrypoint.sh /home/node/opencode-entrypoint.sh
 COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run

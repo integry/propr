@@ -138,7 +138,7 @@ For Docker Compose development, the compose files mount:
 ~/.local/share/opencode
 ```
 
-The worker mounts these read-write so the OpenCode agent containers can access credentials at runtime. The API and analysis/indexing services mount them read-only. For production deployments, use agent env vars or the `xdg-data` auth path described above as an alternative credential strategy.
+In development compose, the worker mounts these read-write so the OpenCode agent containers can access credentials at runtime. In production compose, all OpenCode mounts are read-only (`:ro`). For production deployments, use agent env vars or the `xdg-data` auth path described above as an alternative credential strategy.
 
 For launcher-based production deployments, pass the host paths explicitly:
 
