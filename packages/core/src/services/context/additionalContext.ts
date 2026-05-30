@@ -67,6 +67,73 @@ function stripFilePathsFromContext(context: string, repoName: string): string {
   return header + strippedContext;
 }
 
+type RepoResult = { repository: string; context: string; tokens: number; files: number; filePaths: string[] };
+
+async function processContextRepository(
+  repo: ContextRepository,
+  opts: { authToken: string; tokenBudgetPerRepo: number; correlationId?: string; correlatedLogger: Pick<typeof logger, 'info' | 'warn'> }
+): Promise<{ data?: RepoResult; error?: { repository: string; error: string } }> {
+  const { authToken, tokenBudgetPerRepo, correlationId, correlatedLogger } = opts;
+  const [owner, repoName] = repo.repository.split('/');
+  if (!owner || !repoName) {
+    return { error: { repository: repo.repository, error: 'Invalid repository format. Expected "owner/repo"' } };
+  }
+
+  try {
+    correlatedLogger.info(
+      { repository: repo.repository, branch: repo.branch || 'default', tokenBudget: tokenBudgetPerRepo },
+      'Processing additional context repository'
+    );
+
+    const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+    let effectiveAuthToken = authToken;
+    try {
+      effectiveAuthToken = await getGitHubInstallationToken();
+    } catch {
+      // Fall back to provided auth token
+    }
+
+    const repoPath = await ensureRepoCloned({
+      repoUrl, owner, repoName,
+      authToken: effectiveAuthToken,
+      baseBranch: repo.branch
+    });
+
+    const contextResult = await generateContext({
+      repoPath,
+      tokenLimit: tokenBudgetPerRepo,
+      correlationId,
+      includeFullDirectoryStructure: false,
+      compress: true
+    });
+
+    const strippedContext = stripFilePathsFromContext(contextResult.context, repo.repository);
+    const finalContext = repo.description ? `[${repo.description}]\n${strippedContext}` : strippedContext;
+
+    correlatedLogger.info(
+      { repository: repo.repository, totalTokens: contextResult.totalTokens, totalFiles: contextResult.totalFiles },
+      'Successfully generated context for additional repository'
+    );
+
+    return {
+      data: {
+        repository: repo.repository,
+        context: finalContext,
+        tokens: contextResult.totalTokens,
+        files: contextResult.totalFiles,
+        filePaths: contextResult.includedFiles
+      }
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    correlatedLogger.warn(
+      { repository: repo.repository, error: errorMessage },
+      'Failed to generate context for additional repository'
+    );
+    return { error: { repository: repo.repository, error: errorMessage } };
+  }
+}
+
 /**
  * Generate context from additional repositories.
  * This content is marked as "example/reference only" and file paths are stripped
@@ -101,78 +168,11 @@ export async function generateAdditionalContext(
   const tokenBudgetPerRepo = Math.floor((tokenBudget * 0.9) / repositories.length);
 
   for (const repo of repositories) {
-    const [owner, repoName] = repo.repository.split('/');
-    if (!owner || !repoName) {
-      errors.push({ repository: repo.repository, error: 'Invalid repository format. Expected "owner/repo"' });
-      continue;
-    }
-
-    try {
-      correlatedLogger.info(
-        { repository: repo.repository, branch: repo.branch || 'default', tokenBudget: tokenBudgetPerRepo },
-        'Processing additional context repository'
-      );
-
-      // Ensure the repository is cloned
-      const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      let effectiveAuthToken = authToken;
-      try {
-        // Try to use installation token for private repo access
-        effectiveAuthToken = await getGitHubInstallationToken();
-      } catch {
-        // Fall back to provided auth token
-      }
-
-      const repoPath = await ensureRepoCloned({
-        repoUrl,
-        owner,
-        repoName,
-        authToken: effectiveAuthToken,
-        baseBranch: repo.branch
-      });
-
-      // Generate context for this repository
-      const contextResult = await generateContext({
-        repoPath,
-        tokenLimit: tokenBudgetPerRepo,
-        correlationId,
-        includeFullDirectoryStructure: false, // Skip directory structure for context repos
-        compress: true // Use compression to maximize content
-      });
-
-      // Strip file paths from the context
-      const strippedContext = stripFilePathsFromContext(contextResult.context, repo.repository);
-
-      // Add description if provided
-      let finalContext = strippedContext;
-      if (repo.description) {
-        finalContext = `[${repo.description}]\n${strippedContext}`;
-      }
-
-      results.push({
-        repository: repo.repository,
-        context: finalContext,
-        tokens: contextResult.totalTokens,
-        files: contextResult.totalFiles,
-        filePaths: contextResult.includedFiles
-      });
-
-      correlatedLogger.info(
-        {
-          repository: repo.repository,
-          totalTokens: contextResult.totalTokens,
-          totalFiles: contextResult.totalFiles
-        },
-        'Successfully generated context for additional repository'
-      );
-
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      correlatedLogger.warn(
-        { repository: repo.repository, error: errorMessage },
-        'Failed to generate context for additional repository'
-      );
-      errors.push({ repository: repo.repository, error: errorMessage });
+    const result = await processContextRepository(repo, { authToken, tokenBudgetPerRepo, correlationId, correlatedLogger });
+    if (result.error) {
+      errors.push(result.error);
+    } else if (result.data) {
+      results.push(result.data);
     }
   }
 
