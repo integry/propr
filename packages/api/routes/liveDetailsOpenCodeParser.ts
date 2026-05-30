@@ -64,18 +64,22 @@ function getOpenCodeEventTimestamp(event: OpenCodeEvent, fallback: string): stri
 }
 
 function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
+  // Skip non-assistant messages (user, system)
   if (event.message?.role && event.message.role !== 'assistant') return null;
   const eventType = event.type?.toLowerCase();
   if (eventType && isOpenCodeNonAssistantEventType(eventType)) return null;
   const isConfirmedAssistant = event.message?.role === 'assistant';
+  // Streaming deltas: top-level part/parts on confirmed assistant or non-tool events
   const topLevelPartsText = (isConfirmedAssistant || !eventType || !isOpenCodeToolRelatedType(eventType))
     ? joinOpenCodePartsText([
       ...(event.part ? [event.part] : []),
       ...(event.parts ?? []),
     ], false)
     : '';
+  // Response object format (event.response.text/delta/content)
   const message = event.message;
   const responseText = joinOpenCodeTextValues([event.response?.text, event.response?.delta, event.response?.content]);
+  // Confirmed assistant message with inline parts or text fields
   let messageText = '';
   if (isConfirmedAssistant) {
     messageText = message!.parts?.length
@@ -83,6 +87,7 @@ function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
       : joinOpenCodeTextValues([message!.text, message!.delta, message!.content]);
   }
   if (topLevelPartsText || messageText || responseText) return joinOpenCodeTextGroups(topLevelPartsText, joinOpenCodeTextGroups(messageText, responseText)) || null;
+  // Bare text/delta/content events without structured message wrapper
   if (!eventType || !['text', 'delta', 'completion', 'reasoning'].includes(eventType)) return null;
   const text = joinOpenCodeTextValues([event.text, event.delta, event.content], !isOpenCodeStreamingTextEvent(event));
   return text || null;

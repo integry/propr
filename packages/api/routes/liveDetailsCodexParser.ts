@@ -156,7 +156,6 @@ function buildCodexTokenUsage(parsed: ReturnType<typeof parseCodexStreamOutput>)
     cache_read_input_tokens: tokenUsage.cache_read_input_tokens ?? 0
   };
 }
-
 function appendAssistantMessageEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
   if (event.type !== 'message' || event.role !== 'assistant' || !event.content) return false;
   events.push({ type: 'thought', content: event.content, timestamp });

@@ -262,6 +262,8 @@ propr/
 ├── docs/                             # Docusaurus documentation site
 ├── test/                             # Unit and integration tests
 ├── Dockerfile.claude                 # Secure Docker image for Claude execution
+├── Dockerfile.codex                  # Secure Docker image for Codex execution
+├── Dockerfile.gemini                 # Secure Docker image for Gemini execution
 ├── Dockerfile.opencode               # Secure Docker image for OpenCode execution
 ├── .env.example                      # Complete environment configuration template
 └── package.json                      # Dependencies and npm scripts

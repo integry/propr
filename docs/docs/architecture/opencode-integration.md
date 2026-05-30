@@ -130,14 +130,15 @@ propr/agent-opencode:<version>-<content-hash>
 
 ## Operations
 
-For Docker Compose development, the compose files mount both:
+For Docker Compose development, the compose files mount:
 
 ```text
 ~/.opencode
 ~/.config/opencode
+~/.local/share/opencode
 ```
 
-These are config mounts only. They do not mount `~/.local/share/opencode`; use agent env vars or the `xdg-data` auth path described above for credentials.
+The worker mounts these read-write so the OpenCode agent containers can access credentials at runtime. The API and analysis/indexing services mount them read-only. For production deployments, use agent env vars or the `xdg-data` auth path described above as an alternative credential strategy.
 
 For launcher-based production deployments, pass the host paths explicitly:
 

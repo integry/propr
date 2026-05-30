@@ -86,9 +86,6 @@ services:
       - /tmp/git-processor:/tmp/git-processor:ro
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - ~/.codex:/root/.codex:ro
-      - ~/.opencode:/root/.opencode:ro
-      - ~/.config/opencode:/root/.config/opencode:ro
-      - ~/.local/share/opencode:/root/.local/share/opencode:ro
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
@@ -113,9 +110,6 @@ services:
       - ~/.claude:/root/.claude:ro
       - ~/.gemini:/root/.gemini:ro
       - ~/.codex:/root/.codex:ro
-      - ~/.opencode:/root/.opencode:ro
-      - ~/.config/opencode:/root/.config/opencode:ro
-      - ~/.local/share/opencode:/root/.local/share/opencode:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
     env_file:

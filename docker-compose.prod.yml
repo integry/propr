@@ -105,9 +105,9 @@ services:
       - ./repos:/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
       - propr-sqlite-data:/app/data
-      - ~/.opencode:/root/.opencode
-      - ~/.config/opencode:/root/.config/opencode
-      - ~/.local/share/opencode:/root/.local/share/opencode
+      - ~/.opencode:/root/.opencode:ro
+      - ~/.config/opencode:/root/.config/opencode:ro
+      - ~/.local/share/opencode:/root/.local/share/opencode:ro
     depends_on:
       redis:
         condition: service_healthy
