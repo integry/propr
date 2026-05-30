@@ -45,6 +45,7 @@ services:
       # Agent config mounts used by version resolution and image listing
       - ~/.claude:/root/.claude:ro
       - ~/.codex:/root/.codex:ro
+      - ~/.gemini:/root/.gemini:ro
       - ~/.opencode:/root/.opencode:ro
       - ~/.config/opencode:/root/.config/opencode:ro
     depends_on:
@@ -107,11 +108,14 @@ services:
       - ./repos:/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
       - propr-sqlite-data:/app/data
+      - ~/.claude:/root/.claude:ro
+      - ~/.codex:/root/.codex:ro
+      - ~/.gemini:/root/.gemini:ro
       - ~/.opencode:/root/.opencode:ro
       - ~/.config/opencode:/root/.config/opencode:ro
       # ~/.local/share/opencode is not mounted here; in production, use the
       # xdg-data workaround (copy credentials into ~/.config/opencode/xdg-data/)
-      # as described in the setup docs.
+      # described at docs/docs/architecture/opencode-integration.md
     depends_on:
       redis:
         condition: service_healthy

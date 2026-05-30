@@ -293,7 +293,7 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
 function getImageName(agentType: AgentType): string {
     const imageName = VERSIONED_AGENT_IMAGE_NAMES[agentType];
     if (!imageName) {
-        logger.warn({ agentType }, 'No image name registered in VERSIONED_AGENT_IMAGE_NAMES, falling back to raw agent type string');
+        throw new Error(`No image name registered in VERSIONED_AGENT_IMAGE_NAMES for agent type: ${agentType}`);
     }
-    return imageName || agentType;
+    return imageName;
 }

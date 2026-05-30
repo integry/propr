@@ -34,7 +34,7 @@ export default function Home(): ReactNode {
   return (
     <Layout
       title={`${siteConfig.title} - Automated GitHub Issue Processor`}
-      description="A production-ready automated system that monitors GitHub issues, uses Anthropic's Claude Code to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.">
+      description="A production-ready automated system that monitors GitHub issues, uses AI coding agents to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.">
       <HomepageHeader />
       <main>
         <HomepageFeatures />
