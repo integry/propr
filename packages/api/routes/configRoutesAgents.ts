@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
-import { db } from '@propr/core';
+import { db, logger } from '@propr/core';
 import * as configManager from '@propr/core';
 import {
     AgentRegistry,
@@ -405,7 +405,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
     });
 
     if (!result || typeof result.status !== 'number' || !result.body) {
-      console.error('[AGENTS_UPDATE_INVALID_SHAPE] applyAgentsUpdate returned unexpected shape — possible bug in withConfigLock or applyFn:', JSON.stringify({ hasResult: !!result, statusType: typeof result?.status, hasBody: !!result?.body }));
+      logger.error({ hasResult: !!result, statusType: typeof result?.status, hasBody: !!result?.body }, 'applyAgentsUpdate returned unexpected shape — possible bug in withConfigLock or applyFn');
       res.status(500).json({ error: 'Unexpected response from agent configuration update' });
       return;
     }

@@ -42,7 +42,9 @@ services:
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
     volumes:
       - propr-sqlite-data:/app/data
-      # OpenCode config mounts used by agent version resolution and image listing
+      # Agent config mounts used by version resolution and image listing
+      - ~/.claude:/root/.claude:ro
+      - ~/.codex:/root/.codex:ro
       - ~/.opencode:/root/.opencode:ro
       - ~/.config/opencode:/root/.config/opencode:ro
     depends_on:

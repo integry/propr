@@ -193,7 +193,7 @@ logger.debug('Debug information', { data: someData });
 Access configuration values:
 
 ```typescript
-import config from './config/index.ts';
+import config from './config/index.js';
 
 console.log(config.github.appId);
 console.log(config.logging.level);

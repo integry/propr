@@ -11,12 +11,11 @@ ARG CLI_VERSION=latest
 USER root
 RUN apk add --no-cache su-exec \
     && npm install -g opencode-ai@${CLI_VERSION}
-# Smoke-test and verify the installed CLI exposes the flags the entrypoint
-# relies on. Combined into a single layer to reduce image size. If
-# opencode-ai changes its help output these will break at build time rather
-# than silently at runtime. Requires opencode-ai >= 0.1.0.
-RUN opencode --version \
-    && opencode run --help 2>&1 | grep -q -- '--file' \
+# Smoke-test the binary and verify the installed CLI exposes the flags the
+# entrypoint relies on. If opencode-ai changes its help output these will
+# break at build time rather than silently at runtime. Requires opencode-ai >= 0.1.0.
+RUN opencode --version || (echo "ERROR: opencode binary failed to execute — check installation" && exit 1)
+RUN opencode run --help 2>&1 | grep -q -- '--file' \
     && opencode run --help 2>&1 | grep -q -- '--format' \
     && opencode run --help 2>&1 | grep -q -- '--model' \
     || (echo "ERROR: opencode run missing required flags (--file, --format, --model)" && exit 1)

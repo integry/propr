@@ -59,9 +59,9 @@ services:
       - ~/.claude:/root/.claude
       - ~/.gemini:/root/.gemini
       - ~/.codex:/root/.codex
-      - ~/.opencode:/root/.opencode:ro
-      - ~/.config/opencode:/root/.config/opencode:ro
-      - ~/.local/share/opencode:/root/.local/share/opencode:ro
+      - ~/.opencode:/root/.opencode
+      - ~/.config/opencode:/root/.config/opencode
+      - ~/.local/share/opencode:/root/.local/share/opencode
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
     env_file:
