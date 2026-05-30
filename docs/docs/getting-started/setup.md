@@ -189,6 +189,59 @@ GITHUB_API_MAX_RETRIES=3
 GIT_OPERATION_MAX_RETRIES=3
 ```
 
+## 4b. Vibe Setup (Optional)
+
+If you plan to use Mistral's Vibe coding agent alongside (or instead of) Claude:
+
+### Install Vibe CLI
+
+Install from npm (see [mistral-vibe on npmjs.com](https://www.npmjs.com/package/mistral-vibe)):
+
+```bash
+npm install -g mistral-vibe
+```
+
+### Authenticate with Mistral
+
+Run the setup wizard:
+
+```bash
+vibe --setup
+```
+
+Or authenticate directly:
+
+```bash
+vibe auth login
+```
+
+This stores credentials in `~/.vibe/credentials.json`.
+
+Alternatively, export your API key:
+
+```bash
+export MISTRAL_API_KEY=your-api-key
+```
+
+### Configure Vibe Agent
+
+Add a Vibe agent via the CLI:
+
+```bash
+propr agent add my-vibe -t vibe -m mistral-medium-3.5,devstral-2512
+```
+
+Or via the AI Agents UI page by selecting **vibe** as the agent type.
+
+### Reset Credentials
+
+To re-authenticate:
+
+```bash
+vibe auth logout
+vibe auth login
+```
+
 ## 5. Install Dependencies
 
 Install the Node.js dependencies:

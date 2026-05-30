@@ -15,19 +15,19 @@ export interface AgentOption {
 }
 
 // Models recommended for summarization (cost-effective options)
-const RECOMMENDED_SUMMARIZATION_ALIASES = ['haiku', 'flash', 'flash-lite', 'gpt5-mini', 'o4-mini'];
+const RECOMMENDED_SUMMARIZATION_ALIASES = ['haiku', 'flash', 'flash-lite', 'gpt5-mini', 'o4-mini', 'devstral-small'];
 
 // Models recommended for context analysis (fast, cost-effective options)
-const RECOMMENDED_CONTEXT_ANALYSIS_ALIASES = ['haiku', 'flash', 'flash-lite', 'gpt5-mini', 'o4-mini'];
+const RECOMMENDED_CONTEXT_ANALYSIS_ALIASES = ['haiku', 'flash', 'flash-lite', 'gpt5-mini', 'o4-mini', 'devstral-small'];
 
 // Models recommended for plan generation (high capability options)
-const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro'];
+const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro', 'medium35'];
 
 // Models recommended for implementation (high capability options)
 const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude'];
 
 // Models recommended for PR review (high capability options)
-const RECOMMENDED_PR_REVIEW_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro'];
+const RECOMMENDED_PR_REVIEW_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro', 'medium35'];
 
 function formatFallbackModelName(modelId: string): string {
   const gptMatch = modelId.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
