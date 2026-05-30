@@ -1,6 +1,7 @@
 import { parseVibeOutput } from './vibeOutputParser.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MAX_LLM_LOG_METADATA_TEXT_CHARS = 20000;
 
 export function getAnalysisSandboxArgs(mode?: 'execute' | 'analysis'): string[] {
     return mode === 'analysis'
@@ -116,4 +117,63 @@ export function splitVibeCliArgs(input: string): string[] {
     }
 
     return args;
+}
+
+export function getDefaultVibeCliArgs(maxTurns: number, mode: 'execute' | 'analysis'): string[] {
+    const agentArgs = mode === 'analysis' ? [] : ['--trust', '--agent', 'auto-approve'];
+    return ['vibe', '--max-turns', String(maxTurns), '--output', 'json', ...agentArgs];
+}
+
+export function buildPromptWithRetryContext(prompt: string, isRetry: boolean, retryReason?: string): string {
+    if (isRetry && retryReason) {
+        return `${prompt}\n\n---\n\nRETRY CONTEXT: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
+    }
+    return prompt;
+}
+
+export function truncateLogMetadataText(value: string): string {
+    if (value.length <= MAX_LLM_LOG_METADATA_TEXT_CHARS) {
+        return value;
+    }
+    const omitted = value.length - MAX_LLM_LOG_METADATA_TEXT_CHARS;
+    return `${value.slice(0, MAX_LLM_LOG_METADATA_TEXT_CHARS)}\n...[truncated ${omitted} chars]`;
+}
+
+export function buildLogMetadata(
+    baseMetadata: Record<string, unknown>,
+    result: { stdout: string; stderr: string },
+    includeRawOutput: boolean
+): Record<string, unknown> {
+    if (!includeRawOutput) {
+        return { ...baseMetadata };
+    }
+    return {
+        ...baseMetadata,
+        rawOutput: truncateLogMetadataText(result.stdout),
+        stderr: truncateLogMetadataText(result.stderr),
+        rawOutputLength: result.stdout.length,
+        stderrLength: result.stderr.length,
+        rawOutputTruncated: result.stdout.length > MAX_LLM_LOG_METADATA_TEXT_CHARS,
+        stderrTruncated: result.stderr.length > MAX_LLM_LOG_METADATA_TEXT_CHARS
+    };
+}
+
+export function buildVibeFailureMessage(
+    result: { stdout: string; stderr: string; exitCode: number | null },
+    parsedOutput: ReturnType<typeof parseVibeOutput>
+): string {
+    const parsedError = getParsedVibeError(parsedOutput);
+    const exitContext = result.exitCode === 0
+        ? undefined
+        : result.exitCode === null
+            ? 'Vibe CLI exited without an exit code'
+            : `Vibe CLI exited with code ${result.exitCode}`;
+    const parts = [
+        parsedError,
+        exitContext,
+        result.stderr.trim() ? `stderr: ${result.stderr.trim().slice(0, 4000)}` : undefined,
+        result.stdout.trim() ? `stdout: ${result.stdout.trim().slice(0, 4000)}` : undefined
+    ].filter((part): part is string => Boolean(part));
+
+    return parts.join('\n') || 'Vibe execution failed without diagnostic output';
 }

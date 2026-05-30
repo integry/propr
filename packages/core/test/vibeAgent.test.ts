@@ -49,7 +49,7 @@ test('Vibe Docker args use stdin-oriented default CLI invocation', () => {
     });
 
     const imageIndex = args.indexOf('propr/agent-vibe:latest');
-    assert.deepEqual(args.slice(imageIndex + 1), ['vibe']);
+    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--max-turns', '1000', '--output', 'json']);
     assert.equal(args.some(arg => arg.includes('propr-vibe-prompt.md')), false);
 });
 
