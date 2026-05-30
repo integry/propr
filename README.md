@@ -353,7 +353,7 @@ logger.debug('Debug information', { data: someData });
 ### Configuration
 
 ```typescript
-import config from './config/index.ts';
+import config from './config/index.js';
 
 console.log(config.github.appId);
 console.log(config.logging.level);
@@ -387,7 +387,8 @@ Paths are passed as host paths (not mounted into the launcher) because the
 launcher uses the host docker daemon via the mounted socket to spawn sibling
 containers — any `-v` values it passes need to resolve on the host.
 Pass `HOST_OPENCODE_LEGACY_DIR=$HOME/.opencode` only for OpenCode agents whose
-saved `configPath` is `~/.opencode`.
+saved `configPath` is `~/.opencode`. `HOST_OPENCODE_DIR` is accepted as an alias
+for `HOST_OPENCODE_XDG_DIR`.
 
 The launcher pulls redis + app + ui images on first run and orchestrates them
 via the mounted docker socket. See `.env.example` for required configuration.

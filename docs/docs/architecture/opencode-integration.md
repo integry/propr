@@ -147,7 +147,7 @@ For launcher-based production deployments, pass the host paths explicitly:
 -e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode
 ```
 
-Pass `HOST_OPENCODE_LEGACY_DIR` only for agents whose saved `configPath` is `~/.opencode`.
+Pass `HOST_OPENCODE_LEGACY_DIR` only for agents whose saved `configPath` is `~/.opencode`. `HOST_OPENCODE_DIR` is accepted as an alias for `HOST_OPENCODE_XDG_DIR`.
 
 Before assigning work to OpenCode, verify:
 

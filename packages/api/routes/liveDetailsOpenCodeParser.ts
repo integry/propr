@@ -1,5 +1,5 @@
 import { normalizeOpenCodeTimestamp, parseOpenCodeJsonl, type OpenCodeEvent } from '@propr/core';
-import type { ConversationResult, TokenUsage } from './liveDetailsCodexParser.js';
+import type { ConversationResult, TokenUsage } from './liveDetailsTypes.js';
 
 function buildOpenCodeTokenUsage(parsed: ReturnType<typeof parseOpenCodeJsonl>): TokenUsage | null {
   if (!parsed.tokenUsage) return null;
@@ -116,12 +116,15 @@ function joinOpenCodePartsText(parts: Array<{ type?: string; text?: string; delt
 }
 
 function joinOpenCodeTextValues(values: unknown[], trim = true): string {
-  const added = new Set<string>();
-  const text = values.filter((value): value is string => {
-    if (typeof value !== 'string' || value.length === 0 || added.has(value)) return false;
-    added.add(value);
-    return true;
-  }).join('');
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const value of values) {
+    if (typeof value !== 'string' || value.length === 0) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    parts.push(value);
+  }
+  const text = parts.join('');
   return trim ? text.trim() : text;
 }
 

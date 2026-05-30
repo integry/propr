@@ -19,7 +19,7 @@ import {
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
-const VALID_AGENT_TYPES: readonly string[] = AGENT_TYPES;
+const VALID_AGENT_TYPES = new Set<string>(AGENT_TYPES);
 
 interface AgentVersionRouteDeps {
     getAvailableVersions?: typeof getAvailableVersions;
@@ -33,12 +33,12 @@ interface AgentVersionRouteDeps {
 type AgentTypeValidationResult = { ok: true; agentType: AgentType } | { ok: false; error: string };
 
 function validateAgentType(agentType: unknown): AgentTypeValidationResult {
-    if (typeof agentType === 'string' && VALID_AGENT_TYPES.includes(agentType)) {
+    if (typeof agentType === 'string' && VALID_AGENT_TYPES.has(agentType)) {
         return { ok: true, agentType: agentType as AgentType };
     }
     return {
         ok: false,
-        error: `Invalid agent type '${String(agentType)}'. Must be one of: ${VALID_AGENT_TYPES.join(', ')}`
+        error: `Invalid agent type '${String(agentType)}'. Must be one of: ${[...VALID_AGENT_TYPES].join(', ')}`
     };
 }
 

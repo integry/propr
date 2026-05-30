@@ -13,11 +13,15 @@ import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
 import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 
+interface ApplyAgentsUpdateResult {
+  status: number;
+  body: { error?: string; success?: boolean; agents?: AgentConfig[]; committed?: boolean; out_of_sync?: boolean };
+}
 interface AgentsRoutesDeps {
   redisClient: RedisClientType;
   publishConfigUpdate: (subtype: string) => Promise<void>;
   logActivityHelper: (description: string, idSuffix: string, type: string, username?: string) => Promise<void>;
-  applyAgentsUpdateFn?: (params: ApplyAgentsUpdateParams) => Promise<{ status: number; body: Record<string, unknown> }>;
+  applyAgentsUpdateFn?: (params: ApplyAgentsUpdateParams) => Promise<ApplyAgentsUpdateResult>;
 }
 interface AgentConfigStore {
   loadAgents: typeof configManager.loadAgents;
@@ -235,7 +239,7 @@ async function applyCommittedAgentsUpdate({
   settingsWereUpdated: boolean;
   defaultChanged: boolean;
   lock?: ConfigLockContext;
-}): Promise<{ status: number; body: Record<string, unknown> } | void> {
+}): Promise<ApplyAgentsUpdateResult | void> {
   try {
     if (settingsWereUpdated) {
       await configStore.handleSettingsSaveSideEffects();
@@ -293,7 +297,7 @@ export async function applyAgentsUpdate({
   configStore = configManager,
   registry = AgentRegistry.getInstance(),
   lock
-}: ApplyAgentsUpdateParams): Promise<{ status: number; body: Record<string, unknown> }> {
+}: ApplyAgentsUpdateParams): Promise<ApplyAgentsUpdateResult> {
   const preparedAgents = await loadProcessedAgents(agents, providedProcessedAgents);
   if (preparedAgents.error) {
     return { status: preparedAgents.status ?? 400, body: { error: preparedAgents.error } };
@@ -342,7 +346,7 @@ export async function applyAgentsUpdate({
     };
   }
 
-  let publishResult: { status: number; body: Record<string, unknown> } | null = null;
+  let publishResult: ApplyAgentsUpdateResult | null = null;
   try {
     await publishAgentUpdates({ processedAgents, defaultChanged, publishConfigUpdate, logActivityHelper, username });
   } catch (error) {

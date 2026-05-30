@@ -1,13 +1,8 @@
 import fs from 'fs-extra';
 import { parseCodexStreamOutput } from '@propr/core';
+import type { TokenUsage, ConversationResult, TodoItem, PendingSubagent } from './liveDetailsTypes.js';
 
-export interface TokenUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
-}
-export interface ConversationResult { events: Array<Record<string, unknown>>; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsage | null; }
+export type { TokenUsage, ConversationResult, TodoItem, PendingSubagent };
 
 export function isConversationResultEmpty(result: ConversationResult | null): boolean {
   if (!result) return true;
@@ -17,9 +12,7 @@ export function isConversationResultEmpty(result: ConversationResult | null): bo
     && result.tokenUsage === null;
 }
 
-export interface TodoItem { status: string; content: string; }
 interface CodexTodoItem { text?: string; completed?: boolean; status?: string; }
-export interface PendingSubagent { toolUseId: string; subagentType: string; description: string; startTimestamp: string; }
 interface CodexEventContext { events: Array<Record<string, unknown>>; setTodos: (nextTodos: Array<{ status: string; content: string }>) => void; pendingCommandStarts: Map<string, string[]>; timestamp?: string; }
 interface ParseLineResult { newTodos?: TodoItem[]; tokenUsage?: TokenUsage; }
 export interface ClaudeMessageContent {
