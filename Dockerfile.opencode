@@ -12,8 +12,10 @@ USER root
 RUN apk add --no-cache su-exec \
     && npm install -g opencode-ai@${CLI_VERSION}
 # Smoke-test the binary and verify the installed CLI exposes the flags the
-# entrypoint relies on. If opencode-ai changes its help output these will
-# break at build time rather than silently at runtime. Requires opencode-ai >= 0.1.0.
+# entrypoint relies on. If opencode-ai changes its help output format (e.g.
+# indentation or grouping), these greps will break at build time rather than
+# silently at runtime. Pin CLI_VERSION above to avoid surprise breakage.
+# Requires opencode-ai >= 0.1.0.
 RUN opencode --version || (echo "ERROR: opencode binary failed to execute — check installation" && exit 1)
 RUN opencode run --help 2>&1 | tee /tmp/oc-help \
     && grep -qE '^\s*--file\b' /tmp/oc-help \

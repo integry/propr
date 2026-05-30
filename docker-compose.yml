@@ -161,6 +161,7 @@ services:
       - '${API_PORT:-4000}:4000'
     volumes:
       - ~/.claude:/root/.claude:ro
+      - ~/.gemini:/root/.gemini:ro
       - ~/.codex:/root/.codex:ro
       - ~/.opencode:/root/.opencode:ro
       - ~/.config/opencode:/root/.config/opencode:ro

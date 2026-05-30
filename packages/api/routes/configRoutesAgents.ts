@@ -14,7 +14,7 @@ import type { Knex } from 'knex';
 import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 
 type ApplyAgentsUpdateBody =
-  | { success: true; agents: AgentConfig[] }
+  | { success: true; agents: AgentConfig[]; warning?: string; committed?: boolean; out_of_sync?: boolean }
   | { error: string; success?: never; agents?: never; committed?: boolean; out_of_sync?: boolean };
 
 interface ApplyAgentsUpdateResult {
@@ -406,7 +406,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
     });
 
     if (!result || typeof result.status !== 'number' || !result.body) {
-      logger.error({ hasResult: !!result, statusType: typeof result?.status, hasBody: !!result?.body }, 'applyAgentsUpdate returned unexpected shape — possible bug in withConfigLock or applyFn');
+      logger.error({ hasResult: !!result, statusType: typeof result?.status, hasBody: !!result?.body, resultKeys: result ? Object.keys(result) : [] }, 'applyAgentsUpdate returned unexpected shape — possible bug in withConfigLock or applyFn');
       res.status(500).json({ error: 'Unexpected response from agent configuration update' });
       return;
     }
