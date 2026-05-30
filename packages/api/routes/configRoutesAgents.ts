@@ -25,6 +25,7 @@ interface AgentsRoutesDeps {
   redisClient: RedisClientType;
   publishConfigUpdate: (subtype: string) => Promise<void>;
   logActivityHelper: (description: string, idSuffix: string, type: string, username?: string) => Promise<void>;
+  /** @internal Test-only override for the agent-update function. */
   applyAgentsUpdateFn?: (params: ApplyAgentsUpdateParams) => Promise<ApplyAgentsUpdateResult>;
 }
 interface AgentConfigStore {

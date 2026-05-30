@@ -15,8 +15,7 @@ import {
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
     listAgentImages,
-    loadAgents,
-    logger
+    loadAgents
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
@@ -291,9 +290,5 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
 }
 
 function getImageName(agentType: AgentType): string {
-    const imageName = VERSIONED_AGENT_IMAGE_NAMES[agentType];
-    if (!imageName) {
-        throw new Error(`No image name registered in VERSIONED_AGENT_IMAGE_NAMES for agent type: ${agentType}`);
-    }
-    return imageName;
+    return VERSIONED_AGENT_IMAGE_NAMES[agentType] || agentType;
 }

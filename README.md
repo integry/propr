@@ -255,6 +255,8 @@ propr/
 ├── propr-ui/                         # Frontend package
 ├── scripts/
 │   ├── claude-entrypoint.sh     # Docker entrypoint for secure Claude execution
+│   ├── codex-entrypoint.sh      # Docker entrypoint for secure Codex execution
+│   ├── gemini-entrypoint.sh     # Docker entrypoint for secure Gemini execution
 │   ├── opencode-entrypoint.sh   # Docker entrypoint for secure OpenCode execution
 │   ├── init-firewall.sh         # Security and firewall setup
 │   ├── fix-issue-labels.js      # Manual issue label management utility

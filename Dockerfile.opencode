@@ -16,9 +16,9 @@ RUN apk add --no-cache su-exec \
 # break at build time rather than silently at runtime. Requires opencode-ai >= 0.1.0.
 RUN opencode --version || (echo "ERROR: opencode binary failed to execute — check installation" && exit 1)
 RUN opencode run --help 2>&1 | tee /tmp/oc-help \
-    && grep -q -- '--file' /tmp/oc-help \
-    && grep -q -- '--format' /tmp/oc-help \
-    && grep -q -- '--model' /tmp/oc-help \
+    && grep -qE '^\s*--file\b' /tmp/oc-help \
+    && grep -qE '^\s*--format\b' /tmp/oc-help \
+    && grep -qE '^\s*--model\b' /tmp/oc-help \
     || (echo "ERROR: opencode run missing required flags (--file, --format, --model)" && exit 1) \
     && rm -f /tmp/oc-help
 
