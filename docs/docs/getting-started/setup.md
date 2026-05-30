@@ -195,6 +195,8 @@ If you plan to use Mistral's Vibe coding agent alongside (or instead of) Claude:
 
 ### Install Vibe CLI
 
+Install from npm (see [mistral-vibe on npmjs.com](https://www.npmjs.com/package/mistral-vibe)):
+
 ```bash
 npm install -g mistral-vibe
 ```

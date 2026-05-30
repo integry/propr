@@ -6,6 +6,8 @@ project context.
 
 ## Install
 
+Install from npm (see [mistral-vibe on npmjs.com](https://www.npmjs.com/package/mistral-vibe)):
+
 ```bash
 npm install -g mistral-vibe
 ```

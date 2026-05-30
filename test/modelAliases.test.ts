@@ -188,7 +188,7 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     await t.test('Step 3: resolves agent prefix match for vibe-devstral', async () => {
         const result = await resolveLlmLabel('vibe-devstral');
         assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
-        assert.ok(result.model, 'Should resolve to a devstral model');
+        assert.ok(result.model && result.model.includes('devstral'), 'Should resolve to a devstral model');
     });
 
     await t.test('Step 4: resolves static MODEL_ALIASES for backwards compatibility (opus)', async () => {

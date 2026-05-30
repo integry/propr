@@ -2,6 +2,9 @@
 
 Mistral Vibe CLI options and commands for agentic code generation.
 
+> For installation, authentication, configuration, and ProPR integration details,
+> see the [full Vibe documentation](vibe/index.md).
+
 ## Global Options
 
 | Flag | Type | Default | Description |
@@ -35,23 +38,6 @@ Interactive first-run wizard. Guides through:
 1. API key configuration
 2. Default model selection
 3. Workspace preferences
-
-## Configuration Files
-
-| Path | Purpose |
-|------|---------|
-| `~/.vibe/credentials.json` | API key and auth tokens |
-| `~/.vibe/settings.json` | User preferences and defaults |
-| `~/.vibe/history/` | Session history and checkpoints |
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `MISTRAL_API_KEY` | API key (overrides credentials.json) |
-| `VIBE_MODEL` | Default model override |
-| `VIBE_TIMEOUT` | Session timeout in ms |
-| `VIBE_CONFIG_DIR` | Custom config directory (default: `~/.vibe`) |
 
 ## Supported Models
 
