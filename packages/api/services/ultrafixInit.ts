@@ -18,6 +18,9 @@ import type { Redis } from 'ioredis';
 import * as configManager from '@propr/core';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DEFERRED_SWEEP_INTERVAL_MS = 60_000;
+
+let deferredSweepInterval: NodeJS.Timeout | null = null;
 
 async function pathExists(candidatePath: string): Promise<boolean> {
     try {
@@ -113,6 +116,7 @@ export async function initializeUltrafix(ioRedisClient: Redis): Promise<void> {
     try {
         const bootstrapPath = await resolveJobModulePath('ultrafixBootstrap.js');
         const continuationPath = await resolveJobModulePath('ultrafixLoopContinuation.js');
+        const orchestrationPath = await resolveJobModulePath('ultrafixOrchestrationService.js');
 
         const { createUltrafixDeps } = await importWithTsFallback(bootstrapPath);
         setUltrafixDeps(createUltrafixDeps());
@@ -136,6 +140,31 @@ export async function initializeUltrafix(ioRedisClient: Redis): Promise<void> {
             }
         });
         logger.info('[ultrafix] Check run hook initialized');
+
+        const orchestrationMod = await importWithTsFallback(orchestrationPath);
+        const sweepDeferredContinuations = async (): Promise<void> => {
+            try {
+                const keys = await orchestrationMod.listDeferredContinuationKeys(ioRedisClient);
+                for (const key of keys) {
+                    const parsed = orchestrationMod.parseDeferredKey(key);
+                    if (!parsed) continue;
+                    const log = logger.withCorrelation(generateCorrelationId());
+                    const result = await contMod.resumeDeferredContinuation(parsed, ioRedisClient, log);
+                    if (result.continued) {
+                        log.info({ ...parsed, result }, '[ultrafix] deferred continuation resumed by sweep');
+                    }
+                }
+            } catch (error) {
+                logger.warn({ error: (error as Error).message }, '[ultrafix] deferred continuation sweep failed');
+            }
+        };
+
+        if (!deferredSweepInterval) {
+            await sweepDeferredContinuations();
+            deferredSweepInterval = setInterval(sweepDeferredContinuations, DEFERRED_SWEEP_INTERVAL_MS);
+            deferredSweepInterval.unref?.();
+            logger.info({ intervalMs: DEFERRED_SWEEP_INTERVAL_MS }, '[ultrafix] Deferred continuation sweep initialized');
+        }
     } catch (error) {
         logger.error({ error: (error as Error).message },
             '[ultrafix] Failed to initialize — server will continue without ultrafix support');

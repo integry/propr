@@ -8,6 +8,7 @@ import {
   validatePromptTokens, CLAUDE_CODE_OVERHEAD, CHARS_PER_TOKEN, PlanningFailedError, buildFullContext, getModelHardLimit
 } from '../planningHelpers.js';
 import { generateAdditionalContextIfNeeded } from './additionalContext.js';
+import { calculateEffectiveAdditionalContextBudget } from './tokenBudgets.js';
 import type { ContextGenerationParams, ContextGenerationResult } from './types.js';
 
 export async function generateContextWithRetry(params: ContextGenerationParams): Promise<ContextGenerationResult> {
@@ -55,7 +56,25 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
       correlatedLogger.info({ fileSummaryCount: smartSummaryResult.fileSummaryCount, dirSummaryCount: smartSummaryResult.dirSummaryCount, estimatedTokens: smartSummaryResult.estimatedTokens, truncated: smartSummaryResult.truncated }, 'Built smart summary context');
     }
 
-    const additionalContextResult = await generateAdditionalContextIfNeeded({ contextRepositories: config.contextRepositories, additionalContextBudget: budgets.additionalContextBudget, githubToken, draftId, correlationId, correlatedLogger });
+    const additionalContextBudget = calculateEffectiveAdditionalContextBudget({
+      baseBudget: budgets.additionalContextBudget,
+      repomixBudget: currentRepomixLimit,
+      repomixTokensUsed: contextResult.totalTokens,
+      tokenLimit: config.tokenLimit,
+      contextLevel: config.contextLevel
+    });
+
+    const additionalContextResult = await generateAdditionalContextIfNeeded({
+      contextRepositories: config.contextRepositories,
+      prompt: draft.initial_prompt,
+      contextModel: params.contextModel,
+      additionalContextBudget,
+      useFullBudget: config.contextLevel >= 80,
+      githubToken,
+      draftId,
+      correlationId,
+      correlatedLogger
+    });
     const additionalContext = additionalContextResult.context;
 
     fullContext = buildFullContext({ userRequest: draft.initial_prompt, repomixContext: contextResult.context, granularity: config.granularity, fileSummaries: filteredSummaries, smartSummaries, images: base64Images.length > 0 ? base64Images : undefined, additionalContext });

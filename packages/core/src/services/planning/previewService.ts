@@ -91,7 +91,7 @@ interface BuildPreviewResultParams {
   smartSummaryTokens: number;
   additionalContextTokens: number;
   additionalContextFiles: number;
-  additionalContextFilesIncluded: Array<{ repository: string; path: string }>;
+  additionalContextFilesIncluded: Array<{ repository: string; path: string; score?: number; reason?: string }>;
   targetTokenLimit: number;
   generationModel?: string;
   repomixContextLength: number;
@@ -124,9 +124,10 @@ function buildPreviewResult(params: BuildPreviewResultParams): PreviewResult {
 
   const contextRepoSelection: SmartFileSelection[] = additionalContextFilesIncluded.map(f => ({
     path: f.path,
-    reason: 'Reference context',
+    reason: f.reason ?? 'Reference context',
     source: 'context-repo' as const,
-    repository: f.repository
+    repository: f.repository,
+    score: f.score ?? 0
   }));
   const fullSmartSelection = [...smartSelection, ...contextRepoSelection];
 
@@ -154,9 +155,12 @@ function buildPreviewResult(params: BuildPreviewResultParams): PreviewResult {
 
 interface LoadAdditionalContextOptions {
   contextRepositories: ContextRepository[];
+  prompt: string;
+  contextModel?: string;
   tokenBudget: number;
   githubToken: string;
   correlationId?: string;
+  useFullBudget?: boolean;
   correlatedLogger: MinimalLogger;
 }
 
@@ -164,12 +168,12 @@ interface LoadAdditionalContextOptions {
  * Load additional context from context repositories.
  */
 async function loadAdditionalContextFromRepos(opts: LoadAdditionalContextOptions): Promise<AdditionalContextLoadResult> {
-  const { contextRepositories, tokenBudget, githubToken, correlationId, correlatedLogger } = opts;
+  const { contextRepositories, prompt, contextModel, tokenBudget, githubToken, correlationId, useFullBudget = false, correlatedLogger } = opts;
   const warnings: string[] = [];
   let additionalContext: string | undefined;
   let additionalContextTokens = 0;
   let additionalContextFiles = 0;
-  let additionalContextFilesIncluded: Array<{ repository: string; path: string }> = [];
+  let additionalContextFilesIncluded: Array<{ repository: string; path: string; score?: number; reason?: string }> = [];
 
   correlatedLogger.info({
     repositoryCount: contextRepositories.length,
@@ -180,9 +184,13 @@ async function loadAdditionalContextFromRepos(opts: LoadAdditionalContextOptions
   try {
     const additionalContextResult = await generateAdditionalContext({
       repositories: contextRepositories,
+      prompt,
+      contextModel,
       tokenBudget,
       authToken: githubToken,
-      correlationId
+      correlationId,
+      useFullBudget,
+      fastRelevance: true
     });
 
     if (additionalContextResult.repositoriesIncluded.length > 0) {
@@ -446,10 +454,19 @@ async function generateContextPreviewInternal(options: GenerateContextPreviewOpt
   let additionalContext: string | undefined;
   let additionalContextTokens = 0;
   let additionalContextFiles = 0;
-  let additionalContextFilesIncluded: Array<{ repository: string; path: string }> = [];
+  let additionalContextFilesIncluded: Array<{ repository: string; path: string; score?: number; reason?: string }> = [];
   if (contextRepositories?.length && githubToken) {
-    const additionalContextBudget = calculateAdditionalContextBudget({ targetTokenLimit, simulatedTokens, attachmentTokens, smartSummaryTokens });
-    const result = await loadAdditionalContextFromRepos({ contextRepositories, tokenBudget: additionalContextBudget, githubToken, correlationId, correlatedLogger });
+    const additionalContextBudget = calculateAdditionalContextBudget({ targetTokenLimit, simulatedTokens, attachmentTokens, smartSummaryTokens, contextLevel });
+    const result = await loadAdditionalContextFromRepos({
+      contextRepositories,
+      prompt,
+      contextModel,
+      tokenBudget: additionalContextBudget,
+      githubToken,
+      correlationId,
+      useFullBudget: contextLevel >= 80,
+      correlatedLogger
+    });
     additionalContext = result.additionalContext;
     additionalContextTokens = result.additionalContextTokens;
     additionalContextFiles = result.additionalContextFiles;

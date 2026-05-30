@@ -25,6 +25,7 @@ export { UsageLimitError };
 
 const DEFAULT_CODEX_MAX_TURNS = 1000;
 const DEFAULT_CODEX_TIMEOUT_MS = 3600000;
+const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 // Container path for Codex config
 const CONTAINER_CONFIG_PATH = '/home/node/.codex';
@@ -43,7 +44,7 @@ export class CodexAgent implements Agent {
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, taskId, prNumber } = options;
+            onSessionId, onContainerId, githubToken, environment, taskId, prNumber } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -62,7 +63,7 @@ export class CodexAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, modelName: effectiveModel,
-                issueNumber: issueRef.number, taskId
+                issueNumber: issueRef.number, environment, taskId
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -134,7 +135,7 @@ export class CodexAgent implements Agent {
             commitMessage: null,
             summary: parsedOutput.result ?? undefined,
             prompt,
-            error: parsedOutput.error,
+            error: parsedOutput.error || (result.exitCode === 0 ? undefined : result.stderr?.trim() || undefined),
             tokenUsage: parsedOutput.tokenUsage,
             usageMetrics: usageMetrics ?? undefined
         };
@@ -219,7 +220,8 @@ export class CodexAgent implements Agent {
                 'codex',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: 1800000, stdinData: analysisPrompt, taskId
-                })
+                }),
+                ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
 
             const executionTimeMs = Date.now() - startTime;
@@ -335,6 +337,7 @@ export class CodexAgent implements Agent {
         modelName?: string;
         issueNumber: number;
         jsonOutput?: boolean;
+        environment?: Record<string, string>;
         taskId?: string;
         executionType?: string;
     }): string[] {
@@ -344,6 +347,7 @@ export class CodexAgent implements Agent {
             modelName,
             issueNumber,
             jsonOutput = true,
+            environment,
             taskId,
             executionType
         } = params;
@@ -355,6 +359,11 @@ export class CodexAgent implements Agent {
         const envVars: string[] = [];
         if (this.config.envVars) {
             for (const [key, value] of Object.entries(this.config.envVars)) {
+                envVars.push('-e', `${key}=${value}`);
+            }
+        }
+        if (environment) {
+            for (const [key, value] of Object.entries(environment)) {
                 envVars.push('-e', `${key}=${value}`);
             }
         }

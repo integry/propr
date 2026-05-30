@@ -91,14 +91,14 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   // Calculate token budgets
   const budgets = calculateTokenBudgets({
-    tokenLimit: config.tokenLimit, attachmentTokens, fullSummaryText,
+    tokenLimit: config.tokenLimit, contextLevel: config.contextLevel, attachmentTokens, fullSummaryText,
     hasContextRepositories: !!(config.contextRepositories && config.contextRepositories.length > 0), correlatedLogger
   });
 
   // Generate context with retry logic
   const { fullContext, contextResult } = await generateContextWithRetry({
     worktreePath, config, relevantFilePaths, candidateSummaries, budgets, base64Images,
-    draft, draftId, githubToken, correlationId, generationModel, correlatedLogger
+    draft, draftId, githubToken, correlationId, generationModel, contextModel, correlatedLogger
   });
 
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });

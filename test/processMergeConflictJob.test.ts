@@ -305,10 +305,12 @@ describe('processMergeConflictJob', () => {
 
         // Verify the prompt includes conflict info
         const executeCall = mockAgent.executeTask.mock.calls[0];
-        const prompt = executeCall.arguments[0].prompt as string;
+        const executeOptions = executeCall.arguments[0] as { prompt: string; environment?: Record<string, string> };
+        const prompt = executeOptions.prompt;
         assert.ok(prompt.includes('src/index.ts'), 'Prompt should include conflicted files');
         assert.ok(prompt.includes('src/app.ts'), 'Prompt should include conflicted files');
         assert.ok(prompt.includes('main'), 'Prompt should include base branch');
+        assert.deepStrictEqual(executeOptions.environment, { PROPR_REPO_SETUP: '0' });
 
         // Verify commit and push were called
         assert.strictEqual(mockCommitChanges.mock.callCount(), 1);
@@ -356,6 +358,34 @@ describe('processMergeConflictJob', () => {
         const body = patchCall.arguments[1].body as string;
         assert.ok(body.includes('Failed to resolve merge conflicts'));
         assert.ok(body.includes('not a git repository'));
+    });
+
+    test('agent failure: reports stderr/log details instead of unknown error', async () => {
+        mockMergeResult = { outcome: 'conflicts' as never, conflictedFiles: ['.propr/setup.sh'] } as never;
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+        mockAgent.executeTask.mock.mockImplementationOnce(async () => ({
+            ...mockAgentResult,
+            success: false,
+            error: '',
+            logs: 'Running ProPR repo setup hook\n.propr/setup.sh: line 1: <<<<<<< HEAD',
+        }));
+
+        const job = createMockJob();
+
+        await assert.rejects(
+            async () => processMergeConflictJob(job),
+            /setup\.sh: line 1/
+        );
+
+        const patchCall = mockOctokit.request.mock.calls.find(
+            (c: { arguments: [string, Record<string, unknown>] }) =>
+                c.arguments[0] === 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}' &&
+                (c.arguments[1].body as string).includes('Failed to resolve merge conflicts')
+        );
+        assert.ok(patchCall);
+        const body = patchCall.arguments[1].body as string;
+        assert.ok(body.includes('setup.sh: line 1'));
+        assert.ok(!body.includes('Unknown error'));
     });
 
     test('reschedules if PR is locked by another job', async () => {

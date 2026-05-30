@@ -1,5 +1,7 @@
 import { test, describe, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
+import { calculateAdditionalContextBudget } from '../packages/core/src/services/planning/previewUtils.js';
+import { calculateEffectiveAdditionalContextBudget } from '../packages/core/src/services/taskPlanning/tokenBudgets.js';
 
 process.env.NODE_ENV = 'test';
 
@@ -50,6 +52,56 @@ describe('Context Preview Types', () => {
         assert.strictEqual(result.smartSelection.length, 2);
         assert.strictEqual(result.smartSelection[0].source, 'manual');
         assert.strictEqual(result.smartSelection[1].source, 'auto');
+    });
+});
+
+describe('Additional Context Budgeting', () => {
+    test('full scan preview can use all remaining context budget for additional repositories', () => {
+        const budget = calculateAdditionalContextBudget({
+            targetTokenLimit: 100_000,
+            simulatedTokens: 5_000,
+            attachmentTokens: 0,
+            smartSummaryTokens: 0,
+            contextLevel: 90
+        });
+
+        assert.strictEqual(budget, 95_000);
+    });
+
+    test('non-full-scan preview keeps the existing additional repository cap', () => {
+        const budget = calculateAdditionalContextBudget({
+            targetTokenLimit: 100_000,
+            simulatedTokens: 5_000,
+            attachmentTokens: 0,
+            smartSummaryTokens: 0,
+            contextLevel: 50
+        });
+
+        assert.strictEqual(budget, 80_000);
+    });
+
+    test('full scan planning reuses unused target-repo budget for additional repositories', () => {
+        const budget = calculateEffectiveAdditionalContextBudget({
+            baseBudget: 20_000,
+            repomixBudget: 70_000,
+            repomixTokensUsed: 5_000,
+            tokenLimit: 100_000,
+            contextLevel: 90
+        });
+
+        assert.strictEqual(budget, 85_000);
+    });
+
+    test('expanded planning keeps fixed additional repository budget', () => {
+        const budget = calculateEffectiveAdditionalContextBudget({
+            baseBudget: 20_000,
+            repomixBudget: 70_000,
+            repomixTokensUsed: 5_000,
+            tokenLimit: 100_000,
+            contextLevel: 50
+        });
+
+        assert.strictEqual(budget, 20_000);
     });
 });
 
