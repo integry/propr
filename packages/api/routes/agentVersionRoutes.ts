@@ -38,7 +38,7 @@ function validateAgentType(agentType: unknown): AgentTypeValidationResult {
     }
     return {
         ok: false,
-        error: `Invalid agent type '${String(agentType)}'. Must be one of: ${[...VALID_AGENT_TYPES].join(', ')}`
+        error: `Invalid agent type '${String(agentType)}'. Must be one of: ${[...VALID_AGENT_TYPES].sort().join(', ')}`
     };
 }
 

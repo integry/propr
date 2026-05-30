@@ -400,6 +400,10 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       return effectiveApplyFn({ agents: req.body.agents, processedAgents: prepared.processedAgents, username: req.user?.username, publishConfigUpdate, logActivityHelper, lock });
     });
 
+    if (!result || typeof result.status !== 'number' || !result.body) {
+      res.status(500).json({ error: 'Unexpected response from agent configuration update' });
+      return;
+    }
     res.status(result.status).json(result.body);
   }
   return { getAgents, postAgents };
