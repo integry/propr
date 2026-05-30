@@ -95,56 +95,6 @@ async function resolveAuthToken(authToken: string): Promise<string> {
   }
 }
 
-async function processRepository(
-  repo: ContextRepository,
-  options: { authToken: string; tokenBudgetPerRepo: number; correlationId?: string }
-): Promise<RepoContextResult> {
-  const { authToken, tokenBudgetPerRepo, correlationId } = options;
-  const [owner, repoName] = repo.repository.split('/');
-  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
-
-  correlatedLogger.info(
-    { repository: repo.repository, branch: repo.branch || 'default', tokenBudget: tokenBudgetPerRepo },
-    'Processing additional context repository'
-  );
-
-  const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-  const effectiveAuthToken = await resolveAuthToken(authToken);
-
-  const repoPath = await ensureRepoCloned({
-    repoUrl, owner, repoName,
-    authToken: effectiveAuthToken,
-    baseBranch: repo.branch
-  });
-
-  const contextResult = await generateContext({
-    repoPath,
-    tokenLimit: tokenBudgetPerRepo,
-    correlationId,
-    includeFullDirectoryStructure: false,
-    compress: true
-  });
-
-  const strippedContext = stripFilePathsFromContext(contextResult.context, repo.repository);
-  const finalContext = repo.description
-    ? `[${repo.description}]\n${strippedContext}`
-    : strippedContext;
-
-  correlatedLogger.info(
-    { repository: repo.repository, totalTokens: contextResult.totalTokens, totalFiles: contextResult.totalFiles },
-    'Successfully generated context for additional repository'
-  );
-
-  return {
-    repository: repo.repository,
-    context: finalContext,
-    tokens: contextResult.totalTokens,
-    files: contextResult.totalFiles,
-    filePaths: contextResult.includedFiles,
-    fileScores: {}
-  };
-}
-
 /**
  * Generate context from additional repositories.
  * This content is marked as "example/reference only" and file paths are stripped
@@ -222,9 +172,9 @@ export async function generateAdditionalContext(
             minScore: 1
           });
           priorityFiles = relevanceResult.files.map(file => file.path);
-          for (const file of relevanceResult.files) {
-            fileScores[file.path] = { score: file.score, reason: formatRelevanceReason(file) };
-          }
+          Object.assign(fileScores, Object.fromEntries(
+            relevanceResult.files.map(file => [file.path, { score: file.score, reason: formatRelevanceReason(file) }])
+          ));
           correlatedLogger.info(
             {
               repository: repo.repository,
