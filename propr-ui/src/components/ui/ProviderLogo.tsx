@@ -36,6 +36,15 @@ export const ProviderLogo: React.FC<ProviderLogoProps> = ({ provider, className 
     );
   }
 
+  if (normalized.includes('vibe') || normalized.includes('mistral') || normalized.includes('devstral')) {
+    // Mistral Icon
+    return (
+      <svg className={className} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+        <path d="M3 3h4v4H3V3zm14 0h4v4h-4V3zM3 9h4v4H3V9zm6 0h4v4H9V9zm4 0h4v4h-4V9zm4 0h4v4h-4V9zM3 15h4v4H3v-4zm2 0h4v4H5v-4zm4 0h4v4H9v-4zm8 0h4v4h-4v-4zM3 21h4v-2H3v2zm14 0h4v-2h-4v2z" />
+      </svg>
+    );
+  }
+
   // Fallback
   return <Bot className={className} />;
 };
