@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { after, afterEach, test } from 'node:test';
+import { after, test } from 'node:test';
 import { VibeAgent } from '../src/agents/impl/VibeAgent.js';
+import { splitVibeCliArgs } from '../src/agents/impl/utils/vibeAgentHelpers.js';
 import { db } from '../src/db/connection.js';
 import type { AgentConfig } from '../src/agents/types.js';
 
@@ -11,30 +9,23 @@ type VibeAgentPrivate = {
     buildDockerArgs(params: {
         worktreePath: string;
         githubToken: string;
-        promptPath: string;
         issueNumber: number;
-        mode: 'analysis';
+        mode?: 'execute' | 'analysis';
     }): string[];
 };
 
-const originalEnv = {
-    HOST_VIBE_PROMPT_CACHE_DIR: process.env.HOST_VIBE_PROMPT_CACHE_DIR,
-    VIBE_PROMPT_CACHE_DIR: process.env.VIBE_PROMPT_CACHE_DIR,
-    VIBE_PROMPT_CACHE_HOST_MOUNTED: process.env.VIBE_PROMPT_CACHE_HOST_MOUNTED
-};
-
-afterEach(() => {
-    for (const [key, value] of Object.entries(originalEnv)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-    }
-});
+const originalVibeCliArgs = process.env.VIBE_CLI_ARGS;
 
 after(async () => {
+    if (originalVibeCliArgs === undefined) {
+        delete process.env.VIBE_CLI_ARGS;
+    } else {
+        process.env.VIBE_CLI_ARGS = originalVibeCliArgs;
+    }
     await db.destroy();
 });
 
-function createAgent(): VibeAgentPrivate {
+function createAgent(envVars?: Record<string, string>): VibeAgentPrivate {
     const config: AgentConfig = {
         id: 'vibe-test',
         type: 'vibe',
@@ -42,54 +33,56 @@ function createAgent(): VibeAgentPrivate {
         enabled: true,
         dockerImage: 'propr/agent-vibe:latest',
         configPath: '/tmp/missing-vibe-config',
-        supportedModels: ['mistral-medium-3.5']
+        supportedModels: ['mistral-medium-3.5'],
+        envVars
     };
     return new VibeAgent(config) as unknown as VibeAgentPrivate;
 }
 
-function getPromptMount(args: string[]): string {
-    const mountIndex = args.findIndex((arg, index) => arg === '-v' && args[index + 1]?.endsWith(':/tmp/propr-vibe-prompt.md:ro'));
-    assert.notEqual(mountIndex, -1);
-    return args[mountIndex + 1];
-}
-
-test('Vibe prompt mounts use the container path unless host cache translation is launcher-marked', () => {
-    const containerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-container-'));
-    const hostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-host-'));
-    const promptPath = path.join(containerDir, 'prompt.md');
-    fs.writeFileSync(promptPath, 'hello');
-    process.env.VIBE_PROMPT_CACHE_DIR = containerDir;
-    process.env.HOST_VIBE_PROMPT_CACHE_DIR = hostDir;
-    delete process.env.VIBE_PROMPT_CACHE_HOST_MOUNTED;
-
+test('Vibe Docker args use stdin-oriented default CLI invocation', () => {
+    delete process.env.VIBE_CLI_ARGS;
     const args = createAgent().buildDockerArgs({
         worktreePath: process.cwd(),
         githubToken: 'token',
-        promptPath,
         issueNumber: 0,
         mode: 'analysis'
     });
 
-    assert.equal(getPromptMount(args), `${promptPath}:/tmp/propr-vibe-prompt.md:ro`);
+    const imageIndex = args.indexOf('propr/agent-vibe:latest');
+    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--max-turns', '1000', '--output', 'json']);
+    assert.equal(args.some(arg => arg.includes('propr-vibe-prompt.md')), false);
 });
 
-test('Vibe prompt mounts translate to host cache paths for launcher-mounted caches', () => {
-    const containerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-container-'));
-    const hostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-host-'));
-    const promptPath = path.join(containerDir, 'nested', 'prompt.md');
-    fs.mkdirSync(path.dirname(promptPath));
-    fs.writeFileSync(promptPath, 'hello');
-    process.env.VIBE_PROMPT_CACHE_DIR = containerDir;
-    process.env.HOST_VIBE_PROMPT_CACHE_DIR = hostDir;
-    process.env.VIBE_PROMPT_CACHE_HOST_MOUNTED = '1';
-
+test('Vibe Docker args honor VIBE_CLI_ARGS override', () => {
+    process.env.VIBE_CLI_ARGS = 'vibe --headless "two words"';
     const args = createAgent().buildDockerArgs({
         worktreePath: process.cwd(),
         githubToken: 'token',
-        promptPath,
         issueNumber: 0,
         mode: 'analysis'
     });
 
-    assert.equal(getPromptMount(args), `${path.join(hostDir, 'nested', 'prompt.md')}:/tmp/propr-vibe-prompt.md:ro`);
+    const imageIndex = args.indexOf('propr/agent-vibe:latest');
+    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--headless', 'two words']);
+});
+
+test('Vibe Docker args can read CLI override from agent env vars', () => {
+    delete process.env.VIBE_CLI_ARGS;
+    const args = createAgent({ VIBE_CLI_ARGS: 'vibe --plain' }).buildDockerArgs({
+        worktreePath: process.cwd(),
+        githubToken: 'token',
+        issueNumber: 0,
+        mode: 'analysis'
+    });
+
+    const imageIndex = args.indexOf('propr/agent-vibe:latest');
+    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--plain']);
+});
+
+test('Vibe CLI arg splitter handles quotes and escaped spaces', () => {
+    assert.deepEqual(
+        splitVibeCliArgs('vibe --flag "two words" escaped\\ value'),
+        ['vibe', '--flag', 'two words', 'escaped value']
+    );
+    assert.throws(() => splitVibeCliArgs("vibe 'unterminated"), /unmatched quote/);
 });
