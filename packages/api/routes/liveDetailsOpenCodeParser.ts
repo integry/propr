@@ -64,30 +64,35 @@ function getOpenCodeEventTimestamp(event: OpenCodeEvent, fallback: string): stri
 }
 
 function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
-  // Skip non-assistant messages (user, system)
   if (event.message?.role && event.message.role !== 'assistant') return null;
   const eventType = event.type?.toLowerCase();
   if (eventType && isOpenCodeNonAssistantEventType(eventType)) return null;
+
+  const structured = extractOpenCodeStructuredText(event, eventType);
+  if (structured) return structured;
+
+  return extractOpenCodeBareText(event, eventType);
+}
+
+function extractOpenCodeStructuredText(event: OpenCodeEvent, eventType: string | undefined): string | null {
   const isConfirmedAssistant = event.message?.role === 'assistant';
-  // Streaming deltas: top-level part/parts on confirmed assistant or non-tool events
-  const topLevelPartsText = (isConfirmedAssistant || !eventType || !isOpenCodeToolRelatedType(eventType))
-    ? joinOpenCodePartsText([
-      ...(event.part ? [event.part] : []),
-      ...(event.parts ?? []),
-    ], false)
+  const includeTopLevel = isConfirmedAssistant || !eventType || !isOpenCodeToolRelatedType(eventType);
+  const topLevelPartsText = includeTopLevel
+    ? joinOpenCodePartsText([...(event.part ? [event.part] : []), ...(event.parts ?? [])], false)
     : '';
-  // Response object format (event.response.text/delta/content)
-  const message = event.message;
   const responseText = joinOpenCodeTextValues([event.response?.text, event.response?.delta, event.response?.content]);
-  // Confirmed assistant message with inline parts or text fields
-  let messageText = '';
-  if (isConfirmedAssistant) {
-    messageText = message!.parts?.length
-      ? joinOpenCodePartsText(message!.parts)
-      : joinOpenCodeTextValues([message!.text, message!.delta, message!.content]);
-  }
-  if (topLevelPartsText || messageText || responseText) return joinOpenCodeTextGroups(topLevelPartsText, joinOpenCodeTextGroups(messageText, responseText)) || null;
-  // Bare text/delta/content events without structured message wrapper
+  const messageText = isConfirmedAssistant ? extractOpenCodeConfirmedAssistantText(event.message!) : '';
+  const combined = joinOpenCodeTextGroups(topLevelPartsText, joinOpenCodeTextGroups(messageText, responseText));
+  return combined || null;
+}
+
+function extractOpenCodeConfirmedAssistantText(message: NonNullable<OpenCodeEvent['message']>): string {
+  return message.parts?.length
+    ? joinOpenCodePartsText(message.parts)
+    : joinOpenCodeTextValues([message.text, message.delta, message.content]);
+}
+
+function extractOpenCodeBareText(event: OpenCodeEvent, eventType: string | undefined): string | null {
   if (!eventType || !['text', 'delta', 'completion', 'reasoning'].includes(eventType)) return null;
   const text = joinOpenCodeTextValues([event.text, event.delta, event.content], !isOpenCodeStreamingTextEvent(event));
   return text || null;
@@ -139,28 +144,34 @@ function extractOpenCodeEventError(event: OpenCodeEvent): string {
   return event.error?.data?.message || event.error?.message || event.error?.name || 'OpenCode execution failed';
 }
 
+interface OpenCodeToolTracker {
+  emittedToolUseIds: Set<string>;
+  emittedToolResultIds: Set<string>;
+}
+
 function extractOpenCodeToolEvents(event: OpenCodeEvent, timestamp: string, emittedToolUseIds: Set<string>, emittedToolResultIds: Set<string>): Array<Record<string, unknown>> {
   const events: Array<Record<string, unknown>> = [];
-  if (!event.part) appendOpenCodeToolEvent(events, event, timestamp, emittedToolUseIds, emittedToolResultIds);
-  appendOpenCodeToolEvent(events, event.part, timestamp, emittedToolUseIds, emittedToolResultIds);
-  for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp, emittedToolUseIds, emittedToolResultIds);
+  const tracker: OpenCodeToolTracker = { emittedToolUseIds, emittedToolResultIds };
+  if (!event.part) appendOpenCodeToolEvent(events, event, timestamp, tracker);
+  appendOpenCodeToolEvent(events, event.part, timestamp, tracker);
+  for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp, tracker);
   return events;
 }
 
-function appendOpenCodeToolEvent(events: Array<Record<string, unknown>>, source: OpenCodeEvent['part'] | OpenCodeEvent | undefined, timestamp: string, emittedToolUseIds: Set<string>, emittedToolResultIds: Set<string>): void {
+function appendOpenCodeToolEvent(events: Array<Record<string, unknown>>, source: OpenCodeEvent['part'] | OpenCodeEvent | undefined, timestamp: string, tracker: OpenCodeToolTracker): void {
   if (!source?.type) return;
   const type = source.type.toLowerCase();
   const sourceWithState = source as OpenCodeToolSource;
   if (isOpenCodeToolResultType(type)) {
-    appendOpenCodeToolResultEvent(events, sourceWithState, timestamp, emittedToolResultIds);
+    appendOpenCodeToolResultEvent(events, sourceWithState, timestamp, tracker.emittedToolResultIds);
     return;
   }
   if (!isOpenCodeToolUseType(type)) return;
   const toolId = getOpenCodeToolId(sourceWithState);
-  if (toolId && emittedToolUseIds.has(toolId)) return;
-  if (toolId) emittedToolUseIds.add(toolId);
+  if (toolId && tracker.emittedToolUseIds.has(toolId)) return;
+  if (toolId) tracker.emittedToolUseIds.add(toolId);
   events.push(buildOpenCodeToolUseEvent(sourceWithState, timestamp));
-  if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp, emittedToolResultIds);
+  if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp, tracker.emittedToolResultIds);
 }
 
 interface OpenCodeToolSource {

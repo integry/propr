@@ -97,7 +97,7 @@ Create a GitHub App with the following permissions:
    # generated based on the specific primary label that triggered processing
    
    # Model-Specific Configuration
-   MODEL_LABEL_PATTERN=^llm-(.+)$
+   MODEL_LABEL_PATTERN="^llm-(.+)$"
    
    # PR Comment Monitoring Configuration
    GITHUB_BOT_USERNAME=your_bot_username

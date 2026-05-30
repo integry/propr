@@ -11,16 +11,15 @@ ARG CLI_VERSION=latest
 USER root
 RUN apk add --no-cache su-exec \
     && npm install -g opencode-ai@${CLI_VERSION}
-RUN opencode --version
-# Verify the installed CLI exposes the flags the entrypoint relies on.
-# If opencode-ai changes its help output these will break at build time
-# rather than silently at runtime. Requires opencode-ai >= 0.1.0.
-RUN opencode run --help 2>&1 | grep -q -- '--file' \
-    || (echo "ERROR: opencode run does not support --file flag" && exit 1)
-RUN opencode run --help 2>&1 | grep -q -- '--format' \
-    || (echo "ERROR: opencode run does not support --format flag" && exit 1)
-RUN opencode run --help 2>&1 | grep -q -- '--model' \
-    || (echo "ERROR: opencode run does not support --model flag" && exit 1)
+# Smoke-test and verify the installed CLI exposes the flags the entrypoint
+# relies on. Combined into a single layer to reduce image size. If
+# opencode-ai changes its help output these will break at build time rather
+# than silently at runtime. Requires opencode-ai >= 0.1.0.
+RUN opencode --version \
+    && opencode run --help 2>&1 | grep -q -- '--file' \
+    && opencode run --help 2>&1 | grep -q -- '--format' \
+    && opencode run --help 2>&1 | grep -q -- '--model' \
+    || (echo "ERROR: opencode run missing required flags (--file, --format, --model)" && exit 1)
 
 COPY --chown=node:node scripts/opencode-entrypoint.sh /home/node/opencode-entrypoint.sh
 COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run

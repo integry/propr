@@ -405,7 +405,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
     });
 
     if (!result || typeof result.status !== 'number' || !result.body) {
-      console.error('applyAgentsUpdate returned unexpected shape — possible bug in withConfigLock or applyFn:', result);
+      console.error('[AGENTS_UPDATE_INVALID_SHAPE] applyAgentsUpdate returned unexpected shape — possible bug in withConfigLock or applyFn:', JSON.stringify({ hasResult: !!result, statusType: typeof result?.status, hasBody: !!result?.body }));
       res.status(500).json({ error: 'Unexpected response from agent configuration update' });
       return;
     }

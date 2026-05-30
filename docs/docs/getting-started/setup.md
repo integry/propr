@@ -81,7 +81,7 @@ Define which labels trigger processing:
 PRIMARY_PROCESSING_LABELS=AI,propr
 
 # Model-Specific Configuration
-MODEL_LABEL_PATTERN=^llm-(.+)$
+MODEL_LABEL_PATTERN="^llm-(.+)$"
 ```
 
 **Note**: State labels (`-processing`, `-done`, `-failed-*`) are automatically generated based on the primary label that triggered processing.

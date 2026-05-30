@@ -20,18 +20,18 @@ import {
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
 interface AgentVersionRouteDeps {
-    getAvailableVersions?: typeof getAvailableVersions;
-    resolveVersion?: typeof resolveVersion;
-    ensureVersionedAgentImage?: typeof ensureVersionedAgentImage;
-    cleanupUnusedAgentImages?: typeof cleanupUnusedAgentImages;
-    listAgentImages?: typeof listAgentImages;
-    loadAgents?: typeof loadAgents;
+    getAvailableVersions: typeof getAvailableVersions;
+    resolveVersion: typeof resolveVersion;
+    ensureVersionedAgentImage: typeof ensureVersionedAgentImage;
+    cleanupUnusedAgentImages: typeof cleanupUnusedAgentImages;
+    listAgentImages: typeof listAgentImages;
+    loadAgents: typeof loadAgents;
 }
 
 /**
  * Creates the agent version management routes.
  */
-export function createAgentVersionRoutes(deps: AgentVersionRouteDeps = {}) {
+export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = {}) {
     const versionService = {
         getAvailableVersions,
         resolveVersion,

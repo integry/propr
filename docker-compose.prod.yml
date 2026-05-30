@@ -42,6 +42,7 @@ services:
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
     volumes:
       - propr-sqlite-data:/app/data
+      # OpenCode config mounts used by agent version resolution and image listing
       - ~/.opencode:/root/.opencode:ro
       - ~/.config/opencode:/root/.config/opencode:ro
     depends_on:
@@ -106,6 +107,9 @@ services:
       - propr-sqlite-data:/app/data
       - ~/.opencode:/root/.opencode:ro
       - ~/.config/opencode:/root/.config/opencode:ro
+      # ~/.local/share/opencode is not mounted here; in production, use the
+      # xdg-data workaround (copy credentials into ~/.config/opencode/xdg-data/)
+      # as described in the setup docs.
     depends_on:
       redis:
         condition: service_healthy
