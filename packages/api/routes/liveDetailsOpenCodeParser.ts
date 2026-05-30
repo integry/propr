@@ -18,6 +18,8 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
   let hasAssistantMessageEvents = false;
   let pendingAssistantMessage = '';
   let pendingAssistantTimestamp: string | null = null;
+  const emittedToolUseIds = new Set<string>();
+  const emittedToolResultIds = new Set<string>();
   const flushPendingAssistantMessage = (fallbackTimestamp: string): void => {
     if (!pendingAssistantMessage) return;
     hasAssistantMessageEvents = true;
@@ -42,7 +44,7 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
       flushPendingAssistantMessage(eventTimestamp);
       events.push({ type: 'tool_result', result: extractOpenCodeEventError(event), isError: true, timestamp: eventTimestamp });
     }
-    const toolEvents = extractOpenCodeToolEvents(event, eventTimestamp);
+    const toolEvents = extractOpenCodeToolEvents(event, eventTimestamp, emittedToolUseIds, emittedToolResultIds);
     if (toolEvents.length) {
       flushPendingAssistantMessage(eventTimestamp);
       events.push(...toolEvents);
@@ -63,22 +65,35 @@ function getOpenCodeEventTimestamp(event: OpenCodeEvent, fallback: string): stri
 
 function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
   if (event.message?.role && event.message.role !== 'assistant') return null;
-  const topLevelPartsText = joinOpenCodePartsText([
-    ...(event.part ? [event.part] : []),
-    ...(event.parts ?? []),
-  ], false);
+  const eventType = event.type?.toLowerCase();
+  if (eventType && isOpenCodeNonAssistantEventType(eventType)) return null;
+  const isConfirmedAssistant = event.message?.role === 'assistant';
+  const topLevelPartsText = (isConfirmedAssistant || !eventType || !isOpenCodeToolRelatedType(eventType))
+    ? joinOpenCodePartsText([
+      ...(event.part ? [event.part] : []),
+      ...(event.parts ?? []),
+    ], false)
+    : '';
   const message = event.message;
   const responseText = joinOpenCodeTextValues([event.response?.text, event.response?.delta, event.response?.content]);
   let messageText = '';
-  if (message?.role === 'assistant') {
-    messageText = message.parts?.length
-      ? joinOpenCodePartsText(message.parts)
-      : joinOpenCodeTextValues([message.text, message.delta, message.content]);
+  if (isConfirmedAssistant) {
+    messageText = message!.parts?.length
+      ? joinOpenCodePartsText(message!.parts)
+      : joinOpenCodeTextValues([message!.text, message!.delta, message!.content]);
   }
   if (topLevelPartsText || messageText || responseText) return joinOpenCodeTextGroups(topLevelPartsText, joinOpenCodeTextGroups(messageText, responseText)) || null;
-  if (!event.type || !['text', 'delta', 'completion', 'reasoning'].includes(event.type.toLowerCase())) return null;
+  if (!eventType || !['text', 'delta', 'completion', 'reasoning'].includes(eventType)) return null;
   const text = joinOpenCodeTextValues([event.text, event.delta, event.content], !isOpenCodeStreamingTextEvent(event));
   return text || null;
+}
+
+function isOpenCodeNonAssistantEventType(type: string): boolean {
+  return ['user', 'system', 'user_message', 'system_message'].includes(type);
+}
+
+function isOpenCodeToolRelatedType(type: string): boolean {
+  return ['tool_use', 'tool_result', 'tool', 'tool_call', 'tool_response'].includes(type);
 }
 
 function isOpenCodeStreamingTextEvent(event: OpenCodeEvent): boolean {
@@ -116,25 +131,28 @@ function extractOpenCodeEventError(event: OpenCodeEvent): string {
   return event.error?.data?.message || event.error?.message || event.error?.name || 'OpenCode execution failed';
 }
 
-function extractOpenCodeToolEvents(event: OpenCodeEvent, timestamp: string): Array<Record<string, unknown>> {
+function extractOpenCodeToolEvents(event: OpenCodeEvent, timestamp: string, emittedToolUseIds: Set<string>, emittedToolResultIds: Set<string>): Array<Record<string, unknown>> {
   const events: Array<Record<string, unknown>> = [];
-  if (!event.part) appendOpenCodeToolEvent(events, event, timestamp);
-  appendOpenCodeToolEvent(events, event.part, timestamp);
-  for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp);
+  if (!event.part) appendOpenCodeToolEvent(events, event, timestamp, emittedToolUseIds, emittedToolResultIds);
+  appendOpenCodeToolEvent(events, event.part, timestamp, emittedToolUseIds, emittedToolResultIds);
+  for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp, emittedToolUseIds, emittedToolResultIds);
   return events;
 }
 
-function appendOpenCodeToolEvent(events: Array<Record<string, unknown>>, source: OpenCodeEvent['part'] | OpenCodeEvent | undefined, timestamp: string): void {
+function appendOpenCodeToolEvent(events: Array<Record<string, unknown>>, source: OpenCodeEvent['part'] | OpenCodeEvent | undefined, timestamp: string, emittedToolUseIds: Set<string>, emittedToolResultIds: Set<string>): void {
   if (!source?.type) return;
   const type = source.type.toLowerCase();
   const sourceWithState = source as OpenCodeToolSource;
   if (isOpenCodeToolResultType(type)) {
-    appendOpenCodeToolResultEvent(events, sourceWithState, timestamp);
+    appendOpenCodeToolResultEvent(events, sourceWithState, timestamp, emittedToolResultIds);
     return;
   }
   if (!isOpenCodeToolUseType(type)) return;
+  const toolId = getOpenCodeToolId(sourceWithState);
+  if (toolId && emittedToolUseIds.has(toolId)) return;
+  if (toolId) emittedToolUseIds.add(toolId);
   events.push(buildOpenCodeToolUseEvent(sourceWithState, timestamp));
-  if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp);
+  if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp, emittedToolResultIds);
 }
 
 interface OpenCodeToolSource {
@@ -177,23 +195,29 @@ function buildOpenCodeToolUseEvent(source: OpenCodeToolSource, timestamp: string
   };
 }
 
-function appendOpenCodeCompletedToolResult(events: Array<Record<string, unknown>>, source: OpenCodeToolSource, timestamp: string): void {
+function appendOpenCodeCompletedToolResult(events: Array<Record<string, unknown>>, source: OpenCodeToolSource, timestamp: string, emittedToolResultIds: Set<string>): void {
   if (!source.state || !['completed', 'error'].includes(source.state.status ?? '')) return;
+  const toolId = getOpenCodeToolId(source);
+  if (toolId && emittedToolResultIds.has(toolId)) return;
+  if (toolId) emittedToolResultIds.add(toolId);
   events.push({
     type: 'tool_result',
-    toolUseId: getOpenCodeToolId(source),
+    toolUseId: toolId,
     result: extractOpenCodeToolResult(source),
     isError: isOpenCodeToolStateError(source),
     timestamp
   });
 }
 
-function appendOpenCodeToolResultEvent(events: Array<Record<string, unknown>>, source: OpenCodeToolSource, timestamp: string): void {
+function appendOpenCodeToolResultEvent(events: Array<Record<string, unknown>>, source: OpenCodeToolSource, timestamp: string, emittedToolResultIds: Set<string>): void {
+  const toolId = getOpenCodeToolId(source);
+  if (toolId && emittedToolResultIds.has(toolId)) return;
+  if (toolId) emittedToolResultIds.add(toolId);
   events.push({
     type: 'tool_result',
-    toolUseId: getOpenCodeToolId(source),
-    result: source.output || source.result,
-    isError: source.status === 'error',
+    toolUseId: toolId,
+    result: extractOpenCodeToolResult(source),
+    isError: isOpenCodeToolStateError(source),
     timestamp
   });
 }

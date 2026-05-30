@@ -13,6 +13,7 @@ RUN apk add --no-cache su-exec \
     && npm install -g opencode-ai@${CLI_VERSION}
 RUN opencode --version
 RUN opencode run --help 2>&1 | grep -q -- '--file'
+RUN opencode run --help 2>&1 | grep -q -- '--format'
 USER node
 
 RUN git config --global user.name "ProPR OpenCode Bot" \

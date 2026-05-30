@@ -10,7 +10,7 @@ import {
     computeContentHash,
     generateImageTag,
     AGENT_DEFAULT_VERSIONS,
-    AGENT_IMAGE_NAMES,
+    VERSIONED_AGENT_IMAGE_NAMES,
     AGENT_TYPES,
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
@@ -303,12 +303,6 @@ export function createAgentVersionRoutes(deps: AgentVersionRouteDeps = {}) {
     };
 }
 
-/**
- * Helper to get the Docker image name for an agent type.
- */
 function getImageName(agentType: string): string {
-    if (agentType === 'opencode') {
-        return 'propr-opencode';
-    }
-    return AGENT_IMAGE_NAMES[agentType as AgentType] || agentType;
+    return VERSIONED_AGENT_IMAGE_NAMES[agentType as AgentType] || agentType;
 }
