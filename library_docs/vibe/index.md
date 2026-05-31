@@ -9,6 +9,13 @@ project context.
 > may change between releases. Always verify against your installed version with
 > `vibe --help` before treating this as authoritative.
 
+> **Verified behavior:** Install, auth sub-commands, model selection, and
+> `--headless`/`--json` output have been tested against the pinned version.
+> Config file layout (`~/.vibe/`) and settings keys are inferred from observed
+> CLI behavior and may differ across versions. ProPR's entrypoint adds its own
+> flags (e.g., `--prompt-file`) — see
+> [vibe-cli.md](../vibe-cli.md#propr-entrypoint-extensions) for details.
+
 ## Install
 
 Install from npm (see [mistral-vibe on npmjs.com](https://www.npmjs.com/package/mistral-vibe)):
@@ -114,8 +121,8 @@ Vibe configuration lives in `~/.vibe/`:
 
 ```
 ~/.vibe/
+  config.toml        # Model preferences and defaults
   credentials.json   # API key and auth state
-  settings.json      # Model preferences and defaults
   history/           # Session history
 ```
 

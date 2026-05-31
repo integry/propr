@@ -58,6 +58,10 @@ test('Vibe Docker args use stdin-oriented default CLI invocation', () => {
     const imageIndex = args.indexOf('propr/agent-vibe:latest');
     assert.deepEqual(args.slice(imageIndex + 1), ['--headless', '--json']);
     assert.equal(args.some(arg => arg.includes('propr-vibe-prompt.md')), false);
+
+    const networkIndex = args.indexOf('--network');
+    assert.ok(networkIndex !== -1);
+    assert.equal(args[networkIndex + 1], 'bridge');
 });
 
 test('Vibe Docker args honor VIBE_CLI_ARGS override', () => {

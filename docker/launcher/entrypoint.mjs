@@ -105,9 +105,12 @@ function unescapeDoubleQuotedEnv(value) {
 const VIBE_PROMPT_CACHE_DIR = process.env.VIBE_PROMPT_CACHE_DIR
     || envFileValue('VIBE_PROMPT_CACHE_DIR')
     || '/tmp/propr-vibe-prompts';
+// HOST_VIBE_PROMPT_CACHE_DIR must be an explicit host path; do not default to
+// the container-side VIBE_PROMPT_CACHE_DIR because that path may not exist on
+// the host.
 const HOST_VIBE_PROMPT_CACHE_DIR = process.env.HOST_VIBE_PROMPT_CACHE_DIR
     || envFileValue('HOST_VIBE_PROMPT_CACHE_DIR')
-    || (HOST_VIBE_DIR ? VIBE_PROMPT_CACHE_DIR : undefined);
+    || undefined;
 
 // For each agent, mount the host credentials at the same path on both sides
 // (HOST:HOST) and set *_CONFIG_PATH env vars to that path. When the worker/api
@@ -222,10 +225,16 @@ function ensureNetwork() {
 }
 
 function pullImages() {
+    const skipAgentPull = process.env.PROPR_SKIP_AGENT_PULL === 'true'
+        || process.env.PROPR_SKIP_AGENT_PULL === '1';
     console.log('\npulling images…');
     const failedAgentImages = [];
     for (const [key, tag] of Object.entries(manifest.images)) {
         if (key === 'docs' && !DOCS_ENABLED) continue;
+        if (key.startsWith('agent-') && skipAgentPull) {
+            console.log(`  · ${tag} (agent pull skipped via PROPR_SKIP_AGENT_PULL)`);
+            continue;
+        }
 
         // If the image is already present locally, skip the pull — supports
         // development flow where images are built but not yet published.

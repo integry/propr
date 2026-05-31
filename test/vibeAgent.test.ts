@@ -256,6 +256,46 @@ describe('VibeAgent Docker args', () => {
         }
     });
 
+    test('analysis mode uses bridge network for outbound Mistral API access', () => {
+        withRestoredEnv(() => {
+            process.env.MISTRAL_API_KEY = 'test-key';
+            const args = buildArgs(createAgent(), {
+                issueNumber: 0,
+                maxTurns: 5,
+                mode: 'analysis'
+            });
+
+            const networkIndex = args.indexOf('--network');
+            assert.ok(networkIndex !== -1, 'expected --network flag in docker args');
+            assert.strictEqual(args[networkIndex + 1], 'bridge');
+        });
+    });
+
+    test('hasUsableConfigDir requires config.toml or credentials.json', () => {
+        const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-empty-'));
+        const cacheOnlyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-cache-'));
+        fs.writeFileSync(path.join(cacheOnlyDir, 'history.json'), '[]');
+        const validDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-valid-'));
+        fs.writeFileSync(path.join(validDir, 'config.toml'), 'active_model = "mistral-medium-3.5"\n');
+        try {
+            process.env.MISTRAL_API_KEY = 'test-key';
+
+            const emptyArgs = buildArgs(createAgent({ configPath: emptyDir }));
+            assert.ok(!emptyArgs.some(a => a.includes(`${emptyDir}:`)), 'empty dir should not be mounted');
+
+            const cacheArgs = buildArgs(createAgent({ configPath: cacheOnlyDir }));
+            assert.ok(!cacheArgs.some(a => a.includes(`${cacheOnlyDir}:`)), 'dir with only cache files should not be mounted');
+
+            const validArgs = buildArgs(createAgent({ configPath: validDir }));
+            assert.ok(validArgs.some(a => a.includes(`${validDir}:/home/node/.vibe:ro`)), 'dir with config.toml should be mounted');
+        } finally {
+            delete process.env.MISTRAL_API_KEY;
+            fs.rmSync(emptyDir, { recursive: true, force: true });
+            fs.rmSync(cacheOnlyDir, { recursive: true, force: true });
+            fs.rmSync(validDir, { recursive: true, force: true });
+        }
+    });
+
     test('wraps implementation runs for repo setup and honors VIBE_CLI_ARGS', () => {
         withRestoredEnv(() => {
             process.env.VIBE_CLI_ARGS = 'vibe --headless --plain "two words"';

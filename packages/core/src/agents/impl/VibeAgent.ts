@@ -291,7 +291,9 @@ export class VibeAgent implements Agent {
 
     private hasUsableConfigDir(configPath: string): boolean {
         try {
-            return fs.existsSync(configPath) && fs.statSync(configPath).isDirectory() && fs.readdirSync(configPath).length > 0;
+            if (!fs.existsSync(configPath) || !fs.statSync(configPath).isDirectory()) return false;
+            const entries = fs.readdirSync(configPath);
+            return entries.some(e => e === 'config.toml' || e === 'credentials.json');
         } catch { return false; }
     }
 
@@ -378,7 +380,8 @@ export class VibeAgent implements Agent {
         const containerName = buildVibeContainerName(this.config.alias, taskType, taskId);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const analysisSandboxArgs = getAnalysisSandboxArgs(mode);
-        const networkMode = mode === 'analysis' ? 'none' : 'bridge';
+        // Analysis still calls the Mistral API, so outbound network is required.
+        const networkMode = 'bridge';
         const cliArgs = this.getCliArgs(cleanModelName);
         const promptMountArgs: string[] = [];
         if (promptFilePath) {

@@ -8,6 +8,13 @@ Mistral Vibe CLI options and commands for agentic code generation.
 > as authoritative. ProPR allows overriding the default CLI invocation via the
 > `VIBE_CLI_ARGS` environment variable.
 
+> **Verified vs inferred:** The global options table below was derived from
+> `vibe --help` output for `mistral-vibe==2.12.1`. Auth sub-commands and the
+> `--setup` wizard were tested interactively. Headless execution behavior
+> (structured JSON output, `--prompt` flag) was verified through ProPR
+> integration tests but is not considered stable API by Mistral — pin the CLI
+> version and use `VIBE_CLI_ARGS` to override if a future release changes flags.
+
 > For installation, authentication, configuration, and ProPR integration details,
 > see the [full Vibe documentation](vibe/index.md).
 
@@ -15,13 +22,23 @@ Mistral Vibe CLI options and commands for agentic code generation.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `PROMPT` | string | — | Optional text instruction to start the session |
+| `PROMPT` | string | — | Optional text instruction to start the session (positional) |
+| `--prompt` | string | — | Explicit prompt flag (equivalent to positional PROMPT) |
 | `--model, -m` | string | `mistral-medium-3.5` | Override the model (e.g., `devstral-2512`) |
 | `--setup` | boolean | `false` | Run the interactive setup wizard |
 | `--headless` | boolean | `false` | Non-interactive mode for CI/scripting |
 | `--timeout` | number | `300000` | Session timeout in milliseconds |
 | `--context-dir` | path | `.` | Working directory for file operations |
 | `--json` | boolean | `false` | Output structured JSON results |
+
+## ProPR Entrypoint Extensions
+
+The following flags are handled by `scripts/vibe-entrypoint.sh` before the
+Vibe CLI is invoked. They are **not** native Vibe CLI flags.
+
+| Flag | Description |
+|------|-------------|
+| `--prompt-file PATH` | Read prompt text from PATH and pass it to vibe via `--prompt`. Avoids long command-line arguments in process listings. |
 
 ## Commands
 

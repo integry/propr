@@ -4,7 +4,7 @@ Third-Party Licenses
 This file lists every third-party package bundled in the Propr Docker images,
 its license, and (where required) the full license text.
 
-Generated: 2026-04-14
+Generated: 2026-05-31
 See NOTICE for a higher-level summary and end-user obligations.
 
 ---
