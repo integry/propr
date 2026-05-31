@@ -12,15 +12,14 @@ USER root
 RUN apk add --no-cache su-exec \
     && npm install -g opencode-ai@${CLI_VERSION}
 # Smoke-test the binary and verify the installed CLI exposes the flags the
-# entrypoint relies on. If opencode-ai changes its help output format (e.g.
-# indentation or grouping), these greps will break at build time rather than
-# silently at runtime. Pin CLI_VERSION above to avoid surprise breakage.
+# entrypoint relies on. Keep the checks tolerant of help text indentation and
+# wrapping; pin CLI_VERSION above if opencode-ai changes its CLI contract.
 # Requires opencode-ai >= 0.1.0.
-RUN opencode --version || (echo "ERROR: opencode binary failed to execute — check installation" && exit 1)
+RUN opencode --version || (echo "ERROR: opencode binary failed to execute - check installation" && exit 1)
 RUN opencode run --help 2>&1 | tee /tmp/oc-help \
-    && grep -qE '^\s*--file\b' /tmp/oc-help \
-    && grep -qE '^\s*--format\b' /tmp/oc-help \
-    && grep -qE '^\s*--model\b' /tmp/oc-help \
+    && grep -qE '(^|[[:space:],])--file([=[:space:],]|$)' /tmp/oc-help \
+    && grep -qE '(^|[[:space:],])--format([=[:space:],]|$)' /tmp/oc-help \
+    && grep -qE '(^|[[:space:],])--model([=[:space:],]|$)' /tmp/oc-help \
     || (echo "ERROR: opencode run missing required flags (--file, --format, --model)" && exit 1) \
     && rm -f /tmp/oc-help
 

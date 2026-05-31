@@ -43,11 +43,14 @@ services:
     volumes:
       - propr-sqlite-data:/app/data
       # Agent config mounts used by version resolution and image listing
+      # Comment out unused credential mounts to avoid Docker creating empty
+      # host directories for agents you do not use.
       - ~/.claude:/root/.claude:ro
       - ~/.codex:/root/.codex:ro
       - ~/.gemini:/root/.gemini:ro
       - ~/.opencode:/root/.opencode:ro
       - ~/.config/opencode:/root/.config/opencode:ro
+      - ~/.local/share/opencode:/root/.local/share/opencode:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -113,9 +116,11 @@ services:
       - ~/.gemini:/root/.gemini:ro
       - ~/.opencode:/root/.opencode:ro
       - ~/.config/opencode:/root/.config/opencode:ro
-      # ~/.local/share/opencode is not mounted here; in production, use the
-      # xdg-data workaround (copy credentials into ~/.config/opencode/xdg-data/)
-      # described at docs/docs/architecture/opencode-integration.md
+      - ~/.local/share/opencode:/root/.local/share/opencode:ro
+      # Comment out unused credential mounts to avoid Docker creating empty
+      # host directories for agents you do not use. The OpenCode agent runtime
+      # still mounts only the saved agent configPath; for file auth, prefer the
+      # xdg-data workaround described in docs/docs/architecture/opencode-integration.md.
     depends_on:
       redis:
         condition: service_healthy

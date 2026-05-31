@@ -290,5 +290,5 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
 }
 
 function getImageName(agentType: AgentType): string {
-    return VERSIONED_AGENT_IMAGE_NAMES[agentType] || agentType;
+    return VERSIONED_AGENT_IMAGE_NAMES[agentType];
 }

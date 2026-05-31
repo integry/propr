@@ -233,7 +233,7 @@ Operators must supply their own OpenCode Go or provider API keys. ProPR does not
 OpenCode stores provider credentials in `~/.local/share/opencode/auth.json`, while ProPR mounts only the configured OpenCode config directory into the agent container. Make credentials available to the container in one of these ways:
 
 - Prefer provider environment variables when your selected OpenCode provider supports them. Add those variables to the OpenCode agent's `envVars` through the Settings UI or API.
-- If you use `opencode auth login`, copy or sync `~/.local/share/opencode/auth.json` to `~/.config/opencode/xdg-data/opencode/auth.json`, then set the agent env var `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`.
+- If you use `opencode auth login`, copy or sync `~/.local/share/opencode/auth.json` to `~/.config/opencode/xdg-data/opencode/auth.json`, then set the agent env var `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`. Re-sync this file after changing providers or refreshing OpenCode auth.
 
 ```bash
 mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
@@ -273,9 +273,10 @@ For Docker Compose development, the provided compose files already mount:
 ```text
 ~/.opencode
 ~/.config/opencode
+~/.local/share/opencode
 ```
 
-Those mounts cover OpenCode config files. They do not mount `~/.local/share/opencode`, so file-based auth still needs the `xdg-data` path and `XDG_DATA_HOME` agent env var described above.
+Those mounts let the worker/API containers inspect OpenCode config and default auth state. The spawned OpenCode agent container still receives only the saved agent `configPath`, so file-based auth should use the `xdg-data` path and `XDG_DATA_HOME` agent env var described above.
 
 For the production launcher, pass host paths explicitly:
 

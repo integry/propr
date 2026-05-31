@@ -135,7 +135,7 @@ opencode auth list
 
 An OpenCode agent usually points at `~/.config/opencode` and uses models such as `opencode-go/kimi-k2.6`. OpenCode Go is an optional OpenCode provider/model source, separate from the OpenCode CLI; you can also configure OpenCode with another provider and add that provider/model ID to the ProPR agent's supported models.
 
-OpenCode/provider API keys are operator-owned. If a worker fails with authentication errors, update the provider env vars on the OpenCode agent, or run `opencode auth login` on the host and sync `~/.local/share/opencode/auth.json` into the mounted config tree, for example `~/.config/opencode/xdg-data/opencode/auth.json`, with `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` set on that agent.
+OpenCode/provider API keys are operator-owned. If a worker fails with authentication errors, update the provider env vars on the OpenCode agent, or run `opencode auth login` on the host and sync `~/.local/share/opencode/auth.json` into the mounted config tree, for example `~/.config/opencode/xdg-data/opencode/auth.json`, with `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` set on that agent. Re-sync the copied file after changing providers or refreshing OpenCode auth.
 
 ```bash
 mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json

@@ -1,9 +1,6 @@
 import { createClient, type RedisClientType } from 'redis';
 import type { Request } from 'express';
-
-// Express.User is declared globally in auth.ts via `declare global { namespace Express { ... } }`.
-// This file depends on that augmentation being in the same TypeScript compilation unit.
-type GitHubUser = Express.User;
+import type { GitHubUser } from './authUser.js';
 
 let tokenCacheClient: RedisClientType | null = null;
 const TOKEN_CACHE_PREFIX = 'propr:bearer:';

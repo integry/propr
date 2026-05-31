@@ -51,7 +51,7 @@ Operators must provide their own credentials. OpenCode Go is an optional OpenCod
 OpenCode stores provider auth in `~/.local/share/opencode/auth.json`, while the ProPR agent runtime mounts only the configured OpenCode config directory. Deployments must make credentials available to the OpenCode agent container by either:
 
 - Passing provider API keys as agent `envVars`.
-- Copying or syncing `~/.local/share/opencode/auth.json` to `~/.config/opencode/xdg-data/opencode/auth.json` and setting `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` in the OpenCode agent `envVars`.
+- Copying or syncing `~/.local/share/opencode/auth.json` to `~/.config/opencode/xdg-data/opencode/auth.json` and setting `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` in the OpenCode agent `envVars`. Re-sync this file after changing providers or refreshing OpenCode auth.
 
 ```bash
 mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json

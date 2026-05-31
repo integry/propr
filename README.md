@@ -209,7 +209,7 @@ For OpenCode CLI integration:
    OpenCode stores provider credentials in `~/.local/share/opencode/auth.json`, while ProPR mounts only the configured OpenCode config directory into the agent container. Make credentials available to the container in one of these ways:
 
    - Prefer provider environment variables when your OpenCode provider supports them. Add those variables to the OpenCode agent's `envVars` through your API/UI deployment flow.
-   - If you use `opencode auth login`, copy or sync `~/.local/share/opencode/auth.json` to a data directory under the mounted config path, for example `~/.config/opencode/xdg-data/opencode/auth.json`, and set the agent env var `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`.
+   - If you use `opencode auth login`, copy or sync `~/.local/share/opencode/auth.json` to a data directory under the mounted config path, for example `~/.config/opencode/xdg-data/opencode/auth.json`, and set the agent env var `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`. Re-sync this file after changing providers or refreshing OpenCode auth.
 
    ```bash
    mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json

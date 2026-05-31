@@ -4,30 +4,11 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
+import type { GitHubUser } from './authUser.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { clearSessionForReauth, refreshGitHubTokenIfNeeded, validateGitHubToken } from './authGithubTokens.js';
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
-
-declare global {
-    // eslint-disable-next-line @typescript-eslint/no-namespace
-    namespace Express {
-        interface User {
-            id: string;
-            login?: string;
-            username: string;
-            displayName: string;
-            email: string | null;
-            avatarUrl: string | null;
-            accessToken?: string;
-            refreshToken?: string;
-            tokenExpiresAt?: number;
-            githubAuthInvalid?: boolean;
-        }
-    }
-}
-
-type GitHubUser = Express.User;
 
 interface AllowedRedirectHost {
     host: string;
