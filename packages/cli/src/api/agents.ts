@@ -12,6 +12,8 @@ import { ApiClient, createApiClient } from "./index.js";
  */
 export type AgentType = "claude" | "codex" | "gemini" | "vibe";
 
+export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "gemini", "vibe"] as const;
+
 /**
  * Configuration for a specific agent instance.
  */

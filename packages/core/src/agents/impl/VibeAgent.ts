@@ -1,5 +1,4 @@
 import fs from 'fs';
-import path from 'path';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
@@ -279,10 +278,10 @@ export class VibeAgent implements Agent {
         }
     }
 
-    private hasVibeConfigFile(configPath: string): boolean {
+    private hasVibeConfigFiles(configPath: string): boolean {
         try {
-            return fs.existsSync(path.join(configPath, 'config.toml'))
-                || fs.existsSync(path.join(configPath, 'credentials.json'));
+            const entries = fs.readdirSync(configPath);
+            return entries.length > 0;
         } catch {
             return false;
         }
@@ -328,7 +327,7 @@ export class VibeAgent implements Agent {
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
         const mistralApiKey = this.getMistralApiKey();
         const shouldMountConfig = this.canMountConfigPath(configPath)
-            && (!mistralApiKey || this.hasVibeConfigFile(configPath));
+            && (!mistralApiKey || this.hasVibeConfigFiles(configPath));
         const configMountArgs = shouldMountConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
         const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
         for (const envVar of forwardedEnvVars.skipped) {
@@ -357,8 +356,8 @@ export class VibeAgent implements Agent {
         }
         envVars.push('-e', `VIBE_MAX_TURNS=${maxTurns}`);
 
-        const timestamp = Date.now().toString(36);
-        const shortTaskId = sanitizeDockerNamePart(taskId?.slice(-8), timestamp);
+        const uniqueSuffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        const shortTaskId = sanitizeDockerNamePart(taskId?.slice(-8), uniqueSuffix);
         const taskType = sanitizeDockerNamePart(executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), 'task');
         const alias = sanitizeDockerNamePart(this.config.alias, 'vibe');
         const containerName = `${alias}-${taskType}-${shortTaskId}`.slice(0, 128);

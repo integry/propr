@@ -137,6 +137,7 @@ function agentCredentialArgs() {
 }
 
 function vibePromptCacheArgs() {
+    if (!HOST_VIBE_DIR) return [];
     return [
         '-v', `${HOST_VIBE_PROMPT_CACHE_DIR}:${VIBE_PROMPT_CACHE_DIR}`,
         '-e', `VIBE_PROMPT_CACHE_DIR=${VIBE_PROMPT_CACHE_DIR}`,
@@ -259,11 +260,13 @@ function validateEnv() {
         console.error(`Mount your .env into the launcher too: -v ${ENV_FILE}:${ENV_FILE_LOCAL}:ro`);
         process.exit(1);
     }
-    const invalidVibePromptPath = validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', HOST_VIBE_PROMPT_CACHE_DIR)
-        || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', VIBE_PROMPT_CACHE_DIR, { containerPath: true });
-    if (invalidVibePromptPath) {
-        console.error(`ERROR: ${invalidVibePromptPath}`);
-        process.exit(1);
+    if (HOST_VIBE_DIR) {
+        const invalidVibePromptPath = validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', HOST_VIBE_PROMPT_CACHE_DIR)
+            || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', VIBE_PROMPT_CACHE_DIR, { containerPath: true });
+        if (invalidVibePromptPath) {
+            console.error(`ERROR: ${invalidVibePromptPath}`);
+            process.exit(1);
+        }
     }
     const invalidCredentialPath = [
         ['HOST_CLAUDE_DIR', HOST_CLAUDE_DIR],

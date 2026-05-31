@@ -2,6 +2,11 @@
 
 Mistral Vibe CLI options and commands for agentic code generation.
 
+> **Note:** The Vibe CLI flags documented here (e.g., `--headless`, `--json`) may
+> change between Vibe releases. If you encounter issues, verify the flags against
+> your installed Vibe version with `vibe --help`. ProPR allows overriding the
+> default CLI invocation via the `VIBE_CLI_ARGS` environment variable.
+
 > For installation, authentication, configuration, and ProPR integration details,
 > see the [full Vibe documentation](vibe/index.md).
 

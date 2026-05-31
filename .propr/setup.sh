@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
+
+PROPR_WORKSPACE="${PROPR_WORKSPACE:-$(cd "$(dirname "$0")/.." && pwd)}"
+PROPR_CACHE_DIR="${PROPR_CACHE_DIR:-/tmp/propr-setup-cache}"
 
 cd "$PROPR_WORKSPACE"
 

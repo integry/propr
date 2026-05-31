@@ -58,6 +58,9 @@ services:
       - /tmp/git-processor:/tmp/git-processor
       # Mount agent credentials at the same path on both sides so the worker
       # can pass host-valid paths when spawning sibling agent containers.
+      # IMPORTANT: Create any missing directories before starting:
+      #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe
+      # Docker will create them as root-owned if they do not exist.
       - ${HOME}/.claude:${HOME}/.claude
       - ${HOME}/.gemini:${HOME}/.gemini
       - ${HOME}/.codex:${HOME}/.codex
