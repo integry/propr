@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -e
+set -eu
 
 PROPR_WORKSPACE="${PROPR_WORKSPACE:-$(cd "$(dirname "$0")/.." && pwd)}"
 PROPR_CACHE_DIR="${PROPR_CACHE_DIR:-/tmp/propr-setup-cache}"

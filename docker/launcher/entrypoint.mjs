@@ -107,7 +107,7 @@ const VIBE_PROMPT_CACHE_DIR = process.env.VIBE_PROMPT_CACHE_DIR
     || '/tmp/propr-vibe-prompts';
 const HOST_VIBE_PROMPT_CACHE_DIR = process.env.HOST_VIBE_PROMPT_CACHE_DIR
     || envFileValue('HOST_VIBE_PROMPT_CACHE_DIR')
-    || VIBE_PROMPT_CACHE_DIR;
+    || (HOST_VIBE_DIR ? VIBE_PROMPT_CACHE_DIR : undefined);
 
 // For each agent, mount the host credentials at the same path on both sides
 // (HOST:HOST) and set *_CONFIG_PATH env vars to that path. When the worker/api
@@ -137,7 +137,7 @@ function agentCredentialArgs() {
 }
 
 function vibePromptCacheArgs() {
-    if (!HOST_VIBE_DIR && !HOST_VIBE_PROMPT_CACHE_DIR) return [];
+    if (!HOST_VIBE_PROMPT_CACHE_DIR) return [];
     return [
         '-v', `${HOST_VIBE_PROMPT_CACHE_DIR}:${VIBE_PROMPT_CACHE_DIR}`,
         '-e', `VIBE_PROMPT_CACHE_DIR=${VIBE_PROMPT_CACHE_DIR}`,

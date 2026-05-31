@@ -324,6 +324,43 @@ export class VibeAgent implements Agent {
         return args;
     }
 
+    private buildDockerEnvVars(params: {
+        mistralApiKey?: string;
+        cleanModelName?: string;
+        mode: 'execute' | 'analysis';
+        maxTurns: number;
+    }): string[] {
+        const { mistralApiKey, cleanModelName, mode, maxTurns } = params;
+        const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
+        for (const envVar of forwardedEnvVars.skipped) {
+            logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
+        }
+        const envVars = forwardedEnvVars.dockerArgs;
+        if (mistralApiKey) {
+            envVars.push('-e', `MISTRAL_API_KEY=${mistralApiKey}`);
+        }
+        if (cleanModelName) {
+            envVars.push('-e', `VIBE_ACTIVE_MODEL=${cleanModelName}`);
+        }
+        envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
+        if (mode === 'analysis') {
+            envVars.push(
+                '-e', 'VIBE_READ_ONLY_CONFIG=1',
+                '-e', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache',
+                '-e', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config',
+                '-e', 'XDG_DATA_HOME=/tmp/propr-vibe-data',
+                '-e', 'UV_CACHE_DIR=/tmp/propr-uv-cache',
+                '-e', 'HOME=/tmp/propr-vibe-home',
+                '-e', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home',
+                '-e', 'XDG_STATE_HOME=/tmp/propr-vibe-state',
+                '-e', 'PIP_CACHE_DIR=/tmp/propr-pip-cache',
+                '-e', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache'
+            );
+        }
+        envVars.push('-e', `VIBE_MAX_TURNS=${maxTurns}`);
+        return envVars;
+    }
+
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
         const { worktreePath, githubToken, modelName, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute' } = params;
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
@@ -336,33 +373,8 @@ export class VibeAgent implements Agent {
             );
         }
         const configMountArgs = hasUsableConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
-        const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
-        for (const envVar of forwardedEnvVars.skipped) {
-            logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
-        }
-        const envVars = forwardedEnvVars.dockerArgs;
-        if (mistralApiKey) {
-            process.env.MISTRAL_API_KEY = mistralApiKey;
-            envVars.push('-e', 'MISTRAL_API_KEY');
-        }
         const cleanModelName = modelName?.includes(':') ? modelName.split(':').pop()! : modelName;
-        if (cleanModelName) {
-            envVars.push('-e', `VIBE_ACTIVE_MODEL=${cleanModelName}`);
-        }
-        envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
-        if (mode === 'analysis') {
-            envVars.push('-e', 'VIBE_READ_ONLY_CONFIG=1');
-            envVars.push('-e', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache');
-            envVars.push('-e', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config');
-            envVars.push('-e', 'XDG_DATA_HOME=/tmp/propr-vibe-data');
-            envVars.push('-e', 'UV_CACHE_DIR=/tmp/propr-uv-cache');
-            envVars.push('-e', 'HOME=/tmp/propr-vibe-home');
-            envVars.push('-e', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home');
-            envVars.push('-e', 'XDG_STATE_HOME=/tmp/propr-vibe-state');
-            envVars.push('-e', 'PIP_CACHE_DIR=/tmp/propr-pip-cache');
-            envVars.push('-e', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache');
-        }
-        envVars.push('-e', `VIBE_MAX_TURNS=${maxTurns}`);
+        const envVars = this.buildDockerEnvVars({ mistralApiKey, cleanModelName, mode, maxTurns });
 
         const uniqueSuffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
         const shortTaskId = sanitizeDockerNamePart(taskId?.slice(-8), uniqueSuffix);
@@ -372,6 +384,9 @@ export class VibeAgent implements Agent {
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const analysisSandboxArgs = getAnalysisSandboxArgs(mode);
         const cliArgs = this.getCliArgs(cleanModelName);
+        if (!cliArgs.includes('--max-turns')) {
+            cliArgs.push('--max-turns', String(maxTurns));
+        }
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...analysisSandboxArgs,
@@ -385,6 +400,7 @@ export class VibeAgent implements Agent {
             ...cliArgs
         ];
 
+        const cliArgsSource = (process.env.VIBE_CLI_ARGS ?? this.config.envVars?.VIBE_CLI_ARGS) ? 'custom' : 'default';
         logger.info({
             issueNumber,
             agentAlias: this.config.alias,
@@ -393,7 +409,8 @@ export class VibeAgent implements Agent {
             configPath,
             configPathMounted: hasUsableConfig,
             workspaceMountMode,
-            cliArgs
+            cliArgsSource,
+            cliArgCount: cliArgs.length
         }, 'Docker args built for Vibe agent');
         if (mode === 'analysis') {
             return dockerArgs;
