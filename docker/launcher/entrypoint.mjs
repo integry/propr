@@ -44,10 +44,11 @@ const DOCS_ENABLED = process.env.DOCS_ENABLED === 'true';
 // and can't read the host's $HOME, so the invoker must pass these in. The
 // worker and api containers mount them so the spawned claude/codex/gemini/vibe
 // agent containers can find the user's login state.
-const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR;
-const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR;
-const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR;
-const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR;
+// Each variable can be set as a launcher `-e` flag OR in the mounted .env file.
+const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR || envFileValue('HOST_CLAUDE_DIR') || undefined;
+const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR  || envFileValue('HOST_CODEX_DIR')  || undefined;
+const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR || envFileValue('HOST_GEMINI_DIR') || undefined;
+const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR   || envFileValue('HOST_VIBE_DIR')   || undefined;
 
 function envFileValue(name) {
     if (!existsSync(ENV_FILE_LOCAL)) return undefined;

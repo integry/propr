@@ -203,7 +203,14 @@ export function resolveHostBindPath(containerPath: string): string {
     if (process.env.VIBE_PROMPT_CACHE_HOST_MOUNTED !== '1') return containerPath;
     const hostDir = process.env.HOST_VIBE_PROMPT_CACHE_DIR;
     const containerDir = process.env.VIBE_PROMPT_CACHE_DIR || '/tmp/propr-vibe-prompts';
-    if (hostDir && containerPath.startsWith(containerDir)) {
+    if (!hostDir) {
+        throw new Error(
+            'VIBE_PROMPT_CACHE_HOST_MOUNTED=1 is set but HOST_VIBE_PROMPT_CACHE_DIR is missing. ' +
+            'The launcher must set HOST_VIBE_PROMPT_CACHE_DIR so prompt files can be bind-mounted ' +
+            'into spawned agent containers via the host Docker daemon.'
+        );
+    }
+    if (containerPath.startsWith(containerDir)) {
         return hostDir + containerPath.slice(containerDir.length);
     }
     return containerPath;

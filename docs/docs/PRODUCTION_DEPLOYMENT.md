@@ -41,6 +41,8 @@ ANTHROPIC_API_KEY=your-anthropic-api-key
 
 # Optional Mistral Vibe agent support
 MISTRAL_API_KEY=your-mistral-api-key
+# Host path to the Vibe credential directory. Must be an absolute path.
+# The launcher reads this from the .env file or from a `-e` flag.
 HOST_VIBE_DIR=/home/propr/.vibe
 # Required when using Vibe with Docker-outside-Docker: the prompt cache directory
 # must be host-visible so spawned agent containers can bind-mount prompt files.
@@ -64,6 +66,22 @@ REDIS_PORT=6379
 # Logging
 LOG_LEVEL=info
 ```
+
+## Building Agent Images
+
+Each coding agent runs in its own Docker image. The images for Claude, Codex,
+Gemini, and Vibe are built from their respective Dockerfiles at the project root.
+
+```bash
+# Build all agent images (including propr/agent-vibe)
+scripts/build-images.sh
+
+# Or build the Vibe agent image individually
+docker build -f Dockerfile.vibe -t propr/agent-vibe:latest .
+```
+
+The Vibe image pins a specific CLI version via the `CLI_VERSION` build arg in
+`Dockerfile.vibe`. To upgrade the Vibe CLI, update `CLI_VERSION` and rebuild.
 
 ## Deployment Steps
 
