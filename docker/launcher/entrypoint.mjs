@@ -54,7 +54,13 @@ function envFileValue(name) {
     if (!existsSync(ENV_FILE_LOCAL)) return undefined;
     for (const rawLine of readFileSync(ENV_FILE_LOCAL, 'utf8').split(/\r?\n/)) {
         const parsed = parseEnvAssignment(rawLine);
-        if (parsed?.name === name) return parsed.value || undefined;
+        if (parsed?.name === name) {
+            const value = parsed.value || undefined;
+            if (value && /\$\{?\w/.test(value)) {
+                console.warn(`WARNING: ${name} in .env contains a variable reference ("${value}") that will not be expanded. Use an absolute path instead.`);
+            }
+            return value;
+        }
     }
     return undefined;
 }
@@ -203,7 +209,7 @@ function tagAgentLatest(key, imageTag) {
     if (!latestTag || latestTag === imageTag) return;
     const existing = docker(['images', '-q', latestTag], { capture: true });
     if (existing.stdout.trim()) {
-        console.log(`  · retagging ${latestTag} → ${imageTag} (overwriting existing local tag)`);
+        console.log(`  · retagging ${imageTag} → ${latestTag} (overwriting existing local tag)`);
     }
     const res = docker(['tag', imageTag, latestTag], { capture: true });
     if (res.status !== 0) {
@@ -255,7 +261,7 @@ function pullImages() {
         const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
         if (key.startsWith('agent-') && pulled.status !== 0) {
             failedAgentImages.push(tag);
-            console.log(`  · ${tag} (pull failed; workers pull or build on demand)`);
+            console.log(`  · ${tag} (pull failed — jobs using this agent will fail until the image is available)`);
             continue;
         }
         tagAgentLatest(key, tag);

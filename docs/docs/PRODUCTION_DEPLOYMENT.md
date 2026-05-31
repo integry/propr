@@ -95,6 +95,30 @@ The Vibe image pins a specific CLI version via the `CLI_VERSION` build arg in
 
 ### 1. Build and Start Services
 
+#### Option A: Launcher (Recommended)
+
+The production launcher validates bind mount paths and conditionally mounts
+only configured agent credential directories at startup. It also enforces
+that `HOST_VIBE_PROMPT_CACHE_DIR` is set when Vibe agents are enabled.
+
+```bash
+# Build the launcher image
+docker build -t propr/launcher:latest -f docker/launcher/Dockerfile .
+
+# Run the launcher (adjust host paths to match your environment)
+docker run --rm -it \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/.env:/app/.env:ro" \
+  -e PROPR_ENV_FILE="$PWD/.env" \
+  -e PROPR_DATA_DIR="$PWD/data" \
+  -e PROPR_LOGS_DIR="$PWD/logs" \
+  -e PROPR_REPOS_DIR="$PWD/repos" \
+  -e HOST_CLAUDE_DIR="$HOME/.claude" \
+  propr/launcher:latest
+```
+
+#### Option B: Docker Compose
+
 ```bash
 # Build and start all services
 docker-compose -f docker-compose.prod.yml up -d
@@ -105,6 +129,11 @@ docker-compose -f docker-compose.prod.yml ps
 # View logs
 docker-compose -f docker-compose.prod.yml logs -f
 ```
+
+> **Note:** `docker-compose.yml` mounts all agent credential directories
+> unconditionally. Create any missing directories before starting
+> (`mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts`)
+> to avoid Docker creating them as root-owned.
 
 ### 2. SSL/TLS Configuration (Recommended)
 
@@ -241,7 +270,7 @@ docker-compose -f docker-compose.prod.yml exec redis redis-cli LRANGE system:act
 ## Security Recommendations
 
 1. **Use strong secrets** for SESSION_SECRET
-2. **Enable HTTPS** for all production deployments
+2. **Enable HTTPS** for all production deployments — auth redirects require HTTPS for all non-localhost targets. HTTP is only permitted for `localhost`, `127.0.0.1`, and `::1` to support local development. Internal or preview deployments using HTTP hostnames must use HTTPS or be accessed via a loopback address.
 3. **Restrict access** using ALLOWED_ORGS
 4. **Regular updates** of Docker images and dependencies
 5. **Monitor logs** for suspicious activity

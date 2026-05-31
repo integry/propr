@@ -4,9 +4,10 @@
 # agent containers. In CI or systemd contexts where HOME may be unset, export it
 # explicitly before running docker-compose (e.g., export HOME=/root).
 #
-# PREFLIGHT: Before starting, create credential directories for ALL agents you
-# intend to use (Docker will create missing directories as root-owned otherwise):
-#   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe
+# PREFLIGHT: Before starting, create credential and cache directories for ALL
+# agents you intend to use (Docker will create missing directories as root-owned
+# otherwise, which can cause write failures):
+#   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts
 #
 # For production deployments that only use a subset of agents, use the launcher
 # (docker/launcher/) which conditionally mounts only configured agent directories.

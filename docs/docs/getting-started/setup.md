@@ -177,7 +177,7 @@ Add Claude configuration to your `.env` file:
 ```bash
 # Claude Code Configuration
 CLAUDE_DOCKER_IMAGE=propr/agent-claude:latest
-CLAUDE_CONFIG_PATH=~/.claude
+CLAUDE_CONFIG_PATH=/home/your-user/.claude
 CLAUDE_MAX_TURNS=1000
 CLAUDE_TIMEOUT_MS=300000
 
