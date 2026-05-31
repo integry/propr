@@ -180,7 +180,7 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.error, undefined);
     });
 
-    test('marks JSON text output incomplete when no final event is present', () => {
+    test('marks JSON text output incomplete when no final event is present but treats exit 0 with summary as success', () => {
         const output = [
             JSON.stringify({ type: 'message', text: 'Successful streamed response' }),
             JSON.stringify({ type: 'error', error: 'Stale diagnostic from retry' })
@@ -190,7 +190,7 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.summary, 'Successful streamed response');
         assert.strictEqual(parsed.error, undefined);
         assert.strictEqual(parsed.incomplete, true);
-        assert.strictEqual(isSuccessfulVibeResult(0, parsed), false);
+        assert.strictEqual(isSuccessfulVibeResult(0, parsed), true);
     });
 });
 
@@ -249,7 +249,7 @@ describe('VibeAgent Docker args', () => {
             assert.ok(!args.includes('PROPR_AGENT_TYPE=vibe'));
 
             const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-            assert.deepStrictEqual(args.slice(imageIndex + 1), ['vibe', '--max-turns', '5', '--output', 'json']);
+            assert.deepStrictEqual(args.slice(imageIndex + 1), ['vibe', '--headless', '--json', '--model', 'mistral-medium-3.5']);
         } finally {
             fs.rmSync(configPath, { recursive: true, force: true });
         }
@@ -270,7 +270,7 @@ describe('VibeAgent Docker args', () => {
             assert.ok(!args.some(arg => arg.includes('propr-vibe-prompt.md')));
 
             const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-            assert.deepStrictEqual(args.slice(imageIndex + 4), ['vibe', '--headless', '--plain', 'two words']);
+            assert.deepStrictEqual(args.slice(imageIndex + 4), ['vibe', '--headless', '--plain', 'two words', '--model', 'mistral-medium-3.5']);
         });
     });
 
@@ -325,13 +325,13 @@ describe('VibeAgent Docker args', () => {
         }
     });
 
-    test('uses structured output and auto-approval in the default execution command', () => {
+    test('uses structured output in the default execution command', () => {
         const args = buildArgs(createAgent(), { maxTurns: 12 });
 
         const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
         assert.deepStrictEqual(
             args.slice(imageIndex + 4),
-            ['vibe', '--max-turns', '12', '--output', 'json', '--trust', '--agent', 'auto-approve']
+            ['vibe', '--headless', '--json', '--model', 'mistral-medium-3.5']
         );
     });
 });

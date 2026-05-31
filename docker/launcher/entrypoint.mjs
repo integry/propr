@@ -145,12 +145,15 @@ function vibePromptCacheArgs() {
     ];
 }
 
+// Validates host bind-mount paths for Linux production deployments.
+// The ':' rejection prevents malformed -v HOST:CONTAINER arguments on Linux;
+// Windows-style drive paths (C:\...) are not supported by the launcher.
 function validateDockerBindPath(name, value, { containerPath = false } = {}) {
     if (!value || !isAbsolute(value) || value.includes('~') || /[\0\r\n]/.test(value)) {
         return `${name} must be an absolute path without '~' or control characters`;
     }
     if (!containerPath && value.includes(':')) {
-        return `${name} cannot contain ':' because it is used in a Docker bind mount`;
+        return `${name} cannot contain ':' because it is used in a Docker bind mount (launcher runs on Linux only)`;
     }
     return null;
 }

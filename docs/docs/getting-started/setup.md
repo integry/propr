@@ -176,8 +176,8 @@ Add Claude configuration to your `.env` file:
 
 ```bash
 # Claude Code Configuration
-CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
-CLAUDE_CONFIG_PATH=~/.config/claude-code
+CLAUDE_DOCKER_IMAGE=propr/agent-claude:latest
+CLAUDE_CONFIG_PATH=~/.claude
 CLAUDE_MAX_TURNS=1000
 CLAUDE_TIMEOUT_MS=300000
 
@@ -195,11 +195,15 @@ If you plan to use Mistral's Vibe coding agent alongside (or instead of) Claude:
 
 ### Install Vibe CLI
 
-Install from npm (see [mistral-vibe on npmjs.com](https://www.npmjs.com/package/mistral-vibe)):
+Install from npm for local development (see [mistral-vibe on npmjs.com](https://www.npmjs.com/package/mistral-vibe)):
 
 ```bash
 npm install -g mistral-vibe
 ```
+
+> **Note:** The ProPR Docker image for Vibe (`Dockerfile.vibe`) installs the CLI
+> via `uv` internally. You only need the npm install for local/host usage and
+> credential setup.
 
 ### Authenticate with Mistral
 

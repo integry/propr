@@ -27,7 +27,11 @@ export function getParsedVibeError(parsedOutput: ReturnType<typeof parseVibeOutp
 }
 
 export function isSuccessfulVibeResult(exitCode: number | null, parsedOutput: ReturnType<typeof parseVibeOutput>): boolean {
-    return exitCode === 0 && !getParsedVibeError(parsedOutput);
+    if (exitCode !== 0) return false;
+    if (parsedOutput.error) return false;
+    // Exit code 0 with text output is successful even without a final event marker
+    if (parsedOutput.summary) return true;
+    return !parsedOutput.incomplete;
 }
 
 export function sanitizeDockerNamePart(value: string | undefined, fallback: string): string {
@@ -119,9 +123,8 @@ export function splitVibeCliArgs(input: string): string[] {
     return args;
 }
 
-export function getDefaultVibeCliArgs(maxTurns: number, mode: 'execute' | 'analysis'): string[] {
-    const agentArgs = mode === 'analysis' ? [] : ['--trust', '--agent', 'auto-approve'];
-    return ['vibe', '--max-turns', String(maxTurns), '--output', 'json', ...agentArgs];
+export function getDefaultVibeCliArgs(): string[] {
+    return ['vibe', '--headless', '--json'];
 }
 
 export function buildPromptWithRetryContext(prompt: string, isRetry: boolean, retryReason?: string): string {

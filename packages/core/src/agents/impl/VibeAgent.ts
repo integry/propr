@@ -281,7 +281,8 @@ export class VibeAgent implements Agent {
 
     private hasVibeConfigFile(configPath: string): boolean {
         try {
-            return fs.existsSync(path.join(configPath, 'config.toml'));
+            return fs.existsSync(path.join(configPath, 'config.toml'))
+                || fs.existsSync(path.join(configPath, 'credentials.json'));
         } catch {
             return false;
         }
@@ -296,26 +297,28 @@ export class VibeAgent implements Agent {
         return configuredApiKey || undefined;
     }
 
-    private getCliArgs(maxTurns: number, mode: 'execute' | 'analysis'): string[] {
+    private getCliArgs(modelName?: string): string[] {
         const processArgs = process.env.VIBE_CLI_ARGS;
         const configArgs = this.config.envVars?.VIBE_CLI_ARGS;
         const configuredArgs = processArgs ?? configArgs;
         const source = processArgs !== undefined ? 'process.env.VIBE_CLI_ARGS' : 'config.envVars.VIBE_CLI_ARGS';
-        if (!configuredArgs || !configuredArgs.trim()) {
-            return getDefaultVibeCliArgs(maxTurns, mode);
-        }
-
         let args: string[];
-        try {
-            args = splitVibeCliArgs(configuredArgs);
-        } catch (error) {
-            throw new Error(`Invalid ${source}: ${(error as Error).message}`);
+        if (!configuredArgs || !configuredArgs.trim()) {
+            args = getDefaultVibeCliArgs();
+        } else {
+            try {
+                args = splitVibeCliArgs(configuredArgs);
+            } catch (error) {
+                throw new Error(`Invalid ${source}: ${(error as Error).message}`);
+            }
+            if (args.length === 0) {
+                args = getDefaultVibeCliArgs();
+            } else if (!args.includes('--json')) {
+                logger.warn({ source, args }, 'VIBE_CLI_ARGS override does not include --json; structured output parsing may degrade');
+            }
         }
-        if (args.length === 0) {
-            return getDefaultVibeCliArgs(maxTurns, mode);
-        }
-        if (!args.includes('--output')) {
-            logger.warn({ source, args }, 'VIBE_CLI_ARGS override does not include --output json; structured output parsing may degrade');
+        if (modelName && !args.includes('--model') && !args.includes('-m')) {
+            args.push('--model', modelName);
         }
         return args;
     }
@@ -335,8 +338,8 @@ export class VibeAgent implements Agent {
         if (mistralApiKey) {
             envVars.push('-e', `MISTRAL_API_KEY=${mistralApiKey}`);
         }
-        if (modelName) {
-            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+        const cleanModelName = modelName?.includes(':') ? modelName.split(':').pop()! : modelName;
+        if (cleanModelName) {
             envVars.push('-e', `VIBE_ACTIVE_MODEL=${cleanModelName}`);
         }
         envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
@@ -361,7 +364,7 @@ export class VibeAgent implements Agent {
         const containerName = `${alias}-${taskType}-${shortTaskId}`.slice(0, 128);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const analysisSandboxArgs = getAnalysisSandboxArgs(mode);
-        const cliArgs = this.getCliArgs(maxTurns, mode);
+        const cliArgs = this.getCliArgs(cleanModelName);
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...analysisSandboxArgs,
