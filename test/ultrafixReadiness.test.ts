@@ -12,6 +12,7 @@ import {
     getUltrafixDeferredKey,
     parseDeferredKey,
     createDefaultState,
+    areChecksReadyForUltrafix,
     type UltrafixLoopState,
     type UltrafixDeferredContinuation,
 } from '../src/jobs/ultrafixOrchestrationService.js';
@@ -75,6 +76,21 @@ describe('isCooldownElapsed', () => {
 
         const laterMs = new Date('2026-04-28T12:01:01Z').getTime(); // 61s later
         assert.strictEqual(isCooldownElapsed(state, laterMs), true);
+    });
+});
+
+// --- areChecksReadyForUltrafix ---
+
+describe('areChecksReadyForUltrafix', () => {
+    test('treats zero configured checks as ready instead of waiting forever', () => {
+        const result = areChecksReadyForUltrafix({
+            count: 0,
+            allPassing: true,
+            anyPending: false,
+            anyFailed: false,
+        });
+
+        assert.strictEqual(result, true);
     });
 });
 

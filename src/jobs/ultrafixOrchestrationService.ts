@@ -71,6 +71,13 @@ export interface UltrafixReadinessResult {
     reasons: string[];
 }
 
+export interface UltrafixCheckStatus {
+    count: number;
+    allPassing: boolean;
+    anyPending: boolean;
+    anyFailed: boolean;
+}
+
 export interface UltrafixDeferredContinuation {
     owner: string;
     repo: string;
@@ -352,6 +359,15 @@ export function checkReadiness(opts: {
     }
 
     return { ready: reasons.length === 0, reasons };
+}
+
+/**
+ * Interpret GitHub check/status state for ultrafix progression.
+ * A commit with zero check runs/status contexts is considered ready: there is
+ * no future webhook to wait for, so deferring would deadlock the loop.
+ */
+export function areChecksReadyForUltrafix(status: UltrafixCheckStatus): boolean {
+    return status.allPassing;
 }
 
 // --- Deferred continuation persistence ---

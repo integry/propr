@@ -39,6 +39,7 @@ const DEFAULT_CLAUDE_MAX_TURNS = 1000;
 
 /** Default timeout for Claude execution in milliseconds */
 const DEFAULT_CLAUDE_TIMEOUT_MS = 300000;
+const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 /**
  * Parameters for persisting execution logs.
@@ -110,6 +111,7 @@ export class ClaudeAgent implements Agent {
             onContainerId,
             githubToken,
             tools,
+            environment,
             taskId,
             prNumber
         } = options;
@@ -155,6 +157,7 @@ export class ClaudeAgent implements Agent {
                 issueNumber: issueRef.number,
                 systemPrompt,
                 tools,
+                environment,
                 taskId
             });
 
@@ -305,7 +308,8 @@ export class ClaudeAgent implements Agent {
                     timeout: timeoutMs ?? 1800000,
                     stdinData: analysisPrompt,
                     taskId
-                })
+                }),
+                ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
 
             const executionTimeMs = Date.now() - startTime;

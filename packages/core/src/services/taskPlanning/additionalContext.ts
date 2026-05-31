@@ -10,7 +10,7 @@ import type { AdditionalContextOptions, AdditionalContextResult } from './types.
  * Generate additional context from context repositories if configured
  */
 export async function generateAdditionalContextIfNeeded(options: AdditionalContextOptions): Promise<AdditionalContextResult> {
-  const { contextRepositories, additionalContextBudget, githubToken, draftId, correlationId, correlatedLogger } = options;
+  const { contextRepositories, prompt, contextModel, additionalContextBudget, useFullBudget = false, githubToken, draftId, correlationId, correlatedLogger } = options;
   if (!contextRepositories || contextRepositories.length === 0) {
     return {};
   }
@@ -24,9 +24,12 @@ export async function generateAdditionalContextIfNeeded(options: AdditionalConte
   try {
     const additionalContextResult = await generateAdditionalContext({
       repositories: contextRepositories,
+      prompt,
+      contextModel,
       tokenBudget: additionalContextBudget,
       authToken: githubToken,
-      correlationId
+      correlationId,
+      useFullBudget
     });
 
     if (additionalContextResult.repositoriesIncluded.length > 0) {

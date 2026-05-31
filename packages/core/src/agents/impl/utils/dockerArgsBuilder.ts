@@ -29,6 +29,8 @@ export interface DockerArgsParams {
     systemPrompt?: string;
     /** Optional tools configuration */
     tools?: string;
+    /** Per-execution environment variables to inject into the agent container. */
+    environment?: Record<string, string>;
     /** Optional task ID for container naming */
     taskId?: string;
     /** Optional execution type for container naming (e.g., 'plan-generation', 'context-analysis') */
@@ -54,13 +56,18 @@ export function buildDockerArgs(
     maxTurns: number,
     params: DockerArgsParams
 ): string[] {
-    const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, taskId, executionType } = params;
+    const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment, taskId, executionType } = params;
     const configPath = resolveConfigPath(config.configPath);
 
     // Build environment variable arguments
     const envVars: string[] = [];
     if (config.envVars) {
         for (const [key, value] of Object.entries(config.envVars)) {
+            envVars.push('-e', `${key}=${value}`);
+        }
+    }
+    if (environment) {
+        for (const [key, value] of Object.entries(environment)) {
             envVars.push('-e', `${key}=${value}`);
         }
     }
