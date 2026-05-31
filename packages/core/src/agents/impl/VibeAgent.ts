@@ -293,7 +293,10 @@ export class VibeAgent implements Agent {
         try {
             if (!fs.existsSync(configPath) || !fs.statSync(configPath).isDirectory()) return false;
             const entries = fs.readdirSync(configPath);
-            return entries.some(e => e === 'config.toml' || e === 'credentials.json');
+            const hasCredentials = entries.includes('credentials.json');
+            if (hasCredentials) return true;
+            if (this.getMistralApiKey() && entries.includes('config.toml')) return true;
+            return false;
         } catch { return false; }
     }
 
@@ -303,57 +306,41 @@ export class VibeAgent implements Agent {
 
     private getCliArgs(modelName?: string): string[] {
         const processArgs = process.env.VIBE_CLI_ARGS;
-        const configArgs = this.config.envVars?.VIBE_CLI_ARGS;
-        const configuredArgs = processArgs ?? configArgs;
+        const configuredArgs = processArgs ?? this.config.envVars?.VIBE_CLI_ARGS;
         const source = processArgs !== undefined ? 'process.env.VIBE_CLI_ARGS' : 'config.envVars.VIBE_CLI_ARGS';
         let args: string[];
-        if (!configuredArgs || !configuredArgs.trim()) {
+        if (!configuredArgs?.trim()) {
             args = getDefaultVibeCliArgs();
         } else {
-            try {
-                args = splitVibeCliArgs(configuredArgs);
-            } catch (error) {
-                throw new Error(`Invalid ${source}: ${(error as Error).message}`);
-            }
+            try { args = splitVibeCliArgs(configuredArgs); } catch (error) { throw new Error(`Invalid ${source}: ${(error as Error).message}`); }
             if (args.length === 0) {
                 args = getDefaultVibeCliArgs();
             } else if (!args.includes('--json')) {
+                const allowNoJson = process.env.VIBE_ALLOW_UNSTRUCTURED === '1' || this.config.envVars?.VIBE_ALLOW_UNSTRUCTURED === '1';
+                if (!allowNoJson) {
+                    throw new Error(`${source} does not include --json. Structured output is required. Add --json or set VIBE_ALLOW_UNSTRUCTURED=1 to override.`);
+                }
                 logger.warn({ source, args }, 'VIBE_CLI_ARGS override does not include --json; structured output parsing may degrade');
             }
         }
-        if (modelName && !args.includes('--model') && !args.includes('-m')) {
-            args.push('--model', modelName);
-        }
+        if (modelName && !args.includes('--model') && !args.includes('-m')) args.push('--model', modelName);
         return args;
     }
 
-    private buildDockerEnvVars(params: {
-        cleanModelName?: string;
-        mode: 'execute' | 'analysis';
-        maxTurns: number;
-    }): string[] {
+    private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number }): string[] {
         const { cleanModelName, mode, maxTurns } = params;
         const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
-        for (const envVar of forwardedEnvVars.skipped) {
-            logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
-        }
+        for (const envVar of forwardedEnvVars.skipped) logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
         const envVars = forwardedEnvVars.dockerArgs;
-        if (cleanModelName) {
-            envVars.push('-e', `VIBE_ACTIVE_MODEL=${cleanModelName}`);
-        }
+        if (cleanModelName) envVars.push('-e', `VIBE_ACTIVE_MODEL=${cleanModelName}`);
         envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
         if (mode === 'analysis') {
             envVars.push(
-                '-e', 'VIBE_READ_ONLY_CONFIG=1',
-                '-e', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache',
-                '-e', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config',
-                '-e', 'XDG_DATA_HOME=/tmp/propr-vibe-data',
-                '-e', 'UV_CACHE_DIR=/tmp/propr-uv-cache',
-                '-e', 'HOME=/tmp/propr-vibe-home',
-                '-e', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home',
-                '-e', 'XDG_STATE_HOME=/tmp/propr-vibe-state',
-                '-e', 'PIP_CACHE_DIR=/tmp/propr-pip-cache',
-                '-e', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache'
+                '-e', 'VIBE_READ_ONLY_CONFIG=1', '-e', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache',
+                '-e', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config', '-e', 'XDG_DATA_HOME=/tmp/propr-vibe-data',
+                '-e', 'UV_CACHE_DIR=/tmp/propr-uv-cache', '-e', 'HOME=/tmp/propr-vibe-home',
+                '-e', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', '-e', 'XDG_STATE_HOME=/tmp/propr-vibe-state',
+                '-e', 'PIP_CACHE_DIR=/tmp/propr-pip-cache', '-e', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache'
             );
         }
         envVars.push('-e', `VIBE_MAX_TURNS=${maxTurns}`);
@@ -376,48 +363,22 @@ export class VibeAgent implements Agent {
         const mistralEnvFileArgs = envFilePath ? ['--env-file', envFilePath] : [];
         const envVars = this.buildDockerEnvVars({ cleanModelName, mode, maxTurns });
 
-        const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
-        const containerName = buildVibeContainerName(this.config.alias, taskType, taskId);
+        const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
-        const analysisSandboxArgs = getAnalysisSandboxArgs(mode);
-        // Analysis still calls the Mistral API, so outbound network is required.
-        const networkMode = 'bridge';
         const cliArgs = this.getCliArgs(cleanModelName);
         const promptMountArgs: string[] = [];
-        if (promptFilePath) {
-            promptMountArgs.push('-v', `${promptFilePath}:/tmp/propr-prompt.txt:ro`);
-            cliArgs.push('--prompt-file', '/tmp/propr-prompt.txt');
-        }
+        if (promptFilePath) { promptMountArgs.push('-v', `${promptFilePath}:/tmp/propr-prompt.txt:ro`); cliArgs.push('--prompt-file', '/tmp/propr-prompt.txt'); }
         const dockerArgs: string[] = [
-            'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', networkMode,
-            ...analysisSandboxArgs,
+            'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
+            ...getAnalysisSandboxArgs(mode),
             '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
-            ...configMountArgs,
-            ...promptMountArgs,
-            ...mistralEnvFileArgs,
-            '-e', `GH_TOKEN=${githubToken}`,
-            '-e', `GITHUB_TOKEN=${githubToken}`,
-            ...envVars,
-            '-w', '/home/node/workspace',
-            this.config.dockerImage,
-            ...cliArgs
+            ...configMountArgs, ...promptMountArgs, ...mistralEnvFileArgs,
+            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`,
+            ...envVars, '-w', '/home/node/workspace', this.config.dockerImage, ...cliArgs
         ];
-
         const cliArgsSource = (process.env.VIBE_CLI_ARGS ?? this.config.envVars?.VIBE_CLI_ARGS) ? 'custom' : 'default';
-        logger.info({
-            issueNumber,
-            agentAlias: this.config.alias,
-            mode,
-            dockerImage: this.config.dockerImage,
-            configPath,
-            configPathMounted: hasUsableConfig,
-            workspaceMountMode,
-            cliArgsSource,
-            cliArgCount: cliArgs.length
-        }, 'Docker args built for Vibe agent');
-        if (mode === 'analysis') {
-            return dockerArgs;
-        }
+        logger.info({ issueNumber, agentAlias: this.config.alias, mode, dockerImage: this.config.dockerImage, configPath, configPathMounted: hasUsableConfig, workspaceMountMode, cliArgsSource, cliArgCount: cliArgs.length }, 'Docker args built for Vibe agent');
+        if (mode === 'analysis') return dockerArgs;
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'vibe');
     }
 

@@ -8,6 +8,7 @@ export function getAnalysisSandboxArgs(mode?: 'execute' | 'analysis'): string[] 
     return mode === 'analysis'
         ? [
             '--read-only',
+            '--cap-drop=ALL',
             '--tmpfs', '/tmp:rw,nosuid,size=512m',
             '--tmpfs', '/home/node/bin:rw,nosuid,size=16m',
             '--tmpfs', '/home/node/.cache:rw,nosuid,size=256m',
@@ -183,7 +184,9 @@ export function buildVibeFailureMessage(
 }
 
 export function writeVibePromptFile(prompt: string): string {
-    const promptDir = fs.mkdtempSync('/tmp/vibe-prompt-');
+    const baseDir = process.env.VIBE_PROMPT_CACHE_DIR || '/tmp/propr-vibe-prompts';
+    fs.mkdirSync(baseDir, { recursive: true });
+    const promptDir = fs.mkdtempSync(`${baseDir}/vibe-prompt-`);
     const promptPath = `${promptDir}/prompt.txt`;
     fs.writeFileSync(promptPath, prompt, 'utf8');
     return promptPath;

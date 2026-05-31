@@ -152,12 +152,14 @@ function vibePromptCacheArgs() {
 // Validates host bind-mount paths for Linux production deployments.
 // The ':' rejection prevents malformed -v HOST:CONTAINER arguments on Linux;
 // Windows-style drive paths (C:\...) are not supported by the launcher.
+// NOTE: The launcher only supports Linux hosts. Docker Desktop (macOS/Windows)
+// users should use docker-compose.yml directly instead of the launcher.
 function validateDockerBindPath(name, value, { containerPath = false } = {}) {
     if (!value || !isAbsolute(value) || value.includes('~') || /[\0\r\n]/.test(value)) {
-        return `${name} must be an absolute path without '~' or control characters`;
+        return `${name} must be an absolute path without '~' or control characters (launcher requires Linux host paths)`;
     }
     if (!containerPath && value.includes(':')) {
-        return `${name} cannot contain ':' because it is used in a Docker bind mount (launcher runs on Linux only)`;
+        return `${name} cannot contain ':' because it is used in a Docker bind mount (launcher requires Linux — Windows-style paths like C:\\... are not supported)`;
     }
     return null;
 }
@@ -198,6 +200,10 @@ function tagAgentLatest(key, imageTag) {
     // the launcher manifest pins exact agent image versions.
     const latestTag = latestTagFor(imageTag);
     if (!latestTag || latestTag === imageTag) return;
+    const existing = docker(['images', '-q', latestTag], { capture: true });
+    if (existing.stdout.trim()) {
+        console.log(`  · retagging ${latestTag} → ${imageTag} (overwriting existing local tag)`);
+    }
     const res = docker(['tag', imageTag, latestTag], { capture: true });
     if (res.status !== 0) {
         throw new Error(`Failed to tag ${imageTag} as ${latestTag}: ${res.stderr}`);

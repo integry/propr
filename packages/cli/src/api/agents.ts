@@ -14,6 +14,14 @@ export type AgentType = "claude" | "codex" | "gemini" | "vibe";
 
 export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "gemini", "vibe"] as const;
 
+// Keep in sync with packages/core/src/agents/version/types.ts AGENT_IMAGE_NAMES
+const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
+  claude: "propr/agent-claude",
+  codex: "propr/agent-codex",
+  gemini: "propr/agent-gemini",
+  vibe: "propr/agent-vibe",
+};
+
 /**
  * Configuration for a specific agent instance.
  */
@@ -268,18 +276,8 @@ export async function deleteAgent(
  * @returns The default Docker image name.
  */
 function getDefaultDockerImage(type: AgentType): string {
-  switch (type) {
-    case "claude":
-      return "propr/agent-claude:latest";
-    case "codex":
-      return "propr/agent-codex:latest";
-    case "gemini":
-      return "propr/agent-gemini:latest";
-    case "vibe":
-      return "propr/agent-vibe:latest";
-    default:
-      return `${type}-code-processor:latest`;
-  }
+  const name = AGENT_IMAGE_NAMES[type];
+  return name ? `${name}:latest` : `${type}-code-processor:latest`;
 }
 
 /**

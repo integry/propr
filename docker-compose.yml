@@ -3,6 +3,14 @@
 # and inside containers so path references remain valid when spawning sibling
 # agent containers. In CI or systemd contexts where HOME may be unset, export it
 # explicitly before running docker-compose (e.g., export HOME=/root).
+#
+# PREFLIGHT: Before starting, create credential directories for ALL agents you
+# intend to use (Docker will create missing directories as root-owned otherwise):
+#   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe
+#
+# For production deployments that only use a subset of agents, use the launcher
+# (docker/launcher/) which conditionally mounts only configured agent directories.
+# This compose file is intended for development/all-agent environments.
 services:
   redis:
     image: redis:alpine

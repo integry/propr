@@ -42,6 +42,9 @@ ANTHROPIC_API_KEY=your-anthropic-api-key
 # Optional Mistral Vibe agent support
 MISTRAL_API_KEY=your-mistral-api-key
 HOST_VIBE_DIR=/home/propr/.vibe
+# Required when using Vibe with Docker-outside-Docker: the prompt cache directory
+# must be host-visible so spawned agent containers can bind-mount prompt files.
+# Both vars should point to the same host directory.
 VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
 HOST_VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
 
