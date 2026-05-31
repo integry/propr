@@ -4,9 +4,10 @@ Vibe is Mistral's agentic coding assistant that brings Devstral and Mistral Medi
 models to your terminal. Use it to write, refactor, and review code with full
 project context.
 
-> **Note:** This documentation reflects the Vibe CLI at the time of integration.
-> CLI flags and commands may change between releases. Verify against your installed
-> version with `vibe --help`.
+> **Note:** This documentation was written against `mistral-vibe==2.12.1` (the
+> version pinned in `Dockerfile.vibe`). CLI flags, commands, and config layout
+> may change between releases. Always verify against your installed version with
+> `vibe --help` before treating this as authoritative.
 
 ## Install
 

@@ -223,6 +223,7 @@ function ensureNetwork() {
 
 function pullImages() {
     console.log('\npulling images…');
+    const failedAgentImages = [];
     for (const [key, tag] of Object.entries(manifest.images)) {
         if (key === 'docs' && !DOCS_ENABLED) continue;
 
@@ -237,10 +238,19 @@ function pullImages() {
         console.log(`  · ${tag}`);
         const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
         if (key.startsWith('agent-') && pulled.status !== 0) {
+            failedAgentImages.push(tag);
             console.log(`  · ${tag} (pull failed; workers pull or build on demand)`);
             continue;
         }
         tagAgentLatest(key, tag);
+    }
+    if (failedAgentImages.length > 0) {
+        console.warn(`\n⚠ WARNING: ${failedAgentImages.length} agent image(s) could not be pulled:`);
+        for (const tag of failedAgentImages) {
+            console.warn(`    - ${tag}`);
+        }
+        console.warn('  Jobs using these agents will fail until images are available.');
+        console.warn('  Build locally with scripts/build-agent-images.sh or push to the registry.\n');
     }
 }
 

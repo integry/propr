@@ -63,6 +63,10 @@ function isLocalHttpRedirectHost(hostname: string): boolean {
     return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
 }
 
+// HTTPS is required for all non-local redirect targets. HTTP is only permitted
+// for localhost/127.0.0.1/::1 to support local development. Internal or preview
+// deployments using HTTP hostnames must either use HTTPS or be accessed via a
+// loopback address.
 export function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
     if (!redirectTo) return undefined;
     try {

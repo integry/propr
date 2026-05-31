@@ -144,7 +144,7 @@ Run the authentication command:
 claude login
 ```
 
-This generates `~/.config/claude-code/auth.json` needed for non-interactive execution.
+This stores credentials in `~/.claude/` needed for non-interactive execution.
 
 ### Install Docker
 

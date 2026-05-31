@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { parseVibeOutput } from './vibeOutputParser.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -179,4 +180,36 @@ export function buildVibeFailureMessage(
     ].filter((part): part is string => Boolean(part));
 
     return parts.join('\n') || 'Vibe execution failed without diagnostic output';
+}
+
+export function writeVibePromptFile(prompt: string): string {
+    const promptDir = fs.mkdtempSync('/tmp/vibe-prompt-');
+    const promptPath = `${promptDir}/prompt.txt`;
+    fs.writeFileSync(promptPath, prompt, 'utf8');
+    return promptPath;
+}
+
+export function writeMistralEnvFile(apiKey: string | undefined): string | undefined {
+    if (!apiKey) return undefined;
+    const envDir = fs.mkdtempSync('/tmp/vibe-env-');
+    const envPath = `${envDir}/mistral.env`;
+    fs.writeFileSync(envPath, `MISTRAL_API_KEY=${apiKey}\n`, 'utf8');
+    fs.chmodSync(envPath, 0o600);
+    return envPath;
+}
+
+export function cleanupTempFile(filePath: string | undefined): void {
+    if (!filePath) return;
+    try {
+        const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+        fs.rmSync(dir, { recursive: true, force: true });
+    } catch { /* best-effort cleanup */ }
+}
+
+export function buildVibeContainerName(alias: string, taskType: string, taskId: string | undefined): string {
+    const uniqueSuffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const shortTaskId = sanitizeDockerNamePart(taskId?.slice(-8), uniqueSuffix);
+    const sanitizedAlias = sanitizeDockerNamePart(alias, 'vibe');
+    const sanitizedType = sanitizeDockerNamePart(taskType, 'task');
+    return `${sanitizedAlias}-${sanitizedType}-${shortTaskId}`.slice(0, 128);
 }
