@@ -285,6 +285,15 @@ function validateEnv() {
         console.error(`Mount your .env into the launcher too: -v ${ENV_FILE}:${ENV_FILE_LOCAL}:ro`);
         process.exit(1);
     }
+    if (HOST_VIBE_DIR && !HOST_VIBE_PROMPT_CACHE_DIR) {
+        console.error(
+            'ERROR: HOST_VIBE_DIR is set but HOST_VIBE_PROMPT_CACHE_DIR is missing. ' +
+            'Vibe agent containers need HOST_VIBE_PROMPT_CACHE_DIR to bind-mount prompt ' +
+            'files via the host Docker daemon. Set it to a host-visible directory path ' +
+            '(e.g. /tmp/propr-vibe-prompts).'
+        );
+        process.exit(1);
+    }
     if (HOST_VIBE_DIR || HOST_VIBE_PROMPT_CACHE_DIR) {
         const invalidVibePromptPath = validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', HOST_VIBE_PROMPT_CACHE_DIR)
             || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', VIBE_PROMPT_CACHE_DIR, { containerPath: true });
@@ -293,12 +302,14 @@ function validateEnv() {
             process.exit(1);
         }
     }
-    const invalidCredentialPath = [
+    const credentialDirs = [
         ['HOST_CLAUDE_DIR', HOST_CLAUDE_DIR],
         ['HOST_CODEX_DIR', HOST_CODEX_DIR],
         ['HOST_GEMINI_DIR', HOST_GEMINI_DIR],
         ['HOST_VIBE_DIR', HOST_VIBE_DIR],
-    ].map(([name, value]) => value ? validateDockerBindPath(name, value) : null).find(Boolean);
+    ];
+    const invalidCredentialPath = credentialDirs
+        .map(([name, value]) => value ? validateDockerBindPath(name, value) : null).find(Boolean);
     if (invalidCredentialPath) {
         console.error(`ERROR: ${invalidCredentialPath}`);
         process.exit(1);

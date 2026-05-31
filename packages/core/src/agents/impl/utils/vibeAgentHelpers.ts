@@ -185,19 +185,49 @@ export function buildVibeFailureMessage(
 
 export function writeVibePromptFile(prompt: string): string {
     const baseDir = process.env.VIBE_PROMPT_CACHE_DIR || '/tmp/propr-vibe-prompts';
-    fs.mkdirSync(baseDir, { recursive: true });
+    fs.mkdirSync(baseDir, { recursive: true, mode: 0o700 });
     const promptDir = fs.mkdtempSync(`${baseDir}/vibe-prompt-`);
     const promptPath = `${promptDir}/prompt.txt`;
-    fs.writeFileSync(promptPath, prompt, 'utf8');
+    fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o600 });
     return promptPath;
+}
+
+/**
+ * Translate a container-local path to its host-visible equivalent for Docker
+ * bind mounts. In Docker-outside-Docker (launcher), the host daemon resolves
+ * -v paths against the host filesystem, not the worker container's filesystem.
+ * The launcher sets VIBE_PROMPT_CACHE_HOST_MOUNTED=1 and provides
+ * HOST_VIBE_PROMPT_CACHE_DIR so we can translate back.
+ */
+export function resolveHostBindPath(containerPath: string): string {
+    if (process.env.VIBE_PROMPT_CACHE_HOST_MOUNTED !== '1') return containerPath;
+    const hostDir = process.env.HOST_VIBE_PROMPT_CACHE_DIR;
+    const containerDir = process.env.VIBE_PROMPT_CACHE_DIR || '/tmp/propr-vibe-prompts';
+    if (hostDir && containerPath.startsWith(containerDir)) {
+        return hostDir + containerPath.slice(containerDir.length);
+    }
+    return containerPath;
 }
 
 export function writeMistralEnvFile(apiKey: string | undefined): string | undefined {
     if (!apiKey) return undefined;
     const envDir = fs.mkdtempSync('/tmp/vibe-env-');
     const envPath = `${envDir}/mistral.env`;
-    fs.writeFileSync(envPath, `MISTRAL_API_KEY=${apiKey}\n`, 'utf8');
-    fs.chmodSync(envPath, 0o600);
+    fs.writeFileSync(envPath, `MISTRAL_API_KEY=${apiKey}\n`, { encoding: 'utf8', mode: 0o600 });
+    return envPath;
+}
+
+export function writeVibeSecretEnvFile(secrets: { mistralApiKey?: string; githubToken?: string }): string | undefined {
+    const lines: string[] = [];
+    if (secrets.mistralApiKey) lines.push(`MISTRAL_API_KEY=${secrets.mistralApiKey}`);
+    if (secrets.githubToken) {
+        lines.push(`GH_TOKEN=${secrets.githubToken}`);
+        lines.push(`GITHUB_TOKEN=${secrets.githubToken}`);
+    }
+    if (lines.length === 0) return undefined;
+    const envDir = fs.mkdtempSync('/tmp/vibe-env-');
+    const envPath = `${envDir}/agent.env`;
+    fs.writeFileSync(envPath, lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 });
     return envPath;
 }
 

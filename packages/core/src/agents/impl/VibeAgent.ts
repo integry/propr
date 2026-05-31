@@ -13,7 +13,7 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import { parseVibeOutput } from './utils/vibeOutputParser.js';
-import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeMistralEnvFile, cleanupTempFile, buildVibeContainerName } from './utils/vibeAgentHelpers.js';
+import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
@@ -68,7 +68,7 @@ export class VibeAgent implements Agent {
         try {
             const prompt = buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             promptFilePath = writeVibePromptFile(prompt);
-            envFilePath = writeMistralEnvFile(this.getMistralApiKey());
+            envFilePath = writeVibeSecretEnvFile({ mistralApiKey: this.getMistralApiKey(), githubToken });
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const dockerArgs = this.buildDockerArgs({
@@ -179,7 +179,7 @@ export class VibeAgent implements Agent {
         try {
             analysisWorkspace = this.ensureAnalysisWorkspace();
             promptFilePath = writeVibePromptFile(analysisPrompt);
-            envFilePath = writeMistralEnvFile(this.getMistralApiKey());
+            envFilePath = writeVibeSecretEnvFile({ mistralApiKey: this.getMistralApiKey(), githubToken: process.env.GITHUB_TOKEN });
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
@@ -271,8 +271,17 @@ export class VibeAgent implements Agent {
         try {
             const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage], { timeout: 10000 });
             const imageExists = !!result.stdout.trim();
-            logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage, imageExists }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
-            return imageExists;
+            if (!imageExists) {
+                logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Health check failed: Docker image not found');
+                return false;
+            }
+            const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
+            const hasCredentials = !!this.getMistralApiKey() || this.hasUsableConfigDir(configPath);
+            if (!hasCredentials) {
+                logger.warn({ agentAlias: this.config.alias, configPath }, 'Health check warning: no Vibe credentials found (set MISTRAL_API_KEY or configure ~/.vibe)');
+            }
+            logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage, imageExists, hasCredentials }, 'Health check passed');
+            return true;
         } catch (error) {
             logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'Health check failed with error');
             return false;
@@ -293,9 +302,9 @@ export class VibeAgent implements Agent {
         try {
             if (!fs.existsSync(configPath) || !fs.statSync(configPath).isDirectory()) return false;
             const entries = fs.readdirSync(configPath);
-            const hasCredentials = entries.includes('credentials.json');
-            if (hasCredentials) return true;
-            if (this.getMistralApiKey() && entries.includes('config.toml')) return true;
+            if (entries.includes('credentials.json')) return true;
+            const hasConfigFile = entries.includes('config.toml') || entries.includes('settings.json');
+            if (this.getMistralApiKey() && hasConfigFile) return true;
             return false;
         } catch { return false; }
     }
@@ -348,7 +357,7 @@ export class VibeAgent implements Agent {
     }
 
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath } = params;
+        const { worktreePath, modelName, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath } = params;
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
         const mistralApiKey = this.getMistralApiKey();
         const hasUsableConfig = this.hasUsableConfigDir(configPath);
@@ -367,13 +376,16 @@ export class VibeAgent implements Agent {
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const cliArgs = this.getCliArgs(cleanModelName);
         const promptMountArgs: string[] = [];
-        if (promptFilePath) { promptMountArgs.push('-v', `${promptFilePath}:/tmp/propr-prompt.txt:ro`); cliArgs.push('--prompt-file', '/tmp/propr-prompt.txt'); }
+        if (promptFilePath) {
+            const hostPromptPath = resolveHostBindPath(promptFilePath);
+            promptMountArgs.push('-v', `${hostPromptPath}:/tmp/propr-prompt.txt:ro`);
+            cliArgs.push('--prompt-file', '/tmp/propr-prompt.txt');
+        }
         const dockerArgs: string[] = [
             'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...getAnalysisSandboxArgs(mode),
             '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
             ...configMountArgs, ...promptMountArgs, ...mistralEnvFileArgs,
-            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`,
             ...envVars, '-w', '/home/node/workspace', this.config.dockerImage, ...cliArgs
         ];
         const cliArgsSource = (process.env.VIBE_CLI_ARGS ?? this.config.envVars?.VIBE_CLI_ARGS) ? 'custom' : 'default';
