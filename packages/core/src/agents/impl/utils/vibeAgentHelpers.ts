@@ -29,9 +29,8 @@ export function getParsedVibeError(parsedOutput: ReturnType<typeof parseVibeOutp
 export function isSuccessfulVibeResult(exitCode: number | null, parsedOutput: ReturnType<typeof parseVibeOutput>): boolean {
     if (exitCode !== 0) return false;
     if (parsedOutput.error) return false;
-    // Exit code 0 with text output is successful even without a final event marker
-    if (parsedOutput.summary) return true;
-    return !parsedOutput.incomplete;
+    if (parsedOutput.incomplete) return false;
+    return !!parsedOutput.summary;
 }
 
 export function sanitizeDockerNamePart(value: string | undefined, fallback: string): string {
@@ -124,7 +123,7 @@ export function splitVibeCliArgs(input: string): string[] {
 }
 
 export function getDefaultVibeCliArgs(): string[] {
-    return ['vibe', '--headless', '--json'];
+    return ['--headless', '--json'];
 }
 
 export function buildPromptWithRetryContext(prompt: string, isRetry: boolean, retryReason?: string): string {

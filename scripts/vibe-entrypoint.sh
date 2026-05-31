@@ -208,6 +208,11 @@ if [ -d "/home/node/workspace" ]; then
 fi
 
 if [ $# -gt 0 ]; then
+    # When the first argument is a flag (starts with -), prepend 'vibe' so callers
+    # can pass only CLI flags after the Docker image without duplicating the binary name.
+    case "$1" in
+        -*) set -- vibe "$@" ;;
+    esac
     expand_vibe_prompt_file_args "$@"
     set -- "${EXPANDED_VIBE_ARGS[@]}"
     echo -n "Executing command: " >&2

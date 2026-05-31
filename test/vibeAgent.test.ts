@@ -180,7 +180,7 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.error, undefined);
     });
 
-    test('marks JSON text output incomplete when no final event is present but treats exit 0 with summary as success', () => {
+    test('marks JSON text output incomplete when no final event is present and treats it as failure', () => {
         const output = [
             JSON.stringify({ type: 'message', text: 'Successful streamed response' }),
             JSON.stringify({ type: 'error', error: 'Stale diagnostic from retry' })
@@ -190,7 +190,7 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.summary, 'Successful streamed response');
         assert.strictEqual(parsed.error, undefined);
         assert.strictEqual(parsed.incomplete, true);
-        assert.strictEqual(isSuccessfulVibeResult(0, parsed), true);
+        assert.strictEqual(isSuccessfulVibeResult(0, parsed), false);
     });
 });
 
@@ -219,6 +219,7 @@ describe('Vibe CLI args', () => {
     test('reports which VIBE_CLI_ARGS source is invalid', () => {
         withRestoredEnv(() => {
             process.env.VIBE_CLI_ARGS = 'vibe "unterminated';
+            process.env.MISTRAL_API_KEY = 'test-key';
             assert.throws(
                 () => buildArgs(createAgent()),
                 /Invalid process\.env\.VIBE_CLI_ARGS: unmatched quote/
@@ -249,7 +250,7 @@ describe('VibeAgent Docker args', () => {
             assert.ok(!args.includes('PROPR_AGENT_TYPE=vibe'));
 
             const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-            assert.deepStrictEqual(args.slice(imageIndex + 1), ['vibe', '--headless', '--json', '--model', 'mistral-medium-3.5']);
+            assert.deepStrictEqual(args.slice(imageIndex + 1), ['--headless', '--json', '--model', 'mistral-medium-3.5']);
         } finally {
             fs.rmSync(configPath, { recursive: true, force: true });
         }
@@ -258,6 +259,7 @@ describe('VibeAgent Docker args', () => {
     test('wraps implementation runs for repo setup and honors VIBE_CLI_ARGS', () => {
         withRestoredEnv(() => {
             process.env.VIBE_CLI_ARGS = 'vibe --headless --plain "two words"';
+            process.env.MISTRAL_API_KEY = 'test-key';
             const args = buildArgs(createAgent(), { maxTurns: 12 });
 
             assert.ok(args.includes('/tmp/vibe-worktree:/home/node/workspace:rw'));
@@ -313,26 +315,38 @@ describe('VibeAgent Docker args', () => {
                 }
             }));
 
-            assert.ok(args.includes('MISTRAL_API_KEY=configured-mistral-api-key'));
+            // API key is forwarded via Docker env-name-only (-e MISTRAL_API_KEY) to
+            // avoid exposing the value in /proc/PID/cmdline or docker inspect.
+            const eIndex = args.lastIndexOf('-e');
+            const keyArgIndices = args.reduce<number[]>((acc, arg, i) => {
+                if (arg === 'MISTRAL_API_KEY') acc.push(i);
+                return acc;
+            }, []);
+            assert.strictEqual(keyArgIndices.length, 1);
+            assert.strictEqual(args[keyArgIndices[0] - 1], '-e');
+            assert.strictEqual(process.env.MISTRAL_API_KEY, 'configured-mistral-api-key');
             assert.ok(args.includes('EXTRA_VIBE_ENV=extra-value'));
             assert.ok(!args.includes('VIBE_CLI_ARGS=vibe --output json'));
             assert.ok(!args.includes('BAD-ENV=skipped'));
             assert.ok(!args.includes('MULTILINE_ENV=skip\nme'));
-            assert.strictEqual(args.filter(arg => arg.startsWith('MISTRAL_API_KEY=')).length, 1);
             assert.ok(!args.includes(`${emptyConfigPath}:/home/node/.vibe:ro`));
         } finally {
+            delete process.env.MISTRAL_API_KEY;
             fs.rmSync(emptyConfigPath, { recursive: true, force: true });
         }
     });
 
     test('uses structured output in the default execution command', () => {
-        const args = buildArgs(createAgent(), { maxTurns: 12 });
+        withRestoredEnv(() => {
+            process.env.MISTRAL_API_KEY = 'test-key';
+            const args = buildArgs(createAgent(), { maxTurns: 12 });
 
-        const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-        assert.deepStrictEqual(
-            args.slice(imageIndex + 4),
-            ['vibe', '--headless', '--json', '--model', 'mistral-medium-3.5']
-        );
+            const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
+            assert.deepStrictEqual(
+                args.slice(imageIndex + 4),
+                ['--headless', '--json', '--model', 'mistral-medium-3.5']
+            );
+        });
     });
 });
 

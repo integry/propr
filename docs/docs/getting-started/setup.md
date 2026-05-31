@@ -195,15 +195,20 @@ If you plan to use Mistral's Vibe coding agent alongside (or instead of) Claude:
 
 ### Install Vibe CLI
 
-Install from npm for local development (see [mistral-vibe on npmjs.com](https://www.npmjs.com/package/mistral-vibe)):
+The canonical install method for ProPR compatibility is `uv` (used inside
+`Dockerfile.vibe`). For local credential setup you can use either method:
 
 ```bash
+# Option A — via uv (matches the production Docker image)
+uv tool install mistral-vibe
+
+# Option B — via npm
 npm install -g mistral-vibe
 ```
 
-> **Note:** The ProPR Docker image for Vibe (`Dockerfile.vibe`) installs the CLI
-> via `uv` internally. You only need the npm install for local/host usage and
-> credential setup.
+> **Note:** The ProPR Docker image installs the CLI via `uv` internally.
+> You only need a local install for host-side credential setup. The CLI
+> version used in production is pinned in `Dockerfile.vibe` (`CLI_VERSION`).
 
 ### Authenticate with Mistral
 

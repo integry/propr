@@ -15,12 +15,18 @@ type VibeAgentPrivate = {
 };
 
 const originalVibeCliArgs = process.env.VIBE_CLI_ARGS;
+const originalMistralApiKey = process.env.MISTRAL_API_KEY;
 
 after(async () => {
     if (originalVibeCliArgs === undefined) {
         delete process.env.VIBE_CLI_ARGS;
     } else {
         process.env.VIBE_CLI_ARGS = originalVibeCliArgs;
+    }
+    if (originalMistralApiKey === undefined) {
+        delete process.env.MISTRAL_API_KEY;
+    } else {
+        process.env.MISTRAL_API_KEY = originalMistralApiKey;
     }
     await db.destroy();
 });
@@ -41,6 +47,7 @@ function createAgent(envVars?: Record<string, string>): VibeAgentPrivate {
 
 test('Vibe Docker args use stdin-oriented default CLI invocation', () => {
     delete process.env.VIBE_CLI_ARGS;
+    process.env.MISTRAL_API_KEY = 'test-key';
     const args = createAgent().buildDockerArgs({
         worktreePath: process.cwd(),
         githubToken: 'token',
@@ -49,12 +56,13 @@ test('Vibe Docker args use stdin-oriented default CLI invocation', () => {
     });
 
     const imageIndex = args.indexOf('propr/agent-vibe:latest');
-    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--headless', '--json']);
+    assert.deepEqual(args.slice(imageIndex + 1), ['--headless', '--json']);
     assert.equal(args.some(arg => arg.includes('propr-vibe-prompt.md')), false);
 });
 
 test('Vibe Docker args honor VIBE_CLI_ARGS override', () => {
     process.env.VIBE_CLI_ARGS = 'vibe --headless "two words"';
+    process.env.MISTRAL_API_KEY = 'test-key';
     const args = createAgent().buildDockerArgs({
         worktreePath: process.cwd(),
         githubToken: 'token',
@@ -68,6 +76,7 @@ test('Vibe Docker args honor VIBE_CLI_ARGS override', () => {
 
 test('Vibe Docker args can read CLI override from agent env vars', () => {
     delete process.env.VIBE_CLI_ARGS;
+    process.env.MISTRAL_API_KEY = 'test-key';
     const args = createAgent({ VIBE_CLI_ARGS: 'vibe --plain' }).buildDockerArgs({
         worktreePath: process.cwd(),
         githubToken: 'token',

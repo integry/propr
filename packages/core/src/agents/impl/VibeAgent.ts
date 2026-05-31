@@ -163,8 +163,9 @@ export class VibeAgent implements Agent {
 
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Vibe agent...');
 
+        let analysisWorkspace: string | undefined;
         try {
-            const analysisWorkspace = this.ensureAnalysisWorkspace();
+            analysisWorkspace = this.ensureAnalysisWorkspace();
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
@@ -241,6 +242,10 @@ export class VibeAgent implements Agent {
             const err = error as Error;
             logger.error({ agentAlias: this.config.alias, error: err.message, executionTimeMs }, 'Lightweight analysis failed');
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message };
+        } finally {
+            if (analysisWorkspace) {
+                try { fs.rmSync(analysisWorkspace, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+            }
         }
     }
 
@@ -258,11 +263,8 @@ export class VibeAgent implements Agent {
     }
 
     private ensureAnalysisWorkspace(): string {
-        const workspace = '/tmp/vibe-analysis';
+        const workspace = fs.mkdtempSync('/tmp/vibe-analysis-');
         try {
-            if (!fs.existsSync(workspace)) {
-                fs.mkdirSync(workspace, { recursive: true });
-            }
             fs.chmodSync(workspace, 0o755);
         } catch (error) {
             logger.warn({ error: (error as Error).message, workspace }, 'Failed to prepare Vibe analysis workspace');
@@ -326,16 +328,22 @@ export class VibeAgent implements Agent {
         const { worktreePath, githubToken, modelName, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute' } = params;
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
         const mistralApiKey = this.getMistralApiKey();
-        const shouldMountConfig = this.canMountConfigPath(configPath)
-            && (!mistralApiKey || this.hasVibeConfigFiles(configPath));
-        const configMountArgs = shouldMountConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
+        const hasUsableConfig = this.canMountConfigPath(configPath) && this.hasVibeConfigFiles(configPath);
+        if (!mistralApiKey && !hasUsableConfig) {
+            throw new Error(
+                `Vibe agent "${this.config.alias}" has no credentials. ` +
+                `Set MISTRAL_API_KEY or ensure ${configPath} contains valid Vibe config files.`
+            );
+        }
+        const configMountArgs = hasUsableConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
         const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
         for (const envVar of forwardedEnvVars.skipped) {
             logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
         }
         const envVars = forwardedEnvVars.dockerArgs;
         if (mistralApiKey) {
-            envVars.push('-e', `MISTRAL_API_KEY=${mistralApiKey}`);
+            process.env.MISTRAL_API_KEY = mistralApiKey;
+            envVars.push('-e', 'MISTRAL_API_KEY');
         }
         const cleanModelName = modelName?.includes(':') ? modelName.split(':').pop()! : modelName;
         if (cleanModelName) {
@@ -383,7 +391,7 @@ export class VibeAgent implements Agent {
             mode,
             dockerImage: this.config.dockerImage,
             configPath,
-            configPathMounted: shouldMountConfig,
+            configPathMounted: hasUsableConfig,
             workspaceMountMode,
             cliArgs
         }, 'Docker args built for Vibe agent');
