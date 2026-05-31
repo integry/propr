@@ -80,6 +80,8 @@ services:
       - ${HOME}/.vibe:${HOME}/.vibe
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
+      # Vibe prompt cache: create before starting (mkdir -p /tmp/propr-vibe-prompts)
+      # to avoid Docker creating it as root-owned.
       - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
     env_file:
       - .env

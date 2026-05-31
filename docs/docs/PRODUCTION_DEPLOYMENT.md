@@ -44,9 +44,11 @@ MISTRAL_API_KEY=your-mistral-api-key
 # Host path to the Vibe credential directory. Must be an absolute path.
 # The launcher reads this from the .env file or from a `-e` flag.
 HOST_VIBE_DIR=/home/propr/.vibe
-# Required when using Vibe with Docker-outside-Docker: the prompt cache directory
-# must be host-visible so spawned agent containers can bind-mount prompt files.
-# Both vars should point to the same host directory.
+# Required whenever Vibe agents are enabled (MISTRAL_API_KEY or HOST_VIBE_DIR
+# is set). The prompt cache directory must be host-visible so spawned agent
+# containers can bind-mount prompt files. Both vars should point to the same
+# host directory. Create it before starting:
+#   mkdir -p /tmp/propr-vibe-prompts
 VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
 HOST_VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
 
@@ -84,6 +86,12 @@ The Vibe image pins a specific CLI version via the `CLI_VERSION` build arg in
 `Dockerfile.vibe`. To upgrade the Vibe CLI, update `CLI_VERSION` and rebuild.
 
 ## Deployment Steps
+
+> **Launcher vs Compose:** The production launcher (`docker/launcher/`) is the
+> recommended deployment method. It conditionally mounts only configured agent
+> credential directories and validates Vibe prompt cache paths at startup.
+> The `docker-compose.yml` in the project root is intended for local
+> development and mounts all agent directories unconditionally.
 
 ### 1. Build and Start Services
 

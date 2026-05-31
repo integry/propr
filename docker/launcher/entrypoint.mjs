@@ -286,16 +286,20 @@ function validateEnv() {
         console.error(`Mount your .env into the launcher too: -v ${ENV_FILE}:${ENV_FILE_LOCAL}:ro`);
         process.exit(1);
     }
-    if (HOST_VIBE_DIR && !HOST_VIBE_PROMPT_CACHE_DIR) {
+    const mistralApiKey = process.env.MISTRAL_API_KEY || envFileValue('MISTRAL_API_KEY');
+    const vibeEnabled = !!(HOST_VIBE_DIR || mistralApiKey);
+    if (vibeEnabled && !HOST_VIBE_PROMPT_CACHE_DIR) {
         console.error(
-            'ERROR: HOST_VIBE_DIR is set but HOST_VIBE_PROMPT_CACHE_DIR is missing. ' +
+            'ERROR: Vibe support is enabled (via ' +
+            (HOST_VIBE_DIR ? 'HOST_VIBE_DIR' : 'MISTRAL_API_KEY') +
+            ') but HOST_VIBE_PROMPT_CACHE_DIR is missing. ' +
             'Vibe agent containers need HOST_VIBE_PROMPT_CACHE_DIR to bind-mount prompt ' +
             'files via the host Docker daemon. Set it to a host-visible directory path ' +
             '(e.g. /tmp/propr-vibe-prompts).'
         );
         process.exit(1);
     }
-    if (HOST_VIBE_DIR || HOST_VIBE_PROMPT_CACHE_DIR) {
+    if (vibeEnabled || HOST_VIBE_PROMPT_CACHE_DIR) {
         const invalidVibePromptPath = validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', HOST_VIBE_PROMPT_CACHE_DIR)
             || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', VIBE_PROMPT_CACHE_DIR, { containerPath: true });
         if (invalidVibePromptPath) {

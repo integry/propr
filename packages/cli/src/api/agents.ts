@@ -5,6 +5,8 @@
  * These functions provide a typed interface to list, add, and delete agents.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { ApiClient, createApiClient } from "./index.js";
 
 /**
@@ -287,16 +289,17 @@ function getDefaultDockerImage(type: AgentType): string {
  * @returns The default config path.
  */
 function getDefaultConfigPath(type: AgentType): string {
+  const home = homedir();
   switch (type) {
     case "claude":
-      return "~/.claude";
+      return join(home, ".claude");
     case "codex":
-      return "~/.codex";
+      return join(home, ".codex");
     case "gemini":
-      return "~/.gemini";
+      return join(home, ".gemini");
     case "vibe":
-      return "~/.vibe";
+      return join(home, ".vibe");
     default:
-      return `~/.${type}`;
+      return join(home, `.${type}`);
   }
 }
