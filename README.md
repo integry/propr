@@ -359,8 +359,9 @@ via the mounted docker socket. See `.env.example` for required configuration.
 | `propr/agent-codex` | OpenAI Codex execution container | ~470 MB |
 | `propr/agent-gemini` | Google Gemini CLI execution container | ~380 MB |
 
-Images are also mirrored to `ghcr.io/proprdev/propr-*` (no rate limits for
-unauthenticated pulls).
+Images are also mirrored to GHCR. The current GitHub Actions release workflow
+publishes under `ghcr.io/integry/propr-*`; this namespace can be changed later
+once the organization package permissions are ready.
 
 ### Building locally
 
@@ -374,6 +375,22 @@ The smoke test boots the full stack from the built images with fake
 credentials, confirms the API responds to `/health`, and checks no container
 crashes on startup. It's the first-line defense for catching broken images
 before release.
+
+### Releasing images
+
+Docker image releases are driven by the `Docker Images` GitHub Actions workflow.
+Create a version bump PR first, then tag the merged commit:
+
+```bash
+git tag v0.8.0
+git push origin v0.8.0
+```
+
+The workflow verifies that the tag matches `package.json`, builds GHCR-tagged
+images, smoke-tests the app image, logs into GHCR with `GITHUB_TOKEN`, and
+pushes `0.8.0`, the short git SHA, and `latest` tags. It can also be run
+manually from GitHub Actions with a custom GHCR namespace or without updating
+`latest`.
 
 ### Running integration tests against the stack
 

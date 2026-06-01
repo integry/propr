@@ -1,0 +1,84 @@
+name: Docker Images
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: 'Optional version that must match package.json, for example 0.8.0'
+        required: false
+        type: string
+      ghcr_namespace:
+        description: 'GHCR namespace to publish under'
+        required: true
+        default: 'ghcr.io/integry'
+        type: string
+      push_latest:
+        description: 'Also update the latest tags'
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: docker-images-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-smoke-and-push:
+    name: Build, Smoke Test, Push
+    runs-on: [self-hosted, linux, x64, propr]
+    env:
+      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
+      PUSH_LATEST: ${{ github.event.inputs.push_latest || 'true' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check toolchain
+        run: |
+          node --version
+          npm --version
+          docker version
+
+      - name: Verify release version
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VERSION" != "$VERSION" ]; then
+              echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}" >&2
+              exit 1
+            fi
+          fi
+
+          EXPECTED_VERSION="${{ github.event.inputs.expected_version }}"
+          if [ -n "$EXPECTED_VERSION" ] && [ "$EXPECTED_VERSION" != "$VERSION" ]; then
+            echo "Expected version ${EXPECTED_VERSION} does not match package.json version ${VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Build GHCR-tagged images
+        run: ./scripts/build-images.sh --ghcr
+
+      - name: Smoke test app image
+        env:
+          APP_TAG: ${{ env.GHCR_NS }}/propr-app:${{ steps.version.outputs.version }}
+        run: npm run images:smoke
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push GHCR images
+        run: ./scripts/build-images.sh --push --ghcr

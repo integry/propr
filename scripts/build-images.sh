@@ -12,7 +12,7 @@
 # Tags produced per image:
 #   <registry>/<name>:<version>   — exact version from package.json
 #   <registry>/<name>:<sha>       — short git SHA
-#   <registry>/<name>:latest      — latest
+#   <registry>/<name>:latest      — latest, unless PUSH_LATEST=false
 
 set -euo pipefail
 
@@ -23,6 +23,7 @@ cd "$REPO_ROOT"
 DOCKERHUB_NS="${DOCKERHUB_NS:-propr}"
 GHCR_NS="${GHCR_NS:-ghcr.io/proprdev}"
 GHCR_PREFIX="${GHCR_PREFIX:-propr-}"   # GHCR uses flat namespace: propr-app instead of propr/app
+PUSH_LATEST="${PUSH_LATEST:-true}"
 
 VERSION="$(node -p "require('./package.json').version")"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
@@ -74,37 +75,74 @@ tags_for() {
   if $PUSH_DH; then
     tags+=("$DOCKERHUB_NS/$name:$VERSION")
     tags+=("$DOCKERHUB_NS/$name:$GIT_SHA")
-    tags+=("$DOCKERHUB_NS/$name:latest")
+    if [[ "$PUSH_LATEST" == "true" ]]; then
+      tags+=("$DOCKERHUB_NS/$name:latest")
+    fi
   fi
   if $PUSH_GHCR; then
     tags+=("$GHCR_NS/$GHCR_PREFIX$name:$VERSION")
     tags+=("$GHCR_NS/$GHCR_PREFIX$name:$GIT_SHA")
-    tags+=("$GHCR_NS/$GHCR_PREFIX$name:latest")
+    if [[ "$PUSH_LATEST" == "true" ]]; then
+      tags+=("$GHCR_NS/$GHCR_PREFIX$name:latest")
+    fi
   fi
   printf '%s\n' "${tags[@]}"
+}
+
+manifest_ns() {
+  if [[ -n "${MANIFEST_NS:-}" ]]; then
+    echo "$MANIFEST_NS"
+  elif $PUSH_DH; then
+    echo "$DOCKERHUB_NS"
+  else
+    echo "$GHCR_NS"
+  fi
+}
+
+manifest_prefix() {
+  if [[ -n "${MANIFEST_PREFIX:-}" ]]; then
+    echo "$MANIFEST_PREFIX"
+  elif $PUSH_DH; then
+    echo ""
+  else
+    echo "$GHCR_PREFIX"
+  fi
+}
+
+agent_base_image() {
+  if [[ -n "${AGENT_BASE_IMAGE:-}" ]]; then
+    echo "$AGENT_BASE_IMAGE"
+  elif $PUSH_DH; then
+    echo "$DOCKERHUB_NS/agent-base:$VERSION"
+  else
+    echo "$GHCR_NS/${GHCR_PREFIX}agent-base:$VERSION"
+  fi
 }
 
 # --- Rewrite launcher manifest ------------------------------------------------
 # The launcher image bakes in the image tags it should pull. Write a fresh
 # manifest so the baked tags match this build.
 write_manifest() {
+  local runtime_ns runtime_prefix
+  runtime_ns="$(manifest_ns)"
+  runtime_prefix="$(manifest_prefix)"
   cat > docker/launcher/manifest.json <<EOF
 {
   "version": "$VERSION",
   "git_sha": "$GIT_SHA",
-  "registry": "$DOCKERHUB_NS",
+  "registry": "$runtime_ns",
   "images": {
-    "app": "$DOCKERHUB_NS/app:$VERSION",
-    "ui": "$DOCKERHUB_NS/ui:$VERSION",
-    "docs": "$DOCKERHUB_NS/docs:$VERSION",
-    "agent-claude": "$DOCKERHUB_NS/agent-claude:$VERSION",
-    "agent-codex": "$DOCKERHUB_NS/agent-codex:$VERSION",
-    "agent-gemini": "$DOCKERHUB_NS/agent-gemini:$VERSION",
+    "app": "$runtime_ns/${runtime_prefix}app:$VERSION",
+    "ui": "$runtime_ns/${runtime_prefix}ui:$VERSION",
+    "docs": "$runtime_ns/${runtime_prefix}docs:$VERSION",
+    "agent-claude": "$runtime_ns/${runtime_prefix}agent-claude:$VERSION",
+    "agent-codex": "$runtime_ns/${runtime_prefix}agent-codex:$VERSION",
+    "agent-gemini": "$runtime_ns/${runtime_prefix}agent-gemini:$VERSION",
     "redis": "redis:7-alpine"
   }
 }
 EOF
-  echo "  → wrote docker/launcher/manifest.json (version=$VERSION)"
+  echo "  → wrote docker/launcher/manifest.json (version=$VERSION, registry=$runtime_ns/$runtime_prefix*)"
 }
 
 refresh_notices() {
@@ -125,9 +163,9 @@ build_image() {
     build_args+=("--platform" "$PLATFORM")
   fi
 
-  # Agent images extend propr/agent-base — pin to this build's version.
+  # Agent images extend agent-base — pin to the exact image built in this run.
   if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini ]]; then
-    build_args+=("--build-arg" "BASE_TAG=$VERSION")
+    build_args+=("--build-arg" "BASE_IMAGE=$(agent_base_image)")
   fi
 
   echo ""
@@ -158,6 +196,7 @@ echo "  docker hub: $($PUSH_DH && echo "$DOCKERHUB_NS" || echo 'skip')"
 echo "  ghcr:       $($PUSH_GHCR && echo "$GHCR_NS/$GHCR_PREFIX*" || echo 'skip')"
 echo "  platform:   ${PLATFORM:-native}"
 echo "  push:       $PUSH"
+echo "  latest:     $PUSH_LATEST"
 [[ -n "$ONLY" ]] && echo "  only:       $ONLY"
 
 write_manifest
