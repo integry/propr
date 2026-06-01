@@ -4,7 +4,7 @@ import { ScrollText } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
 import AIActivityMonitor from './AIActivityMonitor';
 import QuickAddTodo from './QuickAddTodo';
-import { useHeaderStats } from '../hooks/useHeaderStats';
+import { useHeaderStats, type HeaderStats } from '../hooks/useHeaderStats';
 import {
   SystemHealth,
   ActivePlansButton,
@@ -22,24 +22,27 @@ interface GlobalHeaderProps {
   onMenuToggle: () => void;
   MenuIcon: React.FC<{ className?: string }>;
   isDemoMode?: boolean;
+  headerStatsOverride?: Pick<HeaderStats, 'runningCount' | 'runningItems' | 'activePlans' | 'reviewGroups' | 'systemHealth'> & {
+    dismissPlan?: HeaderStats['dismissPlan'];
+    dismissTask?: HeaderStats['dismissTask'];
+  };
 }
 
 // Main GlobalHeader Component
-const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false }) => {
+const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride }) => {
   const navigate = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
 
   // Use the centralized header stats hook
-  const {
-    runningCount,
-    runningItems,
-    activePlans,
-    reviewGroups,
-    systemHealth,
-    dismissPlan,
-    dismissTask,
-  } = useHeaderStats();
+  const headerStats = useHeaderStats();
+  const runningCount = headerStatsOverride?.runningCount ?? headerStats.runningCount;
+  const runningItems = headerStatsOverride?.runningItems ?? headerStats.runningItems;
+  const activePlans = headerStatsOverride?.activePlans ?? headerStats.activePlans;
+  const reviewGroups = headerStatsOverride?.reviewGroups ?? headerStats.reviewGroups;
+  const systemHealth = headerStatsOverride?.systemHealth ?? headerStats.systemHealth;
+  const dismissPlan = headerStatsOverride?.dismissPlan ?? headerStats.dismissPlan;
+  const dismissTask = headerStatsOverride?.dismissTask ?? headerStats.dismissTask;
 
   // Handle new plan navigation
   const handleNewPlan = useCallback(() => {

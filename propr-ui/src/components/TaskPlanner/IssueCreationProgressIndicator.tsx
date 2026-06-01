@@ -11,8 +11,9 @@ interface IssueCreationProgressIndicatorProps {
 export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndicatorProps> = ({ progress, onDismiss }) => {
   if (progress.status === 'idle') return null;
 
+  const progressCount = progress.animatedCreatedCount ?? progress.createdCount;
   const progressPercentage = progress.totalCount > 0
-    ? Math.round((progress.createdCount / progress.totalCount) * 100)
+    ? Math.min(100, Math.max(0, (progressCount / progress.totalCount) * 100))
     : 0;
 
   // Compact inline progress bar for the Studio aesthetic
@@ -42,12 +43,16 @@ export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndic
             <>
               {/* Thin progress bar */}
               <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden max-w-[200px]">
-                <motion.div
-                  className="h-full bg-blue-500 rounded-full"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${progressPercentage}%` }}
-                  transition={{ duration: 0.3 }}
-                />
+                {progress.animatedCreatedCount !== undefined ? (
+                  <div className="h-full bg-blue-500 rounded-full" style={{ width: `${progressPercentage}%` }} />
+                ) : (
+                  <motion.div
+                    className="h-full bg-blue-500 rounded-full"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${progressPercentage}%` }}
+                    transition={{ duration: 0.3 }}
+                  />
+                )}
               </div>
               <span className="text-xs text-gray-500 tabular-nums">
                 {progress.createdCount}/{progress.totalCount}

@@ -1,9 +1,10 @@
 {
   "name": "propr",
-  "version": "1.0.0",
+  "version": "0.8.0",
   "type": "module",
   "main": "index.js",
   "workspaces": [
+    "apps/*",
     "packages/*",
     "propr-ui"
   ],

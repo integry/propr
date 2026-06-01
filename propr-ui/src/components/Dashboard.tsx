@@ -63,7 +63,7 @@ interface StatsGridProps {
   statsLoading: boolean;
 }
 
-const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewStats, statsLoading }) => (
+export const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewStats, statsLoading }) => (
   <div className="px-6 py-6 border-b border-slate-200">
     {/* 2x2 Grid for Active/Success and Total/Failed with crosshair borders */}
     <div className="grid grid-cols-2">
