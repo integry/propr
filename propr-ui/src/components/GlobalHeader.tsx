@@ -4,7 +4,7 @@ import { ScrollText } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
 import AIActivityMonitor from './AIActivityMonitor';
 import QuickAddTodo from './QuickAddTodo';
-import { useHeaderStats } from '../hooks/useHeaderStats';
+import { useHeaderStats, type HeaderStats } from '../hooks/useHeaderStats';
 import {
   SystemHealth,
   ActivePlansButton,
@@ -22,24 +22,28 @@ interface GlobalHeaderProps {
   onMenuToggle: () => void;
   MenuIcon: React.FC<{ className?: string }>;
   isDemoMode?: boolean;
+  headerStatsOverride?: Pick<HeaderStats, 'runningCount' | 'runningItems' | 'activePlans' | 'reviewGroups' | 'systemHealth'> & {
+    dismissPlan?: HeaderStats['dismissPlan'];
+    dismissTask?: HeaderStats['dismissTask'];
+  };
+  newPlanPressedOverride?: boolean;
 }
 
 // Main GlobalHeader Component
-const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false }) => {
+const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride, newPlanPressedOverride = false }) => {
   const navigate = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
 
   // Use the centralized header stats hook
-  const {
-    runningCount,
-    runningItems,
-    activePlans,
-    reviewGroups,
-    systemHealth,
-    dismissPlan,
-    dismissTask,
-  } = useHeaderStats();
+  const headerStats = useHeaderStats();
+  const runningCount = headerStatsOverride?.runningCount ?? headerStats.runningCount;
+  const runningItems = headerStatsOverride?.runningItems ?? headerStats.runningItems;
+  const activePlans = headerStatsOverride?.activePlans ?? headerStats.activePlans;
+  const reviewGroups = headerStatsOverride?.reviewGroups ?? headerStats.reviewGroups;
+  const systemHealth = headerStatsOverride?.systemHealth ?? headerStats.systemHealth;
+  const dismissPlan = headerStatsOverride?.dismissPlan ?? headerStats.dismissPlan;
+  const dismissTask = headerStatsOverride?.dismissTask ?? headerStats.dismissTask;
 
   // Handle new plan navigation
   const handleNewPlan = useCallback(() => {
@@ -122,7 +126,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
           onClick={handleNewPlan}
           disabled={isDemoMode}
           title={isDemoMode ? 'Demo mode is read-only' : 'New Plan'}
-          className="flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+          className={`flex items-center gap-2 px-4 py-1.5 text-white text-sm font-medium hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed ${newPlanPressedOverride ? 'bg-teal-800' : 'bg-teal-600'}`}
         >
           <ScrollText className="w-4 h-4" />
           <span>New Plan</span>
@@ -133,7 +137,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       <button
         onClick={handleNewPlan}
         disabled={isDemoMode}
-        className="md:hidden flex items-center px-4 bg-teal-600 text-white hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+        className={`md:hidden flex items-center px-4 text-white hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed ${newPlanPressedOverride ? 'bg-teal-800' : 'bg-teal-600'}`}
         aria-label="New Plan"
         title={isDemoMode ? 'Demo mode is read-only' : 'New Plan'}
       >

@@ -9,7 +9,8 @@ import { UltrafixSettingsControls } from './PlanIssueRowComponents';
 export const TasksBeingCreated: React.FC<{
   tasks: PlanTask[];
   issueCreationProgress: { createdCount: number; lastCreatedIssue?: { number: number } | null };
-}> = ({ tasks, issueCreationProgress }) => (
+  spinnerRotationDegrees?: number;
+}> = ({ tasks, issueCreationProgress, spinnerRotationDegrees }) => (
   <div className="relative pl-1">
     <div className="absolute left-[13px] top-2 bottom-2 w-0.5 bg-slate-200" style={{ zIndex: 0 }} />
     <div className="relative" style={{ zIndex: 1 }}>
@@ -29,7 +30,11 @@ export const TasksBeingCreated: React.FC<{
                   <Check size={10} className="text-gray-400" strokeWidth={3} />
                 </div>
               ) : isCreating ? (
-                <Loader2 size={14} className="text-blue-600 animate-spin" />
+                <Loader2
+                  size={14}
+                  className={`text-blue-600 ${spinnerRotationDegrees === undefined ? 'animate-spin' : ''}`}
+                  style={spinnerRotationDegrees === undefined ? undefined : { transform: `rotate(${spinnerRotationDegrees}deg)` }}
+                />
               ) : (
                 <div className="w-3 h-3 rounded-full border-2 border-gray-300 bg-white" />
               )}

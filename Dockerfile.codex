@@ -1,13 +1,12 @@
-# OpenAI Codex agent image. Extends propr/agent-base (alpine + common tooling).
+# OpenAI Codex agent image. Extends the ProPR agent base image (alpine + common tooling).
 # The CLI is installed at build time and exercised with --version as a smoke
 # test so binary-loading regressions fail the build rather than leaking into
 # user runtime.
 
-# BASE_TAG must match the exact version of propr/agent-base built alongside
-# this agent image. scripts/build-images.sh passes it automatically; a direct
-# `docker build` must pass --build-arg BASE_TAG=<version>.
-ARG BASE_TAG
-FROM propr/agent-base:${BASE_TAG}
+# BASE_IMAGE must point at the exact agent-base image built alongside this
+# agent image. scripts/build-images.sh passes it automatically.
+ARG BASE_IMAGE=propr/agent-base:latest
+FROM ${BASE_IMAGE}
 
 ARG CLI_VERSION=latest
 
