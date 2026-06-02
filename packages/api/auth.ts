@@ -2,11 +2,12 @@ import passport from 'passport';
 import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
 import session from 'express-session';
 import { RedisStore } from 'connect-redis';
-import { createClient, type RedisClientType } from 'redis';
+import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
+import { validateGitHubToken } from './tokenCache.js';
 
-interface GitHubUser {
+export interface GitHubUser {
     id: string;
     login?: string;
     username: string;
@@ -230,87 +231,6 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         res.json({ demoMode: demoModeAtStartup });
     });
 
-}
-
-/**
- * Redis client used for caching Bearer token validations.
- * Initialized lazily on first Bearer token request.
- */
-let tokenCacheClient: RedisClientType | null = null;
-
-async function getTokenCacheClient(): Promise<RedisClientType> {
-    if (!tokenCacheClient) {
-        const redisHost = process.env.REDIS_HOST || '127.0.0.1';
-        const redisPort = process.env.REDIS_PORT || '6379';
-        tokenCacheClient = createClient({ url: `redis://${redisHost}:${redisPort}` }) as RedisClientType;
-        tokenCacheClient.on('error', (err) => {
-            console.error('Token Cache Redis Client Error', err);
-        });
-        await tokenCacheClient.connect();
-    }
-    return tokenCacheClient;
-}
-
-const TOKEN_CACHE_PREFIX = 'propr:bearer:';
-const TOKEN_CACHE_TTL_SECONDS = 300; // 5 minutes
-
-/**
- * Validates a GitHub token by calling the GitHub API and caches the result in Redis.
- * Returns the GitHub user profile if valid, or null if invalid.
- */
-async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
-    try {
-        const redis = await getTokenCacheClient();
-
-        // Check cache first
-        const cached = await redis.get(`${TOKEN_CACHE_PREFIX}${token}`);
-        if (cached) {
-            return JSON.parse(cached) as GitHubUser;
-        }
-
-        // Validate against GitHub API
-        const response = await fetch('https://api.github.com/user', {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'ProPR-CLI',
-            },
-        });
-
-        if (!response.ok) {
-            return null;
-        }
-
-        const profile = await response.json() as {
-            id: number;
-            login: string;
-            name: string | null;
-            email: string | null;
-            avatar_url: string | null;
-        };
-
-        const user: GitHubUser = {
-            id: String(profile.id),
-            login: profile.login,
-            username: profile.login,
-            displayName: profile.name || profile.login,
-            email: profile.email,
-            avatarUrl: profile.avatar_url,
-            accessToken: token,
-        };
-
-        // Cache for 5 minutes
-        await redis.set(
-            `${TOKEN_CACHE_PREFIX}${token}`,
-            JSON.stringify(user),
-            { EX: TOKEN_CACHE_TTL_SECONDS }
-        );
-
-        return user;
-    } catch (error) {
-        console.error('Bearer token validation error:', error);
-        return null;
-    }
 }
 
 // Time buffer before token expiration to trigger proactive refresh (5 minutes)

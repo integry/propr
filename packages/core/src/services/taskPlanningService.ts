@@ -18,7 +18,8 @@ export * from './taskPlanning/index.js';
 
 // Re-export from planning module
 export { BranchNotFoundError, PlanningFailedError, buildFullContext } from './planning/index.js';
-export { SmartFileSelection, PreviewStats, PreviewResult, GenerateContextPreviewOptions, generateContextPreview } from './planning/index.js';
+export type { SmartFileSelection, PreviewStats, PreviewResult, GenerateContextPreviewOptions } from './planning/index.js';
+export { generateContextPreview } from './planning/index.js';
 export { checkoutBranch } from './planning/index.js';
 export type { Granularity, TaskDraftConfig, ContextRepository } from './planning/index.js';
 
