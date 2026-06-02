@@ -6,6 +6,7 @@ interface SmartFileSelectionProps {
   smartSelection: PreviewResult['smartSelection'];
   totalTokens?: number;
   costEstimate?: number;
+  hideCostsAndTokens?: boolean;
   /** Callback to exclude a file from context. Receives the full file path. */
   onExcludeFile?: (filePath: string) => void;
 }
@@ -131,7 +132,7 @@ const TwoLineFileDisplay: React.FC<TwoLineFileDisplayProps> = ({ path, repositor
   );
 };
 
-export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection, totalTokens, costEstimate, onExcludeFile }) => {
+export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection, totalTokens, costEstimate, hideCostsAndTokens, onExcludeFile }) => {
   const { maxScore } = useMemo(() => {
     const max = Math.max(...smartSelection.map(f => f.score || 0), 1);
     return { maxScore: max };
@@ -149,26 +150,28 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
             Included Context ({smartSelection.length} files)
           </span>
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          {totalTokens ? (
-            <span className="text-gray-600">
-              <span className="font-medium text-gray-700">
-                {(totalTokens / 1000).toFixed(0)}k
-              </span>{' '}
-              tokens
-            </span>
-          ) : (
-            <span className="text-gray-400 italic">--</span>
-          )}
-          <span className="text-gray-300">•</span>
-          {costEstimate ? (
-            <span className="font-semibold text-gray-900">
-              ${costEstimate.toFixed(2)}
-            </span>
-          ) : (
-            <span className="text-gray-400 italic">--</span>
-          )}
-        </div>
+        {!hideCostsAndTokens && (
+          <div className="flex items-center gap-2 text-sm">
+            {totalTokens ? (
+              <span className="text-gray-600">
+                <span className="font-medium text-gray-700">
+                  {(totalTokens / 1000).toFixed(0)}k
+                </span>{' '}
+                tokens
+              </span>
+            ) : (
+              <span className="text-gray-400 italic">--</span>
+            )}
+            <span className="text-gray-300">•</span>
+            {costEstimate ? (
+              <span className="font-semibold text-gray-900">
+                ${costEstimate.toFixed(2)}
+              </span>
+            ) : (
+              <span className="text-gray-400 italic">--</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Scrollable file list */}

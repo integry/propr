@@ -1,15 +1,15 @@
 {
-  "version": "1.0.0",
-  "git_sha": "3762cb51",
+  "version": "0.8.1",
+  "git_sha": "56998ddd",
   "registry": "propr",
   "images": {
-    "app": "propr/app:1.0.0",
-    "ui": "propr/ui:1.0.0",
-    "docs": "propr/docs:1.0.0",
-    "agent-claude": "propr/agent-claude:1.0.0",
-    "agent-codex": "propr/agent-codex:1.0.0",
-    "agent-gemini": "propr/agent-gemini:1.0.0",
-    "agent-vibe": "propr/agent-vibe:1.0.0",
+    "app": "propr/app:0.8.1",
+    "ui": "propr/ui:0.8.1",
+    "docs": "propr/docs:0.8.1",
+    "agent-claude": "propr/agent-claude:0.8.1",
+    "agent-codex": "propr/agent-codex:0.8.1",
+    "agent-gemini": "propr/agent-gemini:0.8.1",
+    "agent-vibe": "propr/agent-vibe:0.8.1",
     "redis": "redis:7-alpine"
   }
 }

@@ -30,9 +30,10 @@ const GRANULARITY_OPTIONS: Array<{
 interface GranularitySelectorProps {
   value: Granularity;
   onChange: (granularity: Granularity) => void;
+  pressedOption?: Granularity;
 }
 
-export const GranularitySelector: React.FC<GranularitySelectorProps> = ({ value, onChange }) => {
+export const GranularitySelector: React.FC<GranularitySelectorProps> = ({ value, onChange, pressedOption }) => {
   const selectedOption = GRANULARITY_OPTIONS.find(o => o.id === value);
   return (
     <div className="space-y-2">
@@ -47,14 +48,17 @@ export const GranularitySelector: React.FC<GranularitySelectorProps> = ({ value,
       <div className="flex gap-2">
         {GRANULARITY_OPTIONS.map((option) => {
           const isSelected = value === option.id;
+          const isPressed = pressedOption === option.id;
           return (
             <button
               key={option.id}
               onClick={() => onChange(option.id)}
               className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-md border transition-all ${
-                isSelected
-                  ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
-                  : 'border-gray-200 bg-white hover:border-gray-300 text-gray-600'
+                isPressed
+                  ? 'border-indigo-600 bg-indigo-50 text-indigo-700 shadow-inner'
+                  : isSelected
+                    ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
+                    : 'border-gray-200 bg-white hover:border-gray-300 text-gray-600'
               }`}
               title={option.description}
             >

@@ -12,7 +12,7 @@
 # Tags produced per image:
 #   <registry>/<name>:<version>   — exact version from package.json
 #   <registry>/<name>:<sha>       — short git SHA
-#   <registry>/<name>:latest      — latest
+#   <registry>/<name>:latest      — latest, unless PUSH_LATEST=false
 
 set -euo pipefail
 
@@ -23,9 +23,14 @@ cd "$REPO_ROOT"
 DOCKERHUB_NS="${DOCKERHUB_NS:-propr}"
 GHCR_NS="${GHCR_NS:-ghcr.io/proprdev}"
 GHCR_PREFIX="${GHCR_PREFIX:-propr-}"   # GHCR uses flat namespace: propr-app instead of propr/app
+PUSH_LATEST="${PUSH_LATEST:-true}"
 
 VERSION="$(node -p "require('./package.json').version")"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
+BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+IMAGE_SOURCE="${IMAGE_SOURCE:-https://github.com/integry/propr}"
+IMAGE_URL="${IMAGE_URL:-https://github.com/integry/propr}"
+IMAGE_LICENSES="${IMAGE_LICENSES:-ISC}"
 
 resolve_vibe_cli_version() {
   if [[ -x node_modules/.bin/tsx ]]; then
@@ -94,38 +99,103 @@ tags_for() {
   if $PUSH_DH; then
     tags+=("$DOCKERHUB_NS/$name:$VERSION")
     tags+=("$DOCKERHUB_NS/$name:$GIT_SHA")
-    tags+=("$DOCKERHUB_NS/$name:latest")
+    if [[ "$PUSH_LATEST" == "true" ]]; then
+      tags+=("$DOCKERHUB_NS/$name:latest")
+    fi
   fi
   if $PUSH_GHCR; then
     tags+=("$GHCR_NS/$GHCR_PREFIX$name:$VERSION")
     tags+=("$GHCR_NS/$GHCR_PREFIX$name:$GIT_SHA")
-    tags+=("$GHCR_NS/$GHCR_PREFIX$name:latest")
+    if [[ "$PUSH_LATEST" == "true" ]]; then
+      tags+=("$GHCR_NS/$GHCR_PREFIX$name:latest")
+    fi
   fi
   printf '%s\n' "${tags[@]}"
+}
+
+manifest_ns() {
+  if [[ -n "${MANIFEST_NS:-}" ]]; then
+    echo "$MANIFEST_NS"
+  elif $PUSH_DH; then
+    echo "$DOCKERHUB_NS"
+  else
+    echo "$GHCR_NS"
+  fi
+}
+
+manifest_prefix() {
+  if [[ -n "${MANIFEST_PREFIX:-}" ]]; then
+    echo "$MANIFEST_PREFIX"
+  elif $PUSH_DH; then
+    echo ""
+  else
+    echo "$GHCR_PREFIX"
+  fi
+}
+
+agent_base_image() {
+  if [[ -n "${AGENT_BASE_IMAGE:-}" ]]; then
+    echo "$AGENT_BASE_IMAGE"
+  elif $PUSH_DH; then
+    echo "$DOCKERHUB_NS/agent-base:$VERSION"
+  else
+    echo "$GHCR_NS/${GHCR_PREFIX}agent-base:$VERSION"
+  fi
+}
+
+image_title() {
+  case "$1" in
+    app) echo "ProPR App" ;;
+    ui) echo "ProPR Web UI" ;;
+    docs) echo "ProPR Docs" ;;
+    agent-base) echo "ProPR Agent Base" ;;
+    agent-claude) echo "ProPR Claude Code Agent" ;;
+    agent-codex) echo "ProPR Codex Agent" ;;
+    agent-gemini) echo "ProPR Gemini Agent" ;;
+    launcher) echo "ProPR Launcher" ;;
+    *) echo "ProPR $1" ;;
+  esac
+}
+
+image_description() {
+  case "$1" in
+    app) echo "Backend service image for ProPR daemon, workers, and API roles." ;;
+    ui) echo "Static web UI image for operating ProPR." ;;
+    docs) echo "Static documentation site image for ProPR." ;;
+    agent-base) echo "Shared base image for ProPR coding agent execution containers." ;;
+    agent-claude) echo "Claude Code execution container for ProPR agent runs." ;;
+    agent-codex) echo "OpenAI Codex execution container for ProPR agent runs." ;;
+    agent-gemini) echo "Google Gemini CLI execution container for ProPR agent runs." ;;
+    launcher) echo "Single-command launcher that starts and manages the ProPR Docker stack." ;;
+    *) echo "ProPR production image." ;;
+  esac
 }
 
 # --- Rewrite launcher manifest ------------------------------------------------
 # The launcher image bakes in the image tags it should pull. Write a fresh
 # manifest so the baked tags match this build.
 write_manifest() {
+  local runtime_ns runtime_prefix
+  runtime_ns="$(manifest_ns)"
+  runtime_prefix="$(manifest_prefix)"
   cat > docker/launcher/manifest.json <<EOF
 {
   "version": "$VERSION",
   "git_sha": "$GIT_SHA",
-  "registry": "$DOCKERHUB_NS",
+  "registry": "$runtime_ns",
   "images": {
-    "app": "$DOCKERHUB_NS/app:$VERSION",
-    "ui": "$DOCKERHUB_NS/ui:$VERSION",
-    "docs": "$DOCKERHUB_NS/docs:$VERSION",
-    "agent-claude": "$DOCKERHUB_NS/agent-claude:$VERSION",
-    "agent-codex": "$DOCKERHUB_NS/agent-codex:$VERSION",
-    "agent-gemini": "$DOCKERHUB_NS/agent-gemini:$VERSION",
-    "agent-vibe": "$DOCKERHUB_NS/agent-vibe:$VERSION",
+    "app": "$runtime_ns/${runtime_prefix}app:$VERSION",
+    "ui": "$runtime_ns/${runtime_prefix}ui:$VERSION",
+    "docs": "$runtime_ns/${runtime_prefix}docs:$VERSION",
+    "agent-claude": "$runtime_ns/${runtime_prefix}agent-claude:$VERSION",
+    "agent-codex": "$runtime_ns/${runtime_prefix}agent-codex:$VERSION",
+    "agent-gemini": "$runtime_ns/${runtime_prefix}agent-gemini:$VERSION",
+    "agent-vibe": "$runtime_ns/${runtime_prefix}agent-vibe:$VERSION",
     "redis": "redis:7-alpine"
   }
 }
 EOF
-  echo "  → wrote docker/launcher/manifest.json (version=$VERSION)"
+  echo "  → wrote docker/launcher/manifest.json (version=$VERSION, registry=$runtime_ns/$runtime_prefix*)"
 }
 
 refresh_notices() {
@@ -146,14 +216,25 @@ build_image() {
     build_args+=("--platform" "$PLATFORM")
   fi
 
-  # Agent images extend propr/agent-base — pin to this build's version.
+  # Agent images extend agent-base — pin to the exact image built in this run.
   if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini || "$name" == agent-vibe ]]; then
-    build_args+=("--build-arg" "BASE_TAG=$VERSION")
+    build_args+=("--build-arg" "BASE_IMAGE=$(agent_base_image)")
   fi
   if [[ "$name" == agent-vibe ]]; then
     local vibe_cli_version="${VIBE_CLI_VERSION:-$(resolve_vibe_cli_version)}"
     build_args+=("--build-arg" "CLI_VERSION=$vibe_cli_version")
   fi
+
+  build_args+=(
+    "--label" "org.opencontainers.image.title=$(image_title "$name")"
+    "--label" "org.opencontainers.image.description=$(image_description "$name")"
+    "--label" "org.opencontainers.image.version=$VERSION"
+    "--label" "org.opencontainers.image.revision=$GIT_SHA"
+    "--label" "org.opencontainers.image.created=$BUILD_DATE"
+    "--label" "org.opencontainers.image.source=$IMAGE_SOURCE"
+    "--label" "org.opencontainers.image.url=$IMAGE_URL"
+    "--label" "org.opencontainers.image.licenses=$IMAGE_LICENSES"
+  )
 
   echo ""
   echo "━━━ Building: $name ━━━"
@@ -183,6 +264,7 @@ echo "  docker hub: $($PUSH_DH && echo "$DOCKERHUB_NS" || echo 'skip')"
 echo "  ghcr:       $($PUSH_GHCR && echo "$GHCR_NS/$GHCR_PREFIX*" || echo 'skip')"
 echo "  platform:   ${PLATFORM:-native}"
 echo "  push:       $PUSH"
+echo "  latest:     $PUSH_LATEST"
 [[ -n "$ONLY" ]] && echo "  only:       $ONLY"
 
 write_manifest
