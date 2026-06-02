@@ -31,14 +31,22 @@ const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
 
 interface TopModelsProps {
   limit?: number;
+  metricsOverride?: StatsOverviewResponse;
 }
 
-const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
-  const [metrics, setMetrics] = useState<StatsOverviewResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride }) => {
+  const [metrics, setMetrics] = useState<StatsOverviewResponse | null>(metricsOverride ?? null);
+  const [loading, setLoading] = useState(!metricsOverride);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (metricsOverride) {
+      setMetrics(metricsOverride);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
     const fetchMetrics = async () => {
       try {
         setLoading(true);
@@ -55,7 +63,7 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
     fetchMetrics();
     const interval = setInterval(fetchMetrics, 5 * 60 * 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [metricsOverride]);
 
   if (loading) {
     return (

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
+import { isDemoMode } from '../demoMode.js';
 
 interface StatusRoutesDeps {
   redisClient: RedisClientType;
@@ -10,6 +11,21 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
 
   async function getStatus(req: Request, res: Response): Promise<void> {
     try {
+      // In demo mode, return all-green status
+      if (isDemoMode()) {
+        res.json({
+          api: 'healthy',
+          redis: 'connected',
+          daemon: 'running',
+          worker: 'running',
+          workerCount: 3,
+          githubAuth: 'connected',
+          claudeAuth: 'connected',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
       const status: Record<string, unknown> = {
         api: 'healthy',
         redis: 'unknown',
@@ -19,28 +35,28 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         claudeAuth: 'unknown',
         timestamp: new Date().toISOString()
       };
-      
+
       try {
         await redisClient.ping();
         status.redis = 'connected';
-        
+
         const daemonHeartbeat = await redisClient.get('system:status:daemon');
         status.daemon = (daemonHeartbeat && Date.now() - parseInt(daemonHeartbeat) < 120000) ? 'running' : 'stopped';
-        
+
         const activeWorkers = await redisClient.sCard('system:status:workers');
         status.worker = activeWorkers > 0 ? 'running' : 'stopped';
         status.workerCount = activeWorkers;
-        
-        const githubAppConfigured = process.env.GH_APP_ID && 
-                                   process.env.GH_PRIVATE_KEY_PATH && 
+
+        const githubAppConfigured = process.env.GH_APP_ID &&
+                                   process.env.GH_PRIVATE_KEY_PATH &&
                                    process.env.GH_INSTALLATION_ID;
         status.githubAuth = githubAppConfigured ? 'connected' : 'disconnected';
-        
+
         status.claudeAuth = await checkClaudeStatus(redisClient);
       } catch {
         status.redis = 'disconnected';
       }
-      
+
       res.json(status);
     } catch (error) {
       console.error('Error in /api/status:', error);

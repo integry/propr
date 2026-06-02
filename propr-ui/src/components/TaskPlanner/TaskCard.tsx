@@ -16,6 +16,7 @@ interface TaskCardProps {
   onChange: (task: PlanTask) => void;
   onDelete: () => void;
   id?: string;
+  hideNotes?: boolean;
 }
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
@@ -26,6 +27,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   onChange,
   onDelete,
   id,
+  hideNotes = false,
 }, ref) => {
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
@@ -274,35 +276,37 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         </div>
 
         {/* SECTION 3: NOTES (Draft Style - Scratchpad) */}
-        <div className="bg-white rounded-lg mt-3 mb-8 p-4 border border-dashed border-gray-300">
-          <div className="flex items-start gap-3">
-            <div className="mt-1 p-1.5 text-gray-400">
-              <Pencil size={16} />
-            </div>
-            <div className="flex-1">
-              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">User Notes</span>
-              <RenderEditableContent
-                {...editableContentProps}
-                field="notes"
-                value={task.notes || ''}
-                placeholder="Add specific constraints, API keys, or reminders for the implementation phase..."
-                className="w-full text-sm text-gray-800 bg-transparent placeholder-gray-400"
-                markdownClassName="w-full text-sm text-gray-800"
-              />
-              {/* Attachments section */}
-              <div className="mt-3">
-                <AttachmentUploader
-                  files={task.attachments || []}
-                  draftId={draftId}
-                  isUploading={isUploadingAttachment}
-                  onUpload={handleAttachmentUpload}
-                  onRemove={handleAttachmentRemove}
-                  compact
+        {!hideNotes && (
+          <div className="bg-white rounded-lg mt-3 mb-8 p-4 border border-dashed border-gray-300">
+            <div className="flex items-start gap-3">
+              <div className="mt-1 p-1.5 text-gray-400">
+                <Pencil size={16} />
+              </div>
+              <div className="flex-1">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">User Notes</span>
+                <RenderEditableContent
+                  {...editableContentProps}
+                  field="notes"
+                  value={task.notes || ''}
+                  placeholder="Add specific constraints, API keys, or reminders for the implementation phase..."
+                  className="w-full text-sm text-gray-800 bg-transparent placeholder-gray-400"
+                  markdownClassName="w-full text-sm text-gray-800"
                 />
+                {/* Attachments section */}
+                <div className="mt-3">
+                  <AttachmentUploader
+                    files={task.attachments || []}
+                    draftId={draftId}
+                    isUploading={isUploadingAttachment}
+                    onUpload={handleAttachmentUpload}
+                    onRemove={handleAttachmentRemove}
+                    compact
+                  />
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Confirmation Dialog for clearing implementation */}
