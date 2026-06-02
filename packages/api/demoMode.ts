@@ -24,12 +24,12 @@ function readDemoModeFromEnvironment(): boolean {
 
 export function getDemoUser(): Express.User {
   return {
-    id: 'demo',
-    login: 'demo',
-    username: 'demo',
-    displayName: 'Demo User',
+    id: 'propr-demo',
+    login: 'propr-demo',
+    username: 'propr-demo',
+    displayName: 'propr-demo',
     email: null,
-    avatarUrl: null,
+    avatarUrl: 'https://avatars.githubusercontent.com/u/203882614?v=4',
   };
 }
 
