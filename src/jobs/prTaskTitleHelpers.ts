@@ -57,9 +57,12 @@ const MAX_PR_TITLE_IN_TASK_TITLE = 140;
 const MAX_TITLE_CONTEXT_LENGTH = 6000;
 
 const PROPR_GENERATED_PATTERNS = [
+    'AI Implementation Summary',
+    'AI Processing Completed',
     'Starting work on follow-up changes',
     'Starting AI Code Review',
     'AI Code Review Complete',
+    'Execution Details:',
     'Resolved merge conflicts',
     'Auto-resolving merge conflicts',
     'Auto-merged',
@@ -190,6 +193,10 @@ export function isUsefulTitleComment(comment: TitleComment): boolean {
 
     const authorType = comment.user?.type;
     const author = comment.user?.login || comment.author || '';
+    if (author.toLowerCase().includes('propr')
+        && PROPR_GENERATED_PATTERNS.some(pattern => lowerBody.includes(pattern.toLowerCase()))) {
+        return false;
+    }
     if (authorType === 'Bot' && author.toLowerCase().includes('propr')) return false;
     if (authorType === 'Bot' && COMMON_NOISY_BOT_AUTHORS.includes(author.toLowerCase())) return false;
     if (authorType === 'Bot' && NOISY_BOT_PATTERNS.some(pattern => lowerBody.includes(pattern.toLowerCase()))) {
@@ -238,6 +245,7 @@ function isPrTemplateNoiseLine(line: string): boolean {
 function cleanPrDescriptionForTitleContext(value: string | null | undefined): string {
     const body = stripHtmlComments(value || '');
     if (!body.trim()) return '';
+    if (PROPR_GENERATED_PATTERNS.some(pattern => body.toLowerCase().includes(pattern.toLowerCase()))) return '';
 
     const meaningfulParagraphs = body.split(/\n{2,}/)
         .map(paragraph => paragraph
@@ -337,6 +345,11 @@ function isFallbackContextHeader(line: string): boolean {
         /^Review Details:?$/i,
         /^Overall Evaluation:?$/i,
         /^Next step:?$/i,
+        /^AI Implementation Summary:?$/i,
+        /^AI Processing Completed:?$/i,
+        /^Execution Details:?$/i,
+        /^Changes:?$/i,
+        /^Implemented issue #\d+\.?$/i,
         /^[-*_]{3,}$/,
         /^\*\*AI Review Comments\b/i,
         /^\*\*Review by:\*\*/i,

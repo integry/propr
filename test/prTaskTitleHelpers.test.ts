@@ -124,6 +124,28 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.deepStrictEqual(selected.map(comment => comment.id), [3]);
     });
 
+    test('filters ProPR implementation summaries from title context even without bot type metadata', () => {
+        const selected = selectRecentUsefulPrComments([
+            {
+                id: 5,
+                body: [
+                    '## AI Implementation Summary',
+                    '',
+                    '**Execution Details:**',
+                    '- Issue: #1478',
+                    '- Status: Success',
+                    '',
+                    '**Summary:**',
+                    'Implemented issue #1478.',
+                ].join('\n'),
+                created_at: '2026-05-29T08:05:00Z',
+                user: { login: 'propr-dev[bot]', type: 'User' },
+            },
+            comments[2],
+        ], { limit: 2 });
+        assert.deepStrictEqual(selected.map(comment => comment.id), [3]);
+    });
+
     test('filters generated check comments from bot context', () => {
         const selected = selectRecentUsefulPrComments([
             {
@@ -237,6 +259,29 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.ok(!result.context.includes('Closes #100'));
     });
 
+    test('does not use prior AI implementation summaries as PR description fallback', () => {
+        const result = buildPrTaskTitleContext({
+            workflow: 'ultrafix',
+            pullRequestNumber: 1509,
+            prTitle: '[1508 by Claude Opus 4.6] Remove stale backwards-compatible facade modules',
+            recentComments: [],
+            prDescription: [
+                '## AI Implementation Summary',
+                '',
+                '**Execution Details:**',
+                '- Issue: #1508',
+                '- Status: Success',
+                '',
+                '**Summary:**',
+                'Implemented issue #1508.',
+            ].join('\n'),
+        });
+
+        assert.strictEqual(result.hasMeaningfulContext, false);
+        assert.strictEqual(result.context, '');
+        assert.strictEqual(result.includedPrDescription, false);
+    });
+
     test('includes meaningful slash-command instructions with recent PR context', () => {
         const result = buildPrTaskTitleContext({
             workflow: 'fix',
@@ -317,6 +362,18 @@ describe('prTaskTitleHelpers context selection', () => {
         ].join('\n'));
 
         assert.strictEqual(line, 'Handle conflict markers in src/auth.ts.');
+    });
+
+    test('fallback summary selection skips old AI implementation summary headings', () => {
+        const line = selectFallbackSummaryLine([
+            'Task: Ultrafix PR #1509: [1508 by Claude Opus 4.6] Remove stale backwards-compatible facade modules',
+            '',
+            'Recent useful PR comments (newest first):',
+            '- @propr-dev[bot] (PR comment): AI Implementation Summary',
+            '- @integry (PR comment): The task titles should mention removing stale facade modules.',
+        ].join('\n'));
+
+        assert.strictEqual(line, 'The task titles should mention removing stale facade modules.');
     });
 
     test('fallback summary selection uses merge conflict file names instead of marker body content', () => {
