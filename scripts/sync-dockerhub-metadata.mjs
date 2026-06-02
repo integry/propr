@@ -40,7 +40,26 @@ async function readJson(file) {
   return JSON.parse(await fs.readFile(file, 'utf8'));
 }
 
-async function dockerHubToken(username, token) {
+async function dockerHubLoginToken(username, token) {
+  const response = await fetch('https://hub.docker.com/v2/users/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password: token }),
+  });
+
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(`/v2/users/login failed (${response.status}): ${body}`);
+  }
+
+  const parsed = JSON.parse(body);
+  if (!parsed.token) {
+    throw new Error('/v2/users/login response did not include token');
+  }
+  return parsed.token;
+}
+
+async function dockerHubScopedToken(username, token) {
   const response = await fetch('https://hub.docker.com/v2/auth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -59,11 +78,42 @@ async function dockerHubToken(username, token) {
   return parsed.access_token;
 }
 
-async function patchJson(url, bearerToken, payload) {
+async function dockerHubAuthCandidates(username, token) {
+  const candidates = [];
+  const failures = [];
+
+  try {
+    const loginToken = await dockerHubLoginToken(username, token);
+    candidates.push({
+      label: 'Docker Hub account login token',
+      authorization: `JWT ${loginToken}`,
+    });
+  } catch (error) {
+    failures.push(error.message);
+  }
+
+  try {
+    const scopedToken = await dockerHubScopedToken(username, token);
+    candidates.push({
+      label: 'Docker Hub scoped bearer token',
+      authorization: `Bearer ${scopedToken}`,
+    });
+  } catch (error) {
+    failures.push(error.message);
+  }
+
+  if (candidates.length === 0) {
+    throw new Error(`Docker Hub authentication failed\n${failures.join('\n')}`);
+  }
+
+  return candidates;
+}
+
+async function patchJson(url, authorization, payload) {
   const response = await fetch(url, {
     method: 'PATCH',
     headers: {
-      Authorization: `Bearer ${bearerToken}`,
+      Authorization: authorization,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
@@ -77,19 +127,21 @@ async function patchJson(url, bearerToken, payload) {
   };
 }
 
-async function updateRepository(namespace, bearerToken, repo, payload) {
+async function updateRepository(namespace, authCandidates, repo, payload) {
   const endpoints = [
-    `https://hub.docker.com/v2/namespaces/${namespace}/repositories/${repo}`,
     `https://hub.docker.com/v2/repositories/${namespace}/${repo}/`,
+    `https://hub.docker.com/v2/namespaces/${namespace}/repositories/${repo}`,
   ];
 
   const failures = [];
-  for (const endpoint of endpoints) {
-    const result = await patchJson(endpoint, bearerToken, payload);
-    if (result.ok) return endpoint;
-    failures.push(`${endpoint} -> ${result.status}: ${result.body}`);
+  for (const auth of authCandidates) {
+    for (const endpoint of endpoints) {
+      const result = await patchJson(endpoint, auth.authorization, payload);
+      if (result.ok) return { endpoint, authLabel: auth.label };
+      failures.push(`${auth.label}: ${endpoint} -> ${result.status}: ${result.body}`);
 
-    if (![404, 405].includes(result.status)) break;
+      if (![403, 404, 405].includes(result.status)) break;
+    }
   }
 
   throw new Error(`Failed to update ${namespace}/${repo}\n${failures.join('\n')}`);
@@ -115,9 +167,9 @@ async function main() {
     throw new Error('DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are required');
   }
 
-  const bearerToken = options.dryRun
+  const authCandidates = options.dryRun
     ? null
-    : await dockerHubToken(process.env.DOCKERHUB_USERNAME, process.env.DOCKERHUB_TOKEN);
+    : await dockerHubAuthCandidates(process.env.DOCKERHUB_USERNAME, process.env.DOCKERHUB_TOKEN);
 
   for (const repo of repositories) {
     if (!repo.name || !repo.description || !repo.overview) {
@@ -138,8 +190,8 @@ async function main() {
       continue;
     }
 
-    const endpoint = await updateRepository(namespace, bearerToken, repo.name, payload);
-    console.log(`updated ${namespace}/${repo.name} via ${endpoint}`);
+    const result = await updateRepository(namespace, authCandidates, repo.name, payload);
+    console.log(`updated ${namespace}/${repo.name} via ${result.endpoint} (${result.authLabel})`);
   }
 }
 
