@@ -56,6 +56,13 @@ describe('prTaskTitleHelpers titles', () => {
         assert.ok(title.length < 170);
     });
 
+    test('does not use generated implementation-summary text as a task title suffix', () => {
+        assert.strictEqual(
+            buildPrTaskTitle({ workflow: 'ultrafix', pullRequestNumber: 1492, prTitle: 'AI Implementation Summary' }),
+            'Ultrafix PR #1492: Untitled pull request',
+        );
+    });
+
     test('resolves ultrafix workflow from metadata even when the concrete step is fix or review', () => {
         assert.strictEqual(resolvePrTaskWorkflow('fix', true), 'ultrafix');
         assert.strictEqual(resolvePrTaskWorkflow('review', true), 'ultrafix');
@@ -280,6 +287,25 @@ describe('prTaskTitleHelpers context selection', () => {
         assert.strictEqual(result.hasMeaningfulContext, false);
         assert.strictEqual(result.context, '');
         assert.strictEqual(result.includedPrDescription, false);
+    });
+
+    test('keeps previous useful comments ahead of a generic generated PR title', () => {
+        const result = buildPrTaskTitleContext({
+            workflow: 'ultrafix',
+            pullRequestNumber: 1492,
+            prTitle: 'AI Implementation Summary',
+            recentComments: [{
+                id: 42,
+                body: 'The titles should describe the recent request instead of repeating the implementation summary.',
+                created_at: '2026-06-02T23:20:00Z',
+                user: { login: 'integry', type: 'User' },
+            }],
+        });
+
+        assert.strictEqual(result.hasMeaningfulContext, true);
+        assert.ok(result.context.includes('Task: Ultrafix PR #1492: Untitled pull request'));
+        assert.ok(result.context.includes('The titles should describe the recent request'));
+        assert.ok(!result.context.includes('Task: Ultrafix PR #1492: AI Implementation Summary'));
     });
 
     test('includes meaningful slash-command instructions with recent PR context', () => {

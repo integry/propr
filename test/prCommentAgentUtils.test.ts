@@ -100,6 +100,39 @@ describe('generateSummaryTitle fallback behavior', () => {
         assert.strictEqual(title, 'Handle refresh token expiry');
     });
 
+    test('falls back to previous comment context when generated subtitle repeats implementation-summary text', async () => {
+        const title = await generateSummaryTitle(baseOptions({
+            workflowLabel: 'Ultrafix',
+            prTitle: 'AI Implementation Summary',
+            fallbackSubtitle: 'Ultrafix cycle requested without additional context.',
+            titleContext: [
+                'Task: Ultrafix PR #1492: Untitled pull request',
+                '',
+                'Recent useful PR comments (newest first):',
+                '- @integry (PR comment): The titles should describe the recent request instead of repeating the implementation summary.',
+            ].join('\n'),
+            analysisRunner: async () => 'Ultrafix: AI Implementation Summary',
+        }));
+
+        assert.strictEqual(title, 'Ultrafix: The titles should describe the recent request instead of repeating the impl...');
+    });
+
+    test('does not include generic PR titles in the title-generation prompt', async () => {
+        let prompt = '';
+        await generateSummaryTitle(baseOptions({
+            workflowLabel: 'Ultrafix',
+            prTitle: 'AI Implementation Summary',
+            titleContext: 'Recent useful PR comments (newest first):\n- @integry (PR comment): Use previous comment context.',
+            analysisRunner: async options => {
+                prompt = options.prompt;
+                return 'Use previous comment context';
+            },
+        }));
+
+        assert.ok(prompt.includes('for PR #123.'));
+        assert.ok(!prompt.includes('PR #123: AI Implementation Summary'));
+    });
+
     test('falls back when title generation exceeds the timeout', async () => {
         const title = await generateSummaryTitle(baseOptions({
             titleContext: 'Review feedback to address:\nHandle refresh token expiry quickly.',

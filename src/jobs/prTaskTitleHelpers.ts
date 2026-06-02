@@ -70,6 +70,13 @@ const PROPR_GENERATED_PATTERNS = [
     'Failed to resolve merge conflicts',
 ];
 
+const GENERIC_PR_TITLE_PATTERNS = [
+    /^AI Implementation Summary:?$/i,
+    /^Implementation Summary:?$/i,
+    /^AI Processing Completed:?$/i,
+    /^Implemented issue #\d+\.?$/i,
+];
+
 const NOISY_BOT_PATTERNS = [
     '### Checks Failed',
     'Linting or build errors were detected.',
@@ -134,8 +141,14 @@ export function buildPrTaskTitle(options: {
     pullRequestNumber: number;
     prTitle: string | null | undefined;
 }): string {
-    const title = truncate(compactWhitespace(options.prTitle || '') || 'Untitled pull request', MAX_PR_TITLE_IN_TASK_TITLE);
+    const rawTitle = compactWhitespace(options.prTitle || '');
+    const title = truncate(rawTitle && !isGenericPrTitleText(rawTitle) ? rawTitle : 'Untitled pull request', MAX_PR_TITLE_IN_TASK_TITLE);
     return `${WORKFLOW_LABELS[options.workflow]} PR #${options.pullRequestNumber}: ${title}`;
+}
+
+export function isGenericPrTitleText(value: string | null | undefined): boolean {
+    const title = compactWhitespace(value || '');
+    return !title || GENERIC_PR_TITLE_PATTERNS.some(pattern => pattern.test(title));
 }
 
 export function getPrTaskWorkflowLabel(workflow: PrTaskWorkflow): string {

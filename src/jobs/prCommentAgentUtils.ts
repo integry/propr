@@ -6,7 +6,7 @@ import type { WorkerStateManager } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { createSessionIdCallbackForPR, createContainerIdCallbackForPR } from './prCommentJobHelpers.js';
 import { agentResultToClaudeResponse } from './prCommentJobUtils.js';
-import { selectFallbackSummaryLine } from './prTaskTitleHelpers.js';
+import { isGenericPrTitleText, selectFallbackSummaryLine } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 import type { GitHubToken } from './githubTypes.js';
 
@@ -67,6 +67,22 @@ function buildFallbackGeneratedSubtitle(workflowLabel: string | undefined, first
         return clipped;
     }
     return `${prefix}: ${clipped}`;
+}
+
+function stripWorkflowPrefix(value: string, workflowLabel: string | undefined): string {
+    const prefix = workflowLabel || 'Follow-up';
+    return value.replace(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:?\\s*`, 'i'), '').trim();
+}
+
+function buildContextFallbackSubtitle(context: string, workflowLabel: string | undefined, deterministicFallback: string): string {
+    const firstLine = selectFallbackSummaryLine(context).replace(/\s+/g, ' ').trim();
+    if (!firstLine) return deterministicFallback;
+    return buildFallbackGeneratedSubtitle(workflowLabel, firstLine);
+}
+
+function isGenericGeneratedSubtitle(value: string, workflowLabel: string | undefined): boolean {
+    const withoutWorkflow = stripWorkflowPrefix(value, workflowLabel);
+    return isGenericPrTitleText(withoutWorkflow);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -145,7 +161,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
 
     try {
         const workflowText = workflowLabel ? `${workflowLabel} workflow` : 'PR workflow';
-        const prText = prTitle ? `PR #${pullRequestNumber}: ${prTitle}` : `PR #${pullRequestNumber}`;
+        const prText = prTitle && !isGenericPrTitleText(prTitle) ? `PR #${pullRequestNumber}: ${prTitle}` : `PR #${pullRequestNumber}`;
         const summaryRequest = `Summarize this ${workflowText} as a concise task subtitle for ${prText}. Focus on the concrete action or discussion context, not the slash command itself.\n\nContext:\n${contextToSummarize}`;
         const summarizationSettings = await (options.summarizationSettingsLoader || loadSummarizationSettings)();
         const configuredModel = summarizationSettings.agent_alias?.trim();
@@ -174,15 +190,16 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
         });
         const title = await withTimeout(titlePromise, timeoutMs, 'PR task title generation');
         const sanitizedTitle = sanitizeGeneratedSubtitle(title, deterministicFallback);
+        if (isGenericGeneratedSubtitle(sanitizedTitle, workflowLabel)) {
+            const fallbackFromContext = buildContextFallbackSubtitle(contextToSummarize, workflowLabel, deterministicFallback);
+            correlatedLogger.warn({ taskId, summaryTitle: sanitizedTitle, fallbackSubtitle: fallbackFromContext }, 'Generated PR task subtitle was generic, falling back to context.');
+            return fallbackFromContext;
+        }
         correlatedLogger.info({ taskId, summaryTitle: sanitizedTitle }, 'Generated AI summary for PR task subtitle');
         return sanitizedTitle;
     } catch (summaryError) {
         correlatedLogger.warn({ taskId, error: (summaryError as Error).message }, 'Failed to generate AI summary, falling back to truncation.');
-        if (contextToSummarize) {
-            const firstLine = selectFallbackSummaryLine(contextToSummarize).replace(/\s+/g, ' ').trim();
-            if (!firstLine) return deterministicFallback;
-            return buildFallbackGeneratedSubtitle(workflowLabel, firstLine);
-        }
+        if (contextToSummarize) return buildContextFallbackSubtitle(contextToSummarize, workflowLabel, deterministicFallback);
         return deterministicFallback;
     }
 }
