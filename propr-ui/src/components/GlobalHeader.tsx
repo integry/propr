@@ -29,21 +29,79 @@ interface GlobalHeaderProps {
   newPlanPressedOverride?: boolean;
 }
 
+interface HeaderProfileProps {
+  user: NonNullable<GlobalHeaderProps['user']>;
+  onLogout: () => void;
+}
+
+const getHeaderStatsValues = (
+  headerStats: HeaderStats,
+  override: GlobalHeaderProps['headerStatsOverride']
+) => ({
+  runningCount: override?.runningCount ?? headerStats.runningCount,
+  runningItems: override?.runningItems ?? headerStats.runningItems,
+  activePlans: override?.activePlans ?? headerStats.activePlans,
+  reviewGroups: override?.reviewGroups ?? headerStats.reviewGroups,
+  systemHealth: override?.systemHealth ?? headerStats.systemHealth,
+  dismissPlan: override?.dismissPlan ?? headerStats.dismissPlan,
+  dismissTask: override?.dismissTask ?? headerStats.dismissTask,
+});
+
+const HeaderProfile: React.FC<HeaderProfileProps> = ({ user, onLogout }) => (
+  <>
+    <a
+      href={`https://github.com/${user.username}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex items-center gap-3 hover:bg-slate-50 h-full px-2 transition-colors group"
+    >
+      <div className="hidden lg:flex flex-col items-end">
+        <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
+          {user.displayName || user.username}
+        </span>
+        <span className="text-xs text-gray-500 group-hover:text-gray-700 transition-colors">
+          @{user.username}
+        </span>
+      </div>
+
+      {user.avatarUrl ? (
+        <img
+          src={user.avatarUrl}
+          alt={user.username}
+          className="w-8 h-8 rounded-full border border-gray-200 group-hover:border-gray-300 transition-colors"
+        />
+      ) : (
+        <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs group-hover:bg-primary-200 transition-colors">
+          {user.username.slice(0, 2).toUpperCase()}
+        </div>
+      )}
+    </a>
+
+    <button
+      onClick={onLogout}
+      className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
+    >
+      Logout
+    </button>
+  </>
+);
+
 // Main GlobalHeader Component
 const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride, newPlanPressedOverride = false }) => {
   const navigate = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
 
-  // Use the centralized header stats hook
   const headerStats = useHeaderStats();
-  const runningCount = headerStatsOverride?.runningCount ?? headerStats.runningCount;
-  const runningItems = headerStatsOverride?.runningItems ?? headerStats.runningItems;
-  const activePlans = headerStatsOverride?.activePlans ?? headerStats.activePlans;
-  const reviewGroups = headerStatsOverride?.reviewGroups ?? headerStats.reviewGroups;
-  const systemHealth = headerStatsOverride?.systemHealth ?? headerStats.systemHealth;
-  const dismissPlan = headerStatsOverride?.dismissPlan ?? headerStats.dismissPlan;
-  const dismissTask = headerStatsOverride?.dismissTask ?? headerStats.dismissTask;
+  const {
+    runningCount,
+    runningItems,
+    activePlans,
+    reviewGroups,
+    systemHealth,
+    dismissPlan,
+    dismissTask,
+  } = getHeaderStatsValues(headerStats, headerStatsOverride);
 
   // Handle new plan navigation
   const handleNewPlan = useCallback(() => {
@@ -153,46 +211,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
           <SystemHealth systemHealth={systemHealth} />
         </div>
 
-        {/* Profile */}
-        {user && (
-          <a
-            href={`https://github.com/${user.username}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-3 hover:bg-slate-50 h-full px-2 transition-colors group"
-          >
-            <div className="hidden lg:flex flex-col items-end">
-              <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
-                {user.displayName || user.username}
-              </span>
-              <span className="text-xs text-gray-500 group-hover:text-gray-700 transition-colors">
-                @{user.username}
-              </span>
-            </div>
-
-            {user.avatarUrl ? (
-              <img
-                src={user.avatarUrl}
-                alt={user.username}
-                className="w-8 h-8 rounded-full border border-gray-200 group-hover:border-gray-300 transition-colors"
-              />
-            ) : (
-              <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs group-hover:bg-primary-200 transition-colors">
-                {user.username.slice(0, 2).toUpperCase()}
-              </div>
-            )}
-          </a>
-        )}
-
-        {/* Logout */}
-        {user && (
-          <button
-            onClick={onLogout}
-            className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
-          >
-            Logout
-          </button>
-        )}
+        {user && <HeaderProfile user={user} onLogout={onLogout} />}
       </div>
     </header>
   );

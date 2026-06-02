@@ -10,6 +10,62 @@ interface IssueCreationProgressIndicatorProps {
   spinnerRotationDegrees?: number;
 }
 
+const ProgressStatusIcon: React.FC<{
+  progress: IssueCreationProgress;
+  spinnerRotationDegrees?: number;
+}> = ({ progress, spinnerRotationDegrees }) => {
+  if (progress.status === 'in_progress') {
+    return (
+      <Loader2
+        size={14}
+        className={`text-blue-600 ${spinnerRotationDegrees === undefined ? 'animate-spin' : ''}`}
+        style={spinnerRotationDegrees === undefined ? undefined : { transform: `rotate(${spinnerRotationDegrees}deg)` }}
+      />
+    );
+  }
+  if (progress.status === 'completed') return <Check size={14} className="text-gray-400" />;
+  return <AlertCircle size={14} className="text-red-500" />;
+};
+
+const ProgressBody: React.FC<{
+  progress: IssueCreationProgress;
+  progressPercentage: number;
+}> = ({ progress, progressPercentage }) => {
+  if (progress.status === 'in_progress' && progress.totalCount > 0) {
+    return (
+      <>
+        <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden max-w-[200px]">
+          {progress.animatedCreatedCount !== undefined ? (
+            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${progressPercentage}%` }} />
+          ) : (
+            <motion.div
+              className="h-full bg-blue-500 rounded-full"
+              initial={{ width: 0 }}
+              animate={{ width: `${progressPercentage}%` }}
+              transition={{ duration: 0.3 }}
+            />
+          )}
+        </div>
+        <span className="text-xs text-gray-500 tabular-nums">
+          {progress.createdCount}/{progress.totalCount}
+        </span>
+      </>
+    );
+  }
+  if (progress.status === 'completed') {
+    return (
+      <span className="text-xs text-gray-500">
+        {progress.createdCount} issue{progress.createdCount !== 1 ? 's' : ''} created
+      </span>
+    );
+  }
+  return (
+    <span className="text-xs text-red-600">
+      {progress.error || 'Failed to create issues'}
+    </span>
+  );
+};
+
 export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndicatorProps> = ({ progress, onDismiss, stableLayout = false, spinnerRotationDegrees }) => {
   if (progress.status === 'idle') return null;
 
@@ -24,49 +80,12 @@ export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndic
       <div className="flex items-center gap-3 h-8 px-2.5 py-1.5 bg-slate-50 rounded-md border border-slate-100">
         {/* Status indicator */}
         <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
-          {progress.status === 'in_progress' ? (
-            <Loader2
-              size={14}
-              className={`text-blue-600 ${spinnerRotationDegrees === undefined ? 'animate-spin' : ''}`}
-              style={spinnerRotationDegrees === undefined ? undefined : { transform: `rotate(${spinnerRotationDegrees}deg)` }}
-            />
-          ) : progress.status === 'completed' ? (
-            <Check size={14} className="text-gray-400" />
-          ) : (
-            <AlertCircle size={14} className="text-red-500" />
-          )}
+          <ProgressStatusIcon progress={progress} spinnerRotationDegrees={spinnerRotationDegrees} />
         </div>
 
         {/* Progress bar and status */}
         <div className="flex-1 flex items-center gap-3">
-          {progress.status === 'in_progress' && progress.totalCount > 0 ? (
-            <>
-              {/* Thin progress bar */}
-              <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden max-w-[200px]">
-                {progress.animatedCreatedCount !== undefined ? (
-                  <div className="h-full bg-blue-500 rounded-full" style={{ width: `${progressPercentage}%` }} />
-                ) : (
-                  <motion.div
-                    className="h-full bg-blue-500 rounded-full"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${progressPercentage}%` }}
-                    transition={{ duration: 0.3 }}
-                  />
-                )}
-              </div>
-              <span className="text-xs text-gray-500 tabular-nums">
-                {progress.createdCount}/{progress.totalCount}
-              </span>
-            </>
-          ) : progress.status === 'completed' ? (
-            <span className="text-xs text-gray-500">
-              {progress.createdCount} issue{progress.createdCount !== 1 ? 's' : ''} created
-            </span>
-          ) : (
-            <span className="text-xs text-red-600">
-              {progress.error || 'Failed to create issues'}
-            </span>
-          )}
+          <ProgressBody progress={progress} progressPercentage={progressPercentage} />
 
           {/* Last created issue chip */}
           {progress.lastCreatedIssue && progress.status === 'in_progress' && (

@@ -29,6 +29,8 @@ interface CostPreviewProps {
   hideRefreshControls?: boolean;
 }
 
+type PreviewData = NonNullable<PreviewResult>;
+
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
   // Only use red when context actually exceeds the limit
   if (actualPercentage > 100) return 'bg-red-500';
@@ -222,6 +224,113 @@ const RefreshIndicator: React.FC<RefreshIndicatorProps> = ({
   );
 };
 
+const CostStatsRow: React.FC<{
+  stats: PreviewData['stats'];
+  smartSelection: PreviewData['smartSelection'];
+}> = ({ stats, smartSelection }) => (
+  <div className="flex items-center justify-between">
+    <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2">
+        <DollarSign className="w-5 h-5 text-gray-400" />
+        <span className="text-2xl font-bold text-gray-900">
+          ${stats.costEstimate.toFixed(3)}
+        </span>
+      </div>
+      <div className="text-sm text-gray-500">
+        <span className="font-medium">{stats.totalTokens.toLocaleString()}</span> tokens
+      </div>
+      {stats.usageEstimatePercent != null && stats.usageEstimatePercent > 0 && (
+        <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
+          <Activity className="w-3.5 h-3.5" />
+          <span className="font-medium">~{stats.usageEstimatePercent}%</span>
+          <span className="text-amber-500 hidden sm:inline">session usage</span>
+        </div>
+      )}
+    </div>
+
+    {smartSelection.length > 0 && (
+      <div className="flex items-center gap-2">
+        <Zap className="w-4 h-4 text-indigo-500" />
+        <span className="text-sm font-medium text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full">
+          {smartSelection.filter(f => f.source === 'auto').length} files auto-selected
+        </span>
+      </div>
+    )}
+  </div>
+);
+
+const ContextUsageBar: React.FC<{
+  usagePercentage: number;
+  maxTokens: number;
+  usageColor: string;
+}> = ({ usagePercentage, maxTokens, usageColor }) => (
+  <div className="space-y-2">
+    <div className="flex items-center justify-between text-xs text-gray-500">
+      <span>Context window usage</span>
+      <span>{usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k</span>
+    </div>
+    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+      <div
+        className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
+        style={{ width: `${usagePercentage}%` }}
+      />
+    </div>
+  </div>
+);
+
+const ContextRepositoriesIndicator: React.FC<{
+  contextRepositories?: ContextRepository[];
+}> = ({ contextRepositories }) => {
+  if (!contextRepositories?.length) return null;
+
+  return (
+    <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
+      <BookOpen className="w-4 h-4 text-blue-500" />
+      <span className="text-sm text-gray-600">
+        Including context from {contextRepositories.length} additional
+        {contextRepositories.length === 1 ? ' repository' : ' repositories'}
+      </span>
+    </div>
+  );
+};
+
+const WarningsAndRefresh: React.FC<{
+  warnings: string[];
+  showRefreshIndicator: boolean;
+  isContextStale?: boolean;
+  timeUntilRefresh?: number | null;
+  isPaused?: boolean;
+  onTogglePause?: () => void;
+  onManualRefresh: () => void;
+  isLoading: boolean;
+}> = ({ warnings, showRefreshIndicator, isContextStale, timeUntilRefresh, isPaused, onTogglePause, onManualRefresh, isLoading }) => {
+  if (warnings.length === 0 && !showRefreshIndicator) return null;
+
+  return (
+    <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+      <div className="space-y-1 flex-1">
+        {warnings.map((warning, idx) => (
+          <div key={idx} className="flex items-start gap-2 text-sm text-gray-600">
+            <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
+            <span>{warning}</span>
+          </div>
+        ))}
+      </div>
+
+      {showRefreshIndicator && (
+        <RefreshIndicator
+          isContextStale={isContextStale}
+          timeUntilRefresh={timeUntilRefresh}
+          isPaused={isPaused}
+          onTogglePause={onTogglePause}
+          onManualRefresh={onManualRefresh}
+          isLoading={isLoading}
+        />
+      )}
+    </div>
+  );
+};
+
 export const CostPreview: React.FC<CostPreviewProps> = ({
   preview,
   contextRepositories,
@@ -268,90 +377,28 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
     <div className="pt-4 border-t border-gray-200 space-y-4">
       {/* Main stats row */}
       {!hideCostsAndTokens && (
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <DollarSign className="w-5 h-5 text-gray-400" />
-              <span className="text-2xl font-bold text-gray-900">
-                ${stats.costEstimate.toFixed(3)}
-              </span>
-            </div>
-            <div className="text-sm text-gray-500">
-              <span className="font-medium">{stats.totalTokens.toLocaleString()}</span> tokens
-            </div>
-            {stats.usageEstimatePercent != null && stats.usageEstimatePercent > 0 && (
-              <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
-                <Activity className="w-3.5 h-3.5" />
-                <span className="font-medium">~{stats.usageEstimatePercent}%</span>
-                <span className="text-amber-500 hidden sm:inline">session usage</span>
-              </div>
-            )}
-          </div>
-
-          {smartSelection.length > 0 && (
-            <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-indigo-500" />
-              <span className="text-sm font-medium text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full">
-                {smartSelection.filter(f => f.source === 'auto').length} files auto-selected
-              </span>
-            </div>
-          )}
-        </div>
+        <CostStatsRow stats={stats} smartSelection={smartSelection} />
       )}
 
       {/* Context window usage bar */}
       {!hideCostsAndTokens && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs text-gray-500">
-            <span>Context window usage</span>
-            <span>{usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k</span>
-          </div>
-          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
-              style={{ width: `${usagePercentage}%` }}
-            />
-          </div>
-        </div>
+        <ContextUsageBar usagePercentage={usagePercentage} maxTokens={maxTokens} usageColor={usageColor} />
       )}
 
       {/* Context repositories indicator */}
-      {contextRepositories && contextRepositories.length > 0 && (
-        <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
-          <BookOpen className="w-4 h-4 text-blue-500" />
-          <span className="text-sm text-gray-600">
-            Including context from {contextRepositories.length} additional
-            {contextRepositories.length === 1 ? ' repository' : ' repositories'}
-          </span>
-        </div>
-      )}
+      <ContextRepositoriesIndicator contextRepositories={contextRepositories} />
 
       {/* Warnings and Refresh Indicator - styled as neutral info tips */}
-      {(warnings.length > 0 || showRefreshIndicator) && (
-        <div className="flex items-center justify-between pt-2 border-t border-gray-100">
-          {/* Warnings */}
-          <div className="space-y-1 flex-1">
-            {warnings.map((warning, idx) => (
-              <div key={idx} className="flex items-start gap-2 text-sm text-gray-600">
-                <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
-                <span>{warning}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Compact Refresh Indicator with Pause Control */}
-          {showRefreshIndicator && (
-            <RefreshIndicator
-              isContextStale={isContextStale}
-              timeUntilRefresh={hideRefreshControls ? null : timeUntilRefresh}
-              isPaused={isPaused}
-              onTogglePause={hideRefreshControls ? undefined : onTogglePause}
-              onManualRefresh={refreshHandler}
-              isLoading={preview.isLoading}
-            />
-          )}
-        </div>
-      )}
+      <WarningsAndRefresh
+        warnings={warnings}
+        showRefreshIndicator={showRefreshIndicator}
+        isContextStale={isContextStale}
+        timeUntilRefresh={hideRefreshControls ? null : timeUntilRefresh}
+        isPaused={isPaused}
+        onTogglePause={hideRefreshControls ? undefined : onTogglePause}
+        onManualRefresh={refreshHandler}
+        isLoading={preview.isLoading}
+      />
     </div>
   );
 };

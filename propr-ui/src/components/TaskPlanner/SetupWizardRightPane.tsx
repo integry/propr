@@ -55,6 +55,12 @@ interface SetupWizardRightPaneProps {
   hideCostsAndTokens?: boolean;
 }
 
+const getEmptySelectionMessage = (isNewMode: boolean | undefined, hasPreviewData: boolean): string => {
+  if (isNewMode) return 'Context preview will be available after entering a prompt';
+  if (hasPreviewData) return 'No files found in repository';
+  return 'Files will be selected after context analysis';
+};
+
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   contextLevel,
   onContextLevelChange,
@@ -82,6 +88,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   const showContextRepositories = !hideContextRepositories;
   const showCostPreview = !hideCostsAndTokens || (preview.isLoading && showPreviewProgress) || !!preview.error;
   const showBottomSection = showContextRepositories || showCostPreview;
+  const hasSmartSelection = !!smartSelection?.length;
 
   return (
     <div
@@ -98,10 +105,10 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
       </div>
 
       {/* Smart file selection - scrollable area, hidden on mobile when empty to save space */}
-      <div className={`flex-1 overflow-auto flex flex-col min-h-0 ${!smartSelection || smartSelection.length === 0 ? 'hidden md:flex' : ''}`}>
-        {smartSelection && smartSelection.length > 0 ? (
+      <div className={`flex-1 overflow-auto flex flex-col min-h-0 ${hasSmartSelection ? '' : 'hidden md:flex'}`}>
+        {hasSmartSelection ? (
           <SmartFileSelection
-            smartSelection={smartSelection}
+            smartSelection={smartSelection ?? []}
             totalTokens={stats?.totalTokens}
             costEstimate={stats?.costEstimate}
             hideCostsAndTokens={hideCostsAndTokens}
@@ -110,11 +117,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         ) : (
           <div className="p-3 md:p-5 space-y-4">
             <p className="text-sm text-gray-400 italic">
-              {isNewMode
-                ? 'Context preview will be available after entering a prompt'
-                : preview.data
-                  ? 'No files found in repository'
-                  : 'Files will be selected after context analysis'}
+              {getEmptySelectionMessage(isNewMode, !!preview.data)}
             </p>
             {isPreviewLoading && <FileSelectionSkeleton />}
           </div>

@@ -28,30 +28,14 @@ interface RefinementChatProps {
   stableComposerHeight?: number;
 }
 
-/** Maximum progress percentage to show when execution takes longer than estimated */
 const MAX_PROGRESS_PERCENT = 98;
-
-/** Threshold for showing humorous messages (60 seconds) */
 const LONG_ESTIMATE_THRESHOLD_MS = 60000;
-
-/** Interval for rotating humorous messages (10 seconds) */
 const MESSAGE_ROTATION_INTERVAL_MS = 10000;
-
-/** Humorous messages to display when estimate is > 60 seconds and taking longer than expected */
 const HUMOROUS_MESSAGES = [
-  "It may be slow, but it's worth the wait...",
-  "Reticulating splines...",
-  "Consulting the oracle...",
-  "Teaching AI to be patient...",
-  "Brewing some digital coffee...",
-  "Counting to infinity (almost there)...",
-  "Asking the hamsters to run faster...",
-  "Polishing the response...",
-  "Good things come to those who wait...",
-  "The AI is deep in thought...",
+  "It may be slow, but it's worth the wait...", "Reticulating splines...", "Consulting the oracle...", "Teaching AI to be patient...", "Brewing some digital coffee...",
+  "Counting to infinity (almost there)...", "Asking the hamsters to run faster...", "Polishing the response...", "Good things come to those who wait...", "The AI is deep in thought...",
 ];
 
-/** Format duration for display (e.g., "1m 30s") */
 const formatDuration = (ms: number): string => {
   if (ms < 1000) return `${Math.round(ms / 100) / 10}s`;
   const totalSeconds = Math.floor(ms / 1000);
@@ -74,7 +58,6 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
 
   const startTime = useMemo(() => new Date(startedAt).getTime(), [startedAt]);
 
-  // Determine if this is a long estimate (> 60 seconds)
   const isLongEstimate = estimatedDuration > LONG_ESTIMATE_THRESHOLD_MS;
 
   useEffect(() => {
@@ -83,21 +66,17 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
       const elapsedMs = now - startTime;
       setElapsed(elapsedMs);
 
-      // Calculate progress percentage, capped at MAX_PROGRESS_PERCENT until completion
       const rawProgress = (elapsedMs / estimatedDuration) * 100;
       setProgress(Math.min(rawProgress, MAX_PROGRESS_PERCENT));
     };
 
-    // Update immediately
     updateProgress();
 
-    // Update every 500ms for smooth progress
     const interval = setInterval(updateProgress, 500);
 
     return () => clearInterval(interval);
   }, [startTime, estimatedDuration]);
 
-  // Rotate humorous messages every 10 seconds for long estimates
   useEffect(() => {
     if (!isLongEstimate) return;
 
@@ -113,7 +92,6 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
   const remaining = Math.max(0, estimatedDuration - elapsed);
   const isOverEstimate = elapsed > estimatedDuration;
 
-  // Determine which message to show when over estimate
   const getOverEstimateMessage = () => {
     if (isLongEstimate) {
       return HUMOROUS_MESSAGES[messageIndex];
@@ -123,7 +101,6 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
 
   return (
     <div className="mt-2 mb-1">
-      {/* Progress bar */}
       <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
         <div
           className="h-full transition-all duration-500 ease-out rounded-full"
@@ -133,7 +110,6 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
           }}
         />
       </div>
-      {/* Progress info */}
       <div className="flex justify-between mt-1 text-xs text-gray-400">
         <span>
           {isOverEstimate ? (
@@ -148,18 +124,91 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
   );
 };
 
+const ChatHeader: React.FC<{ showEmptySubtitle: boolean }> = ({ showEmptySubtitle }) => (
+  <div className="px-4 py-3">
+    <div className="flex items-center">
+      <div className="w-10 flex-shrink-0 flex justify-center">
+        <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
+          <Bot size={16} className="text-white" />
+        </div>
+      </div>
+      <h3 className="font-semibold text-gray-900 ml-3">Assistant</h3>
+    </div>
+    {showEmptySubtitle && <p className="text-xs text-gray-500 mt-0.5 ml-[52px]">Refine your plan through conversation</p>}
+  </div>
+);
+
+const OnboardingCard: React.FC = () => (
+  <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+    <p className="text-sm text-gray-700 whitespace-pre-wrap">
+      I can help you refine this plan. You can:{'\n\n'}
+      <strong>Ask questions:</strong>{'\n'}
+      - "Why is task #2 structured this way?"{'\n'}
+      - "What would happen if we combined these tasks?"{'\n\n'}
+      <strong>Give instructions:</strong>{'\n'}
+      - "Make the testing task more detailed"{'\n'}
+      - "Split the backend task into two"{'\n'}
+      - "Add error handling to all tasks"
+    </p>
+  </div>
+);
+
+const getMessageBubbleClass = (role: Message['role']): string => {
+  if (role === 'user') return 'bg-white border border-indigo-100 text-slate-800 shadow-sm px-4 py-2 inline-block';
+  if (role === 'thinking') return 'bg-slate-200 text-gray-600 italic p-3 w-full max-w-xs';
+  return 'bg-transparent text-gray-800 inline-block';
+};
+
+const MessageIcon: React.FC<{ role: Message['role'] }> = ({ role }) => (
+  <div
+    className={`
+      w-8 h-8 rounded-full flex items-center justify-center
+      ${role === 'thinking' ? 'bg-gray-300' : role === 'assistant' ? 'bg-gray-700' : 'bg-white border border-slate-200'}
+    `}
+  >
+    {role === 'user' ? (
+      <User size={16} className="text-slate-600" />
+    ) : role === 'thinking' ? (
+      <Loader2 size={16} className="text-gray-600 animate-spin" />
+    ) : (
+      <Bot size={16} className="text-white" />
+    )}
+  </div>
+);
+
+const MessageRow: React.FC<{
+  message: Message; isLast: boolean; refinementProgress?: RefinementProgress;
+}> = ({ message, isLast, refinementProgress }) => (
+  <div className={`flex items-start pb-6 ${isLast ? '' : 'border-b border-slate-100'}`}>
+    <div className="w-10 flex-shrink-0 flex justify-center">
+      <MessageIcon role={message.role} />
+    </div>
+    <div className="flex-1 min-w-0 ml-3">
+      <div className={`rounded-lg ${getMessageBubbleClass(message.role)}`}>
+        <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+        {message.role === 'thinking' && refinementProgress?.startedAt && refinementProgress?.estimatedDuration && (
+          <RefinementProgressBar
+            startedAt={refinementProgress.startedAt}
+            estimatedDuration={refinementProgress.estimatedDuration}
+          />
+        )}
+      </div>
+    </div>
+  </div>
+);
+
+const getVisibleMessages = (syncInitialMessages: boolean, syncedMessages: Message[], messages: Message[]) => (
+  syncInitialMessages ? syncedMessages : messages
+);
+
 export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
   const isMobile = useIsMobile();
-  const initialMessagesKey = useMemo(
-    () => initialMessages?.map(m => `${m.id}:${m.role}:${m.content}:${m.timestamp}`).join('|') ?? '',
-    [initialMessages]
-  );
   const syncedMessages = useMemo<Message[]>(
     () => (initialMessages ?? []).map(m => ({
       ...m,
       timestamp: new Date(m.timestamp)
     })),
-    [initialMessagesKey]
+    [initialMessages]
   );
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
@@ -180,9 +229,8 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const visibleMessages = syncInitialMessages ? syncedMessages : messages;
+  const visibleMessages = getVisibleMessages(syncInitialMessages, syncedMessages, messages);
 
-  // Auto-resize textarea based on content
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (textarea) {
@@ -190,28 +238,24 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         textarea.style.height = `${stableComposerHeight}px`;
         return;
       }
-      // Reset height to auto to get the correct scrollHeight
       textarea.style.height = 'auto';
-      // Set to scrollHeight, capped by max-height via CSS
       textarea.style.height = `${textarea.scrollHeight}px`;
     }
-  }, []);
+  }, [stableComposerHeight]);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     if (disableAutoScroll) return;
     messagesEndRef.current?.scrollIntoView({ behavior: disableSmoothAutoScroll ? 'auto' : 'smooth' });
-  };
+  }, [disableAutoScroll, disableSmoothAutoScroll]);
 
   useEffect(() => {
     scrollToBottom();
-  }, [visibleMessages, disableSmoothAutoScroll, disableAutoScroll]);
+  }, [visibleMessages, scrollToBottom]);
 
-  // Adjust textarea height when input changes
   useEffect(() => {
     adjustTextareaHeight();
   }, [effectiveInput, adjustTextareaHeight]);
 
-  // Convert messages to ChatMessage format for persistence (excluding 'thinking' messages)
   const toChatMessages = useCallback((msgs: Message[]): ChatMessage[] => {
     return msgs
       .filter(m => m.role !== 'thinking')
@@ -223,7 +267,6 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       }));
   }, []);
 
-  // Handle keyboard shortcuts: Enter to submit, Shift+Enter for new line
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -236,7 +279,6 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-    // Call the backend abort endpoint to stop server-side processing
     if (onStop) {
       try {
         await onStop();
@@ -346,23 +388,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-      {/* Header - hidden on mobile since it's shown in the parent bottom sheet */}
-      {!isMobile && (
-        <div className="px-4 py-3">
-          <div className="flex items-center">
-            {/* Fixed 40px icon column to match message gutter alignment */}
-            <div className="w-10 flex-shrink-0 flex justify-center">
-              <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
-                <Bot size={16} className="text-white" />
-              </div>
-            </div>
-            <h3 className="font-semibold text-gray-900 ml-3">Assistant</h3>
-          </div>
-          {visibleMessages.length === 0 && (
-            <p className="text-xs text-gray-500 mt-0.5 ml-[52px]">Refine your plan through conversation</p>
-          )}
-        </div>
-      )}
+      {!isMobile && <ChatHeader showEmptySubtitle={visibleMessages.length === 0} />}
 
       {/* Messages area - no border, fills available space */}
       <div
@@ -384,67 +410,14 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             border-radius: 3px;
           }
         `}</style>
-        {/* Onboarding Card - shown only when chat is empty */}
-        {visibleMessages.length === 0 && (
-          <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
-            <p className="text-sm text-gray-700 whitespace-pre-wrap">
-              I can help you refine this plan. You can:{'\n\n'}
-              <strong>Ask questions:</strong>{'\n'}
-              - "Why is task #2 structured this way?"{'\n'}
-              - "What would happen if we combined these tasks?"{'\n\n'}
-              <strong>Give instructions:</strong>{'\n'}
-              - "Make the testing task more detailed"{'\n'}
-              - "Split the backend task into two"{'\n'}
-              - "Add error handling to all tasks"
-            </p>
-          </div>
-        )}
+        {visibleMessages.length === 0 && <OnboardingCard />}
         {visibleMessages.map((message, index) => (
-          <div
+          <MessageRow
             key={message.id}
-            className={`flex items-start pb-6 ${index < visibleMessages.length - 1 ? 'border-b border-slate-100' : ''}`}
-          >
-            {/* Fixed 40px icon column for gutter alignment */}
-            <div className="w-10 flex-shrink-0 flex justify-center">
-              <div
-                className={`
-                  w-8 h-8 rounded-full flex items-center justify-center
-                  ${message.role === 'thinking' ? 'bg-gray-300' : message.role === 'assistant' ? 'bg-gray-700' : 'bg-white border border-slate-200'}
-                `}
-              >
-                {message.role === 'user' ? (
-                  <User size={16} className="text-slate-600" />
-                ) : message.role === 'thinking' ? (
-                  <Loader2 size={16} className="text-gray-600 animate-spin" />
-                ) : (
-                  <Bot size={16} className="text-white" />
-                )}
-              </div>
-            </div>
-            {/* Message text column - never wraps under icon */}
-            <div className="flex-1 min-w-0 ml-3">
-              <div
-                className={`
-                  rounded-lg
-                  ${message.role === 'user'
-                    ? 'bg-white border border-indigo-100 text-slate-800 shadow-sm px-4 py-2 inline-block'
-                    : message.role === 'thinking'
-                      ? 'bg-slate-200 text-gray-600 italic p-3 w-full max-w-xs'
-                      : 'bg-transparent text-gray-800 inline-block'
-                  }
-                `}
-              >
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                {/* Show progress bar for thinking messages when progress data is available */}
-                {message.role === 'thinking' && refinementProgress?.startedAt && refinementProgress?.estimatedDuration && (
-                  <RefinementProgressBar
-                    startedAt={refinementProgress.startedAt}
-                    estimatedDuration={refinementProgress.estimatedDuration}
-                  />
-                )}
-              </div>
-            </div>
-          </div>
+            message={message}
+            isLast={index === visibleMessages.length - 1}
+            refinementProgress={refinementProgress}
+          />
         ))}
         <div ref={messagesEndRef} />
       </div>
