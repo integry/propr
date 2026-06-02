@@ -27,6 +27,10 @@ PUSH_LATEST="${PUSH_LATEST:-true}"
 
 VERSION="$(node -p "require('./package.json').version")"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
+BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+IMAGE_SOURCE="${IMAGE_SOURCE:-https://github.com/integry/propr}"
+IMAGE_URL="${IMAGE_URL:-https://github.com/integry/propr}"
+IMAGE_LICENSES="${IMAGE_LICENSES:-ISC}"
 
 # --- Arg parsing --------------------------------------------------------------
 PUSH=false
@@ -119,6 +123,34 @@ agent_base_image() {
   fi
 }
 
+image_title() {
+  case "$1" in
+    app) echo "ProPR App" ;;
+    ui) echo "ProPR Web UI" ;;
+    docs) echo "ProPR Docs" ;;
+    agent-base) echo "ProPR Agent Base" ;;
+    agent-claude) echo "ProPR Claude Code Agent" ;;
+    agent-codex) echo "ProPR Codex Agent" ;;
+    agent-gemini) echo "ProPR Gemini Agent" ;;
+    launcher) echo "ProPR Launcher" ;;
+    *) echo "ProPR $1" ;;
+  esac
+}
+
+image_description() {
+  case "$1" in
+    app) echo "Backend service image for ProPR daemon, workers, and API roles." ;;
+    ui) echo "Static web UI image for operating ProPR." ;;
+    docs) echo "Static documentation site image for ProPR." ;;
+    agent-base) echo "Shared base image for ProPR coding agent execution containers." ;;
+    agent-claude) echo "Claude Code execution container for ProPR agent runs." ;;
+    agent-codex) echo "OpenAI Codex execution container for ProPR agent runs." ;;
+    agent-gemini) echo "Google Gemini CLI execution container for ProPR agent runs." ;;
+    launcher) echo "Single-command launcher that starts and manages the ProPR Docker stack." ;;
+    *) echo "ProPR production image." ;;
+  esac
+}
+
 # --- Rewrite launcher manifest ------------------------------------------------
 # The launcher image bakes in the image tags it should pull. Write a fresh
 # manifest so the baked tags match this build.
@@ -167,6 +199,17 @@ build_image() {
   if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini ]]; then
     build_args+=("--build-arg" "BASE_IMAGE=$(agent_base_image)")
   fi
+
+  build_args+=(
+    "--label" "org.opencontainers.image.title=$(image_title "$name")"
+    "--label" "org.opencontainers.image.description=$(image_description "$name")"
+    "--label" "org.opencontainers.image.version=$VERSION"
+    "--label" "org.opencontainers.image.revision=$GIT_SHA"
+    "--label" "org.opencontainers.image.created=$BUILD_DATE"
+    "--label" "org.opencontainers.image.source=$IMAGE_SOURCE"
+    "--label" "org.opencontainers.image.url=$IMAGE_URL"
+    "--label" "org.opencontainers.image.licenses=$IMAGE_LICENSES"
+  )
 
   echo ""
   echo "━━━ Building: $name ━━━"
