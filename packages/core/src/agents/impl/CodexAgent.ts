@@ -89,31 +89,12 @@ export class CodexAgent implements Agent {
                 agentAlias: this.config.alias, sessionId: parsedOutput.sessionId
             }, 'Codex agent execution completed');
 
-            const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
+            const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, executionTime, prompt, usageMetrics });
 
-            const response: AgentExecutionResult = {
-                success: parsedOutput.success && result.exitCode === 0,
-                executionTimeMs: executionTime,
-                logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
-                exitCode: result.exitCode,
-                rawOutput: result.stdout,
-                modelUsed,
-                sessionId: parsedOutput.sessionId,
-                conversationId: parsedOutput.conversationId,
-                conversationLog: parsedOutput.conversationLog,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: parsedOutput.result ?? undefined,
-                prompt,
-                error: parsedOutput.error || (result.exitCode === 0 ? undefined : result.stderr?.trim() || undefined),
-                tokenUsage: parsedOutput.tokenUsage,
-                usageMetrics: usageMetrics ?? undefined
-            };
-
-            await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt, issueRef, model: modelUsed, isRetry, retryReason });
+            await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt, issueRef, model: response.modelUsed, isRetry, retryReason });
 
             const logEntry = createLlmLogFromAnalysis({
-                executionType: 'implementation', modelUsed,
+                executionType: 'implementation', modelUsed: response.modelUsed,
                 executionTimeMs: executionTime, success: response.success,
                 tokenUsage: parsedOutput.tokenUsage,
                 error: response.success ? undefined : (parsedOutput.error || 'Execution failed'),
@@ -132,7 +113,7 @@ export class CodexAgent implements Agent {
                     stderr: result.stderr, agentAlias: this.config.alias, error: parsedOutput.error
                 }, 'Codex agent execution failed');
             } else {
-                logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Codex agent execution succeeded');
+                logger.info({ issueNumber: issueRef.number, model: response.modelUsed, agentAlias: this.config.alias }, 'Codex agent execution succeeded');
                 verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
             }
 
@@ -156,6 +137,36 @@ export class CodexAgent implements Agent {
                 modifiedFiles: [], commitMessage: null, summary: undefined,
                 modelUsed: effectiveModel || 'unknown' };
         }
+    }
+
+    private buildTaskExecutionResult(params: {
+        parsedOutput: ReturnType<typeof parseCodexStreamOutput>;
+        result: { stdout: string; stderr?: string; exitCode: number | null };
+        effectiveModel?: string;
+        executionTime: number;
+        prompt: string;
+        usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
+    }): AgentExecutionResult {
+        const { parsedOutput, result, effectiveModel, executionTime, prompt, usageMetrics } = params;
+        const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
+        return {
+            success: parsedOutput.success && result.exitCode === 0,
+            executionTimeMs: executionTime,
+            logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
+            exitCode: result.exitCode,
+            rawOutput: result.stdout,
+            modelUsed,
+            sessionId: parsedOutput.sessionId,
+            conversationId: parsedOutput.conversationId,
+            conversationLog: parsedOutput.conversationLog,
+            modifiedFiles: [],
+            commitMessage: null,
+            summary: parsedOutput.result ?? undefined,
+            prompt,
+            error: parsedOutput.error || (result.exitCode === 0 ? undefined : result.stderr?.trim() || undefined),
+            tokenUsage: parsedOutput.tokenUsage,
+            usageMetrics: usageMetrics ?? undefined
+        };
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {

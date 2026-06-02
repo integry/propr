@@ -57,25 +57,25 @@ describe('Context Preview Types', () => {
 
 describe('Additional Context Budgeting', () => {
     test('full scan preview can use all remaining context budget for additional repositories', () => {
-        const budget = calculateAdditionalContextBudget(
-            100_000,
-            5_000,
-            0,
-            0,
-            90
-        );
+        const budget = calculateAdditionalContextBudget({
+            targetTokenLimit: 100_000,
+            simulatedTokens: 5_000,
+            attachmentTokens: 0,
+            smartSummaryTokens: 0,
+            contextLevel: 90
+        });
 
         assert.strictEqual(budget, 95_000);
     });
 
     test('non-full-scan preview keeps the existing additional repository cap', () => {
-        const budget = calculateAdditionalContextBudget(
-            100_000,
-            5_000,
-            0,
-            0,
-            50
-        );
+        const budget = calculateAdditionalContextBudget({
+            targetTokenLimit: 100_000,
+            simulatedTokens: 5_000,
+            attachmentTokens: 0,
+            smartSummaryTokens: 0,
+            contextLevel: 50
+        });
 
         assert.strictEqual(budget, 80_000);
     });
