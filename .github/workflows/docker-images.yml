@@ -15,6 +15,11 @@ on:
         required: true
         default: 'ghcr.io/integry'
         type: string
+      dockerhub_namespace:
+        description: 'Docker Hub namespace to publish under'
+        required: true
+        default: 'propr'
+        type: string
       push_latest:
         description: 'Also update the latest tags'
         required: true
@@ -35,6 +40,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, propr]
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
+      DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
       PUSH_LATEST: ${{ github.event.inputs.push_latest || 'true' }}
 
     steps:
@@ -87,3 +93,26 @@ jobs:
 
       - name: Push GHCR images
         run: ./scripts/build-images.sh --push --ghcr
+
+      - name: Login to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are required" >&2
+            exit 1
+          fi
+
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Build Docker Hub-tagged images
+        run: ./scripts/build-images.sh --dockerhub
+
+      - name: Smoke test Docker Hub app image
+        env:
+          APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}
+        run: npm run images:smoke
+
+      - name: Push Docker Hub images
+        run: ./scripts/build-images.sh --push --dockerhub
