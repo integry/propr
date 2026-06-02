@@ -45,7 +45,7 @@ const AttachmentsSection: React.FC<{
         disabled={isUploading || isGenerating}
         className={`flex items-center gap-1.5 px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors ${
           isGenerating ? 'opacity-50 cursor-not-allowed' : ''
-        } ${attachButtonPressed ? 'bg-gray-300 shadow-inner' : ''}`}
+        } ${attachButtonPressed ? 'bg-gray-200 shadow-inner' : ''}`}
       >
         {isUploading ? (
           <>

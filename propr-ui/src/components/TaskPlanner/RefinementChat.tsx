@@ -20,6 +20,8 @@ interface RefinementChatProps {
   inputValueOverride?: string;
   isLoadingOverride?: boolean;
   sendButtonPressed?: boolean;
+  sendButtonForceEnabled?: boolean;
+  showStopButtonOverride?: boolean;
   syncInitialMessages?: boolean;
   disableSmoothAutoScroll?: boolean;
   disableAutoScroll?: boolean;
@@ -146,7 +148,7 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
   );
 };
 
-export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, inputValueOverride, isLoadingOverride, sendButtonPressed = false, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
+export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
   const isMobile = useIsMobile();
   const initialMessagesKey = useMemo(
     () => initialMessages?.map(m => `${m.id}:${m.role}:${m.content}:${m.timestamp}`).join('|') ?? '',
@@ -173,6 +175,8 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   const [isLoading, setIsLoading] = useState(false);
   const effectiveInput = inputValueOverride ?? input;
   const effectiveIsLoading = isLoadingOverride ?? isLoading;
+  const showStopButton = effectiveIsLoading && (showStopButtonOverride ?? true);
+  const submitDisabled = !sendButtonForceEnabled && !effectiveInput.trim();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -462,7 +466,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             />
             {/* Keyboard shortcut hint - hidden on mobile */}
             {!isMobile && <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>}
-            {effectiveIsLoading ? (
+            {showStopButton ? (
               <button
                 type="button"
                 onClick={handleStop}
@@ -474,8 +478,8 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             ) : (
               <button
                 type="submit"
-                disabled={!effectiveInput.trim()}
-                className={`p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed ${sendButtonPressed ? 'bg-indigo-800' : 'bg-indigo-600'}`}
+                disabled={submitDisabled}
+                className={`p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed ${sendButtonPressed ? 'bg-indigo-700 shadow-inner' : 'bg-indigo-600'}`}
               >
                 <Send size={16} />
               </button>

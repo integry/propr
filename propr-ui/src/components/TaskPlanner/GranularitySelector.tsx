@@ -55,7 +55,7 @@ export const GranularitySelector: React.FC<GranularitySelectorProps> = ({ value,
               onClick={() => onChange(option.id)}
               className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-md border transition-all ${
                 isPressed
-                  ? 'border-indigo-700 bg-indigo-200 text-indigo-900'
+                  ? 'border-indigo-600 bg-indigo-50 text-indigo-700 shadow-inner'
                   : isSelected
                     ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
                     : 'border-gray-200 bg-white hover:border-gray-300 text-gray-600'

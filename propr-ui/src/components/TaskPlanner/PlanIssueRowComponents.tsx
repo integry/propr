@@ -129,7 +129,7 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
       transition-colors
       ${pressed && !implementing && hasAgent
         ? isFirstPending
-          ? 'bg-primary-800 text-white'
+          ? 'bg-primary-700 text-white shadow-inner'
           : 'bg-amber-100 border border-amber-600 text-amber-900'
         : getImplementButtonClassName(implementing, hasAgent, isFirstPending)}
     `}
