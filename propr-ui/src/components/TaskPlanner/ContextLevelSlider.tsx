@@ -6,6 +6,7 @@ interface ContextLevelSliderProps {
   onChange: (level: number) => void;
   compress?: boolean;
   onCompressChange?: (compress: boolean) => void;
+  hideCostLabels?: boolean;
 }
 
 // Level thresholds for determining which config to use
@@ -55,7 +56,7 @@ const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
   },
 };
 
-export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange }) => {
+export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, hideCostLabels }) => {
   // Get the current level type and config
   const levelType = getLevelType(value);
   const config = LEVEL_CONFIGS[levelType];
@@ -90,8 +91,12 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
         <div className={`flex items-center gap-1 sm:gap-2 text-xs ${levelType === 'focused' ? 'text-sky-400' : levelType === 'expanded' ? 'text-blue-500' : 'text-indigo-600'}`}>
           <SpeedIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-gray-500" />
           <span className="hidden sm:inline">{levelType === 'focused' ? 'Fast' : levelType === 'expanded' ? 'Moderate' : 'Slower'}</span>
-          <span className="text-gray-400">•</span>
-          <span>{config.costText}</span>
+          {!hideCostLabels && (
+            <>
+              <span className="text-gray-400">•</span>
+              <span>{config.costText}</span>
+            </>
+          )}
           <span className="text-gray-400 hidden sm:inline">•</span>
           <span className="hidden sm:inline">{levelType === 'focused' ? 'Standard' : levelType === 'expanded' ? 'High' : 'Max'}</span>
         </div>

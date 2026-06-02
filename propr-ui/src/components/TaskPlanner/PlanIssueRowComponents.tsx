@@ -116,8 +116,8 @@ export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) =
   );
 };
 
-export interface ImplementButtonProps { implementing: boolean; disabled?: boolean; hasAgent: boolean; isFirstPending: boolean; onClick: () => void; }
-export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, disabled = false, hasAgent, isFirstPending, onClick }) => (
+export interface ImplementButtonProps { implementing: boolean; disabled?: boolean; hasAgent: boolean; isFirstPending: boolean; pressed?: boolean; onClick: () => void; }
+export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, disabled = false, hasAgent, isFirstPending, pressed = false, onClick }) => (
   <button
     onClick={onClick}
     disabled={implementing || disabled || !hasAgent}
@@ -127,7 +127,11 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
       text-xs sm:text-sm font-medium
       rounded-md
       transition-colors
-      ${getImplementButtonClassName(implementing, hasAgent, isFirstPending)}
+      ${pressed && !implementing && hasAgent
+        ? isFirstPending
+          ? 'bg-primary-800 text-white'
+          : 'bg-amber-100 border border-amber-600 text-amber-900'
+        : getImplementButtonClassName(implementing, hasAgent, isFirstPending)}
     `}
     title={getImplementButtonTitle(hasAgent, isFirstPending)}
   >
@@ -189,6 +193,7 @@ export interface RowActionsProps {
   plannerUltrafixMaxCycles?: number | null;
   disableImplementation?: boolean;
   showUltrafixControls?: boolean;
+  implementButtonPressed?: boolean;
   handleMultiToggle: (multi: boolean) => void;
   handleMultiModelChange: (models: AgentModelPair[]) => void;
   handleImplementClick: () => void;
@@ -216,6 +221,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
   plannerUltrafixMaxCycles,
   disableImplementation = false,
   showUltrafixControls = true,
+  implementButtonPressed = false,
   handleMultiToggle,
   handleMultiModelChange,
   handleImplementClick,
@@ -289,6 +295,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
           disabled={disableImplementation}
           hasAgent={hasAgent}
           isFirstPending={isFirstPending}
+          pressed={implementButtonPressed}
           onClick={handleImplementClick}
         />
       )}

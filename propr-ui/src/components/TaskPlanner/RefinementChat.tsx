@@ -17,6 +17,13 @@ interface RefinementChatProps {
   onMessagesChange?: (messages: ChatMessage[]) => void;
   refinementProgress?: RefinementProgress;
   onStop?: () => Promise<void>;
+  inputValueOverride?: string;
+  isLoadingOverride?: boolean;
+  sendButtonPressed?: boolean;
+  syncInitialMessages?: boolean;
+  disableSmoothAutoScroll?: boolean;
+  disableAutoScroll?: boolean;
+  stableComposerHeight?: number;
 }
 
 /** Maximum progress percentage to show when execution takes longer than estimated */
@@ -139,8 +146,19 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
   );
 };
 
-export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop }) => {
+export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, inputValueOverride, isLoadingOverride, sendButtonPressed = false, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
   const isMobile = useIsMobile();
+  const initialMessagesKey = useMemo(
+    () => initialMessages?.map(m => `${m.id}:${m.role}:${m.content}:${m.timestamp}`).join('|') ?? '',
+    [initialMessages]
+  );
+  const syncedMessages = useMemo<Message[]>(
+    () => (initialMessages ?? []).map(m => ({
+      ...m,
+      timestamp: new Date(m.timestamp)
+    })),
+    [initialMessagesKey]
+  );
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
       // Map initial messages directly to internal format - seeded messages from backend should be displayed
@@ -153,14 +171,21 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const effectiveInput = inputValueOverride ?? input;
+  const effectiveIsLoading = isLoadingOverride ?? isLoading;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const visibleMessages = syncInitialMessages ? syncedMessages : messages;
 
   // Auto-resize textarea based on content
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (textarea) {
+      if (stableComposerHeight !== undefined) {
+        textarea.style.height = `${stableComposerHeight}px`;
+        return;
+      }
       // Reset height to auto to get the correct scrollHeight
       textarea.style.height = 'auto';
       // Set to scrollHeight, capped by max-height via CSS
@@ -169,17 +194,18 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   }, []);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (disableAutoScroll) return;
+    messagesEndRef.current?.scrollIntoView({ behavior: disableSmoothAutoScroll ? 'auto' : 'smooth' });
   };
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [visibleMessages, disableSmoothAutoScroll, disableAutoScroll]);
 
   // Adjust textarea height when input changes
   useEffect(() => {
     adjustTextareaHeight();
-  }, [input, adjustTextareaHeight]);
+  }, [effectiveInput, adjustTextareaHeight]);
 
   // Convert messages to ChatMessage format for persistence (excluding 'thinking' messages)
   const toChatMessages = useCallback((msgs: Message[]): ChatMessage[] => {
@@ -262,12 +288,12 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if (!effectiveInput.trim() || effectiveIsLoading) return;
 
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
-      content: input.trim(),
+      content: effectiveInput.trim(),
       timestamp: new Date()
     };
 
@@ -328,7 +354,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             </div>
             <h3 className="font-semibold text-gray-900 ml-3">Assistant</h3>
           </div>
-          {messages.length === 0 && (
+          {visibleMessages.length === 0 && (
             <p className="text-xs text-gray-500 mt-0.5 ml-[52px]">Refine your plan through conversation</p>
           )}
         </div>
@@ -355,7 +381,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
           }
         `}</style>
         {/* Onboarding Card - shown only when chat is empty */}
-        {messages.length === 0 && (
+        {visibleMessages.length === 0 && (
           <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
             <p className="text-sm text-gray-700 whitespace-pre-wrap">
               I can help you refine this plan. You can:{'\n\n'}
@@ -369,10 +395,10 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             </p>
           </div>
         )}
-        {messages.map((message, index) => (
+        {visibleMessages.map((message, index) => (
           <div
             key={message.id}
-            className={`flex items-start pb-6 ${index < messages.length - 1 ? 'border-b border-slate-100' : ''}`}
+            className={`flex items-start pb-6 ${index < visibleMessages.length - 1 ? 'border-b border-slate-100' : ''}`}
           >
             {/* Fixed 40px icon column for gutter alignment */}
             <div className="w-10 flex-shrink-0 flex justify-center">
@@ -425,17 +451,18 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
           <div className={`flex gap-2 items-end bg-white rounded-lg shadow-lg border border-slate-200 ${isMobile ? 'p-3' : 'p-4'}`}>
             <textarea
               ref={textareaRef}
-              value={input}
+              value={effectiveInput}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask the AI to refine the plan..."
-              disabled={isLoading}
+              disabled={effectiveIsLoading}
               rows={1}
               className={`flex-1 px-3 py-2 bg-transparent focus:outline-none disabled:bg-gray-50 resize-none min-h-[40px] overflow-y-auto text-sm ${isMobile ? 'max-h-[120px]' : 'max-h-[200px]'}`}
+              style={stableComposerHeight === undefined ? undefined : { height: stableComposerHeight, minHeight: stableComposerHeight, maxHeight: stableComposerHeight }}
             />
             {/* Keyboard shortcut hint - hidden on mobile */}
             {!isMobile && <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>}
-            {isLoading ? (
+            {effectiveIsLoading ? (
               <button
                 type="button"
                 onClick={handleStop}
@@ -447,8 +474,8 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             ) : (
               <button
                 type="submit"
-                disabled={!input.trim()}
-                className="p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                disabled={!effectiveInput.trim()}
+                className={`p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed ${sendButtonPressed ? 'bg-indigo-800' : 'bg-indigo-600'}`}
               >
                 <Send size={16} />
               </button>

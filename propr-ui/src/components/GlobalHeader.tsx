@@ -26,10 +26,11 @@ interface GlobalHeaderProps {
     dismissPlan?: HeaderStats['dismissPlan'];
     dismissTask?: HeaderStats['dismissTask'];
   };
+  newPlanPressedOverride?: boolean;
 }
 
 // Main GlobalHeader Component
-const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride }) => {
+const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride, newPlanPressedOverride = false }) => {
   const navigate = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
@@ -125,7 +126,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
           onClick={handleNewPlan}
           disabled={isDemoMode}
           title={isDemoMode ? 'Demo mode is read-only' : 'New Plan'}
-          className="flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+          className={`flex items-center gap-2 px-4 py-1.5 text-white text-sm font-medium hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed ${newPlanPressedOverride ? 'bg-teal-800' : 'bg-teal-600'}`}
         >
           <ScrollText className="w-4 h-4" />
           <span>New Plan</span>
@@ -136,7 +137,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       <button
         onClick={handleNewPlan}
         disabled={isDemoMode}
-        className="md:hidden flex items-center px-4 bg-teal-600 text-white hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+        className={`md:hidden flex items-center px-4 text-white hover:bg-teal-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed ${newPlanPressedOverride ? 'bg-teal-800' : 'bg-teal-600'}`}
         aria-label="New Plan"
         title={isDemoMode ? 'Demo mode is read-only' : 'New Plan'}
       >

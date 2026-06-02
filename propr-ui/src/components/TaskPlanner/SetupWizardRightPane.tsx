@@ -50,6 +50,9 @@ interface SetupWizardRightPaneProps {
   showPreviewProgress?: boolean;
   // File exclusion callback
   onExcludeFile?: (filePath: string) => void;
+  hideContextRepositories?: boolean;
+  hideRefreshControls?: boolean;
+  hideCostsAndTokens?: boolean;
 }
 
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
@@ -72,7 +75,14 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   previewTrace,
   showPreviewProgress,
   onExcludeFile,
+  hideContextRepositories,
+  hideRefreshControls,
+  hideCostsAndTokens,
 }) => {
+  const showContextRepositories = !hideContextRepositories;
+  const showCostPreview = !hideCostsAndTokens || (preview.isLoading && showPreviewProgress) || !!preview.error;
+  const showBottomSection = showContextRepositories || showCostPreview;
+
   return (
     <div
       data-testid="setup-wizard-right-pane"
@@ -83,6 +93,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         <ContextLevelSlider
           value={contextLevel}
           onChange={onContextLevelChange}
+          hideCostLabels={hideCostsAndTokens}
         />
       </div>
 
@@ -93,6 +104,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
             smartSelection={smartSelection}
             totalTokens={stats?.totalTokens}
             costEstimate={stats?.costEstimate}
+            hideCostsAndTokens={hideCostsAndTokens}
             onExcludeFile={onExcludeFile}
           />
         ) : (
@@ -110,29 +122,37 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
       </div>
 
       {/* Bottom section - Context repositories and Cost preview */}
-      <div className="flex-shrink-0 border-t border-gray-300 p-3 md:p-5 space-y-3 md:space-y-4 bg-gray-50">
-        {/* Context Repositories Section */}
-        <ContextRepositoriesSection
-          repositories={contextRepositories}
-          availableRepos={availableRepos}
-          onAdd={onAddContextRepo}
-          onRemove={onRemoveContextRepo}
-        />
+      {showBottomSection && (
+        <div className="flex-shrink-0 border-t border-gray-300 p-3 md:p-5 space-y-3 md:space-y-4 bg-gray-50">
+          {/* Context Repositories Section */}
+          {showContextRepositories && (
+            <ContextRepositoriesSection
+              repositories={contextRepositories}
+              availableRepos={availableRepos}
+              onAdd={onAddContextRepo}
+              onRemove={onRemoveContextRepo}
+            />
+          )}
 
-        {/* Cost Preview with Refresh Indicator */}
-        <CostPreview
-          preview={preview}
-          contextRepositories={contextRepositories}
-          isContextStale={isContextStale}
-          timeUntilRefresh={timeUntilRefresh}
-          isPaused={isPaused}
-          onTogglePause={onTogglePause}
-          onManualRefresh={onManualRefresh}
-          isNewMode={isNewMode}
-          previewTrace={previewTrace}
-          showPreviewProgress={showPreviewProgress}
-        />
-      </div>
+          {/* Cost Preview with Refresh Indicator */}
+          {showCostPreview && (
+            <CostPreview
+              preview={preview}
+              contextRepositories={showContextRepositories ? contextRepositories : []}
+              isContextStale={isContextStale}
+              timeUntilRefresh={hideRefreshControls ? null : timeUntilRefresh}
+              isPaused={isPaused}
+              onTogglePause={hideRefreshControls ? undefined : onTogglePause}
+              onManualRefresh={hideRefreshControls ? undefined : onManualRefresh}
+              isNewMode={isNewMode}
+              previewTrace={previewTrace}
+              showPreviewProgress={showPreviewProgress}
+              hideCostsAndTokens={hideCostsAndTokens}
+              hideRefreshControls={hideRefreshControls}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 };
