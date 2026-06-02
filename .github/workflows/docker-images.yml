@@ -118,6 +118,7 @@ jobs:
         run: ./scripts/build-images.sh --push --dockerhub
 
       - name: Sync Docker Hub metadata
+        continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}

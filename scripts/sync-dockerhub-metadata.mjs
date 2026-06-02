@@ -144,7 +144,10 @@ async function updateRepository(namespace, authCandidates, repo, payload) {
     }
   }
 
-  throw new Error(`Failed to update ${namespace}/${repo}\n${failures.join('\n')}`);
+  const hint = failures.some((failure) => failure.includes('insufficient scope'))
+    ? '\n\nDocker Hub accepted the credentials but rejected repository metadata updates. Image push tokens may not be enough here; this endpoint appears to require repository admin scope for the namespace.'
+    : '';
+  throw new Error(`Failed to update ${namespace}/${repo}\n${failures.join('\n')}${hint}`);
 }
 
 async function main() {
