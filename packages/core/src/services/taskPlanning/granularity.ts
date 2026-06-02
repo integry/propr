@@ -3,7 +3,7 @@
  */
 
 import type { Plan, PlanItem } from '../../claude/prompts/plannerPrompts.js';
-import type { Granularity, MinimalLogger } from '../planningHelpers.js';
+import type { Granularity, MinimalLogger } from '../planning/index.js';
 import type { EnforceGranularityResult } from './types.js';
 
 /**

@@ -3,7 +3,7 @@
  */
 
 import logger from '../../utils/logger.js';
-import type { ContextRepository } from '../planningHelpers.js';
+import type { ContextRepository } from '../planning/index.js';
 import { ensureRepoCloned } from '../../git/repoManager.js';
 import { getGitHubInstallationToken } from '../../auth/githubAuth.js';
 import { generateContext } from './generateContext.js';

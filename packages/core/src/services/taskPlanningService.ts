@@ -9,18 +9,18 @@ import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
 import {
   updateTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
-} from './planningHelpers.js';
+} from './planning/index.js';
 import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
 
 // Re-export everything from the taskPlanning module
 export * from './taskPlanning/index.js';
 
-// Re-export from planningHelpers for backwards compatibility
-export { BranchNotFoundError, PlanningFailedError, buildFullContext } from './planningHelpers.js';
-export { SmartFileSelection, PreviewStats, PreviewResult, GenerateContextPreviewOptions, generateContextPreview } from './planningHelpers.js';
-export { checkoutBranch } from './planningHelpers.js';
-export type { Granularity, TaskDraftConfig, ContextRepository } from './planningHelpers.js';
+// Re-export from planning module
+export { BranchNotFoundError, PlanningFailedError, buildFullContext } from './planning/index.js';
+export { SmartFileSelection, PreviewStats, PreviewResult, GenerateContextPreviewOptions, generateContextPreview } from './planning/index.js';
+export { checkoutBranch } from './planning/index.js';
+export type { Granularity, TaskDraftConfig, ContextRepository } from './planning/index.js';
 
 // Import from taskPlanning for internal use
 import {

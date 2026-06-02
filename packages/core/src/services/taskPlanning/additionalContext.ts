@@ -2,8 +2,8 @@
  * Additional context generation from context repositories.
  */
 
-import { generateAdditionalContext } from '../contextService.js';
-import { updateTrace } from '../planningHelpers.js';
+import { generateAdditionalContext } from '../context/index.js';
+import { updateTrace } from '../planning/index.js';
 import type { AdditionalContextOptions, AdditionalContextResult } from './types.js';
 
 /**

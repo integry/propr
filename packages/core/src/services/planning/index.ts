@@ -20,3 +20,6 @@ export { buildFullContext, buildSmartSelection, getModelDisplayInfo } from './co
 
 // Preview service
 export { generateContextPreview, truncateToSentences } from './previewService.js';
+
+// Planning utilities (relocated from planningHelpers.ts)
+export { getModelHardLimit, parseContextConfig, getDefaultModelLimit, validatePromptTokens, calculateCostEstimate, findFilesForPlan } from './planningUtils.js';
