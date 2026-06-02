@@ -133,6 +133,7 @@ async function handleMergeWithAgent(options: {
         prompt,
         model: resolvedModel,
         githubToken: githubToken.token,
+        environment: { PROPR_REPO_SETUP: '0' },
         branchName,
         onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolvedModel, stateManager, correlatedLogger, redisClient }),
         onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
@@ -152,7 +153,7 @@ async function handleMergeWithAgent(options: {
     });
 
     if (!claudeResult.success) {
-        throw new Error(`Agent execution failed during conflict resolution: ${claudeResult.error || 'Unknown error'}`);
+        throw new Error(`Agent execution failed during conflict resolution: ${claudeResult.error || claudeResult.logs || 'Unknown error'}`);
     }
 
     // Verify no conflict markers remain in the worktree before committing

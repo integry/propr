@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import {
+  db,
   getCategoriesForRepository,
   createCategory,
   updateCategory,
@@ -11,8 +12,13 @@ import {
   updateTodo,
   deleteTodo,
   batchReorderTodos,
+  type RepoTodo,
+  type RepoTodoCategory,
+  type RepoTodoCategoryRecord,
+  type RepoTodoRecord,
 } from '@propr/core';
 import crypto from 'crypto';
+import { isDemoMode } from '../demoMode.js';
 
 interface CreateCategoryRequest {
   repository: string;
@@ -48,6 +54,54 @@ interface BatchReorderRequest {
   }>;
 }
 
+function toCategoryDomain(record: RepoTodoCategoryRecord): RepoTodoCategory {
+  return {
+    categoryId: record.category_id,
+    name: record.name,
+    orderIndex: record.order_index,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at
+  };
+}
+
+function toTodoDomain(record: RepoTodoRecord): RepoTodo {
+  return {
+    todoId: record.todo_id,
+    categoryId: record.category_id,
+    content: record.content,
+    orderIndex: record.order_index,
+    isCompleted: Boolean(record.is_completed),
+    linkedDraftId: record.linked_draft_id,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at
+  };
+}
+
+async function getDemoCategoriesForRepository(repository: string): Promise<RepoTodoCategory[]> {
+  const records = await db<RepoTodoCategoryRecord>('repo_todo_categories')
+    .where('repository', repository)
+    .orderBy('order_index', 'asc')
+    .orderBy('name', 'asc')
+    .orderBy('category_id', 'asc');
+  return records.map(toCategoryDomain);
+}
+
+async function getDemoTodosForRepository(repository: string): Promise<RepoTodo[]> {
+  const records = await db<RepoTodoRecord>('repo_todos')
+    .where('repository', repository)
+    .orderBy('order_index', 'asc')
+    .orderBy('category_id', 'asc')
+    .orderBy('todo_id', 'asc');
+  return records.map(toTodoDomain);
+}
+
+async function getDemoTodo(todoId: string): Promise<RepoTodo | null> {
+  const record = await db<RepoTodoRecord>('repo_todos')
+    .where('todo_id', todoId)
+    .first();
+  return record ? toTodoDomain(record) : null;
+}
+
 export function createRepoTodoRoutes() {
   // ============================================================================
   // Category Endpoints
@@ -71,7 +125,9 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      const categories = await getCategoriesForRepository(req.user.id, repository);
+      const categories = isDemoMode()
+        ? await getDemoCategoriesForRepository(repository)
+        : await getCategoriesForRepository(req.user.id, repository);
       res.json({ categories });
     } catch (error) {
       console.error('Error getting categories:', error);
@@ -230,7 +286,9 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      const todos = await getTodosForRepository(req.user.id, repository);
+      const todos = isDemoMode()
+        ? await getDemoTodosForRepository(repository)
+        : await getTodosForRepository(req.user.id, repository);
       res.json({ todos });
     } catch (error) {
       console.error('Error getting todos:', error);
@@ -256,7 +314,9 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      const todo = await getTodo(todoId, req.user.id);
+      const todo = isDemoMode()
+        ? await getDemoTodo(todoId)
+        : await getTodo(todoId, req.user.id);
 
       if (!todo) {
         res.status(404).json({ error: 'Todo not found' });

@@ -25,6 +25,8 @@ interface CostPreviewProps {
   previewTrace?: GenerationTrace;
   // Whether preview progress should render in the right pane
   showPreviewProgress?: boolean;
+  hideCostsAndTokens?: boolean;
+  hideRefreshControls?: boolean;
 }
 
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
@@ -230,20 +232,25 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   onTogglePause,
   isNewMode,
   previewTrace,
-  showPreviewProgress = true
+  showPreviewProgress = true,
+  hideCostsAndTokens,
+  hideRefreshControls
 }) => {
   if (preview.isLoading && showPreviewProgress) return <LoadingState previewTrace={previewTrace} />;
-  if (preview.isLoading) return <DeferredLoadingState />;
+  if (preview.isLoading) return hideCostsAndTokens ? null : <DeferredLoadingState />;
   if (preview.error) return <ErrorState error={preview.error} />;
+  const refreshHandler = hideRefreshControls ? undefined : onManualRefresh;
   if (!preview.data) return (
-    <EmptyState
-      isContextStale={isContextStale}
-      timeUntilRefresh={timeUntilRefresh}
-      isPaused={isPaused}
-      onTogglePause={onTogglePause}
-      onManualRefresh={onManualRefresh}
-      isNewMode={isNewMode}
-    />
+    hideCostsAndTokens ? null : (
+      <EmptyState
+        isContextStale={isContextStale}
+        timeUntilRefresh={hideRefreshControls ? null : timeUntilRefresh}
+        isPaused={isPaused}
+        onTogglePause={hideRefreshControls ? undefined : onTogglePause}
+        onManualRefresh={refreshHandler}
+        isNewMode={isNewMode}
+      />
+    )
   );
 
   const { stats, smartSelection, warnings } = preview.data;
@@ -255,54 +262,58 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   const actualPercentage = (stats.totalTokens / maxTokens) * 100;
   const usageColor = getUsageColor(usagePercentage, actualPercentage);
   // Always show refresh indicator when manual refresh is available
-  const showRefreshIndicator = !!onManualRefresh;
+  const showRefreshIndicator = !!refreshHandler;
 
   return (
     <div className="pt-4 border-t border-gray-200 space-y-4">
       {/* Main stats row */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <DollarSign className="w-5 h-5 text-gray-400" />
-            <span className="text-2xl font-bold text-gray-900">
-              ${stats.costEstimate.toFixed(3)}
-            </span>
+      {!hideCostsAndTokens && (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <DollarSign className="w-5 h-5 text-gray-400" />
+              <span className="text-2xl font-bold text-gray-900">
+                ${stats.costEstimate.toFixed(3)}
+              </span>
+            </div>
+            <div className="text-sm text-gray-500">
+              <span className="font-medium">{stats.totalTokens.toLocaleString()}</span> tokens
+            </div>
+            {stats.usageEstimatePercent != null && stats.usageEstimatePercent > 0 && (
+              <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
+                <Activity className="w-3.5 h-3.5" />
+                <span className="font-medium">~{stats.usageEstimatePercent}%</span>
+                <span className="text-amber-500 hidden sm:inline">session usage</span>
+              </div>
+            )}
           </div>
-          <div className="text-sm text-gray-500">
-            <span className="font-medium">{stats.totalTokens.toLocaleString()}</span> tokens
-          </div>
-          {stats.usageEstimatePercent != null && stats.usageEstimatePercent > 0 && (
-            <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
-              <Activity className="w-3.5 h-3.5" />
-              <span className="font-medium">~{stats.usageEstimatePercent}%</span>
-              <span className="text-amber-500 hidden sm:inline">session usage</span>
+
+          {smartSelection.length > 0 && (
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-indigo-500" />
+              <span className="text-sm font-medium text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full">
+                {smartSelection.filter(f => f.source === 'auto').length} files auto-selected
+              </span>
             </div>
           )}
         </div>
-
-        {smartSelection.length > 0 && (
-          <div className="flex items-center gap-2">
-            <Zap className="w-4 h-4 text-indigo-500" />
-            <span className="text-sm font-medium text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full">
-              {smartSelection.filter(f => f.source === 'auto').length} files auto-selected
-            </span>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Context window usage bar */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between text-xs text-gray-500">
-          <span>Context window usage</span>
-          <span>{usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k</span>
+      {!hideCostsAndTokens && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs text-gray-500">
+            <span>Context window usage</span>
+            <span>{usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k</span>
+          </div>
+          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
+              style={{ width: `${usagePercentage}%` }}
+            />
+          </div>
         </div>
-        <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
-            style={{ width: `${usagePercentage}%` }}
-          />
-        </div>
-      </div>
+      )}
 
       {/* Context repositories indicator */}
       {contextRepositories && contextRepositories.length > 0 && (
@@ -332,10 +343,10 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
           {showRefreshIndicator && (
             <RefreshIndicator
               isContextStale={isContextStale}
-              timeUntilRefresh={timeUntilRefresh}
+              timeUntilRefresh={hideRefreshControls ? null : timeUntilRefresh}
               isPaused={isPaused}
-              onTogglePause={onTogglePause}
-              onManualRefresh={onManualRefresh}
+              onTogglePause={hideRefreshControls ? undefined : onTogglePause}
+              onManualRefresh={refreshHandler}
               isLoading={preview.isLoading}
             />
           )}

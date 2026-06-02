@@ -6,6 +6,8 @@ import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
+import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
+import { parseTruthyEnvValue } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import {
   createStatusRoutes,
@@ -56,6 +58,8 @@ type RouteHandler = RequestHandler;
 type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
 type ShutdownTask = { name: string; close: () => Promise<unknown> };
 
+const demoMode = configureDemoMode();
+
 function buildRedisUrlFromOptions(options: RedisOptions): string {
   const protocol = options.tls ? 'rediss' : 'redis';
   const host = options.host || 'redis';
@@ -97,14 +101,14 @@ function assertNoDuplicateRoutes(routes: RouteEntry[]): void {
 }
 
 const redisRuntimeConfig = getRedisRuntimeConfig();
-const ioRedisClient = new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options);
+const ioRedisClient = demoMode ? null : new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options);
 
 const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
 
 function getCommentConfig(): CommentEventConfig {
     return {
-        redisClient: ioRedisClient,
+        redisClient: getIoRedisClient(),
         PR_FOLLOWUP_TRIGGER_KEYWORDS,
         MODEL_LABEL_PATTERN,
         processCommentEvent: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) =>
@@ -112,8 +116,13 @@ function getCommentConfig(): CommentEventConfig {
     };
 }
 
+function getIoRedisClient(): Redis {
+  if (!ioRedisClient) throw new Error('Redis is disabled in demo mode');
+  return ioRedisClient;
+}
+
 const processDetectedIssue = (issue: DetectedIssue, correlationId: string): Promise<void> =>
-  processDetectedIssueBase(issue, correlationId, ioRedisClient as unknown as Parameters<typeof processDetectedIssueBase>[2]);
+  processDetectedIssueBase(issue, correlationId, getIoRedisClient() as unknown as Parameters<typeof processDetectedIssueBase>[2]);
 const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => processCommentEvent(payload, eventType, correlationId, getCommentConfig());
 const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
 const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
@@ -174,12 +183,36 @@ app.use('/api', (_req, res, next) => {
 app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
-setupAuth(app);
+// Register demo read-only protection before routes so future mutating /api routes,
+// including auth-adjacent endpoints, cannot bypass it by ordering.
+app.use('/api', demoModeReadOnlyMiddleware);
+
+setupAuth(app, demoMode);
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
 
+function createDemoTaskQueue(): Queue {
+  return {
+    add: async () => { throw new Error('Task queue is disabled in demo mode'); },
+    close: async () => undefined,
+    getWaitingCount: async () => 0,
+    getActiveCount: async () => 0,
+    getCompletedCount: async () => 0,
+    getFailedCount: async () => 0,
+    getDelayedCount: async () => 0,
+    getJob: async () => null,
+  } as unknown as Queue;
+}
+
 async function initRedis(): Promise<void> {
+  if (demoMode) {
+    redisClient = createDemoRedisClient();
+    taskQueue = createDemoTaskQueue();
+    console.log('Demo mode: Redis and task queue clients are disabled; using read-only in-memory facades');
+    return;
+  }
+
   redisClient = createClient({
     url: redisRuntimeConfig.url
   });
@@ -271,7 +304,15 @@ function setupRoutes(): void {
 }
 
 function setupWebhookRoute(): void {
-  if (process.env.ENABLE_GITHUB_WEBHOOKS !== 'true') {
+  if (demoMode) {
+    app.post('/webhook', (_req: Request, res: Response) => {
+      res.status(403).send('Webhook processing is disabled in demo mode.');
+    });
+    console.log('[webhook] Webhook endpoint disabled in demo mode');
+    return;
+  }
+
+  if (!parseTruthyEnvValue(process.env.ENABLE_GITHUB_WEBHOOKS)) {
     console.log('[webhook] Webhook endpoint disabled (ENABLE_GITHUB_WEBHOOKS not set to true)');
     return;
   }
@@ -316,34 +357,46 @@ async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
     try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
+    if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await initRedis();
+    if (!demoMode) {
+      try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
+      try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+    } else {
+      console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
+    }
     setupRoutes();
-    const socketService = initSocketService(httpServer, validateCorsOrigin);
-    console.log('[WebSocket] Socket.IO server initialized');
-    socketService.initQueueFeatures({ taskQueue, redisClient, db });
-    console.log('[WebSocket] Queue features initialized for real-time updates');
-    try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
-    try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
-    await initializeUltrafix(ioRedisClient);
-    try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
-    httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT} (with WebSocket support)`); });
-    setInterval(async () => {
-      try {
-        await checkAndExecuteDelayedReindex(redisClient as RedisClientType);
-      } catch (error) {
-        console.error('Error checking for delayed reindex:', error);
-      }
-    }, 30 * 1000);
+    if (!demoMode) {
+      const socketService = initSocketService(httpServer, validateCorsOrigin);
+      console.log('[WebSocket] Socket.IO server initialized');
+      socketService.initQueueFeatures({ taskQueue, redisClient, db });
+      console.log('[WebSocket] Queue features initialized for real-time updates');
+      await initializeUltrafix(getIoRedisClient());
+      try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
+      setInterval(async () => {
+        try {
+          await checkAndExecuteDelayedReindex(redisClient as RedisClientType);
+        } catch (error) {
+          console.error('Error checking for delayed reindex:', error);
+        }
+      }, 30 * 1000);
+    }
+    httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
 
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
-      await closeResources([
-        { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
-        { name: 'socket service', close: () => closeSocketService() },
+      const shutdownTasks: ShutdownTask[] = [
         { name: 'task queue', close: () => taskQueue.close() },
-        { name: 'redis client', close: () => redisClient.quit() },
-        { name: 'io redis client', close: () => ioRedisClient.quit() }
-      ]);
+        { name: 'redis client', close: () => redisClient.quit() }
+      ];
+      if (!demoMode) {
+        shutdownTasks.push(
+          { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
+          { name: 'socket service', close: () => closeSocketService() },
+          { name: 'io redis client', close: () => getIoRedisClient().quit() }
+        );
+      }
+      await closeResources(shutdownTasks);
       httpServer.close(() => {
         console.log('Server closed');
         process.exit(0);

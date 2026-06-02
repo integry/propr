@@ -110,11 +110,14 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         await configureGitAuthor(git, author, worktreePath, issueNumber);
 
         await git.add('.');
-        // Unstage .propr/assets if it was staged - this directory should never be committed
-        try {
-            await git.raw(['reset', 'HEAD', '--', '.propr/assets']);
-        } catch {
-            // Ignore error if .propr/assets doesn't exist or wasn't staged
+        // Unstage generated ProPR runtime directories. Repo-authored files such
+        // as .propr/setup.sh and .propr/package.json should remain committable.
+        for (const generatedPath of ['.propr/assets', '.propr/cache', '.propr/.cache', '.propr/node_modules']) {
+            try {
+                await git.raw(['reset', 'HEAD', '--', generatedPath]);
+            } catch {
+                // Ignore error if the path doesn't exist or wasn't staged.
+            }
         }
         const status = await git.status();
 

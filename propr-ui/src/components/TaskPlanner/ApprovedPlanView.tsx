@@ -9,6 +9,7 @@ import PlanIssuesManager from './PlanIssuesManager';
 import { PlanTask, reviseDraft, pauseDraft, resumeDraft, updateExecutionSettings } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
 import { useToast } from '../ui/useToast';
+import { useDemoMode } from '../../contexts/DemoModeContext';
 
 interface ApprovedPlanViewProps {
   draft: DraftWithPlan;
@@ -107,6 +108,7 @@ interface PlanHeaderActionsProps {
   onPauseResume: () => void;
   onRevise: () => void;
   onDelete: () => void;
+  isReadOnly?: boolean;
 }
 function parsePlanTasks(planJson: DraftWithPlan['plan_json']): PlanTask[] {
   if (typeof planJson === 'string') {
@@ -133,20 +135,20 @@ async function persistExecutionSetting(draftId: string, update: Parameters<typeo
   return updateExecutionSettings(draftId, update);
 }
 
-const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete }) => {
+const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete, isReadOnly = false }) => {
   const showPauseResume = draftStatus === 'executed' || draftStatus === 'pr_created';
   return (
     <div className="flex items-center gap-2 flex-shrink-0">
       {showPauseResume && (
         <button
           onClick={onPauseResume}
-          disabled={isPauseLoading}
+          disabled={isPauseLoading || isReadOnly}
           className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
             isPaused
               ? 'text-green-600 hover:text-green-700 hover:bg-green-50'
               : 'text-orange-600 hover:text-orange-700 hover:bg-orange-50'
           }`}
-          title={isPaused ? 'Resume plan execution' : 'Pause plan execution'}
+          title={isReadOnly ? 'Demo mode is read-only' : isPaused ? 'Resume plan execution' : 'Pause plan execution'}
         >
           {isPauseLoading ? (
             <Loader2 size={16} className="animate-spin" />
@@ -160,18 +162,18 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPa
       )}
       <button
         onClick={onRevise}
-        disabled={isRevising}
+        disabled={isRevising || isReadOnly}
         className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        title="Revise Plan"
+        title={isReadOnly ? 'Demo mode is read-only' : 'Revise Plan'}
       >
         {isRevising ? <Loader2 size={16} className="animate-spin" /> : <Edit3 size={16} />}
         <span className="hidden sm:inline">Revise</span>
       </button>
       <button
         onClick={onDelete}
-        disabled={isDeleting}
+        disabled={isDeleting || isReadOnly}
         className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        title="Delete Plan"
+        title={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
       >
         {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
       </button>
@@ -237,6 +239,7 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRefetch }) => {
   const navigate = useNavigate();
   const { addToast } = useToast();
+  const { isDemoMode } = useDemoMode();
   const [issues, _setIssues] = useState<PlanIssue[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -261,6 +264,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   const footerStats = useMemo(() => buildFooterStats(issues), [issues]);
 
   const handleDeletePlanConfirm = useCallback(async () => {
+    if (isDemoMode) {
+      addToast({ type: 'warning', message: 'Demo mode is read-only.', duration: 3000 });
+      return;
+    }
     setIsDeleting(true);
     try {
       await deleteDraft(draft.draft_id);
@@ -268,9 +275,13 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       addToast({ type: 'success', message: 'Plan deleted successfully', duration: 3000 });
       navigate('/plans');
     } catch (err) { addToast({ type: 'error', message: (err as Error).message || 'Failed to delete plan', duration: 5000 }); } finally { setIsDeleting(false); }
-  }, [draft.draft_id, addToast, navigate]);
+  }, [addToast, draft.draft_id, isDemoMode, navigate]);
 
   const handlePauseResume = useCallback(async () => {
+    if (isDemoMode) {
+      addToast({ type: 'warning', message: 'Demo mode is read-only.', duration: 3000 });
+      return;
+    }
     setIsPauseLoading(true);
     try {
       if (isPaused) {
@@ -283,9 +294,13 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         addToast({ type: 'success', message: 'Plan execution paused. Current task will complete, but next task won\'t start.', duration: 4000 });
       }
     } catch (err) { addToast({ type: 'error', message: (err as Error).message || `Failed to ${isPaused ? 'resume' : 'pause'} plan`, duration: 5000 }); } finally { setIsPauseLoading(false); }
-  }, [draft.draft_id, isPaused, addToast]);
+  }, [addToast, draft.draft_id, isDemoMode, isPaused]);
 
   const handleRevisePlanConfirm = useCallback(async () => {
+    if (isDemoMode) {
+      addToast({ type: 'warning', message: 'Demo mode is read-only.', duration: 3000 });
+      return;
+    }
     setIsRevising(true);
     try {
       const result = await reviseDraft(draft.draft_id);
@@ -296,7 +311,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       addToast({ type: 'success', message, duration: 3000 });
       onRefetch?.();
     } catch (err) { addToast({ type: 'error', message: (err as Error).message || 'Failed to revise plan', duration: 5000 }); } finally { setIsRevising(false); }
-  }, [draft.draft_id, addToast, onRefetch]);
+  }, [addToast, draft.draft_id, isDemoMode, onRefetch]);
 
   const handleRefresh = useCallback(() => setRefreshKey(prev => prev + 1), []);
   const handleIssuesChange = useCallback((newIssues: PlanIssue[]) => _setIssues(newIssues), []);
@@ -308,6 +323,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
   }, [addToast]);
 
   const handleUseEpicChange = useCallback(async (value: boolean) => {
+    if (isDemoMode) return;
     const previousValue = useEpic;
     setUseEpic(value);
     setPendingExecutionSettingsSaves((count) => count + 1);
@@ -316,9 +332,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       setUseEpic(saved.useEpic);
     } catch (err) { setUseEpic(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save Epic PR setting', duration: 5000 }); }
     finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
-  }, [addToast, draft.draft_id, useEpic]);
+  }, [addToast, draft.draft_id, isDemoMode, useEpic]);
 
   const handleAutoMergeChange = useCallback(async (value: boolean) => {
+    if (isDemoMode) return;
     const previousValue = autoMerge;
     setAutoMerge(value);
     setPendingExecutionSettingsSaves((count) => count + 1);
@@ -327,9 +344,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       setAutoMerge(saved.autoMerge);
     } catch (err) { setAutoMerge(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save auto-merge setting', duration: 5000 }); }
     finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
-  }, [addToast, autoMerge, draft.draft_id]);
+  }, [addToast, autoMerge, draft.draft_id, isDemoMode]);
 
   const handleRunUltrafixChange = useCallback(async (value: boolean) => {
+    if (isDemoMode) return;
     const previousValue = runUltrafix;
     setRunUltrafix(value);
     setPendingExecutionSettingsSaves((count) => count + 1);
@@ -340,9 +358,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       setUltrafixMaxCycles(saved.ultrafixMaxCycles);
     } catch (err) { setRunUltrafix(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix setting', duration: 5000 }); }
     finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
-  }, [addToast, draft.draft_id, runUltrafix]);
+  }, [addToast, draft.draft_id, isDemoMode, runUltrafix]);
 
   const handleUltrafixGoalChange = useCallback(async (value: number | null) => {
+    if (isDemoMode) return;
     const previousValue = ultrafixGoal;
     setUltrafixGoal(value);
     setPendingExecutionSettingsSaves((count) => count + 1);
@@ -351,9 +370,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       setUltrafixGoal(saved.ultrafixGoal);
     } catch (err) { setUltrafixGoal(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix goal', duration: 5000 }); }
     finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
-  }, [addToast, draft.draft_id, ultrafixGoal]);
+  }, [addToast, draft.draft_id, isDemoMode, ultrafixGoal]);
 
   const handleUltrafixMaxCyclesChange = useCallback(async (value: number | null) => {
+    if (isDemoMode) return;
     const previousValue = ultrafixMaxCycles;
     setUltrafixMaxCycles(value);
     setPendingExecutionSettingsSaves((count) => count + 1);
@@ -362,16 +382,16 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       setUltrafixMaxCycles(saved.ultrafixMaxCycles);
     } catch (err) { setUltrafixMaxCycles(previousValue); addToast({ type: 'error', message: (err as Error).message || 'Failed to save ultrafix max cycles', duration: 5000 }); }
     finally { setPendingExecutionSettingsSaves((count) => Math.max(0, count - 1)); }
-  }, [addToast, draft.draft_id, ultrafixMaxCycles]);
+  }, [addToast, draft.draft_id, isDemoMode, ultrafixMaxCycles]);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
         <PlanHeaderSummary planName={planName} draftStatus={draft.status} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={draft.initial_prompt} />
-        <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => setShowReviseDialog(true)} onDelete={() => setShowDeleteDialog(true)} />
+        <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} />
       </div>
       <div className="flex-1 overflow-auto p-4">
-        <PlanIssuesManager draftId={draft.draft_id} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} isSavingExecutionSettings={isSavingExecutionSettings} />
+        <PlanIssuesManager draftId={draft.draft_id} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} isSavingExecutionSettings={isSavingExecutionSettings} isReadOnly={isDemoMode} />
       </div>
       <PlanFooterStats stats={footerStats} onRefresh={handleRefresh} />
       <DeletePlanDialog isOpen={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} onConfirm={handleDeletePlanConfirm} isLoading={isDeleting} />

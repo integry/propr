@@ -1,5 +1,5 @@
 // Summary Browser API - File and Directory Summaries
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 // ============= Types =============
 
@@ -55,7 +55,7 @@ export async function getDirectoryTree(
   const pathSuffix = path ? `/${encodeURIComponent(path)}` : '';
   const url = `${API_BASE_URL}/api/summaries/${encodedOwner}/${encodedRepo}/tree${pathSuffix}`;
 
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -88,7 +88,7 @@ export async function getPathSummary(
   const encodedPath = encodeURIComponent(path);
   const url = `${API_BASE_URL}/api/summaries/${encodedOwner}/${encodedRepo}/summary/${encodedPath}`;
 
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -114,7 +114,7 @@ export async function getIndexingStatus(
   const encodedRepo = encodeURIComponent(repo);
   const url = `${API_BASE_URL}/api/summaries/${encodedOwner}/${encodedRepo}/status`;
 
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     method: 'GET',
     credentials: 'include',
     headers: {

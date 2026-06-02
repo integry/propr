@@ -9,7 +9,7 @@ import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type Sta
 import { clearUltrafixLoopState } from './checkRunHelpers.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
-import { getProcessorPrNumber, handlePreviewRouting } from './previewRouting.js';
+import { handlePreviewRouting } from './previewRouting.js';
 import type {
     IssuesEvent,
     IssuesLabeledEvent,
@@ -36,9 +36,8 @@ export const SUPPORTED_WEBHOOK_EVENTS = [
 
 /** Derived union type — always in sync with the runtime array. */
 export type WebhookEventType = (typeof SUPPORTED_WEBHOOK_EVENTS)[number];
-
+export { getProcessorPrNumber } from './previewRouting.js';
 export type { CommentEventType };
-export { getProcessorPrNumber };
 
 export interface DetectedIssue {
     id: number;

@@ -1,6 +1,7 @@
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,
@@ -19,6 +20,7 @@ import os from 'os';
 export { UsageLimitError };
 
 const DEFAULT_GEMINI_TIMEOUT_MS = 300000;
+const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 // Container path for Gemini config
 const CONTAINER_CONFIG_PATH = '/home/node/.gemini';
@@ -45,7 +47,7 @@ export class GeminiAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, taskId, prNumber } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
 
@@ -60,7 +62,7 @@ export class GeminiAgent implements Agent {
 
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId });
 
             // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -163,7 +165,8 @@ export class GeminiAgent implements Agent {
             // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'gemini',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId })
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId }),
+                ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
             const executionTimeMs = Date.now() - startTime;
 
@@ -271,12 +274,15 @@ export class GeminiAgent implements Agent {
     }
 
     /** Builds Docker arguments for running Gemini in a container. */
-    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; outputFormat?: 'stream-json' | 'text'; taskId?: string; executionType?: string }): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, outputFormat = 'stream-json', taskId, executionType } = params;
+    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; outputFormat?: 'stream-json' | 'text'; environment?: Record<string, string>; taskId?: string; executionType?: string }): string[] {
+        const { worktreePath, githubToken, modelName, issueNumber, outputFormat = 'stream-json', environment, taskId, executionType } = params;
         const configPath = resolveConfigPath(this.config.configPath);
         const envVars: string[] = [];
         if (this.config.envVars) {
             for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`);
+        }
+        if (environment) {
+            for (const [key, value] of Object.entries(environment)) envVars.push('-e', `${key}=${value}`);
         }
         // Generate human-readable container name
         const timestamp = Date.now().toString(36);
@@ -297,7 +303,7 @@ export class GeminiAgent implements Agent {
         }
         else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Gemini agent will use default'); }
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Gemini agent');
-        return dockerArgs;
+        return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'gemini');
     }
 
     /** Handles an assistant message event, updating current and last complete assistant messages. */

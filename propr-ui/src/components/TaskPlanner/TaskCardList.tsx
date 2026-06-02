@@ -12,6 +12,7 @@ interface TaskCardListProps {
   onTaskChange: (taskId: string, updates: Partial<PlanTask>) => void;
   onDeleteTask: (taskId: string) => void;
   onReorderTasks?: (activeId: string, overId: string) => void;
+  hideNotes?: boolean;
 }
 
 export const TaskCardList: React.FC<TaskCardListProps> = ({
@@ -21,6 +22,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   onTaskChange,
   onDeleteTask,
   onReorderTasks,
+  hideNotes = false,
 }) => {
   const isMobile = useIsMobile();
   const [activeTaskIndex, setActiveTaskIndex] = useState<number>(0);
@@ -151,6 +153,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                     isHighlighted={isHighlighted}
                     stepNumber={index + 1}
                     draftId={draftId}
+                    hideNotes={hideNotes}
                     onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
                     onDelete={() => {
                       // Explicitly capture and log the task.id for debugging

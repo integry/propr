@@ -13,6 +13,7 @@ interface AddRepositoryModalProps {
   onBaseBranchChange: (value: string) => void;
   onAdd: () => void;
   onClose: () => void;
+  isReadOnly?: boolean;
 }
 
 export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
@@ -26,11 +27,13 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
   onBaseBranchChange,
   onAdd,
   onClose,
+  isReadOnly = false,
 }) => {
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isReadOnly) return;
     onAdd();
   };
 
@@ -70,6 +73,7 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
               placeholder="owner/repo"
               className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md font-mono text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               autoFocus
+              disabled={isReadOnly}
             />
             <datalist id="available-repos">
               {availableRepos.map(repo => <option key={repo} value={repo} />)}
@@ -83,6 +87,7 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
               onChange={(e) => onAliasChange(e.target.value)}
               placeholder="e.g., Production"
               className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              disabled={isReadOnly}
             />
             <p className="text-xs text-gray-500 mt-1">
               A friendly name to help identify this repository.
@@ -96,6 +101,7 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
               value={newBaseBranch}
               onChange={onBaseBranchChange}
               placeholder="Select branch..."
+              disabled={isReadOnly}
             />
             <p className="text-xs text-gray-500 mt-1">
               You can add the same repository multiple times with different base branches.
@@ -115,9 +121,9 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
           <button
             type="button"
             onClick={onAdd}
-            disabled={!newRepo}
+            disabled={!newRepo || isReadOnly}
             className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              !newRepo
+              !newRepo || isReadOnly
                 ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
                 : 'bg-primary-600 text-white hover:bg-primary-700'
             }`}

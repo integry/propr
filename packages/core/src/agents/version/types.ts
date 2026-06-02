@@ -33,7 +33,7 @@ export const AGENT_NPM_TAGS: Record<AgentType, string[]> = {
  */
 export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     claude: '2.1.85',
-    codex: '0.116.0',
+    codex: '0.133.0',
     gemini: '0.35.1'
 };
 

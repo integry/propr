@@ -1,0 +1,42 @@
+[
+  {
+    "name": "launcher",
+    "description": "Single-command launcher for the ProPR Docker stack.",
+    "overview": "launcher.md"
+  },
+  {
+    "name": "app",
+    "description": "Backend service image for ProPR daemon, workers, and API roles.",
+    "overview": "app.md"
+  },
+  {
+    "name": "ui",
+    "description": "Static web UI for operating ProPR.",
+    "overview": "ui.md"
+  },
+  {
+    "name": "docs",
+    "description": "Static ProPR documentation site.",
+    "overview": "docs.md"
+  },
+  {
+    "name": "agent-base",
+    "description": "Shared base image for ProPR agent execution containers.",
+    "overview": "agent-base.md"
+  },
+  {
+    "name": "agent-claude",
+    "description": "Claude Code execution container for ProPR agent runs.",
+    "overview": "agent-claude.md"
+  },
+  {
+    "name": "agent-codex",
+    "description": "OpenAI Codex execution container for ProPR agent runs.",
+    "overview": "agent-codex.md"
+  },
+  {
+    "name": "agent-gemini",
+    "description": "Google Gemini CLI execution container for ProPR agent runs.",
+    "overview": "agent-gemini.md"
+  }
+]

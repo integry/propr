@@ -1,5 +1,5 @@
 // Agent Chat Types and API
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 export interface ChatQuery {
   agentId: string;
@@ -20,7 +20,7 @@ export const chatWithAgents = async (
   prompt: string,
   context: string
 ): Promise<{ results: ChatResult[] }> => {
-  const response = await fetch(`${API_BASE_URL}/api/agents/chat`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/agents/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ queries, prompt, context }),

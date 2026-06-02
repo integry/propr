@@ -30,8 +30,9 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 
 // Codex (OpenAI) models - ChatGPT Plus/Pro available models
 // Note: Available models depend on account type (ChatGPT login vs API key)
-// Recommended: gpt-5.4 (default), gpt-5.4-mini (fast/subagents), gpt-5.3-codex (industry-leading coding)
+// Recommended: gpt-5.5 (default), gpt-5.4-mini (fast/subagents), gpt-5.3-codex (industry-leading coding)
 export const CODEX_MODELS: ModelInfo[] = [
+  { id: 'gpt-5.5', name: 'GPT-5.5', shortName: 'GPT-5.5', shortAlias: 'gpt55', githubLabel: 'llm-codex-gpt55', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.5' },
   { id: 'gpt-5.4', name: 'GPT-5.4', shortName: 'GPT-5.4', shortAlias: 'gpt54', githubLabel: 'llm-codex-gpt54', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.4' },
   { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', shortName: 'GPT-5.4 Mini', shortAlias: 'gpt54-mini', githubLabel: 'llm-codex-gpt54-mini', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.4-mini' },
   { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', shortName: 'GPT-5.3 Codex', shortAlias: 'gpt53-codex', githubLabel: 'llm-codex-gpt53-codex', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.3-codex' },
@@ -93,7 +94,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
     npmPackage: '@openai/codex',
-    defaultCliVersion: '0.120.0'
+    defaultCliVersion: '0.133.0'
   },
   gemini: {
     dockerImage: 'gemini-cli:latest',

@@ -3,8 +3,10 @@
  */
 
 import { Request, Response } from 'express';
+import { isDemoMode } from '../../../demoMode.js';
 import type { OwnershipResult, ValidateContextRepositoryResponse } from '../types.js';
 import { getRepoAuthToken } from '../auth.js';
+import { loadDemoRepositoryMetadata } from '../../demoRepositoryMetadata.js';
 
 interface RepositoryInfoDeps {
   verifyOwnership: (draftId: string, userId: string, fields: string[]) => Promise<OwnershipResult>;
@@ -41,6 +43,16 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
       const [owner, repoName] = (repoFullName as string).split('/');
       if (!owner || !repoName) {
         res.status(400).json({ error: 'Invalid repository format' });
+        return;
+      }
+
+      if (isDemoMode()) {
+        const metadata = await loadDemoRepositoryMetadata(repoFullName);
+        if (!metadata) {
+          res.status(404).json({ error: 'Repository is not configured in demo mode' });
+          return;
+        }
+        res.json(metadata);
         return;
       }
 

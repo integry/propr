@@ -1,5 +1,5 @@
 // Task Statistics Types and API
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 export interface DailyCount {
   date: string;
@@ -30,7 +30,7 @@ export interface TaskStatsResponse {
 }
 
 export const getTaskStats = async (): Promise<TaskStatsResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/stats/tasks`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/stats/tasks`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include'
@@ -54,7 +54,7 @@ export interface RepositoryStatsResponse {
 }
 
 export const getRepositoryStats = async (): Promise<RepositoryStatsResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/stats/repositories`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/stats/repositories`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include'
@@ -89,7 +89,7 @@ export interface StatsOverviewResponse {
 }
 
 export const getStatsOverview = async (): Promise<StatsOverviewResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/stats/overview`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/stats/overview`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include'
@@ -104,7 +104,7 @@ export interface GeneratingPlansCountResponse {
 }
 
 export const getGeneratingPlansCount = async (): Promise<GeneratingPlansCountResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/stats/generating-plans`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/stats/generating-plans`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include'

@@ -12,6 +12,7 @@ import {
 import { enableAutoMerge } from '../github/autoMergeOperations.js';
 import {
     checkReadiness,
+    areChecksReadyForUltrafix,
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
     type UltrafixReadinessResult,
@@ -195,11 +196,7 @@ export async function evaluateCIChecksPassing(
         if (deps.getCheckRunsStatus) {
             const status = await deps.getCheckRunsStatus(owner, repo, headSha);
             correlatedLogger.debug({ pullRequestNumber, ...status, completedAction }, 'Ultrafix readiness: check runs status');
-            if (completedAction === 'fix' && status.count === 0) {
-                correlatedLogger.info({ pullRequestNumber }, 'Ultrafix readiness: 0 checks after fix, CI likely not started yet');
-                return false;
-            }
-            return status.allPassing;
+            return areChecksReadyForUltrafix(status);
         }
         return deps.areAllChecksPassing ? deps.areAllChecksPassing(owner, repo, headSha) : false;
     } catch (err) {

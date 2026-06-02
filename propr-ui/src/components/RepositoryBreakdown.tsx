@@ -3,14 +3,22 @@ import { getRepositoryStats, RepositoryStats } from '../api/taskStatsApi';
 
 interface RepositoryBreakdownProps {
   limit?: number;
+  repositoriesOverride?: RepositoryStats[];
 }
 
-const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit }) => {
+const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, repositoriesOverride }) => {
   const [repositories, setRepositories] = useState<RepositoryStats[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!repositoriesOverride);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (repositoriesOverride) {
+      setRepositories(repositoriesOverride);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
     const fetchStats = async () => {
       try {
         setLoading(true);
@@ -27,7 +35,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit }) => {
     fetchStats();
     const interval = setInterval(fetchStats, 5 * 60 * 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [repositoriesOverride]);
 
   if (loading) {
     return (

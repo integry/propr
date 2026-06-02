@@ -39,13 +39,14 @@ export interface PlanEditorMobileLayoutProps {
   onReorderTasks: (taskIds: string[]) => void;
   onFinalize: () => void;
   onSetChatExpanded: (value: boolean) => void;
-  onRefine: (message: string) => Promise<void>;
+  onRefine: (message: string, signal?: AbortSignal) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   onChatMessagesChange: (messages: ChatMessage[]) => void;
   onStopRefinement: () => Promise<void>;
   onSetShowBackToSetupDialog: (value: boolean) => void;
   onSetShowDeleteDialog: (value: boolean) => void;
   onBackToSetupConfirm: () => Promise<void>;
   onDeleteConfirm: () => Promise<void>;
+  isReadOnly?: boolean;
 }
 
 export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
@@ -85,7 +86,8 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
   onSetShowBackToSetupDialog,
   onSetShowDeleteDialog,
   onBackToSetupConfirm,
-  onDeleteConfirm
+  onDeleteConfirm,
+  isReadOnly = false
 }) => {
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
@@ -105,6 +107,7 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
         onUndo={onUndo}
         onRedo={onRedo}
         isMobile={true}
+        isReadOnly={isReadOnly}
       />
 
       {/* Error and Notice Banners */}
@@ -147,11 +150,17 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
         </div>
         <button
           onClick={onFinalize}
-          disabled={isFinalizing || plan.length === 0}
+          disabled={isFinalizing || plan.length === 0 || isReadOnly}
+          title={isReadOnly ? 'Demo mode is read-only' : undefined}
           className="flex items-center gap-1.5 px-4 py-2 text-sm text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
-          style={{ backgroundColor: isFinalizing || plan.length === 0 ? undefined : 'rgb(29, 138, 138)' }}
+          style={{ backgroundColor: isFinalizing || plan.length === 0 || isReadOnly ? undefined : 'rgb(29, 138, 138)' }}
         >
-          {isFinalizing ? (
+          {isReadOnly ? (
+            <>
+              <Github size={14} />
+              <span>Read-only</span>
+            </>
+          ) : isFinalizing ? (
             <>
               <Loader2 size={14} className="animate-spin" />
               <span>Creating...</span>

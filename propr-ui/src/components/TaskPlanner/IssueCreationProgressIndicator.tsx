@@ -6,29 +6,30 @@ import { IssueCreationProgress } from './usePlanIssuesManager';
 interface IssueCreationProgressIndicatorProps {
   progress: IssueCreationProgress;
   onDismiss?: () => void;
+  stableLayout?: boolean;
+  spinnerRotationDegrees?: number;
 }
 
-export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndicatorProps> = ({ progress, onDismiss }) => {
+export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndicatorProps> = ({ progress, onDismiss, stableLayout = false, spinnerRotationDegrees }) => {
   if (progress.status === 'idle') return null;
 
+  const progressCount = progress.animatedCreatedCount ?? progress.createdCount;
   const progressPercentage = progress.totalCount > 0
-    ? Math.round((progress.createdCount / progress.totalCount) * 100)
+    ? Math.min(100, Math.max(0, (progressCount / progress.totalCount) * 100))
     : 0;
 
-  // Compact inline progress bar for the Studio aesthetic
-  return (
-    <motion.div
-      initial={{ opacity: 0, height: 0 }}
-      animate={{ opacity: 1, height: 'auto' }}
-      exit={{ opacity: 0, height: 0 }}
-      className="mb-3"
-    >
+  const content = (
+    <>
       {/* Progress Strip with subtle background anchor */}
       <div className="flex items-center gap-3 h-8 px-2.5 py-1.5 bg-slate-50 rounded-md border border-slate-100">
         {/* Status indicator */}
         <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
           {progress.status === 'in_progress' ? (
-            <Loader2 size={14} className="text-blue-600 animate-spin" />
+            <Loader2
+              size={14}
+              className={`text-blue-600 ${spinnerRotationDegrees === undefined ? 'animate-spin' : ''}`}
+              style={spinnerRotationDegrees === undefined ? undefined : { transform: `rotate(${spinnerRotationDegrees}deg)` }}
+            />
           ) : progress.status === 'completed' ? (
             <Check size={14} className="text-gray-400" />
           ) : (
@@ -42,12 +43,16 @@ export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndic
             <>
               {/* Thin progress bar */}
               <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden max-w-[200px]">
-                <motion.div
-                  className="h-full bg-blue-500 rounded-full"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${progressPercentage}%` }}
-                  transition={{ duration: 0.3 }}
-                />
+                {progress.animatedCreatedCount !== undefined ? (
+                  <div className="h-full bg-blue-500 rounded-full" style={{ width: `${progressPercentage}%` }} />
+                ) : (
+                  <motion.div
+                    className="h-full bg-blue-500 rounded-full"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${progressPercentage}%` }}
+                    transition={{ duration: 0.3 }}
+                  />
+                )}
               </div>
               <span className="text-xs text-gray-500 tabular-nums">
                 {progress.createdCount}/{progress.totalCount}
@@ -87,6 +92,22 @@ export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndic
           </button>
         )}
       </div>
+    </>
+  );
+
+  if (stableLayout) {
+    return <div className="mb-3">{content}</div>;
+  }
+
+  // Compact inline progress bar for the Studio aesthetic
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: 'auto' }}
+      exit={{ opacity: 0, height: 0 }}
+      className="mb-3"
+    >
+      {content}
     </motion.div>
   );
 };

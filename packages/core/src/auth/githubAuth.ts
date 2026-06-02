@@ -4,6 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
+import { parseTruthyEnvValue } from '@propr/shared';
 
 interface InstallationAuth {
     token: string;
@@ -13,12 +14,13 @@ interface InstallationAuth {
 const appId = process.env.GH_APP_ID;
 const privateKeyPath = process.env.GH_PRIVATE_KEY_PATH;
 const installationId = process.env.GH_INSTALLATION_ID;
+const demoMode = parseTruthyEnvValue(process.env.PROPR_DEMO_MODE);
 
 let privateKey: string | undefined;
 const PaginatedOctokit = Octokit.plugin(paginateRest);
 let appOctokit: InstanceType<typeof PaginatedOctokit> | null = null;
 
-if (appId && privateKeyPath && installationId) {
+if (!demoMode && appId && privateKeyPath && installationId) {
     try {
         privateKey = fs.readFileSync(path.resolve(privateKeyPath), 'utf8');
 
@@ -37,7 +39,7 @@ if (appId && privateKeyPath && installationId) {
             process.exit(1);
         }
     }
-} else if (process.env.NODE_ENV !== 'test') {
+} else if (!demoMode && process.env.NODE_ENV !== 'test') {
     console.error('GH_APP_ID, GH_PRIVATE_KEY_PATH, and GH_INSTALLATION_ID must be set in .env file.');
     process.exit(1);
 }

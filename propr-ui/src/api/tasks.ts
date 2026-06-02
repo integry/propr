@@ -4,7 +4,7 @@
  * Client wrapper for the /api/tasks backend routes.
  * Provides methods to list, get, stop, and delete tasks.
  */
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 // ============================================================================
 // Type Definitions
@@ -274,7 +274,7 @@ export const listTasks = async (options: ListTasksOptions = {}): Promise<ListTas
     params.set('excludeMerged', 'true');
   }
 
-  const response = await fetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
     method: 'GET',
     credentials: 'include'
   });
@@ -297,7 +297,7 @@ export const listTasks = async (options: ListTasksOptions = {}): Promise<ListTas
  * ```
  */
 export const getTask = async (taskId: string): Promise<TaskDetails> => {
-  const response = await fetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/history`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/history`, {
     method: 'GET',
     credentials: 'include'
   });
@@ -327,7 +327,7 @@ export const getTask = async (taskId: string): Promise<TaskDetails> => {
  * ```
  */
 export const stopTask = async (taskId: string): Promise<StopTaskResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/stop`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/stop`, {
     method: 'POST',
     credentials: 'include'
   });
@@ -366,7 +366,7 @@ export const deleteTask = async (taskId: string, force?: boolean): Promise<void>
     ? `${API_BASE_URL}/api/tasks/${encodeURIComponent(taskId)}?force=true`
     : `${API_BASE_URL}/api/tasks/${encodeURIComponent(taskId)}`;
 
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     method: 'DELETE',
     credentials: 'include'
   });
@@ -392,7 +392,7 @@ export const deleteTask = async (taskId: string, force?: boolean): Promise<void>
  * @returns Promise resolving to live execution details
  */
 export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/live-details`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/live-details`, {
     method: 'GET',
     credentials: 'include'
   });
@@ -411,7 +411,7 @@ export const getTaskAnalysis = async (taskId: string): Promise<{
   analysis: unknown | null;
   message?: string;
 }> => {
-  const response = await fetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/analysis`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/analysis`, {
     method: 'GET',
     credentials: 'include'
   });

@@ -21,7 +21,8 @@ const AttachmentsSection: React.FC<{
   isGenerating: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-}> = ({ isNewMode, localFiles, files, draftId, onRemoveLocalFile, onRemoveFile, isUploading, isGenerating, fileInputRef, onFileInputChange }) => {
+  attachButtonPressed?: boolean;
+}> = ({ isNewMode, localFiles, files, draftId, onRemoveLocalFile, onRemoveFile, isUploading, isGenerating, fileInputRef, onFileInputChange, attachButtonPressed }) => {
   const safeLocalFiles = Array.isArray(localFiles) ? localFiles : [];
   const safeFiles = Array.isArray(files) ? files : [];
   const hasLocalFiles = isNewMode && safeLocalFiles.length > 0;
@@ -44,7 +45,7 @@ const AttachmentsSection: React.FC<{
         disabled={isUploading || isGenerating}
         className={`flex items-center gap-1.5 px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors ${
           isGenerating ? 'opacity-50 cursor-not-allowed' : ''
-        }`}
+        } ${attachButtonPressed ? 'bg-gray-200 shadow-inner' : ''}`}
       >
         {isUploading ? (
           <>
@@ -120,6 +121,8 @@ interface SetupWizardLeftPaneProps {
   manualFiles: string[];
   onAddManualFile: (filePath: string) => void;
   onRemoveManualFile: (filePath: string) => void;
+  hideManualFileSelector?: boolean;
+  attachButtonPressed?: boolean;
 }
 
 export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
@@ -156,6 +159,8 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   manualFiles,
   onAddManualFile,
   onRemoveManualFile,
+  hideManualFileSelector,
+  attachButtonPressed,
 }) => (
   <div className="w-full md:w-[65%] h-auto md:h-full flex flex-col">
     {/* Header with repo/branch - Toolbar border for alignment with right pane */}
@@ -218,13 +223,16 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
               isGenerating={isGenerating}
               fileInputRef={fileInputRef}
               onFileInputChange={onFileInputChange}
+              attachButtonPressed={attachButtonPressed}
             />
-            <ManualFileSelector
-              manualFiles={manualFiles}
-              onAddFile={onAddManualFile}
-              onRemoveFile={onRemoveManualFile}
-              disabled={isGenerating || isUploading}
-            />
+            {!hideManualFileSelector && (
+              <ManualFileSelector
+                manualFiles={manualFiles}
+                onAddFile={onAddManualFile}
+                onRemoveFile={onRemoveManualFile}
+                disabled={isGenerating || isUploading}
+              />
+            )}
           </div>
         </div>
       </div>

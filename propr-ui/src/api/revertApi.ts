@@ -1,4 +1,4 @@
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 export interface RevertParams {
   repo: string;
@@ -28,13 +28,13 @@ export interface RevertPreviewResponse {
 
 export const getRevertPreview = async (params: { owner: string; repo: string; pr: string; commit: string }): Promise<RevertPreviewResponse> => {
   const queryParams = new URLSearchParams(params);
-  const response = await fetch(`${API_BASE_URL}/api/tasks/revert-preview?${queryParams}`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/tasks/revert-preview?${queryParams}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const revertCommit = async (params: RevertParams): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks/revert`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/tasks/revert`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params), credentials: 'include'
   });
@@ -49,13 +49,13 @@ export interface SummarizationSettings {
 }
 
 export const getSummarizationSettings = async (): Promise<SummarizationSettings> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/summarization`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/summarization`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updateSummarizationSettings = async (settings: SummarizationSettings): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/summarization`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/summarization`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings), credentials: 'include'
   });
@@ -64,7 +64,7 @@ export const updateSummarizationSettings = async (settings: SummarizationSetting
 
 export interface TriggerReindexAllResponse { success: boolean; repositoriesQueued: number; }
 export const triggerReindexAll = async (): Promise<TriggerReindexAllResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
@@ -74,13 +74,13 @@ export interface AgentTankSettingsResponse { enabled: boolean; url: string; }
 export interface AgentTankStatusResponse { available: boolean; reason?: string; }
 
 export const getAgentTankSettings = async (): Promise<AgentTankSettingsResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const updateAgentTankSettings = async (settings: { enabled: boolean; url: string }): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings), credentials: 'include'
   });
@@ -88,7 +88,7 @@ export const updateAgentTankSettings = async (settings: { enabled: boolean; url:
 };
 
 export const getAgentTankStatus = async (): Promise<AgentTankStatusResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank/status`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank/status`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
@@ -122,13 +122,13 @@ export interface AgentTankUsageResponse {
 }
 
 export const getAgentTankUsage = async (): Promise<AgentTankUsageResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank/usage`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank/usage`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const refreshAgentTank = async (): Promise<{ success: boolean; error?: string }> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank/refresh`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank/refresh`, {
     method: 'POST',
     credentials: 'include'
   });
@@ -143,13 +143,13 @@ export interface AgentTankDetectResponse {
 }
 
 export const detectAgentTank = async (): Promise<AgentTankDetectResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank/detect`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank/detect`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const enableAgentTank = async (url: string): Promise<{ success: boolean }> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/agent-tank`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled: true, url }),
@@ -161,7 +161,7 @@ export const enableAgentTank = async (url: string): Promise<{ success: boolean }
 
 export interface PostFollowupResponse { success: boolean; message: string; }
 export const postTaskFollowup = async (taskId: string, body: string): Promise<PostFollowupResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/followup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }), credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/tasks/${taskId}/followup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }), credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
