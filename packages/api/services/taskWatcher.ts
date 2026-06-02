@@ -111,10 +111,13 @@ export class TaskWatcherManager {
       await fs.ensureDir(dirPath);
 
       // Watch the directory for the file to be created
+      // Use polling to avoid EMFILE errors when directory has many files
       const watcher = chokidar.watch(dirPath, {
         persistent: true,
         ignoreInitial: true,
         depth: 0, // Only watch the directory itself, not subdirectories
+        usePolling: true,
+        interval: 500,
         awaitWriteFinish: {
           stabilityThreshold: 100,
           pollInterval: 50
@@ -153,9 +156,12 @@ export class TaskWatcherManager {
     }
 
     // File exists - watch it directly for changes
+    // Use polling to avoid EMFILE errors
     const watcher = chokidar.watch(conversationPath, {
       persistent: true,
       ignoreInitial: true,
+      usePolling: true,
+      interval: 500,
       awaitWriteFinish: {
         stabilityThreshold: 100,
         pollInterval: 50
@@ -202,9 +208,12 @@ export class TaskWatcherManager {
     }
 
     // Create a new watcher for the file itself
+    // Use polling to avoid EMFILE errors
     const watcher = chokidar.watch(conversationPath, {
       persistent: true,
       ignoreInitial: true,
+      usePolling: true,
+      interval: 500,
       awaitWriteFinish: {
         stabilityThreshold: 100,
         pollInterval: 50
