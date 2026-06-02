@@ -22,6 +22,9 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         assert.match(wrapperScript, /\.propr\/setup\.sh/);
         assert.match(wrapperScript, /sudo -E -u node -H \/bin\/bash/);
         assert.match(wrapperScript, /<\/dev\/null >&2/);
+        assert.match(wrapperScript, /ProPR repo setup hook failed with exit code/);
+        assert.match(wrapperScript, /PROPR_REPO_SETUP_STRICT/);
+        assert.match(wrapperScript, /Continuing so the agent can inspect and repair/);
         assert.match(wrapperScript, /exec "\$entrypoint" "\$@"/);
     });
 

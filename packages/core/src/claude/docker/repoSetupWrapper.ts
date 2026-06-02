@@ -23,14 +23,26 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
     chown node:node "$PROPR_CACHE_DIR" 2>/dev/null || true
 
     echo "Running ProPR repo setup hook: $setup_script" >&2
+    set +e
     if command -v sudo >/dev/null 2>&1 && id node >/dev/null 2>&1; then
         cd "$PROPR_WORKSPACE"
         sudo -E -u node -H /bin/bash "$setup_script" </dev/null >&2
+        setup_exit=$?
     else
         cd "$PROPR_WORKSPACE"
         /bin/bash "$setup_script" </dev/null >&2
+        setup_exit=$?
     fi
-    echo "ProPR repo setup hook completed" >&2
+    set -e
+    if [ "$setup_exit" -ne 0 ]; then
+        echo "ProPR repo setup hook failed with exit code $setup_exit" >&2
+        if [ "\${PROPR_REPO_SETUP_STRICT:-0}" = "1" ]; then
+            exit "$setup_exit"
+        fi
+        echo "Continuing so the agent can inspect and repair repository setup/build issues" >&2
+    else
+        echo "ProPR repo setup hook completed" >&2
+    fi
 fi
 
 exec "$entrypoint" "$@"
