@@ -1,7 +1,7 @@
 import { extractKeywords, extractKeywordsWithLLM, mergeKeywords } from './relevance/keywordExtractor.js';
 import { mineGitHistory, mineGitHistoryWithLLM, FileScore as GitFileScore, SemanticMiningOptions } from './relevance/gitMiner.js';
 import { scorePaths, FileScore as PathFileScore } from './relevance/pathScorer.js';
-import { scoreSemanticRelevance, SemanticFileScore, SemanticScoringOptions } from './relevance/semanticScorer.js';
+import { scoreSemanticRelevance, SemanticScoringOptions } from './relevance/semanticScorer.js';
 import { Agent } from '../agents/types.js';
 import logger from '../utils/logger.js';
 
@@ -233,16 +233,19 @@ async function performGitSemanticMining(params: GitSemanticMiningParams): Promis
   }
 }
 
+interface KeywordScoringParams {
+  repoPath: string;
+  keywords: string[];
+  finalScores: Record<string, AggregatedFileScore>;
+  correlationId?: string;
+  timeoutMs?: number;
+}
+
 /**
  * Phase 2: Keyword-based scoring (Git history + Path matching)
  */
-async function performKeywordScoring(
-  repoPath: string,
-  keywords: string[],
-  finalScores: Record<string, AggregatedFileScore>,
-  correlationId?: string,
-  timeoutMs: number = TIMEOUT_MS
-): Promise<void> {
+async function performKeywordScoring(params: KeywordScoringParams): Promise<void> {
+  const { repoPath, keywords, finalScores, correlationId, timeoutMs = TIMEOUT_MS } = params;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   async function withTimeout<T>(name: string, promise: Promise<T>, fallback: T): Promise<T> {
@@ -371,7 +374,7 @@ export async function findRelevantFiles(
   }
 
   if (keywords.length > 0) {
-    await performKeywordScoring(repoPath, keywords, finalScores, correlationId, keywordTimeoutMs);
+    await performKeywordScoring({ repoPath, keywords, finalScores, correlationId, timeoutMs: keywordTimeoutMs });
   }
 
   // --- Phase 3: Summary-based Semantic Scoring ---

@@ -78,6 +78,123 @@ function stripFilePathsFromContext(context: string, repoName: string): string {
   return header + strippedContext;
 }
 
+interface RepoContextResult {
+  repository: string;
+  context: string;
+  tokens: number;
+  files: number;
+  filePaths: string[];
+  fileScores: Record<string, { score: number; reason: string }>;
+}
+
+async function rankRepoFiles(
+  repoPath: string,
+  repo: ContextRepository,
+  options: { prompt: string; contextModel?: string; fastRelevance: boolean; correlationId?: string },
+  correlatedLogger: ReturnType<typeof logger.withCorrelation> | typeof logger
+): Promise<{ priorityFiles: string[]; fileScores: Record<string, { score: number; reason: string }> }> {
+  const { prompt, contextModel, fastRelevance, correlationId } = options;
+  const agent = fastRelevance ? undefined : await resolveRelevanceAgent(contextModel, correlationId);
+  const relevanceResult = await findRelevantFiles(repoPath, prompt, {
+    correlationId,
+    repoName: repo.repository,
+    branch: repo.branch,
+    agent,
+    modelId: contextModel,
+    useLLMKeywords: !fastRelevance,
+    useSummaryScoring: !fastRelevance,
+    keywordTimeoutMs: fastRelevance ? 3000 : undefined,
+    maxResults: 1000,
+    minScore: 1
+  });
+
+  const fileScores: Record<string, { score: number; reason: string }> = {};
+  for (const file of relevanceResult.files) {
+    fileScores[file.path] = { score: file.score, reason: formatRelevanceReason(file) };
+  }
+
+  correlatedLogger.info(
+    {
+      repository: repo.repository,
+      relevantFileCount: relevanceResult.files.length,
+      topFiles: relevanceResult.files.slice(0, 5).map(file => ({ path: file.path, score: file.score, reason: file.reason }))
+    },
+    'Ranked additional context repository files by relevance'
+  );
+
+  return { priorityFiles: relevanceResult.files.map(file => file.path), fileScores };
+}
+
+async function processRepository(
+  repo: ContextRepository,
+  options: { prompt?: string; contextModel?: string; tokenBudget: number; fastRelevance: boolean; authToken: string; correlationId?: string },
+  correlatedLogger: ReturnType<typeof logger.withCorrelation> | typeof logger
+): Promise<RepoContextResult> {
+  const { prompt, contextModel, tokenBudget, fastRelevance, authToken, correlationId } = options;
+  const [owner, repoName] = repo.repository.split('/');
+  if (!owner || !repoName) {
+    throw new Error('Invalid repository format. Expected "owner/repo"');
+  }
+
+  correlatedLogger.info(
+    { repository: repo.repository, branch: repo.branch || 'default', tokenBudget },
+    'Processing additional context repository'
+  );
+
+  const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+  let effectiveAuthToken = authToken;
+  try {
+    effectiveAuthToken = await getGitHubInstallationToken();
+  } catch {
+    // Fall back to provided auth token
+  }
+
+  const repoPath = await ensureRepoCloned({
+    repoUrl, owner, repoName,
+    authToken: effectiveAuthToken,
+    baseBranch: repo.branch
+  });
+
+  let priorityFiles: string[] | undefined;
+  let fileScores: Record<string, { score: number; reason: string }> = {};
+  if (prompt?.trim()) {
+    try {
+      const ranked = await rankRepoFiles(repoPath, repo, { prompt, contextModel, fastRelevance, correlationId }, correlatedLogger);
+      priorityFiles = ranked.priorityFiles;
+      fileScores = ranked.fileScores;
+    } catch (error) {
+      correlatedLogger.warn(
+        { repository: repo.repository, error: (error as Error).message },
+        'Failed to rank additional context repository files; falling back to repository order'
+      );
+    }
+  }
+
+  const contextResult = await generateContext({
+    repoPath, priorityFiles,
+    tokenLimit: tokenBudget, correlationId,
+    includeFullDirectoryStructure: false,
+    compress: true
+  });
+
+  const strippedContext = stripFilePathsFromContext(contextResult.context, repo.repository);
+  const finalContext = repo.description ? `[${repo.description}]\n${strippedContext}` : strippedContext;
+
+  correlatedLogger.info(
+    { repository: repo.repository, totalTokens: contextResult.totalTokens, totalFiles: contextResult.totalFiles },
+    'Successfully generated context for additional repository'
+  );
+
+  return {
+    repository: repo.repository,
+    context: finalContext,
+    tokens: contextResult.totalTokens,
+    files: contextResult.totalFiles,
+    filePaths: contextResult.includedFiles,
+    fileScores
+  };
+}
+
 /**
  * Generate context from additional repositories.
  * This content is marked as "example/reference only" and file paths are stripped
@@ -90,14 +207,7 @@ export async function generateAdditionalContext(
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!repositories || repositories.length === 0) {
-    return {
-      context: '',
-      totalTokens: 0,
-      totalFiles: 0,
-      filesIncluded: [],
-      repositoriesIncluded: [],
-      errors: []
-    };
+    return { context: '', totalTokens: 0, totalFiles: 0, filesIncluded: [], repositoriesIncluded: [], errors: [] };
   }
 
   correlatedLogger.info(
@@ -105,126 +215,20 @@ export async function generateAdditionalContext(
     'Starting additional context generation'
   );
 
-  const results: Array<{
-    repository: string;
-    context: string;
-    tokens: number;
-    files: number;
-    filePaths: string[];
-    fileScores: Record<string, { score: number; reason: string }>;
-  }> = [];
+  const results: RepoContextResult[] = [];
   const errors: Array<{ repository: string; error: string }> = [];
 
-  // Divide token budget evenly among repositories. Full scan intentionally uses
-  // the entire remaining budget so small target repos can lean on references.
   const budgetRatio = useFullBudget ? 1 : 0.9;
   const tokenBudgetPerRepo = Math.floor((tokenBudget * budgetRatio) / repositories.length);
 
   for (const repo of repositories) {
-    const [owner, repoName] = repo.repository.split('/');
-    if (!owner || !repoName) {
-      errors.push({ repository: repo.repository, error: 'Invalid repository format. Expected "owner/repo"' });
-      continue;
-    }
-
     try {
-      correlatedLogger.info(
-        { repository: repo.repository, branch: repo.branch || 'default', tokenBudget: tokenBudgetPerRepo },
-        'Processing additional context repository'
+      const result = await processRepository(
+        repo,
+        { prompt, contextModel, tokenBudget: tokenBudgetPerRepo, fastRelevance, authToken, correlationId },
+        correlatedLogger
       );
-
-      // Ensure the repository is cloned
-      const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      let effectiveAuthToken = authToken;
-      try {
-        // Try to use installation token for private repo access
-        effectiveAuthToken = await getGitHubInstallationToken();
-      } catch {
-        // Fall back to provided auth token
-      }
-
-      const repoPath = await ensureRepoCloned({
-        repoUrl,
-        owner,
-        repoName,
-        authToken: effectiveAuthToken,
-        baseBranch: repo.branch
-      });
-
-      let priorityFiles: string[] | undefined;
-      const fileScores: Record<string, { score: number; reason: string }> = {};
-      if (prompt?.trim()) {
-        try {
-          const agent = fastRelevance ? undefined : await resolveRelevanceAgent(contextModel, correlationId);
-          const relevanceResult = await findRelevantFiles(repoPath, prompt, {
-            correlationId,
-            repoName: repo.repository,
-            branch: repo.branch,
-            agent,
-            modelId: contextModel,
-            useLLMKeywords: !fastRelevance,
-            useSummaryScoring: !fastRelevance,
-            keywordTimeoutMs: fastRelevance ? 3000 : undefined,
-            maxResults: 1000,
-            minScore: 1
-          });
-          priorityFiles = relevanceResult.files.map(file => file.path);
-          for (const file of relevanceResult.files) {
-            fileScores[file.path] = { score: file.score, reason: formatRelevanceReason(file) };
-          }
-          correlatedLogger.info(
-            {
-              repository: repo.repository,
-              relevantFileCount: relevanceResult.files.length,
-              topFiles: relevanceResult.files.slice(0, 5).map(file => ({ path: file.path, score: file.score, reason: file.reason }))
-            },
-            'Ranked additional context repository files by relevance'
-          );
-        } catch (error) {
-          correlatedLogger.warn(
-            { repository: repo.repository, error: (error as Error).message },
-            'Failed to rank additional context repository files; falling back to repository order'
-          );
-        }
-      }
-
-      // Generate context for this repository
-      const contextResult = await generateContext({
-        repoPath,
-        priorityFiles,
-        tokenLimit: tokenBudgetPerRepo,
-        correlationId,
-        includeFullDirectoryStructure: false, // Skip directory structure for context repos
-        compress: true // Use compression to maximize content
-      });
-
-      // Strip file paths from the context
-      const strippedContext = stripFilePathsFromContext(contextResult.context, repo.repository);
-
-      // Add description if provided
-      let finalContext = strippedContext;
-      if (repo.description) {
-        finalContext = `[${repo.description}]\n${strippedContext}`;
-      }
-
-      results.push({
-        repository: repo.repository,
-        context: finalContext,
-        tokens: contextResult.totalTokens,
-        files: contextResult.totalFiles,
-        filePaths: contextResult.includedFiles,
-        fileScores
-      });
-
-      correlatedLogger.info(
-        {
-          repository: repo.repository,
-          totalTokens: contextResult.totalTokens,
-          totalFiles: contextResult.totalFiles
-        },
-        'Successfully generated context for additional repository'
-      );
-
+      results.push(result);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       correlatedLogger.warn(
@@ -235,33 +239,24 @@ export async function generateAdditionalContext(
     }
   }
 
-  // Combine all context
   const combinedContext = results.map(r => r.context).join('\n\n---\n\n');
   const totalTokens = results.reduce((sum, r) => sum + r.tokens, 0);
   const totalFiles = results.reduce((sum, r) => sum + r.files, 0);
   const filesIncluded = results
     .flatMap(r => r.filePaths.map(path => ({
-      repository: r.repository,
-      path,
+      repository: r.repository, path,
       score: r.fileScores[path]?.score,
       reason: r.fileScores[path]?.reason
     })))
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
   correlatedLogger.info(
-    {
-      repositoriesIncluded: results.length,
-      errorCount: errors.length,
-      totalTokens,
-      totalFiles
-    },
+    { repositoriesIncluded: results.length, errorCount: errors.length, totalTokens, totalFiles },
     'Additional context generation completed'
   );
 
   return {
-    context: combinedContext,
-    totalTokens,
-    totalFiles,
+    context: combinedContext, totalTokens, totalFiles,
     filesIncluded,
     repositoriesIncluded: results.map(r => r.repository),
     errors

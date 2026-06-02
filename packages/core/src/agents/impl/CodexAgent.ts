@@ -91,24 +91,7 @@ export class CodexAgent implements Agent {
 
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
 
-            const response: AgentExecutionResult = {
-                success: parsedOutput.success && result.exitCode === 0,
-                executionTimeMs: executionTime,
-                logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
-                exitCode: result.exitCode,
-                rawOutput: result.stdout,
-                modelUsed,
-                sessionId: parsedOutput.sessionId,
-                conversationId: parsedOutput.conversationId,
-                conversationLog: parsedOutput.conversationLog,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: parsedOutput.result ?? undefined,
-                prompt,
-                error: parsedOutput.error || (result.exitCode === 0 ? undefined : result.stderr?.trim() || undefined),
-                tokenUsage: parsedOutput.tokenUsage,
-                usageMetrics: usageMetrics ?? undefined
-            };
+            const response = this.buildTaskResponse({ result, parsedOutput, modelUsed, executionTime, prompt, usageMetrics });
 
             await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt, issueRef, model: modelUsed, isRetry, retryReason });
 
@@ -222,6 +205,35 @@ export class CodexAgent implements Agent {
             logger.warn({ error: (initError as Error).message }, 'Failed to initialize analysis workspace git repo');
         }
         return workspace;
+    }
+
+    private buildTaskResponse(opts: {
+        result: { stdout: string; stderr?: string; exitCode: number | null };
+        parsedOutput: ReturnType<typeof parseCodexStreamOutput>;
+        modelUsed: string;
+        executionTime: number;
+        prompt: string;
+        usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
+    }): AgentExecutionResult {
+        const { result, parsedOutput, modelUsed, executionTime, prompt, usageMetrics } = opts;
+        return {
+            success: parsedOutput.success && result.exitCode === 0,
+            executionTimeMs: executionTime,
+            logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
+            exitCode: result.exitCode,
+            rawOutput: result.stdout,
+            modelUsed,
+            sessionId: parsedOutput.sessionId,
+            conversationId: parsedOutput.conversationId,
+            conversationLog: parsedOutput.conversationLog,
+            modifiedFiles: [],
+            commitMessage: null,
+            summary: parsedOutput.result ?? undefined,
+            prompt,
+            error: parsedOutput.error || (result.exitCode === 0 ? undefined : result.stderr?.trim() || undefined),
+            tokenUsage: parsedOutput.tokenUsage,
+            usageMetrics: usageMetrics ?? undefined
+        };
     }
 
     /**
