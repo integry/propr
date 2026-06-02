@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
-import { randomUUID } from 'crypto';
 import * as configManager from '@propr/core';
 import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY } from './configHelpers.js';
@@ -9,6 +8,7 @@ import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
 import { saveSettingsWithRollback } from './configRoutesSettings.js';
 import type { ConfigLockContext } from './configHelpers.js';
+import { normalizeRepoConfig } from './configRepoValidation.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -207,23 +207,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     // Validate and process repos before taking the lock to avoid blocking valid updates on malformed requests.
     const processedRepos: RepoToMonitor[] = [];
     for (const repo of repos_to_monitor) {
-      const isValid = typeof repo?.name === 'string' &&
-        repo.name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/) &&
-        typeof repo.enabled === 'boolean';
-      if (!isValid) {
-        res.status(400).json({ error: `Invalid repository format: ${JSON.stringify(repo)}` });
+      const normalized = normalizeRepoConfig(repo);
+      if (!normalized.ok) {
+        res.status(400).json({ error: normalized.error });
         return;
       }
-
-      if (repo.alias !== undefined && typeof repo.alias !== 'string') {
-        res.status(400).json({ error: `Invalid alias format for ${repo.name}: must be a string` });
-        return;
-      }
-      if (repo.baseBranch !== undefined && typeof repo.baseBranch !== 'string') {
-        res.status(400).json({ error: `Invalid baseBranch format for ${repo.name}: must be a string` });
-        return;
-      }
-      processedRepos.push({ id: repo.id || randomUUID(), name: repo.name, enabled: repo.enabled, alias: repo.alias?.trim() || undefined, baseBranch: repo.baseBranch?.trim() || undefined });
+      processedRepos.push(normalized.value);
     }
     const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
       return saveThenPublishConfigUpdate({

@@ -1,4 +1,4 @@
-import { handleApiResponse, API_BASE_URL } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 /**
  * Status enum for plan issues.
@@ -125,7 +125,7 @@ export interface ImplementAllIssuesResponse {
  * Fetches all plan issues for a draft.
  */
 export const getPlanIssues = async (draftId: string): Promise<PlanIssue[]> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/issues`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/issues`, {
     credentials: 'include'
   });
   await handleApiResponse(response);
@@ -147,7 +147,7 @@ export const getPlanIssuesPaginated = async (
   const queryString = params.toString();
   const url = `${API_BASE_URL}/api/planner/drafts/${draftId}/issues${queryString ? `?${queryString}` : ''}`;
 
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     credentials: 'include'
   });
   await handleApiResponse(response);
@@ -162,7 +162,7 @@ export const implementIssue = async (
   issueNumber: number,
   options?: ImplementIssueOptions
 ): Promise<ImplementIssueResponse> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/planner/drafts/${draftId}/issues/${issueNumber}/implement`,
     {
       method: 'POST',
@@ -183,7 +183,7 @@ export const updatePlanIssue = async (
   issueNumber: number,
   options: UpdateIssueOptions
 ): Promise<PlanIssue> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/planner/drafts/${draftId}/issues/${issueNumber}`,
     {
       method: 'PATCH',
@@ -204,7 +204,7 @@ export const implementAllIssues = async (
   draftId: string,
   options?: ImplementAllIssuesOptions
 ): Promise<ImplementAllIssuesResponse> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/planner/drafts/${draftId}/issues/implement-all`,
     {
       method: 'POST',

@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="${PROPR_WORKSPACE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
+cd "$WORKSPACE"
+npm ci
+npm run build --workspace packages/shared
+npm run build --workspace packages/core
+
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js is required to validate the docs site." >&2
   exit 1

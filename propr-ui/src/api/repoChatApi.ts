@@ -1,5 +1,5 @@
 // Repository Chat API
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 /**
  * Represents a message in the conversation history
@@ -66,7 +66,7 @@ export const chatWithRepository = async (
   options: ChatWithRepositoryOptions
 ): Promise<RepoChatResponse> => {
   const { repository, branch, prompt, history = [], model, contextLevel } = options;
-  const response = await fetch(`${API_BASE_URL}/api/repos/chat`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/repos/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -92,7 +92,7 @@ export const chatWithRepository = async (
 export const getChatMessages = async (
   repository: string
 ): Promise<PersistedChatMessage[]> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/chat/messages?repository=${encodeURIComponent(repository)}`,
     {
       method: 'GET',
@@ -114,7 +114,7 @@ export const saveChatMessages = async (
   repository: string,
   messages: PersistedChatMessage[]
 ): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/repos/chat/messages`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/repos/chat/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repository, messages }),
@@ -132,7 +132,7 @@ export const saveChatMessages = async (
 export const deleteChatMessage = async (
   messageId: string
 ): Promise<boolean> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/chat/messages/${encodeURIComponent(messageId)}`,
     {
       method: 'DELETE',
@@ -153,7 +153,7 @@ export const deleteChatMessage = async (
 export const clearChatMessages = async (
   repository: string
 ): Promise<number> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/chat/messages?repository=${encodeURIComponent(repository)}`,
     {
       method: 'DELETE',

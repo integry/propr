@@ -39,6 +39,7 @@ interface RepositoryListContentProps {
   onToggleHidden: (repoId: string) => void;
   onSelect: (repoId: string) => void;
   onRetry: () => void;
+  isReadOnly?: boolean;
 }
 
 export const RepositoryListContent: React.FC<RepositoryListContentProps> = ({
@@ -55,6 +56,7 @@ export const RepositoryListContent: React.FC<RepositoryListContentProps> = ({
   onToggleHidden,
   onSelect,
   onRetry,
+  isReadOnly = false,
 }) => {
   // Separate starred and non-starred repos
   const { starredRepos, unstarredRepos } = useMemo(() => {
@@ -107,6 +109,7 @@ export const RepositoryListContent: React.FC<RepositoryListContentProps> = ({
       onToggleHidden={onToggleHidden}
       isSelected={repo.id === selectedRepoId}
       onSelect={onSelect}
+      isReadOnly={isReadOnly}
     />
   );
 

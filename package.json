@@ -1,9 +1,10 @@
 {
   "name": "propr",
-  "version": "1.0.0",
+  "version": "0.8.2",
   "type": "module",
   "main": "index.js",
   "workspaces": [
+    "apps/*",
     "packages/*",
     "propr-ui"
   ],
@@ -49,6 +50,7 @@
     "compose:build": "./scripts/compose.sh build",
     "images:build": "./scripts/build-images.sh",
     "images:build:push": "./scripts/build-images.sh --push",
+    "images:metadata": "node scripts/sync-dockerhub-metadata.mjs",
     "images:smoke": "./scripts/smoke-test-images.sh",
     "start:prod": "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD/.env:/app/.env:ro -v $PWD/data:/app/data -v $PWD/logs:/app/logs -v $PWD/repos:/app/repos propr/launcher:latest"
   },

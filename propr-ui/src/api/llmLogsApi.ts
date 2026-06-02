@@ -1,4 +1,4 @@
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 export interface UsageMetricRecordEntry {
   agent: string;
@@ -93,7 +93,7 @@ export const getLlmLogs = async (params: LlmLogsParams = {}): Promise<LlmLogsRes
   const queryString = queryParams.toString();
   const url = `${API_BASE_URL}/api/llm-logs${queryString ? `?${queryString}` : ''}`;
 
-  const response = await fetch(url, { credentials: 'include' });
+  const response = await apiFetch(url, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };

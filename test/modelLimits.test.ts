@@ -257,8 +257,13 @@ test('getModelHardLimit - all 18 known models', async (t) => {
         assert.strictEqual(haikuLimit, 196000, 'Claude Haiku 4.5 hard limit should be 196000');
     });
 
-    await t.test('Codex models (8 models, 400K context)', () => {
+    await t.test('Codex models (9 models, 400K context)', () => {
         const expectedCodexLimit = Math.floor(400000 * 0.98); // 392000
+
+        // GPT-5.5
+        const gpt55Limit = getModelHardLimit('gpt-5.5');
+        assert.strictEqual(gpt55Limit, expectedCodexLimit, 'GPT-5.5 should return 98% of 400K');
+        assert.strictEqual(gpt55Limit, 392000, 'GPT-5.5 hard limit should be 392000');
 
         // GPT-5.4
         const gpt54Limit = getModelHardLimit('gpt-5.4');
@@ -340,7 +345,8 @@ test('getModelHardLimit - all 18 known models', async (t) => {
             'claude-opus-4-5-20251101',
             'claude-sonnet-4-5-20250929',
             'claude-haiku-4-5-20251001',
-            // Codex (8)
+            // Codex (9)
+            'gpt-5.5',
             'gpt-5.4',
             'gpt-5.4-mini',
             'gpt-5.3-codex',

@@ -12,6 +12,7 @@ import { tooltipStyle } from './chartConstants';
 interface ActivitySparklineProps {
   data: Array<{ date: string; displayDate: string; count: number }>;
   isLoading?: boolean;
+  deterministicSvg?: boolean;
 }
 
 const formatDateShort = (dateStr: string): string => {
@@ -19,7 +20,59 @@ const formatDateShort = (dateStr: string): string => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false }) => {
+const DeterministicActivityGraph: React.FC<{ data: ActivitySparklineProps['data'] }> = ({ data }) => {
+  const width = 300;
+  const height = 120;
+  const left = 34;
+  const right = 8;
+  const top = 10;
+  const bottom = 24;
+  const startDate = data.length > 0 ? formatDateShort(data[0].date) : '';
+  const endDate = data.length > 0 ? formatDateShort(data[data.length - 1].date) : '';
+  const middleDate = data.length > 0 ? formatDateShort(data[Math.floor(data.length / 2)].date) : '';
+  const max = Math.max(...data.map((point) => point.count));
+  const min = Math.min(...data.map((point) => point.count));
+  const range = Math.max(1, max - min);
+  const points = data.map((point, index) => {
+    const x = left + (index / Math.max(1, data.length - 1)) * (width - left - right);
+    const y = top + (1 - (point.count - min) / range) * (height - top - bottom);
+    return { x, y };
+  });
+  const linePath = points.reduce((path, point, index) => {
+    if (index === 0) return `M ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+
+    const previous = points[index - 1];
+    const controlX = (previous.x + point.x) / 2;
+    return `${path} C ${controlX.toFixed(1)} ${previous.y.toFixed(1)}, ${controlX.toFixed(1)} ${point.y.toFixed(1)}, ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+  }, '');
+  const areaPath = `${linePath} L ${(width - right).toFixed(1)} ${(height - bottom).toFixed(1)} L ${left.toFixed(1)} ${(height - bottom).toFixed(1)} Z`;
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-[120px] w-full overflow-visible" aria-hidden="true">
+      <defs>
+        <linearGradient id="sparklineGradientSvg" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="#14B8A6" stopOpacity="0.2" />
+          <stop offset="100%" stopColor="#14B8A6" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <text x="8" y={top + 4} className="fill-slate-400 text-[10px]">{max}</text>
+      <text x="8" y={top + (height - top - bottom) / 2 + 4} className="fill-slate-400 text-[10px]">{Math.round(max / 2)}</text>
+      <line x1={left} x2={width - right} y1={top} y2={top} className="stroke-slate-200" strokeWidth="1" />
+      <line x1={left} x2={width - right} y1={top + (height - top - bottom) / 2} y2={top + (height - top - bottom) / 2} className="stroke-slate-200" strokeWidth="1" />
+      <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} className="stroke-slate-200" strokeWidth="1" />
+      <path d={areaPath} fill="url(#sparklineGradientSvg)" />
+      <path d={linePath} fill="none" stroke="#14B8A6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
+      {points.filter((_, index) => index === data.length - 1 || index === data.length - 8 || index === data.length - 15).map((point) => (
+        <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="3" fill="#14B8A6" stroke="white" strokeWidth="1.5" />
+      ))}
+      <text x={left} y={height - 4} textAnchor="start" className="fill-slate-400 text-[10px]">{startDate}</text>
+      <text x={(left + width - right) / 2} y={height - 4} textAnchor="middle" className="fill-slate-400 text-[10px]">{middleDate}</text>
+      <text x={width - right} y={height - 4} textAnchor="end" className="fill-slate-400 text-[10px]">{endDate}</text>
+    </svg>
+  );
+};
+
+const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false, deterministicSvg = false }) => {
   // Get first, middle and last dates for minimal axis display
   const startDate = data.length > 0 ? formatDateShort(data[0].date) : '';
   const endDate = data.length > 0 ? formatDateShort(data[data.length - 1].date) : '';
@@ -97,6 +150,8 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
               <div className="h-2 w-12 bg-gray-200 rounded" />
             </div>
           </div>
+        ) : data.length > 0 && deterministicSvg ? (
+          <DeterministicActivityGraph data={data} />
         ) : data.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data} margin={{ top: 5, right: 5, left: 25, bottom: 5 }}>

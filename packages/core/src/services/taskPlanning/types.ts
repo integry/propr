@@ -60,6 +60,7 @@ export interface TokenBudgetResult {
 
 export interface TokenBudgetOptions {
   tokenLimit: number;
+  contextLevel?: number;
   attachmentTokens: number;
   fullSummaryText: string;
   hasContextRepositories: boolean;
@@ -72,7 +73,10 @@ export interface AdditionalContextResult {
 
 export interface AdditionalContextOptions {
   contextRepositories: ContextRepository[] | undefined;
+  prompt?: string;
+  contextModel?: string;
   additionalContextBudget: number;
+  useFullBudget?: boolean;
   githubToken: string;
   draftId: string;
   correlationId: string | undefined;
@@ -157,6 +161,8 @@ export interface ContextGenerationParams {
   config: {
     compress: boolean;
     granularity: Granularity;
+    contextLevel: number;
+    tokenLimit: number;
     contextRepositories?: ContextRepository[];
   };
   relevantFilePaths: string[];
@@ -168,5 +174,6 @@ export interface ContextGenerationParams {
   githubToken: string;
   correlationId?: string;
   generationModel: string;
+  contextModel?: string;
   correlatedLogger: MinimalLogger;
 }

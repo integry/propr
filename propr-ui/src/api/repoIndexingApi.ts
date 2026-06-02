@@ -1,5 +1,5 @@
 // Repository Indexing Status
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 export interface RepositoryIndexingProgress {
   totalFiles: number;
@@ -29,7 +29,7 @@ export const getRepoStatusKey = (fullName: string, branch?: string): string => {
 };
 
 export const getRepositoriesIndexingStatus = async (): Promise<{ repositories: RepositoryIndexingStatus[] }> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/repos/indexing-status`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/repos/indexing-status`, {
     credentials: 'include'
   });
   await handleApiResponse(response);
@@ -37,7 +37,7 @@ export const getRepositoriesIndexingStatus = async (): Promise<{ repositories: R
 };
 
 export const stopRepositoryIndexing = async (repository: string, branch?: string): Promise<{ success: boolean }> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/repos/stop-indexing`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/repos/stop-indexing`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repository, branch }),
@@ -48,7 +48,7 @@ export const stopRepositoryIndexing = async (repository: string, branch?: string
 };
 
 export const triggerRepositoryIndexing = async (repository: string, baseBranch?: string): Promise<{ success: boolean; jobId?: string }> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/repos/trigger-indexing`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/repos/trigger-indexing`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repository, baseBranch, fullReindex: true }),

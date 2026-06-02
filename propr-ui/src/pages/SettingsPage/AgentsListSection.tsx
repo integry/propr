@@ -87,6 +87,7 @@ interface AgentsListSectionProps {
   showAddModal?: boolean;
   onCloseAddModal?: () => void;
   onAddClick?: () => void;
+  readOnly?: boolean;
 }
 
 // Code Chip component for consistent styling of IDs, aliases, and paths
@@ -95,6 +96,16 @@ const CodeChip: React.FC<{ children: React.ReactNode; className?: string }> = ({
     {children}
   </code>
 );
+
+function getModelDisplayName(modelId: string, modelInfo: typeof MODEL_INFO_MAP[string] | undefined): string {
+  if (modelInfo?.name) return modelInfo.name;
+  const gptMatch = modelId.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
+  if (!gptMatch) return modelId;
+  const suffix = gptMatch[2]
+    ? ` ${gptMatch[2].split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ')}`
+    : '';
+  return `GPT-${gptMatch[1]}${suffix}`;
+}
 
 // High-density model row component - tighter padding for density
 const ModelRow: React.FC<{
@@ -107,7 +118,7 @@ const ModelRow: React.FC<{
     {/* Name + Badge column */}
     <div className="flex items-center gap-1.5 flex-1 min-w-0">
       <span className={`truncate text-[13px] ${isDefault ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
-        {modelInfo?.name || modelId}
+        {getModelDisplayName(modelId, modelInfo)}
       </span>
       {customLabel && (
         <span className="px-1 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] rounded font-medium flex-shrink-0">
@@ -149,7 +160,8 @@ const AgentCard: React.FC<{
   onEdit: () => void;
   onDelete: () => void;
   onToggle: () => void;
-}> = ({ agent, onEdit, onDelete, onToggle }) => {
+  readOnly?: boolean;
+}> = ({ agent, onEdit, onDelete, onToggle, readOnly = false }) => {
   return (
     <div className="border-b border-slate-100 py-4 first:pt-0">
       {/* --- Agent Header: [Icon] [Bold Name] [Brand Badge] ... [Toggle] [Edit] --- */}
@@ -165,11 +177,12 @@ const AgentCard: React.FC<{
 
         <div className="flex items-center gap-1.5">
           {/* Toggle Switch */}
-          <label className="relative inline-flex items-center cursor-pointer">
+          <label className={`relative inline-flex items-center ${readOnly ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
             <input
               type="checkbox"
               checked={agent.enabled}
               onChange={onToggle}
+              disabled={readOnly}
               className="sr-only peer"
             />
             <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary-600"></div>
@@ -178,8 +191,9 @@ const AgentCard: React.FC<{
           {/* Edit Button */}
           <button
             onClick={onEdit}
-            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded transition-colors"
-            title="Edit agent"
+            disabled={readOnly}
+            className={`p-1 rounded transition-colors ${readOnly ? 'cursor-not-allowed text-gray-300' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'}`}
+            title={readOnly ? 'Demo mode is read-only' : 'Edit agent'}
           >
             <PencilIcon className="w-3.5 h-3.5" />
           </button>
@@ -187,8 +201,9 @@ const AgentCard: React.FC<{
           {/* Delete Button */}
           <button
             onClick={onDelete}
-            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
-            title="Delete agent"
+            disabled={readOnly}
+            className={`p-1 rounded transition-colors ${readOnly ? 'cursor-not-allowed text-gray-300' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'}`}
+            title={readOnly ? 'Demo mode is read-only' : 'Delete agent'}
           >
             <TrashIcon className="w-3.5 h-3.5" />
           </button>
@@ -237,18 +252,19 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
   onSaveAgents,
   showAddModal = false,
   onCloseAddModal,
-  onAddClick
+  onAddClick,
+  readOnly = false
 }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null);
 
   // Handle external trigger for add modal from header button
   React.useEffect(() => {
-    if (showAddModal) {
+    if (showAddModal && !readOnly) {
       setEditingAgent(null);
       setShowModal(true);
     }
-  }, [showAddModal]);
+  }, [readOnly, showAddModal]);
 
   const handleEditAgent = (agent: AgentConfig) => {
     setEditingAgent(agent);
@@ -293,6 +309,11 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
 
   return (
     <div>
+      {readOnly && (
+        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          Demo mode is read-only. Agent configuration can be inspected but not changed.
+        </div>
+      )}
       {error && <Alert message={error} type="error" />}
       {success && <Alert message={success} type="success" />}
 
@@ -307,6 +328,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
               onEdit={() => handleEditAgent(agent)}
               onDelete={() => handleDeleteAgent(agent)}
               onToggle={() => handleToggleAgent(agent)}
+              readOnly={readOnly}
             />
           ))}
           {agents.length === 0 && (
@@ -322,7 +344,8 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
               </p>
               <button
                 onClick={onAddClick}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                disabled={readOnly}
+                className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${readOnly ? 'cursor-not-allowed bg-gray-300' : 'bg-primary-600 hover:bg-primary-700'}`}
               >
                 <PlusIcon className="w-4 h-4" />
                 Add First Agent

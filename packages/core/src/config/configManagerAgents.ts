@@ -2,6 +2,8 @@ import path from 'path';
 import { MODEL_INFO_MAP } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
+import { AGENT_DEFAULT_VERSIONS } from '../agents/version/types.js';
+import { computeContentHash, generateImageTag } from '../agents/version/versionService.js';
 
 /**
  * CLI version type - how the version is specified.
@@ -76,11 +78,12 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
 
 const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
     claude: '2.1.85',
-    codex: '0.120.0',
+    codex: AGENT_DEFAULT_VERSIONS.codex,
     gemini: '0.35.1'
 };
 
 const CLAUDE_46_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];
+const CODEX_55_MODELS = ['gpt-5.5'];
 
 /**
  * Migrates agent configurations to include CLI version fields and new models.
@@ -104,6 +107,30 @@ export async function migrateAgentConfigs(): Promise<boolean> {
                     agent.supportedModels = [...missingModels, ...agent.supportedModels];
                     migrated = true;
                     logger.info({ agentAlias: agent.alias, addedModels: missingModels }, 'Added Claude 4.6 models to agent');
+                }
+            }
+
+            if (agent.type === 'codex') {
+                if (agent.supportedModels) {
+                    const missingModels = CODEX_55_MODELS.filter(m => !agent.supportedModels.includes(m));
+                    if (missingModels.length > 0) {
+                        agent.supportedModels = [...missingModels, ...agent.supportedModels];
+                        migrated = true;
+                        logger.info({ agentAlias: agent.alias, addedModels: missingModels }, 'Added GPT-5.5 models to Codex agent');
+                    }
+                }
+
+                if (!agent.defaultModel || agent.defaultModel === 'gpt-5.4') {
+                    agent.defaultModel = 'gpt-5.5';
+                    migrated = true;
+                    logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Updated Codex default model');
+                }
+
+                if (agent.cliVersionType === 'default' && agent.cliVersionResolved !== AGENT_DEFAULT_VERSIONS.codex) {
+                    agent.cliVersionResolved = AGENT_DEFAULT_VERSIONS.codex;
+                    agent.dockerImage = generateImageTag('codex', agent.cliVersionResolved, computeContentHash('codex'));
+                    migrated = true;
+                    logger.info({ agentAlias: agent.alias, cliVersion: agent.cliVersionResolved, dockerImage: agent.dockerImage }, 'Updated Codex default CLI version and Docker image');
                 }
             }
 

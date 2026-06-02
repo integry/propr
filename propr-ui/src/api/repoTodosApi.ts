@@ -1,5 +1,5 @@
 // Repository To-Dos API
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 /**
  * Represents a to-do category for organizing to-dos
@@ -91,7 +91,7 @@ export interface BatchReorderParams {
  * @returns Array of categories ordered by orderIndex
  */
 export const getCategories = async (repository: string): Promise<RepoTodoCategory[]> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/todos/categories?repository=${encodeURIComponent(repository)}`,
     {
       method: 'GET',
@@ -110,7 +110,7 @@ export const getCategories = async (repository: string): Promise<RepoTodoCategor
  * @returns The created category
  */
 export const createCategory = async (params: CreateCategoryParams): Promise<RepoTodoCategory> => {
-  const response = await fetch(`${API_BASE_URL}/api/repos/todos/categories`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/repos/todos/categories`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
@@ -131,7 +131,7 @@ export const updateCategory = async (
   categoryId: string,
   params: UpdateCategoryParams
 ): Promise<RepoTodoCategory> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/todos/categories/${encodeURIComponent(categoryId)}`,
     {
       method: 'PUT',
@@ -151,7 +151,7 @@ export const updateCategory = async (
  * @returns Whether the deletion was successful
  */
 export const deleteCategory = async (categoryId: string): Promise<boolean> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/todos/categories/${encodeURIComponent(categoryId)}`,
     {
       method: 'DELETE',
@@ -170,7 +170,7 @@ export const deleteCategory = async (categoryId: string): Promise<boolean> => {
  * @returns Whether the reorder was successful
  */
 export const reorderCategories = async (params: BatchReorderParams): Promise<boolean> => {
-  const response = await fetch(`${API_BASE_URL}/api/repos/todos/categories/reorder`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/repos/todos/categories/reorder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
@@ -192,7 +192,7 @@ export const reorderCategories = async (params: BatchReorderParams): Promise<boo
  * @returns Array of to-dos ordered by category and orderIndex
  */
 export const getTodos = async (repository: string): Promise<RepoTodo[]> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/todos?repository=${encodeURIComponent(repository)}`,
     {
       method: 'GET',
@@ -211,7 +211,7 @@ export const getTodos = async (repository: string): Promise<RepoTodo[]> => {
  * @returns The to-do if found
  */
 export const getTodo = async (todoId: string): Promise<RepoTodo> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/todos/${encodeURIComponent(todoId)}`,
     {
       method: 'GET',
@@ -229,7 +229,7 @@ export const getTodo = async (todoId: string): Promise<RepoTodo> => {
  * @returns The created to-do
  */
 export const createTodo = async (params: CreateTodoParams): Promise<RepoTodo> => {
-  const response = await fetch(`${API_BASE_URL}/api/repos/todos`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/repos/todos`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
@@ -250,7 +250,7 @@ export const updateTodo = async (
   todoId: string,
   params: UpdateTodoParams
 ): Promise<RepoTodo> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/todos/${encodeURIComponent(todoId)}`,
     {
       method: 'PUT',
@@ -270,7 +270,7 @@ export const updateTodo = async (
  * @returns Whether the deletion was successful
  */
 export const deleteTodo = async (todoId: string): Promise<boolean> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/repos/todos/${encodeURIComponent(todoId)}`,
     {
       method: 'DELETE',
@@ -289,7 +289,7 @@ export const deleteTodo = async (todoId: string): Promise<boolean> => {
  * @returns Whether the reorder was successful
  */
 export const reorderTodos = async (params: BatchReorderParams): Promise<boolean> => {
-  const response = await fetch(`${API_BASE_URL}/api/repos/todos/reorder`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/repos/todos/reorder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),

@@ -23,10 +23,13 @@ propr login ghp_xxxxxxxxxxxx
 # 3. Set a default project
 propr use owner/repo
 
-# 4. List available plans
+# 4. Scaffold repo-local ProPR setup files
+propr init
+
+# 5. List available plans
 propr plan list
 
-# 5. Implement an issue
+# 6. Implement an issue
 propr issue implement <draft-id>/<issue-number> --wait
 ```
 
@@ -40,6 +43,17 @@ propr use <owner/repo>   # Set default project
 propr login [token]      # Authenticate (interactive or PAT)
 propr logout             # Clear stored token
 ```
+
+## Repository Setup
+
+Use `propr init` from a repository root to scaffold `.propr` setup files used by agent execution containers.
+
+```bash
+propr init
+cd .propr && npm install <package>
+```
+
+The generated `.propr/setup.sh` runs before each implementation execution. Edit it to install system tools with commands such as `sudo apk add --no-cache jq`.
 
 ### Authentication
 

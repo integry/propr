@@ -2,7 +2,7 @@
  * API client for agent CLI version management.
  */
 
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 export type AgentType = 'claude' | 'codex' | 'gemini';
 export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
@@ -70,7 +70,7 @@ export interface ImageTagResponse {
  * Returns npm tags with resolved versions and recent specific versions.
  */
 export async function getAgentVersions(agentType: AgentType): Promise<AvailableVersionsResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/agents/versions/${agentType}`,
     { credentials: 'include' }
   );
@@ -85,7 +85,7 @@ export async function buildAgentImage(
   agentId: string,
   options?: { cliVersionType?: CliVersionType; cliVersion?: string }
 ): Promise<BuildImageResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/agents/${agentId}/build-image`,
     {
       method: 'POST',
@@ -102,7 +102,7 @@ export async function buildAgentImage(
  * Triggers cleanup of unused Docker images for an agent type.
  */
 export async function cleanupAgentImages(agentType: AgentType): Promise<CleanupResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/agents/${agentType}/images/cleanup`,
     {
       method: 'DELETE',
@@ -117,7 +117,7 @@ export async function cleanupAgentImages(agentType: AgentType): Promise<CleanupR
  * Lists all Docker images for an agent type.
  */
 export async function listAgentImages(agentType: AgentType): Promise<ListImagesResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/agents/${agentType}/images`,
     { credentials: 'include' }
   );
@@ -133,7 +133,7 @@ export async function resolveAgentVersion(
   versionType: CliVersionType,
   versionSpec?: string
 ): Promise<ResolveVersionResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/agents/resolve-version`,
     {
       method: 'POST',
@@ -159,7 +159,7 @@ export async function getAgentImageTag(
   if (versionSpec) params.append('versionSpec', versionSpec);
 
   const url = `${API_BASE_URL}/api/agents/${agentType}/image-tag${params.toString() ? '?' + params.toString() : ''}`;
-  const response = await fetch(url, { credentials: 'include' });
+  const response = await apiFetch(url, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 }

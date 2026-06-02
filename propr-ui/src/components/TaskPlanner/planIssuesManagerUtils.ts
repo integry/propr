@@ -4,6 +4,7 @@ import React from 'react';
 export interface IssueCreationProgress {
   status: 'idle' | 'in_progress' | 'completed' | 'failed';
   createdCount: number;
+  animatedCreatedCount?: number;
   totalCount: number;
   failedCount: number;
   lastCreatedIssue?: { number: number; url: string; title: string };

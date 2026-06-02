@@ -233,15 +233,18 @@ export const GenerateButton: React.FC<GenerateButtonProps> = ({
 export interface CreatePlanButtonProps {
   selectedCount: number;
   onClick: () => void;
+  disabled?: boolean;
 }
 
 export const CreatePlanButton: React.FC<CreatePlanButtonProps> = ({
   selectedCount,
   onClick,
+  disabled = false,
 }) => (
   <button
     onClick={onClick}
-    className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-teal-600 text-white hover:bg-teal-700 shadow-sm"
+    disabled={disabled}
+    className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-teal-600 text-white hover:bg-teal-700 shadow-sm disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed"
   >
     <ArrowRight size={16} />
     <span>Create Plan ({selectedCount})</span>
@@ -252,16 +255,18 @@ export interface SaveToTodosButtonProps {
   selectedCount: number;
   onClick: () => void;
   isLoading?: boolean;
+  disabled?: boolean;
 }
 
 export const SaveToTodosButton: React.FC<SaveToTodosButtonProps> = ({
   selectedCount,
   onClick,
   isLoading = false,
+  disabled = false,
 }) => (
   <button
     onClick={onClick}
-    disabled={isLoading}
+    disabled={isLoading || disabled}
     className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-slate-600 text-white hover:bg-slate-700 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
   >
     {isLoading ? (
@@ -278,6 +283,7 @@ export interface SelectedSuggestionsFooterProps {
   onCreatePlan: () => void;
   onSaveToTodos: () => void;
   isSavingTodos?: boolean;
+  disabled?: boolean;
 }
 
 export const SelectedSuggestionsFooter: React.FC<SelectedSuggestionsFooterProps> = ({
@@ -285,11 +291,12 @@ export const SelectedSuggestionsFooter: React.FC<SelectedSuggestionsFooterProps>
   onCreatePlan,
   onSaveToTodos,
   isSavingTodos = false,
+  disabled = false,
 }) => (
   <div className="flex-shrink-0 px-4 py-3 border-t border-slate-200 bg-slate-100">
     <div className="flex gap-2">
-      <CreatePlanButton selectedCount={selectedCount} onClick={onCreatePlan} />
-      <SaveToTodosButton selectedCount={selectedCount} onClick={onSaveToTodos} isLoading={isSavingTodos} />
+      <CreatePlanButton selectedCount={selectedCount} onClick={onCreatePlan} disabled={disabled} />
+      <SaveToTodosButton selectedCount={selectedCount} onClick={onSaveToTodos} isLoading={isSavingTodos} disabled={disabled} />
     </div>
   </div>
 );

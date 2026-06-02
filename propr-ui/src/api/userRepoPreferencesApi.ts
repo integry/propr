@@ -1,5 +1,5 @@
 // User Repository Preferences API
-import { API_BASE_URL, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 
 /**
  * User-specific repository preferences.
@@ -33,7 +33,7 @@ export interface UpdateUserRepoPreferencesResponse {
  * @returns The user's repository preferences (starred, hidden states)
  */
 export const getUserRepoPreferences = async (): Promise<UserRepoPreferences> => {
-  const response = await fetch(`${API_BASE_URL}/api/user/repo-preferences`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/user/repo-preferences`, {
     method: 'GET',
     credentials: 'include'
   });
@@ -52,7 +52,7 @@ export const getUserRepoPreferences = async (): Promise<UserRepoPreferences> => 
 export const updateUserRepoPreferences = async (
   preferences: UserRepoPreferences
 ): Promise<UserRepoPreferences> => {
-  const response = await fetch(`${API_BASE_URL}/api/user/repo-preferences`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/user/repo-preferences`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ preferences }),
