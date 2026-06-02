@@ -13,9 +13,44 @@ interface ParentTaskRowProps {
   isDuplicateRepo?: boolean;
 }
 
+const renderTaskBadges = (task: Task, prNumber?: number, forceIssueWithPr = false): React.ReactNode[] => {
+  const badges: React.ReactNode[] = [];
+
+  if (prNumber) {
+    badges.push(
+      <span key="pr" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-xs font-mono font-medium text-slate-700 border border-slate-200">
+        <GitPullRequest size={12} className="text-purple-600" />
+        #{prNumber}
+      </span>
+    );
+  }
+
+  const issueToShow = task.linkedIssueNumber || task.issueNumber;
+
+  if (issueToShow && (forceIssueWithPr || issueToShow !== prNumber)) {
+    badges.push(
+      <span key="issue" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-xs font-mono font-medium text-slate-700 border border-slate-200">
+        <CircleDot size={12} className="text-green-600" />
+        #{issueToShow}
+      </span>
+    );
+  }
+
+  if (badges.length === 0) {
+    badges.push(
+      <span key="fallback" className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 text-xs font-mono font-medium text-slate-700 border border-slate-200">
+        #{task.id.substring(0, 8)}
+      </span>
+    );
+  }
+
+  return badges;
+};
+
 export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRowClick, isDuplicateRepo = false }) => {
   const typeInfo = getTaskTypeInfo(task);
   const isDimmed = shouldDimTask(task);
+  const showIssueWithPr = task.status === 'completed' || typeInfo.type === 'followup';
 
   return (
     <tr
@@ -31,43 +66,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
       <td className="py-3 px-4 align-top">
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            {(() => {
-              const badges: React.ReactNode[] = [];
-
-              // Show PR badge if there's a PR number
-              if (group.prNumber) {
-                badges.push(
-                  <span key="pr" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-xs font-mono font-medium text-slate-700 border border-slate-200">
-                    <GitPullRequest size={12} className="text-purple-600" />
-                    #{group.prNumber}
-                  </span>
-                );
-              }
-
-              // Determine the issue number to display
-              const issueToShow = task.linkedIssueNumber || task.issueNumber;
-
-              // Show Issue badge if it differs from PR number, or if there's no PR
-              if (issueToShow && issueToShow !== group.prNumber) {
-                badges.push(
-                  <span key="issue" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-xs font-mono font-medium text-slate-700 border border-slate-200">
-                    <CircleDot size={12} className="text-green-600" />
-                    #{issueToShow}
-                  </span>
-                );
-              }
-
-              // Fallback: if no badges, show task ID
-              if (badges.length === 0) {
-                badges.push(
-                  <span key="fallback" className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 text-xs font-mono font-medium text-slate-700 border border-slate-200">
-                    #{task.id.substring(0, 8)}
-                  </span>
-                );
-              }
-
-              return badges;
-            })()}
+            {renderTaskBadges(task, group.prNumber, showIssueWithPr)}
             <TaskTypeBadge type={typeInfo.type} />
           </div>
           <div className="text-sm text-gray-900 font-medium">
@@ -134,6 +133,7 @@ interface ChildTaskRowExtraProps extends ChildTaskRowProps {
 export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClick, isLastChild = false }) => {
   const childTypeInfo = getTaskTypeInfo(task);
   const isDimmed = shouldDimTask(task);
+  const showIssueWithPr = task.status === 'completed' || childTypeInfo.type === 'followup';
   const childDisplayTitle = (() => {
     // For followup tasks, prefer subtitle if available
     if (childTypeInfo.type === 'followup' && task.subtitle) {
@@ -158,6 +158,10 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
         <div className="absolute left-6 w-4 h-0.5 bg-gray-200 z-10" style={{ top: 'calc(0.75rem + 0.5em)' }}></div>
 
         <div className="flex flex-col gap-1 pl-6 py-3">
+          <div className="flex items-center gap-2 pl-4">
+            {renderTaskBadges(task, task.prNumber, showIssueWithPr)}
+            <TaskTypeBadge type={childTypeInfo.type} />
+          </div>
           <div className="flex items-start gap-2 pl-4">
             <span className="text-sm text-gray-600 line-clamp-1">{childDisplayTitle}</span>
           </div>
