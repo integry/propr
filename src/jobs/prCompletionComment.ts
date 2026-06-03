@@ -69,9 +69,21 @@ function isDryCodeSummary(text: string): boolean {
     const trimmed = text.trim();
     if (!trimmed) return true;
     const lines = trimmed.split('\n').map(line => line.trim()).filter(Boolean);
+    if (lines.some(line => /^[\w./-]+:$/.test(line))) return true;
+    if (lines.some(line => /^output:$/i.test(line))) return true;
     if (lines.length <= 4 && lines.some(line => /^[\w./-]+:\d+/.test(line))) return true;
     if (lines.length <= 3 && lines.some(line => /^(print|return|const|let|var|if|def|class)\b/.test(line))) return true;
     return false;
+}
+
+function isSummaryEntry(text: string): boolean {
+    const lower = text.trim().toLowerCase();
+    return lower.includes('summary of changes')
+        || lower.includes('implementation summary')
+        || lower.startsWith('summary:')
+        || lower.startsWith('the change is complete')
+        || lower.startsWith('implementation complete')
+        || lower.startsWith('completed ');
 }
 
 function textFromConversationMessage(message: ConversationMessage): string | null {
@@ -87,9 +99,22 @@ function textFromConversationMessage(message: ConversationMessage): string | nul
 
 function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): string | null {
     const conversationLog = (claudeResult.conversationLog || []) as ConversationMessage[];
-    for (const message of [...conversationLog].reverse()) {
-        const text = textFromConversationMessage(message);
-        if (text && !isDryCodeSummary(text)) return text;
+    const assistantTexts = conversationLog
+        .map(textFromConversationMessage)
+        .filter((text): text is string => Boolean(text));
+
+    for (let index = assistantTexts.length - 1; index >= 0; index--) {
+        if (!isSummaryEntry(assistantTexts[index])) continue;
+        const summaryThread = assistantTexts
+            .slice(index)
+            .filter(text => !isDryCodeSummary(text) || isSummaryEntry(text))
+            .join('\n\n')
+            .trim();
+        if (summaryThread) return summaryThread;
+    }
+
+    for (const text of [...assistantTexts].reverse()) {
+        if (!isDryCodeSummary(text)) return text;
     }
     return null;
 }
@@ -97,10 +122,12 @@ function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): s
 function getCompletionSummary(claudeResult: ClaudeCodeResponse, commitMessage: string, changesSummary: string): string {
     const commitBody = commitMessage.split('\n\n').slice(1).join('\n\n').trim();
     const primarySummary = (claudeResult.summary || claudeResult.finalResult?.result || changesSummary || '').trim();
+    const conversationSummary = getLatestUsefulConversationSummary(claudeResult);
 
+    if (conversationSummary && (isDryCodeSummary(primarySummary) || isSummaryEntry(conversationSummary))) return conversationSummary;
     if (primarySummary && !isDryCodeSummary(primarySummary)) return primarySummary;
 
-    return getLatestUsefulConversationSummary(claudeResult)
+    return conversationSummary
         || primarySummary
         || commitBody
         || changesSummary;
