@@ -97,7 +97,7 @@ describe('buildMergeConflictComment', () => {
         assert.ok(comment.includes('`feature`'));
         assert.ok(comment.includes('abc1234'));
         assert.ok(comment.includes('clean merge'));
-        assert.ok(comment.includes('without invoking an AI agent'));
+        assert.ok(comment.includes('verified by an AI agent'));
         assert.ok(comment.includes('System-triggered'));
     });
 

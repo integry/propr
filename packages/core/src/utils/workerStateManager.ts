@@ -175,6 +175,49 @@ export class WorkerStateManager {
     }
 
     /**
+     * Updates issue reference metadata without changing the task state.
+     * @param taskId - Task identifier
+     * @param issueRefPatch - Issue reference fields to merge
+     * @returns Updated state, or null if no state exists
+     */
+    async updateIssueRef(taskId: string, issueRefPatch: Partial<IssueRef>): Promise<TaskStateData | null> {
+        const key = this.getTaskKey(taskId);
+        const stateJson = await this.redis.get(key);
+        if (!stateJson) return null;
+
+        const state: TaskStateData = JSON.parse(stateJson);
+        state.issueRef = { ...state.issueRef, ...issueRefPatch };
+        state.updatedAt = new Date().toISOString();
+        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+
+        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
+        correlatedLogger.info({
+            taskId,
+            issueNumber: state.issueRef.number,
+            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+            updatedFields: Object.keys(issueRefPatch)
+        }, 'Task issue reference updated');
+
+        try {
+            const eventPublisher = getEventPublisher();
+            await eventPublisher.publishTaskUpdate({
+                taskId,
+                state: state.state,
+                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                issueNumber: state.issueRef.number,
+                metadata: {
+                    issueRefUpdated: true,
+                    updatedFields: Object.keys(issueRefPatch)
+                }
+            });
+        } catch (error) {
+            correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish issue reference update event');
+        }
+
+        return state;
+    }
+
+    /**
      * Checks if task can be resumed after worker restart
      * @param taskId - Task identifier
      * @returns Resumable task info or null
