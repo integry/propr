@@ -362,6 +362,8 @@ describe('VibeAgent Docker args', () => {
         assert.match(script, /export HOME="\$RUNTIME_VIBE_HOME"/);
         assert.match(script, /env HOME="\$RUNTIME_VIBE_HOME" VIBE_HOME="\$RUNTIME_VIBE_HOME"/);
         assert.match(script, /normalize_vibe_config_paths/);
+        assert.match(script, /ensure_runtime_dirs/);
+        assert.match(script, /chown -R node:node "\$RUNTIME_VIBE_HOME"/);
         assert.match(script, /bypass_tool_permissions = true/);
         assert.doesNotMatch(script, /sudo -E -u node -H/);
     });

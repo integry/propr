@@ -25,8 +25,7 @@ copy_vibe_home() {
     fi
     normalize_vibe_config_paths
     configure_tool_permissions
-    chown -R node:node "$RUNTIME_VIBE_HOME" 2>/dev/null || true
-    chmod -R u+rw "$RUNTIME_VIBE_HOME" 2>/dev/null || true
+    ensure_runtime_dirs
 }
 
 normalize_vibe_config_paths() {
@@ -56,6 +55,17 @@ configure_tool_permissions() {
         printf '\n%s\n' 'bypass_tool_permissions = true' >> "$config_file"
     fi
     echo "Enabled non-interactive Vibe tool execution" >&2
+}
+
+ensure_runtime_dirs() {
+    for dir in logs sessions skills; do
+        if [ ! -d "$RUNTIME_VIBE_HOME/$dir" ]; then
+            echo "Creating missing directory: $RUNTIME_VIBE_HOME/$dir" >&2
+            mkdir -p "$RUNTIME_VIBE_HOME/$dir" 2>/dev/null || echo "Could not create $dir (permission issue)" >&2
+        fi
+    done
+    chown -R node:node "$RUNTIME_VIBE_HOME" 2>/dev/null || true
+    chmod -R u+rw "$RUNTIME_VIBE_HOME" 2>/dev/null || true
 }
 
 configure_active_model() {
@@ -236,17 +246,13 @@ if [ -d "$SOURCE_VIBE_HOME" ]; then
     configure_active_model
     load_vibe_env_defaults
 
-    for dir in logs sessions skills; do
-        if [ ! -d "$RUNTIME_VIBE_HOME/$dir" ]; then
-            echo "Creating missing directory: $RUNTIME_VIBE_HOME/$dir" >&2
-            mkdir -p "$RUNTIME_VIBE_HOME/$dir" 2>/dev/null || echo "Could not create $dir (permission issue)" >&2
-        fi
-    done
+    ensure_runtime_dirs
 else
     echo "WARNING: Vibe config directory not mounted at $SOURCE_VIBE_HOME" >&2
     copy_vibe_home
     configure_active_model
     load_vibe_env_defaults
+    ensure_runtime_dirs
 fi
 
 if [ ! -f "$RUNTIME_VIBE_HOME/config.toml" ]; then
