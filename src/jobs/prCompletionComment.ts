@@ -37,6 +37,18 @@ interface CommitResult {
     commitHash: string;
 }
 
+interface ConversationTextBlock {
+    type?: string;
+    text?: string;
+}
+
+interface ConversationMessage {
+    type?: string;
+    message?: {
+        content?: ConversationTextBlock[];
+    };
+}
+
 function buildUndoLink(undoContext: UndoLinkContext, commitHash: string): string {
     const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
     const { repoOwner, repoName, prNumber, branchName, instructionCommentId } = undoContext;
@@ -51,6 +63,47 @@ function buildUndoLink(undoContext: UndoLinkContext, commitHash: string): string
     });
 
     return `${webUiUrl}/revert?${params.toString()}`;
+}
+
+function isDryCodeSummary(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) return true;
+    const lines = trimmed.split('\n').map(line => line.trim()).filter(Boolean);
+    if (lines.length <= 4 && lines.some(line => /^[\w./-]+:\d+/.test(line))) return true;
+    if (lines.length <= 3 && lines.some(line => /^(print|return|const|let|var|if|def|class)\b/.test(line))) return true;
+    return false;
+}
+
+function textFromConversationMessage(message: ConversationMessage): string | null {
+    if (message.type !== 'assistant' || !Array.isArray(message.message?.content)) return null;
+    const text = message.message.content
+        .filter(block => block.type === 'text' && typeof block.text === 'string')
+        .map(block => block.text!.trim())
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+    return text || null;
+}
+
+function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): string | null {
+    const conversationLog = (claudeResult.conversationLog || []) as ConversationMessage[];
+    for (const message of [...conversationLog].reverse()) {
+        const text = textFromConversationMessage(message);
+        if (text && !isDryCodeSummary(text)) return text;
+    }
+    return null;
+}
+
+function getCompletionSummary(claudeResult: ClaudeCodeResponse, commitMessage: string, changesSummary: string): string {
+    const commitBody = commitMessage.split('\n\n').slice(1).join('\n\n').trim();
+    const primarySummary = (claudeResult.summary || claudeResult.finalResult?.result || changesSummary || '').trim();
+
+    if (primarySummary && !isDryCodeSummary(primarySummary)) return primarySummary;
+
+    return getLatestUsefulConversationSummary(claudeResult)
+        || primarySummary
+        || commitBody
+        || changesSummary;
 }
 
 export async function buildCompletionComment(
@@ -83,9 +136,8 @@ export async function buildCompletionComment(
             prCommentBody += `> Addressed ${consumedReviewCommentIds.length} AI review comment${consumedReviewCommentIds.length > 1 ? 's' : ''} (IDs: ${consumedReviewCommentIds.join(', ')})\n\n`;
         }
 
-        if (changesSummary) {
-            const commitBody = commitMessage.split('\n\n').slice(1).join('\n\n').trim();
-            const contentToShow = commitBody || changesSummary;
+        const contentToShow = getCompletionSummary(claudeResult, commitMessage, changesSummary);
+        if (contentToShow) {
             prCommentBody += `## Summary of Changes\n\n${cleanBody(contentToShow)}\n\n`;
         }
 
