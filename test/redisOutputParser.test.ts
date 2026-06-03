@@ -79,3 +79,18 @@ test('parseRedisOutput emits Vibe progress when no session messages exist yet', 
         'Switching to node user...'
     ]);
 });
+
+test('parseRedisOutput prefers Vibe session JSONL over startup progress when both are present', () => {
+    const parsed = parseRedisOutput([
+        'Vibe config directory mounted',
+        'Executing command: vibe --output json -p <redacted>',
+        'Switching to node user...',
+        '{"role":"assistant","reasoning_content":"The comment asks for a less formal greeting."}',
+        '{"role":"assistant","content":"Updated the greeting and verified the script output."}'
+    ]);
+
+    assert.deepStrictEqual(parsed.events.map(event => event.content), [
+        'The comment asks for a less formal greeting.',
+        'Updated the greeting and verified the script output.'
+    ]);
+});

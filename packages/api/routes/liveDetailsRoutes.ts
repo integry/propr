@@ -21,6 +21,7 @@ import {
   type PendingSubagent,
   type TodoItem
 } from './liveDetailsCodexParser.js';
+import { parseRedisOutput } from '../services/redisOutputParser.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 interface HistoryEntryWithSessionMetadata { state?: string; metadata?: { sessionId?: string }; }
@@ -202,6 +203,15 @@ async function loadStoredExecutionOutput(redisClient: RedisClientType, sessionId
 async function parseActiveExecutionOutput(redisClient: RedisClientType, taskId: string): Promise<ConversationResult | null> {
   const output = await redisClient.get(`agent:output:${taskId}`);
   if (!output?.trim()) return null;
+  const redisParsed = parseRedisOutput(output.split('\n').filter(line => line.trim()));
+  if (redisParsed.events.length > 0 || redisParsed.todos.length > 0 || redisParsed.currentTask || redisParsed.tokenUsage) {
+    return {
+      events: redisParsed.events as unknown as Array<Record<string, unknown>>,
+      todos: redisParsed.todos,
+      currentTask: redisParsed.currentTask,
+      tokenUsage: redisParsed.tokenUsage
+    };
+  }
   const parsedOutput = parseStoredOutputContent(output);
   return parsedOutput.parsed ?? parsedOutput.rawFallback;
 }

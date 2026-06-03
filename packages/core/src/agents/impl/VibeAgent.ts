@@ -364,8 +364,10 @@ export class VibeAgent implements Agent {
     }
 
     private prepareRuntimeHome(taskId?: string): string {
+        const baseDir = path.join(process.env.VIBE_PROMPT_CACHE_DIR || os.tmpdir(), 'propr-vibe-runtime');
+        fs.mkdirSync(baseDir, { recursive: true, mode: 0o755 });
         const prefix = taskId ? `propr-vibe-home-${taskId.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 80)}-` : 'propr-vibe-home-';
-        const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+        const runtimeHome = fs.mkdtempSync(path.join(baseDir, prefix));
         try {
             fs.chmodSync(runtimeHome, 0o777);
         } catch (error) {
@@ -475,7 +477,7 @@ export class VibeAgent implements Agent {
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const cliArgs = this.getCliArgs();
         const promptMountArgs = this.buildPromptMountArgs(promptFilePath, cliArgs);
-        const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${runtimeHomePath}:/tmp/propr-vibe-home:rw`] : [];
+        const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:/tmp/propr-vibe-home:rw`] : [];
         const dockerArgs: string[] = [
             'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...getAnalysisSandboxArgs(mode),
