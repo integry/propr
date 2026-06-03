@@ -1,6 +1,7 @@
 import { db } from '../db/connection.js';
 import { getIndexingProgress } from '../services/relevance/indexingCancellation.js';
 import logger from '../utils/logger.js';
+import type { RepoToMonitor } from './configManager.js';
 
 export interface RepositoryIndexingProgress {
     totalFiles: number;
@@ -22,6 +23,101 @@ export interface RepositoryIndexingStatus {
     last_indexed_commit_message: string | null;
     icon_path: string | null;
     progress?: RepositoryIndexingProgress;
+}
+
+export interface RepositoryIndexCleanupResult {
+    repositories: number;
+    file_summaries: number;
+    directory_summaries: number;
+}
+
+interface RepositoryIndexKey {
+    repository: string;
+    branch: string;
+}
+
+const DEFAULT_INDEX_BRANCH = 'HEAD';
+
+function normalizeIndexBranch(branch?: string): string {
+    return branch || DEFAULT_INDEX_BRANCH;
+}
+
+function toRepositoryIndexKey(repo: Pick<RepoToMonitor, 'name' | 'baseBranch'>): RepositoryIndexKey {
+    return { repository: repo.name, branch: normalizeIndexBranch(repo.baseBranch) };
+}
+
+function serializeRepositoryIndexKey({ repository, branch }: RepositoryIndexKey): string {
+    return `${repository}\0${branch}`;
+}
+
+function deleteFileSummaries(repository: string, branch?: string) {
+    const query = db('file_summaries')
+        .where('path', 'like', `${repository}/%`);
+    if (branch) query.andWhere({ branch });
+    return query.delete();
+}
+
+function deleteDirectorySummaries(repository: string, branch?: string) {
+    const query = db('directory_summaries')
+        .where(function() {
+            this.where('path', 'like', `${repository}/%`).orWhere('path', repository);
+        });
+    if (branch) query.andWhere({ branch });
+    return query.delete();
+}
+
+function deleteRepositoryRows(repository: string, branch?: string) {
+    const query = db('repositories').where({ full_name: repository });
+    if (branch) query.andWhere({ branch });
+    return query.delete();
+}
+
+/**
+ * Clears persisted index data for repository entries that were removed from the
+ * monitored repository config.
+ */
+export async function clearRemovedRepositoryIndexData(
+    previousRepos: Pick<RepoToMonitor, 'name' | 'baseBranch'>[],
+    nextRepos: Pick<RepoToMonitor, 'name' | 'baseBranch'>[]
+): Promise<RepositoryIndexCleanupResult> {
+    const nextKeys = new Set(nextRepos.map(repo => serializeRepositoryIndexKey(toRepositoryIndexKey(repo))));
+    const nextRepositories = new Set(nextRepos.map(repo => repo.name));
+    const removedByRepository = new Map<string, Set<string>>();
+
+    for (const previousRepo of previousRepos) {
+        const key = toRepositoryIndexKey(previousRepo);
+        if (nextKeys.has(serializeRepositoryIndexKey(key))) continue;
+        const branches = removedByRepository.get(key.repository) ?? new Set<string>();
+        branches.add(key.branch);
+        removedByRepository.set(key.repository, branches);
+    }
+
+    const result: RepositoryIndexCleanupResult = {
+        repositories: 0,
+        file_summaries: 0,
+        directory_summaries: 0
+    };
+
+    for (const [repository, branches] of removedByRepository.entries()) {
+        if (!nextRepositories.has(repository)) {
+            result.file_summaries += await deleteFileSummaries(repository);
+            result.directory_summaries += await deleteDirectorySummaries(repository);
+            result.repositories += await deleteRepositoryRows(repository);
+            continue;
+        }
+
+        for (const branch of branches) {
+            result.file_summaries += await deleteFileSummaries(repository, branch);
+            result.directory_summaries += await deleteDirectorySummaries(repository, branch);
+            result.repositories += await deleteRepositoryRows(repository, branch);
+        }
+    }
+
+    if (result.repositories || result.file_summaries || result.directory_summaries) {
+        logger.info({ cleanup: result }, 'Cleared index data for removed monitored repository entries');
+    }
+
+    return result;
 }
 
 /**

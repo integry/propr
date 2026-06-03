@@ -2,8 +2,10 @@ import logger from '../utils/logger.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 import { getConfig, saveConfig } from './configStore.js';
 export {
+    clearRemovedRepositoryIndexData,
     getRepositoriesIndexingStatus,
     getRepositoryIndexingStatus,
+    type RepositoryIndexCleanupResult,
     type RepositoryIndexingProgress,
     type RepositoryIndexingStatus
 } from './configManagerIndexing.js';

@@ -215,9 +215,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       processedRepos.push(normalized.value);
     }
     const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
+      const previousRepos = await configManager.loadMonitoredReposRaw();
       return saveThenPublishConfigUpdate({
         save: async () => {
           await configManager.saveMonitoredRepos(processedRepos);
+          await configManager.clearRemovedRepositoryIndexData(previousRepos, processedRepos);
         },
         publish: async () => {
           await publishConfigUpdate('repos_update');
