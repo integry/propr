@@ -437,24 +437,13 @@ export async function ensureVersionedAgentImage(
     const dockerfileName = AGENT_DOCKERFILES[agentType];
 
     if (!dockerfileName) {
-        return {
-            success: false,
-            imageTag: '',
-            error: `Unknown agent type: ${agentType}`
-        };
+        return { success: false, imageTag: '', error: `Unknown agent type: ${agentType}` };
     }
 
-    // Resolve dockerfile path relative to base path
     const dockerfile = path.join(basePath, dockerfileName);
-
-    // Generate image tag
     const imageName = AGENT_IMAGE_NAMES[agentType as AgentType];
     if (!imageName) {
-        return {
-            success: false,
-            imageTag: '',
-            error: `Unknown agent type: ${agentType}`
-        };
+        return { success: false, imageTag: '', error: `Unknown agent type: ${agentType}` };
     }
 
     const imageTag = `${imageName}:${getDockerTagComponent(cliVersion)}-${contentHash}`;
@@ -486,23 +475,18 @@ export async function ensureVersionedAgentImage(
             timeout: 600000 // 10 minute timeout for build
         });
 
-        if (buildResult.exitCode === 0) {
-            logger.info({ agentType, imageTag, cliVersion }, 'Versioned agent Docker image built successfully');
-
-            // Trigger cleanup of unused images in the background, preserving the just-built version
-            const versionsToKeep = new Set<string>([cliVersion, `${cliVersion}-${contentHash}`]);
-            import('./dockerImageManager.js').then(m =>
-                m.cleanupUnusedAgentImages(agentType, versionsToKeep)
-            ).catch(err => {
-                logger.warn({ agentType, error: (err as Error).message }, 'Background cleanup failed');
-            });
-
-            return { success: true, imageTag };
-        } else {
+        if (buildResult.exitCode !== 0) {
             logger.error({ agentType, imageTag, cliVersion, dockerfile, exitCode: buildResult.exitCode, stderr: buildResult.stderr }, 'Failed to build versioned agent Docker image');
             return { success: false, imageTag, error: `Build failed with exit code ${buildResult.exitCode}: ${buildResult.stderr}` };
         }
-
+        logger.info({ agentType, imageTag, cliVersion }, 'Versioned agent Docker image built successfully');
+        const versionsToKeep = new Set<string>([cliVersion, `${cliVersion}-${contentHash}`]);
+        import('./dockerImageManager.js').then(m =>
+            m.cleanupUnusedAgentImages(agentType, versionsToKeep)
+        ).catch(err => {
+            logger.warn({ agentType, error: (err as Error).message }, 'Background cleanup failed');
+        });
+        return { success: true, imageTag };
     } catch (error) {
         const err = error as Error;
         logger.error({ agentType, imageTag, cliVersion, dockerfile, error: err.message }, 'Error ensuring versioned agent Docker image');

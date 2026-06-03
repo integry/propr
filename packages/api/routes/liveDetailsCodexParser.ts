@@ -1,12 +1,7 @@
 import fs from 'fs-extra';
 import { parseCodexStreamOutput, parseVibeConversationLog } from '@propr/core';
 
-export interface TokenUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
-}
+export interface TokenUsage { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number; }
 export interface ConversationResult { events: Array<Record<string, unknown>>; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsage | null; }
 
 export function isConversationResultEmpty(result: ConversationResult | null): boolean {

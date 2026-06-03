@@ -154,11 +154,7 @@ interface ExecutionDetailRow { event_type: string; event_timestamp: string; cont
 interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
 interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; session_id?: string; conversation_id?: string; item?: unknown; reasoning_content?: unknown; tool_calls?: unknown; tool_call_id?: string; }
 export type StoredOutputFormat = 'claude' | 'codex' | 'vibe' | 'unknown';
-export interface ParsedStoredOutput {
-  parsed: ConversationResult | null;
-  rawFallback: ConversationResult | null;
-  format: StoredOutputFormat;
-}
+export interface ParsedStoredOutput { parsed: ConversationResult | null; rawFallback: ConversationResult | null; format: StoredOutputFormat; }
 function getClaudeProjectDirName(workspacePath: string): string {
   const normalizedPath = path.resolve(workspacePath).replace(/\\/g, '/');
   const collapsed = normalizedPath.replace(/\/+/g, '-');
@@ -244,12 +240,8 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
 function detectParsedStoredOutputFormat(jsonText: string): StoredOutputFormat {
   try {
     const parsed = JSON.parse(jsonText) as StoredExecutionOutputLine | StoredExecutionOutputLine[];
-    if (isVibeTranscript(parsed)) {
-      return 'vibe';
-    }
-    if (Array.isArray(parsed)) {
-      return 'unknown';
-    }
+    if (isVibeTranscript(parsed)) return 'vibe';
+    if (Array.isArray(parsed)) return 'unknown';
     if (parsed.type === 'message'
       || parsed.type === 'tool_use'
       || parsed.type === 'error'
