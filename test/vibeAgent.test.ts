@@ -416,11 +416,14 @@ describe('VibeAgent Docker args', () => {
 
     test('entrypoint forces Vibe runtime home after dropping privileges', () => {
         const script = fs.readFileSync(path.resolve('scripts/vibe-entrypoint.sh'), 'utf8');
+        const readOnlyIndex = script.indexOf('VIBE_READ_ONLY_CONFIG" = "1"');
         const suExecIndex = script.indexOf('command -v su-exec');
         const sudoIndex = script.indexOf('command -v sudo', suExecIndex);
 
         assert.match(script, /export HOME="\$RUNTIME_VIBE_HOME"/);
         assert.match(script, /env HOME="\$RUNTIME_VIBE_HOME" VIBE_HOME="\$RUNTIME_VIBE_HOME"/);
+        assert.ok(readOnlyIndex !== -1, 'entrypoint should handle read-only analysis mode before user switching');
+        assert.ok(readOnlyIndex < suExecIndex, 'read-only analysis mode should not call su-exec');
         assert.ok(suExecIndex !== -1, 'entrypoint should support su-exec for restricted containers');
         assert.ok(sudoIndex > suExecIndex, 'entrypoint should prefer su-exec before sudo');
         assert.match(script, /normalize_vibe_config_paths/);

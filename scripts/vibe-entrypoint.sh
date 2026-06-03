@@ -299,8 +299,12 @@ if [ $# -gt 0 ]; then
     echo -n "Executing command: " >&2
     format_command_for_log "$@"
     if [ "$(id -u)" = "0" ]; then
-        echo "Switching to node user..." >&2
         cd /home/node/workspace
+        if [ "$VIBE_READ_ONLY_CONFIG" = "1" ]; then
+            echo "Running Vibe as root in read-only analysis sandbox" >&2
+            exec env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
+        fi
+        echo "Switching to node user..." >&2
         if command -v su-exec >/dev/null 2>&1; then
             exec su-exec node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
         fi
