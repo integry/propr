@@ -118,7 +118,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-                body: `⚠️ **Post-processing encountered an error, but Claude analysis was completed.**\n\n${completionComment}`,
+                body: `⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**\n\n${completionComment}`,
             });
             postProcessingResult = { success: false, pr: null, updatedLabels: [AI_DONE_TAG], error: (postProcessingError as Error).message };
         } catch (fallbackError) {
