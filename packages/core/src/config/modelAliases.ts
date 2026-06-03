@@ -109,8 +109,34 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     }
 
     const lowerCaseModel = modelNameOrAlias.toLowerCase();
+
+    // 1. Check static MODEL_ALIASES (backwards compatibility for Claude aliases)
     if (MODEL_ALIASES[lowerCaseModel]) {
         return MODEL_ALIASES[lowerCaseModel];
+    }
+
+    // 2. Check if it's an exact model ID in MODEL_INFO_MAP
+    if (MODEL_INFO_MAP[modelNameOrAlias]) {
+        return modelNameOrAlias;
+    }
+
+    // 3. Check if it matches a shortAlias in MODEL_INFO_MAP (e.g., "mistral" -> "mistral-medium-3.5")
+    for (const modelInfo of ALL_MODELS) {
+        if (modelInfo.shortAlias.toLowerCase() === lowerCaseModel) {
+            return modelInfo.id;
+        }
+    }
+
+    // 4. Check if it matches an "agentType-shortAlias" pattern (e.g., "vibe-mistral" -> "mistral-medium-3.5")
+    // This handles labels like "llm-vibe-mistral" where the prefix indicates agent type
+    const dashIdx = lowerCaseModel.indexOf('-');
+    if (dashIdx > 0) {
+        const possibleAlias = lowerCaseModel.substring(dashIdx + 1);
+        for (const modelInfo of ALL_MODELS) {
+            if (modelInfo.shortAlias.toLowerCase() === possibleAlias) {
+                return modelInfo.id;
+            }
+        }
     }
 
     return modelNameOrAlias;
