@@ -78,11 +78,6 @@ function stripFilePathsFromContext(context: string, repoName: string): string {
   return header + strippedContext;
 }
 
-interface RankedRepositoryFiles {
-  priorityFiles?: string[];
-  fileScores: Record<string, { score: number; reason: string }>;
-}
-
 async function resolveEffectiveAuthToken(authToken: string): Promise<string> {
   try {
     // Try to use installation token for private repo access
