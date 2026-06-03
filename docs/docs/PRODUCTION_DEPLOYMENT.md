@@ -131,6 +131,21 @@ docker run --rm -it \
   -e PROPR_REPOS_DIR="$PWD/repos" \
   -e HOST_CLAUDE_DIR="$HOME/.claude" \
   propr/launcher:latest
+
+# With Vibe agent support (API-key auth):
+mkdir -p /tmp/propr-vibe-prompts
+docker run --rm -it \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/.env:/app/.env:ro" \
+  -e PROPR_ENV_FILE="$PWD/.env" \
+  -e PROPR_DATA_DIR="$PWD/data" \
+  -e PROPR_LOGS_DIR="$PWD/logs" \
+  -e PROPR_REPOS_DIR="$PWD/repos" \
+  -e HOST_CLAUDE_DIR="$HOME/.claude" \
+  -e MISTRAL_API_KEY="$MISTRAL_API_KEY" \
+  -e VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
+  -e HOST_VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
+  propr/launcher:latest
 ```
 
 #### Option B: Docker Compose

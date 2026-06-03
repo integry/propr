@@ -9,7 +9,7 @@
 // to orchestrate sibling containers on the host's docker daemon.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import { resolve, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -338,6 +338,23 @@ function validateEnv() {
             || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', VIBE_PROMPT_CACHE_DIR, { containerPath: true });
         if (invalidVibePromptPath) {
             console.error(`ERROR: ${invalidVibePromptPath}`);
+            process.exit(1);
+        }
+        if (!existsSync(HOST_VIBE_PROMPT_CACHE_DIR)) {
+            console.error(
+                `ERROR: HOST_VIBE_PROMPT_CACHE_DIR (${HOST_VIBE_PROMPT_CACHE_DIR}) does not exist. ` +
+                'Create it before starting the launcher: ' +
+                `mkdir -p ${HOST_VIBE_PROMPT_CACHE_DIR}`
+            );
+            process.exit(1);
+        }
+        try {
+            accessSync(HOST_VIBE_PROMPT_CACHE_DIR, fsConstants.W_OK);
+        } catch {
+            console.error(
+                `ERROR: HOST_VIBE_PROMPT_CACHE_DIR (${HOST_VIBE_PROMPT_CACHE_DIR}) is not writable. ` +
+                'Ensure the directory is owned by the user running the worker.'
+            );
             process.exit(1);
         }
     }
