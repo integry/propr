@@ -5,7 +5,7 @@
 
 import { db } from '../../db/connection.js';
 import { TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, DEFAULT_CONTEXT_LEVEL, MAX_CONTEXT_LEVEL } from '../../config/modelLimits.js';
-import { selectFilesWithinLimit, generateAdditionalContext } from '../contextService.js';
+import { selectFilesWithinLimit, generateAdditionalContext } from '../context/index.js';
 import logger from '../../utils/logger.js';
 
 import { PlanningFailedError } from './planningErrors.js';
@@ -456,13 +456,7 @@ async function generateContextPreviewInternal(options: GenerateContextPreviewOpt
   let additionalContextFiles = 0;
   let additionalContextFilesIncluded: Array<{ repository: string; path: string; score?: number; reason?: string }> = [];
   if (contextRepositories?.length && githubToken) {
-    const additionalContextBudget = calculateAdditionalContextBudget({
-      targetTokenLimit,
-      simulatedTokens,
-      attachmentTokens,
-      smartSummaryTokens,
-      contextLevel
-    });
+    const additionalContextBudget = calculateAdditionalContextBudget({ targetTokenLimit, simulatedTokens, attachmentTokens, smartSummaryTokens, contextLevel });
     const result = await loadAdditionalContextFromRepos({
       contextRepositories,
       prompt,

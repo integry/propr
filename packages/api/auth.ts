@@ -2,77 +2,15 @@ import passport from 'passport';
 import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
 import session from 'express-session';
 import { RedisStore } from 'connect-redis';
-import { createClient, type RedisClientType } from 'redis';
+import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
+import { validateGitHubToken } from './tokenCache.js';
+import { getValidatedRedirectTo } from './redirectValidation.js';
+import type { GitHubUser } from './authTypes.js';
+import './authTypes.js';
 
-interface GitHubUser {
-    id: string;
-    login?: string;
-    username: string;
-    displayName: string;
-    email: string | null;
-    avatarUrl: string | null;
-    accessToken?: string;
-    refreshToken?: string;
-    tokenExpiresAt?: number;
-    githubAuthInvalid?: boolean;
-}
-interface AllowedRedirectHost {
-    host: string;
-    includeSubdomains: boolean;
-}
-
-function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
-    if (!redirectTo) return undefined;
-    try {
-        const url = new URL(redirectTo);
-        if ((url.protocol === 'https:' || url.protocol === 'http:') && isAllowedRedirectHost(url.hostname)) return redirectTo;
-    } catch {
-        // Invalid URL, ignore
-    }
-    return undefined;
-}
-
-function parseAllowedRedirectHost(value: string, includeSubdomainsByDefault = false): AllowedRedirectHost | null {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const includeSubdomains = includeSubdomainsByDefault || trimmed.startsWith('.') || trimmed.startsWith('*.') || trimmed.startsWith('https://*.') || trimmed.startsWith('http://*.');
-    const normalized = trimmed.replace(/^(https?:\/\/)\*\./, '$1').replace(/^\*\./, '');
-    try {
-        return { host: new URL(normalized).hostname.replace(/^\./, ''), includeSubdomains };
-    } catch {
-        return { host: normalized.replace(/^\./, ''), includeSubdomains };
-    }
-}
-
-function getAllowedRedirectHosts(): AllowedRedirectHost[] {
-    const hosts = [
-        process.env.FRONTEND_URL ? parseAllowedRedirectHost(process.env.FRONTEND_URL) : null,
-        process.env.COOKIE_DOMAIN ? parseAllowedRedirectHost(process.env.COOKIE_DOMAIN, process.env.COOKIE_DOMAIN.trim().startsWith('.')) : null,
-        ...(process.env.AUTH_REDIRECT_ALLOWED_HOSTS || '').split(',').map(value => parseAllowedRedirectHost(value))
-    ].filter((value): value is AllowedRedirectHost => Boolean(value));
-    const uniqueHosts = new Map<string, AllowedRedirectHost>();
-    for (const host of hosts) {
-        const existing = uniqueHosts.get(host.host);
-        uniqueHosts.set(host.host, { host: host.host, includeSubdomains: host.includeSubdomains || existing?.includeSubdomains === true });
-    }
-    return Array.from(uniqueHosts.values());
-}
-
-function isAllowedRedirectHost(hostname: string): boolean {
-    return getAllowedRedirectHosts().some(({ host, includeSubdomains }) =>
-        hostname === host || (includeSubdomains && hostname.endsWith(`.${host}`))
-    );
-}
-
-declare global {
-    // eslint-disable-next-line @typescript-eslint/no-namespace
-    namespace Express {
-        // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-        interface User extends GitHubUser {}
-    }
-}
+export type { GitHubUser } from './authTypes.js';
 
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
     configureDemoMode(demoModeAtStartup);
@@ -230,87 +168,6 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         res.json({ demoMode: demoModeAtStartup });
     });
 
-}
-
-/**
- * Redis client used for caching Bearer token validations.
- * Initialized lazily on first Bearer token request.
- */
-let tokenCacheClient: RedisClientType | null = null;
-
-async function getTokenCacheClient(): Promise<RedisClientType> {
-    if (!tokenCacheClient) {
-        const redisHost = process.env.REDIS_HOST || '127.0.0.1';
-        const redisPort = process.env.REDIS_PORT || '6379';
-        tokenCacheClient = createClient({ url: `redis://${redisHost}:${redisPort}` }) as RedisClientType;
-        tokenCacheClient.on('error', (err) => {
-            console.error('Token Cache Redis Client Error', err);
-        });
-        await tokenCacheClient.connect();
-    }
-    return tokenCacheClient;
-}
-
-const TOKEN_CACHE_PREFIX = 'propr:bearer:';
-const TOKEN_CACHE_TTL_SECONDS = 300; // 5 minutes
-
-/**
- * Validates a GitHub token by calling the GitHub API and caches the result in Redis.
- * Returns the GitHub user profile if valid, or null if invalid.
- */
-async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
-    try {
-        const redis = await getTokenCacheClient();
-
-        // Check cache first
-        const cached = await redis.get(`${TOKEN_CACHE_PREFIX}${token}`);
-        if (cached) {
-            return JSON.parse(cached) as GitHubUser;
-        }
-
-        // Validate against GitHub API
-        const response = await fetch('https://api.github.com/user', {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'ProPR-CLI',
-            },
-        });
-
-        if (!response.ok) {
-            return null;
-        }
-
-        const profile = await response.json() as {
-            id: number;
-            login: string;
-            name: string | null;
-            email: string | null;
-            avatar_url: string | null;
-        };
-
-        const user: GitHubUser = {
-            id: String(profile.id),
-            login: profile.login,
-            username: profile.login,
-            displayName: profile.name || profile.login,
-            email: profile.email,
-            avatarUrl: profile.avatar_url,
-            accessToken: token,
-        };
-
-        // Cache for 5 minutes
-        await redis.set(
-            `${TOKEN_CACHE_PREFIX}${token}`,
-            JSON.stringify(user),
-            { EX: TOKEN_CACHE_TTL_SECONDS }
-        );
-
-        return user;
-    } catch (error) {
-        console.error('Bearer token validation error:', error);
-        return null;
-    }
 }
 
 // Time buffer before token expiration to trigger proactive refresh (5 minutes)

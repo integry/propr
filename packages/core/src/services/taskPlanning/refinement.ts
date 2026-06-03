@@ -9,7 +9,7 @@ import logger from '../../utils/logger.js';
 import { estimateLlmDuration } from '../../utils/llmEstimation.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { loadSettings } from '../../config/configManager.js';
-import { PlanningFailedError, MinimalLogger } from '../planningHelpers.js';
+import { PlanningFailedError, type MinimalLogger } from '../planning/index.js';
 import type { RefinePlanOptions, RefinePlanResult, RefinePlanEstimation } from './types.js';
 
 /** Default model for plan generation (high capability) */

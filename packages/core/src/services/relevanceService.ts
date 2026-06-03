@@ -244,9 +244,7 @@ interface KeywordScoringParams {
   timeoutMs?: number;
 }
 
-async function performKeywordScoring(
-  params: KeywordScoringParams
-): Promise<void> {
+async function performKeywordScoring(params: KeywordScoringParams): Promise<void> {
   const { repoPath, keywords, finalScores, correlationId, timeoutMs = TIMEOUT_MS } = params;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
@@ -376,13 +374,7 @@ export async function findRelevantFiles(
   }
 
   if (keywords.length > 0) {
-    await performKeywordScoring({
-      repoPath,
-      keywords,
-      finalScores,
-      correlationId,
-      timeoutMs: keywordTimeoutMs
-    });
+    await performKeywordScoring({ repoPath, keywords, finalScores, correlationId, timeoutMs: keywordTimeoutMs });
   }
 
   // --- Phase 3: Summary-based Semantic Scoring ---
