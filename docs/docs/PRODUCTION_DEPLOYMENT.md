@@ -68,7 +68,7 @@ ANTHROPIC_API_KEY=your-anthropic-api-key
 # Option A: API-key auth (simplest)
 MISTRAL_API_KEY=your-mistral-api-key
 # Option B: config-file auth (set HOST_VIBE_DIR to the host path of your
-# .vibe credential directory instead of / in addition to MISTRAL_API_KEY)
+# .vibe credential directory as an alternative to MISTRAL_API_KEY)
 # HOST_VIBE_DIR=/home/propr/.vibe
 
 # Required whenever Vibe agents are enabled (MISTRAL_API_KEY or HOST_VIBE_DIR
@@ -92,7 +92,10 @@ scripts/build-images.sh
 # Or build the Vibe agent image individually (requires propr/agent-base to
 # exist — run scripts/build-images.sh first, or build the base image manually:
 #   docker build -f docker/Dockerfile.agent-base -t propr/agent-base:latest .)
-docker build -f Dockerfile.vibe -t propr/agent-vibe:latest .
+# NOTE: --build-arg BASE_TAG=latest is required when the base image was
+# tagged as "latest" above; without it the default tag in Dockerfile.vibe
+# is used and the build will fail if that exact tag does not exist.
+docker build -f Dockerfile.vibe --build-arg BASE_TAG=latest -t propr/agent-vibe:latest .
 ```
 
 The Vibe image pins a specific CLI version via the `CLI_VERSION` build arg in

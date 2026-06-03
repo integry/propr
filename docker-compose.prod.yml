@@ -68,10 +68,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
-      DB_FILENAME: /app/data/propr.sqlite
+      DB_FILENAME: /usr/src/app/data/propr.sqlite
     volumes:
-      - ./logs:/app/logs
-      - propr-sqlite-data:/app/data
+      - ./logs:/usr/src/app/logs
+      - propr-sqlite-data:/usr/src/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -97,6 +97,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
       # Vibe prompt cache: required when MISTRAL_API_KEY is set.
+      # API-key-only Vibe needs MISTRAL_API_KEY plus the prompt cache vars
+      # and mount below — no config-file auth vars are required.
       # Both vars should point to the same host directory.
       # PREFLIGHT: create before starting: mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"
       VIBE_PROMPT_CACHE_DIR: ${VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
@@ -108,13 +110,13 @@ services:
       # API-key auth (MISTRAL_API_KEY above) does not require either.
       # VIBE_CONFIG_PATH: ${HOST_VIBE_DIR}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
-      DB_FILENAME: /app/data/propr.sqlite
+      DB_FILENAME: /usr/src/app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
     volumes:
-      - ./logs:/app/logs
-      - ./repos:/app/repos
+      - ./logs:/usr/src/app/logs
+      - ./repos:/usr/src/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
-      - propr-sqlite-data:/app/data
+      - propr-sqlite-data:/usr/src/app/data
       # Vibe prompt cache bind mount.
       # PREFLIGHT: mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"
       - ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}:/tmp/propr-vibe-prompts
