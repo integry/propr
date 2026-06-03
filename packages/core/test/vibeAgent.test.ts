@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { VibeAgent } from '../src/agents/impl/VibeAgent.js';
-import { splitVibeCliArgs } from '../src/agents/impl/utils/vibeAgentHelpers.js';
+import { splitVibeCliArgs, writeVibePromptFile } from '../src/agents/impl/utils/vibeAgentHelpers.js';
 import { db } from '../src/db/connection.js';
 import type { AgentConfig } from '../src/agents/types.js';
 
@@ -19,6 +19,7 @@ type VibeAgentPrivate = {
 
 const originalVibeCliArgs = process.env.VIBE_CLI_ARGS;
 const originalMistralApiKey = process.env.MISTRAL_API_KEY;
+const originalVibePromptCacheDir = process.env.VIBE_PROMPT_CACHE_DIR;
 
 after(async () => {
     if (originalVibeCliArgs === undefined) {
@@ -30,6 +31,11 @@ after(async () => {
         delete process.env.MISTRAL_API_KEY;
     } else {
         process.env.MISTRAL_API_KEY = originalMistralApiKey;
+    }
+    if (originalVibePromptCacheDir === undefined) {
+        delete process.env.VIBE_PROMPT_CACHE_DIR;
+    } else {
+        process.env.VIBE_PROMPT_CACHE_DIR = originalVibePromptCacheDir;
     }
     await db.destroy();
 });
@@ -119,5 +125,19 @@ test('Vibe Docker args accept mounted Vibe config env file credentials', () => {
         assert.ok(args.includes(`${configDir}:/home/node/.vibe:ro`));
     } finally {
         fs.rmSync(configDir, { recursive: true, force: true });
+    }
+});
+
+test('Vibe prompt files are readable by spawned agent container user', () => {
+    const promptCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-prompts-'));
+    process.env.VIBE_PROMPT_CACHE_DIR = promptCacheDir;
+    try {
+        const promptPath = writeVibePromptFile('test prompt');
+        const promptDir = path.dirname(promptPath);
+        assert.equal(fs.statSync(promptDir).mode & 0o777, 0o755);
+        assert.equal(fs.statSync(promptPath).mode & 0o777, 0o644);
+    } finally {
+        fs.rmSync(promptCacheDir, { recursive: true, force: true });
+        delete process.env.VIBE_PROMPT_CACHE_DIR;
     }
 });

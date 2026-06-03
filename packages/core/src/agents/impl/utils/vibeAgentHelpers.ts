@@ -185,10 +185,11 @@ export function buildVibeFailureMessage(
 
 export function writeVibePromptFile(prompt: string): string {
     const baseDir = process.env.VIBE_PROMPT_CACHE_DIR || '/tmp/propr-vibe-prompts';
-    fs.mkdirSync(baseDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(baseDir, { recursive: true, mode: 0o755 });
     const promptDir = fs.mkdtempSync(`${baseDir}/vibe-prompt-`);
+    fs.chmodSync(promptDir, 0o755);
     const promptPath = `${promptDir}/prompt.txt`;
-    fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o600 });
+    fs.writeFileSync(promptPath, prompt, { encoding: 'utf8', mode: 0o644 });
     return promptPath;
 }
 
