@@ -1,131 +1,23 @@
 import fs from 'fs';
-import os from 'os';
-import path from 'path';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
-import {
-    verifyWorktreeStructure,
-    verifyWorktreePostExecution,
-    setWorktreeOwnership,
-    UsageLimitError
-} from '../../claude/claudeHelpers.js';
+import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath, loadSettings } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
-import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath } from './utils/vibeAgentHelpers.js';
+import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath, getMistralApiKeyFromSettings, readLatestVibeSessionMessages, readLatestVibeSessionTokenUsage, ensureAnalysisWorkspace, prepareRuntimeHome, cleanupRuntimeHome, hasUsableVibeConfigDir, hasStructuredOutputArg } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
 export { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
+export { getMistralApiKeyFromSettings, readLatestVibeSessionTokenUsage } from './utils/vibeAgentHelpers.js';
 
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
-const MISTRAL_API_KEY_SETTING_KEYS = ['mistral_api_key', 'MISTRAL_API_KEY', 'mistralApiKey', 'vibe_mistral_api_key'];
-
-export function getMistralApiKeyFromSettings(settings: Record<string, unknown>): string | undefined {
-    for (const key of MISTRAL_API_KEY_SETTING_KEYS) {
-        const value = settings[key];
-        if (typeof value === 'string' && value.trim()) return value.trim();
-    }
-    return undefined;
-}
-
-function findNewestMessagesFile(root: string): string | undefined {
-    const sessionRoot = path.join(root, 'logs', 'session');
-    if (!fs.existsSync(sessionRoot)) return undefined;
-
-    let newest: { filePath: string; mtimeMs: number } | undefined;
-    const stack = [sessionRoot];
-    while (stack.length > 0) {
-        const current = stack.pop()!;
-        let entries: fs.Dirent[];
-        try { entries = fs.readdirSync(current, { withFileTypes: true }); }
-        catch { continue; }
-
-        for (const entry of entries) {
-            const entryPath = path.join(current, entry.name);
-            if (entry.isDirectory()) {
-                stack.push(entryPath);
-                continue;
-            }
-            if (!entry.isFile() || entry.name !== 'messages.jsonl') continue;
-            try {
-                const stat = fs.statSync(entryPath);
-                if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { filePath: entryPath, mtimeMs: stat.mtimeMs };
-            } catch {
-                // Ignore files that disappear while the session logger is writing.
-            }
-        }
-    }
-
-    return newest?.filePath;
-}
-
-function findNewestMetaFile(root: string): string | undefined {
-    const sessionRoot = path.join(root, 'logs', 'session');
-    if (!fs.existsSync(sessionRoot)) return undefined;
-
-    let newest: { filePath: string; mtimeMs: number } | undefined;
-    const stack = [sessionRoot];
-    while (stack.length > 0) {
-        const current = stack.pop()!;
-        let entries: fs.Dirent[];
-        try { entries = fs.readdirSync(current, { withFileTypes: true }); }
-        catch { continue; }
-
-        for (const entry of entries) {
-            const entryPath = path.join(current, entry.name);
-            if (entry.isDirectory()) {
-                stack.push(entryPath);
-                continue;
-            }
-            if (!entry.isFile() || entry.name !== 'meta.json') continue;
-            try {
-                const stat = fs.statSync(entryPath);
-                if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { filePath: entryPath, mtimeMs: stat.mtimeMs };
-            } catch {
-                // Ignore files that disappear while the session logger is writing.
-            }
-        }
-    }
-
-    return newest?.filePath;
-}
-
-function readLatestVibeSessionMessages(runtimeHomePath: string | undefined): string {
-    if (!runtimeHomePath) return '';
-    const messagesFile = findNewestMessagesFile(runtimeHomePath);
-    if (!messagesFile) return '';
-    try { return fs.readFileSync(messagesFile, 'utf8'); }
-    catch { return ''; }
-}
-
-export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefined): { input_tokens?: number; output_tokens?: number } | undefined {
-    if (!runtimeHomePath) return undefined;
-    const metaFile = findNewestMetaFile(runtimeHomePath);
-    if (!metaFile) return undefined;
-
-    try {
-        const parsed = JSON.parse(fs.readFileSync(metaFile, 'utf8')) as {
-            stats?: {
-                session_prompt_tokens?: unknown;
-                session_completion_tokens?: unknown;
-            };
-        };
-        const inputTokens = parsed.stats?.session_prompt_tokens;
-        const outputTokens = parsed.stats?.session_completion_tokens;
-        return {
-            input_tokens: typeof inputTokens === 'number' ? inputTokens : undefined,
-            output_tokens: typeof outputTokens === 'number' ? outputTokens : undefined
-        };
-    } catch {
-        return undefined;
-    }
-}
 
 interface VibeDockerArgsParams {
     worktreePath: string;
@@ -177,7 +69,7 @@ export class VibeAgent implements Agent {
             promptFilePath = writeVibePromptFile(prompt);
             const mistralApiKey = await this.getMistralApiKey();
             envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken });
-            runtimeHomePath = this.prepareRuntimeHome(taskId);
+            runtimeHomePath = prepareRuntimeHome(taskId);
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const dockerArgs = this.buildDockerArgs({
@@ -277,7 +169,7 @@ export class VibeAgent implements Agent {
         } finally {
             cleanupTempFile(promptFilePath);
             cleanupTempFile(envFilePath);
-            this.cleanupRuntimeHome(runtimeHomePath);
+            cleanupRuntimeHome(runtimeHomePath);
         }
     }
 
@@ -295,11 +187,11 @@ export class VibeAgent implements Agent {
         let envFilePath: string | undefined;
         let runtimeHomePath: string | undefined;
         try {
-            analysisWorkspace = this.ensureAnalysisWorkspace();
+            analysisWorkspace = ensureAnalysisWorkspace();
             promptFilePath = writeVibePromptFile(analysisPrompt);
             const mistralApiKey = await this.getMistralApiKey();
             envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken: process.env.GITHUB_TOKEN });
-            runtimeHomePath = this.prepareRuntimeHome(taskId);
+            runtimeHomePath = prepareRuntimeHome(taskId);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
@@ -383,7 +275,7 @@ export class VibeAgent implements Agent {
         } finally {
             cleanupTempFile(promptFilePath);
             cleanupTempFile(envFilePath);
-            this.cleanupRuntimeHome(runtimeHomePath);
+            cleanupRuntimeHome(runtimeHomePath);
             if (analysisWorkspace) {
                 try { fs.rmSync(analysisWorkspace, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
             }
@@ -401,7 +293,7 @@ export class VibeAgent implements Agent {
             }
             const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
             const mistralApiKey = await this.getMistralApiKey();
-            const hasCredentials = !!mistralApiKey || this.hasUsableConfigDir(configPath, mistralApiKey);
+            const hasCredentials = !!mistralApiKey || hasUsableVibeConfigDir(configPath, mistralApiKey);
             if (!hasCredentials) {
                 logger.warn({ agentAlias: this.config.alias, configPath }, 'Health check warning: no Vibe credentials found (set MISTRAL_API_KEY or configure ~/.vibe)');
             }
@@ -411,46 +303,6 @@ export class VibeAgent implements Agent {
             logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'Health check failed with error');
             return false;
         }
-    }
-
-    private ensureAnalysisWorkspace(): string {
-        const workspace = fs.mkdtempSync('/tmp/vibe-analysis-');
-        try {
-            fs.chmodSync(workspace, 0o755);
-        } catch (error) {
-            logger.warn({ error: (error as Error).message, workspace }, 'Failed to prepare Vibe analysis workspace');
-        }
-        return workspace;
-    }
-
-    private prepareRuntimeHome(taskId?: string): string {
-        const baseDir = path.join(process.env.VIBE_PROMPT_CACHE_DIR || '/tmp/propr-vibe-prompts', 'propr-vibe-runtime');
-        fs.mkdirSync(baseDir, { recursive: true, mode: 0o755 });
-        const prefix = taskId ? `propr-vibe-home-${taskId.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 80)}-` : 'propr-vibe-home-';
-        const runtimeHome = fs.mkdtempSync(path.join(baseDir, prefix));
-        try {
-            fs.chmodSync(runtimeHome, 0o777);
-        } catch (error) {
-            logger.warn({ runtimeHome, error: (error as Error).message }, 'Failed to chmod Vibe runtime home');
-        }
-        return runtimeHome;
-    }
-
-    private cleanupRuntimeHome(runtimeHomePath: string | undefined): void {
-        if (!runtimeHomePath) return;
-        try { fs.rmSync(runtimeHomePath, { recursive: true, force: true }); }
-        catch (error) { logger.debug({ runtimeHomePath, error: (error as Error).message }, 'Failed to clean Vibe runtime home'); }
-    }
-
-    private hasUsableConfigDir(configPath: string, mistralApiKey?: string): boolean {
-        try {
-            if (!fs.existsSync(configPath) || !fs.statSync(configPath).isDirectory()) return false;
-            const entries = fs.readdirSync(configPath);
-            if (entries.includes('credentials.json') || entries.includes('.env')) return true;
-            const hasConfigFile = entries.includes('config.toml') || entries.includes('settings.json');
-            if (mistralApiKey && hasConfigFile) return true;
-            return false;
-        } catch { return false; }
     }
 
     private async getMistralApiKey(): Promise<string | undefined> {
@@ -476,7 +328,7 @@ export class VibeAgent implements Agent {
             try { args = splitVibeCliArgs(configuredArgs); } catch (error) { throw new Error(`Invalid ${source}: ${(error as Error).message}`); }
             if (args.length === 0) {
                 args = getDefaultVibeCliArgs();
-            } else if (!this.hasStructuredOutputArg(args)) {
+            } else if (!hasStructuredOutputArg(args)) {
                 const allowNoJson = process.env.VIBE_ALLOW_UNSTRUCTURED === '1' || this.config.envVars?.VIBE_ALLOW_UNSTRUCTURED === '1';
                 if (!allowNoJson) {
                     throw new Error(`${source} does not include --output json. Structured output is required. Add --output json or set VIBE_ALLOW_UNSTRUCTURED=1 to override.`);
@@ -485,14 +337,6 @@ export class VibeAgent implements Agent {
             }
         }
         return args;
-    }
-
-    private hasStructuredOutputArg(args: string[]): boolean {
-        return args.some((arg, index) => (
-            arg === '--json' ||
-            arg === '--output=json' ||
-            (arg === '--output' && args[index + 1] === 'json')
-        ));
     }
 
     private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number; runtimeHomePath?: string }): string[] {
@@ -514,7 +358,7 @@ export class VibeAgent implements Agent {
     private resolveCredentialsAndConfig(mistralApiKey?: string): { configPath: string; resolvedApiKey: string | undefined; hasUsableConfig: boolean; configMountArgs: string[] } {
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
         const resolvedApiKey = mistralApiKey || process.env.MISTRAL_API_KEY?.trim() || this.config.envVars?.MISTRAL_API_KEY?.trim();
-        const hasUsableConfig = this.hasUsableConfigDir(configPath, resolvedApiKey);
+        const hasUsableConfig = hasUsableVibeConfigDir(configPath, resolvedApiKey);
         if (!resolvedApiKey && !hasUsableConfig) throw new Error(`Vibe agent "${this.config.alias}" has no credentials. Set MISTRAL_API_KEY or ensure ${configPath} contains valid Vibe config files.`);
         return { configPath, resolvedApiKey, hasUsableConfig, configMountArgs: hasUsableConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [] };
     }
