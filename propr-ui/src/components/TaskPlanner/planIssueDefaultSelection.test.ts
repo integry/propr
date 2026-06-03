@@ -25,6 +25,20 @@ describe('resolvePlanIssueDefaultSelection', () => {
     }
   ];
 
+  const agentsWithVibe = [
+    ...agents,
+    {
+      id: 'agent-3',
+      type: 'vibe' as const,
+      alias: 'vibe-prod',
+      enabled: true,
+      dockerImage: 'propr/agent-vibe:latest',
+      configPath: '~/.vibe',
+      supportedModels: ['mistral-medium-3.5', 'devstral-2512'],
+      defaultModel: 'mistral-medium-3.5'
+    }
+  ];
+
   it('prefers default_agent_alias over the first enabled agent', () => {
     expect(resolvePlanIssueDefaultSelection(agents, 'codex-prod')).toEqual({
       agentAlias: 'codex-prod',
@@ -34,6 +48,20 @@ describe('resolvePlanIssueDefaultSelection', () => {
 
   it('falls back deterministically when the configured default agent is unavailable', () => {
     expect(resolvePlanIssueDefaultSelection(agents, 'missing-agent')).toEqual({
+      agentAlias: 'claude-prod',
+      modelName: 'claude-haiku-4-5'
+    });
+  });
+
+  it('selects vibe agent when configured as default', () => {
+    expect(resolvePlanIssueDefaultSelection(agentsWithVibe, 'vibe-prod')).toEqual({
+      agentAlias: 'vibe-prod',
+      modelName: 'mistral-medium-3.5'
+    });
+  });
+
+  it('falls back to first agent when vibe default is unavailable', () => {
+    expect(resolvePlanIssueDefaultSelection(agents, 'vibe-prod')).toEqual({
       agentAlias: 'claude-prod',
       modelName: 'claude-haiku-4-5'
     });

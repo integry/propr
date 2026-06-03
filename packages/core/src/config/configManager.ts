@@ -28,6 +28,16 @@ interface ConfigSettings {
     [key: string]: unknown;
 }
 
+function redactSettingsForLog(settings: ConfigSettings): ConfigSettings {
+    const redacted: ConfigSettings = {};
+    for (const [key, value] of Object.entries(settings)) {
+        redacted[key] = /(api[_-]?key|token|secret|password|credential)/i.test(key)
+            ? '[REDACTED]'
+            : value;
+    }
+    return redacted;
+}
+
 // --- Exported Functions ---
 
 /**
@@ -134,7 +144,7 @@ export async function saveMonitoredRepos(repos: RepoToMonitor[]): Promise<boolea
 
 export async function loadSettings(): Promise<ConfigSettings> {
     const settings = await getConfig<ConfigSettings>('settings', {});
-    logger.info({ settings }, 'Successfully loaded settings');
+    logger.info({ settings: redactSettingsForLog(settings) }, 'Successfully loaded settings');
     return settings;
 }
 

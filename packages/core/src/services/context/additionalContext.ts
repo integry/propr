@@ -78,12 +78,19 @@ function stripFilePathsFromContext(context: string, repoName: string): string {
   return header + strippedContext;
 }
 
-async function resolveEffectiveAuthToken(authToken: string): Promise<string> {
+interface RepoContextResult {
+  repository: string;
+  context: string;
+  tokens: number;
+  files: number;
+  filePaths: string[];
+  fileScores: Record<string, { score: number; reason: string }>;
+}
+
+async function resolveAuthToken(authToken: string): Promise<string> {
   try {
-    // Try to use installation token for private repo access
     return await getGitHubInstallationToken();
   } catch {
-    // Fall back to provided auth token
     return authToken;
   }
 }
@@ -115,14 +122,7 @@ export async function generateAdditionalContext(
     'Starting additional context generation'
   );
 
-  const results: Array<{
-    repository: string;
-    context: string;
-    tokens: number;
-    files: number;
-    filePaths: string[];
-    fileScores: Record<string, { score: number; reason: string }>;
-  }> = [];
+  const results: RepoContextResult[] = [];
   const errors: Array<{ repository: string; error: string }> = [];
 
   // Divide token budget evenly among repositories. Full scan intentionally uses
@@ -143,9 +143,8 @@ export async function generateAdditionalContext(
         'Processing additional context repository'
       );
 
-      // Ensure the repository is cloned
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      const effectiveAuthToken = await resolveEffectiveAuthToken(authToken);
+      const effectiveAuthToken = await resolveAuthToken(authToken);
 
       const repoPath = await ensureRepoCloned({
         repoUrl,
@@ -159,24 +158,19 @@ export async function generateAdditionalContext(
         repoPath, repo, prompt, contextModel, fastRelevance, correlationId
       });
 
-      // Generate context for this repository
       const contextResult = await generateContext({
         repoPath,
         priorityFiles,
         tokenLimit: tokenBudgetPerRepo,
         correlationId,
-        includeFullDirectoryStructure: false, // Skip directory structure for context repos
-        compress: true // Use compression to maximize content
+        includeFullDirectoryStructure: false,
+        compress: true
       });
 
-      // Strip file paths from the context
       const strippedContext = stripFilePathsFromContext(contextResult.context, repo.repository);
-
-      // Add description if provided
-      let finalContext = strippedContext;
-      if (repo.description) {
-        finalContext = `[${repo.description}]\n${strippedContext}`;
-      }
+      const finalContext = repo.description
+        ? `[${repo.description}]\n${strippedContext}`
+        : strippedContext;
 
       results.push({
         repository: repo.repository,
@@ -206,7 +200,6 @@ export async function generateAdditionalContext(
     }
   }
 
-  // Combine all context
   const combinedContext = results.map(r => r.context).join('\n\n---\n\n');
   const totalTokens = results.reduce((sum, r) => sum + r.tokens, 0);
   const totalFiles = results.reduce((sum, r) => sum + r.files, 0);
@@ -220,12 +213,7 @@ export async function generateAdditionalContext(
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
   correlatedLogger.info(
-    {
-      repositoriesIncluded: results.length,
-      errorCount: errors.length,
-      totalTokens,
-      totalFiles
-    },
+    { repositoriesIncluded: results.length, errorCount: errors.length, totalTokens, totalFiles },
     'Additional context generation completed'
   );
 

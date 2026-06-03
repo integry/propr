@@ -1,3 +1,20 @@
+# NOTE: This compose file requires the HOME environment variable to be set.
+# Agent credential directories are mounted at ${HOME}/.<agent> on both the host
+# and inside containers so path references remain valid when spawning sibling
+# agent containers. In CI or systemd contexts where HOME may be unset, export it
+# explicitly before running docker-compose (e.g., export HOME=/root).
+#
+# PREFLIGHT: Before starting, create credential and cache directories for ALL
+# agents you intend to use (Docker will create missing directories as root-owned
+# otherwise, which can cause write failures):
+#   mkdir -p ~/.claude ~/.codex ~/.gemini /tmp/propr-vibe-prompts
+#
+# For Vibe support, also create:
+#   mkdir -p ~/.vibe
+#
+# For production deployments that only use a subset of agents, use the launcher
+# (docker/launcher/) which conditionally mounts only configured agent directories.
+# This compose file is intended for development environments.
 services:
   redis:
     image: redis:alpine
@@ -56,13 +73,27 @@ services:
       - ./repos:/usr/src/app/repos
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor
-      - ~/.claude:/root/.claude
-      - ~/.gemini:/root/.gemini
-      - ~/.codex:/root/.codex
+      # Mount agent credentials at the same path on both sides so the worker
+      # can pass host-valid paths when spawning sibling agent containers.
+      # IMPORTANT: Create any missing directories before starting:
+      #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe
+      # Docker will create them as root-owned if they do not exist.
+      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude
+      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini
+      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex
+      - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
+      # Vibe prompt cache — mounted by default so Vibe works when MISTRAL_API_KEY
+      # is set. PREFLIGHT: mkdir -p /tmp/propr-vibe-prompts
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
     env_file:
       - .env
+    environment:
+      - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
+      - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
+      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
       redis:
         condition: service_started
@@ -81,11 +112,21 @@ services:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor:ro
+      # Vibe prompt cache — mounted by default for consistency with worker.
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts:rw
       - /tmp/claude-logs:/tmp/claude-logs:ro
-      - ~/.codex:/root/.codex:ro
+      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
+      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
+      - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
+    environment:
+      - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
+      - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
+      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
       redis:
         condition: service_started
@@ -104,14 +145,19 @@ services:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor
-      - ~/.claude:/root/.claude:ro
-      - ~/.gemini:/root/.gemini:ro
-      - ~/.codex:/root/.codex:ro
+      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
+      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
+      - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
     env_file:
       - .env
     environment:
+      - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
+      - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
+      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       # How often to scan for repos needing indexing (default: 5 minutes)
       - INDEXING_SCAN_INTERVAL_MS=${INDEXING_SCAN_INTERVAL_MS:-300000}
       # How often to re-index repos (default: 24 hours)
@@ -151,12 +197,16 @@ services:
       # Allow injection of API_PORT for PR preview environments, default to 4000
       - '${API_PORT:-4000}:4000'
     volumes:
-      - ~/.claude:/root/.claude:ro
-      - ~/.codex:/root/.codex:ro
+      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
+      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
+      - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - ./data:/usr/src/app/data
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/git-processor:/tmp/git-processor
+      # Vibe prompt cache — mounted by default for consistency with worker.
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
       # Worktrees directory for PR branch checkouts
       - /tmp/pr-worktrees:/tmp/pr-worktrees
       # Mount the env file - uses STAGING_ENV_FILE if set, defaults to ./.env
@@ -165,6 +215,10 @@ services:
       # Use the same env file for environment variable injection
       - ${STAGING_ENV_FILE:-.env}
     environment:
+      - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
+      - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
+      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       - CONFIG_REPO_PATH=/tmp/config_repo
       # Allow injection of API_PUBLIC_URL for PR preview environments
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:4000}

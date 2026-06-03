@@ -8,7 +8,8 @@ import fs from 'fs-extra';
 import { TASK_LIVE_UPDATE, type TaskLiveUpdatePayload } from '@propr/shared';
 import { parseConversationFile } from './conversationParser.js';
 import { parseRedisOutput } from './redisOutputParser.js';
-import { loadAgents, resolveConfigPath, type AgentConfig } from '@propr/core';
+import { resolveConfigPath } from '@propr/core';
+import { findAgentConfigForTask, findExecutionStartTimestampForTask } from './taskWatcherLookup.js';
 
 /** Active task watcher info */
 export interface TaskWatcherInfo {
@@ -53,7 +54,7 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Start watching a task's log for changes (file-based for Claude, Redis-based for Codex)
+   * Start watching a task's log for changes (file-based for Claude, Redis-based for agents that stream to Redis)
    */
   async startTaskWatcher(taskId: string): Promise<void> {
     // Check if already watching
@@ -72,19 +73,13 @@ export class TaskWatcherManager {
     }
 
     // Get agent config to find the correct log path
-    const agentConfig = await this.findAgentConfigForTask(taskId);
+    const agentConfig = await findAgentConfigForTask(taskId);
     const agentType = agentConfig?.type || 'claude';
     const agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
 
     let conversationPath: string;
-    if (agentType === 'codex') {
-      // Codex streams to Redis, use Redis watcher
-      console.log(`[TaskWatcher] Codex task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
-      await this.startRedisWatcher(taskId);
-      return;
-    } else if (agentType === 'gemini') {
-      // Gemini streams to Redis, use Redis watcher
-      console.log(`[TaskWatcher] Gemini task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
+    if (agentType === 'codex' || agentType === 'gemini' || agentType === 'vibe') {
+      console.log(`[TaskWatcher] ${agentType} task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
       await this.startRedisWatcher(taskId);
       return;
     } else {
@@ -338,20 +333,7 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Check if task has Redis output (indicates Codex/non-Claude agent)
-   */
-  private async hasRedisOutput(taskId: string): Promise<boolean> {
-    if (!this.deps) return false;
-    try {
-      const output = await this.deps.redisClient.get(`agent:output:${taskId}`);
-      return output !== null && output.length > 0;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Start Redis-based watcher for Codex tasks
+   * Start Redis-based watcher for agents that stream output to Redis
    */
   private async startRedisWatcher(taskId: string): Promise<void> {
     console.log(`[TaskWatcher] Starting Redis watcher for task ${taskId}`);
@@ -378,7 +360,7 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Send live update from Redis output (for Codex tasks)
+   * Send live update from Redis output
    */
   private async sendRedisLiveUpdate(taskId: string, isInitial = false): Promise<void> {
     if (!this.deps) return;
@@ -398,7 +380,8 @@ export class TaskWatcherManager {
 
       // Parse the output using the Redis output parser
       const lines = output.trim().split('\n').filter((line: string) => line.trim());
-      const result = parseRedisOutput(lines);
+      const executionStartTimestamp = await this.findExecutionStartTimestampForTask(taskId);
+      const result = parseRedisOutput(lines, { executionStartTimestamp });
 
       // Determine which events to send
       let eventsToSend = result.events;
@@ -434,30 +417,6 @@ export class TaskWatcherManager {
     }
   }
 
-  /**
-   * Find the agent config for a task based on agent alias in task ID
-   */
-  private async findAgentConfigForTask(taskId: string): Promise<AgentConfig | null> {
-    try {
-      const agents = await loadAgents();
-      // Extract agent alias from task ID (e.g., "integry-propr-test-48-codex-gpt-5.2-xxx" -> "codex")
-      for (const agent of agents) {
-        if (taskId.includes(`-${agent.alias}-`)) {
-          return agent;
-        }
-      }
-      // Fallback: check by type
-      for (const agent of agents) {
-        if (taskId.includes(`-${agent.type}-`)) {
-          return agent;
-        }
-      }
-      return null;
-    } catch (error) {
-      console.error('[TaskWatcher] Error loading agent config:', error);
-      return null;
-    }
-  }
 
   /**
    * Find the session ID for a task from Redis or database
@@ -506,6 +465,11 @@ export class TaskWatcherManager {
     }
 
     return null;
+  }
+
+  private async findExecutionStartTimestampForTask(taskId: string): Promise<string | null> {
+    if (!this.deps) return null;
+    return findExecutionStartTimestampForTask(this.deps, this.normalizeTaskId(taskId));
   }
 
   /**

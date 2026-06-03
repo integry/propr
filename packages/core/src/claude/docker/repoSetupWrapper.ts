@@ -3,7 +3,8 @@ import type { AgentType } from '../../agents/types.js';
 const ENTRYPOINT_PATHS: Record<AgentType, string> = {
     claude: '/home/node/claude-entrypoint.sh',
     codex: '/home/node/codex-entrypoint.sh',
-    gemini: '/home/node/gemini-entrypoint.sh'
+    gemini: '/home/node/gemini-entrypoint.sh',
+    vibe: '/home/node/vibe-entrypoint.sh'
 };
 
 const WORKSPACE_PATH = '/home/node/workspace';
@@ -24,7 +25,7 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
 
     echo "Running ProPR repo setup hook: $setup_script" >&2
     set +e
-    if command -v sudo >/dev/null 2>&1 && id node >/dev/null 2>&1; then
+    if [ "$(id -u)" = "0" ] && command -v sudo >/dev/null 2>&1 && id node >/dev/null 2>&1; then
         cd "$PROPR_WORKSPACE"
         sudo -E -u node -H /bin/bash "$setup_script" </dev/null >&2
         setup_exit=$?

@@ -4,9 +4,9 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
+import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
-import { validateGitHubToken } from './tokenCache.js';
-import { getValidatedRedirectTo } from './redirectValidation.js';
+import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import type { GitHubUser } from './authTypes.js';
 import './authTypes.js';
 
@@ -27,19 +27,14 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
         const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
         const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
-        const redisClient = createClient({
-            url: `redis://${sessionRedisHost}:${sessionRedisPort}`
-        });
+        const redisClient = createClient({ url: `redis://${sessionRedisHost}:${sessionRedisPort}` });
         redisClient.on('error', (err) => {
             console.error('Session Redis Client Error', err);
         });
         redisClient.connect().catch(console.error);
 
         // Use Redis store for sessions to share across subdomains
-        const redisStore = new RedisStore({
-            client: redisClient,
-            prefix: 'propr:session:'
-        });
+        const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
 
         app.use(session({
             store: redisStore,
@@ -72,17 +67,15 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
             console.log('User authenticated:', profile.username);
 
             // Calculate token expiration time (expires_in is in seconds)
-            const tokenExpiresAt = params.expires_in
-                ? Date.now() + (params.expires_in * 1000)
-                : undefined;
+            const tokenExpiresAt = params.expires_in ? Date.now() + (params.expires_in * 1000) : undefined;
 
             const user: GitHubUser = {
                 id: profile.id,
                 login: profile.username || '',
                 username: profile.username || '',
                 displayName: profile.displayName,
-                email: profile.emails && profile.emails[0] ? profile.emails[0].value : null,
-                avatarUrl: profile.photos && profile.photos[0] ? profile.photos[0].value : null,
+                email: profile.emails?.[0]?.value || null,
+                avatarUrl: profile.photos?.[0]?.value || null,
                 accessToken: accessToken,
                 refreshToken: refreshToken || undefined,
                 tokenExpiresAt: tokenExpiresAt
@@ -100,7 +93,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
 
         if (demoModeAtStartup) {
-            res.redirect(redirectTo || `${process.env.FRONTEND_URL}/`);
+            res.redirect(redirectTo || getDefaultRedirectUrl());
             return;
         }
 
@@ -113,7 +106,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
     if (demoModeAtStartup) {
         app.get('/api/auth/github/callback', (req: Request, res: Response) => {
             const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
-            res.redirect(redirectTo || `${process.env.FRONTEND_URL}/`);
+            res.redirect(redirectTo || getDefaultRedirectUrl());
         });
     } else {
         app.get('/api/auth/github/callback',
@@ -126,7 +119,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                     delete (req.session as session.Session & { redirectTo?: string }).redirectTo;
                 }
 
-                const finalRedirect = redirectTo || `${process.env.FRONTEND_URL}/`;
+                const finalRedirect = redirectTo || getDefaultRedirectUrl();
 
                 // Explicitly save session before redirect to ensure cookie is set
                 // This is required when using Redis store with async operations
@@ -317,11 +310,7 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
     if (req.isAuthenticated()) {
         if (req.user?.githubAuthInvalid) {
             await clearSessionForReauth(req);
-            res.status(401).json({
-                error: 'GitHub authentication expired',
-                code: 'GITHUB_REAUTH_REQUIRED',
-                message: 'Your GitHub session has expired. Please log in again.'
-            });
+            res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
             return;
         }
 

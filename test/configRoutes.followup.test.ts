@@ -1163,7 +1163,7 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(result.status, 200);
         assert.strictEqual(typeof (result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage, 'string');
-        assert.match(String((result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage), /^propr-claude:.*-abc123$/);
+        assert.match(String((result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage), /^propr\/agent-claude:.*-abc123$/);
         contentHashMock.mock.restore();
     });
 
@@ -1613,6 +1613,44 @@ describe('config route follow-up helpers', () => {
         assert.deepStrictEqual(parsed.parsed?.events, [
             { type: 'thought', content: 'Codex says hi', timestamp: undefined },
         ]);
+    });
+
+    test('parseStoredOutputContent parses pretty Vibe transcript arrays', () => {
+        const parsed = parseStoredOutputContent(JSON.stringify([
+            { role: 'system', content: 'System prompt should not appear' },
+            {
+                role: 'assistant',
+                content: '',
+                reasoning_content: 'I will inspect the file.',
+                tool_calls: [{
+                    id: 'tool-1',
+                    function: {
+                        name: 'read_file',
+                        arguments: '{"path":"vibe_test.py"}',
+                    },
+                }],
+            },
+            {
+                role: 'tool',
+                tool_call_id: 'tool-1',
+                name: 'read_file',
+                content: 'content: print("Hello from Vibe")',
+            },
+            {
+                role: 'assistant',
+                content: 'Changed the greeting to Yo from Vibe.',
+            },
+        ], null, 2));
+
+        assert.strictEqual(parsed.format, 'vibe');
+        assert.ok(parsed.parsed);
+        assert.deepStrictEqual(parsed.parsed?.events.map(event => event.type), ['thought', 'tool_use', 'tool_result', 'thought']);
+        assert.strictEqual(parsed.parsed?.events[0].content, 'I will inspect the file.');
+        assert.strictEqual(parsed.parsed?.events[1].toolName, 'read_file');
+        assert.deepStrictEqual(parsed.parsed?.events[1].input, { path: 'vibe_test.py' });
+        assert.strictEqual(parsed.parsed?.events[2].result, 'content: print("Hello from Vibe")');
+        assert.strictEqual(parsed.parsed?.events[3].content, 'Changed the greeting to Yo from Vibe.');
+        assert.ok(!JSON.stringify(parsed.parsed).includes('System prompt should not appear'));
     });
 
     test('parseCodexOutputToConversationResult preserves token usage without conversation events', () => {

@@ -1,20 +1,17 @@
 import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
-import path from 'path';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
 
 export interface DockerCommandOptions {
-    timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; stripAnsi?: boolean;
+    timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
     onSessionId?: (sessionId: string, conversationId?: string) => void; onContainerId?: (containerId: string, containerName: string) => void;
-    extraMounts?: string[]; extraEnvVars?: Record<string, string>;
+    extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
 }
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
-
-const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest';
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
@@ -33,17 +30,6 @@ export class ExecutionAbortedError extends Error {
         this.name = 'ExecutionAbortedError';
     }
 }
-
-// Mapping from agent types to their Dockerfiles
-const AGENT_DOCKERFILES: Record<string, string> = {
-    'claude': 'Dockerfile.claude',
-    'codex': 'Dockerfile.codex',
-    'gemini': 'Dockerfile.gemini'
-};
-
-// Default project root - can be overridden via environment variable
-// In Docker container, the app root is /usr/src/app but cwd may be /usr/src/app/packages/api
-const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
 
 async function checkAbortSignal(taskId: string): Promise<boolean> {
     try {
@@ -185,7 +171,7 @@ function setupAbortChecker(taskId: string, abortedRef: { value: boolean }, child
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, stripAnsi } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi } = options;
         const executablePath = resolveDockerPath(command);
         const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
         if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
@@ -205,8 +191,17 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const timeoutHandle = setTimeout(() => { state.timedOut = true; child.kill('SIGTERM'); setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000); }, timeout);
         const abortCheckInterval = taskId ? setupAbortChecker(taskId, state.aborted, child, state.containerId) : null;
 
+        const getRedisOutput = () => {
+            const primaryOutput = streamStderrToRedis ? `${stderr}${stdout ? `\n${stdout}` : ''}` : stdout;
+            let extraOutput = '';
+            if (streamExtraOutput) {
+                try { extraOutput = streamExtraOutput(); }
+                catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to read extra streaming output'); }
+            }
+            return extraOutput ? `${primaryOutput}${primaryOutput ? '\n' : ''}${extraOutput}` : primaryOutput;
+        };
         const redisState = { client: null as Redis | null, interval: null as ReturnType<typeof setInterval> | null, lastLen: 0 };
-        if (streamToRedis && taskId) initRedisStreaming(taskId, stripAnsi, () => stdout, redisState);
+        if (streamToRedis && taskId) initRedisStreaming(taskId, stripAnsi, getRedisOutput, redisState);
         if (command === 'docker' && args[0] === 'run' && worktreePath) detectContainerId(worktreePath, state, onContainerId);
 
         child.stdout?.on('data', (data: Buffer) => {
@@ -226,7 +221,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
             if (abortCheckInterval) clearInterval(abortCheckInterval);
-            await cleanupRedisStreaming(redisState, taskId, stripAnsi, stdout);
+            await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
             if (state.timedOut) { reject(new Error(`Command timed out after ${timeout}ms`)); return; }
             if (state.aborted.value) { reject(new ExecutionAbortedError()); return; }
             resolve({ exitCode, stdout, stderr, messageTimestamps });
@@ -276,224 +271,6 @@ function detectContainerId(worktreePath: string, state: { containerIdDetected: b
     }, 2000);
 }
 
-export async function buildClaudeDockerImage(): Promise<boolean> {
-    logger.info({ image: CLAUDE_DOCKER_IMAGE }, 'Building Claude Code Docker image...');
-
-    try {
-        const checkResult = await executeDockerCommand('docker', [
-            'images', '-q', CLAUDE_DOCKER_IMAGE
-        ]);
-
-        if (checkResult.stdout.trim()) {
-            logger.info({ image: CLAUDE_DOCKER_IMAGE }, 'Docker image already exists');
-            return true;
-        }
-
-        const buildResult = await executeDockerCommand('docker', [
-            'build',
-            '-f', 'Dockerfile.claude',
-            '-t', CLAUDE_DOCKER_IMAGE,
-            '.'
-        ], {
-            timeout: 600000
-        });
-
-        if (buildResult.exitCode === 0) {
-            logger.info({ image: CLAUDE_DOCKER_IMAGE }, 'Docker image built successfully');
-            return true;
-        } else {
-            logger.error({
-                image: CLAUDE_DOCKER_IMAGE,
-                exitCode: buildResult.exitCode,
-                stderr: buildResult.stderr
-            }, 'Failed to build Docker image');
-            return false;
-        }
-
-    } catch (error) {
-        const err = error as Error;
-        logger.error({
-            image: CLAUDE_DOCKER_IMAGE,
-            error: err.message
-        }, 'Error building Docker image');
-        return false;
-    }
-}
-
-/**
- * Ensures an agent's Docker image exists, building it if necessary.
- * This is called when agents are registered to ensure their images are ready.
- *
- * @param agentType - The type of agent ('claude', 'codex', 'gemini')
- * @param dockerImage - The expected Docker image name (e.g., 'propr-codex:latest')
- * @returns true if image exists or was built successfully, false otherwise
- */
-export async function ensureAgentDockerImage(agentType: string, dockerImage: string): Promise<boolean> {
-    logger.info({ agentType, dockerImage }, 'Ensuring agent Docker image exists...');
-
-    try {
-        // Already cached locally?
-        const checkResult = await executeDockerCommand('docker', ['images', '-q', dockerImage]);
-        if (checkResult.stdout.trim()) {
-            logger.info({ agentType, dockerImage }, 'Agent Docker image already exists');
-            return true;
-        }
-
-        // Not cached — try pulling from a registry. In production this is the
-        // only path that works since the build context (Dockerfile + source)
-        // isn't available inside the worker container.
-        logger.info({ agentType, dockerImage }, 'Pulling agent Docker image from registry...');
-        const pullResult = await executeDockerCommand('docker', ['pull', dockerImage], { timeout: 600000 });
-        if (pullResult.exitCode === 0) {
-            logger.info({ agentType, dockerImage }, 'Agent Docker image pulled');
-            return true;
-        }
-        logger.warn({
-            agentType,
-            dockerImage,
-            stderr: pullResult.stderr
-        }, 'Agent Docker image pull failed; will try local build as fallback');
-
-        // Fallback: build from source. Only works in dev where the repo is mounted.
-        const dockerfile = AGENT_DOCKERFILES[agentType];
-        if (!dockerfile) {
-            logger.error({ agentType, dockerImage }, 'Unknown agent type and pull failed');
-            return false;
-        }
-        if (!fs.existsSync(dockerfile)) {
-            logger.error({
-                agentType,
-                dockerImage,
-                dockerfile
-            }, 'Pull failed and Dockerfile not available for local build — ensure the image is published or run from a dev checkout');
-            return false;
-        }
-
-        logger.info({ agentType, dockerImage, dockerfile }, 'Building agent Docker image locally...');
-        const buildResult = await executeDockerCommand('docker', [
-            'build',
-            '-f', dockerfile,
-            '-t', dockerImage,
-            '.'
-        ], { timeout: 600000 });
-
-        if (buildResult.exitCode === 0) {
-            logger.info({ agentType, dockerImage }, 'Agent Docker image built successfully');
-            return true;
-        }
-        logger.error({
-            agentType,
-            dockerImage,
-            dockerfile,
-            exitCode: buildResult.exitCode,
-            stderr: buildResult.stderr
-        }, 'Failed to build agent Docker image');
-        return false;
-
-    } catch (error) {
-        const err = error as Error;
-        logger.error({ agentType, dockerImage, error: err.message }, 'Error ensuring agent Docker image');
-        return false;
-    }
-}
-
-/**
- * Result from building a versioned Docker image.
- */
-export interface VersionedImageBuildResult {
-    success: boolean;
-    imageTag: string;
-    error?: string;
-}
-
-/**
- * Ensures a versioned agent Docker image exists, building it if necessary.
- * The image tag format is: {imageName}:{cliVersion}-{contentHash}
- */
-export async function ensureVersionedAgentImage(
-    agentType: string,
-    cliVersion: string,
-    contentHash: string,
-    basePath: string = PROJECT_ROOT
-): Promise<VersionedImageBuildResult> {
-    const dockerfileName = AGENT_DOCKERFILES[agentType];
-
-    if (!dockerfileName) {
-        return {
-            success: false,
-            imageTag: '',
-            error: `Unknown agent type: ${agentType}`
-        };
-    }
-
-    // Resolve dockerfile path relative to base path
-    const dockerfile = path.join(basePath, dockerfileName);
-
-    // Generate image tag
-    const imageNames: Record<string, string> = {
-        claude: 'propr-claude',
-        codex: 'propr-codex',
-        gemini: 'propr-gemini'
-    };
-
-    const imageName = imageNames[agentType];
-    if (!imageName) {
-        return {
-            success: false,
-            imageTag: '',
-            error: `Unknown agent type: ${agentType}`
-        };
-    }
-
-    const imageTag = `${imageName}:${cliVersion}-${contentHash}`;
-
-    logger.info({ agentType, imageTag, cliVersion, contentHash, dockerfile }, 'Ensuring versioned agent Docker image exists...');
-
-    try {
-        // Check if image already exists
-        const checkResult = await executeDockerCommand('docker', [
-            'images', '-q', imageTag
-        ]);
-
-        if (checkResult.stdout.trim()) {
-            logger.info({ agentType, imageTag }, 'Versioned Docker image already exists');
-            return { success: true, imageTag };
-        }
-
-        // Image doesn't exist, build it with CLI_VERSION build arg
-        logger.info({ agentType, imageTag, cliVersion, dockerfile, basePath }, 'Building versioned agent Docker image...');
-
-        const buildResult = await executeDockerCommand('docker', [
-            'build',
-            '-f', dockerfile,
-            '--build-arg', `CLI_VERSION=${cliVersion}`,
-            '--build-arg', 'BASE_TAG=latest',
-            '-t', imageTag,
-            basePath
-        ], {
-            timeout: 600000 // 10 minute timeout for build
-        });
-
-        if (buildResult.exitCode === 0) {
-            logger.info({ agentType, imageTag, cliVersion }, 'Versioned agent Docker image built successfully');
-
-            // Trigger cleanup of unused images in the background, preserving the just-built version
-            const versionsToKeep = new Set<string>([cliVersion, `${cliVersion}-${contentHash}`]);
-            import('./dockerImageManager.js').then(m =>
-                m.cleanupUnusedAgentImages(agentType, versionsToKeep)
-            ).catch(err => {
-                logger.warn({ agentType, error: (err as Error).message }, 'Background cleanup failed');
-            });
-
-            return { success: true, imageTag };
-        } else {
-            logger.error({ agentType, imageTag, cliVersion, dockerfile, exitCode: buildResult.exitCode, stderr: buildResult.stderr }, 'Failed to build versioned agent Docker image');
-            return { success: false, imageTag, error: `Build failed with exit code ${buildResult.exitCode}: ${buildResult.stderr}` };
-        }
-
-    } catch (error) {
-        const err = error as Error;
-        logger.error({ agentType, imageTag, cliVersion, dockerfile, error: err.message }, 'Error ensuring versioned agent Docker image');
-        return { success: false, imageTag, error: err.message };
-    }
-}
+// Re-export image builder functions for backward compatibility
+export { buildClaudeDockerImage, ensureAgentDockerImage, ensureVersionedAgentImage } from './dockerImageBuilder.js';
+export type { VersionedImageBuildResult } from './dockerImageBuilder.js';

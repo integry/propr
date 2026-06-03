@@ -85,8 +85,18 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2'],
                 defaultModel: 'gpt-5.5'
+            }
+        },
+        {
+            config: {
+                id: 'vibe-agent-1',
+                type: 'vibe' as const,
+                alias: 'vibe',
+                enabled: true,
+                supportedModels: ['mistral-medium-3.5', 'devstral-small'],
+                defaultModel: 'mistral-medium-3.5'
             }
         }
     ];
@@ -124,6 +134,31 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'gpt-5.4', 'Should resolve to correct codex model');
     });
 
+    await t.test('Step 1: resolves exact githubLabel for vibe models', async () => {
+        const result = await resolveLlmLabel('vibe-mistral');
+        assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
+        assert.strictEqual(result.model, 'mistral-medium-3.5', 'Should resolve to correct vibe model');
+    });
+
+    await t.test('Step 1: resolves exact githubLabel for vibe devstral model', async () => {
+        const result = await resolveLlmLabel('vibe-devstral');
+        assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
+        assert.strictEqual(result.model, 'devstral-small', 'Should resolve to devstral-small');
+    });
+
+    await t.test('Step 1b: resolves vibe agent-type label when configured alias differs', async () => {
+        const vibeAgent = mockAgentConfigs[3].config;
+        const originalAlias = vibeAgent.alias;
+        vibeAgent.alias = 'mistral-vibe';
+        try {
+            const result = await resolveLlmLabel('vibe-mistral');
+            assert.strictEqual(result.agentAlias, 'mistral-vibe', 'Should resolve to configured vibe agent alias');
+            assert.strictEqual(result.model, 'mistral-medium-3.5', 'Should resolve to correct vibe model');
+        } finally {
+            vibeAgent.alias = originalAlias;
+        }
+    });
+
     await t.test('Step 2: resolves agent alias match with default model', async () => {
         // Just "gemini" should return the default gemini model
         const result = await resolveLlmLabel('gemini');
@@ -143,6 +178,12 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'gpt-5.5', 'Should use codex default model');
     });
 
+    await t.test('Step 2: resolves vibe alias to default model', async () => {
+        const result = await resolveLlmLabel('vibe');
+        assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
+        assert.strictEqual(result.model, 'mistral-medium-3.5', 'Should use vibe default model');
+    });
+
     await t.test('Step 3: resolves agent prefix match (e.g., gemini-flash)', async () => {
         // "gemini-flash" should resolve to gemini agent with flash model
         const result = await resolveLlmLabel('gemini-flash');
@@ -155,6 +196,12 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
         // spark is shortAlias for gpt-5.3-codex-spark (but may fallback to default if not found in supported)
         assert.ok(result.model, 'Should resolve to a model');
+    });
+
+    await t.test('Step 3: resolves agent prefix match for vibe-devstral', async () => {
+        const result = await resolveLlmLabel('vibe-devstral');
+        assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
+        assert.ok(result.model && result.model.includes('devstral'), 'Should resolve to a devstral model');
     });
 
     await t.test('Step 4: resolves static MODEL_ALIASES for backwards compatibility (opus)', async () => {
@@ -284,6 +331,18 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
         assert.strictEqual(findMatchingModel('codex-spark', config), 'gpt-5.3-codex-spark');
     });
 
+    await t.test('matches exact shortAlias for vibe models', () => {
+        const config = createMockConfig(['mistral-medium-3.5', 'devstral-2512', 'devstral-small-latest']);
+
+        assert.strictEqual(findMatchingModel('medium35', config), 'mistral-medium-3.5');
+        assert.strictEqual(findMatchingModel('devstral2', config), 'devstral-2512');
+        assert.strictEqual(findMatchingModel('devstral-small', config), 'devstral-small-latest');
+
+        // Case-insensitive shortAlias
+        assert.strictEqual(findMatchingModel('MEDIUM35', config), 'mistral-medium-3.5');
+        assert.strictEqual(findMatchingModel('Devstral2', config), 'devstral-2512');
+    });
+
     await t.test('matches partial model ID (contains)', () => {
         const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001']);
 
@@ -378,6 +437,8 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
     });
 
     await t.test('returns correct short name for Codex (OpenAI) models', () => {
+        // GPT-5.5
+        assert.strictEqual(getModelShortName('gpt-5.5'), 'GPT-5.5');
         // GPT-5.4
         assert.strictEqual(getModelShortName('gpt-5.4'), 'GPT-5.4');
         // GPT-5.4 Mini
@@ -386,14 +447,8 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName('gpt-5.3-codex'), 'GPT-5.3 Codex');
         // GPT-5.3 Codex Spark
         assert.strictEqual(getModelShortName('gpt-5.3-codex-spark'), 'Codex Spark');
-        // GPT-5.2 Codex
-        assert.strictEqual(getModelShortName('gpt-5.2-codex'), 'GPT-5.2 Codex');
         // GPT-5.2
         assert.strictEqual(getModelShortName('gpt-5.2'), 'GPT-5.2');
-        // GPT-5.1 Codex Max
-        assert.strictEqual(getModelShortName('gpt-5.1-codex-max'), 'Codex Max');
-        // GPT-5.1 Codex Mini
-        assert.strictEqual(getModelShortName('gpt-5.1-codex-mini'), 'Codex Mini');
     });
 
     await t.test('returns correct short name for Gemini models', () => {
@@ -407,6 +462,15 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName('gemini-2.5-flash'), 'Gemini Flash');
         // Gemini 2.5 Flash Lite
         assert.strictEqual(getModelShortName('gemini-2.5-flash-lite'), 'Flash Lite');
+    });
+
+    await t.test('returns correct short name for Vibe (Mistral) models', () => {
+        // Mistral Medium 3.5
+        assert.strictEqual(getModelShortName('mistral-medium-3.5'), 'Mistral Medium 3.5');
+        // Devstral 2
+        assert.strictEqual(getModelShortName('devstral-2512'), 'Devstral 2');
+        // Devstral Small
+        assert.strictEqual(getModelShortName('devstral-small-latest'), 'Devstral Small');
     });
 
     await t.test('returns AI for unknown models', () => {
@@ -424,7 +488,7 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName(undefined), 'AI');
     });
 
-    await t.test('verifies all 18 models return correct short names', () => {
+    await t.test('verifies all 19 models return correct short names', () => {
         // This test verifies the exact count and mapping for all models
         const expectedMappings: Record<string, string> = {
             // 5 Claude models (2 x 4.6, 3 x 4.5)
@@ -433,26 +497,28 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
             'claude-opus-4-5-20251101': 'Claude Opus 4.5',
             'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
             'claude-haiku-4-5-20251001': 'Claude Haiku',
-            // 8 Codex models
+            // 6 Codex models
+            'gpt-5.5': 'GPT-5.5',
             'gpt-5.4': 'GPT-5.4',
             'gpt-5.4-mini': 'GPT-5.4 Mini',
             'gpt-5.3-codex': 'GPT-5.3 Codex',
             'gpt-5.3-codex-spark': 'Codex Spark',
-            'gpt-5.2-codex': 'GPT-5.2 Codex',
             'gpt-5.2': 'GPT-5.2',
-            'gpt-5.1-codex-max': 'Codex Max',
-            'gpt-5.1-codex-mini': 'Codex Mini',
             // 5 Gemini models
             'gemini-3-pro-preview': 'Gemini 3 Preview',
             'gemini-3-flash-preview': 'Gemini 3 Flash',
             'gemini-2.5-pro': 'Gemini Pro',
             'gemini-2.5-flash': 'Gemini Flash',
             'gemini-2.5-flash-lite': 'Flash Lite',
+            // 3 Vibe (Mistral) models
+            'mistral-medium-3.5': 'Mistral Medium 3.5',
+            'devstral-2512': 'Devstral 2',
+            'devstral-small-latest': 'Devstral Small',
         };
 
-        // Verify we have exactly 18 models
+        // Verify we have exactly 19 models
         const modelCount = Object.keys(expectedMappings).length;
-        assert.strictEqual(modelCount, 18, `Expected 18 models but found ${modelCount}`);
+        assert.strictEqual(modelCount, 19, `Expected 19 models but found ${modelCount}`);
 
         // Verify each model returns the correct short name
         for (const [modelId, expectedShortName] of Object.entries(expectedMappings)) {
@@ -465,9 +531,9 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         }
     });
 
-    await t.test('ALL_MODELS array matches the 18 expected models', () => {
-        // Verify ALL_MODELS contains all 18 models
-        assert.strictEqual(ALL_MODELS.length, 18, `Expected 18 models in ALL_MODELS but found ${ALL_MODELS.length}`);
+    await t.test('ALL_MODELS array matches the 19 expected models', () => {
+        // Verify ALL_MODELS contains all 19 models (5 Claude + 6 Codex + 5 Gemini + 3 Vibe)
+        assert.strictEqual(ALL_MODELS.length, 19, `Expected 19 models in ALL_MODELS but found ${ALL_MODELS.length}`);
 
         // Verify each model in ALL_MODELS has a valid shortName
         for (const model of ALL_MODELS) {
@@ -516,8 +582,18 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2'],
                 defaultModel: 'gpt-5.5'
+            }
+        },
+        {
+            config: {
+                id: 'vibe-agent-1',
+                type: 'vibe' as const,
+                alias: 'vibe',
+                enabled: true,
+                supportedModels: ['mistral-medium-3.5', 'devstral-2512', 'devstral-small-latest'],
+                defaultModel: 'mistral-medium-3.5'
             }
         }
     ];
@@ -620,11 +696,16 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         const codexResults = await resolveReviewModels(['codex']);
         assert.strictEqual(codexResults[0].agentAlias, 'codex');
         assert.strictEqual(codexResults[0].model, 'gpt-5.5');
+
+        // vibe -> default enabled Vibe agent/model
+        const vibeResults = await resolveReviewModels(['vibe']);
+        assert.strictEqual(vibeResults[0].agentAlias, 'vibe');
+        assert.strictEqual(vibeResults[0].model, 'mistral-medium-3.5');
     });
 
     await t.test('assignments include display-friendly labels', async () => {
-        const results = await resolveReviewModels(['claude', 'gemini', 'codex']);
-        assert.strictEqual(results.length, 3);
+        const results = await resolveReviewModels(['claude', 'gemini', 'codex', 'vibe']);
+        assert.strictEqual(results.length, 4);
 
         for (const result of results) {
             assert.ok(result.displayLabel, `Assignment for ${result.agentAlias} should have displayLabel`);
@@ -640,6 +721,9 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
 
         const codexAssignment = results.find(r => r.agentAlias === 'codex');
         assert.strictEqual(codexAssignment?.displayLabel, 'GPT-5.5');
+
+        const vibeAssignment = results.find(r => r.agentAlias === 'vibe');
+        assert.strictEqual(vibeAssignment?.displayLabel, 'Mistral Medium 3.5');
     });
 
     await t.test('ReviewAssignment has correct shape', async () => {

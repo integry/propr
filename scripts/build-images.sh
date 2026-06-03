@@ -32,6 +32,14 @@ IMAGE_SOURCE="${IMAGE_SOURCE:-https://github.com/integry/propr}"
 IMAGE_URL="${IMAGE_URL:-https://github.com/integry/propr}"
 IMAGE_LICENSES="${IMAGE_LICENSES:-ISC}"
 
+resolve_vibe_cli_version() {
+  if [[ -x node_modules/.bin/tsx ]]; then
+    node_modules/.bin/tsx -e "import { AGENT_DEFAULT_VERSIONS } from './packages/core/src/agents/version/types.ts'; console.log(AGENT_DEFAULT_VERSIONS.vibe);"
+  else
+    npx tsx -e "import { AGENT_DEFAULT_VERSIONS } from './packages/core/src/agents/version/types.ts'; console.log(AGENT_DEFAULT_VERSIONS.vibe);"
+  fi
+}
+
 # --- Arg parsing --------------------------------------------------------------
 PUSH=false
 PUSH_DH=true
@@ -61,6 +69,7 @@ IMAGES=(
   "agent-claude|Dockerfile.claude|."
   "agent-codex|Dockerfile.codex|."
   "agent-gemini|Dockerfile.gemini|."
+  "agent-vibe|Dockerfile.vibe|."
 )
 
 should_build() {
@@ -70,6 +79,17 @@ should_build() {
     [[ "$s" == "$1" ]] && return 0
   done
   return 1
+}
+
+include_agent_base_when_needed() {
+  [[ -z "$ONLY" ]] && return
+  should_build "agent-base" && return
+  for agent_name in agent-claude agent-codex agent-gemini agent-vibe; do
+    if should_build "$agent_name"; then
+      ONLY="agent-base,$ONLY"
+      return
+    fi
+  done
 }
 
 # --- Derive tags --------------------------------------------------------------
@@ -170,6 +190,7 @@ write_manifest() {
     "agent-claude": "$runtime_ns/${runtime_prefix}agent-claude:$VERSION",
     "agent-codex": "$runtime_ns/${runtime_prefix}agent-codex:$VERSION",
     "agent-gemini": "$runtime_ns/${runtime_prefix}agent-gemini:$VERSION",
+    "agent-vibe": "$runtime_ns/${runtime_prefix}agent-vibe:$VERSION",
     "redis": "redis:7-alpine"
   }
 }
@@ -196,8 +217,12 @@ build_image() {
   fi
 
   # Agent images extend agent-base — pin to the exact image built in this run.
-  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini ]]; then
+  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini || "$name" == agent-vibe ]]; then
     build_args+=("--build-arg" "BASE_IMAGE=$(agent_base_image)")
+  fi
+  if [[ "$name" == agent-vibe ]]; then
+    local vibe_cli_version="${VIBE_CLI_VERSION:-$(resolve_vibe_cli_version)}"
+    build_args+=("--build-arg" "CLI_VERSION=$vibe_cli_version")
   fi
 
   build_args+=(
@@ -244,6 +269,7 @@ echo "  latest:     $PUSH_LATEST"
 
 write_manifest
 refresh_notices
+include_agent_base_when_needed
 
 for entry in "${IMAGES[@]}"; do
   IFS='|' read -r name dockerfile context <<< "$entry"

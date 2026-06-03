@@ -927,7 +927,7 @@ describe('issueJobDispatcher - Label Resolution', () => {
      */
     interface MockAgentConfig {
         alias: string;
-        type: 'claude' | 'codex' | 'gemini';
+        type: 'claude' | 'codex' | 'gemini' | 'vibe';
         defaultModel: string;
         supportedModels: string[];
     }

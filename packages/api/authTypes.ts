@@ -11,6 +11,11 @@ export interface GitHubUser {
     githubAuthInvalid?: boolean;
 }
 
+export interface AllowedRedirectHost {
+    host: string;
+    includeSubdomains: boolean;
+}
+
 declare global {
     // eslint-disable-next-line @typescript-eslint/no-namespace
     namespace Express {

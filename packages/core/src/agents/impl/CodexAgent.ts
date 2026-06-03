@@ -86,59 +86,23 @@ export class CodexAgent implements Agent {
 
             const executionTime = Date.now() - startTime;
             const parsedOutput = parseCodexStreamOutput(result.stdout);
-
-            logger.info({
-                issueNumber: issueRef.number, repository: repo, executionTime,
-                outputLength: result.stdout?.length || 0, exitCode: result.exitCode,
-                agentAlias: this.config.alias, sessionId: parsedOutput.sessionId
-            }, 'Codex agent execution completed');
+            const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
 
             const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, executionTime, prompt, usageMetrics });
 
-            await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt, issueRef, model: response.modelUsed, isRetry, retryReason });
-
-            const logEntry = createLlmLogFromAnalysis({
-                executionType: 'implementation', modelUsed: response.modelUsed,
-                executionTimeMs: executionTime, success: response.success,
-                tokenUsage: parsedOutput.tokenUsage,
-                error: response.success ? undefined : (parsedOutput.error || 'Execution failed'),
-                sessionId: parsedOutput.sessionId, draftId: taskId,
-                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-                agentAlias: this.config.alias,
-                metadata: { isRetry, retryReason, conversationId: parsedOutput.conversationId },
-                ...this.formatUsageMetrics(usageMetrics),
-                workRef: buildTaskWorkRef(taskId, issueRef.number, repo, prNumber),
+            await this.persistTaskLog({
+                response, parsedOutput, executionTime, modelUsed, prompt, usageMetrics,
+                issueRef, repo, taskId, prNumber, isRetry, retryReason
             });
-            await persistLlmLog(logEntry);
 
-            this.handleTaskCompletion({
-                response,
-                issueNumber: issueRef.number,
-                result,
-                parsedOutput,
-                worktreePath,
-                worktreeGitContent
-            });
+            this.handleTaskCompletion({ response, issueNumber: issueRef.number, result, parsedOutput, worktreePath, worktreeGitContent });
 
             return response;
         } catch (error) {
-            const executionTime = Date.now() - startTime;
-            const err = error as Error;
-
-            // Re-throw UsageLimitError for proper handling upstream
             if (error instanceof UsageLimitError) {
                 throw error;
             }
-
-            logger.error({
-                issueNumber: issueRef.number, repository: repo,
-                executionTime, error: err.message, agentAlias: this.config.alias
-            }, 'Error during Codex agent execution');
-
-            return { success: false, error: err.message, executionTimeMs: executionTime,
-                logs: (error as { stderr?: string }).stderr || err.message,
-                modifiedFiles: [], commitMessage: null, summary: undefined,
-                modelUsed: effectiveModel || 'unknown' };
+            return this.handleTaskError({ error: error as Error, executionTime: Date.now() - startTime, issueRef, repo, effectiveModel });
         }
     }
 
@@ -172,6 +136,30 @@ export class CodexAgent implements Agent {
         };
     }
 
+    private async persistTaskLog(params: {
+        response: AgentExecutionResult; parsedOutput: CodexParsedOutput;
+        executionTime: number; modelUsed: string; prompt: string;
+        usageMetrics: CodexUsageMetrics;
+        issueRef: AgentTaskOptions['issueRef']; repo: string;
+        taskId?: string; prNumber?: number; isRetry: boolean; retryReason?: string;
+    }): Promise<void> {
+        const { response, parsedOutput, executionTime, modelUsed, usageMetrics, issueRef, repo, taskId, prNumber, isRetry, retryReason } = params;
+        await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt: params.prompt, issueRef, model: modelUsed, isRetry, retryReason });
+        const logEntry = createLlmLogFromAnalysis({
+            executionType: 'implementation', modelUsed,
+            executionTimeMs: executionTime, success: response.success,
+            tokenUsage: parsedOutput.tokenUsage,
+            error: response.success ? undefined : (parsedOutput.error || 'Execution failed'),
+            sessionId: parsedOutput.sessionId, draftId: taskId,
+            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
+            agentAlias: this.config.alias,
+            metadata: { isRetry, retryReason, conversationId: parsedOutput.conversationId },
+            ...this.formatUsageMetrics(usageMetrics),
+            workRef: buildTaskWorkRef(taskId, issueRef.number, repo, prNumber),
+        });
+        await persistLlmLog(logEntry);
+    }
+
     private handleTaskCompletion(params: {
         response: AgentExecutionResult;
         issueNumber: number;
@@ -193,6 +181,24 @@ export class CodexAgent implements Agent {
         verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
     }
 
+    private handleTaskError(params: {
+        error: Error; executionTime: number;
+        issueRef: AgentTaskOptions['issueRef']; repo: string;
+        effectiveModel: string | undefined;
+    }): AgentExecutionResult {
+        const { error, executionTime, issueRef, repo, effectiveModel } = params;
+        logger.error({
+            issueNumber: issueRef.number, repository: repo,
+            executionTime, error: error.message, agentAlias: this.config.alias
+        }, 'Error during Codex agent execution');
+
+        return {
+            success: false, error: error.message, executionTimeMs: executionTime,
+            logs: (error as unknown as { stderr?: string }).stderr || error.message,
+            modifiedFiles: [], commitMessage: null, summary: undefined,
+            modelUsed: effectiveModel || 'unknown'
+        };
+    }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs } = options || {};

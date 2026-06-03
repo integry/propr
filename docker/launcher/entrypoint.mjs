@@ -9,8 +9,8 @@
 // to orchestrate sibling containers on the host's docker daemon.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, existsSync, accessSync, constants as fsConstants } from 'node:fs';
+import { resolve, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -42,11 +42,82 @@ const DOCS_ENABLED = process.env.DOCS_ENABLED === 'true';
 
 // Host paths for per-CLI credential directories. Launcher is in a container
 // and can't read the host's $HOME, so the invoker must pass these in. The
-// worker and api containers mount them so the spawned claude/codex/gemini
+// worker and api containers mount them so the spawned claude/codex/gemini/vibe
 // agent containers can find the user's login state.
-const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR;
-const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR;
-const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR;
+// Each variable can be set as a launcher `-e` flag OR in the mounted .env file.
+const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR || envFileValue('HOST_CLAUDE_DIR') || undefined;
+const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR  || envFileValue('HOST_CODEX_DIR')  || undefined;
+const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR || envFileValue('HOST_GEMINI_DIR') || undefined;
+const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR   || envFileValue('HOST_VIBE_DIR')   || undefined;
+
+function envFileValue(name) {
+    if (!existsSync(ENV_FILE_LOCAL)) return undefined;
+    for (const rawLine of readFileSync(ENV_FILE_LOCAL, 'utf8').split(/\r?\n/)) {
+        const parsed = parseEnvAssignment(rawLine);
+        if (parsed?.name === name) {
+            const value = parsed.value || undefined;
+            if (value && /\$\{[A-Za-z_]/.test(value)) {
+                console.warn(`WARNING: ${name} in .env contains a variable reference ("${value}") that will not be expanded. Use an absolute path instead.`);
+            }
+            return value;
+        }
+    }
+    return undefined;
+}
+
+function parseEnvAssignment(rawLine) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) return null;
+    const assignment = line.startsWith('export ') ? line.slice(7).trimStart() : line;
+    const equalsIndex = assignment.indexOf('=');
+    if (equalsIndex <= 0) return null;
+
+    const name = assignment.slice(0, equalsIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return null;
+
+    const valueSource = assignment.slice(equalsIndex + 1).trimStart();
+    return { name, value: parseEnvValue(valueSource) };
+}
+
+function parseEnvValue(valueSource) {
+    if (!valueSource) return '';
+    const quote = valueSource[0];
+    if (quote === '"' || quote === "'") {
+        let value = '';
+        for (let index = 1; index < valueSource.length; index += 1) {
+            const char = valueSource[index];
+            if (char === quote) return quote === '"' ? unescapeDoubleQuotedEnv(value) : value;
+            if (quote === '"' && char === '\\' && index + 1 < valueSource.length) {
+                value += char + valueSource[index + 1];
+                index += 1;
+            } else {
+                value += char;
+            }
+        }
+        return quote === '"' ? unescapeDoubleQuotedEnv(value) : value;
+    }
+
+    return valueSource.replace(/\s+#.*$/, '').trimEnd();
+}
+
+function unescapeDoubleQuotedEnv(value) {
+    return value.replace(/\\([\\nrt"$`])/g, (_match, escaped) => {
+        if (escaped === 'n') return '\n';
+        if (escaped === 'r') return '\r';
+        if (escaped === 't') return '\t';
+        return escaped;
+    });
+}
+
+const VIBE_PROMPT_CACHE_DIR = process.env.VIBE_PROMPT_CACHE_DIR
+    || envFileValue('VIBE_PROMPT_CACHE_DIR')
+    || '/tmp/propr-vibe-prompts';
+// HOST_VIBE_PROMPT_CACHE_DIR must be an explicit host path; do not default to
+// the container-side VIBE_PROMPT_CACHE_DIR because that path may not exist on
+// the host.
+const HOST_VIBE_PROMPT_CACHE_DIR = process.env.HOST_VIBE_PROMPT_CACHE_DIR
+    || envFileValue('HOST_VIBE_PROMPT_CACHE_DIR')
+    || undefined;
 
 // For each agent, mount the host credentials at the same path on both sides
 // (HOST:HOST) and set *_CONFIG_PATH env vars to that path. When the worker/api
@@ -68,7 +139,36 @@ function agentCredentialArgs() {
         args.push('-v', `${HOST_GEMINI_DIR}:${HOST_GEMINI_DIR}`);
         args.push('-e', `GEMINI_CONFIG_PATH=${HOST_GEMINI_DIR}`);
     }
+    if (HOST_VIBE_DIR) {
+        args.push('-v', `${HOST_VIBE_DIR}:${HOST_VIBE_DIR}`);
+        args.push('-e', `VIBE_CONFIG_PATH=${HOST_VIBE_DIR}`);
+    }
     return args;
+}
+
+function vibePromptCacheArgs() {
+    if (!HOST_VIBE_PROMPT_CACHE_DIR) return [];
+    return [
+        '-v', `${HOST_VIBE_PROMPT_CACHE_DIR}:${VIBE_PROMPT_CACHE_DIR}`,
+        '-e', `VIBE_PROMPT_CACHE_DIR=${VIBE_PROMPT_CACHE_DIR}`,
+        '-e', `HOST_VIBE_PROMPT_CACHE_DIR=${HOST_VIBE_PROMPT_CACHE_DIR}`,
+        '-e', 'VIBE_PROMPT_CACHE_HOST_MOUNTED=1',
+    ];
+}
+
+// Validates host bind-mount paths for Linux production deployments.
+// The ':' rejection prevents malformed -v HOST:CONTAINER arguments on Linux;
+// Windows-style drive paths (C:\...) are not supported by the launcher.
+// NOTE: The launcher only supports Linux hosts. Docker Desktop (macOS/Windows)
+// users should use docker-compose.yml directly instead of the launcher.
+function validateDockerBindPath(name, value, { containerPath = false } = {}) {
+    if (!value || !isAbsolute(value) || value.includes('~') || /[\0\r\n]/.test(value)) {
+        return `${name} must be an absolute path without '~' or control characters (launcher requires Linux host paths)`;
+    }
+    if (!containerPath && value.includes(':')) {
+        return `${name} cannot contain ':' because it is used in a Docker bind mount (launcher requires Linux — Windows-style paths like C:\\... are not supported)`;
+    }
+    return null;
 }
 
 // Track containers we start so we can stop them on shutdown.
@@ -92,7 +192,29 @@ function dockerRunDetached(name, args) {
         throw new Error(`Failed to start ${name}: ${res.stderr}`);
     }
     runningContainers.add(name);
-    console.log(`  ✓ started ${name}`);
+    console.log(`  [ok] started ${name}`);
+}
+
+function latestTagFor(imageTag) {
+    const slashIndex = imageTag.lastIndexOf('/');
+    const tagIndex = imageTag.lastIndexOf(':');
+    return tagIndex > slashIndex ? `${imageTag.slice(0, tagIndex)}:latest` : null;
+}
+
+function tagAgentLatest(key, imageTag) {
+    if (!key.startsWith('agent-')) return;
+    // Keep existing configs that reference propr/agent-*:latest working when
+    // the launcher manifest pins exact agent image versions.
+    const latestTag = latestTagFor(imageTag);
+    if (!latestTag || latestTag === imageTag) return;
+    const existing = docker(['images', '-q', latestTag], { capture: true });
+    if (existing.stdout.trim()) {
+        console.log(`  . retagging ${imageTag} -> ${latestTag} (overwriting existing local tag)`);
+    }
+    const res = docker(['tag', imageTag, latestTag], { capture: true });
+    if (res.status !== 0) {
+        throw new Error(`Failed to tag ${imageTag} as ${latestTag}: ${res.stderr}`);
+    }
 }
 
 function containerExists(name) {
@@ -116,21 +238,58 @@ function ensureNetwork() {
 }
 
 function pullImages() {
+    const skipAgentPull = process.env.PROPR_SKIP_AGENT_PULL === 'true'
+        || process.env.PROPR_SKIP_AGENT_PULL === '1';
+    const strictAgentPull = process.env.PROPR_STRICT_AGENT_PULL !== 'false'
+        && process.env.PROPR_STRICT_AGENT_PULL !== '0';
     console.log('\npulling images…');
+    const failedAgentImages = [];
     for (const [key, tag] of Object.entries(manifest.images)) {
-        // Skip agent images — workers pull them on demand.
-        if (key.startsWith('agent-')) continue;
         if (key === 'docs' && !DOCS_ENABLED) continue;
+        if (key.startsWith('agent-') && skipAgentPull) {
+            const localImg = docker(['images', '-q', tag], { capture: true });
+            if (localImg.stdout.trim()) {
+                console.log(`  · ${tag} (local, pull skipped via PROPR_SKIP_AGENT_PULL)`);
+                tagAgentLatest(key, tag);
+            } else {
+                console.log(`  · ${tag} (not found locally, pull skipped via PROPR_SKIP_AGENT_PULL)`);
+            }
+            continue;
+        }
 
         // If the image is already present locally, skip the pull — supports
         // development flow where images are built but not yet published.
         const local = docker(['images', '-q', tag], { capture: true });
         if (local.stdout.trim()) {
             console.log(`  · ${tag} (local)`);
+            tagAgentLatest(key, tag);
             continue;
         }
         console.log(`  · ${tag}`);
-        docker(['pull', tag]);
+        const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
+        if (key.startsWith('agent-') && pulled.status !== 0) {
+            failedAgentImages.push(tag);
+            console.log(`  · ${tag} (pull failed — jobs using this agent will fail until the image is available)`);
+            continue;
+        }
+        tagAgentLatest(key, tag);
+    }
+    if (failedAgentImages.length > 0) {
+        if (strictAgentPull) {
+            console.error(`\nERROR: ${failedAgentImages.length} agent image(s) could not be pulled (PROPR_STRICT_AGENT_PULL is enabled):`);
+            for (const tag of failedAgentImages) {
+                console.error(`    - ${tag}`);
+            }
+            console.error('  Build locally with scripts/build-images.sh or push to the registry.');
+            console.error('  Set PROPR_STRICT_AGENT_PULL=false to allow startup without all agent images.\n');
+            process.exit(1);
+        }
+        console.warn(`\nWARNING: ${failedAgentImages.length} agent image(s) could not be pulled (strict mode disabled):`);
+        for (const tag of failedAgentImages) {
+            console.warn(`    - ${tag}`);
+        }
+        console.warn('  Jobs using these agents will fail until images are available.');
+        console.warn('  Build locally with scripts/build-images.sh or push to the registry.\n');
     }
 }
 
@@ -148,6 +307,67 @@ function validateEnv() {
     if (!existsSync(ENV_FILE_LOCAL)) {
         console.error(`ERROR: launcher cannot read the env file at ${ENV_FILE_LOCAL}.`);
         console.error(`Mount your .env into the launcher too: -v ${ENV_FILE}:${ENV_FILE_LOCAL}:ro`);
+        process.exit(1);
+    }
+    const mistralApiKey = process.env.MISTRAL_API_KEY || envFileValue('MISTRAL_API_KEY');
+    const vibeConfigPath = process.env.VIBE_CONFIG_PATH || envFileValue('VIBE_CONFIG_PATH');
+    if (vibeConfigPath && !HOST_VIBE_DIR) {
+        console.error(
+            'ERROR: VIBE_CONFIG_PATH is set but HOST_VIBE_DIR is not. ' +
+            'VIBE_CONFIG_PATH tells the worker where to find Vibe credentials inside the container, ' +
+            'but HOST_VIBE_DIR is required to mount that directory from the host. ' +
+            'Set HOST_VIBE_DIR to the host path of your .vibe directory ' +
+            '(e.g. -e HOST_VIBE_DIR=/home/propr/.vibe).'
+        );
+        process.exit(1);
+    }
+    const vibeEnabled = !!(HOST_VIBE_DIR || mistralApiKey);
+    if (vibeEnabled && !HOST_VIBE_PROMPT_CACHE_DIR) {
+        const vibeSource = HOST_VIBE_DIR ? 'HOST_VIBE_DIR' : 'MISTRAL_API_KEY';
+        console.error(
+            'ERROR: Vibe support is enabled (via ' + vibeSource +
+            ') but HOST_VIBE_PROMPT_CACHE_DIR is missing. ' +
+            'Vibe agent containers need HOST_VIBE_PROMPT_CACHE_DIR to bind-mount prompt ' +
+            'files via the host Docker daemon. Set it to a host-visible directory path ' +
+            '(e.g. /tmp/propr-vibe-prompts).'
+        );
+        process.exit(1);
+    }
+    if (vibeEnabled || HOST_VIBE_PROMPT_CACHE_DIR) {
+        const invalidVibePromptPath = validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', HOST_VIBE_PROMPT_CACHE_DIR)
+            || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', VIBE_PROMPT_CACHE_DIR, { containerPath: true });
+        if (invalidVibePromptPath) {
+            console.error(`ERROR: ${invalidVibePromptPath}`);
+            process.exit(1);
+        }
+        if (!existsSync(HOST_VIBE_PROMPT_CACHE_DIR)) {
+            console.error(
+                `ERROR: HOST_VIBE_PROMPT_CACHE_DIR (${HOST_VIBE_PROMPT_CACHE_DIR}) does not exist. ` +
+                'Create it before starting the launcher: ' +
+                `mkdir -p ${HOST_VIBE_PROMPT_CACHE_DIR}`
+            );
+            process.exit(1);
+        }
+        try {
+            accessSync(HOST_VIBE_PROMPT_CACHE_DIR, fsConstants.W_OK);
+        } catch {
+            console.error(
+                `ERROR: HOST_VIBE_PROMPT_CACHE_DIR (${HOST_VIBE_PROMPT_CACHE_DIR}) is not writable. ` +
+                'Ensure the directory is owned by the user running the worker.'
+            );
+            process.exit(1);
+        }
+    }
+    const credentialDirs = [
+        ['HOST_CLAUDE_DIR', HOST_CLAUDE_DIR],
+        ['HOST_CODEX_DIR', HOST_CODEX_DIR],
+        ['HOST_GEMINI_DIR', HOST_GEMINI_DIR],
+        ['HOST_VIBE_DIR', HOST_VIBE_DIR],
+    ];
+    const invalidCredentialPath = credentialDirs
+        .map(([name, value]) => value ? validateDockerBindPath(name, value) : null).find(Boolean);
+    if (invalidCredentialPath) {
+        console.error(`ERROR: ${invalidCredentialPath}`);
         process.exit(1);
     }
 }
@@ -191,17 +411,22 @@ function startApp() {
     ]);
 
     const creds = agentCredentialArgs();
+    const vibePrompts = vibePromptCacheArgs();
 
     removeIfExists(`${STACK}-worker`);
     appContainer(`${STACK}-worker`, ['dist/src/worker.js'], [
         '-v', `${HOST_REPOS}:/usr/src/app/repos`,
         '-v', '/tmp/claude-logs:/tmp/claude-logs',
         '--ulimit', 'nofile=65536:65536',
+        ...vibePrompts,
         ...creds,
     ]);
 
     removeIfExists(`${STACK}-analysis-worker`);
-    appContainer(`${STACK}-analysis-worker`, ['dist/src/analysis_worker.js'], [...creds]);
+    appContainer(`${STACK}-analysis-worker`, ['dist/src/analysis_worker.js'], [
+        ...vibePrompts,
+        ...creds,
+    ]);
 
     removeIfExists(`${STACK}-indexing-worker`);
     appContainer(`${STACK}-indexing-worker`, ['dist/src/indexing_worker.js'], [
@@ -217,6 +442,7 @@ function startApp() {
         '-v', `${ENV_FILE}:/usr/src/app/.env:ro`,
         '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
         '--ulimit', 'nofile=65536:65536',
+        ...vibePrompts,
         ...creds,
         '-e', `API_PUBLIC_URL=${process.env.API_PUBLIC_URL || `http://localhost:${API_PORT}`}`,
         '-e', `FRONTEND_URL=${process.env.FRONTEND_URL || `http://localhost:${UI_PORT}`}`,
@@ -249,7 +475,7 @@ function shutdown(code = 0) {
         try {
             docker(['stop', '-t', '10', name], { capture: true });
             docker(['rm', name], { capture: true });
-            console.log(`  ✓ stopped ${name}`);
+            console.log(`  [ok] stopped ${name}`);
         } catch (e) {
             console.error(`  ! failed to stop ${name}: ${e.message}`);
         }
@@ -286,7 +512,7 @@ async function main() {
     startUI();
     startDocs();
 
-    console.log(`\n✓ stack up. streaming logs… (Ctrl-C to stop)`);
+    console.log(`\n[ok] stack up. streaming logs... (Ctrl-C to stop)`);
     streamLogs();
 
     // Keep process alive until signal.
