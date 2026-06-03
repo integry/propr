@@ -1,5 +1,6 @@
 interface VibeJsonOutput {
     type?: string;
+    role?: string;
     session_id?: string;
     sessionId?: string;
     model?: string;
@@ -127,7 +128,13 @@ function findTextEvent(jsonObjects: VibeJsonOutput[]): { event: VibeJsonOutput; 
     }
     for (let index = jsonObjects.length - 1; index >= 0; index--) {
         const event = jsonObjects[index];
-        if (event.type !== 'error' && pickText(event)) {
+        if (event.type !== 'error' && event.role === 'assistant' && pickText(event)) {
+            return { event, index, isFinal: true };
+        }
+    }
+    for (let index = jsonObjects.length - 1; index >= 0; index--) {
+        const event = jsonObjects[index];
+        if (event.type !== 'error' && event.role !== 'system' && pickText(event)) {
             return { event, index, isFinal: false };
         }
     }

@@ -164,6 +164,18 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parseVibeOutput(output).summary, 'Final response');
     });
 
+    test('treats assistant transcript arrays as complete Vibe output', () => {
+        const parsed = parseVibeOutput(JSON.stringify([
+            { role: 'system', content: 'System prompt should not be selected' },
+            { role: 'user', content: 'Do the task' },
+            { role: 'assistant', content: 'Implemented the requested change.' }
+        ]));
+
+        assert.strictEqual(parsed.summary, 'Implemented the requested change.');
+        assert.strictEqual(parsed.incomplete, false);
+        assert.strictEqual(isSuccessfulVibeResult(0, parsed), true);
+    });
+
     test('captures explicit error events', () => {
         const output = [
             JSON.stringify({ type: 'final', response: 'Final response' }),
