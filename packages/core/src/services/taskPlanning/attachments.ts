@@ -5,7 +5,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import type { Attachment } from '../attachmentService.js';
-import type { MinimalLogger, Base64Image, TaskDraftConfig } from '../planningHelpers.js';
+import type { MinimalLogger, Base64Image, TaskDraftConfig } from '../planning/index.js';
 import type { LoadedImages } from './types.js';
 
 /**

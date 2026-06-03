@@ -8,6 +8,9 @@ import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import type { GitHubUser } from './authTypes.js';
+import './authTypes.js';
+
+export type { GitHubUser } from './authTypes.js';
 
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
     configureDemoMode(demoModeAtStartup);

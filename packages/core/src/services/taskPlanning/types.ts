@@ -6,7 +6,7 @@ import type { Plan, PlanItem } from '../../claude/prompts/plannerPrompts.js';
 import type { Attachment } from '../attachmentService.js';
 import type {
   GenerationTrace, Granularity, TaskDraftConfig, MinimalLogger, Base64Image, ContextRepository
-} from '../planningHelpers.js';
+} from '../planning/index.js';
 
 export { Plan, PlanItem };
 
