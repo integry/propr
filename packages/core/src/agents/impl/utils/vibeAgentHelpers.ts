@@ -1,8 +1,80 @@
 import fs from 'fs';
+import path from 'path';
 import { parseVibeOutput } from './vibeOutputParser.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_LLM_LOG_METADATA_TEXT_CHARS = 20000;
+const MISTRAL_API_KEY_SETTING_KEYS = ['mistral_api_key', 'MISTRAL_API_KEY', 'mistralApiKey', 'vibe_mistral_api_key'];
+
+export function getMistralApiKeyFromSettings(settings: Record<string, unknown>): string | undefined {
+    for (const key of MISTRAL_API_KEY_SETTING_KEYS) {
+        const value = settings[key];
+        if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return undefined;
+}
+
+function findNewestFileByName(root: string, fileName: string): string | undefined {
+    const sessionRoot = path.join(root, 'logs', 'session');
+    if (!fs.existsSync(sessionRoot)) return undefined;
+
+    let newest: { filePath: string; mtimeMs: number } | undefined;
+    const stack = [sessionRoot];
+    while (stack.length > 0) {
+        const current = stack.pop()!;
+        let entries: fs.Dirent[];
+        try { entries = fs.readdirSync(current, { withFileTypes: true }); }
+        catch { continue; }
+
+        for (const entry of entries) {
+            const entryPath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                stack.push(entryPath);
+                continue;
+            }
+            if (!entry.isFile() || entry.name !== fileName) continue;
+            try {
+                const stat = fs.statSync(entryPath);
+                if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { filePath: entryPath, mtimeMs: stat.mtimeMs };
+            } catch {
+                // Ignore files that disappear while the session logger is writing.
+            }
+        }
+    }
+
+    return newest?.filePath;
+}
+
+export function readLatestVibeSessionMessages(runtimeHomePath: string | undefined): string {
+    if (!runtimeHomePath) return '';
+    const messagesFile = findNewestFileByName(runtimeHomePath, 'messages.jsonl');
+    if (!messagesFile) return '';
+    try { return fs.readFileSync(messagesFile, 'utf8'); }
+    catch { return ''; }
+}
+
+export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefined): { input_tokens?: number; output_tokens?: number } | undefined {
+    if (!runtimeHomePath) return undefined;
+    const metaFile = findNewestFileByName(runtimeHomePath, 'meta.json');
+    if (!metaFile) return undefined;
+
+    try {
+        const parsed = JSON.parse(fs.readFileSync(metaFile, 'utf8')) as {
+            stats?: {
+                session_prompt_tokens?: unknown;
+                session_completion_tokens?: unknown;
+            };
+        };
+        const inputTokens = parsed.stats?.session_prompt_tokens;
+        const outputTokens = parsed.stats?.session_completion_tokens;
+        return {
+            input_tokens: typeof inputTokens === 'number' ? inputTokens : undefined,
+            output_tokens: typeof outputTokens === 'number' ? outputTokens : undefined
+        };
+    } catch {
+        return undefined;
+    }
+}
 
 export function getAnalysisSandboxArgs(mode?: 'execute' | 'analysis'): string[] {
     return mode === 'analysis'
@@ -253,4 +325,48 @@ export function buildVibeContainerName(alias: string, taskType: string, taskId: 
     const sanitizedAlias = sanitizeDockerNamePart(alias, 'vibe');
     const sanitizedType = sanitizeDockerNamePart(taskType, 'task');
     return `${sanitizedAlias}-${sanitizedType}-${shortTaskId}`.slice(0, 128);
+}
+
+export function ensureAnalysisWorkspace(): string {
+    const workspace = fs.mkdtempSync('/tmp/vibe-analysis-');
+    try {
+        fs.chmodSync(workspace, 0o755);
+    } catch { /* best-effort */ }
+    return workspace;
+}
+
+export function prepareRuntimeHome(taskId?: string): string {
+    const baseDir = path.join(process.env.VIBE_PROMPT_CACHE_DIR || '/tmp/propr-vibe-prompts', 'propr-vibe-runtime');
+    fs.mkdirSync(baseDir, { recursive: true, mode: 0o755 });
+    const prefix = taskId ? `propr-vibe-home-${taskId.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 80)}-` : 'propr-vibe-home-';
+    const runtimeHome = fs.mkdtempSync(path.join(baseDir, prefix));
+    try {
+        fs.chmodSync(runtimeHome, 0o777);
+    } catch { /* best-effort */ }
+    return runtimeHome;
+}
+
+export function cleanupRuntimeHome(runtimeHomePath: string | undefined): void {
+    if (!runtimeHomePath) return;
+    try { fs.rmSync(runtimeHomePath, { recursive: true, force: true }); }
+    catch { /* best-effort cleanup */ }
+}
+
+export function hasUsableVibeConfigDir(configPath: string, mistralApiKey?: string): boolean {
+    try {
+        if (!fs.existsSync(configPath) || !fs.statSync(configPath).isDirectory()) return false;
+        const entries = fs.readdirSync(configPath);
+        if (entries.includes('credentials.json') || entries.includes('.env')) return true;
+        const hasConfigFile = entries.includes('config.toml') || entries.includes('settings.json');
+        if (mistralApiKey && hasConfigFile) return true;
+        return false;
+    } catch { return false; }
+}
+
+export function hasStructuredOutputArg(args: string[]): boolean {
+    return args.some((arg, index) => (
+        arg === '--json' ||
+        arg === '--output=json' ||
+        (arg === '--output' && args[index + 1] === 'json')
+    ));
 }
