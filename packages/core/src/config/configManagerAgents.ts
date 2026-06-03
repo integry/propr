@@ -165,10 +165,6 @@ function migrateLegacyAgentImageName(agent: AgentConfig): boolean {
     return true;
 }
 
-function addMissingSupportedModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
-    return addMissingModels(agent, models, logMessage);
-}
-
 function addMissingModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
     if (!agent.supportedModels) {
         return false;
