@@ -10,6 +10,7 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
+import { loadSettings } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import { parseVibeOutput } from './utils/vibeOutputParser.js';
@@ -22,11 +23,21 @@ export { parseVibeOutput } from './utils/vibeOutputParser.js';
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
+const MISTRAL_API_KEY_SETTING_KEYS = ['mistral_api_key', 'MISTRAL_API_KEY', 'mistralApiKey', 'vibe_mistral_api_key'];
+
+export function getMistralApiKeyFromSettings(settings: Record<string, unknown>): string | undefined {
+    for (const key of MISTRAL_API_KEY_SETTING_KEYS) {
+        const value = settings[key];
+        if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return undefined;
+}
 
 interface VibeDockerArgsParams {
     worktreePath: string;
     githubToken: string;
     modelName?: string;
+    mistralApiKey?: string;
     issueNumber: number;
     taskId?: string;
     executionType?: string;
@@ -68,13 +79,15 @@ export class VibeAgent implements Agent {
         try {
             const prompt = buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             promptFilePath = writeVibePromptFile(prompt);
-            envFilePath = writeVibeSecretEnvFile({ mistralApiKey: this.getMistralApiKey(), githubToken });
+            const mistralApiKey = await this.getMistralApiKey();
+            envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken });
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath,
                 githubToken,
                 modelName: effectiveModel,
+                mistralApiKey,
                 issueNumber: issueRef.number,
                 taskId,
                 promptFilePath,
@@ -179,11 +192,13 @@ export class VibeAgent implements Agent {
         try {
             analysisWorkspace = this.ensureAnalysisWorkspace();
             promptFilePath = writeVibePromptFile(analysisPrompt);
-            envFilePath = writeVibeSecretEnvFile({ mistralApiKey: this.getMistralApiKey(), githubToken: process.env.GITHUB_TOKEN });
+            const mistralApiKey = await this.getMistralApiKey();
+            envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken: process.env.GITHUB_TOKEN });
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel,
+                mistralApiKey,
                 issueNumber: 0,
                 taskId,
                 executionType,
@@ -276,7 +291,8 @@ export class VibeAgent implements Agent {
                 return false;
             }
             const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
-            const hasCredentials = !!this.getMistralApiKey() || this.hasUsableConfigDir(configPath);
+            const mistralApiKey = await this.getMistralApiKey();
+            const hasCredentials = !!mistralApiKey || this.hasUsableConfigDir(configPath, mistralApiKey);
             if (!hasCredentials) {
                 logger.warn({ agentAlias: this.config.alias, configPath }, 'Health check warning: no Vibe credentials found (set MISTRAL_API_KEY or configure ~/.vibe)');
             }
@@ -298,19 +314,27 @@ export class VibeAgent implements Agent {
         return workspace;
     }
 
-    private hasUsableConfigDir(configPath: string): boolean {
+    private hasUsableConfigDir(configPath: string, mistralApiKey?: string): boolean {
         try {
             if (!fs.existsSync(configPath) || !fs.statSync(configPath).isDirectory()) return false;
             const entries = fs.readdirSync(configPath);
             if (entries.includes('credentials.json') || entries.includes('.env')) return true;
             const hasConfigFile = entries.includes('config.toml') || entries.includes('settings.json');
-            if (this.getMistralApiKey() && hasConfigFile) return true;
+            if (mistralApiKey && hasConfigFile) return true;
             return false;
         } catch { return false; }
     }
 
-    private getMistralApiKey(): string | undefined {
-        return process.env.MISTRAL_API_KEY?.trim() || this.config.envVars?.MISTRAL_API_KEY?.trim() || undefined;
+    private async getMistralApiKey(): Promise<string | undefined> {
+        const explicitKey = process.env.MISTRAL_API_KEY?.trim() || this.config.envVars?.MISTRAL_API_KEY?.trim();
+        if (explicitKey) return explicitKey;
+        try {
+            const settings = await loadSettings();
+            return getMistralApiKeyFromSettings(settings);
+        } catch (error) {
+            logger.warn({ agentAlias: this.config.alias, error: (error as Error).message }, 'Failed to load Mistral API key from settings');
+        }
+        return undefined;
     }
 
     private getCliArgs(): string[] {
@@ -364,11 +388,11 @@ export class VibeAgent implements Agent {
     }
 
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
-        const { worktreePath, modelName, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath } = params;
+        const { worktreePath, modelName, mistralApiKey, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath } = params;
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
-        const mistralApiKey = this.getMistralApiKey();
-        const hasUsableConfig = this.hasUsableConfigDir(configPath);
-        if (!mistralApiKey && !hasUsableConfig) {
+        const resolvedMistralApiKey = mistralApiKey || process.env.MISTRAL_API_KEY?.trim() || this.config.envVars?.MISTRAL_API_KEY?.trim();
+        const hasUsableConfig = this.hasUsableConfigDir(configPath, resolvedMistralApiKey);
+        if (!resolvedMistralApiKey && !hasUsableConfig) {
             throw new Error(
                 `Vibe agent "${this.config.alias}" has no credentials. ` +
                 `Set MISTRAL_API_KEY or ensure ${configPath} contains valid Vibe config files.`

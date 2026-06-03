@@ -77,6 +77,36 @@ replace_active_model_line() {
     mv "$tmp_file" "$config_file"
 }
 
+load_vibe_env_file() {
+    local env_file="$RUNTIME_VIBE_HOME/.env"
+    if [ ! -f "$env_file" ]; then
+        return
+    fi
+
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        case "$key" in
+            ''|\#*) continue ;;
+        esac
+        if ! printf '%s\n' "$key" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$'; then
+            echo "Skipping invalid Vibe .env key: $key" >&2
+            continue
+        fi
+        if [ -n "${!key:-}" ]; then
+            continue
+        fi
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        case "$value" in
+            \"*\") value="${value#\"}"; value="${value%\"}" ;;
+            \'*\') value="${value#\'}"; value="${value%\'}" ;;
+        esac
+        export "$key=$value"
+    done < "$env_file"
+    echo "Loaded Vibe .env defaults" >&2
+}
+
 format_command_for_log() {
     if [ $# -eq 0 ]; then
         return
@@ -161,6 +191,7 @@ if [ -d "$SOURCE_VIBE_HOME" ]; then
 
     copy_vibe_home
     configure_active_model
+    load_vibe_env_file
 
     for dir in logs sessions skills; do
         if [ ! -d "$RUNTIME_VIBE_HOME/$dir" ]; then
@@ -172,6 +203,7 @@ else
     echo "WARNING: Vibe config directory not mounted at $SOURCE_VIBE_HOME" >&2
     copy_vibe_home
     configure_active_model
+    load_vibe_env_file
 fi
 
 if [ ! -f "$RUNTIME_VIBE_HOME/config.toml" ]; then

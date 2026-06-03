@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { VibeAgent, parseVibeOutput } from '../packages/core/src/agents/impl/VibeAgent.js';
+import { VibeAgent, getMistralApiKeyFromSettings, parseVibeOutput } from '../packages/core/src/agents/impl/VibeAgent.js';
 import { executeDockerCommand } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import { getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs } from '../packages/core/src/agents/impl/utils/vibeAgentHelpers.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
@@ -54,27 +54,33 @@ function buildArgs(agent: VibeAgent, params: {
     executionType?: string;
     maxTurns?: number;
     mode?: 'execute' | 'analysis';
+    mistralApiKey?: string;
+    envFilePath?: string;
 } = {}): string[] {
     return (agent as unknown as {
         buildDockerArgs(params: {
             worktreePath: string;
             githubToken: string;
             modelName?: string;
+            mistralApiKey?: string;
             issueNumber: number;
             taskId?: string;
             executionType?: string;
             maxTurns?: number;
             mode?: 'execute' | 'analysis';
+            envFilePath?: string;
         }): string[];
     }).buildDockerArgs({
         worktreePath: params.worktreePath || '/tmp/vibe-worktree',
         githubToken: params.githubToken || 'github-token',
         modelName: params.modelName || 'mistral-medium-3.5',
+        mistralApiKey: params.mistralApiKey,
         issueNumber: params.issueNumber ?? 1477,
         taskId: params.taskId || 'task-1234567890',
         executionType: params.executionType,
         maxTurns: params.maxTurns,
-        mode: params.mode
+        mode: params.mode,
+        envFilePath: params.envFilePath
     });
 }
 
@@ -229,9 +235,16 @@ describe('Vibe CLI args', () => {
 });
 
 describe('VibeAgent Docker args', () => {
+    test('resolves Mistral API key from ProPR settings when explicit env is absent', () => {
+        assert.strictEqual(getMistralApiKeyFromSettings({ mistral_api_key: ' settings-mistral-key ' }), 'settings-mistral-key');
+        assert.strictEqual(getMistralApiKeyFromSettings({ vibe_mistral_api_key: 'vibe-settings-key' }), 'vibe-settings-key');
+        assert.strictEqual(getMistralApiKeyFromSettings({ mistral_api_key: '   ' }), undefined);
+    });
+
     test('uses stdin-oriented structured default command and read-only sandbox for analysis', () => {
         const configPath = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-config-test-'));
         fs.writeFileSync(path.join(configPath, 'config.toml'), 'active_model = "mistral-medium-3.5"\n');
+        fs.writeFileSync(path.join(configPath, '.env'), 'MISTRAL_API_KEY=test-key\n', { mode: 0o600 });
         try {
             const args = buildArgs(createAgent({ configPath }), {
                 issueNumber: 0,
@@ -250,7 +263,7 @@ describe('VibeAgent Docker args', () => {
             assert.ok(!args.includes('PROPR_AGENT_TYPE=vibe'));
 
             const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-            assert.deepStrictEqual(args.slice(imageIndex + 1), ['--headless', '--json', '--model', 'mistral-medium-3.5']);
+            assert.deepStrictEqual(args.slice(imageIndex + 1), ['--output', 'json']);
         } finally {
             fs.rmSync(configPath, { recursive: true, force: true });
         }
@@ -298,13 +311,14 @@ describe('VibeAgent Docker args', () => {
 
     test('wraps implementation runs for repo setup and honors VIBE_CLI_ARGS', () => {
         withRestoredEnv(() => {
-            process.env.VIBE_CLI_ARGS = 'vibe --headless --plain "two words"';
+            process.env.VIBE_CLI_ARGS = 'vibe --plain --output json "two words"';
             process.env.MISTRAL_API_KEY = 'test-key';
-            const args = buildArgs(createAgent(), { maxTurns: 12 });
+            const args = buildArgs(createAgent(), { maxTurns: 12, envFilePath: '/tmp/propr-vibe-agent.env' });
 
             assert.ok(args.includes('/tmp/vibe-worktree:/home/node/workspace:rw'));
-            assert.ok(args.includes('GH_TOKEN=github-token'));
-            assert.ok(args.includes('GITHUB_TOKEN=github-token'));
+            const envFileIndex = args.indexOf('--env-file');
+            assert.notStrictEqual(envFileIndex, -1);
+            assert.strictEqual(args[envFileIndex + 1], '/tmp/propr-vibe-agent.env');
             assert.ok(args.includes('PROPR_AGENT_TYPE=vibe'));
             assert.ok(args.includes('PROPR_WORKSPACE=/home/node/workspace'));
             assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
@@ -312,7 +326,7 @@ describe('VibeAgent Docker args', () => {
             assert.ok(!args.some(arg => arg.includes('propr-vibe-prompt.md')));
 
             const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
-            assert.deepStrictEqual(args.slice(imageIndex + 4), ['vibe', '--headless', '--plain', 'two words', '--model', 'mistral-medium-3.5']);
+            assert.deepStrictEqual(args.slice(imageIndex + 4), ['vibe', '--plain', '--output', 'json', 'two words']);
         });
     });
 
@@ -321,6 +335,7 @@ describe('VibeAgent Docker args', () => {
         const configPath = path.join(homeDir, '.vibe');
         fs.mkdirSync(configPath);
         fs.writeFileSync(path.join(configPath, 'config.toml'), 'active_model = "mistral-medium-3.5"\n');
+        fs.writeFileSync(path.join(configPath, '.env'), 'MISTRAL_API_KEY=test-key\n', { mode: 0o600 });
         const previousHome = process.env.HOME;
         try {
             process.env.HOME = homeDir;
@@ -353,18 +368,12 @@ describe('VibeAgent Docker args', () => {
                     'BAD-ENV': 'skipped',
                     MULTILINE_ENV: 'skip\nme'
                 }
-            }));
+            }), { mistralApiKey: 'configured-mistral-api-key', envFilePath: '/tmp/propr-vibe-agent.env' });
 
-            // API key is forwarded via Docker env-name-only (-e MISTRAL_API_KEY) to
-            // avoid exposing the value in /proc/PID/cmdline or docker inspect.
-            const eIndex = args.lastIndexOf('-e');
-            const keyArgIndices = args.reduce<number[]>((acc, arg, i) => {
-                if (arg === 'MISTRAL_API_KEY') acc.push(i);
-                return acc;
-            }, []);
-            assert.strictEqual(keyArgIndices.length, 1);
-            assert.strictEqual(args[keyArgIndices[0] - 1], '-e');
-            assert.strictEqual(process.env.MISTRAL_API_KEY, 'configured-mistral-api-key');
+            const envFileIndex = args.indexOf('--env-file');
+            assert.notStrictEqual(envFileIndex, -1);
+            assert.strictEqual(args[envFileIndex + 1], '/tmp/propr-vibe-agent.env');
+            assert.ok(!args.includes('MISTRAL_API_KEY=configured-mistral-api-key'));
             assert.ok(args.includes('EXTRA_VIBE_ENV=extra-value'));
             assert.ok(!args.includes('VIBE_CLI_ARGS=vibe --output json'));
             assert.ok(!args.includes('BAD-ENV=skipped'));
@@ -384,7 +393,7 @@ describe('VibeAgent Docker args', () => {
             const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
             assert.deepStrictEqual(
                 args.slice(imageIndex + 4),
-                ['--headless', '--json', '--model', 'mistral-medium-3.5']
+                ['--output', 'json']
             );
         });
     });
