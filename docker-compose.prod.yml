@@ -66,6 +66,7 @@ services:
       GH_CLIENT_SECRET: ${GH_CLIENT_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /app/data/propr.sqlite
     volumes:
@@ -100,9 +101,11 @@ services:
       # PREFLIGHT: create before starting: mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"
       VIBE_PROMPT_CACHE_DIR: ${VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
-      # Config-file auth: uncomment VIBE_CONFIG_PATH below AND the HOST_VIBE_DIR
-      # volume mount further down. Both must be set together. API-key auth
-      # (MISTRAL_API_KEY) does not require either.
+      # Config-file auth: to enable, you MUST uncomment BOTH of the following:
+      #   1. VIBE_CONFIG_PATH (here)
+      #   2. The HOST_VIBE_DIR volume mount in the volumes section below.
+      # Uncommenting only one will cause a broken deployment at runtime.
+      # API-key auth (MISTRAL_API_KEY above) does not require either.
       # VIBE_CONFIG_PATH: ${HOST_VIBE_DIR}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /app/data/propr.sqlite
@@ -119,6 +122,8 @@ services:
       #   1. Set HOST_VIBE_DIR in .env to the host path of your .vibe directory.
       #   2. Uncomment the volume mount below.
       #   3. Uncomment VIBE_CONFIG_PATH in the environment section above.
+      # WARNING: Both the env var and the volume mount must be uncommented
+      # together. A partial uncomment will silently break the deployment.
       # - ${HOST_VIBE_DIR}:${HOST_VIBE_DIR}:ro
     depends_on:
       redis:

@@ -89,7 +89,9 @@ Gemini, and Vibe are built from their respective Dockerfiles at the project root
 # Build all agent images (including propr/agent-vibe)
 scripts/build-images.sh
 
-# Or build the Vibe agent image individually
+# Or build the Vibe agent image individually (requires propr/agent-base to
+# exist — run scripts/build-images.sh first, or build the base image manually:
+#   docker build -f docker/Dockerfile.agent-base -t propr/agent-base:latest .)
 docker build -f Dockerfile.vibe -t propr/agent-vibe:latest .
 ```
 
@@ -203,9 +205,9 @@ docker logs -f propr-worker
 docker logs -f propr-daemon
 
 # If using Docker Compose (Option B):
-docker-compose exec redis redis-cli INFO
-docker-compose logs -f worker
-docker-compose logs -f daemon
+docker-compose -f docker-compose.prod.yml exec redis redis-cli INFO
+docker-compose -f docker-compose.prod.yml logs -f worker
+docker-compose -f docker-compose.prod.yml logs -f daemon
 ```
 
 ## Maintenance
@@ -221,8 +223,8 @@ docker build -t propr/launcher:latest -f docker/launcher/Dockerfile .
 # Then re-run your launcher command (see Option A above)
 
 # If using Docker Compose: rebuild and restart
-docker-compose build
-docker-compose up -d
+docker-compose -f docker-compose.prod.yml build
+docker-compose -f docker-compose.prod.yml up -d
 ```
 
 ### Backup
@@ -236,7 +238,7 @@ Important data to backup:
 # Backup Redis data (launcher)
 docker exec propr-redis redis-cli BGSAVE
 # Backup Redis data (compose)
-docker-compose exec redis redis-cli BGSAVE
+docker-compose -f docker-compose.prod.yml exec redis redis-cli BGSAVE
 
 # Create backup archive
 tar -czf propr-backup-$(date +%Y%m%d).tar.gz \
@@ -250,7 +252,7 @@ tar -czf propr-backup-$(date +%Y%m%d).tar.gz \
 To handle more load, you can scale the worker service (Docker Compose only):
 
 ```bash
-docker-compose up -d --scale worker=3
+docker-compose -f docker-compose.prod.yml up -d --scale worker=3
 ```
 
 ## Troubleshooting
@@ -276,16 +278,16 @@ docker-compose up -d --scale worker=3
 
 ```bash
 # Check Redis keys (use "docker exec propr-redis" for launcher deployments)
-docker-compose exec redis redis-cli KEYS '*'
+docker-compose -f docker-compose.prod.yml exec redis redis-cli KEYS '*'
 
 # Monitor Redis activity
-docker-compose exec redis redis-cli MONITOR
+docker-compose -f docker-compose.prod.yml exec redis redis-cli MONITOR
 
 # Check queue status
-docker-compose exec redis redis-cli LLEN github-issue-processor
+docker-compose -f docker-compose.prod.yml exec redis redis-cli LLEN github-issue-processor
 
 # View recent activities
-docker-compose exec redis redis-cli LRANGE system:activity:log 0 10
+docker-compose -f docker-compose.prod.yml exec redis redis-cli LRANGE system:activity:log 0 10
 ```
 
 ## Security Recommendations
