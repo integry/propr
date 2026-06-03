@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { VibeAgent, getMistralApiKeyFromSettings, parseVibeOutput } from '../packages/core/src/agents/impl/VibeAgent.js';
+import { VibeAgent, getMistralApiKeyFromSettings, parseVibeConversationLog, parseVibeOutput } from '../packages/core/src/agents/impl/VibeAgent.js';
 import { executeDockerCommand } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import { getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs } from '../packages/core/src/agents/impl/utils/vibeAgentHelpers.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
@@ -174,6 +174,52 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.summary, 'Implemented the requested change.');
         assert.strictEqual(parsed.incomplete, false);
         assert.strictEqual(isSuccessfulVibeResult(0, parsed), true);
+    });
+
+    test('converts Vibe transcript arrays into structured conversation log entries', () => {
+        const conversationLog = parseVibeConversationLog(JSON.stringify([
+            { role: 'system', content: 'System prompt should not be logged' },
+            { role: 'user', content: 'speed it up', message_id: 'user-1' },
+            {
+                role: 'assistant',
+                content: '',
+                reasoning_content: 'I need to inspect the file.',
+                message_id: 'assistant-1',
+                tool_calls: [{
+                    id: 'tool-1',
+                    function: {
+                        name: 'read_file',
+                        arguments: '{"path":"vibe_test.py"}'
+                    }
+                }]
+            },
+            {
+                role: 'tool',
+                name: 'read_file',
+                tool_call_id: 'tool-1',
+                content: 'path: /home/node/workspace/vibe_test.py\ncontent: print("Hello from Vibe")'
+            },
+            {
+                role: 'assistant',
+                content: 'Updated vibe_test.py.',
+                message_id: 'assistant-2'
+            }
+        ]));
+
+        assert.strictEqual(conversationLog.length, 4);
+        assert.strictEqual(conversationLog[0].type, 'user');
+        assert.deepStrictEqual(conversationLog[1].message.content, [
+            { type: 'text', text: 'I need to inspect the file.' },
+            { type: 'tool_use', id: 'tool-1', name: 'read_file', input: { path: 'vibe_test.py' } }
+        ]);
+        assert.deepStrictEqual(conversationLog[2].message.content, [{
+            type: 'tool_result',
+            tool_use_id: 'tool-1',
+            content: 'path: /home/node/workspace/vibe_test.py\ncontent: print("Hello from Vibe")',
+            is_error: false
+        }]);
+        assert.deepStrictEqual(conversationLog[3].message.content, [{ type: 'text', text: 'Updated vibe_test.py.' }]);
+        assert.ok(!JSON.stringify(conversationLog).includes('System prompt should not be logged'));
     });
 
     test('captures explicit error events', () => {

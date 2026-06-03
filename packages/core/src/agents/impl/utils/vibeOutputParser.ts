@@ -13,6 +13,12 @@ interface VibeJsonOutput {
     delta?: unknown;
     data?: unknown;
     error?: unknown;
+    reasoning_content?: unknown;
+    message_id?: string;
+    reasoning_message_id?: string;
+    tool_call_id?: string;
+    name?: string;
+    tool_calls?: VibeToolCall[];
     usage?: {
         input_tokens?: number;
         output_tokens?: number;
@@ -23,6 +29,14 @@ interface VibeJsonOutput {
     };
 }
 
+interface VibeToolCall {
+    id?: string;
+    function?: {
+        name?: string;
+        arguments?: unknown;
+    };
+}
+
 interface ParsedVibeOutput {
     sessionId?: string;
     model?: string;
@@ -30,6 +44,30 @@ interface ParsedVibeOutput {
     error?: string;
     incomplete?: boolean;
     tokenUsage?: { input_tokens?: number; output_tokens?: number };
+}
+
+interface ConversationContentItem {
+    type: 'text' | 'tool_use' | 'tool_result';
+    text?: string;
+    id?: string;
+    name?: string;
+    input?: unknown;
+    tool_use_id?: string;
+    content?: unknown;
+    is_error?: boolean;
+}
+
+export interface VibeConversationLogEntry {
+    type: 'assistant' | 'user';
+    timestamp: string;
+    message: {
+        id?: string;
+        content: ConversationContentItem[];
+        usage?: {
+            input_tokens?: number;
+            output_tokens?: number;
+        };
+    };
 }
 
 const FINAL_EVENT_TYPES = new Set(['final', 'result', 'completed', 'complete', 'response']);
@@ -153,6 +191,122 @@ function findRelevantError(jsonObjects: VibeJsonOutput[], textEvent?: { index: n
         }
     }
     return undefined;
+}
+
+function parseToolInput(input: unknown): unknown {
+    if (typeof input !== 'string') {
+        return input;
+    }
+    try {
+        return JSON.parse(input);
+    } catch {
+        return input;
+    }
+}
+
+function buildTextItem(text: string): ConversationContentItem {
+    return { type: 'text', text };
+}
+
+function hasContentItems(items: ConversationContentItem[]): boolean {
+    return items.some(item => item.type !== 'text' || Boolean(item.text?.trim()));
+}
+
+function buildAssistantConversationEntry(event: VibeJsonOutput, index: number): VibeConversationLogEntry | undefined {
+    const content: ConversationContentItem[] = [];
+    const reasoningText = textFromValue(event.reasoning_content);
+    const messageText = textFromValue(event.content);
+
+    if (reasoningText) {
+        content.push(buildTextItem(reasoningText));
+    }
+    if (messageText) {
+        content.push(buildTextItem(messageText));
+    }
+    for (const toolCall of event.tool_calls || []) {
+        const toolName = toolCall.function?.name || 'tool';
+        content.push({
+            type: 'tool_use',
+            id: toolCall.id,
+            name: toolName,
+            input: parseToolInput(toolCall.function?.arguments)
+        });
+    }
+
+    if (!hasContentItems(content)) {
+        return undefined;
+    }
+
+    return {
+        type: 'assistant',
+        timestamp: new Date().toISOString(),
+        message: {
+            id: event.message_id || event.reasoning_message_id || `vibe-assistant-${index}`,
+            content,
+            usage: event.usage || event.token_usage
+        }
+    };
+}
+
+function buildUserConversationEntry(event: VibeJsonOutput, index: number): VibeConversationLogEntry | undefined {
+    const userText = textFromValue(event.content);
+    if (!userText) {
+        return undefined;
+    }
+    return {
+        type: 'user',
+        timestamp: new Date().toISOString(),
+        message: {
+            id: event.message_id || `vibe-user-${index}`,
+            content: [buildTextItem(userText)],
+            usage: event.usage || event.token_usage
+        }
+    };
+}
+
+function buildToolResultConversationEntry(event: VibeJsonOutput, index: number): VibeConversationLogEntry | undefined {
+    const resultText = textFromValue(event.content) || textFromValue(event.result) || textFromValue(event.output);
+    if (!resultText && !event.error) {
+        return undefined;
+    }
+
+    return {
+        type: 'user',
+        timestamp: new Date().toISOString(),
+        message: {
+            id: event.message_id || event.tool_call_id || `vibe-tool-${index}`,
+            content: [{
+                type: 'tool_result',
+                tool_use_id: event.tool_call_id,
+                content: resultText || event.error,
+                is_error: typeof resultText === 'string' && resultText.includes('<tool_error>')
+            }],
+            usage: event.usage || event.token_usage
+        }
+    };
+}
+
+export function parseVibeConversationLog(output: string): VibeConversationLogEntry[] {
+    const jsonObjects = parseJsonObjects(output);
+    const conversationLog: VibeConversationLogEntry[] = [];
+
+    jsonObjects.forEach((event, index) => {
+        if (event.role === 'system') {
+            return;
+        }
+        const entry = event.role === 'assistant'
+            ? buildAssistantConversationEntry(event, index)
+            : event.role === 'tool'
+                ? buildToolResultConversationEntry(event, index)
+                : event.role === 'user'
+                    ? buildUserConversationEntry(event, index)
+                    : undefined;
+        if (entry) {
+            conversationLog.push(entry);
+        }
+    });
+
+    return conversationLog;
 }
 
 export function parseVibeOutput(output: string): ParsedVibeOutput {

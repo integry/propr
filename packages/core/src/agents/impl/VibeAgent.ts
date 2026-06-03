@@ -13,12 +13,12 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { loadSettings } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
-import { parseVibeOutput } from './utils/vibeOutputParser.js';
+import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
 import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
-export { parseVibeOutput } from './utils/vibeOutputParser.js';
+export { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
 
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const DEFAULT_VIBE_TIMEOUT_MS = 3600000;
@@ -108,6 +108,7 @@ export class VibeAgent implements Agent {
 
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseVibeOutput(result.stdout);
+            const conversationLog = parseVibeConversationLog(result.stdout);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
             const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
@@ -125,6 +126,7 @@ export class VibeAgent implements Agent {
                 summary: parsedOutput.summary,
                 prompt,
                 sessionId: parsedOutput.sessionId,
+                conversationLog,
                 error,
                 tokenUsage: parsedOutput.tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
