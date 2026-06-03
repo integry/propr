@@ -36,6 +36,14 @@ IMAGE_SOURCE="${IMAGE_SOURCE:-https://github.com/integry/propr}"
 IMAGE_URL="${IMAGE_URL:-https://github.com/integry/propr}"
 IMAGE_LICENSES="${IMAGE_LICENSES:-ISC}"
 
+resolve_vibe_cli_version() {
+  if [[ -x node_modules/.bin/tsx ]]; then
+    node_modules/.bin/tsx -e "import { AGENT_DEFAULT_VERSIONS } from './packages/core/src/agents/version/types.ts'; console.log(AGENT_DEFAULT_VERSIONS.vibe);"
+  else
+    npx tsx -e "import { AGENT_DEFAULT_VERSIONS } from './packages/core/src/agents/version/types.ts'; console.log(AGENT_DEFAULT_VERSIONS.vibe);"
+  fi
+}
+
 # --- Arg parsing --------------------------------------------------------------
 PUSH=false
 PUSH_DH=true
@@ -66,6 +74,7 @@ IMAGES=(
   "agent-codex|Dockerfile.codex|."
   "agent-gemini|Dockerfile.gemini|."
   "agent-opencode|Dockerfile.opencode|."
+  "agent-vibe|Dockerfile.vibe|."
 )
 
 should_build() {
@@ -80,6 +89,17 @@ should_build() {
     done
   fi
   return 1
+}
+
+include_agent_base_when_needed() {
+  [[ -z "$ONLY" ]] && return
+  should_build "agent-base" && return
+  for agent_name in agent-claude agent-codex agent-gemini agent-vibe; do
+    if should_build "$agent_name"; then
+      ONLY="agent-base,$ONLY"
+      return
+    fi
+  done
 }
 
 # --- Derive tags --------------------------------------------------------------
@@ -181,6 +201,7 @@ write_manifest() {
     "agent-codex": "$runtime_ns/${runtime_prefix}agent-codex:$VERSION",
     "agent-gemini": "$runtime_ns/${runtime_prefix}agent-gemini:$VERSION",
     "agent-opencode": "$runtime_ns/${runtime_prefix}agent-opencode:$VERSION",
+    "agent-vibe": "$runtime_ns/${runtime_prefix}agent-vibe:$VERSION",
     "redis": "redis:7-alpine"
   }
 }
@@ -207,7 +228,7 @@ build_image() {
   fi
 
   # Agent images extend agent-base — pin to the exact image built in this run.
-  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini || "$name" == agent-opencode ]]; then
+  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini || "$name" == agent-opencode || "$name" == agent-vibe ]]; then
     build_args+=("--build-arg" "BASE_IMAGE=$(agent_base_image)")
   fi
   case "$name" in
@@ -215,6 +236,10 @@ build_image() {
     agent-codex) build_args+=("--build-arg" "CLI_VERSION=$CODEX_CLI_VERSION") ;;
     agent-gemini) build_args+=("--build-arg" "CLI_VERSION=$GEMINI_CLI_VERSION") ;;
     agent-opencode) build_args+=("--build-arg" "CLI_VERSION=$OPENCODE_CLI_VERSION") ;;
+    agent-vibe)
+      local vibe_cli_version="${VIBE_CLI_VERSION:-$(resolve_vibe_cli_version)}"
+      build_args+=("--build-arg" "CLI_VERSION=$vibe_cli_version")
+      ;;
   esac
 
   build_args+=(
@@ -261,6 +286,7 @@ echo "  latest:     $PUSH_LATEST"
 
 write_manifest
 refresh_notices
+include_agent_base_when_needed
 
 for entry in "${IMAGES[@]}"; do
   IFS='|' read -r name dockerfile context <<< "$entry"

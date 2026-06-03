@@ -11,13 +11,25 @@ import {
     generateImageTag,
     AGENT_DEFAULT_VERSIONS,
     VERSIONED_AGENT_IMAGE_NAMES,
+    AGENT_IMAGE_NAMES,
     validateAgentType,
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
     listAgentImages,
-    loadAgents
+    loadAgents,
+    AGENT_TYPES
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
+
+const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
+
+function isValidAgentType(agentType: string): agentType is AgentType {
+    return AGENT_TYPES.includes(agentType as AgentType);
+}
+
+function isValidCliVersionType(versionType: unknown): versionType is CliVersionType {
+    return typeof versionType === 'string' && VALID_CLI_VERSION_TYPES.includes(versionType as CliVersionType);
+}
 
 interface AgentVersionRouteDeps {
     getAvailableVersions: typeof getAvailableVersions;
@@ -220,9 +232,14 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
             }
             const type = validation.agentType;
 
+            if (!isValidCliVersionType(versionType)) {
+                res.status(400).json({ error: `Invalid version type: ${versionType}` });
+                return;
+            }
+
             const resolved = await versionService.resolveVersion(
                 type,
-                versionType as CliVersionType,
+                versionType,
                 versionSpec
             );
 
@@ -255,6 +272,10 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
 
             const type = validation.agentType;
             const effectiveVersionType = (versionType as CliVersionType) || 'default';
+            if (!isValidCliVersionType(effectiveVersionType)) {
+                res.status(400).json({ error: `Invalid version type: ${effectiveVersionType}` });
+                return;
+            }
 
             // Resolve version
             const resolved = await versionService.resolveVersion(type, effectiveVersionType, versionSpec as string);
@@ -288,6 +309,7 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
         getImageTag
     };
 }
+
 
 function getImageName(agentType: AgentType): string {
     return VERSIONED_AGENT_IMAGE_NAMES[agentType];

@@ -32,6 +32,7 @@ function formatType(type: string): string {
     codex: "Codex",
     gemini: "Gemini",
     opencode: "OpenCode",
+    vibe: "Mistral Vibe",
   };
   return typeMap[type?.toLowerCase()] || type;
 }
@@ -203,6 +204,7 @@ Agent Types:
   codex     OpenAI Codex models
   gemini    Google Gemini models
   opencode  OpenCode models
+  vibe      Mistral Vibe models
 
 JSON File Format:
   {

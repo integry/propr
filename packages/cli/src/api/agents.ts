@@ -5,19 +5,24 @@
  * These functions provide a typed interface to list, add, and delete agents.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { ApiClient, createApiClient } from "./index.js";
 
 /**
  * Agent type identifier.
  */
-export const AGENT_TYPES = ["claude", "codex", "gemini", "opencode"] as const;
-export type AgentType = typeof AGENT_TYPES[number];
+export type AgentType = "claude" | "codex" | "gemini" | "opencode" | "vibe";
 
-const DEFAULT_DOCKER_IMAGES: Record<AgentType, string> = {
-  claude: "propr/agent-claude:latest",
-  codex: "propr/agent-codex:latest",
-  gemini: "propr/agent-gemini:latest",
-  opencode: "propr/agent-opencode:latest",
+export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "gemini", "opencode", "vibe"] as const;
+
+// Keep in sync with packages/core/src/agents/version/types.ts AGENT_IMAGE_NAMES
+const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
+  claude: "propr/agent-claude",
+  codex: "propr/agent-codex",
+  gemini: "propr/agent-gemini",
+  opencode: "propr/agent-opencode",
+  vibe: "propr/agent-vibe",
 };
 
 /**
@@ -30,7 +35,7 @@ export interface AgentConfig {
   id: string;
 
   /**
-   * The agent type.
+   * The agent type (claude, codex, gemini, opencode, or vibe).
    */
   type: AgentType;
 
@@ -95,7 +100,7 @@ export interface AddAgentOptions {
   alias: string;
 
   /**
-   * The agent type.
+   * The agent type (claude, codex, gemini, opencode, or vibe).
    */
   type: AgentType;
 
@@ -199,6 +204,8 @@ export async function addAgent(
     throw new Error(`Agent with alias '${options.alias}' already exists`);
   }
 
+  const configPath = options.configPath || resolveDefaultConfigPath(options.type, apiClient);
+
   // Create new agent config
   const newAgent: AgentConfig = {
     id: crypto.randomUUID(),
@@ -206,7 +213,7 @@ export async function addAgent(
     alias: options.alias,
     enabled: options.enabled !== undefined ? options.enabled : true,
     dockerImage: options.dockerImage || getDefaultDockerImage(options.type),
-    configPath: options.configPath || getDefaultConfigPath(options.type),
+    configPath,
     supportedModels: options.models,
     defaultModel: options.defaultModel || options.models[0],
   };
@@ -274,26 +281,56 @@ export async function deleteAgent(
  * @returns The default Docker image name.
  */
 function getDefaultDockerImage(type: AgentType): string {
-  return DEFAULT_DOCKER_IMAGES[type];
+  const name = AGENT_IMAGE_NAMES[type];
+  return name ? `${name}:latest` : `${type}-code-processor:latest`;
 }
 
 /**
  * Gets the default config path for an agent type.
  *
+ * Returns a path under the local user's home directory. This is correct for
+ * Docker-outside-Docker setups where the CLI and server share the same host,
+ * but will produce an incorrect path if the CLI talks to a remote ProPR
+ * server. In remote setups, always pass an explicit `configPath` instead.
+ *
  * @param type - The agent type.
  * @returns The default config path.
  */
 function getDefaultConfigPath(type: AgentType): string {
+  const home = homedir();
   switch (type) {
     case "claude":
-      return "/root/.claude";
+      return join(home, ".claude");
     case "codex":
-      return "/root/.codex";
+      return join(home, ".codex");
     case "gemini":
-      return "/root/.gemini";
+      return join(home, ".gemini");
     case "opencode":
-      return "/root/.config/opencode";
+      return join(home, ".config", "opencode");
+    case "vibe":
+      return join(home, ".vibe");
     default:
-      return `/root/.${type}`;
+      return join(home, `.${type}`);
   }
+}
+
+function isRemoteApiUrl(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname;
+    return hostname !== "localhost" && hostname !== "127.0.0.1" && hostname !== "::1";
+  } catch {
+    return false;
+  }
+}
+
+function resolveDefaultConfigPath(type: AgentType, client: ApiClient): string {
+  const baseUrl = client.getBaseUrl();
+  if (isRemoteApiUrl(baseUrl)) {
+    throw new Error(
+      `Cannot infer config path for a remote ProPR server (${baseUrl}). ` +
+      `Pass --config-path explicitly with the host path on the server ` +
+      `(e.g. --config-path /home/propr/.${type}).`
+    );
+  }
+  return getDefaultConfigPath(type);
 }

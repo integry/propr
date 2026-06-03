@@ -2,7 +2,8 @@
 // This file provides a single source of truth for model information
 // Both backend (packages/core) and frontend (propr-ui) import from this package
 
-export type AgentType = 'claude' | 'codex' | 'gemini' | 'opencode';
+export type AgentType = 'claude' | 'codex' | 'gemini' | 'opencode' | 'vibe';
+export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'gemini', 'opencode', 'vibe'];
 
 export interface ModelInfo {
   id: string;
@@ -73,8 +74,15 @@ export const OPENCODE_MODELS: ModelInfo[] = [
   { id: 'opencode-go/mimo-v2.5', name: 'MiMo-V2.5', shortName: 'MiMo', shortAlias: 'mimo-v25', githubLabel: 'llm-opencode-mimo-v25', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'xiaomi/mimo-v2.5' },
 ];
 
+// Mistral Vibe coding models
+// Available models from `vibe /model`: mistral-medium-3.5, devstral-small, local
+export const VIBE_MODELS: ModelInfo[] = [
+  { id: 'mistral-medium-3.5', name: 'Mistral Medium 3.5', shortName: 'Mistral Medium', shortAlias: 'mistral', githubLabel: 'llm-vibe-mistral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/mistral-medium-3-5' },
+  { id: 'devstral-small', name: 'Devstral Small', shortName: 'Devstral Small', shortAlias: 'devstral', githubLabel: 'llm-vibe-devstral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/devstral-2512' },
+];
+
 // All models combined
-export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS, ...OPENCODE_MODELS];
+export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS, ...OPENCODE_MODELS, ...VIBE_MODELS];
 
 // Map of agent types to their models
 export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
@@ -82,6 +90,7 @@ export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
   codex: CODEX_MODELS,
   gemini: GEMINI_MODELS,
   opencode: OPENCODE_MODELS,
+  vibe: VIBE_MODELS,
 };
 
 export const AGENT_DISPLAY: Record<AgentType, AgentDisplayInfo> = {
@@ -89,6 +98,7 @@ export const AGENT_DISPLAY: Record<AgentType, AgentDisplayInfo> = {
   gemini: { label: 'Gemini', order: 20 },
   codex: { label: 'Codex (OpenAI)', order: 30 },
   opencode: { label: 'OpenCode', order: 40 },
+  vibe: { label: 'Vibe', order: 50 },
 };
 
 export const AGENT_DISPLAY_ORDER: AgentType[] = (Object.keys(AGENT_DISPLAY) as AgentType[])
@@ -146,6 +156,14 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultAlias: 'opencode',
     npmPackage: 'opencode-ai',
     defaultCliVersion: '1.15.12'
+  },
+  vibe: {
+    dockerImage: 'propr/agent-vibe:latest',
+    configPath: '~/.vibe',
+    defaultModels: VIBE_MODELS.map(m => m.id),
+    defaultAlias: 'vibe',
+    npmPackage: 'mistral-vibe',
+    defaultCliVersion: '2.12.1'
   }
 };
 
@@ -154,5 +172,6 @@ export const typeBadgeColors: Record<AgentType, string> = {
   claude: 'bg-orange-100 text-orange-800 border-orange-300',
   codex: 'bg-green-100 text-green-800 border-green-300',
   gemini: 'bg-blue-100 text-blue-800 border-blue-300',
-  opencode: 'bg-cyan-100 text-cyan-800 border-cyan-300'
+  opencode: 'bg-cyan-100 text-cyan-800 border-cyan-300',
+  vibe: 'bg-red-100 text-red-700 border-red-400'  // Mistral Vibe brand orange-red (#FA500F)
 };

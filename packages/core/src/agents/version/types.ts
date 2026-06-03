@@ -9,24 +9,26 @@ import type { AgentType } from '../types.js';
 export type { CliVersionType } from '../../config/configManager.js';
 
 /**
- * NPM package names for each agent type.
+ * Package names for each agent CLI.
  */
-export const AGENT_NPM_PACKAGES: Record<AgentType, string> = {
+export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
     claude: '@anthropic-ai/claude-code',
     codex: '@openai/codex',
     gemini: '@google/gemini-cli',
-    opencode: 'opencode-ai'
+    opencode: 'opencode-ai',
+    vibe: 'mistral-vibe'
 } as const;
 
 /**
- * Available npm dist-tags for each agent type.
+ * Available package tags for each agent type.
  * These are the common tags that can be selected in the UI.
  */
-export const AGENT_NPM_TAGS: Record<AgentType, string[]> = {
+export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
     claude: ['stable', 'latest', 'next'],
     codex: ['latest', 'alpha'],
     gemini: ['latest', 'preview'],
-    opencode: ['latest', 'beta', 'dev']
+    opencode: ['latest', 'beta', 'dev'],
+    vibe: ['latest']
 };
 
 /**
@@ -37,7 +39,19 @@ export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     claude: '2.1.85',
     codex: '0.133.0',
     gemini: '0.35.1',
-    opencode: '1.15.12'
+    opencode: '1.15.12',
+    vibe: '2.12.1'
+};
+
+/**
+ * Docker repositories used for versioned agent images.
+ */
+export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
+    claude: 'propr/agent-claude',
+    codex: 'propr/agent-codex',
+    gemini: 'propr/agent-gemini',
+    opencode: 'propr/agent-opencode',
+    vibe: 'propr/agent-vibe'
 };
 
 /**
@@ -67,6 +81,12 @@ export const DOCKER_CONTENT_FILES: Record<AgentType, string[]> = {
         'Dockerfile.opencode',
         'scripts/opencode-entrypoint.sh',
         'scripts/opencode-run.sh',
+        'scripts/init-firewall.sh',
+        'scripts/gh-wrapper.sh'
+    ],
+    vibe: [
+        'Dockerfile.vibe',
+        'scripts/vibe-entrypoint.sh',
         'scripts/init-firewall.sh',
         'scripts/gh-wrapper.sh'
     ]

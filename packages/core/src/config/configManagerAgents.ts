@@ -1,9 +1,9 @@
 import path from 'path';
-import { MODEL_INFO_MAP } from '@propr/shared';
+import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from '../agents/constants.js';
-import { AGENT_DEFAULT_VERSIONS } from '../agents/version/types.js';
+import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from '../agents/version/types.js';
 import { computeContentHash, generateImageTag } from '../agents/version/versionService.js';
 
 /**
@@ -17,7 +17,7 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
  */
 export interface AgentConfig {
     id: string;
-    type: 'claude' | 'codex' | 'gemini' | 'opencode';
+    type: 'claude' | 'codex' | 'gemini' | 'opencode' | 'vibe';
     alias: string;
     enabled: boolean;
     dockerImage: string;
@@ -38,7 +38,8 @@ export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
     claude: '~/.claude',
     codex: '~/.codex',
     gemini: '~/.gemini',
-    opencode: '~/.config/opencode'
+    opencode: '~/.config/opencode',
+    vibe: '~/.vibe'
 };
 
 /**
@@ -79,23 +80,96 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
 }
 
 const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
-    claude: '2.1.85',
+    claude: AGENT_DEFAULT_VERSIONS.claude,
     codex: AGENT_DEFAULT_VERSIONS.codex,
-    gemini: '0.35.1',
-    opencode: AGENT_DEFAULT_VERSIONS.opencode
+    gemini: AGENT_DEFAULT_VERSIONS.gemini,
+    opencode: AGENT_DEFAULT_VERSIONS.opencode,
+    vibe: AGENT_DEFAULT_VERSIONS.vibe
 };
 
 const CLAUDE_46_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];
 const CODEX_55_MODELS = ['gpt-5.5'];
+const VIBE_CURRENT_MODELS = VIBE_MODELS.map(model => model.id);
+const LEGACY_AGENT_IMAGE_NAMES: Record<AgentConfig['type'], string> = {
+    claude: 'propr-claude',
+    codex: 'propr-codex',
+    gemini: 'propr-gemini',
+    opencode: 'propr-opencode',
+    vibe: 'propr-vibe'
+};
 
 const LEGACY_DEFAULT_DOCKER_IMAGES: Record<AgentConfig['type'], string[]> = {
     claude: ['claude-code-processor:latest', 'propr-claude:latest'],
     codex: ['codex-code-processor:latest', 'propr-codex:latest'],
     gemini: ['gemini-code-processor:latest', 'propr-gemini:latest'],
-    opencode: []
+    opencode: [],
+    vibe: []
 };
 
+function migrateCliVersion(agent: AgentConfig): boolean {
+    if (agent.cliVersionType) {
+        return false;
+    }
+
+    agent.cliVersionType = 'default';
+    agent.cliVersionResolved = DEFAULT_CLI_VERSIONS[agent.type];
+    logger.info({ agentAlias: agent.alias, type: agent.type }, 'Migrated agent to default CLI version');
+    return true;
+}
+
+function applyDefaultAgentFields(agent: AgentConfig): boolean {
+    const defaults = AGENT_DEFAULTS[agent.type];
+    let migrated = false;
+
+    if (!defaults) {
+        return false;
+    }
+
+    if (!agent.configPath) {
+        agent.configPath = defaults.configPath;
+        migrated = true;
+        logger.info({ agentAlias: agent.alias, configPath: agent.configPath }, 'Added missing agent config path');
+    }
+
+    if (!agent.dockerImage) {
+        agent.dockerImage = defaults.dockerImage;
+        migrated = true;
+        logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Added missing agent Docker image');
+    }
+
+    if (!agent.supportedModels || agent.supportedModels.length === 0) {
+        agent.supportedModels = [...defaults.defaultModels];
+        migrated = true;
+        logger.info({ agentAlias: agent.alias, supportedModels: agent.supportedModels }, 'Added default agent models');
+    }
+
+    if (!agent.defaultModel && agent.supportedModels.length > 0) {
+        agent.defaultModel = agent.supportedModels[0];
+        migrated = true;
+        logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Added default agent model');
+    }
+
+    return migrated;
+}
+
+function migrateLegacyAgentImageName(agent: AgentConfig): boolean {
+    const legacyName = LEGACY_AGENT_IMAGE_NAMES[agent.type];
+    const currentName = AGENT_IMAGE_NAMES[agent.type];
+
+    if (!agent.dockerImage?.startsWith(`${legacyName}:`)) {
+        return false;
+    }
+
+    agent.dockerImage = `${currentName}:${agent.dockerImage.slice(legacyName.length + 1)}`;
+    logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Migrated agent Docker image to registry namespace');
+    return true;
+}
+
 function addMissingSupportedModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
+    return addMissingModels(agent, models, logMessage);
+}
+
+function addMissingModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
     if (!agent.supportedModels) {
         return false;
     }
@@ -110,24 +184,14 @@ function addMissingSupportedModels(agent: AgentConfig, models: string[], logMess
     return true;
 }
 
-function removeDeprecatedSupportedModels(agent: AgentConfig): boolean {
-    if (!agent.supportedModels) {
+function updateCodexDefaults(agent: AgentConfig): boolean {
+    let migrated = false;
+
+    if (agent.type !== 'codex') {
         return false;
     }
 
-    const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
-    const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
-    if (removedModels.length === 0) {
-        return false;
-    }
-
-    agent.supportedModels = validModels;
-    logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
-    return true;
-}
-
-function migrateCodexAgent(agent: AgentConfig): boolean {
-    let migrated = addMissingSupportedModels(agent, CODEX_55_MODELS, 'Added GPT-5.5 models to Codex agent');
+    migrated = addMissingModels(agent, CODEX_55_MODELS, 'Added GPT-5.5 models to Codex agent') || migrated;
 
     if (!agent.defaultModel || agent.defaultModel === 'gpt-5.4') {
         agent.defaultModel = 'gpt-5.5';
@@ -145,6 +209,22 @@ function migrateCodexAgent(agent: AgentConfig): boolean {
     return migrated;
 }
 
+function removeDeprecatedModels(agent: AgentConfig): boolean {
+    if (!agent.supportedModels) {
+        return false;
+    }
+
+    const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
+    const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
+    if (removedModels.length === 0) {
+        return false;
+    }
+
+    agent.supportedModels = validModels;
+    logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
+    return true;
+}
+
 /**
  * Migrates agent configurations to include CLI version fields and new models.
  */
@@ -154,11 +234,11 @@ export async function migrateAgentConfigs(): Promise<boolean> {
         let migrated = false;
 
         for (const agent of agents) {
-            if (!agent.cliVersionType) {
-                agent.cliVersionType = 'default';
-                agent.cliVersionResolved = DEFAULT_CLI_VERSIONS[agent.type];
-                migrated = true;
-                logger.info({ agentAlias: agent.alias, type: agent.type }, 'Migrated agent to default CLI version');
+            migrated = migrateCliVersion(agent) || migrated;
+            migrated = applyDefaultAgentFields(agent) || migrated;
+            migrated = migrateLegacyAgentImageName(agent) || migrated;
+            if (agent.type === 'claude') {
+                migrated = addMissingModels(agent, CLAUDE_46_MODELS, 'Added Claude 4.6 models to agent') || migrated;
             }
 
             if (agent.cliVersionType === 'default' && LEGACY_DEFAULT_DOCKER_IMAGES[agent.type].includes(agent.dockerImage)) {
@@ -167,15 +247,11 @@ export async function migrateAgentConfigs(): Promise<boolean> {
                 logger.info({ agentAlias: agent.alias, type: agent.type, dockerImage: agent.dockerImage }, 'Migrated legacy default agent Docker image');
             }
 
-            if (agent.type === 'claude' && agent.supportedModels) {
-                migrated = addMissingSupportedModels(agent, CLAUDE_46_MODELS, 'Added Claude 4.6 models to agent') || migrated;
+            if (agent.type === 'vibe') {
+                migrated = addMissingModels(agent, VIBE_CURRENT_MODELS, 'Added current Mistral Vibe models to agent') || migrated;
             }
-
-            if (agent.type === 'codex') {
-                if (migrateCodexAgent(agent)) migrated = true;
-            }
-
-            migrated = removeDeprecatedSupportedModels(agent) || migrated;
+            migrated = updateCodexDefaults(agent) || migrated;
+            migrated = removeDeprecatedModels(agent) || migrated;
         }
 
         if (migrated) {

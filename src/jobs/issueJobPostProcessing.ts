@@ -6,6 +6,7 @@ import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@propr/c
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
+import { redactSecrets } from '@propr/core';
 import { validatePRCreation } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
@@ -15,6 +16,31 @@ import type { GitHubToken } from './githubTypes.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
+
+function formatErrorBlock(title: string, message: string): string {
+    const redacted = redactSecrets(message || 'Unknown error').slice(0, 4000);
+    return `**${title}:**\n${redacted}\n\n`;
+}
+
+function getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+function formatFallbackDiagnostics(claudeResult: ClaudeCodeResponse, postProcessingError: unknown): string {
+    const systemError = claudeResult?.success === false ? claudeResult.error?.trim() : '';
+    const postProcessingMessage = getErrorMessage(postProcessingError).trim();
+    let diagnostics = '';
+
+    if (systemError) {
+        diagnostics += formatErrorBlock('System Error', systemError);
+    }
+
+    if (postProcessingMessage && postProcessingMessage !== systemError) {
+        diagnostics += formatErrorBlock('Post-processing Error', postProcessingMessage);
+    }
+
+    return diagnostics;
+}
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -118,7 +144,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-                body: `⚠️ **Post-processing encountered an error, but Claude analysis was completed.**\n\n${completionComment}`,
+                body: `⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**\n\n${formatFallbackDiagnostics(claudeResult, postProcessingError)}${completionComment}`,
             });
             postProcessingResult = { success: false, pr: null, updatedLabels: [AI_DONE_TAG], error: (postProcessingError as Error).message };
         } catch (fallbackError) {

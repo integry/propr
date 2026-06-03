@@ -639,7 +639,7 @@ describe('performPostProcessing - Integration with Mocks', () => {
                 owner: 'testowner',
                 repo: 'testrepo',
                 issue_number: 123,
-                body: '⚠️ **Post-processing encountered an error, but Claude analysis was completed.**\n\nCompletion comment'
+                body: '⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**\n\nCompletion comment'
             });
 
             // Verify calls

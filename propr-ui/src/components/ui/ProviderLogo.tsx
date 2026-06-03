@@ -47,6 +47,24 @@ export const ProviderLogo: React.FC<ProviderLogoProps> = ({ provider, className 
     );
   }
 
+  if (normalized.includes('vibe') || normalized.includes('mistral') || normalized.startsWith('devstral')) {
+    // Mistral Vibe Icon (official logo)
+    return (
+      <svg className={className} viewBox="0 0 49 34" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+        <path d="M13.8133 0H6.90643V6.21621H13.8133V0Z" />
+        <path d="M41.4411 0H34.5342V6.21621H41.4411V0Z" />
+        <path d="M27.6272 20.7207H20.7203V26.9369H27.6272V20.7207Z" />
+        <path d="M13.8133 20.7207H6.90643V26.9369H13.8133V20.7207Z" />
+        <path d="M41.4411 20.7207H34.5342V26.9369H41.4411V20.7207Z" />
+        <path d="M20.7202 6.90698H6.90643V13.1232H20.7202V6.90698Z" />
+        <path d="M20.7208 27.6277H0V33.8439H20.7208V27.6277Z" />
+        <path d="M48.3483 27.6277H27.6275V33.8439H48.3483V27.6277Z" />
+        <path d="M41.4411 13.814H6.90643V20.0302H41.4411V13.814Z" />
+        <path d="M41.4413 6.90698H27.6275V13.1232H41.4413V6.90698Z" />
+      </svg>
+    );
+  }
+
   // Fallback
   return <Bot className={className} />;
 };

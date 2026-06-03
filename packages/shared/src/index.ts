@@ -2,11 +2,13 @@
 export {
   type AgentType,
   type AgentDisplayInfo,
+  AGENT_TYPES,
   type ModelInfo,
   CLAUDE_MODELS,
   CODEX_MODELS,
   GEMINI_MODELS,
   OPENCODE_MODELS,
+  VIBE_MODELS,
   ALL_MODELS,
   AGENT_MODELS,
   AGENT_DISPLAY,

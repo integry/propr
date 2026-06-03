@@ -7,13 +7,13 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import logger from '../../utils/logger.js';
-import { VERSIONED_AGENT_IMAGE_NAMES } from '../constants.js';
 import type { AgentType } from '../types.js';
 import type { AvailableVersionsResponse, CliVersionType } from './types.js';
 import {
-    AGENT_NPM_PACKAGES,
-    AGENT_NPM_TAGS,
+    AGENT_CLI_PACKAGES,
+    AGENT_CLI_TAGS,
     AGENT_DEFAULT_VERSIONS,
+    AGENT_IMAGE_NAMES,
     DOCKER_CONTENT_FILES
 } from './types.js';
 import {
@@ -21,6 +21,40 @@ import {
     getRecentVersions,
     resolveVersionSpec
 } from './npmClient.js';
+import {
+    getLatestPyPiVersion,
+    getRecentPyPiVersions,
+    resolvePyPiVersionSpec
+} from './pypiClient.js';
+
+const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
+
+function validatePyPiCustomVersion(versionSpec: string, packageName: string): string {
+    const trimmedVersionSpec = versionSpec.trim();
+    if (!trimmedVersionSpec) {
+        throw new Error('Version spec required');
+    }
+    logger.debug({ packageName, versionSpec: trimmedVersionSpec }, 'Using custom PyPI install spec');
+    return trimmedVersionSpec;
+}
+
+function resolvePyPiTag(agentType: AgentType, packageName: string, versionSpec: string): Promise<string> | string {
+    if (!AGENT_CLI_TAGS[agentType].includes(versionSpec)) {
+        throw new Error(`Unknown tag '${versionSpec}' for PyPI-backed package ${packageName}`);
+    }
+    return versionSpec === 'latest' ? getLatestPyPiVersion(packageName) : AGENT_DEFAULT_VERSIONS[agentType];
+}
+
+export function getDockerTagComponent(value: string): string {
+    const trimmed = value.trim();
+    const normalized = trimmed.replace(/[^A-Za-z0-9_.-]/g, '-').replace(/^[.-]+/, '').slice(0, 96);
+    const tagBase = normalized || 'custom';
+    if (tagBase === trimmed && tagBase.length <= 96) {
+        return tagBase;
+    }
+    const hash = crypto.createHash('sha256').update(trimmed).digest('hex').slice(0, 12);
+    return `${tagBase.slice(0, 83)}-${hash}`;
+}
 
 /**
  * Resolves a version specification to an actual semver version.
@@ -35,7 +69,32 @@ export async function resolveVersion(
     versionType: CliVersionType,
     versionSpec?: string
 ): Promise<string> {
-    const packageName = AGENT_NPM_PACKAGES[agentType];
+    const packageName = AGENT_CLI_PACKAGES[agentType];
+
+    if (PYPI_AGENT_TYPES.has(agentType)) {
+        switch (versionType) {
+            case 'default':
+                return AGENT_DEFAULT_VERSIONS[agentType];
+            case 'tag':
+                if (!versionSpec) {
+                    throw new Error('Version spec required for tag type');
+                }
+                return resolvePyPiTag(agentType, packageName, versionSpec);
+            case 'specific':
+                if (!versionSpec) {
+                    throw new Error('Version spec required');
+                }
+                return resolvePyPiVersionSpec(packageName, versionSpec);
+            case 'custom':
+                if (!versionSpec) {
+                    throw new Error('Version spec required');
+                }
+                return validatePyPiCustomVersion(versionSpec, packageName);
+            default:
+                logger.warn({ agentType, versionType }, 'Unknown version type, using default');
+                return AGENT_DEFAULT_VERSIONS[agentType];
+        }
+    }
 
     switch (versionType) {
         case 'default':
@@ -69,11 +128,29 @@ export async function resolveVersion(
  * @returns Available versions response
  */
 export async function getAvailableVersions(agentType: AgentType): Promise<AvailableVersionsResponse> {
-    const packageName = AGENT_NPM_PACKAGES[agentType];
+    const packageName = AGENT_CLI_PACKAGES[agentType];
     const defaultVersion = AGENT_DEFAULT_VERSIONS[agentType];
-    const tagNames = AGENT_NPM_TAGS[agentType];
+    const tagNames = AGENT_CLI_TAGS[agentType];
 
     try {
+        if (PYPI_AGENT_TYPES.has(agentType)) {
+            const [latestVersion, recentVersions] = await Promise.all([
+                getLatestPyPiVersion(packageName),
+                getRecentPyPiVersions(packageName, 10)
+            ]);
+
+            return {
+                agentType,
+                packageName,
+                defaultVersion,
+                availableTags: tagNames.map(tag => ({
+                    tag,
+                    version: tag === 'latest' ? latestVersion : defaultVersion
+                })),
+                recentVersions
+            };
+        }
+
         // Fetch tags and recent versions in parallel
         const [distTags, recentVersions] = await Promise.all([
             getDistTags(packageName),
@@ -154,8 +231,8 @@ export function computeContentHash(agentType: AgentType, basePath: string = PROJ
  * @returns Docker image tag (e.g., 'propr/agent-claude:2.1.77-a3f2b1')
  */
 export function generateImageTag(agentType: AgentType, cliVersion: string, contentHash: string): string {
-    const imageName = VERSIONED_AGENT_IMAGE_NAMES[agentType];
-    return `${imageName}:${cliVersion}-${contentHash}`;
+    const imageName = AGENT_IMAGE_NAMES[agentType];
+    return `${imageName}:${getDockerTagComponent(cliVersion)}-${contentHash}`;
 }
 
 /**
@@ -186,9 +263,10 @@ export async function getEffectiveCliVersion(
 
 // Re-export types and constants for convenience
 export {
-    AGENT_NPM_PACKAGES,
-    AGENT_NPM_TAGS,
+    AGENT_CLI_PACKAGES,
+    AGENT_CLI_TAGS,
     AGENT_DEFAULT_VERSIONS,
+    AGENT_IMAGE_NAMES,
     DOCKER_CONTENT_FILES
 };
 

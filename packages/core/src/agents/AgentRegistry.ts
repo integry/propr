@@ -6,11 +6,13 @@ import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
 import { GeminiAgent } from './impl/GeminiAgent.js';
 import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
+import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
 import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
-import { computeContentHash } from './version/versionService.js';
+import { computeContentHash, generateImageTag, getDockerTagComponent } from './version/versionService.js';
+import { AGENT_IMAGE_NAMES } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 
 /**
@@ -234,9 +236,23 @@ export class AgentRegistry {
      * Uses versioned image if version config is present, otherwise uses default.
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
+        if (this.isManagedVersionedImage(config)) {
+            const contentHash = computeContentHash(config.type as AgentType);
+            const expectedImageTag = generateImageTag(config.type as AgentType, config.cliVersionResolved!, contentHash);
+            const result = await ensureVersionedAgentImage(
+                config.type,
+                config.cliVersionResolved!,
+                contentHash
+            );
+            if (result.success) {
+                config.dockerImage = result.imageTag || expectedImageTag;
+            }
+            return result.success;
+        }
+
         // Prefer the user-configured dockerImage (pull-first, build fallback).
         // This matters for production images like propr/agent-claude:latest.
-        // The versioned-build path below requires the agent Dockerfiles on disk.
+        // The versioned-build path below only works when Dockerfiles are present.
         if (config.dockerImage && await ensureAgentDockerImage(config.type, config.dockerImage)) {
             return true;
         }
@@ -257,6 +273,15 @@ export class AgentRegistry {
         return false;
     }
 
+    private isManagedVersionedImage(config: AgentConfig): boolean {
+        if (!config.cliVersionType || !config.cliVersionResolved) return false;
+        const managedImageName = AGENT_IMAGE_NAMES[config.type as AgentType];
+        if (!managedImageName || !config.dockerImage?.startsWith(`${managedImageName}:`)) return false;
+        const tag = config.dockerImage.slice(managedImageName.length + 1);
+        const versionTag = getDockerTagComponent(config.cliVersionResolved);
+        return tag.startsWith(`${versionTag}-`) && /-[0-9a-f]{6}$/i.test(tag);
+    }
+
     /**
      * Creates an agent instance from configuration.
      * This is the factory method that handles different agent types.
@@ -271,6 +296,8 @@ export class AgentRegistry {
                 return new GeminiAgent(config);
             case 'opencode':
                 return new OpenCodeAgent(config);
+            case 'vibe':
+                return new VibeAgent(config);
             default:
                 throw new Error(`Unknown agent type: ${config.type}`);
         }

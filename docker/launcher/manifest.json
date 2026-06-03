@@ -10,6 +10,7 @@
     "agent-codex": "propr/agent-codex:0.8.1",
     "agent-gemini": "propr/agent-gemini:0.8.1",
     "agent-opencode": "propr/agent-opencode:0.8.1",
+    "agent-vibe": "propr/agent-vibe:0.8.1",
     "redis": "redis:7-alpine"
   }
 }

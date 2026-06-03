@@ -78,7 +78,16 @@ function stripFilePathsFromContext(context: string, repoName: string): string {
   return header + strippedContext;
 }
 
-async function resolveEffectiveAuthToken(authToken: string): Promise<string> {
+interface RepoContextResult {
+  repository: string;
+  context: string;
+  tokens: number;
+  files: number;
+  filePaths: string[];
+  fileScores: Record<string, { score: number; reason: string }>;
+}
+
+async function resolveAuthToken(authToken: string): Promise<string> {
   try {
     return await getGitHubInstallationToken();
   } catch {
@@ -113,14 +122,7 @@ export async function generateAdditionalContext(
     'Starting additional context generation'
   );
 
-  const results: Array<{
-    repository: string;
-    context: string;
-    tokens: number;
-    files: number;
-    filePaths: string[];
-    fileScores: Record<string, { score: number; reason: string }>;
-  }> = [];
+  const results: RepoContextResult[] = [];
   const errors: Array<{ repository: string; error: string }> = [];
 
   // Divide token budget evenly among repositories. Full scan intentionally uses
@@ -142,7 +144,7 @@ export async function generateAdditionalContext(
       );
 
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      const effectiveAuthToken = await resolveEffectiveAuthToken(authToken);
+      const effectiveAuthToken = await resolveAuthToken(authToken);
 
       const repoPath = await ensureRepoCloned({
         repoUrl,
@@ -166,7 +168,9 @@ export async function generateAdditionalContext(
       });
 
       const strippedContext = stripFilePathsFromContext(contextResult.context, repo.repository);
-      const finalContext = repo.description ? `[${repo.description}]\n${strippedContext}` : strippedContext;
+      const finalContext = repo.description
+        ? `[${repo.description}]\n${strippedContext}`
+        : strippedContext;
 
       results.push({
         repository: repo.repository,
@@ -196,7 +200,6 @@ export async function generateAdditionalContext(
     }
   }
 
-  // Combine all context
   const combinedContext = results.map(r => r.context).join('\n\n---\n\n');
   const totalTokens = results.reduce((sum, r) => sum + r.tokens, 0);
   const totalFiles = results.reduce((sum, r) => sum + r.files, 0);
@@ -210,12 +213,7 @@ export async function generateAdditionalContext(
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
   correlatedLogger.info(
-    {
-      repositoriesIncluded: results.length,
-      errorCount: errors.length,
-      totalTokens,
-      totalFiles
-    },
+    { repositoriesIncluded: results.length, errorCount: errors.length, totalTokens, totalFiles },
     'Additional context generation completed'
   );
 

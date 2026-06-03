@@ -85,7 +85,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2'],
                 defaultModel: 'gpt-5.5'
             }
         },
@@ -96,6 +96,16 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 alias: 'opencode',
                 enabled: true,
                 supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode:kimi-k2.6']
+            }
+        },
+        {
+            config: {
+                id: 'vibe-agent-1',
+                type: 'vibe' as const,
+                alias: 'vibe',
+                enabled: true,
+                supportedModels: ['mistral-medium-3.5', 'devstral-small'],
+                defaultModel: 'mistral-medium-3.5'
             }
         }
     ];
@@ -162,6 +172,31 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'opencode:unknown', 'Should not strip the OpenCode route prefix');
     });
 
+    await t.test('Step 1: resolves exact githubLabel for vibe models', async () => {
+        const result = await resolveLlmLabel('vibe-mistral');
+        assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
+        assert.strictEqual(result.model, 'mistral-medium-3.5', 'Should resolve to correct vibe model');
+    });
+
+    await t.test('Step 1: resolves exact githubLabel for vibe devstral model', async () => {
+        const result = await resolveLlmLabel('vibe-devstral');
+        assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
+        assert.strictEqual(result.model, 'devstral-small', 'Should resolve to devstral-small');
+    });
+
+    await t.test('Step 1b: resolves vibe agent-type label when configured alias differs', async () => {
+        const vibeAgent = mockAgentConfigs[4].config;
+        const originalAlias = vibeAgent.alias;
+        vibeAgent.alias = 'mistral-vibe';
+        try {
+            const result = await resolveLlmLabel('vibe-mistral');
+            assert.strictEqual(result.agentAlias, 'mistral-vibe', 'Should resolve to configured vibe agent alias');
+            assert.strictEqual(result.model, 'mistral-medium-3.5', 'Should resolve to correct vibe model');
+        } finally {
+            vibeAgent.alias = originalAlias;
+        }
+    });
+
     await t.test('Step 4: resolves agent alias match with default model', async () => {
         // Just "gemini" should return the default gemini model
         const result = await resolveLlmLabel('gemini');
@@ -187,6 +222,12 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'opencode-go/kimi-k2.6', 'Should use preferred OpenCode model');
     });
 
+    await t.test('Step 2: resolves vibe alias to default model', async () => {
+        const result = await resolveLlmLabel('vibe');
+        assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
+        assert.strictEqual(result.model, 'mistral-medium-3.5', 'Should use vibe default model');
+    });
+
     await t.test('Step 5: resolves agent prefix match (e.g., gemini-flash)', async () => {
         // "gemini-flash" should resolve to gemini agent with flash model
         const result = await resolveLlmLabel('gemini-flash');
@@ -199,6 +240,12 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
         // spark is shortAlias for gpt-5.3-codex-spark (but may fallback to default if not found in supported)
         assert.ok(result.model, 'Should resolve to a model');
+    });
+
+    await t.test('Step 3: resolves agent prefix match for vibe-devstral', async () => {
+        const result = await resolveLlmLabel('vibe-devstral');
+        assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
+        assert.ok(result.model && result.model.includes('devstral'), 'Should resolve to a devstral model');
     });
 
     await t.test('Step 6: resolves static MODEL_ALIASES for backwards compatibility (opus)', async () => {
@@ -327,6 +374,18 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
         assert.strictEqual(findMatchingModel('gpt54', config), 'gpt-5.4');
         assert.strictEqual(findMatchingModel('gpt54-mini', config), 'gpt-5.4-mini');
         assert.strictEqual(findMatchingModel('codex-spark', config), 'gpt-5.3-codex-spark');
+    });
+
+    await t.test('matches exact shortAlias for vibe models', () => {
+        const config = createMockConfig(['mistral-medium-3.5', 'devstral-2512', 'devstral-small-latest']);
+
+        assert.strictEqual(findMatchingModel('medium35', config), 'mistral-medium-3.5');
+        assert.strictEqual(findMatchingModel('devstral2', config), 'devstral-2512');
+        assert.strictEqual(findMatchingModel('devstral-small', config), 'devstral-small-latest');
+
+        // Case-insensitive shortAlias
+        assert.strictEqual(findMatchingModel('MEDIUM35', config), 'mistral-medium-3.5');
+        assert.strictEqual(findMatchingModel('Devstral2', config), 'devstral-2512');
     });
 
     await t.test('matches partial model ID (contains)', () => {
@@ -469,6 +528,15 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName('opencode-go/glm-5.1'), 'GLM-5.1');
     });
 
+    await t.test('returns correct short name for Vibe (Mistral) models', () => {
+        // Mistral Medium 3.5
+        assert.strictEqual(getModelShortName('mistral-medium-3.5'), 'Mistral Medium 3.5');
+        // Devstral 2
+        assert.strictEqual(getModelShortName('devstral-2512'), 'Devstral 2');
+        // Devstral Small
+        assert.strictEqual(getModelShortName('devstral-small-latest'), 'Devstral Small');
+    });
+
     await t.test('returns AI for unknown models', () => {
         // Completely unknown model
         assert.strictEqual(getModelShortName('unknown-model-xyz'), 'AI');
@@ -542,7 +610,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2'],
                 defaultModel: 'gpt-5.5'
             }
         },
@@ -553,6 +621,16 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 alias: 'opencode',
                 enabled: true,
                 supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode:kimi-k2.6']
+            }
+        },
+        {
+            config: {
+                id: 'vibe-agent-1',
+                type: 'vibe' as const,
+                alias: 'vibe',
+                enabled: true,
+                supportedModels: ['mistral-medium-3.5', 'devstral-2512', 'devstral-small-latest'],
+                defaultModel: 'mistral-medium-3.5'
             }
         }
     ];
@@ -666,6 +744,11 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         const opencodeResults = await resolveReviewModels(['opencode']);
         assert.strictEqual(opencodeResults[0].agentAlias, 'opencode');
         assert.strictEqual(opencodeResults[0].model, 'opencode-go/kimi-k2.6');
+
+        // vibe -> default enabled Vibe agent/model
+        const vibeResults = await resolveReviewModels(['vibe']);
+        assert.strictEqual(vibeResults[0].agentAlias, 'vibe');
+        assert.strictEqual(vibeResults[0].model, 'mistral-medium-3.5');
     });
 
     await t.test('OpenCode labels resolve to configured OpenCode agent models', async () => {
@@ -707,8 +790,8 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
     });
 
     await t.test('assignments include display-friendly labels', async () => {
-        const results = await resolveReviewModels(['claude', 'gemini', 'codex']);
-        assert.strictEqual(results.length, 3);
+        const results = await resolveReviewModels(['claude', 'gemini', 'codex', 'vibe']);
+        assert.strictEqual(results.length, 4);
 
         for (const result of results) {
             assert.ok(result.displayLabel, `Assignment for ${result.agentAlias} should have displayLabel`);
@@ -724,6 +807,9 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
 
         const codexAssignment = results.find(r => r.agentAlias === 'codex');
         assert.strictEqual(codexAssignment?.displayLabel, 'GPT-5.5');
+
+        const vibeAssignment = results.find(r => r.agentAlias === 'vibe');
+        assert.strictEqual(vibeAssignment?.displayLabel, 'Mistral Medium 3.5');
     });
 
     await t.test('ReviewAssignment has correct shape', async () => {

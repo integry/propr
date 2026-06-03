@@ -29,8 +29,6 @@ interface CostPreviewProps {
   hideRefreshControls?: boolean;
 }
 
-type PreviewData = NonNullable<PreviewResult>;
-
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
   // Only use red when context actually exceeds the limit
   if (actualPercentage > 100) return 'bg-red-500';
@@ -224,10 +222,25 @@ const RefreshIndicator: React.FC<RefreshIndicatorProps> = ({
   );
 };
 
-const CostStatsRow: React.FC<{
-  stats: PreviewData['stats'];
-  smartSelection: PreviewData['smartSelection'];
-}> = ({ stats, smartSelection }) => (
+interface CostPreviewContentProps {
+  data: PreviewResult;
+  contextRepositories?: ContextRepository[];
+  isContextStale?: boolean;
+  isLoading: boolean;
+  hideCostsAndTokens?: boolean;
+  hideRefreshControls?: boolean;
+  timeUntilRefresh?: number | null;
+  isPaused?: boolean;
+  onTogglePause?: () => void;
+  refreshHandler?: () => void;
+}
+
+interface CostStatsHeaderProps {
+  stats: PreviewResult['stats'];
+  smartSelection: PreviewResult['smartSelection'];
+}
+
+const CostStatsHeader: React.FC<CostStatsHeaderProps> = ({ stats, smartSelection }) => (
   <div className="flex items-center justify-between">
     <div className="flex items-center gap-4">
       <div className="flex items-center gap-2">
@@ -247,7 +260,6 @@ const CostStatsRow: React.FC<{
         </div>
       )}
     </div>
-
     {smartSelection.length > 0 && (
       <div className="flex items-center gap-2">
         <Zap className="w-4 h-4 text-indigo-500" />
@@ -259,11 +271,13 @@ const CostStatsRow: React.FC<{
   </div>
 );
 
-const ContextUsageBar: React.FC<{
+interface TokenUsageBarProps {
   usagePercentage: number;
-  maxTokens: number;
   usageColor: string;
-}> = ({ usagePercentage, maxTokens, usageColor }) => (
+  maxTokens: number;
+}
+
+const TokenUsageBar: React.FC<TokenUsageBarProps> = ({ usagePercentage, usageColor, maxTokens }) => (
   <div className="space-y-2">
     <div className="flex items-center justify-between text-xs text-gray-500">
       <span>Context window usage</span>
@@ -278,54 +292,59 @@ const ContextUsageBar: React.FC<{
   </div>
 );
 
-const ContextRepositoriesIndicator: React.FC<{
-  contextRepositories?: ContextRepository[];
-}> = ({ contextRepositories }) => {
-  if (!contextRepositories?.length) return null;
+const CostPreviewContent: React.FC<CostPreviewContentProps> = ({
+  data,
+  contextRepositories,
+  isContextStale,
+  isLoading,
+  hideCostsAndTokens,
+  hideRefreshControls,
+  timeUntilRefresh,
+  isPaused,
+  onTogglePause,
+  refreshHandler,
+}) => {
+  const { stats, smartSelection, warnings } = data;
+  const maxTokens = stats.maxTokens || 200000;
+  const usagePercentage = Math.min(100, (stats.totalTokens / maxTokens) * 100);
+  const actualPercentage = (stats.totalTokens / maxTokens) * 100;
+  const usageColor = getUsageColor(usagePercentage, actualPercentage);
+  const showRefreshIndicator = !!refreshHandler;
 
   return (
-    <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
-      <BookOpen className="w-4 h-4 text-blue-500" />
-      <span className="text-sm text-gray-600">
-        Including context from {contextRepositories.length} additional
-        {contextRepositories.length === 1 ? ' repository' : ' repositories'}
-      </span>
-    </div>
-  );
-};
-
-const WarningsAndRefresh: React.FC<{
-  warnings: string[];
-  showRefreshIndicator: boolean;
-  isContextStale?: boolean;
-  timeUntilRefresh?: number | null;
-  isPaused?: boolean;
-  onTogglePause?: () => void;
-  onManualRefresh: () => void;
-  isLoading: boolean;
-}> = ({ warnings, showRefreshIndicator, isContextStale, timeUntilRefresh, isPaused, onTogglePause, onManualRefresh, isLoading }) => {
-  if (warnings.length === 0 && !showRefreshIndicator) return null;
-
-  return (
-    <div className="flex items-center justify-between pt-2 border-t border-gray-100">
-      <div className="space-y-1 flex-1">
-        {warnings.map((warning, idx) => (
-          <div key={idx} className="flex items-start gap-2 text-sm text-gray-600">
-            <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
-            <span>{warning}</span>
+    <div className="pt-4 border-t border-gray-200 space-y-4">
+      {!hideCostsAndTokens && <CostStatsHeader stats={stats} smartSelection={smartSelection} />}
+      {!hideCostsAndTokens && <TokenUsageBar usagePercentage={usagePercentage} usageColor={usageColor} maxTokens={maxTokens} />}
+      {contextRepositories && contextRepositories.length > 0 && (
+        <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
+          <BookOpen className="w-4 h-4 text-blue-500" />
+          <span className="text-sm text-gray-600">
+            Including context from {contextRepositories.length} additional
+            {contextRepositories.length === 1 ? ' repository' : ' repositories'}
+          </span>
+        </div>
+      )}
+      {(warnings.length > 0 || showRefreshIndicator) && (
+        <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+          <div className="space-y-1 flex-1">
+            {warnings.map((warning, idx) => (
+              <div key={idx} className="flex items-start gap-2 text-sm text-gray-600">
+                <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
+                <span>{warning}</span>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-
-      {showRefreshIndicator && (
-        <RefreshIndicator
-          isContextStale={isContextStale}
-          timeUntilRefresh={timeUntilRefresh}
-          isPaused={isPaused}
-          onTogglePause={onTogglePause}
-          onManualRefresh={onManualRefresh}
-          isLoading={isLoading}
-        />
+          {showRefreshIndicator && (
+            <RefreshIndicator
+              isContextStale={isContextStale}
+              timeUntilRefresh={hideRefreshControls ? null : timeUntilRefresh}
+              isPaused={isPaused}
+              onTogglePause={hideRefreshControls ? undefined : onTogglePause}
+              onManualRefresh={refreshHandler}
+              isLoading={isLoading}
+            />
+          )}
+        </div>
       )}
     </div>
   );
@@ -362,43 +381,18 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
     )
   );
 
-  const { stats, smartSelection, warnings } = preview.data;
-
-  // Use dynamic maxTokens from stats, fallback to 200k if not available (legacy support)
-  const maxTokens = stats.maxTokens || 200000;
-
-  const usagePercentage = Math.min(100, (stats.totalTokens / maxTokens) * 100);
-  const actualPercentage = (stats.totalTokens / maxTokens) * 100;
-  const usageColor = getUsageColor(usagePercentage, actualPercentage);
-  // Always show refresh indicator when manual refresh is available
-  const showRefreshIndicator = !!refreshHandler;
-
   return (
-    <div className="pt-4 border-t border-gray-200 space-y-4">
-      {/* Main stats row */}
-      {!hideCostsAndTokens && (
-        <CostStatsRow stats={stats} smartSelection={smartSelection} />
-      )}
-
-      {/* Context window usage bar */}
-      {!hideCostsAndTokens && (
-        <ContextUsageBar usagePercentage={usagePercentage} maxTokens={maxTokens} usageColor={usageColor} />
-      )}
-
-      {/* Context repositories indicator */}
-      <ContextRepositoriesIndicator contextRepositories={contextRepositories} />
-
-      {/* Warnings and Refresh Indicator - styled as neutral info tips */}
-      <WarningsAndRefresh
-        warnings={warnings}
-        showRefreshIndicator={showRefreshIndicator}
-        isContextStale={isContextStale}
-        timeUntilRefresh={hideRefreshControls ? null : timeUntilRefresh}
-        isPaused={isPaused}
-        onTogglePause={hideRefreshControls ? undefined : onTogglePause}
-        onManualRefresh={refreshHandler}
-        isLoading={preview.isLoading}
-      />
-    </div>
+    <CostPreviewContent
+      data={preview.data}
+      contextRepositories={contextRepositories}
+      isContextStale={isContextStale}
+      isLoading={preview.isLoading}
+      hideCostsAndTokens={hideCostsAndTokens}
+      hideRefreshControls={hideRefreshControls}
+      timeUntilRefresh={timeUntilRefresh}
+      isPaused={isPaused}
+      onTogglePause={onTogglePause}
+      refreshHandler={refreshHandler}
+    />
   );
 };

@@ -76,7 +76,7 @@ export interface DeleteTaskResponse {
 
 export interface AgentConfig {
   id: string;
-  type: 'claude' | 'codex' | 'gemini' | 'opencode';
+  type: 'claude' | 'codex' | 'gemini' | 'opencode' | 'vibe';
   alias: string;
   enabled: boolean;
   dockerImage: string;

@@ -35,7 +35,7 @@ set -euo pipefail
 # Available environment variables:
 #   PROPR_WORKSPACE   Mounted repository path inside the agent container
 #   PROPR_CACHE_DIR   Writable cache directory outside the repository
-#   PROPR_AGENT_TYPE  claude, codex, gemini, or opencode
+#   PROPR_AGENT_TYPE  claude, codex, gemini, opencode, or vibe
 
 cd "$PROPR_WORKSPACE"
 

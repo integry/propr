@@ -75,11 +75,12 @@ services:
       GH_CLIENT_SECRET: ${GH_CLIENT_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
-      DB_FILENAME: /app/data/propr.sqlite
+      DB_FILENAME: /usr/src/app/data/propr.sqlite
     volumes:
-      - ./logs:/app/logs
-      - propr-sqlite-data:/app/data
+      - ./logs:/usr/src/app/logs
+      - propr-sqlite-data:/usr/src/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -103,14 +104,23 @@ services:
       GH_CLIENT_SECRET: ${GH_CLIENT_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      # Vibe prompt cache — active with sane defaults so setting MISTRAL_API_KEY
+      # is sufficient for API-key auth. PREFLIGHT: create the host directory
+      # before starting (mkdir -p /tmp/propr-vibe-prompts && chown to your
+      # worker user) — Docker creates missing bind-mount dirs as root.
+      VIBE_PROMPT_CACHE_DIR: ${VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
+      HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
+      # --- Vibe agent (config-file auth, alternative to API-key) ---
+      VIBE_CONFIG_PATH: ${VIBE_CONFIG_PATH:-/root/.vibe}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
-      DB_FILENAME: /app/data/propr.sqlite
+      DB_FILENAME: /usr/src/app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
     volumes:
-      - ./logs:/app/logs
-      - ./repos:/app/repos
+      - ./logs:/usr/src/app/logs
+      - ./repos:/usr/src/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
-      - propr-sqlite-data:/app/data
+      - propr-sqlite-data:/usr/src/app/data
       - ~/.claude:/root/.claude:ro
       - ~/.codex:/root/.codex:ro
       - ~/.gemini:/root/.gemini:ro
@@ -121,6 +131,13 @@ services:
       # host directories for agents you do not use. The OpenCode agent runtime
       # still mounts only the saved agent configPath; for file auth, prefer the
       # xdg-data workaround described in docs/docs/architecture/opencode-integration.md.
+      # Vibe prompt cache — mounted by default so API-key auth works without
+      # manual edits. PREFLIGHT: create and own the host directory before starting:
+      #   mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"
+      - ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}:/tmp/propr-vibe-prompts
+      # Vibe config-file auth. Mounts host config to the same path the worker
+      # passes to sibling agent containers.
+      - ${HOST_VIBE_DIR:-/root/.vibe}:${VIBE_CONFIG_PATH:-/root/.vibe}:ro
     depends_on:
       redis:
         condition: service_healthy
