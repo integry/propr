@@ -48,6 +48,7 @@ export interface ExecuteClaudeCodeOptions {
     onContainerId?: (containerId: string, containerName: string) => void;
     systemPrompt?: string;
     tools?: string;
+    timeoutMs?: number;
 }
 
 export interface ClaudeCodeResponse {
@@ -91,11 +92,12 @@ export interface RunLightweightLLMAnalysisOptions {
     prNumber?: number;
     executionType?: ExecutionType;
     metadata?: Record<string, unknown>;
+    timeoutMs?: number;
 }
 
 /** @deprecated Use AgentRegistry.getDefaultAgent().executeTask() instead. */
 export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Promise<ClaudeCodeResponse> {
-    const { worktreePath, issueRef, githubToken, customPrompt, isRetry = false, retryReason, branchName, modelName, issueDetails, onSessionId, onContainerId } = options;
+    const { worktreePath, issueRef, githubToken, customPrompt, isRetry = false, retryReason, branchName, modelName, issueDetails, onSessionId, onContainerId, timeoutMs } = options;
     const startTime = Date.now();
 
     const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -115,7 +117,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         const { result, usageMetrics } = await executeWithUsageTracking(
             'claude',
             async () => executeDockerCommand('docker', dockerArgs, {
-                timeout: CLAUDE_TIMEOUT_MS,
+                timeout: timeoutMs ?? CLAUDE_TIMEOUT_MS,
                 cwd: worktreePath,
                 onSessionId,
                 onContainerId,
@@ -271,11 +273,12 @@ interface AgentExecutionParams {
     correlationId?: string;
     repository?: string;
     metadata?: Record<string, unknown>;
+    timeoutMs?: number;
     correlatedLogger: ReturnType<typeof logger.withCorrelation>;
 }
 
 async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<AnalysisResult | null> {
-    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, correlatedLogger } = params;
+    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, correlatedLogger } = params;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
@@ -287,7 +290,7 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
 
     const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
     correlatedLogger.info({ agentAlias, resolvedModel, taskId, executionType }, 'Using agent-specific lightweight LLM analysis');
-    return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata });
+    return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs });
 }
 
 function buildWorkRef(opts: {
@@ -314,7 +317,7 @@ async function executeClaudeAnalysis(
     resolvedModel: string,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<string> {
-    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, prNumber, executionType = 'other', model } = options;
+    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, prNumber, executionType = 'other', model, timeoutMs } = options;
 
     const claudeResult = await executeClaudeCode({
         worktreePath, issueRef, githubToken,
@@ -322,7 +325,8 @@ async function executeClaudeAnalysis(
         branchName: 'analysis-generation',
         modelName: resolvedModel,
         systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT,
-        tools: LIGHTWEIGHT_TOOLS
+        tools: LIGHTWEIGHT_TOOLS,
+        timeoutMs,
     });
 
     await recordLLMMetrics(buildLlmMetricsPayload(claudeResult, resolvedModel), issueRef, { correlationId, taskId, executionType });
@@ -354,7 +358,7 @@ async function executeClaudeAnalysis(
 }
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata } = options;
+    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata, timeoutMs } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
@@ -366,7 +370,7 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
             // Pass all logging fields to agent - agent handles persistence internally
             const analysisResult = await tryExecuteWithAgent({
                 agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType,
-                correlationId, repository, metadata, correlatedLogger
+                correlationId, repository, metadata, timeoutMs, correlatedLogger
             });
             if (analysisResult !== null) {
                 if (!analysisResult.success) {

@@ -4,9 +4,52 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
+const legacyDocsRedirects = [
+  {
+    to: '/docs/concepts/pr-review-guidelines',
+    from: '/docs/AI_PR_REVIEW_GUIDELINES',
+  },
+  {
+    to: '/docs/operations/llm-metrics',
+    from: '/docs/LLM_METRICS',
+  },
+  {
+    to: '/docs/operations/deployment',
+    from: '/docs/PRODUCTION_DEPLOYMENT',
+  },
+  {
+    to: '/docs/features/branch-config',
+    from: '/docs/REPOSITORY_BRANCH_CONFIG',
+  },
+  {
+    to: '/docs/operations/system-metrics',
+    from: '/docs/SYSTEM_METRICS',
+  },
+  {
+    to: '/docs/operations/web-ui-integration',
+    from: '/docs/WEB_UI_INTEGRATION',
+  },
+  {
+    to: '/docs/features/overview',
+    from: '/docs/features',
+  },
+  {
+    to: '/docs/tutorials/setup',
+    from: '/docs/getting-started/setup',
+  },
+  {
+    to: '/docs/tutorials/usage',
+    from: '/docs/getting-started/usage',
+  },
+  {
+    to: '/docs/features/pr-commands',
+    from: '/docs/pr-commands',
+  },
+] as const;
+
 const config: Config = {
   title: 'ProPR',
-  tagline: 'Automated GitHub Issue Processor with AI',
+  tagline: 'Web UI for AI planning, execution, and PR automation',
   favicon: 'img/favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
@@ -54,6 +97,15 @@ const config: Config = {
     ],
   ],
 
+  plugins: [
+    [
+      '@docusaurus/plugin-client-redirects',
+      {
+        redirects: legacyDocsRedirects,
+      },
+    ],
+  ],
+
   themeConfig: {
     // Replace with your project's social card
     image: 'img/logo.svg',
@@ -88,7 +140,7 @@ const config: Config = {
           items: [
             {
               label: 'Documentation',
-              to: '/docs/AI_PR_REVIEW_GUIDELINES',
+              to: '/docs/intro',
             },
           ],
         },
@@ -112,4 +164,3 @@ const config: Config = {
 };
 
 export default config;
-

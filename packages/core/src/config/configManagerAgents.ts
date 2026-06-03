@@ -95,74 +95,35 @@ const LEGACY_DEFAULT_DOCKER_IMAGES: Record<AgentConfig['type'], string[]> = {
     opencode: []
 };
 
-function migrateDefaultCliVersion(agent: AgentConfig): boolean {
-    if (agent.cliVersionType) return false;
-    agent.cliVersionType = 'default';
-    agent.cliVersionResolved = DEFAULT_CLI_VERSIONS[agent.type];
-    logger.info({ agentAlias: agent.alias, type: agent.type }, 'Migrated agent to default CLI version');
-    return true;
-}
-
-function migrateLegacyDefaultDockerImage(agent: AgentConfig): boolean {
-    if (agent.cliVersionType !== 'default') return false;
-    if (!LEGACY_DEFAULT_DOCKER_IMAGES[agent.type].includes(agent.dockerImage)) return false;
-    agent.dockerImage = DEFAULT_AGENT_DOCKER_IMAGES[agent.type];
-    logger.info({ agentAlias: agent.alias, type: agent.type, dockerImage: agent.dockerImage }, 'Migrated legacy default agent Docker image');
-    return true;
-}
-
-function migrateCodexAgent(agent: AgentConfig): boolean {
-    let migrated = false;
-    const missingModels = agent.supportedModels ? CODEX_55_MODELS.filter(m => !agent.supportedModels.includes(m)) : [];
-    if (missingModels.length > 0) {
-        agent.supportedModels = [...missingModels, ...agent.supportedModels];
-        migrated = true;
-        logger.info({ agentAlias: agent.alias, addedModels: missingModels }, 'Added GPT-5.5 models to Codex agent');
+function addMissingSupportedModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
+    if (!agent.supportedModels) {
+        return false;
     }
 
-    if (!agent.defaultModel || agent.defaultModel === 'gpt-5.4') {
-        agent.defaultModel = 'gpt-5.5';
-        migrated = true;
-        logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Updated Codex default model');
+    const missingModels = models.filter(m => !agent.supportedModels.includes(m));
+    if (missingModels.length === 0) {
+        return false;
     }
 
-    if (agent.cliVersionType === 'default' && agent.cliVersionResolved !== AGENT_DEFAULT_VERSIONS.codex) {
-        agent.cliVersionResolved = AGENT_DEFAULT_VERSIONS.codex;
-        agent.dockerImage = generateImageTag('codex', agent.cliVersionResolved, computeContentHash('codex'));
-        migrated = true;
-        logger.info({ agentAlias: agent.alias, cliVersion: agent.cliVersionResolved, dockerImage: agent.dockerImage }, 'Updated Codex default CLI version and Docker image');
-    }
-
-    return migrated;
-}
-
-function migrateClaudeAgent(agent: AgentConfig): boolean {
-    if (!agent.supportedModels) return false;
-    const missingModels = CLAUDE_46_MODELS.filter(m => !agent.supportedModels.includes(m));
-    if (missingModels.length === 0) return false;
     agent.supportedModels = [...missingModels, ...agent.supportedModels];
-    logger.info({ agentAlias: agent.alias, addedModels: missingModels }, 'Added Claude 4.6 models to agent');
+    logger.info({ agentAlias: agent.alias, addedModels: missingModels }, logMessage);
     return true;
 }
 
-function removeDeprecatedModels(agent: AgentConfig): boolean {
-    if (!agent.supportedModels) return false;
+function removeDeprecatedSupportedModels(agent: AgentConfig): boolean {
+    if (!agent.supportedModels) {
+        return false;
+    }
+
     const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
     const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
-    if (removedModels.length === 0) return false;
+    if (removedModels.length === 0) {
+        return false;
+    }
+
     agent.supportedModels = validModels;
     logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
     return true;
-}
-
-export function migrateAgentConfig(agent: AgentConfig): boolean {
-    let migrated = false;
-    migrated = migrateDefaultCliVersion(agent) || migrated;
-    migrated = migrateLegacyDefaultDockerImage(agent) || migrated;
-    if (agent.type === 'claude') migrated = migrateClaudeAgent(agent) || migrated;
-    if (agent.type === 'codex') migrated = migrateCodexAgent(agent) || migrated;
-    migrated = removeDeprecatedModels(agent) || migrated;
-    return migrated;
 }
 
 /**
@@ -174,7 +135,41 @@ export async function migrateAgentConfigs(): Promise<boolean> {
         let migrated = false;
 
         for (const agent of agents) {
-            migrated = migrateAgentConfig(agent) || migrated;
+            if (!agent.cliVersionType) {
+                agent.cliVersionType = 'default';
+                agent.cliVersionResolved = DEFAULT_CLI_VERSIONS[agent.type];
+                migrated = true;
+                logger.info({ agentAlias: agent.alias, type: agent.type }, 'Migrated agent to default CLI version');
+            }
+
+            if (agent.cliVersionType === 'default' && LEGACY_DEFAULT_DOCKER_IMAGES[agent.type].includes(agent.dockerImage)) {
+                agent.dockerImage = DEFAULT_AGENT_DOCKER_IMAGES[agent.type];
+                migrated = true;
+                logger.info({ agentAlias: agent.alias, type: agent.type, dockerImage: agent.dockerImage }, 'Migrated legacy default agent Docker image');
+            }
+
+            if (agent.type === 'claude' && agent.supportedModels) {
+                migrated = addMissingSupportedModels(agent, CLAUDE_46_MODELS, 'Added Claude 4.6 models to agent') || migrated;
+            }
+
+            if (agent.type === 'codex') {
+                migrated = addMissingSupportedModels(agent, CODEX_55_MODELS, 'Added GPT-5.5 models to Codex agent') || migrated;
+
+                if (!agent.defaultModel || agent.defaultModel === 'gpt-5.4') {
+                    agent.defaultModel = 'gpt-5.5';
+                    migrated = true;
+                    logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Updated Codex default model');
+                }
+
+                if (agent.cliVersionType === 'default' && agent.cliVersionResolved !== AGENT_DEFAULT_VERSIONS.codex) {
+                    agent.cliVersionResolved = AGENT_DEFAULT_VERSIONS.codex;
+                    agent.dockerImage = generateImageTag('codex', agent.cliVersionResolved, computeContentHash('codex'));
+                    migrated = true;
+                    logger.info({ agentAlias: agent.alias, cliVersion: agent.cliVersionResolved, dockerImage: agent.dockerImage }, 'Updated Codex default CLI version and Docker image');
+                }
+            }
+
+            migrated = removeDeprecatedSupportedModels(agent) || migrated;
         }
 
         if (migrated) {

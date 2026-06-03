@@ -18,10 +18,7 @@ import { generateTaskImportPrompt } from '@propr/core';
 import { handleError } from '@propr/core';
 import { handleSimpleUsageLimitError } from './issueJobHelpers.js';
 import type { TaskImportJobData, JobResult } from '@propr/core';
-
-interface GitHubToken {
-    token: string;
-}
+import type { GitHubToken } from './githubTypes.js';
 
 interface TaskImportResult extends JobResult {
     repository?: string;

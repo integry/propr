@@ -1,22 +1,22 @@
 # ProPR - Automated GitHub Issue Processor
 
-A production-ready automated system that monitors GitHub issues, uses configurable coding agents such as Claude Code and OpenCode to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
+A production-ready automated system that monitors GitHub issues, runs configured AI coding agents to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
 
 ## Features
 
 ### ✅ Complete End-to-End Automation
 - **Issue Detection**: Automatic monitoring of GitHub repositories for AI-eligible issues
 - **Multiple Primary Labels**: Support for multiple trigger labels (e.g., 'AI', 'propr') with dynamic state label generation
-- **Model-Specific Processing**: Support for multiple coding agents and models with dedicated job queues
+- **Model-Specific Processing**: Support for multiple models through configured coding agents
 - **Deterministic Git Workflow**: Reliable 3-phase workflow separating AI implementation from git operations
 - **Automatic PR Creation**: Direct GitHub API integration with proper issue linking
 - **Quality Assurance**: Comprehensive validation and retry mechanisms
 
 ### ✅ Advanced Multi-Model Support
-- **Model-Specific Enqueueing**: Separate job queues for different agent/model selections based on issue labels
+- **Model-Specific Enqueueing**: Separate jobs for different agent/model labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels (`llm-claude-sonnet`, `llm-claude-opus`, `llm-opencode-kimi-k26`)
+- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, `llm-opencode-kimi-k26`, and `llm-gemini-pro`
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -25,7 +25,7 @@ A production-ready automated system that monitors GitHub issues, uses configurab
 - **Branch Management**: Automatic creation, pushing, and cleanup of feature branches
 
 ### ✅ Intelligent Agent Integration
-- **Implementation-Focused Prompts**: AI agents focus solely on code implementation, not git operations
+- **Implementation-Focused Prompts**: Agents focus on code implementation, not git operations
 - **Context-Aware Processing**: Reads both issue descriptions and all comments for complete context
 - **Docker Isolation**: Secure containerized execution environment with network restrictions
 - **Output Parsing**: Intelligent extraction of implementation details and commit messages
@@ -46,15 +46,16 @@ A production-ready automated system that monitors GitHub issues, uses configurab
 
 ## Prerequisites
 
-- **Node.js 18+** - Runtime environment
+- **Docker** - Runs the ProPR stack and isolated agent execution containers
 - **GitHub App** - Created with appropriate permissions (see setup below)
-- **AI Agent Credentials** - Configure at least one coding agent. Claude requires your Anthropic/Claude credentials; OpenCode requires your own OpenCode Go or provider API keys.
-- **Redis Server** - For task queue management (v6.0+ recommended)
-- **Git 2.25+** - For worktree support and modern git operations
-- **Docker** - For secure coding-agent execution environments
-- **Disk Space** - Sufficient space for repository clones and worktrees (minimum 10GB recommended)
+- **Agent credentials** - Credentials for at least one enabled coding agent
+- **Disk Space** - Sufficient space for repository clones, worktrees, logs, and application data
+
+Node.js, Redis, Git, and a source checkout are only required when developing ProPR itself. The normal local or server setup uses prebuilt Docker images.
 
 ## Setup
+
+Most users should start ProPR from the prebuilt images. Use the source setup only if you plan to modify the codebase.
 
 ### 1. GitHub App Configuration
 
@@ -73,200 +74,142 @@ Create a GitHub App with the following permissions:
 3. Install the app on your repository
 4. Note down the App ID and Installation ID
 
-### 2. Environment Configuration
+### 2. Local Runtime Directory
 
-1. Copy the example environment file:
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Fill in your credentials and daemon configuration:
-   ```
-   # GitHub App Configuration
-   GH_APP_ID=your_app_id
-   GH_PRIVATE_KEY_PATH=./your-app-private-key.pem
-   GH_INSTALLATION_ID=your_installation_id
-   
-   # Daemon Configuration
-   GITHUB_REPOS_TO_MONITOR=owner/repo1,owner/repo2
-   POLLING_INTERVAL_MS=60000
-   
-   # Issue Detection Configuration
-   PRIMARY_PROCESSING_LABELS=AI,propr
-   # Note: State labels (-processing, -done, -failed-*) are now automatically 
-   # generated based on the specific primary label that triggered processing
-   
-   # Model-Specific Configuration
-   MODEL_LABEL_PATTERN="^llm-(.+)$"
-   
-   # PR Comment Monitoring Configuration
-   GITHUB_BOT_USERNAME=your_bot_username
-   GITHUB_USER_WHITELIST=
-   GITHUB_USER_BLACKLIST=
-   
-   # Git Configuration
-   GIT_CLONES_BASE_PATH=/tmp/git-processor/clones
-   GIT_WORKTREES_BASE_PATH=/tmp/git-processor/worktrees
-   GIT_DEFAULT_BRANCH=main
-   GIT_SHALLOW_CLONE_DEPTH=
-   
-   # Repository-Specific Branch Configuration (optional)
-   GIT_DEFAULT_BRANCH_OWNER_REPO=dev
-   ```
-
-3. Place your GitHub App private key file in the project root
-
-### 3. Git Environment Setup
-
-Ensure the worker can access repository storage directories:
+Create a directory for local configuration and persistent data:
 
 ```bash
-# Create directories with appropriate permissions
-sudo mkdir -p /tmp/git-processor/{clones,worktrees}
-sudo chown -R $(whoami) /tmp/git-processor
-chmod 755 /tmp/git-processor
-
-# Verify Git installation and worktree support
-git --version
-git worktree --help
+mkdir -p propr-deploy/{data,logs,repos}
+cd propr-deploy
 ```
 
-### 4. Coding Agent Setup
-
-Configure one or more implementation agents. Each agent needs its own CLI credentials and Docker image.
-
-#### Docker
-
-The worker uses Docker to run all coding agents in secure, isolated environments.
+Place your GitHub App private key in this directory and restrict its permissions:
 
 ```bash
-# Ubuntu/Debian
-sudo apt-get update
-sudo apt-get install docker.io
-sudo usermod -aG docker $USER
-
-# macOS (with Homebrew)
-brew install docker
-
-# Verify installation
-docker --version
+chmod 600 your-app-private-key.pem
 ```
 
-#### Claude Code
+### 3. Environment Configuration
 
-For Claude Code CLI integration:
-
-1. **Install Claude Code CLI globally:**
-   ```bash
-   npm install -g @anthropic-ai/claude-code
-   ```
-
-2. **Authenticate with Claude:**
-   ```bash
-   claude login
-   ```
-   This generates `~/.config/claude-code/auth.json` needed for non-interactive execution.
-
-3. **Configure Claude settings in .env:**
-   ```bash
-   # Claude Code Configuration
-   CLAUDE_DOCKER_IMAGE=claude-code-processor:latest
-   CLAUDE_CONFIG_PATH=~/.config/claude-code
-   CLAUDE_MAX_TURNS=1000
-   CLAUDE_TIMEOUT_MS=300000
-   
-   # Worker Configuration
-   WORKER_CONCURRENCY=5
-   
-   # Retry Configuration
-   GITHUB_API_MAX_RETRIES=3
-   GIT_OPERATION_MAX_RETRIES=3
-   ```
-
-#### OpenCode
-
-For OpenCode CLI integration:
-
-1. **Install OpenCode CLI globally:**
-   ```bash
-   curl -fsSL https://opencode.ai/install | bash
-   # or: npm install -g opencode-ai
-   ```
-
-2. **Initialize local OpenCode directories:**
-   ```bash
-   mkdir -p ~/.config/opencode ~/.config/opencode/xdg-data/opencode
-   opencode --version
-   ```
-
-   OpenCode's current config path is `~/.config/opencode`. Use that as the agent `--config-path` for new installs. Legacy deployments can keep using `~/.opencode` by configuring the agent with `--config-path ~/.opencode`.
-
-3. **Authenticate OpenCode with your provider keys:**
-   ```bash
-   opencode auth login
-   ```
-
-   OpenCode stores provider credentials in `~/.local/share/opencode/auth.json`, while ProPR mounts only the configured OpenCode config directory into the agent container. Make credentials available to the container in one of these ways:
-
-   - Prefer provider environment variables when your OpenCode provider supports them. Add those variables to the OpenCode agent's `envVars` through your API/UI deployment flow.
-   - If you use `opencode auth login`, copy or sync `~/.local/share/opencode/auth.json` to a data directory under the mounted config path, for example `~/.config/opencode/xdg-data/opencode/auth.json`, and set the agent env var `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`. Re-sync this file after changing providers or refreshing OpenCode auth.
-
-   ```bash
-   mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
-   ```
-
-   OpenCode Go is an optional OpenCode provider/model source, separate from the OpenCode CLI. You can use an OpenCode Go model such as `opencode-go/kimi-k2.6`, or configure any other provider supported by OpenCode. In all cases, operators must supply their own OpenCode/provider API keys.
-
-4. **Configure an OpenCode agent in ProPR:**
-   ```bash
-   propr agent add opencode \
-     -t opencode \
-     -m opencode-go/kimi-k2.6 \
-     -d opencode-go/kimi-k2.6 \
-     --docker-image propr/agent-opencode:latest \
-     --config-path ~/.config/opencode
-   ```
-
-   If you keep OpenCode credentials in environment variables or need the `XDG_DATA_HOME` override shown above, add those env vars to the agent configuration through the API/UI deployment flow used by your installation.
-
-   GitHub issue labels are matched by `MODEL_LABEL_PATTERN` (default `^llm-(.+)$`) and then resolved against ProPR's model catalog and configured agents. The built-in label `llm-opencode-kimi-k26` maps to `opencode-go/kimi-k2.6` when an enabled OpenCode agent supports that model.
-
-### 5. Installation
+Create a `.env` file for bootstrap credentials and default paths:
 
 ```bash
-npm install
+# GitHub App Configuration
+GH_APP_ID=your_app_id
+GH_PRIVATE_KEY_PATH=/app/config/your-app-private-key.pem
+GH_INSTALLATION_ID=your_installation_id
+
+# Dashboard API and Auth
+DASHBOARD_API_PORT=4000
+FRONTEND_URL=http://localhost:5173
+GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
+GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
+GH_OAUTH_CALLBACK_URL=http://localhost:4000/api/auth/github/callback
+SESSION_SECRET=generate-a-strong-secret-here
+
+# Issue Detection Defaults
+PRIMARY_PROCESSING_LABELS=AI,propr
+
+# PR Comment Monitoring
+GITHUB_BOT_USERNAME=your_bot_username
+GITHUB_USER_WHITELIST=
+GITHUB_USER_BLACKLIST=
+
+# Git Storage Inside The ProPR Containers
+GIT_CLONES_BASE_PATH=/app/repos/clones
+GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
+GIT_DEFAULT_BRANCH=main
+GIT_SHALLOW_CLONE_DEPTH=
+
+# Shared SQLite Database
+DB_FILENAME=/app/data/propr.sqlite
 ```
+
+### 4. Agent Credential Setup
+
+Configure at least one coding agent before sending real work through the system. The Web UI is the normal place to add enabled agent entries, supported models, default models, Docker images, and credential paths.
+
+Authenticate with the provider CLI for the agents you plan to enable. For example, Claude Code uses:
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude login
+```
+
+Use equivalent login and credential setup for Codex or Gemini if those are the agents you plan to enable.
+
+### 5. Start From Prebuilt Images
+
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/.env:/app/.env:ro" \
+  -v "$PWD/your-app-private-key.pem:/app/config/your-app-private-key.pem:ro" \
+  -e PROPR_ENV_FILE="$PWD/.env" \
+  -e PROPR_DATA_DIR="$PWD/data" \
+  -e PROPR_LOGS_DIR="$PWD/logs" \
+  -e PROPR_REPOS_DIR="$PWD/repos" \
+  -e HOST_CLAUDE_DIR="$HOME/.claude" \
+  -e HOST_CODEX_DIR="$HOME/.codex" \
+  -e HOST_GEMINI_DIR="$HOME/.gemini" \
+  propr/launcher:latest
+```
+
+Open the local Web UI at `http://localhost:5173`. For a remote server, use the same image-based flow with server paths and public `FRONTEND_URL` / `GH_OAUTH_CALLBACK_URL` values.
+
+### 6. Source Development Setup
+
+Install dependencies from a source checkout only when you are changing ProPR code:
+
+```bash
+npm ci
+```
+
+For local platform development, use `npm run compose:up` to build and run the stack from source.
 
 ## Project Structure
 
 ```
 propr/
-├── src/                              # Daemon, worker, polling, and job orchestration
-│   ├── daemon.ts                     # Issue detection daemon entry point
-│   ├── worker.ts                     # Worker entry point
-│   ├── jobs/                         # Issue, PR comment, review, and system task jobs
-│   ├── polling/                      # GitHub issue and PR polling
-│   └── github/                       # GitHub PR and merge operations
-├── packages/
-│   ├── core/                         # Agent registry, agent implementations, shared runtime
-│   ├── api/                          # Dashboard API and webhook routes
-│   ├── cli/                          # ProPR CLI
-│   └── shared/                       # Shared model definitions and types
-├── propr-ui/                         # Frontend package
+├── src/
+│   ├── auth/
+│   │   └── githubAuth.js        # GitHub App authentication
+│   ├── agents/
+│   │   └── impl/                # Supported coding agent implementations
+│   ├── claude/
+│   │   └── claudeService.js     # Claude Code integration helpers
+│   ├── git/
+│   │   └── repoManager.js       # Git operations, worktree management, branch handling
+│   ├── queue/
+│   │   └── taskQueue.js         # BullMQ task queue with Redis
+│   ├── utils/
+│   │   ├── errorHandler.js      # Comprehensive error handling utilities
+│   │   ├── logger.js            # Structured logging with correlation IDs
+│   │   ├── prValidation.js      # PR validation and retry mechanisms
+│   │   ├── retryHandler.js      # Configurable retry logic with exponential backoff
+│   │   ├── workerStateManager.js # Job state management and tracking
+│   │   └── idempotentOps.js     # Idempotent operation utilities
+│   ├── daemon.js                # Multi-model issue detection daemon
+│   ├── worker.js                # 3-phase deterministic job processor
+│   ├── githubService.js         # GitHub API operations and PR management
+│   └── index.js                 # Application entry point
 ├── scripts/
-│   ├── claude-entrypoint.sh     # Docker entrypoint for secure Claude execution
-│   ├── codex-entrypoint.sh      # Docker entrypoint for secure Codex execution
-│   ├── gemini-entrypoint.sh     # Docker entrypoint for secure Gemini execution
-│   ├── opencode-entrypoint.sh   # Docker entrypoint for secure OpenCode execution
+│   ├── claude-entrypoint.sh     # Docker entrypoint for Claude execution
+│   ├── codex-entrypoint.sh      # Docker entrypoint for Codex execution
+│   ├── gemini-entrypoint.sh     # Docker entrypoint for Gemini execution
+│   ├── opencode-entrypoint.sh   # Docker entrypoint for OpenCode execution
 │   ├── init-firewall.sh         # Security and firewall setup
 │   ├── fix-issue-labels.js      # Manual issue label management utility
 │   └── list-repo-configs.js     # Repository configuration display utility
-├── docs/                             # Docusaurus documentation site
-├── test/                             # Unit and integration tests
-├── Dockerfile.claude                 # Secure Docker image for Claude execution
-├── Dockerfile.codex                  # Secure Docker image for Codex execution
-├── Dockerfile.gemini                 # Secure Docker image for Gemini execution
-├── Dockerfile.opencode               # Secure Docker image for OpenCode execution
+├── docs/
+│   ├── AI_PR_REVIEW_GUIDELINES.md    # Guidelines for AI-generated code review
+│   ├── REPOSITORY_BRANCH_CONFIG.md   # Repository configuration documentation
+│   └── SYSTEM_METRICS.md             # System metrics and monitoring guide
+├── test/                             # Comprehensive test suite
+│   ├── *.test.js                     # Unit and integration tests
+│   ├── worker.modelSpecific.test.js  # Multi-model processing tests
+│   └── repoManager.modelSpecific.test.js # Git worktree isolation tests
+├── Dockerfile.claude                 # Docker image for Claude execution
 ├── .env.example                      # Complete environment configuration template
 └── package.json                      # Dependencies and npm scripts
 ```
@@ -328,7 +271,7 @@ npm run worker & npm run worker
 
 The worker will:
 - **Phase 1 (Pre-Agent Setup)**: Pull jobs from queue, update base branch, create isolated git worktree, push initial branch to GitHub
-- **Phase 2 (AI Implementation)**: Execute the selected coding agent with implementation-focused prompts in a secure Docker environment
+- **Phase 2 (AI Implementation)**: Execute the selected agent with implementation-focused prompts in a secure Docker environment
 - **Phase 3 (Post-Agent Finalization)**: Commit any changes, push to GitHub, create pull request with automatic issue linking
 - Handle multiple models concurrently with model-specific delays to prevent conflicts
 - Provide comprehensive error handling and retry mechanisms
@@ -499,9 +442,12 @@ These commands use the `scripts/compose.sh` script which wraps Docker Compose op
 
 ### Docker Compose Services
 
-- **propr**: Main application (daemon and worker)
+- **daemon**: Polls GitHub and enqueues issue work
+- **worker**: Runs issue, PR comment, and merge-conflict jobs
+- **api**: Serves the dashboard API, auth, and webhooks
+- **web-ui**: Web UI for monitoring and management (port 5173)
 - **redis**: Redis server for task queue management
-- **propr-ui**: Web UI for monitoring and management (port 5173)
+- **indexing-worker** and **analysis-worker**: Optional support workers in the development Compose stack
 
 All services are configured in `docker-compose.yml` with proper networking and volume management.
 
@@ -551,11 +497,14 @@ npm test
 ## Workflow Overview
 
 ### Issue Labels for Model Selection
-Add labels to GitHub issues to specify which agent/model(s) should process them:
-- `llm-claude-sonnet` - Use Claude Sonnet model
-- `llm-claude-opus` - Use Claude Opus model
+Add labels to GitHub issues to specify which enabled agent/model pair should process them:
+- `llm-claude-sonnet46` - Use the configured Claude Sonnet 4.6 model
+- `llm-codex-gpt54` - Use the configured Codex GPT-5.4 model
 - `llm-opencode-kimi-k26` - Use the configured OpenCode Kimi K2.6 model
-- Multiple labels can be used together for multi-model processing
+- `llm-gemini-pro` - Use the configured Gemini Pro model
+- Multiple model labels can be used together for multi-model processing
+
+To target a non-default branch for direct labeled issue execution, add a `base-<branch>` label before processing starts.
 
 ### Deterministic 3-Phase Processing
 1. **Pre-Agent Setup** (Deterministic)

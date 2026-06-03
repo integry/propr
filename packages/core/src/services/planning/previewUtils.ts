@@ -148,9 +148,13 @@ export function estimateContextGatheringDuration(fileCount: number): number {
 /**
  * Calculate the token budget for additional context repositories.
  */
-export function calculateAdditionalContextBudget(
-  params: { targetTokenLimit: number; simulatedTokens: number; attachmentTokens: number; smartSummaryTokens: number; contextLevel?: number }
-): number {
+export function calculateAdditionalContextBudget(params: {
+  targetTokenLimit: number;
+  simulatedTokens: number;
+  attachmentTokens: number;
+  smartSummaryTokens: number;
+  contextLevel?: number;
+}): number {
   const { targetTokenLimit, simulatedTokens, attachmentTokens, smartSummaryTokens, contextLevel = 50 } = params;
   const targetRepoUsage = simulatedTokens + attachmentTokens + smartSummaryTokens;
   const remainingBudget = targetTokenLimit - targetRepoUsage;

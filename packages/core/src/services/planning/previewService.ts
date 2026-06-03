@@ -456,7 +456,13 @@ async function generateContextPreviewInternal(options: GenerateContextPreviewOpt
   let additionalContextFiles = 0;
   let additionalContextFilesIncluded: Array<{ repository: string; path: string; score?: number; reason?: string }> = [];
   if (contextRepositories?.length && githubToken) {
-    const additionalContextBudget = calculateAdditionalContextBudget({ targetTokenLimit, simulatedTokens, attachmentTokens, smartSummaryTokens, contextLevel });
+    const additionalContextBudget = calculateAdditionalContextBudget({
+      targetTokenLimit,
+      simulatedTokens,
+      attachmentTokens,
+      smartSummaryTokens,
+      contextLevel
+    });
     const result = await loadAdditionalContextFromRepos({
       contextRepositories,
       prompt,

@@ -15,11 +15,72 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   tutorialSidebar: [
     'intro',
-    'features',
     {
       type: 'category',
-      label: 'Getting Started',
-      items: ['getting-started/setup', 'getting-started/usage'],
+      label: 'Setup',
+      items: [
+        'tutorials/setup',
+        'tutorials/setup-local',
+        'tutorials/setup-server',
+        'tutorials/setup-source',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Tutorials',
+      items: [
+        'tutorials/usage',
+        'tutorials/end-to-end-workflow',
+        'tutorials/planner-studio',
+      ],
+    },
+    {
+      type: 'doc',
+      id: 'features/overview',
+      label: 'Feature Overview',
+    },
+    {
+      type: 'category',
+      label: 'Core Workflow',
+      items: [
+        'features/planning',
+        'features/agent-routing',
+        'features/execution-safety',
+        'features/observability',
+        'features/self-hosting',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'PR Control',
+      items: [
+        'features/pr-followup',
+        'features/pr-commands',
+        'features/pr-review-fix-commands',
+        'features/pr-model-routing-commands',
+        'features/pr-ultrafix-commands',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Repository Context',
+      items: [
+        'features/repository-knowledge',
+        'features/work-splitting',
+        'features/branch-config',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Tools',
+      items: [
+        'features/cli-workflows',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Concepts',
+      items: ['concepts/pr-review-guidelines'],
     },
     {
       type: 'category',
@@ -27,22 +88,26 @@ const sidebars: SidebarsConfig = {
       items: [
         'architecture/overview',
         'architecture/daemon',
+        'architecture/daemon-runtime',
         'architecture/worker',
+        'architecture/worker-runtime',
         'architecture/claude-integration',
         'architecture/opencode-integration',
+        'architecture/claude-code-runtime',
         'architecture/git-management',
+        'architecture/git-runtime',
       ],
     },
     {
       type: 'category',
-      label: 'Technical Docs',
+      label: 'Operations',
       items: [
-        'AI_PR_REVIEW_GUIDELINES',
-        'LLM_METRICS',
-        'PRODUCTION_DEPLOYMENT',
-        'REPOSITORY_BRANCH_CONFIG',
-        'SYSTEM_METRICS',
-        'WEB_UI_INTEGRATION',
+        'operations/deployment',
+        'operations/maintenance',
+        'operations/system-metrics',
+        'operations/metrics-feedback-loop',
+        'operations/llm-metrics',
+        'operations/web-ui-integration',
       ],
     },
   ],
