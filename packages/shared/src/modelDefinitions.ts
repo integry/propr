@@ -51,10 +51,10 @@ export const GEMINI_MODELS: ModelInfo[] = [
 ];
 
 // Mistral Vibe coding models
+// Available models from `vibe /model`: mistral-medium-3.5, devstral-small, local
 export const VIBE_MODELS: ModelInfo[] = [
-  { id: 'mistral-medium-3.5', name: 'Mistral Medium 3.5', shortName: 'Mistral Medium 3.5', shortAlias: 'medium35', githubLabel: 'llm-vibe-medium35', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/mistral-medium-3.5' },
-  { id: 'devstral-2512', name: 'Devstral 2', shortName: 'Devstral 2', shortAlias: 'devstral2', githubLabel: 'llm-vibe-devstral2', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/devstral-2' },
-  { id: 'devstral-small-latest', name: 'Devstral Small 2', shortName: 'Devstral Small', shortAlias: 'devstral-small', githubLabel: 'llm-vibe-devstral-small', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/devstral-small-latest' },
+  { id: 'mistral-medium-3.5', name: 'Mistral Medium 3.5', shortName: 'Mistral Medium', shortAlias: 'mistral', githubLabel: 'llm-vibe-mistral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/mistral-medium-3.5' },
+  { id: 'devstral-small', name: 'Devstral Small', shortName: 'Devstral Small', shortAlias: 'devstral', githubLabel: 'llm-vibe-devstral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/devstral-small' },
 ];
 
 // All models combined
@@ -128,5 +128,5 @@ export const typeBadgeColors: Record<AgentType, string> = {
   claude: 'bg-orange-100 text-orange-800 border-orange-300',
   codex: 'bg-green-100 text-green-800 border-green-300',
   gemini: 'bg-blue-100 text-blue-800 border-blue-300',
-  vibe: 'bg-pink-100 text-pink-800 border-pink-300'
+  vibe: 'bg-red-100 text-red-700 border-red-400'  // Mistral Vibe brand orange-red (#FA500F)
 };
