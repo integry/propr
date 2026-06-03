@@ -253,6 +253,26 @@ function pushEvent(state: ParseState, event: ConversationEvent): void {
   state.events.push(event);
 }
 
+function processVibeAssistantEvent(event: VibeTranscriptEvent, timestamp: string, state: ParseState): void {
+  const reasoning = textFromValue(event.reasoning_content);
+  if (reasoning) pushEvent(state, { type: 'thought' as const, content: truncateContent(reasoning), timestamp });
+
+  const content = textFromValue(event.content);
+  if (content && !isGenericVibeCompletionContent(content)) {
+    pushEvent(state, { type: 'thought' as const, content: truncateContent(content), timestamp });
+  }
+
+  for (const toolCall of event.tool_calls || []) {
+    pushEvent(state, {
+      type: 'tool_use' as const,
+      toolName: toolCall.function?.name || 'tool',
+      input: parseToolInput(toolCall.function?.arguments),
+      id: toolCall.id,
+      timestamp
+    });
+  }
+}
+
 function processVibeEvent(event: VibeTranscriptEvent, timestamp: string, state: ParseState): void {
   if (event.role === 'system') return;
 
@@ -263,23 +283,7 @@ function processVibeEvent(event: VibeTranscriptEvent, timestamp: string, state: 
   }
 
   if (event.role === 'assistant') {
-    const reasoning = textFromValue(event.reasoning_content);
-    if (reasoning) pushEvent(state, { type: 'thought' as const, content: truncateContent(reasoning), timestamp });
-
-    const content = textFromValue(event.content);
-    if (content && !isGenericVibeCompletionContent(content)) {
-      pushEvent(state, { type: 'thought' as const, content: truncateContent(content), timestamp });
-    }
-
-    for (const toolCall of event.tool_calls || []) {
-      pushEvent(state, {
-        type: 'tool_use' as const,
-        toolName: toolCall.function?.name || 'tool',
-        input: parseToolInput(toolCall.function?.arguments),
-        id: toolCall.id,
-        timestamp
-      });
-    }
+    processVibeAssistantEvent(event, timestamp, state);
     return;
   }
 

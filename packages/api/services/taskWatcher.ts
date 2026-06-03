@@ -8,7 +8,8 @@ import fs from 'fs-extra';
 import { TASK_LIVE_UPDATE, type TaskLiveUpdatePayload } from '@propr/shared';
 import { parseConversationFile } from './conversationParser.js';
 import { parseRedisOutput } from './redisOutputParser.js';
-import { loadAgents, resolveConfigPath, type AgentConfig } from '@propr/core';
+import { resolveConfigPath } from '@propr/core';
+import { findAgentConfigForTask, findExecutionStartTimestampForTask } from './taskWatcherLookup.js';
 
 /** Active task watcher info */
 export interface TaskWatcherInfo {
@@ -72,7 +73,7 @@ export class TaskWatcherManager {
     }
 
     // Get agent config to find the correct log path
-    const agentConfig = await this.findAgentConfigForTask(taskId);
+    const agentConfig = await findAgentConfigForTask(taskId);
     const agentType = agentConfig?.type || 'claude';
     const agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
 
@@ -332,19 +333,6 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Check if task has Redis output (indicates non-Claude agent)
-   */
-  private async hasRedisOutput(taskId: string): Promise<boolean> {
-    if (!this.deps) return false;
-    try {
-      const output = await this.deps.redisClient.get(`agent:output:${taskId}`);
-      return output !== null && output.length > 0;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
    * Start Redis-based watcher for agents that stream output to Redis
    */
   private async startRedisWatcher(taskId: string): Promise<void> {
@@ -429,30 +417,6 @@ export class TaskWatcherManager {
     }
   }
 
-  /**
-   * Find the agent config for a task based on agent alias in task ID
-   */
-  private async findAgentConfigForTask(taskId: string): Promise<AgentConfig | null> {
-    try {
-      const agents = await loadAgents();
-      // Extract agent alias from task ID (e.g., "integry-propr-test-48-codex-gpt-5.2-xxx" -> "codex")
-      for (const agent of agents) {
-        if (taskId.includes(`-${agent.alias}-`)) {
-          return agent;
-        }
-      }
-      // Fallback: check by type
-      for (const agent of agents) {
-        if (taskId.includes(`-${agent.type}-`)) {
-          return agent;
-        }
-      }
-      return null;
-    } catch (error) {
-      console.error('[TaskWatcher] Error loading agent config:', error);
-      return null;
-    }
-  }
 
   /**
    * Find the session ID for a task from Redis or database
@@ -505,37 +469,7 @@ export class TaskWatcherManager {
 
   private async findExecutionStartTimestampForTask(taskId: string): Promise<string | null> {
     if (!this.deps) return null;
-
-    const { redisClient, db } = this.deps;
-    const normalizedTaskId = this.normalizeTaskId(taskId);
-
-    try {
-      const stateData = await redisClient.get(`worker:state:${normalizedTaskId}`);
-      if (stateData) {
-        const state = JSON.parse(stateData) as {
-          history?: Array<{ state?: string; timestamp?: string }>
-        };
-        const history = Array.isArray(state.history) ? state.history : [];
-        const entry = history.find(
-          h => h.timestamp && (h.state === 'claude_execution' || h.state === 'codex_execution' || h.state === 'gemini_execution' || h.state === 'vibe_execution')
-        ) || history.find(h => h.timestamp && (h.state ?? '').endsWith('_execution'));
-        if (entry?.timestamp) return entry.timestamp;
-      }
-    } catch (error) {
-      console.error('[TaskWatcher] Error fetching execution start from Redis:', error);
-    }
-
-    try {
-      const llmExecution = await db('llm_executions')
-        .where({ task_id: normalizedTaskId })
-        .orderBy('start_time', 'desc')
-        .first('start_time');
-      const startTime = llmExecution?.start_time;
-      return startTime ? new Date(startTime as string | Date).toISOString() : null;
-    } catch (error) {
-      console.error('[TaskWatcher] Error fetching execution start from database:', error);
-      return null;
-    }
+    return findExecutionStartTimestampForTask(this.deps, this.normalizeTaskId(taskId));
   }
 
   /**
