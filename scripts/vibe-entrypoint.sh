@@ -93,12 +93,12 @@ format_command_for_log() {
             continue
         fi
         case "$arg" in
-            --prompt)
+            -p|--prompt)
                 redacted+=("$arg")
                 redact_next=true
                 ;;
-            --prompt=*)
-                redacted+=("--prompt=<redacted>")
+            -p=*|--prompt=*)
+                redacted+=("${arg%%=*}=<redacted>")
                 ;;
             *)
                 redacted+=("$arg")
@@ -128,7 +128,7 @@ expand_vibe_prompt_file_args() {
                     echo "Prompt file not found: $2" >&2
                     exit 2
                 fi
-                EXPANDED_VIBE_ARGS+=("--prompt" "$(cat "$2")")
+                EXPANDED_VIBE_ARGS+=("-p" "$(cat "$2")")
                 shift 2
                 ;;
             --prompt-file=*)
@@ -137,7 +137,7 @@ expand_vibe_prompt_file_args() {
                     echo "Prompt file not found: $prompt_file" >&2
                     exit 2
                 fi
-                EXPANDED_VIBE_ARGS+=("--prompt" "$(cat "$prompt_file")")
+                EXPANDED_VIBE_ARGS+=("-p" "$(cat "$prompt_file")")
                 shift
                 ;;
             *)

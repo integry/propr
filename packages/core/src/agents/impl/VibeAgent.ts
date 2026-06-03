@@ -313,7 +313,7 @@ export class VibeAgent implements Agent {
         return process.env.MISTRAL_API_KEY?.trim() || this.config.envVars?.MISTRAL_API_KEY?.trim() || undefined;
     }
 
-    private getCliArgs(modelName?: string): string[] {
+    private getCliArgs(): string[] {
         const processArgs = process.env.VIBE_CLI_ARGS;
         const configuredArgs = processArgs ?? this.config.envVars?.VIBE_CLI_ARGS;
         const source = processArgs !== undefined ? 'process.env.VIBE_CLI_ARGS' : 'config.envVars.VIBE_CLI_ARGS';
@@ -324,16 +324,23 @@ export class VibeAgent implements Agent {
             try { args = splitVibeCliArgs(configuredArgs); } catch (error) { throw new Error(`Invalid ${source}: ${(error as Error).message}`); }
             if (args.length === 0) {
                 args = getDefaultVibeCliArgs();
-            } else if (!args.includes('--json')) {
+            } else if (!this.hasStructuredOutputArg(args)) {
                 const allowNoJson = process.env.VIBE_ALLOW_UNSTRUCTURED === '1' || this.config.envVars?.VIBE_ALLOW_UNSTRUCTURED === '1';
                 if (!allowNoJson) {
-                    throw new Error(`${source} does not include --json. Structured output is required. Add --json or set VIBE_ALLOW_UNSTRUCTURED=1 to override.`);
+                    throw new Error(`${source} does not include --output json. Structured output is required. Add --output json or set VIBE_ALLOW_UNSTRUCTURED=1 to override.`);
                 }
-                logger.warn({ source, args }, 'VIBE_CLI_ARGS override does not include --json; structured output parsing may degrade');
+                logger.warn({ source, args }, 'VIBE_CLI_ARGS override does not include --output json; structured output parsing may degrade');
             }
         }
-        if (modelName && !args.includes('--model') && !args.includes('-m')) args.push('--model', modelName);
         return args;
+    }
+
+    private hasStructuredOutputArg(args: string[]): boolean {
+        return args.some((arg, index) => (
+            arg === '--json' ||
+            arg === '--output=json' ||
+            (arg === '--output' && args[index + 1] === 'json')
+        ));
     }
 
     private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number }): string[] {
@@ -374,7 +381,7 @@ export class VibeAgent implements Agent {
 
         const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
-        const cliArgs = this.getCliArgs(cleanModelName);
+        const cliArgs = this.getCliArgs();
         const promptMountArgs: string[] = [];
         if (promptFilePath) {
             const hostPromptPath = resolveHostBindPath(promptFilePath);

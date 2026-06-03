@@ -54,7 +54,7 @@ function createAgent(envVars?: Record<string, string>, configPath = '/tmp/missin
     return new VibeAgent(config) as unknown as VibeAgentPrivate;
 }
 
-test('Vibe Docker args use stdin-oriented default CLI invocation', () => {
+test('Vibe Docker args use supported default CLI invocation', () => {
     delete process.env.VIBE_CLI_ARGS;
     process.env.MISTRAL_API_KEY = 'test-key';
     const args = createAgent().buildDockerArgs({
@@ -65,7 +65,7 @@ test('Vibe Docker args use stdin-oriented default CLI invocation', () => {
     });
 
     const imageIndex = args.indexOf('propr/agent-vibe:latest');
-    assert.deepEqual(args.slice(imageIndex + 1), ['--headless', '--json']);
+    assert.deepEqual(args.slice(imageIndex + 1), ['--output', 'json']);
     assert.equal(args.some(arg => arg.includes('propr-vibe-prompt.md')), false);
 
     const networkIndex = args.indexOf('--network');
@@ -74,7 +74,7 @@ test('Vibe Docker args use stdin-oriented default CLI invocation', () => {
 });
 
 test('Vibe Docker args honor VIBE_CLI_ARGS override', () => {
-    process.env.VIBE_CLI_ARGS = 'vibe --headless --json "two words"';
+    process.env.VIBE_CLI_ARGS = 'vibe --output json "two words"';
     process.env.MISTRAL_API_KEY = 'test-key';
     const args = createAgent().buildDockerArgs({
         worktreePath: process.cwd(),
@@ -84,13 +84,13 @@ test('Vibe Docker args honor VIBE_CLI_ARGS override', () => {
     });
 
     const imageIndex = args.indexOf('propr/agent-vibe:latest');
-    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--headless', '--json', 'two words']);
+    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--output', 'json', 'two words']);
 });
 
 test('Vibe Docker args can read CLI override from agent env vars', () => {
     delete process.env.VIBE_CLI_ARGS;
     process.env.MISTRAL_API_KEY = 'test-key';
-    const args = createAgent({ VIBE_CLI_ARGS: 'vibe --plain --json' }).buildDockerArgs({
+    const args = createAgent({ VIBE_CLI_ARGS: 'vibe --plain --output json' }).buildDockerArgs({
         worktreePath: process.cwd(),
         githubToken: 'token',
         issueNumber: 0,
@@ -98,7 +98,7 @@ test('Vibe Docker args can read CLI override from agent env vars', () => {
     });
 
     const imageIndex = args.indexOf('propr/agent-vibe:latest');
-    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--plain', '--json']);
+    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--plain', '--output', 'json']);
 });
 
 test('Vibe CLI arg splitter handles quotes and escaped spaces', () => {

@@ -126,7 +126,7 @@ export function splitVibeCliArgs(input: string): string[] {
 
 // Tied to the pinned mistral-vibe version in Dockerfile.vibe; override via VIBE_CLI_ARGS if flags change.
 export function getDefaultVibeCliArgs(): string[] {
-    return ['--headless', '--json'];
+    return ['--output', 'json'];
 }
 
 export function buildPromptWithRetryContext(prompt: string, isRetry: boolean, retryReason?: string): string {

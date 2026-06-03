@@ -21,7 +21,7 @@ export { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '
 export { ensureGitRepository } from './utils/git/gitValidation.js';
 export { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
 export type { LabelContext, UpdateResults } from './utils/github/labelOperations.js';
-export { createLogFiles, generateCompletionComment } from './utils/github/logFiles.js';
+export { createLogFiles, generateCompletionComment, redactSecrets } from './utils/github/logFiles.js';
 export { formatSubscriptionUsage } from './utils/github/formatSubscriptionUsage.js';
 export type { SubscriptionUsageRecord, SubscriptionUsageMetrics } from './utils/github/formatSubscriptionUsage.js';
 

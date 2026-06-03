@@ -6,6 +6,7 @@ import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@propr/c
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
+import { redactSecrets } from '@propr/core';
 import { validatePRCreation } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
@@ -15,6 +16,12 @@ import type { GitHubToken } from './githubTypes.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
+
+function formatPostProcessingError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    const redacted = redactSecrets(message || 'Unknown post-processing error');
+    return `**Post-processing Error:**\n${redacted.slice(0, 4000)}\n\n`;
+}
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -118,7 +125,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-                body: `⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**\n\n${completionComment}`,
+                body: `⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**\n\n${formatPostProcessingError(postProcessingError)}${completionComment}`,
             });
             postProcessingResult = { success: false, pr: null, updatedLabels: [AI_DONE_TAG], error: (postProcessingError as Error).message };
         } catch (fallbackError) {
