@@ -56,7 +56,7 @@ function envFileValue(name) {
         const parsed = parseEnvAssignment(rawLine);
         if (parsed?.name === name) {
             const value = parsed.value || undefined;
-            if (value && /\$\{?\w/.test(value)) {
+            if (value && /\$\{[A-Za-z_]/.test(value)) {
                 console.warn(`WARNING: ${name} in .env contains a variable reference ("${value}") that will not be expanded. Use an absolute path instead.`);
             }
             return value;

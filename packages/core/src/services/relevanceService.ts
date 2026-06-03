@@ -1,5 +1,5 @@
 import { extractKeywords, extractKeywordsWithLLM, mergeKeywords } from './relevance/keywordExtractor.js';
-import { mineGitHistory, mineGitHistoryWithLLM, FileScore as GitFileScore, SemanticMiningOptions } from './relevance/gitMiner.js';
+import { mineGitHistory, mineGitHistoryWithLLM, type FileScore as GitFileScore, type SemanticMiningOptions } from './relevance/gitMiner.js';
 import { scorePaths, FileScore as PathFileScore } from './relevance/pathScorer.js';
 import { scoreSemanticRelevance, type SemanticScoringOptions } from './relevance/semanticScorer.js';
 import { Agent } from '../agents/types.js';

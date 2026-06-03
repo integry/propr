@@ -1,13 +1,15 @@
-# Mistral Vibe CLI documentation
+# ProPR Vibe Integration Notes
 
 Vibe is Mistral's agentic coding assistant that brings Devstral and Mistral Medium
 models to your terminal. Use it to write, refactor, and review code with full
 project context.
 
-> **Note:** This documentation was written against `mistral-vibe==2.12.1` (the
-> version pinned in `Dockerfile.vibe`). CLI flags, commands, and config layout
-> may change between releases. Always verify against your installed version with
-> `vibe --help` before treating this as authoritative.
+> **Scope:** This file documents ProPR-specific integration behavior — how
+> ProPR installs, configures, and invokes the Vibe CLI. It is **not**
+> authoritative upstream documentation. Settings and config paths below were
+> observed against `mistral-vibe==2.12.1` (the version pinned in
+> `Dockerfile.vibe`) and may differ in other releases. Always verify against
+> your installed version with `vibe --help`.
 
 > **Verified behavior:** Install, auth sub-commands, model selection, and
 > `--headless`/`--json` output have been tested against the pinned version.

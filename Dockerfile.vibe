@@ -24,7 +24,10 @@ RUN if [ "$CLI_VERSION" = "latest" ]; then \
     else \
       uv tool install "${CLI_VERSION}"; \
     fi
-RUN chmod -R a+rX /opt/uv && chmod a+rx /usr/local/bin/vibe
+RUN chmod -R a+rX /opt/uv \
+    && VIBE_BIN=$(command -v vibe) \
+    && if [ -z "$VIBE_BIN" ]; then echo "ERROR: vibe not found after uv tool install" >&2; exit 1; fi \
+    && chmod a+rx "$VIBE_BIN"
 USER node
 RUN vibe --version
 

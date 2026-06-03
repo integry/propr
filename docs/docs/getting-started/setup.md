@@ -212,23 +212,19 @@ npm install -g mistral-vibe
 
 ### Authenticate with Mistral
 
-> **Note:** The `vibe` CLI commands below apply to the version pinned in
-> `Dockerfile.vibe` (`CLI_VERSION`). Flags and subcommands may differ in
-> newer releases — run `vibe --help` to confirm available options.
+> **Important:** The commands below were verified against the version pinned
+> in `Dockerfile.vibe` (`CLI_VERSION`). The Vibe CLI is under active
+> development — flags and subcommands may change between releases. Always
+> check `vibe --help` for the version you have installed, and refer to
+> `Dockerfile.vibe` for the exact version ProPR uses in production.
 
-Run the setup wizard:
-
-```bash
-vibe --setup
-```
-
-Or authenticate directly:
+Run the setup wizard (if available in your version):
 
 ```bash
-vibe auth login
+vibe --setup        # or: vibe auth login
 ```
 
-This stores credentials in `~/.vibe/credentials.json`.
+This stores credentials in `~/.vibe/` (path may vary by version).
 
 Alternatively, export your API key:
 

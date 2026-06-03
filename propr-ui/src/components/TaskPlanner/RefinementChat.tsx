@@ -137,24 +137,21 @@ const ChatInputForm: React.FC<ChatInputFormProps> = ({
   </div>
 );
 
+function initMessages(initialMessages: ChatMessage[] | undefined): Message[] {
+  if (initialMessages && initialMessages.length > 0) {
+    return initialMessages.map(m => ({ ...m, timestamp: new Date(m.timestamp) }));
+  }
+  return [];
+}
+
+function toMessages(chatMessages: ChatMessage[] | undefined): Message[] {
+  return (chatMessages ?? []).map(m => ({ ...m, timestamp: new Date(m.timestamp) }));
+}
+
 export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
   const isMobile = useIsMobile();
-  const syncedMessages = useMemo<Message[]>(
-    () => (initialMessages ?? []).map(m => ({
-      ...m,
-      timestamp: new Date(m.timestamp)
-    })),
-    [initialMessages]
-  );
-  const [messages, setMessages] = useState<Message[]>(() => {
-    if (initialMessages && initialMessages.length > 0) {
-      return initialMessages.map(m => ({
-        ...m,
-        timestamp: new Date(m.timestamp)
-      }));
-    }
-    return [];
-  });
+  const syncedMessages = useMemo<Message[]>(() => toMessages(initialMessages), [initialMessages]);
+  const [messages, setMessages] = useState<Message[]>(() => initMessages(initialMessages));
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const effectiveInput = inputValueOverride ?? input;
@@ -291,12 +288,15 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
 
     abortControllerRef.current = null;
 
+    let assistantContent: string;
+    if (result.cancelled) assistantContent = 'Refinement cancelled by user.';
+    else if (result.success) assistantContent = result.message;
+    else assistantContent = `Error: ${result.message}`;
+
     const assistantMessage: Message = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
-      content: result.cancelled
-        ? 'Refinement cancelled by user.'
-        : (result.success ? result.message : `Error: ${result.message}`),
+      content: assistantContent,
       timestamp: new Date()
     };
 

@@ -235,6 +235,63 @@ interface CostPreviewContentProps {
   refreshHandler?: () => void;
 }
 
+interface CostStatsHeaderProps {
+  stats: PreviewResult['stats'];
+  smartSelection: PreviewResult['smartSelection'];
+}
+
+const CostStatsHeader: React.FC<CostStatsHeaderProps> = ({ stats, smartSelection }) => (
+  <div className="flex items-center justify-between">
+    <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2">
+        <DollarSign className="w-5 h-5 text-gray-400" />
+        <span className="text-2xl font-bold text-gray-900">
+          ${stats.costEstimate.toFixed(3)}
+        </span>
+      </div>
+      <div className="text-sm text-gray-500">
+        <span className="font-medium">{stats.totalTokens.toLocaleString()}</span> tokens
+      </div>
+      {stats.usageEstimatePercent != null && stats.usageEstimatePercent > 0 && (
+        <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
+          <Activity className="w-3.5 h-3.5" />
+          <span className="font-medium">~{stats.usageEstimatePercent}%</span>
+          <span className="text-amber-500 hidden sm:inline">session usage</span>
+        </div>
+      )}
+    </div>
+    {smartSelection.length > 0 && (
+      <div className="flex items-center gap-2">
+        <Zap className="w-4 h-4 text-indigo-500" />
+        <span className="text-sm font-medium text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full">
+          {smartSelection.filter(f => f.source === 'auto').length} files auto-selected
+        </span>
+      </div>
+    )}
+  </div>
+);
+
+interface TokenUsageBarProps {
+  usagePercentage: number;
+  usageColor: string;
+  maxTokens: number;
+}
+
+const TokenUsageBar: React.FC<TokenUsageBarProps> = ({ usagePercentage, usageColor, maxTokens }) => (
+  <div className="space-y-2">
+    <div className="flex items-center justify-between text-xs text-gray-500">
+      <span>Context window usage</span>
+      <span>{usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k</span>
+    </div>
+    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+      <div
+        className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
+        style={{ width: `${usagePercentage}%` }}
+      />
+    </div>
+  </div>
+);
+
 const CostPreviewContent: React.FC<CostPreviewContentProps> = ({
   data,
   contextRepositories,
@@ -256,50 +313,8 @@ const CostPreviewContent: React.FC<CostPreviewContentProps> = ({
 
   return (
     <div className="pt-4 border-t border-gray-200 space-y-4">
-      {!hideCostsAndTokens && (
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <DollarSign className="w-5 h-5 text-gray-400" />
-              <span className="text-2xl font-bold text-gray-900">
-                ${stats.costEstimate.toFixed(3)}
-              </span>
-            </div>
-            <div className="text-sm text-gray-500">
-              <span className="font-medium">{stats.totalTokens.toLocaleString()}</span> tokens
-            </div>
-            {stats.usageEstimatePercent != null && stats.usageEstimatePercent > 0 && (
-              <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
-                <Activity className="w-3.5 h-3.5" />
-                <span className="font-medium">~{stats.usageEstimatePercent}%</span>
-                <span className="text-amber-500 hidden sm:inline">session usage</span>
-              </div>
-            )}
-          </div>
-          {smartSelection.length > 0 && (
-            <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-indigo-500" />
-              <span className="text-sm font-medium text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full">
-                {smartSelection.filter(f => f.source === 'auto').length} files auto-selected
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-      {!hideCostsAndTokens && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs text-gray-500">
-            <span>Context window usage</span>
-            <span>{usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k</span>
-          </div>
-          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
-              style={{ width: `${usagePercentage}%` }}
-            />
-          </div>
-        </div>
-      )}
+      {!hideCostsAndTokens && <CostStatsHeader stats={stats} smartSelection={smartSelection} />}
+      {!hideCostsAndTokens && <TokenUsageBar usagePercentage={usagePercentage} usageColor={usageColor} maxTokens={maxTokens} />}
       {contextRepositories && contextRepositories.length > 0 && (
         <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
           <BookOpen className="w-4 h-4 text-blue-500" />
