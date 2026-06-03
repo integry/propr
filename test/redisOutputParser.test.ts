@@ -90,3 +90,16 @@ test('parseRedisOutput prefers Vibe session JSONL over startup progress when bot
         'Updated the greeting and verified the script output.'
     ]);
 });
+
+test('parseRedisOutput ignores generic Vibe completion event before session messages', () => {
+    const parsed = parseRedisOutput([
+        '{"role":"assistant","content":"Task completed."}',
+        '{"role":"assistant","reasoning_content":"I can see there are PHP files already."}',
+        '{"role":"assistant","reasoning_content":"Now I understand the current state."}'
+    ]);
+
+    assert.deepStrictEqual(parsed.events.map(event => event.content), [
+        'I can see there are PHP files already.',
+        'Now I understand the current state.'
+    ]);
+});

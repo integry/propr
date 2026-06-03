@@ -220,6 +220,10 @@ function parseToolInput(input: unknown): Record<string, unknown> | undefined {
   }
 }
 
+function isGenericVibeCompletionContent(content: string): boolean {
+  return /^task completed\.?$/i.test(content.trim());
+}
+
 function processVibeEvent(event: VibeTranscriptEvent, timestamp: string, state: ParseState): void {
   if (event.role === 'system') return;
 
@@ -234,7 +238,9 @@ function processVibeEvent(event: VibeTranscriptEvent, timestamp: string, state: 
     if (reasoning) state.events.push({ type: 'thought' as const, content: truncateContent(reasoning), timestamp });
 
     const content = textFromValue(event.content);
-    if (content) state.events.push({ type: 'thought' as const, content: truncateContent(content), timestamp });
+    if (content && !isGenericVibeCompletionContent(content)) {
+      state.events.push({ type: 'thought' as const, content: truncateContent(content), timestamp });
+    }
 
     for (const toolCall of event.tool_calls || []) {
       state.events.push({
