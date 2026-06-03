@@ -21,6 +21,7 @@ interface ParseState {
   pendingAssistantMessage: string;
   syntheticTimestampBaseMs: number | null;
   syntheticTimestampIndex: number;
+  seenEventFingerprints: Set<string>;
 }
 
 interface VibeToolCall {
@@ -237,6 +238,21 @@ function getNextSyntheticTimestamp(state: ParseState): string {
   return timestamp;
 }
 
+function pushEvent(state: ParseState, event: ConversationEvent): void {
+  const fingerprint = JSON.stringify({
+    type: event.type,
+    content: event.content,
+    toolName: event.toolName,
+    input: event.input,
+    toolUseId: event.toolUseId,
+    result: event.result,
+    isError: event.isError
+  });
+  if (state.seenEventFingerprints.has(fingerprint)) return;
+  state.seenEventFingerprints.add(fingerprint);
+  state.events.push(event);
+}
+
 function processVibeEvent(event: VibeTranscriptEvent, timestamp: string, state: ParseState): void {
   if (event.role === 'system') return;
 
@@ -248,15 +264,15 @@ function processVibeEvent(event: VibeTranscriptEvent, timestamp: string, state: 
 
   if (event.role === 'assistant') {
     const reasoning = textFromValue(event.reasoning_content);
-    if (reasoning) state.events.push({ type: 'thought' as const, content: truncateContent(reasoning), timestamp });
+    if (reasoning) pushEvent(state, { type: 'thought' as const, content: truncateContent(reasoning), timestamp });
 
     const content = textFromValue(event.content);
     if (content && !isGenericVibeCompletionContent(content)) {
-      state.events.push({ type: 'thought' as const, content: truncateContent(content), timestamp });
+      pushEvent(state, { type: 'thought' as const, content: truncateContent(content), timestamp });
     }
 
     for (const toolCall of event.tool_calls || []) {
-      state.events.push({
+      pushEvent(state, {
         type: 'tool_use' as const,
         toolName: toolCall.function?.name || 'tool',
         input: parseToolInput(toolCall.function?.arguments),
@@ -270,7 +286,7 @@ function processVibeEvent(event: VibeTranscriptEvent, timestamp: string, state: 
   if (event.role === 'tool') {
     const result = textFromValue(event.content) || textFromValue(event.result) || textFromValue(event.output) || textFromValue(event.error);
     if (result) {
-      state.events.push({
+      pushEvent(state, {
         type: 'tool_result' as const,
         toolUseId: event.tool_call_id,
         result: truncateContent(result),
@@ -379,7 +395,8 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     tokenUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
     pendingAssistantMessage: '',
     syntheticTimestampBaseMs: Number.isNaN(executionStartMs) ? null : executionStartMs,
-    syntheticTimestampIndex: 0
+    syntheticTimestampIndex: 0,
+    seenEventFingerprints: new Set()
   };
 
   if (parseVibeTranscriptOutput(lines.join('\n'), state)) {

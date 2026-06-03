@@ -115,3 +115,21 @@ test('parseRedisOutput anchors untimestamped Vibe events to execution start', ()
         '2026-06-03T20:56:53.000Z'
     ]);
 });
+
+test('parseRedisOutput deduplicates replayed Vibe session transcript events', () => {
+    const sessionLines = [
+        '{"role":"assistant","reasoning_content":"I need to understand the current state."}',
+        '{"role":"assistant","reasoning_content":"Let me verify the change was applied correctly."}',
+        '{"role":"assistant","content":"The change has been successfully applied."}'
+    ];
+
+    const parsed = parseRedisOutput([...sessionLines, ...sessionLines], {
+        executionStartTimestamp: '2026-06-03T20:56:52.000Z'
+    });
+
+    assert.deepStrictEqual(parsed.events.map(event => event.content), [
+        'I need to understand the current state.',
+        'Let me verify the change was applied correctly.',
+        'The change has been successfully applied.'
+    ]);
+});
