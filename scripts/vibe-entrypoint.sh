@@ -78,8 +78,12 @@ replace_active_model_line() {
 }
 
 load_vibe_env_file() {
-    local env_file="$RUNTIME_VIBE_HOME/.env"
+    local env_file="$1"
     if [ ! -f "$env_file" ]; then
+        return
+    fi
+    if [ ! -r "$env_file" ]; then
+        echo "Vibe .env file is not readable: $env_file" >&2
         return
     fi
 
@@ -104,7 +108,14 @@ load_vibe_env_file() {
         esac
         export "$key=$value"
     done < "$env_file"
-    echo "Loaded Vibe .env defaults" >&2
+    echo "Loaded Vibe .env defaults from $env_file" >&2
+}
+
+load_vibe_env_defaults() {
+    load_vibe_env_file "$SOURCE_VIBE_HOME/.env"
+    if [ "$SOURCE_VIBE_HOME" != "$RUNTIME_VIBE_HOME" ]; then
+        load_vibe_env_file "$RUNTIME_VIBE_HOME/.env"
+    fi
 }
 
 format_command_for_log() {
@@ -191,7 +202,7 @@ if [ -d "$SOURCE_VIBE_HOME" ]; then
 
     copy_vibe_home
     configure_active_model
-    load_vibe_env_file
+    load_vibe_env_defaults
 
     for dir in logs sessions skills; do
         if [ ! -d "$RUNTIME_VIBE_HOME/$dir" ]; then
@@ -203,7 +214,7 @@ else
     echo "WARNING: Vibe config directory not mounted at $SOURCE_VIBE_HOME" >&2
     copy_vibe_home
     configure_active_model
-    load_vibe_env_file
+    load_vibe_env_defaults
 fi
 
 if [ ! -f "$RUNTIME_VIBE_HOME/config.toml" ]; then
