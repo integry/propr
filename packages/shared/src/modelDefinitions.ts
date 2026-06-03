@@ -54,7 +54,7 @@ export const GEMINI_MODELS: ModelInfo[] = [
 // Available models from `vibe /model`: mistral-medium-3.5, devstral-small, local
 export const VIBE_MODELS: ModelInfo[] = [
   { id: 'mistral-medium-3.5', name: 'Mistral Medium 3.5', shortName: 'Mistral Medium', shortAlias: 'mistral', githubLabel: 'llm-vibe-mistral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/mistral-medium-3-5' },
-  { id: 'devstral-small', name: 'Devstral Small', shortName: 'Devstral Small', shortAlias: 'devstral', githubLabel: 'llm-vibe-devstral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/devstral-small' },
+  { id: 'devstral-small', name: 'Devstral Small', shortName: 'Devstral Small', shortAlias: 'devstral', githubLabel: 'llm-vibe-devstral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/devstral-2512' },
 ];
 
 // All models combined
