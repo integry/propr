@@ -95,6 +95,61 @@ async function resolveAuthToken(authToken: string): Promise<string> {
   }
 }
 
+interface RankRepoFilesOptions {
+  repo: ContextRepository;
+  repoPath: string;
+  prompt: string | undefined;
+  fastRelevance: boolean;
+  contextModel: string | undefined;
+  correlationId: string | undefined;
+  correlatedLogger: typeof logger;
+}
+
+async function rankRepoFiles(
+  opts: RankRepoFilesOptions
+): Promise<{ priorityFiles: string[] | undefined; fileScores: Record<string, { score: number; reason: string }> }> {
+  const { repo, repoPath, prompt, fastRelevance, contextModel, correlationId, correlatedLogger } = opts;
+  const fileScores: Record<string, { score: number; reason: string }> = {};
+  if (!prompt?.trim()) {
+    return { priorityFiles: undefined, fileScores };
+  }
+
+  try {
+    const agent = fastRelevance ? undefined : await resolveRelevanceAgent(contextModel, correlationId);
+    const relevanceResult = await findRelevantFiles(repoPath, prompt, {
+      correlationId,
+      repoName: repo.repository,
+      branch: repo.branch,
+      agent,
+      modelId: contextModel,
+      useLLMKeywords: !fastRelevance,
+      useSummaryScoring: !fastRelevance,
+      keywordTimeoutMs: fastRelevance ? 3000 : undefined,
+      maxResults: 1000,
+      minScore: 1
+    });
+    const priorityFiles = relevanceResult.files.map(file => file.path);
+    Object.assign(fileScores, Object.fromEntries(
+      relevanceResult.files.map(file => [file.path, { score: file.score, reason: formatRelevanceReason(file) }])
+    ));
+    correlatedLogger.info(
+      {
+        repository: repo.repository,
+        relevantFileCount: relevanceResult.files.length,
+        topFiles: relevanceResult.files.slice(0, 5).map(file => ({ path: file.path, score: file.score, reason: file.reason }))
+      },
+      'Ranked additional context repository files by relevance'
+    );
+    return { priorityFiles, fileScores };
+  } catch (error) {
+    correlatedLogger.warn(
+      { repository: repo.repository, error: (error as Error).message },
+      'Failed to rank additional context repository files; falling back to repository order'
+    );
+    return { priorityFiles: undefined, fileScores };
+  }
+}
+
 /**
  * Generate context from additional repositories.
  * This content is marked as "example/reference only" and file paths are stripped
@@ -154,42 +209,9 @@ export async function generateAdditionalContext(
         baseBranch: repo.branch
       });
 
-      let priorityFiles: string[] | undefined;
-      const fileScores: Record<string, { score: number; reason: string }> = {};
-      if (prompt?.trim()) {
-        try {
-          const agent = fastRelevance ? undefined : await resolveRelevanceAgent(contextModel, correlationId);
-          const relevanceResult = await findRelevantFiles(repoPath, prompt, {
-            correlationId,
-            repoName: repo.repository,
-            branch: repo.branch,
-            agent,
-            modelId: contextModel,
-            useLLMKeywords: !fastRelevance,
-            useSummaryScoring: !fastRelevance,
-            keywordTimeoutMs: fastRelevance ? 3000 : undefined,
-            maxResults: 1000,
-            minScore: 1
-          });
-          priorityFiles = relevanceResult.files.map(file => file.path);
-          Object.assign(fileScores, Object.fromEntries(
-            relevanceResult.files.map(file => [file.path, { score: file.score, reason: formatRelevanceReason(file) }])
-          ));
-          correlatedLogger.info(
-            {
-              repository: repo.repository,
-              relevantFileCount: relevanceResult.files.length,
-              topFiles: relevanceResult.files.slice(0, 5).map(file => ({ path: file.path, score: file.score, reason: file.reason }))
-            },
-            'Ranked additional context repository files by relevance'
-          );
-        } catch (error) {
-          correlatedLogger.warn(
-            { repository: repo.repository, error: (error as Error).message },
-            'Failed to rank additional context repository files; falling back to repository order'
-          );
-        }
-      }
+      const { priorityFiles, fileScores } = await rankRepoFiles({
+        repo, repoPath, prompt, fastRelevance, contextModel, correlationId, correlatedLogger
+      });
 
       const contextResult = await generateContext({
         repoPath,
