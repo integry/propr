@@ -9,7 +9,7 @@ import logger from '../../utils/logger.js';
 import { estimateLlmDuration } from '../../utils/llmEstimation.js';
 import {
   updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, PlanningFailedError, getModelHardLimit
-} from '../planningHelpers.js';
+} from '../planning/index.js';
 import { enforceGranularity } from './granularity.js';
 import type { Plan } from '../../claude/prompts/plannerPrompts.js';
 import type { CallLLMOptions, CallLLMForPlanResult } from './types.js';

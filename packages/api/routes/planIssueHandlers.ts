@@ -37,7 +37,7 @@ import {
   validateOptionalConfigString,
   validateUpdateIssueRequest
 } from './planIssueRouteUtils.js';
-import type { OwnershipResult } from './plannerHelpers.js';
+import type { OwnershipResult } from './plannerHelpers/index.js';
 export interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
 }

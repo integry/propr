@@ -3,7 +3,7 @@
  */
 
 import crypto from 'crypto';
-import { truncateToSentences } from '../planningHelpers.js';
+import { truncateToSentences } from '../planning/index.js';
 import type { ChatHistoryMessage } from './types.js';
 
 /**

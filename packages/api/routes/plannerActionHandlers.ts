@@ -26,7 +26,7 @@ import {
   runBackgroundGeneration,
   getRefineRepoContext,
   GenerateRequestBody
-} from './plannerHelpers.js';
+} from './plannerHelpers/index.js';
 
 export function createGenerateHandler(db: Knex) {
   return async function generate(req: Request, res: Response): Promise<void> {

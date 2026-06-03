@@ -3,7 +3,7 @@
  */
 
 import logger from '../../utils/logger.js';
-import type { ContextRepository } from '../planningHelpers.js';
+import type { ContextRepository } from '../planning/planningTypes.js';
 import { ensureRepoCloned } from '../../git/repoManager.js';
 import { getGitHubInstallationToken } from '../../auth/githubAuth.js';
 import { generateContext } from './generateContext.js';
@@ -87,42 +87,14 @@ interface RepoContextResult {
   fileScores: Record<string, { score: number; reason: string }>;
 }
 
-async function rankRepoFiles(
-  repoPath: string,
-  repo: ContextRepository,
-  options: { prompt: string; contextModel?: string; fastRelevance: boolean; correlationId?: string },
-  correlatedLogger: ReturnType<typeof logger.withCorrelation> | typeof logger
-): Promise<{ priorityFiles: string[]; fileScores: Record<string, { score: number; reason: string }> }> {
-  const { prompt, contextModel, fastRelevance, correlationId } = options;
-  const agent = fastRelevance ? undefined : await resolveRelevanceAgent(contextModel, correlationId);
-  const relevanceResult = await findRelevantFiles(repoPath, prompt, {
-    correlationId,
-    repoName: repo.repository,
-    branch: repo.branch,
-    agent,
-    modelId: contextModel,
-    useLLMKeywords: !fastRelevance,
-    useSummaryScoring: !fastRelevance,
-    keywordTimeoutMs: fastRelevance ? 3000 : undefined,
-    maxResults: 1000,
-    minScore: 1
-  });
-
-  const fileScores: Record<string, { score: number; reason: string }> = {};
-  for (const file of relevanceResult.files) {
-    fileScores[file.path] = { score: file.score, reason: formatRelevanceReason(file) };
+async function resolveEffectiveAuthToken(authToken: string): Promise<string> {
+  try {
+    // Try to use installation token for private repo access
+    return await getGitHubInstallationToken();
+  } catch {
+    // Fall back to provided auth token
+    return authToken;
   }
-
-  correlatedLogger.info(
-    {
-      repository: repo.repository,
-      relevantFileCount: relevanceResult.files.length,
-      topFiles: relevanceResult.files.slice(0, 5).map(file => ({ path: file.path, score: file.score, reason: file.reason }))
-    },
-    'Ranked additional context repository files by relevance'
-  );
-
-  return { priorityFiles: relevanceResult.files.map(file => file.path), fileScores };
 }
 
 async function processRepository(
@@ -142,12 +114,7 @@ async function processRepository(
   );
 
   const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-  let effectiveAuthToken = authToken;
-  try {
-    effectiveAuthToken = await getGitHubInstallationToken();
-  } catch {
-    // Fall back to provided auth token
-  }
+  const effectiveAuthToken = await resolveEffectiveAuthToken(authToken);
 
   const repoPath = await ensureRepoCloned({
     repoUrl, owner, repoName,
@@ -155,20 +122,9 @@ async function processRepository(
     baseBranch: repo.branch
   });
 
-  let priorityFiles: string[] | undefined;
-  let fileScores: Record<string, { score: number; reason: string }> = {};
-  if (prompt?.trim()) {
-    try {
-      const ranked = await rankRepoFiles(repoPath, repo, { prompt, contextModel, fastRelevance, correlationId }, correlatedLogger);
-      priorityFiles = ranked.priorityFiles;
-      fileScores = ranked.fileScores;
-    } catch (error) {
-      correlatedLogger.warn(
-        { repository: repo.repository, error: (error as Error).message },
-        'Failed to rank additional context repository files; falling back to repository order'
-      );
-    }
-  }
+  const { priorityFiles, fileScores } = await rankRepoFiles({
+    repoPath, repo, prompt, contextModel, fastRelevance, correlationId
+  });
 
   const contextResult = await generateContext({
     repoPath, priorityFiles,
@@ -261,6 +217,58 @@ export async function generateAdditionalContext(
     repositoriesIncluded: results.map(r => r.repository),
     errors
   };
+}
+
+async function rankRepoFiles(params: {
+  repoPath: string;
+  repo: ContextRepository;
+  prompt?: string;
+  contextModel?: string;
+  fastRelevance: boolean;
+  correlationId?: string;
+}): Promise<{ priorityFiles?: string[]; fileScores: Record<string, { score: number; reason: string }> }> {
+  const { repoPath, repo, prompt, contextModel, fastRelevance, correlationId } = params;
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+  const fileScores: Record<string, { score: number; reason: string }> = {};
+
+  if (!prompt?.trim()) {
+    return { priorityFiles: undefined, fileScores };
+  }
+
+  try {
+    const agent = fastRelevance ? undefined : await resolveRelevanceAgent(contextModel, correlationId);
+    const relevanceResult = await findRelevantFiles(repoPath, prompt, {
+      correlationId,
+      repoName: repo.repository,
+      branch: repo.branch,
+      agent,
+      modelId: contextModel,
+      useLLMKeywords: !fastRelevance,
+      useSummaryScoring: !fastRelevance,
+      keywordTimeoutMs: fastRelevance ? 3000 : undefined,
+      maxResults: 1000,
+      minScore: 1
+    });
+    const priorityFiles = relevanceResult.files.map(file => file.path);
+    for (const file of relevanceResult.files) {
+      fileScores[file.path] = { score: file.score, reason: formatRelevanceReason(file) };
+    }
+    correlatedLogger.info(
+      {
+        repository: repo.repository,
+        relevantFileCount: relevanceResult.files.length,
+        topFiles: relevanceResult.files.slice(0, 5).map(file => ({ path: file.path, score: file.score, reason: file.reason }))
+      },
+      'Ranked additional context repository files by relevance'
+    );
+    return { priorityFiles, fileScores };
+  } catch (error) {
+    correlatedLogger.warn(
+      { repository: repo.repository, error: (error as Error).message },
+      'Failed to rank additional context repository files; falling back to repository order'
+    );
+    return { priorityFiles: undefined, fileScores };
+  }
 }
 
 async function resolveRelevanceAgent(contextModel: string | undefined, correlationId: string | undefined): Promise<Agent | undefined> {

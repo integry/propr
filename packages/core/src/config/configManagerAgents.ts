@@ -85,36 +85,54 @@ const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
 const CLAUDE_46_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];
 const CODEX_55_MODELS = ['gpt-5.5'];
 
-function addMissingModels(agent: AgentConfig, requiredModels: string[]): boolean {
-    if (!agent.supportedModels) return false;
-    const missingModels = requiredModels.filter(m => !agent.supportedModels.includes(m));
-    if (missingModels.length === 0) return false;
+function addMissingSupportedModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
+    if (!agent.supportedModels) {
+        return false;
+    }
+
+    const missingModels = models.filter(m => !agent.supportedModels.includes(m));
+    if (missingModels.length === 0) {
+        return false;
+    }
+
     agent.supportedModels = [...missingModels, ...agent.supportedModels];
+    logger.info({ agentAlias: agent.alias, addedModels: missingModels }, logMessage);
+    return true;
+}
+
+function removeDeprecatedSupportedModels(agent: AgentConfig): boolean {
+    if (!agent.supportedModels) {
+        return false;
+    }
+
+    const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
+    const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
+    if (removedModels.length === 0) {
+        return false;
+    }
+
+    agent.supportedModels = validModels;
+    logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
     return true;
 }
 
 function migrateCodexAgent(agent: AgentConfig): boolean {
-    let changed = false;
-
-    if (addMissingModels(agent, CODEX_55_MODELS)) {
-        changed = true;
-        logger.info({ agentAlias: agent.alias, addedModels: CODEX_55_MODELS }, 'Added GPT-5.5 models to Codex agent');
-    }
+    let migrated = addMissingSupportedModels(agent, CODEX_55_MODELS, 'Added GPT-5.5 models to Codex agent');
 
     if (!agent.defaultModel || agent.defaultModel === 'gpt-5.4') {
         agent.defaultModel = 'gpt-5.5';
-        changed = true;
+        migrated = true;
         logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Updated Codex default model');
     }
 
     if (agent.cliVersionType === 'default' && agent.cliVersionResolved !== AGENT_DEFAULT_VERSIONS.codex) {
         agent.cliVersionResolved = AGENT_DEFAULT_VERSIONS.codex;
         agent.dockerImage = generateImageTag('codex', agent.cliVersionResolved, computeContentHash('codex'));
-        changed = true;
+        migrated = true;
         logger.info({ agentAlias: agent.alias, cliVersion: agent.cliVersionResolved, dockerImage: agent.dockerImage }, 'Updated Codex default CLI version and Docker image');
     }
 
-    return changed;
+    return migrated;
 }
 
 /**
@@ -133,24 +151,15 @@ export async function migrateAgentConfigs(): Promise<boolean> {
                 logger.info({ agentAlias: agent.alias, type: agent.type }, 'Migrated agent to default CLI version');
             }
 
-            if (agent.type === 'claude' && addMissingModels(agent, CLAUDE_46_MODELS)) {
-                migrated = true;
-                logger.info({ agentAlias: agent.alias }, 'Added Claude 4.6 models to agent');
+            if (agent.type === 'claude' && agent.supportedModels) {
+                migrated = addMissingSupportedModels(agent, CLAUDE_46_MODELS, 'Added Claude 4.6 models to agent') || migrated;
             }
 
-            if (agent.type === 'codex' && migrateCodexAgent(agent)) {
-                migrated = true;
+            if (agent.type === 'codex') {
+                if (migrateCodexAgent(agent)) migrated = true;
             }
 
-            if (agent.supportedModels) {
-                const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
-                const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
-                if (removedModels.length > 0) {
-                    agent.supportedModels = validModels;
-                    migrated = true;
-                    logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
-                }
-            }
+            migrated = removeDeprecatedSupportedModels(agent) || migrated;
         }
 
         if (migrated) {

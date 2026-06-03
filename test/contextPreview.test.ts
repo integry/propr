@@ -62,7 +62,7 @@ describe('Additional Context Budgeting', () => {
             simulatedTokens: 5_000,
             attachmentTokens: 0,
             smartSummaryTokens: 0,
-            contextLevel: 90,
+            contextLevel: 90
         });
 
         assert.strictEqual(budget, 95_000);
@@ -74,7 +74,7 @@ describe('Additional Context Budgeting', () => {
             simulatedTokens: 5_000,
             attachmentTokens: 0,
             smartSummaryTokens: 0,
-            contextLevel: 50,
+            contextLevel: 50
         });
 
         assert.strictEqual(budget, 80_000);

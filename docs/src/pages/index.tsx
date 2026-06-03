@@ -33,8 +33,8 @@ export default function Home(): ReactNode {
   const {siteConfig} = useDocusaurusContext();
   return (
     <Layout
-      title={`${siteConfig.title} - Automated GitHub Issue Processor`}
-      description="A production-ready automated system that monitors GitHub issues, uses Anthropic's Claude Code to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.">
+      title={`${siteConfig.title} - Web UI for AI GitHub Workflows`}
+      description="A production-ready platform for configuring repositories in the browser, planning work in Planner Studio, and running AI-powered GitHub issue and pull request workflows end to end.">
       <HomepageHeader />
       <main>
         <HomepageFeatures />
@@ -42,4 +42,3 @@ export default function Home(): ReactNode {
     </Layout>
   );
 }
-

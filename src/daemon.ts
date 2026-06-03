@@ -38,7 +38,7 @@ import {
     getUserWhitelist,
     getPrimaryProcessingLabels,
     loadSettingsFromConfig
-} from './daemon/configLoader.js';
+} from '@propr/core';
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';

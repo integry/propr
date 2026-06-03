@@ -3,7 +3,7 @@ import { logger } from '@propr/core';
 import { handleError } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import type { PaginatedOctokitInstance } from '@propr/core';
-import { getRepos, getPrimaryProcessingLabels } from './configLoader.js';
+import { getRepos, getPrimaryProcessingLabels } from '@propr/core';
 
 interface GitHubIssue {
     number: number;
