@@ -38,6 +38,5 @@ RUN git config --global user.name "ProPR Vibe Bot" \
 COPY --chown=node:node scripts/vibe-entrypoint.sh /home/node/vibe-entrypoint.sh
 USER root
 RUN chmod +x /home/node/vibe-entrypoint.sh
-USER node
 
 ENTRYPOINT ["/home/node/vibe-entrypoint.sh"]
