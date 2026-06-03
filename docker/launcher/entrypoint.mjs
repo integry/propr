@@ -245,7 +245,13 @@ function pullImages() {
     for (const [key, tag] of Object.entries(manifest.images)) {
         if (key === 'docs' && !DOCS_ENABLED) continue;
         if (key.startsWith('agent-') && skipAgentPull) {
-            console.log(`  · ${tag} (agent pull skipped via PROPR_SKIP_AGENT_PULL)`);
+            const localImg = docker(['images', '-q', tag], { capture: true });
+            if (localImg.stdout.trim()) {
+                console.log(`  · ${tag} (local, pull skipped via PROPR_SKIP_AGENT_PULL)`);
+                tagAgentLatest(key, tag);
+            } else {
+                console.log(`  · ${tag} (not found locally, pull skipped via PROPR_SKIP_AGENT_PULL)`);
+            }
             continue;
         }
 

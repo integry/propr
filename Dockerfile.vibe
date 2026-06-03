@@ -5,7 +5,7 @@
 # BASE_TAG must match the exact version of propr/agent-base built alongside
 # this agent image. scripts/build-images.sh passes it automatically; a direct
 # `docker build` can override it with --build-arg BASE_TAG=<version>.
-ARG BASE_TAG=1.0.0
+ARG BASE_TAG=0.8.1
 ARG UV_VERSION=0.8.17
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
 FROM propr/agent-base:${BASE_TAG}

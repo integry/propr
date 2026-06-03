@@ -212,6 +212,10 @@ npm install -g mistral-vibe
 
 ### Authenticate with Mistral
 
+> **Note:** The `vibe` CLI commands below apply to the version pinned in
+> `Dockerfile.vibe` (`CLI_VERSION`). Flags and subcommands may differ in
+> newer releases — run `vibe --help` to confirm available options.
+
 Run the setup wizard:
 
 ```bash

@@ -121,19 +121,23 @@ docker run --rm -it \
 
 ```bash
 # Build and start all services
-docker-compose -f docker-compose.prod.yml up -d
+docker-compose up -d
 
 # Check service status
-docker-compose -f docker-compose.prod.yml ps
+docker-compose ps
 
 # View logs
-docker-compose -f docker-compose.prod.yml logs -f
+docker-compose logs -f
 ```
 
 > **Note:** `docker-compose.yml` mounts all agent credential directories
 > unconditionally. Create any missing directories before starting
 > (`mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts`)
 > to avoid Docker creating them as root-owned.
+>
+> A minimal `docker-compose.prod.yml` is also provided for simpler setups
+> that do not require per-agent credential mounts. For full Vibe support,
+> use the primary `docker-compose.yml` or the launcher (Option A).
 
 ### 2. SSL/TLS Configuration (Recommended)
 
