@@ -9,12 +9,18 @@ export interface ParsedRedisOutput {
   totalEventCount: number;
 }
 
+export interface RedisOutputParseOptions {
+  executionStartTimestamp?: string | null;
+}
+
 /** State accumulated while parsing lines */
 interface ParseState {
   events: ConversationEvent[];
   todos: TodoItem[];
   tokenUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number };
   pendingAssistantMessage: string;
+  syntheticTimestampBaseMs: number | null;
+  syntheticTimestampIndex: number;
 }
 
 interface VibeToolCall {
@@ -224,6 +230,13 @@ function isGenericVibeCompletionContent(content: string): boolean {
   return /^task completed\.?$/i.test(content.trim());
 }
 
+function getNextSyntheticTimestamp(state: ParseState): string {
+  if (state.syntheticTimestampBaseMs === null) return new Date().toISOString();
+  const timestamp = new Date(state.syntheticTimestampBaseMs + state.syntheticTimestampIndex * 1000).toISOString();
+  state.syntheticTimestampIndex += 1;
+  return timestamp;
+}
+
 function processVibeEvent(event: VibeTranscriptEvent, timestamp: string, state: ParseState): void {
   if (event.role === 'system') return;
 
@@ -321,7 +334,7 @@ function parseVibeTranscriptOutput(output: string, state: ParseState): boolean {
     try {
       const event = JSON.parse(objectText) as VibeTranscriptEvent;
       if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
-        processVibeEvent(event, new Date().toISOString(), state);
+        processVibeEvent(event, getNextSyntheticTimestamp(state), state);
         handled = true;
       }
     } catch {
@@ -337,12 +350,13 @@ function parseVibeTranscriptOutput(output: string, state: ParseState): boolean {
 function parseLine(line: string, state: ParseState): void {
   try {
     const event = JSON.parse(line);
-    const timestamp = event.timestamp || new Date().toISOString();
-
     if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
+      const timestamp = event.timestamp || getNextSyntheticTimestamp(state);
       processVibeEvent(event, timestamp, state);
       return;
     }
+
+    const timestamp = event.timestamp || new Date().toISOString();
 
     // Try Codex event processing first
     if (!processCodexEvent(event, timestamp, state)) {
@@ -357,12 +371,15 @@ function parseLine(line: string, state: ParseState): void {
 /**
  * Parse Redis output (Codex NDJSON or Gemini JSONL format)
  */
-export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
+export function parseRedisOutput(lines: string[], options: RedisOutputParseOptions = {}): ParsedRedisOutput {
+  const executionStartMs = options.executionStartTimestamp ? new Date(options.executionStartTimestamp).getTime() : NaN;
   const state: ParseState = {
     events: [],
     todos: [],
     tokenUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
-    pendingAssistantMessage: ''
+    pendingAssistantMessage: '',
+    syntheticTimestampBaseMs: Number.isNaN(executionStartMs) ? null : executionStartMs,
+    syntheticTimestampIndex: 0
   };
 
   if (parseVibeTranscriptOutput(lines.join('\n'), state)) {

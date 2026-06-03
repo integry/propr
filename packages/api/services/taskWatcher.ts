@@ -392,7 +392,8 @@ export class TaskWatcherManager {
 
       // Parse the output using the Redis output parser
       const lines = output.trim().split('\n').filter((line: string) => line.trim());
-      const result = parseRedisOutput(lines);
+      const executionStartTimestamp = await this.findExecutionStartTimestampForTask(taskId);
+      const result = parseRedisOutput(lines, { executionStartTimestamp });
 
       // Determine which events to send
       let eventsToSend = result.events;
@@ -500,6 +501,41 @@ export class TaskWatcherManager {
     }
 
     return null;
+  }
+
+  private async findExecutionStartTimestampForTask(taskId: string): Promise<string | null> {
+    if (!this.deps) return null;
+
+    const { redisClient, db } = this.deps;
+    const normalizedTaskId = this.normalizeTaskId(taskId);
+
+    try {
+      const stateData = await redisClient.get(`worker:state:${normalizedTaskId}`);
+      if (stateData) {
+        const state = JSON.parse(stateData) as {
+          history?: Array<{ state?: string; timestamp?: string }>
+        };
+        const history = Array.isArray(state.history) ? state.history : [];
+        const entry = history.find(
+          h => h.timestamp && (h.state === 'claude_execution' || h.state === 'codex_execution' || h.state === 'gemini_execution' || h.state === 'vibe_execution')
+        ) || history.find(h => h.timestamp && (h.state ?? '').endsWith('_execution'));
+        if (entry?.timestamp) return entry.timestamp;
+      }
+    } catch (error) {
+      console.error('[TaskWatcher] Error fetching execution start from Redis:', error);
+    }
+
+    try {
+      const llmExecution = await db('llm_executions')
+        .where({ task_id: normalizedTaskId })
+        .orderBy('start_time', 'desc')
+        .first('start_time');
+      const startTime = llmExecution?.start_time;
+      return startTime ? new Date(startTime as string | Date).toISOString() : null;
+    } catch (error) {
+      console.error('[TaskWatcher] Error fetching execution start from database:', error);
+      return null;
+    }
   }
 
   /**

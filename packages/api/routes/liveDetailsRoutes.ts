@@ -24,8 +24,9 @@ import {
 import { parseRedisOutput } from '../services/redisOutputParser.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
-interface HistoryEntryWithSessionMetadata { state?: string; metadata?: { sessionId?: string }; }
+interface HistoryEntryWithSessionMetadata { state?: string; timestamp?: string; metadata?: { sessionId?: string }; }
 const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution']);
+const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'vibe_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
@@ -40,7 +41,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
       console.log(`[live-details] jobId: ${jobId}, taskId: ${taskId}`);
       const sessionId = await findSessionId(redisClient, db, taskId);
       if (!sessionId) {
-        const activeRedisResult = await parseActiveExecutionOutput(redisClient, taskId);
+        const activeRedisResult = await parseActiveExecutionOutput(redisClient, db, taskId);
         if (activeRedisResult) {
           res.json(activeRedisResult);
           return;
@@ -54,7 +55,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
       console.log(`[live-details] Checking Claude conversation path: ${conversationPath ?? 'not found'}`);
       if (!conversationPath) {
         console.log('[live-details] Claude conversation file not found, trying active Redis output');
-        const activeRedisResult = await parseActiveExecutionOutput(redisClient, taskId);
+        const activeRedisResult = await parseActiveExecutionOutput(redisClient, db, taskId);
         if (activeRedisResult) {
           res.json(activeRedisResult);
           return;
@@ -100,6 +101,40 @@ async function findSessionId(redisClient: RedisClientType, db: Knex, taskId: str
   if (redisSessionId) return redisSessionId;
   return findSessionIdFromDb(db, taskId);
 }
+
+async function findExecutionStartTimestamp(redisClient: RedisClientType, db: Knex, taskId: string): Promise<string | null> {
+  const redisTimestamp = await findExecutionStartTimestampFromRedis(redisClient, taskId);
+  if (redisTimestamp) return redisTimestamp;
+  return findExecutionStartTimestampFromDb(db, taskId);
+}
+
+async function findExecutionStartTimestampFromRedis(redisClient: RedisClientType, taskId: string): Promise<string | null> {
+  try {
+    const stateData = await redisClient.get(`worker:state:${taskId}`);
+    if (!stateData) return null;
+    const state = JSON.parse(stateData) as { history?: HistoryEntryWithSessionMetadata[] };
+    const history = Array.isArray(state.history) ? state.history : [];
+    const entry = history.find(item => item.timestamp && EXECUTION_TIMING_STATES.has(item.state ?? ''))
+      || history.find(item => item.timestamp && (item.state ?? '').endsWith('_execution'));
+    return entry?.timestamp ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function findExecutionStartTimestampFromDb(db: Knex, taskId: string): Promise<string | null> {
+  try {
+    const llmExecution = await db('llm_executions')
+      .where({ task_id: taskId })
+      .orderBy('start_time', 'desc')
+      .first('start_time');
+    const startTime = llmExecution?.start_time;
+    return startTime ? new Date(startTime as string | Date).toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
 async function findSessionIdFromDb(db: Knex, taskId: string): Promise<string | null> {
   try {
     console.log(`[live-details] Fetching sessionId from SQLite for taskId: ${taskId}`);
@@ -200,10 +235,11 @@ async function loadStoredExecutionOutput(redisClient: RedisClientType, sessionId
   const output = await fs.readFile(outputPath, 'utf8');
   return parseStoredOutputContent(output);
 }
-async function parseActiveExecutionOutput(redisClient: RedisClientType, taskId: string): Promise<ConversationResult | null> {
+async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex, taskId: string): Promise<ConversationResult | null> {
   const output = await redisClient.get(`agent:output:${taskId}`);
   if (!output?.trim()) return null;
-  const redisParsed = parseRedisOutput(output.split('\n').filter(line => line.trim()));
+  const executionStartTimestamp = await findExecutionStartTimestamp(redisClient, db, taskId);
+  const redisParsed = parseRedisOutput(output.split('\n').filter(line => line.trim()), { executionStartTimestamp });
   if (redisParsed.events.length > 0 || redisParsed.todos.length > 0 || redisParsed.currentTask || redisParsed.tokenUsage) {
     return {
       events: redisParsed.events as unknown as Array<Record<string, unknown>>,

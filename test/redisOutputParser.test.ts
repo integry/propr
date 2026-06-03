@@ -103,3 +103,15 @@ test('parseRedisOutput ignores generic Vibe completion event before session mess
         'Now I understand the current state.'
     ]);
 });
+
+test('parseRedisOutput anchors untimestamped Vibe events to execution start', () => {
+    const parsed = parseRedisOutput([
+        '{"role":"assistant","reasoning_content":"First thought."}',
+        '{"role":"assistant","reasoning_content":"Second thought."}'
+    ], { executionStartTimestamp: '2026-06-03T20:56:52.000Z' });
+
+    assert.deepStrictEqual(parsed.events.map(event => event.timestamp), [
+        '2026-06-03T20:56:52.000Z',
+        '2026-06-03T20:56:53.000Z'
+    ]);
+});
