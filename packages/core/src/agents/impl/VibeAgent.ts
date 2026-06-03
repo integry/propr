@@ -1,4 +1,6 @@
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
@@ -32,6 +34,45 @@ export function getMistralApiKeyFromSettings(settings: Record<string, unknown>):
     return undefined;
 }
 
+function findNewestMessagesFile(root: string): string | undefined {
+    const sessionRoot = path.join(root, 'logs', 'session');
+    if (!fs.existsSync(sessionRoot)) return undefined;
+
+    let newest: { filePath: string; mtimeMs: number } | undefined;
+    const stack = [sessionRoot];
+    while (stack.length > 0) {
+        const current = stack.pop()!;
+        let entries: fs.Dirent[];
+        try { entries = fs.readdirSync(current, { withFileTypes: true }); }
+        catch { continue; }
+
+        for (const entry of entries) {
+            const entryPath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                stack.push(entryPath);
+                continue;
+            }
+            if (!entry.isFile() || entry.name !== 'messages.jsonl') continue;
+            try {
+                const stat = fs.statSync(entryPath);
+                if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { filePath: entryPath, mtimeMs: stat.mtimeMs };
+            } catch {
+                // Ignore files that disappear while the session logger is writing.
+            }
+        }
+    }
+
+    return newest?.filePath;
+}
+
+function readLatestVibeSessionMessages(runtimeHomePath: string | undefined): string {
+    if (!runtimeHomePath) return '';
+    const messagesFile = findNewestMessagesFile(runtimeHomePath);
+    if (!messagesFile) return '';
+    try { return fs.readFileSync(messagesFile, 'utf8'); }
+    catch { return ''; }
+}
+
 interface VibeDockerArgsParams {
     worktreePath: string;
     githubToken: string;
@@ -44,6 +85,7 @@ interface VibeDockerArgsParams {
     mode?: 'execute' | 'analysis';
     promptFilePath?: string;
     envFilePath?: string;
+    runtimeHomePath?: string;
 }
 
 export class VibeAgent implements Agent {
@@ -75,11 +117,13 @@ export class VibeAgent implements Agent {
 
         let promptFilePath: string | undefined;
         let envFilePath: string | undefined;
+        let runtimeHomePath: string | undefined;
         try {
             const prompt = buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             promptFilePath = writeVibePromptFile(prompt);
             const mistralApiKey = await this.getMistralApiKey();
             envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken });
+            runtimeHomePath = this.prepareRuntimeHome(taskId);
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const dockerArgs = this.buildDockerArgs({
@@ -90,7 +134,8 @@ export class VibeAgent implements Agent {
                 issueNumber: issueRef.number,
                 taskId,
                 promptFilePath,
-                envFilePath
+                envFilePath,
+                runtimeHomePath
             });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
@@ -101,7 +146,9 @@ export class VibeAgent implements Agent {
                     onContainerId,
                     worktreePath,
                     taskId,
-                    streamToRedis: true
+                    streamToRedis: true,
+                    streamStderrToRedis: true,
+                    streamExtraOutput: () => readLatestVibeSessionMessages(runtimeHomePath)
                 })
             );
 
@@ -175,6 +222,7 @@ export class VibeAgent implements Agent {
         } finally {
             cleanupTempFile(promptFilePath);
             cleanupTempFile(envFilePath);
+            this.cleanupRuntimeHome(runtimeHomePath);
         }
     }
 
@@ -315,6 +363,23 @@ export class VibeAgent implements Agent {
         return workspace;
     }
 
+    private prepareRuntimeHome(taskId?: string): string {
+        const prefix = taskId ? `propr-vibe-home-${taskId.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 80)}-` : 'propr-vibe-home-';
+        const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+        try {
+            fs.chmodSync(runtimeHome, 0o777);
+        } catch (error) {
+            logger.warn({ runtimeHome, error: (error as Error).message }, 'Failed to chmod Vibe runtime home');
+        }
+        return runtimeHome;
+    }
+
+    private cleanupRuntimeHome(runtimeHomePath: string | undefined): void {
+        if (!runtimeHomePath) return;
+        try { fs.rmSync(runtimeHomePath, { recursive: true, force: true }); }
+        catch (error) { logger.debug({ runtimeHomePath, error: (error as Error).message }, 'Failed to clean Vibe runtime home'); }
+    }
+
     private hasUsableConfigDir(configPath: string, mistralApiKey?: string): boolean {
         try {
             if (!fs.existsSync(configPath) || !fs.statSync(configPath).isDirectory()) return false;
@@ -368,13 +433,14 @@ export class VibeAgent implements Agent {
         ));
     }
 
-    private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number }): string[] {
-        const { cleanModelName, mode, maxTurns } = params;
+    private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number; runtimeHomePath?: string }): string[] {
+        const { cleanModelName, mode, maxTurns, runtimeHomePath } = params;
         const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
         for (const envVar of forwardedEnvVars.skipped) logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
         const envVars = forwardedEnvVars.dockerArgs;
         if (cleanModelName) envVars.push('-e', `VIBE_ACTIVE_MODEL=${cleanModelName}`);
         envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
+        if (runtimeHomePath) envVars.push('-e', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', '-e', 'HOME=/tmp/propr-vibe-home');
         if (mode === 'analysis') {
             const analysisDirs = ['VIBE_READ_ONLY_CONFIG=1', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config', 'XDG_DATA_HOME=/tmp/propr-vibe-data', 'UV_CACHE_DIR=/tmp/propr-uv-cache', 'HOME=/tmp/propr-vibe-home', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', 'XDG_STATE_HOME=/tmp/propr-vibe-state', 'PIP_CACHE_DIR=/tmp/propr-pip-cache', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache'];
             for (const dir of analysisDirs) envVars.push('-e', dir);
@@ -399,21 +465,22 @@ export class VibeAgent implements Agent {
     }
 
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
-        const { worktreePath, modelName, mistralApiKey, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath } = params;
+        const { worktreePath, modelName, mistralApiKey, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath, runtimeHomePath } = params;
         const { configPath, hasUsableConfig, configMountArgs } = this.resolveCredentialsAndConfig(mistralApiKey);
         const cleanModelName = modelName?.includes(':') ? modelName.split(':').pop()! : modelName;
         const mistralEnvFileArgs = envFilePath ? ['--env-file', envFilePath] : [];
-        const envVars = this.buildDockerEnvVars({ cleanModelName, mode, maxTurns });
+        const envVars = this.buildDockerEnvVars({ cleanModelName, mode, maxTurns, runtimeHomePath });
 
         const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const cliArgs = this.getCliArgs();
         const promptMountArgs = this.buildPromptMountArgs(promptFilePath, cliArgs);
+        const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${runtimeHomePath}:/tmp/propr-vibe-home:rw`] : [];
         const dockerArgs: string[] = [
             'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...getAnalysisSandboxArgs(mode),
             '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
-            ...configMountArgs, ...promptMountArgs, ...mistralEnvFileArgs,
+            ...configMountArgs, ...promptMountArgs, ...runtimeHomeMountArgs, ...mistralEnvFileArgs,
             ...envVars, '-w', '/home/node/workspace', this.config.dockerImage, ...cliArgs
         ];
         const cliArgsSource = (process.env.VIBE_CLI_ARGS ?? this.config.envVars?.VIBE_CLI_ARGS) ? 'custom' : 'default';

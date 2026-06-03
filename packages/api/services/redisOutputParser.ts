@@ -333,6 +333,11 @@ function parseLine(line: string, state: ParseState): void {
     const event = JSON.parse(line);
     const timestamp = event.timestamp || new Date().toISOString();
 
+    if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
+      processVibeEvent(event, timestamp, state);
+      return;
+    }
+
     // Try Codex event processing first
     if (!processCodexEvent(event, timestamp, state)) {
       // Fall back to Gemini event processing
@@ -340,6 +345,32 @@ function parseLine(line: string, state: ParseState): void {
     }
   } catch {
     // Skip non-JSON lines
+  }
+}
+
+const VIBE_PROGRESS_PATTERNS = [
+  /Vibe config directory mounted/i,
+  /Vibe configuration found/i,
+  /Executing command: vibe/i,
+  /Running Vibe/i,
+  /Switching to node user/i,
+  /Configured Vibe active model override/i,
+  /Loaded Vibe \.env defaults/i,
+  /Enabled non-interactive Vibe tool execution/i
+];
+
+function isVibeProgressLine(line: string): boolean {
+  return VIBE_PROGRESS_PATTERNS.some(pattern => pattern.test(line));
+}
+
+function parseVibeProgressLines(lines: string[], state: ParseState): void {
+  const timestamp = new Date().toISOString();
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || seen.has(trimmed) || !isVibeProgressLine(trimmed)) continue;
+    seen.add(trimmed);
+    state.events.push({ type: 'thought' as const, content: trimmed, timestamp });
   }
 }
 
@@ -367,6 +398,10 @@ export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
 
   for (const line of lines) {
     parseLine(line, state);
+  }
+
+  if (state.events.length === 0) {
+    parseVibeProgressLines(lines, state);
   }
 
   // Flush any remaining pending message

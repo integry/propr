@@ -10,9 +10,9 @@ import type { AgentType } from '../../agents/types.js';
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
 
 export interface DockerCommandOptions {
-    timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; stripAnsi?: boolean;
+    timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
     onSessionId?: (sessionId: string, conversationId?: string) => void; onContainerId?: (containerId: string, containerName: string) => void;
-    extraMounts?: string[]; extraEnvVars?: Record<string, string>;
+    extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
 }
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
@@ -202,7 +202,7 @@ function setupAbortChecker(taskId: string, abortedRef: { value: boolean }, child
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, stripAnsi } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi } = options;
         const executablePath = resolveDockerPath(command);
         const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
         if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
@@ -222,8 +222,17 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const timeoutHandle = setTimeout(() => { state.timedOut = true; child.kill('SIGTERM'); setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000); }, timeout);
         const abortCheckInterval = taskId ? setupAbortChecker(taskId, state.aborted, child, state.containerId) : null;
 
+        const getRedisOutput = () => {
+            const primaryOutput = streamStderrToRedis ? `${stderr}${stdout ? `\n${stdout}` : ''}` : stdout;
+            let extraOutput = '';
+            if (streamExtraOutput) {
+                try { extraOutput = streamExtraOutput(); }
+                catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to read extra streaming output'); }
+            }
+            return extraOutput ? `${primaryOutput}${primaryOutput ? '\n' : ''}${extraOutput}` : primaryOutput;
+        };
         const redisState = { client: null as Redis | null, interval: null as ReturnType<typeof setInterval> | null, lastLen: 0 };
-        if (streamToRedis && taskId) initRedisStreaming(taskId, stripAnsi, () => stdout, redisState);
+        if (streamToRedis && taskId) initRedisStreaming(taskId, stripAnsi, getRedisOutput, redisState);
         if (command === 'docker' && args[0] === 'run' && worktreePath) detectContainerId(worktreePath, state, onContainerId);
 
         child.stdout?.on('data', (data: Buffer) => {
@@ -243,7 +252,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
             if (abortCheckInterval) clearInterval(abortCheckInterval);
-            await cleanupRedisStreaming(redisState, taskId, stripAnsi, stdout);
+            await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
             if (state.timedOut) { reject(new Error(`Command timed out after ${timeout}ms`)); return; }
             if (state.aborted.value) { reject(new ExecutionAbortedError()); return; }
             resolve({ exitCode, stdout, stderr, messageTimestamps });
