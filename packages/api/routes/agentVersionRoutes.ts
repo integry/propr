@@ -11,21 +11,15 @@ import {
     generateImageTag,
     AGENT_DEFAULT_VERSIONS,
     VERSIONED_AGENT_IMAGE_NAMES,
-    AGENT_IMAGE_NAMES,
     validateAgentType,
     ensureVersionedAgentImage,
     cleanupUnusedAgentImages,
     listAgentImages,
     loadAgents,
-    AGENT_TYPES
 } from '@propr/core';
 import type { AgentType, CliVersionType, AgentConfig } from '@propr/core';
 
 const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
-
-function isValidAgentType(agentType: string): agentType is AgentType {
-    return AGENT_TYPES.includes(agentType as AgentType);
-}
 
 function isValidCliVersionType(versionType: unknown): versionType is CliVersionType {
     return typeof versionType === 'string' && VALID_CLI_VERSION_TYPES.includes(versionType as CliVersionType);

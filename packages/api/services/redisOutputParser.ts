@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import type { ConversationEvent, TodoItem, TokenUsageInfo } from '@propr/shared';
 import { isOpenCodeJsonlEvent, normalizeOpenCodeTimestamp, normalizeOpenCodeUsage } from '@propr/core';
 

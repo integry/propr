@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { db, logger } from '@propr/core';
