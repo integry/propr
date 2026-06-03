@@ -187,14 +187,14 @@ Monitor your deployment:
 # Check system health via API
 curl https://yourdomain.com/api/status
 
-# Monitor Redis
-docker-compose -f docker-compose.prod.yml exec redis redis-cli INFO
+# If using the launcher (Option A):
+docker logs -f propr-worker
+docker logs -f propr-daemon
 
-# Check worker logs
-docker-compose -f docker-compose.prod.yml logs -f worker
-
-# Check daemon logs
-docker-compose -f docker-compose.prod.yml logs -f daemon
+# If using Docker Compose (Option B):
+docker-compose exec redis redis-cli INFO
+docker-compose logs -f worker
+docker-compose logs -f daemon
 ```
 
 ## Maintenance
@@ -205,9 +205,13 @@ docker-compose -f docker-compose.prod.yml logs -f daemon
 # Pull latest changes
 git pull
 
-# Rebuild and restart services
-docker-compose -f docker-compose.prod.yml build
-docker-compose -f docker-compose.prod.yml up -d
+# If using the launcher: rebuild the launcher image and restart
+docker build -t propr/launcher:latest -f docker/launcher/Dockerfile .
+# Then re-run your launcher command (see Option A above)
+
+# If using Docker Compose: rebuild and restart
+docker-compose build
+docker-compose up -d
 ```
 
 ### Backup
@@ -218,8 +222,10 @@ Important data to backup:
 - Logs: `./logs` directory
 
 ```bash
-# Backup Redis data
-docker-compose -f docker-compose.prod.yml exec redis redis-cli BGSAVE
+# Backup Redis data (launcher)
+docker exec propr-redis redis-cli BGSAVE
+# Backup Redis data (compose)
+docker-compose exec redis redis-cli BGSAVE
 
 # Create backup archive
 tar -czf propr-backup-$(date +%Y%m%d).tar.gz \
@@ -230,10 +236,10 @@ tar -czf propr-backup-$(date +%Y%m%d).tar.gz \
 
 ### Scaling
 
-To handle more load, you can scale the worker service:
+To handle more load, you can scale the worker service (Docker Compose only):
 
 ```bash
-docker-compose -f docker-compose.prod.yml up -d --scale worker=3
+docker-compose up -d --scale worker=3
 ```
 
 ## Troubleshooting
@@ -258,17 +264,17 @@ docker-compose -f docker-compose.prod.yml up -d --scale worker=3
 ### Debug Commands
 
 ```bash
-# Check Redis keys
-docker-compose -f docker-compose.prod.yml exec redis redis-cli KEYS '*'
+# Check Redis keys (use "docker exec propr-redis" for launcher deployments)
+docker-compose exec redis redis-cli KEYS '*'
 
 # Monitor Redis activity
-docker-compose -f docker-compose.prod.yml exec redis redis-cli MONITOR
+docker-compose exec redis redis-cli MONITOR
 
 # Check queue status
-docker-compose -f docker-compose.prod.yml exec redis redis-cli LLEN github-issue-processor
+docker-compose exec redis redis-cli LLEN github-issue-processor
 
 # View recent activities
-docker-compose -f docker-compose.prod.yml exec redis redis-cli LRANGE system:activity:log 0 10
+docker-compose exec redis redis-cli LRANGE system:activity:log 0 10
 ```
 
 ## Security Recommendations

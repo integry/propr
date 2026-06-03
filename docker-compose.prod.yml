@@ -95,6 +95,11 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      # Vibe prompt cache: required when MISTRAL_API_KEY is set.
+      # Both vars should point to the same host directory.
+      # Create before starting: mkdir -p /tmp/propr-vibe-prompts
+      VIBE_PROMPT_CACHE_DIR: ${VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
+      HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
@@ -103,6 +108,8 @@ services:
       - ./repos:/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
       - propr-sqlite-data:/app/data
+      # Vibe prompt cache bind mount (create dir before starting)
+      - ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}:/tmp/propr-vibe-prompts
     depends_on:
       redis:
         condition: service_healthy

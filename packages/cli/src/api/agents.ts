@@ -285,6 +285,11 @@ function getDefaultDockerImage(type: AgentType): string {
 /**
  * Gets the default config path for an agent type.
  *
+ * Returns a path under the local user's home directory. This is correct for
+ * Docker-outside-Docker setups where the CLI and server share the same host,
+ * but will produce an incorrect path if the CLI talks to a remote ProPR
+ * server. In remote setups, always pass an explicit `configPath` instead.
+ *
  * @param type - The agent type.
  * @returns The default config path.
  */

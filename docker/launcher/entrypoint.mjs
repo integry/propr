@@ -240,6 +240,8 @@ function ensureNetwork() {
 function pullImages() {
     const skipAgentPull = process.env.PROPR_SKIP_AGENT_PULL === 'true'
         || process.env.PROPR_SKIP_AGENT_PULL === '1';
+    const strictAgentPull = process.env.PROPR_STRICT_AGENT_PULL === 'true'
+        || process.env.PROPR_STRICT_AGENT_PULL === '1';
     console.log('\npulling images…');
     const failedAgentImages = [];
     for (const [key, tag] of Object.entries(manifest.images)) {
@@ -273,12 +275,21 @@ function pullImages() {
         tagAgentLatest(key, tag);
     }
     if (failedAgentImages.length > 0) {
+        if (strictAgentPull) {
+            console.error(`\nERROR: ${failedAgentImages.length} agent image(s) could not be pulled (PROPR_STRICT_AGENT_PULL is enabled):`);
+            for (const tag of failedAgentImages) {
+                console.error(`    - ${tag}`);
+            }
+            console.error('  Build locally with scripts/build-agent-images.sh or push to the registry.');
+            process.exit(1);
+        }
         console.warn(`\n⚠ WARNING: ${failedAgentImages.length} agent image(s) could not be pulled:`);
         for (const tag of failedAgentImages) {
             console.warn(`    - ${tag}`);
         }
         console.warn('  Jobs using these agents will fail until images are available.');
-        console.warn('  Build locally with scripts/build-agent-images.sh or push to the registry.\n');
+        console.warn('  Build locally with scripts/build-agent-images.sh or push to the registry.');
+        console.warn('  Set PROPR_STRICT_AGENT_PULL=true to make this a fatal error.\n');
     }
 }
 
@@ -299,11 +310,12 @@ function validateEnv() {
         process.exit(1);
     }
     const mistralApiKey = process.env.MISTRAL_API_KEY || envFileValue('MISTRAL_API_KEY');
-    const vibeEnabled = !!(HOST_VIBE_DIR || mistralApiKey);
+    const vibeConfigPath = process.env.VIBE_CONFIG_PATH || envFileValue('VIBE_CONFIG_PATH');
+    const vibeEnabled = !!(HOST_VIBE_DIR || mistralApiKey || vibeConfigPath);
     if (vibeEnabled && !HOST_VIBE_PROMPT_CACHE_DIR) {
+        const vibeSource = HOST_VIBE_DIR ? 'HOST_VIBE_DIR' : vibeConfigPath ? 'VIBE_CONFIG_PATH' : 'MISTRAL_API_KEY';
         console.error(
-            'ERROR: Vibe support is enabled (via ' +
-            (HOST_VIBE_DIR ? 'HOST_VIBE_DIR' : 'MISTRAL_API_KEY') +
+            'ERROR: Vibe support is enabled (via ' + vibeSource +
             ') but HOST_VIBE_PROMPT_CACHE_DIR is missing. ' +
             'Vibe agent containers need HOST_VIBE_PROMPT_CACHE_DIR to bind-mount prompt ' +
             'files via the host Docker daemon. Set it to a host-visible directory path ' +
