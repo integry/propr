@@ -2,7 +2,8 @@
  * Additional context generation from external repositories.
  */
 
-import logger from '../../utils/logger.js';
+import logger, { type EnhancedLogger } from '../../utils/logger.js';
+import type { Logger } from 'pino';
 import type { ContextRepository } from '../planningHelpers.js';
 import { ensureRepoCloned } from '../../git/repoManager.js';
 import { getGitHubInstallationToken } from '../../auth/githubAuth.js';
@@ -102,7 +103,7 @@ interface RankRepoFilesOptions {
   fastRelevance: boolean;
   contextModel: string | undefined;
   correlationId: string | undefined;
-  correlatedLogger: typeof logger;
+  correlatedLogger: Logger | EnhancedLogger;
 }
 
 async function rankRepoFiles(
