@@ -9,8 +9,7 @@ import {
     setWorktreeOwnership,
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
-import { resolveConfigPath } from '../../config/configManager.js';
-import { loadSettings } from '../../config/configManager.js';
+import { resolveConfigPath, loadSettings } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
@@ -377,13 +376,8 @@ export class VibeAgent implements Agent {
         if (cleanModelName) envVars.push('-e', `VIBE_ACTIVE_MODEL=${cleanModelName}`);
         envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
         if (mode === 'analysis') {
-            envVars.push(
-                '-e', 'VIBE_READ_ONLY_CONFIG=1', '-e', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache',
-                '-e', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config', '-e', 'XDG_DATA_HOME=/tmp/propr-vibe-data',
-                '-e', 'UV_CACHE_DIR=/tmp/propr-uv-cache', '-e', 'HOME=/tmp/propr-vibe-home',
-                '-e', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', '-e', 'XDG_STATE_HOME=/tmp/propr-vibe-state',
-                '-e', 'PIP_CACHE_DIR=/tmp/propr-pip-cache', '-e', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache'
-            );
+            const analysisDirs = ['VIBE_READ_ONLY_CONFIG=1', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config', 'XDG_DATA_HOME=/tmp/propr-vibe-data', 'UV_CACHE_DIR=/tmp/propr-uv-cache', 'HOME=/tmp/propr-vibe-home', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', 'XDG_STATE_HOME=/tmp/propr-vibe-state', 'PIP_CACHE_DIR=/tmp/propr-pip-cache', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache'];
+            for (const dir of analysisDirs) envVars.push('-e', dir);
         }
         envVars.push('-e', `VIBE_MAX_TURNS=${maxTurns}`);
         return envVars;
@@ -393,14 +387,8 @@ export class VibeAgent implements Agent {
         const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
         const resolvedApiKey = mistralApiKey || process.env.MISTRAL_API_KEY?.trim() || this.config.envVars?.MISTRAL_API_KEY?.trim();
         const hasUsableConfig = this.hasUsableConfigDir(configPath, resolvedApiKey);
-        if (!resolvedApiKey && !hasUsableConfig) {
-            throw new Error(
-                `Vibe agent "${this.config.alias}" has no credentials. ` +
-                `Set MISTRAL_API_KEY or ensure ${configPath} contains valid Vibe config files.`
-            );
-        }
-        const configMountArgs = hasUsableConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [];
-        return { configPath, resolvedApiKey, hasUsableConfig, configMountArgs };
+        if (!resolvedApiKey && !hasUsableConfig) throw new Error(`Vibe agent "${this.config.alias}" has no credentials. Set MISTRAL_API_KEY or ensure ${configPath} contains valid Vibe config files.`);
+        return { configPath, resolvedApiKey, hasUsableConfig, configMountArgs: hasUsableConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [] };
     }
 
     private buildPromptMountArgs(promptFilePath: string | undefined, cliArgs: string[]): string[] {
