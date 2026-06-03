@@ -1,6 +1,7 @@
 import logger from '../utils/logger.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 import { getConfig, saveConfig } from './configStore.js';
+import type { Knex } from 'knex';
 export {
     clearRemovedRepositoryIndexData,
     getRepositoriesIndexingStatus,
@@ -138,8 +139,8 @@ export async function loadMonitoredReposRaw(): Promise<RepoToMonitor[]> {
     return rawRepos;
 }
 
-export async function saveMonitoredRepos(repos: RepoToMonitor[]): Promise<boolean> {
-    await saveConfig('repos_to_monitor', repos);
+export async function saveMonitoredRepos(repos: RepoToMonitor[], client?: Knex | Knex.Transaction): Promise<boolean> {
+    await saveConfig('repos_to_monitor', repos, client);
     logger.info({ repos }, 'Successfully saved monitored repositories');
     return true;
 }

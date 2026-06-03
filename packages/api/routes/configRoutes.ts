@@ -218,8 +218,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       const previousRepos = await configManager.loadMonitoredReposRaw();
       return saveThenPublishConfigUpdate({
         save: async () => {
-          await configManager.saveMonitoredRepos(processedRepos);
-          await configManager.clearRemovedRepositoryIndexData(previousRepos, processedRepos);
+          await configManager.db.transaction(async trx => {
+            await configManager.saveMonitoredRepos(processedRepos, trx);
+            await configManager.clearRemovedRepositoryIndexData(previousRepos, processedRepos, trx);
+          });
         },
         publish: async () => {
           await publishConfigUpdate('repos_update');

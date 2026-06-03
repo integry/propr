@@ -157,6 +157,24 @@ describe('repository index cleanup', () => {
     assert.strictEqual(await countRows('directory_summaries', 'integry/propr', 'main'), 2);
   });
 
+  test('whitespace-only branch config is normalized to HEAD during cleanup', async () => {
+    await seedRepositoryIndex('integry/propr', 'HEAD');
+
+    const cleanup = await clearRemovedRepositoryIndexData(
+      [{ name: 'integry/propr', baseBranch: '   ' }],
+      []
+    );
+
+    assert.deepStrictEqual(cleanup, {
+      repositories: 1,
+      file_summaries: 1,
+      directory_summaries: 2
+    });
+    assert.strictEqual(await countRows('repositories', 'integry/propr', 'HEAD'), 0);
+    assert.strictEqual(await countRows('file_summaries', 'integry/propr', 'HEAD'), 0);
+    assert.strictEqual(await countRows('directory_summaries', 'integry/propr', 'HEAD'), 0);
+  });
+
   test('repository names containing SQL wildcards do not clear unrelated path prefixes', async () => {
     await seedRepositoryIndex('integry/foo_bar', 'main');
     await seedRepositoryIndex('integry/fooXbar', 'main');

@@ -2,6 +2,7 @@ import { db } from '../db/connection.js';
 import { getIndexingProgress } from '../services/relevance/indexingCancellation.js';
 import logger from '../utils/logger.js';
 import type { RepoToMonitor } from './configManager.js';
+import type { Knex } from 'knex';
 
 export interface RepositoryIndexingProgress {
     totalFiles: number;
@@ -37,9 +38,10 @@ interface RepositoryIndexKey {
 }
 
 const DEFAULT_INDEX_BRANCH = 'HEAD';
+type IndexCleanupDbClient = Knex | Knex.Transaction;
 
 function normalizeIndexBranch(branch?: string): string {
-    return branch || DEFAULT_INDEX_BRANCH;
+    return branch?.trim() || DEFAULT_INDEX_BRANCH;
 }
 
 function toRepositoryIndexKey(repo: Pick<RepoToMonitor, 'name' | 'baseBranch'>): RepositoryIndexKey {
@@ -54,18 +56,18 @@ function escapeLikePattern(value: string): string {
     return value.replace(/[\\%_]/g, match => `\\${match}`);
 }
 
-function whereRepositoryPathPrefix(query: ReturnType<typeof db>, repository: string) {
+function whereRepositoryPathPrefix(query: Knex.QueryBuilder, repository: string) {
     return query.whereRaw('?? LIKE ? ESCAPE ?', ['path', `${escapeLikePattern(repository)}/%`, '\\']);
 }
 
-function deleteFileSummaries(repository: string, branch?: string) {
-    const query = whereRepositoryPathPrefix(db('file_summaries'), repository);
+function deleteFileSummaries(client: IndexCleanupDbClient, repository: string, branch?: string) {
+    const query = whereRepositoryPathPrefix(client('file_summaries'), repository);
     if (branch) query.andWhere({ branch });
     return query.delete();
 }
 
-function deleteDirectorySummaries(repository: string, branch?: string) {
-    const query = db('directory_summaries')
+function deleteDirectorySummaries(client: IndexCleanupDbClient, repository: string, branch?: string) {
+    const query = client('directory_summaries')
         .where(function() {
             whereRepositoryPathPrefix(this, repository).orWhere('path', repository);
         });
@@ -73,8 +75,8 @@ function deleteDirectorySummaries(repository: string, branch?: string) {
     return query.delete();
 }
 
-function deleteRepositoryRows(repository: string, branch?: string) {
-    const query = db('repositories').where({ full_name: repository });
+function deleteRepositoryRows(client: IndexCleanupDbClient, repository: string, branch?: string) {
+    const query = client('repositories').where({ full_name: repository });
     if (branch) query.andWhere({ branch });
     return query.delete();
 }
@@ -85,7 +87,8 @@ function deleteRepositoryRows(repository: string, branch?: string) {
  */
 export async function clearRemovedRepositoryIndexData(
     previousRepos: Pick<RepoToMonitor, 'name' | 'baseBranch'>[],
-    nextRepos: Pick<RepoToMonitor, 'name' | 'baseBranch'>[]
+    nextRepos: Pick<RepoToMonitor, 'name' | 'baseBranch'>[],
+    client: IndexCleanupDbClient = db
 ): Promise<RepositoryIndexCleanupResult> {
     const nextKeys = new Set(nextRepos.map(repo => serializeRepositoryIndexKey(toRepositoryIndexKey(repo))));
     const nextRepositories = new Set(nextRepos.map(repo => repo.name));
@@ -105,18 +108,22 @@ export async function clearRemovedRepositoryIndexData(
         directory_summaries: 0
     };
 
+    if (removedByRepository.size === 0) {
+        return result;
+    }
+
     for (const [repository, branches] of removedByRepository.entries()) {
         if (!nextRepositories.has(repository)) {
-            result.file_summaries += await deleteFileSummaries(repository);
-            result.directory_summaries += await deleteDirectorySummaries(repository);
-            result.repositories += await deleteRepositoryRows(repository);
+            result.file_summaries += await deleteFileSummaries(client, repository);
+            result.directory_summaries += await deleteDirectorySummaries(client, repository);
+            result.repositories += await deleteRepositoryRows(client, repository);
             continue;
         }
 
         for (const branch of branches) {
-            result.file_summaries += await deleteFileSummaries(repository, branch);
-            result.directory_summaries += await deleteDirectorySummaries(repository, branch);
-            result.repositories += await deleteRepositoryRows(repository, branch);
+            result.file_summaries += await deleteFileSummaries(client, repository, branch);
+            result.directory_summaries += await deleteDirectorySummaries(client, repository, branch);
+            result.repositories += await deleteRepositoryRows(client, repository, branch);
         }
     }
 

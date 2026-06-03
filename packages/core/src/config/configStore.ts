@@ -1,5 +1,8 @@
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
+import type { Knex } from 'knex';
+
+type ConfigDbClient = Knex | Knex.Transaction;
 
 /**
  * Helper to get a config value from DB with a fallback.
@@ -23,20 +26,20 @@ export async function getConfig<T>(key: string, defaultValue: T): Promise<T> {
  * Helper to save a config value to DB.
  * Exported for reuse by sibling config modules.
  */
-export async function saveConfig<T>(key: string, value: T): Promise<boolean> {
+export async function saveConfig<T>(key: string, value: T, client: ConfigDbClient = db): Promise<boolean> {
     try {
         const jsonValue = JSON.stringify(value);
-        await db('system_configs')
+        await client('system_configs')
             .insert({
                 key,
                 value: jsonValue,
-                updated_at: db.fn.now(),
-                created_at: db.fn.now()
+                updated_at: client.fn.now(),
+                created_at: client.fn.now()
             })
             .onConflict('key')
             .merge({
                 value: jsonValue,
-                updated_at: db.fn.now()
+                updated_at: client.fn.now()
             });
         return true;
     } catch (error) {
