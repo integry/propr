@@ -65,12 +65,66 @@ function findNewestMessagesFile(root: string): string | undefined {
     return newest?.filePath;
 }
 
+function findNewestMetaFile(root: string): string | undefined {
+    const sessionRoot = path.join(root, 'logs', 'session');
+    if (!fs.existsSync(sessionRoot)) return undefined;
+
+    let newest: { filePath: string; mtimeMs: number } | undefined;
+    const stack = [sessionRoot];
+    while (stack.length > 0) {
+        const current = stack.pop()!;
+        let entries: fs.Dirent[];
+        try { entries = fs.readdirSync(current, { withFileTypes: true }); }
+        catch { continue; }
+
+        for (const entry of entries) {
+            const entryPath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                stack.push(entryPath);
+                continue;
+            }
+            if (!entry.isFile() || entry.name !== 'meta.json') continue;
+            try {
+                const stat = fs.statSync(entryPath);
+                if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { filePath: entryPath, mtimeMs: stat.mtimeMs };
+            } catch {
+                // Ignore files that disappear while the session logger is writing.
+            }
+        }
+    }
+
+    return newest?.filePath;
+}
+
 function readLatestVibeSessionMessages(runtimeHomePath: string | undefined): string {
     if (!runtimeHomePath) return '';
     const messagesFile = findNewestMessagesFile(runtimeHomePath);
     if (!messagesFile) return '';
     try { return fs.readFileSync(messagesFile, 'utf8'); }
     catch { return ''; }
+}
+
+export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefined): { input_tokens?: number; output_tokens?: number } | undefined {
+    if (!runtimeHomePath) return undefined;
+    const metaFile = findNewestMetaFile(runtimeHomePath);
+    if (!metaFile) return undefined;
+
+    try {
+        const parsed = JSON.parse(fs.readFileSync(metaFile, 'utf8')) as {
+            stats?: {
+                session_prompt_tokens?: unknown;
+                session_completion_tokens?: unknown;
+            };
+        };
+        const inputTokens = parsed.stats?.session_prompt_tokens;
+        const outputTokens = parsed.stats?.session_completion_tokens;
+        return {
+            input_tokens: typeof inputTokens === 'number' ? inputTokens : undefined,
+            output_tokens: typeof outputTokens === 'number' ? outputTokens : undefined
+        };
+    } catch {
+        return undefined;
+    }
 }
 
 interface VibeDockerArgsParams {
@@ -155,6 +209,7 @@ export class VibeAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseVibeOutput(result.stdout);
             const conversationLog = parseVibeConversationLog(result.stdout);
+            const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
             const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
@@ -174,7 +229,7 @@ export class VibeAgent implements Agent {
                 sessionId: parsedOutput.sessionId,
                 conversationLog,
                 error,
-                tokenUsage: parsedOutput.tokenUsage,
+                tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
             };
 
@@ -184,7 +239,7 @@ export class VibeAgent implements Agent {
                 modelUsed,
                 executionTimeMs,
                 success: response.success,
-                tokenUsage: parsedOutput.tokenUsage,
+                tokenUsage,
                 error: response.success ? undefined : (response.error || result.stderr || 'Execution failed'),
                 sessionId: parsedOutput.sessionId,
                 draftId: taskId,
@@ -238,11 +293,13 @@ export class VibeAgent implements Agent {
         let analysisWorkspace: string | undefined;
         let promptFilePath: string | undefined;
         let envFilePath: string | undefined;
+        let runtimeHomePath: string | undefined;
         try {
             analysisWorkspace = this.ensureAnalysisWorkspace();
             promptFilePath = writeVibePromptFile(analysisPrompt);
             const mistralApiKey = await this.getMistralApiKey();
             envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken: process.env.GITHUB_TOKEN });
+            runtimeHomePath = this.prepareRuntimeHome(taskId);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
@@ -254,7 +311,8 @@ export class VibeAgent implements Agent {
                 maxTurns: 5,
                 mode: 'analysis',
                 promptFilePath,
-                envFilePath
+                envFilePath,
+                runtimeHomePath
             });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
@@ -265,6 +323,7 @@ export class VibeAgent implements Agent {
             );
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseVibeOutput(result.stdout);
+            const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const analysisText = (parsedOutput.summary || '').trim();
             const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
             const usage = formatUsageMetrics(usageMetrics);
@@ -275,7 +334,7 @@ export class VibeAgent implements Agent {
                     modelUsed: parsedOutput.model || effectiveModel,
                     executionTimeMs,
                     success: true,
-                    tokenUsage: parsedOutput.tokenUsage,
+                    tokenUsage,
                     sessionId: parsedOutput.sessionId,
                     draftId: taskId,
                     correlationId,
@@ -292,7 +351,7 @@ export class VibeAgent implements Agent {
                     modelUsed: parsedOutput.model || effectiveModel,
                     executionTimeMs,
                     success: true,
-                    tokenUsage: parsedOutput.tokenUsage,
+                    tokenUsage,
                     sessionId: parsedOutput.sessionId
                 };
             }
@@ -303,7 +362,7 @@ export class VibeAgent implements Agent {
                 modelUsed: parsedOutput.model || effectiveModel,
                 executionTimeMs,
                 success: false,
-                tokenUsage: parsedOutput.tokenUsage,
+                tokenUsage,
                 error: errorMsg,
                 sessionId: parsedOutput.sessionId,
                 draftId: taskId,
@@ -324,6 +383,7 @@ export class VibeAgent implements Agent {
         } finally {
             cleanupTempFile(promptFilePath);
             cleanupTempFile(envFilePath);
+            this.cleanupRuntimeHome(runtimeHomePath);
             if (analysisWorkspace) {
                 try { fs.rmSync(analysisWorkspace, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
             }

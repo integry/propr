@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { VibeAgent, getMistralApiKeyFromSettings, parseVibeConversationLog, parseVibeOutput } from '../packages/core/src/agents/impl/VibeAgent.js';
+import { VibeAgent, getMistralApiKeyFromSettings, parseVibeConversationLog, parseVibeOutput, readLatestVibeSessionTokenUsage } from '../packages/core/src/agents/impl/VibeAgent.js';
 import { executeDockerCommand } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import { getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs } from '../packages/core/src/agents/impl/utils/vibeAgentHelpers.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
@@ -258,6 +258,31 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parsed.error, undefined);
         assert.strictEqual(parsed.incomplete, true);
         assert.strictEqual(isSuccessfulVibeResult(0, parsed), false);
+    });
+});
+
+describe('readLatestVibeSessionTokenUsage', () => {
+    test('reads token totals from Vibe session meta stats', () => {
+        const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-meta-test-'));
+        try {
+            const sessionDir = path.join(runtimeHome, 'logs', 'session', 'session_20260603_131445_ae284605');
+            fs.mkdirSync(sessionDir, { recursive: true });
+            fs.writeFileSync(path.join(sessionDir, 'meta.json'), JSON.stringify({
+                stats: {
+                    session_prompt_tokens: 7462,
+                    session_completion_tokens: 4,
+                    session_total_llm_tokens: 7466,
+                    session_cost: 0.0007474
+                }
+            }));
+
+            assert.deepStrictEqual(readLatestVibeSessionTokenUsage(runtimeHome), {
+                input_tokens: 7462,
+                output_tokens: 4
+            });
+        } finally {
+            fs.rmSync(runtimeHome, { recursive: true, force: true });
+        }
     });
 });
 
