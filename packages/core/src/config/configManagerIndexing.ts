@@ -50,9 +50,16 @@ function serializeRepositoryIndexKey({ repository, branch }: RepositoryIndexKey)
     return `${repository}\0${branch}`;
 }
 
+function escapeLikePattern(value: string): string {
+    return value.replace(/[\\%_]/g, match => `\\${match}`);
+}
+
+function whereRepositoryPathPrefix(query: ReturnType<typeof db>, repository: string) {
+    return query.whereRaw('?? LIKE ? ESCAPE ?', ['path', `${escapeLikePattern(repository)}/%`, '\\']);
+}
+
 function deleteFileSummaries(repository: string, branch?: string) {
-    const query = db('file_summaries')
-        .where('path', 'like', `${repository}/%`);
+    const query = whereRepositoryPathPrefix(db('file_summaries'), repository);
     if (branch) query.andWhere({ branch });
     return query.delete();
 }
@@ -60,7 +67,7 @@ function deleteFileSummaries(repository: string, branch?: string) {
 function deleteDirectorySummaries(repository: string, branch?: string) {
     const query = db('directory_summaries')
         .where(function() {
-            this.where('path', 'like', `${repository}/%`).orWhere('path', repository);
+            whereRepositoryPathPrefix(this, repository).orWhere('path', repository);
         });
     if (branch) query.andWhere({ branch });
     return query.delete();
@@ -114,7 +121,13 @@ export async function clearRemovedRepositoryIndexData(
     }
 
     if (result.repositories || result.file_summaries || result.directory_summaries) {
-        logger.info({ cleanup: result }, 'Cleared index data for removed monitored repository entries');
+        logger.info({
+            cleanup: result,
+            removed: Array.from(removedByRepository.entries()).map(([repository, branches]) => ({
+                repository,
+                branches: nextRepositories.has(repository) ? Array.from(branches) : 'all'
+            }))
+        }, 'Cleared index data for removed monitored repository entries');
     }
 
     return result;

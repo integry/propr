@@ -37,10 +37,18 @@ async function seedRepositoryIndex(repository: string, branch: string): Promise<
   });
 
   await db('directory_summaries').insert({
+    path: repository,
+    branch,
+    summary: `${repository} ${branch} root directory`,
+    hash: `${branch}-root-directory-hash`,
+    last_updated_at: now
+  });
+
+  await db('directory_summaries').insert({
     path: `${repository}/src`,
     branch,
-    summary: `${repository} ${branch} directory`,
-    hash: `${branch}-directory-hash`,
+    summary: `${repository} ${branch} src directory`,
+    hash: `${branch}-src-directory-hash`,
     last_updated_at: now
   });
 }
@@ -49,8 +57,10 @@ async function countRows(table: string, repository: string, branch?: string): Pr
   const query = db(table);
   if (table === 'repositories') {
     query.where({ full_name: repository });
+  } else if (table === 'directory_summaries') {
+    query.whereIn('path', [repository, `${repository}/src`]);
   } else {
-    query.where('path', 'like', `${repository}/%`);
+    query.where({ path: `${repository}/src/index.ts` });
   }
   if (branch) query.andWhere({ branch });
   const row = await query.count<{ count: number | string }[]>({ count: '*' }).first();
@@ -93,17 +103,17 @@ describe('repository index cleanup', () => {
     assert.deepStrictEqual(cleanup, {
       repositories: 1,
       file_summaries: 1,
-      directory_summaries: 1
+      directory_summaries: 2
     });
     assert.strictEqual(await countRows('repositories', 'integry/propr', 'main'), 1);
     assert.strictEqual(await countRows('repositories', 'integry/propr', 'develop'), 0);
     assert.strictEqual(await countRows('file_summaries', 'integry/propr', 'main'), 1);
     assert.strictEqual(await countRows('file_summaries', 'integry/propr', 'develop'), 0);
-    assert.strictEqual(await countRows('directory_summaries', 'integry/propr', 'main'), 1);
+    assert.strictEqual(await countRows('directory_summaries', 'integry/propr', 'main'), 2);
     assert.strictEqual(await countRows('directory_summaries', 'integry/propr', 'develop'), 0);
     assert.strictEqual(await countRows('repositories', 'integry/other', 'develop'), 1);
     assert.strictEqual(await countRows('file_summaries', 'integry/other', 'develop'), 1);
-    assert.strictEqual(await countRows('directory_summaries', 'integry/other', 'develop'), 1);
+    assert.strictEqual(await countRows('directory_summaries', 'integry/other', 'develop'), 2);
   });
 
   test('removing the final configured repository entry deletes all branch index data', async () => {
@@ -119,14 +129,14 @@ describe('repository index cleanup', () => {
     assert.deepStrictEqual(cleanup, {
       repositories: 2,
       file_summaries: 2,
-      directory_summaries: 2
+      directory_summaries: 4
     });
     assert.strictEqual(await countRows('repositories', 'integry/propr'), 0);
     assert.strictEqual(await countRows('file_summaries', 'integry/propr'), 0);
     assert.strictEqual(await countRows('directory_summaries', 'integry/propr'), 0);
     assert.strictEqual(await countRows('repositories', 'integry/other', 'main'), 1);
     assert.strictEqual(await countRows('file_summaries', 'integry/other', 'main'), 1);
-    assert.strictEqual(await countRows('directory_summaries', 'integry/other', 'main'), 1);
+    assert.strictEqual(await countRows('directory_summaries', 'integry/other', 'main'), 2);
   });
 
   test('saving with no removed repository entries does not clear index data', async () => {
@@ -144,6 +154,28 @@ describe('repository index cleanup', () => {
     });
     assert.strictEqual(await countRows('repositories', 'integry/propr', 'main'), 1);
     assert.strictEqual(await countRows('file_summaries', 'integry/propr', 'main'), 1);
-    assert.strictEqual(await countRows('directory_summaries', 'integry/propr', 'main'), 1);
+    assert.strictEqual(await countRows('directory_summaries', 'integry/propr', 'main'), 2);
+  });
+
+  test('repository names containing SQL wildcards do not clear unrelated path prefixes', async () => {
+    await seedRepositoryIndex('integry/foo_bar', 'main');
+    await seedRepositoryIndex('integry/fooXbar', 'main');
+
+    const cleanup = await clearRemovedRepositoryIndexData(
+      [{ name: 'integry/foo_bar', baseBranch: 'main' }],
+      []
+    );
+
+    assert.deepStrictEqual(cleanup, {
+      repositories: 1,
+      file_summaries: 1,
+      directory_summaries: 2
+    });
+    assert.strictEqual(await countRows('repositories', 'integry/foo_bar', 'main'), 0);
+    assert.strictEqual(await countRows('file_summaries', 'integry/foo_bar', 'main'), 0);
+    assert.strictEqual(await countRows('directory_summaries', 'integry/foo_bar', 'main'), 0);
+    assert.strictEqual(await countRows('repositories', 'integry/fooXbar', 'main'), 1);
+    assert.strictEqual(await countRows('file_summaries', 'integry/fooXbar', 'main'), 1);
+    assert.strictEqual(await countRows('directory_summaries', 'integry/fooXbar', 'main'), 2);
   });
 });
