@@ -88,14 +88,13 @@ export class CodexAgent implements Agent {
             const parsedOutput = parseCodexStreamOutput(result.stdout);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
 
-            const response = this.buildTaskExecutionResult({
-                parsedOutput,
-                result,
-                executionTime,
-                modelUsed,
-                prompt,
-                usageMetrics
-            });
+            logger.info({
+                issueNumber: issueRef.number, repository: repo, executionTime,
+                outputLength: result.stdout?.length || 0, exitCode: result.exitCode,
+                agentAlias: this.config.alias, sessionId: parsedOutput.sessionId
+            }, 'Codex agent execution completed');
+
+            const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, executionTime, prompt, usageMetrics });
 
             await this.persistExecutionLogs({
                 parsedOutput, prompt, issueRef, modelUsed, isRetry, retryReason,
@@ -107,7 +106,6 @@ export class CodexAgent implements Agent {
                 issueNumber: issueRef.number,
                 result,
                 parsedOutput,
-                modelUsed,
                 worktreePath,
                 worktreeGitContent
             });
@@ -136,12 +134,13 @@ export class CodexAgent implements Agent {
     private buildTaskExecutionResult(params: {
         parsedOutput: CodexParsedOutput;
         result: CodexExecutionOutput;
+        effectiveModel?: string;
         executionTime: number;
-        modelUsed: string;
         prompt: string;
         usageMetrics: CodexUsageMetrics;
     }): AgentExecutionResult {
-        const { parsedOutput, result, executionTime, modelUsed, prompt, usageMetrics } = params;
+        const { parsedOutput, result, effectiveModel, executionTime, prompt, usageMetrics } = params;
+        const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
         return {
             success: parsedOutput.success && result.exitCode === 0,
             executionTimeMs: executionTime,
@@ -195,11 +194,10 @@ export class CodexAgent implements Agent {
         issueNumber: number;
         result: CodexExecutionOutput;
         parsedOutput: CodexParsedOutput;
-        modelUsed: string;
         worktreePath: string;
         worktreeGitContent: string | null;
     }): void {
-        const { response, issueNumber, result, parsedOutput, modelUsed, worktreePath, worktreeGitContent } = params;
+        const { response, issueNumber, result, parsedOutput, worktreePath, worktreeGitContent } = params;
         if (!response.success) {
             logger.error({
                 issueNumber, exitCode: result.exitCode,
@@ -208,9 +206,10 @@ export class CodexAgent implements Agent {
             return;
         }
 
-        logger.info({ issueNumber, model: modelUsed, agentAlias: this.config.alias }, 'Codex agent execution succeeded');
+        logger.info({ issueNumber, model: response.modelUsed, agentAlias: this.config.alias }, 'Codex agent execution succeeded');
         verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
     }
+
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs } = options || {};

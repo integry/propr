@@ -6,7 +6,7 @@ import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { estimateLlmDuration } from '../../utils/llmEstimation.js';
 import { findRelevantFiles } from '../relevanceService.js';
 import { getAgentRegistry } from '../../agents/AgentRegistry.js';
-import { generateContext } from '../contextService.js';
+import { generateContext } from '../context/index.js';
 import { parseFileReferences, getResolvedPaths } from '../relevance/fileReferenceParser.js';
 import { buildSummaryContext } from '../relevance/contextBuilder.js';
 

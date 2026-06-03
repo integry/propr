@@ -2,11 +2,11 @@
  * Context generation with retry logic for plan generation.
  */
 
-import { generateContext } from '../contextService.js';
+import { generateContext } from '../context/index.js';
 import { buildSummaryContext } from '../relevance/contextBuilder.js';
 import {
   validatePromptTokens, CLAUDE_CODE_OVERHEAD, CHARS_PER_TOKEN, PlanningFailedError, buildFullContext, getModelHardLimit
-} from '../planningHelpers.js';
+} from '../planning/index.js';
 import { generateAdditionalContextIfNeeded } from './additionalContext.js';
 import { calculateEffectiveAdditionalContextBudget } from './tokenBudgets.js';
 import type { ContextGenerationParams, ContextGenerationResult } from './types.js';
