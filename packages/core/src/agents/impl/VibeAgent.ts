@@ -302,7 +302,7 @@ export class VibeAgent implements Agent {
         try {
             if (!fs.existsSync(configPath) || !fs.statSync(configPath).isDirectory()) return false;
             const entries = fs.readdirSync(configPath);
-            if (entries.includes('credentials.json')) return true;
+            if (entries.includes('credentials.json') || entries.includes('.env')) return true;
             const hasConfigFile = entries.includes('config.toml') || entries.includes('settings.json');
             if (this.getMistralApiKey() && hasConfigFile) return true;
             return false;

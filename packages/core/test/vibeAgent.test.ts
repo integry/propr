@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { VibeAgent } from '../src/agents/impl/VibeAgent.js';
 import { splitVibeCliArgs } from '../src/agents/impl/utils/vibeAgentHelpers.js';
 import { db } from '../src/db/connection.js';
@@ -31,14 +34,14 @@ after(async () => {
     await db.destroy();
 });
 
-function createAgent(envVars?: Record<string, string>): VibeAgentPrivate {
+function createAgent(envVars?: Record<string, string>, configPath = '/tmp/missing-vibe-config'): VibeAgentPrivate {
     const config: AgentConfig = {
         id: 'vibe-test',
         type: 'vibe',
         alias: 'vibe-test',
         enabled: true,
         dockerImage: 'propr/agent-vibe:latest',
-        configPath: '/tmp/missing-vibe-config',
+        configPath,
         supportedModels: ['mistral-medium-3.5'],
         envVars
     };
@@ -65,7 +68,7 @@ test('Vibe Docker args use stdin-oriented default CLI invocation', () => {
 });
 
 test('Vibe Docker args honor VIBE_CLI_ARGS override', () => {
-    process.env.VIBE_CLI_ARGS = 'vibe --headless "two words"';
+    process.env.VIBE_CLI_ARGS = 'vibe --headless --json "two words"';
     process.env.MISTRAL_API_KEY = 'test-key';
     const args = createAgent().buildDockerArgs({
         worktreePath: process.cwd(),
@@ -75,13 +78,13 @@ test('Vibe Docker args honor VIBE_CLI_ARGS override', () => {
     });
 
     const imageIndex = args.indexOf('propr/agent-vibe:latest');
-    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--headless', 'two words']);
+    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--headless', '--json', 'two words']);
 });
 
 test('Vibe Docker args can read CLI override from agent env vars', () => {
     delete process.env.VIBE_CLI_ARGS;
     process.env.MISTRAL_API_KEY = 'test-key';
-    const args = createAgent({ VIBE_CLI_ARGS: 'vibe --plain' }).buildDockerArgs({
+    const args = createAgent({ VIBE_CLI_ARGS: 'vibe --plain --json' }).buildDockerArgs({
         worktreePath: process.cwd(),
         githubToken: 'token',
         issueNumber: 0,
@@ -89,7 +92,7 @@ test('Vibe Docker args can read CLI override from agent env vars', () => {
     });
 
     const imageIndex = args.indexOf('propr/agent-vibe:latest');
-    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--plain']);
+    assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--plain', '--json']);
 });
 
 test('Vibe CLI arg splitter handles quotes and escaped spaces', () => {
@@ -98,4 +101,23 @@ test('Vibe CLI arg splitter handles quotes and escaped spaces', () => {
         ['vibe', '--flag', 'two words', 'escaped value']
     );
     assert.throws(() => splitVibeCliArgs("vibe 'unterminated"), /unmatched quote/);
+});
+
+test('Vibe Docker args accept mounted Vibe config env file credentials', () => {
+    delete process.env.MISTRAL_API_KEY;
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-config-'));
+    try {
+        fs.writeFileSync(path.join(configDir, 'config.toml'), 'active_model = "mistral-medium-3.5"\n');
+        fs.writeFileSync(path.join(configDir, '.env'), 'MISTRAL_API_KEY=test-key\n', { mode: 0o600 });
+
+        const args = createAgent(undefined, configDir).buildDockerArgs({
+            worktreePath: process.cwd(),
+            githubToken: 'token',
+            issueNumber: 191
+        });
+
+        assert.ok(args.includes(`${configDir}:/home/node/.vibe:ro`));
+    } finally {
+        fs.rmSync(configDir, { recursive: true, force: true });
+    }
 });
