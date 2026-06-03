@@ -5,33 +5,33 @@ import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
-import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitChanges, pushBranch, mergeBaseIntoBranch } from '@propr/core';
+import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, mergeBaseIntoBranch } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
-import { createLogFiles } from '@propr/core';
 import { UsageLimitError, AgentRegistry } from '@propr/core';
-import type { ClaudeCodeResponse } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
 import type { MergeConflictJobData, JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, loadSettings, db, NoDefaultModelConfiguredError } from '@propr/core';
+import { getDefaultModel, NoDefaultModelConfiguredError } from '@propr/core';
 import { cleanupWorktree } from '@propr/core';
 import {
-    createSessionIdCallbackForPR,
-    createContainerIdCallbackForPR,
-} from './prCommentJobHelpers.js';
-import {
-    toClaudeResult,
-    agentResultToClaudeResponse,
-} from './prCommentJobUtils.js';
-import {
-    buildConflictResolutionPrompt,
-    buildMergeConflictCommitMessage,
-    buildMergeConflictComment,
-    updateMergeTaskWithPRInfo,
+    fetchMergeTaskPRInfo,
+    updateMergeTaskWithKnownPRInfo,
 } from './mergeConflictHelpers.js';
+import { handleMergeWithAgent } from './mergeConflictAgentRunner.js';
+import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
+import { fetchAllComments } from './prCommentJobUtils.js';
+import {
+    buildDeterministicPrTaskSubtitle,
+    getConflictDiffForTitle,
+    buildPrTaskTitle,
+    buildPrTaskTitleContext,
+    buildPrTaskTitleContextHistoryMetadata,
+} from './prTaskTitleHelpers.js';
+import type { GitHubToken } from './githubTypes.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
+type MergeResult = Awaited<ReturnType<typeof mergeBaseIntoBranch>>;
+type MergeTaskPrInfo = { prTitle: string; linkedIssueNumber: number | null };
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -39,218 +39,6 @@ const redisClient = new Redis({
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
 });
-
-interface GitHubToken { token: string }
-
-/**
- * Resolves the default agent and model from settings, with fallback to registry default.
- */
-async function resolveDefaultAgentAndModel(
-    registry: AgentRegistry,
-    correlatedLogger: Logger
-): Promise<{ resolvedAlias: string; resolvedModel: string }> {
-    try {
-        const settings = await loadSettings();
-        if (settings.default_agent_alias) {
-            const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
-            if (configuredAgent && configuredAgent.config.enabled) {
-                const resolvedAlias = settings.default_agent_alias as string;
-                const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
-                if (!resolvedModel) {
-                    throw new NoDefaultModelConfiguredError();
-                }
-                return { resolvedAlias, resolvedModel };
-            }
-        }
-    } catch (settingsError) {
-        if (settingsError instanceof NoDefaultModelConfiguredError) throw settingsError;
-        correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
-    }
-
-    const defaultAgent = registry.getDefaultAgent();
-    const resolvedAlias = defaultAgent?.config.alias || 'claude';
-    const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
-    if (!resolvedModel) {
-        throw new NoDefaultModelConfiguredError();
-    }
-    return { resolvedAlias, resolvedModel };
-}
-
-async function handleMergeWithAgent(options: {
-    conflictedFiles?: string[];
-    worktreeInfo: WorktreeInfo;
-    branchName: string;
-    baseBranch: string;
-    pullRequestNumber: number;
-    repoUrl: string;
-    repoOwner: string;
-    repoName: string;
-    githubToken: GitHubToken;
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
-    startingCommentId: number;
-    stateManager: WorkerStateManager;
-    taskId: string;
-    correlationId: string;
-    correlatedLogger: Logger;
-}): Promise<JobResult> {
-    const { conflictedFiles, worktreeInfo, branchName, baseBranch, pullRequestNumber, repoUrl,
-        repoOwner, repoName, githubToken, octokit, startingCommentId,
-        stateManager, taskId, correlationId, correlatedLogger } = options;
-
-    // Build the conflict resolution prompt
-    const prompt = buildConflictResolutionPrompt({
-        pullRequestNumber,
-        baseBranch,
-        headBranch: branchName,
-        conflictedFiles,
-        worktreeInfo,
-        repoOwner,
-        repoName,
-    });
-
-    // Resolve agent
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-    const agent = registry.getAgentByAlias(resolvedAlias);
-
-    if (!agent) {
-        throw new Error(`Agent not found for alias: ${resolvedAlias}`);
-    }
-
-    correlatedLogger.info({
-        agentAlias: resolvedAlias,
-        agentType: agent.config.type,
-        model: resolvedModel,
-        pullRequestNumber,
-        conflictedFiles,
-    }, 'Executing merge conflict resolution with agent');
-
-    const agentResult = await agent.executeTask({
-        worktreePath: worktreeInfo.worktreePath,
-        issueRef: { number: pullRequestNumber, repoOwner, repoName },
-        prompt,
-        model: resolvedModel,
-        githubToken: githubToken.token,
-        environment: { PROPR_REPO_SETUP: '0' },
-        branchName,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolvedModel, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
-        taskId,
-        prNumber: pullRequestNumber,
-    });
-
-    const claudeResult: ClaudeCodeResponse = agentResultToClaudeResponse(agentResult);
-
-    await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'merge_conflict', correlationId, taskId });
-    await createLogFiles(claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
-
-    await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
-        reason: `${agent.config.type} agent execution completed for merge conflict resolution`,
-        claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
-        historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model },
-    });
-
-    if (!claudeResult.success) {
-        throw new Error(`Agent execution failed during conflict resolution: ${claudeResult.error || claudeResult.logs || 'Unknown error'}`);
-    }
-
-    // Verify no conflict markers remain in the worktree before committing
-    const { execSync } = await import('child_process');
-    try {
-        // Search for conflict markers in all files (excluding .git directory)
-        const grepResult = execSync(
-            `grep -rn "^<<<<<<<\\|^=======\\|^>>>>>>>" --include="*" . 2>/dev/null || true`,
-            { cwd: worktreeInfo.worktreePath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
-        ).trim();
-
-        if (grepResult) {
-            const markerLines = grepResult.split('\n').filter(line => line.length > 0);
-            correlatedLogger.error({
-                pullRequestNumber,
-                remainingMarkers: markerLines.length,
-                firstFewMarkers: markerLines.slice(0, 5)
-            }, 'Conflict markers still present after agent execution');
-            throw new Error(`Agent failed to resolve all merge conflicts. ${markerLines.length} conflict marker(s) still present in files.`);
-        }
-    } catch (grepError) {
-        // If the error is from our throw above, re-throw it
-        if ((grepError as Error).message?.includes('Agent failed to resolve')) {
-            throw grepError;
-        }
-        // Otherwise log and continue (grep command failed)
-        correlatedLogger.warn({ error: (grepError as Error).message }, 'Failed to verify conflict markers, continuing');
-    }
-
-    // Commit any changes from conflict resolution (if agent made changes)
-    const commitMessage = buildMergeConflictCommitMessage({
-        baseBranch,
-        headBranch: branchName,
-        pullRequestNumber,
-        conflictedFiles,
-        model: claudeResult.model || resolvedModel,
-        wasCleanMerge: false,
-    });
-
-    const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Resolve merge conflicts' });
-
-    // Always push - even if no new commit was created by the agent,
-    // git merge may have created a merge commit that needs pushing
-    await pushBranch(worktreeInfo.worktreePath, branchName, { repoUrl, authToken: githubToken.token });
-
-    // Get the current HEAD commit hash (either from our commit or the merge commit)
-    const { simpleGit } = await import('simple-git');
-    const git = simpleGit({ baseDir: worktreeInfo.worktreePath });
-    const headCommit = await git.revparse(['HEAD']);
-    const finalCommitHash = commitResult?.commitHash || headCommit.trim();
-
-    const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
-    const taskUrl = `${webUiUrl}/tasks/${taskId}`;
-
-    // Update the starting comment with resolution result
-    const comment = buildMergeConflictComment({
-        wasCleanMerge: !conflictedFiles || conflictedFiles.length === 0,
-        commitHash: finalCommitHash,
-        baseBranch,
-        headBranch: branchName,
-        conflictedFiles,
-        resolutionSummary: claudeResult.summary,
-        model: claudeResult.model || resolvedModel,
-        executionTimeMs: claudeResult.executionTime,
-        taskUrl,
-    });
-
-    await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-        owner: repoOwner, repo: repoName, comment_id: startingCommentId, body: comment,
-    });
-
-    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: 'Merge conflict resolution completed successfully', commitHash: finalCommitHash,
-    });
-
-    try {
-        await db('tasks').where({ task_id: taskId }).update({ commit_hash: finalCommitHash });
-    } catch (dbError) {
-        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
-    }
-
-    correlatedLogger.info({
-        pullRequestNumber,
-        commitHash: finalCommitHash,
-        baseBranch,
-        conflictedFiles,
-        model: claudeResult.model || resolvedModel,
-    }, 'Merge conflict resolution completed successfully');
-
-    return {
-        status: 'complete',
-        commit: finalCommitHash,
-        pullRequestNumber,
-        mergeType: conflictedFiles && conflictedFiles.length > 0 ? 'conflict_resolved' : 'clean',
-        claudeResult: { success: claudeResult.success },
-    };
-}
 
 async function acquireMergeJobLock(
     lockKey: string,
@@ -271,16 +59,14 @@ async function acquireMergeJobLock(
     return { acquired: true };
 }
 
-async function resolveModelForTask(): Promise<string> {
+async function resolveModelForTask(correlatedLogger: Logger): Promise<string> {
     try {
         const registry = AgentRegistry.getInstance();
         await registry.ensureInitialized();
-        const defaultAgent = registry.getDefaultAgent();
-        if (defaultAgent?.config.defaultModel) {
-            return defaultAgent.config.defaultModel;
-        }
-    } catch {
-        // Keep default
+        return (await resolveDefaultAgentAndModel(registry, correlatedLogger)).resolvedModel;
+    } catch (error) {
+        if (error instanceof NoDefaultModelConfiguredError) throw error;
+        correlatedLogger.debug({ error: (error as Error).message }, 'Failed to resolve default agent model for merge task state');
     }
     if (!DEFAULT_MODEL_NAME) {
         throw new NoDefaultModelConfiguredError();
@@ -322,6 +108,126 @@ async function handleMergeJobError(error: Error, options: {
     return { status: 'failed', reason: 'merge_conflict_resolution_failed' };
 }
 
+async function updateMergeTaskBeforeLocalMerge(options: {
+    prInfo: MergeTaskPrInfo | undefined;
+    stateManager: WorkerStateManager;
+    taskId: string;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    baseBranch: string;
+    headBranch: string;
+    correlatedLogger: Logger;
+}): Promise<void> {
+    const { prInfo, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger } = options;
+    if (!prInfo) return;
+    try {
+        await updateMergeTaskWithKnownPRInfo({
+            stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch,
+            correlatedLogger, prTitle: prInfo.prTitle, linkedIssueNumber: prInfo.linkedIssueNumber,
+            title: buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle: prInfo.prTitle }),
+            subtitle: buildDeterministicPrTaskSubtitle('merge', { baseBranch, headBranch }),
+        });
+    } catch (titleError) {
+        correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to update merge task title before local merge');
+    }
+}
+
+async function fetchMergeTitleContextInfo(options: {
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    taskId: string;
+    correlatedLogger: Logger;
+}): Promise<{ prInfo: MergeTaskPrInfo | undefined; prDescription: string | null | undefined; recentComments: Awaited<ReturnType<typeof fetchAllComments>> }> {
+    const { octokit, pullRequestNumber, repoOwner, repoName, taskId, correlatedLogger } = options;
+    let prInfo: MergeTaskPrInfo | undefined;
+    let prDescription: string | null | undefined;
+    let recentComments: Awaited<ReturnType<typeof fetchAllComments>> = [];
+
+    try {
+        prInfo = await fetchMergeTaskPRInfo({ octokit, pullRequestNumber, repoOwner, repoName });
+    } catch (prError) {
+        correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR info for merge task');
+    }
+    try {
+        const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+            owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
+        }) as { data: { body: string | null; title?: string } };
+        prDescription = prResponse.data.body;
+        prInfo ??= { prTitle: prResponse.data.title || 'Untitled pull request', linkedIssueNumber: null };
+    } catch (prContextError) {
+        correlatedLogger.warn({ taskId, error: (prContextError as Error).message }, 'Failed to fetch PR description for merge task title context');
+    }
+    try {
+        recentComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
+    } catch (commentsError) {
+        correlatedLogger.warn({ taskId, error: (commentsError as Error).message }, 'Failed to fetch recent comments for merge task title context');
+    }
+
+    return { prInfo, prDescription, recentComments };
+}
+
+async function updateMergeTaskAfterLocalMerge(options: {
+    mergeResult: MergeResult;
+    mergeTitleInfo: MergeTaskPrInfo;
+    prDescription: string | null | undefined;
+    recentComments: Awaited<ReturnType<typeof fetchAllComments>>;
+    worktreeInfo: WorktreeInfo;
+    githubToken: GitHubToken;
+    stateManager: WorkerStateManager;
+    taskId: string;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    baseBranch: string;
+    headBranch: string;
+    correlationId: string;
+    correlatedLogger: Logger;
+}): Promise<void> {
+    const { mergeResult, mergeTitleInfo, prDescription, recentComments, worktreeInfo, githubToken, stateManager,
+        taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlationId, correlatedLogger } = options;
+    const hasConflictedFiles = (mergeResult.conflictedFiles?.length ?? 0) > 0;
+
+    const fallbackSubtitle = buildDeterministicPrTaskSubtitle('merge', { baseBranch, headBranch });
+    let subtitle = fallbackSubtitle;
+    let titleContextMetadata: Record<string, unknown> | undefined;
+    if (hasConflictedFiles) {
+        try {
+            const conflictDiff = await getConflictDiffForTitle(worktreeInfo.worktreePath, mergeResult.conflictedFiles);
+            const titleContext = buildPrTaskTitleContext({
+                workflow: 'merge',
+                pullRequestNumber,
+                prTitle: mergeTitleInfo.prTitle,
+                recentComments,
+                prDescription,
+                mergeConflictDiff: conflictDiff,
+            });
+            titleContextMetadata = buildPrTaskTitleContextHistoryMetadata(titleContext);
+            subtitle = titleContext.hasMeaningfulContext ? await generateSummaryTitle({
+                combinedCommentBody: '', titleContext: titleContext.context, fallbackSubtitle, worktreeInfo, githubToken,
+                pullRequestNumber, prTitle: mergeTitleInfo.prTitle, workflowLabel: 'Merge', repoOwner, repoName,
+                correlationId, taskId, correlatedLogger,
+            }) : fallbackSubtitle;
+        } catch (subtitleError) {
+            correlatedLogger.warn({ taskId, error: (subtitleError as Error).message }, 'Failed to generate merge task subtitle from conflict diff');
+        }
+    }
+    try {
+        await updateMergeTaskWithKnownPRInfo({
+            stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch,
+            correlatedLogger, prTitle: mergeTitleInfo.prTitle,
+            linkedIssueNumber: mergeTitleInfo.linkedIssueNumber,
+            title: buildPrTaskTitle({ workflow: 'merge', pullRequestNumber, prTitle: mergeTitleInfo.prTitle }),
+            subtitle,
+            titleContextMetadata,
+        });
+    } catch (titleError) {
+        correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to update merge task subtitle from conflict diff');
+    }
+}
+
 /**
  * Processes a merge conflict resolution job.
  * This job:
@@ -346,12 +252,12 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
     const lockStatus = await acquireMergeJobLock(lockKey, correlationId, job, correlatedLogger);
     if (!lockStatus.acquired) return lockStatus.result;
 
-    const modelName = await resolveModelForTask();
+    const modelName = await resolveModelForTask(correlatedLogger);
 
     try {
         await stateManager.createTaskState(taskId, {
             number: pullRequestNumber, repoOwner, repoName, modelName,
-            type: 'pr_followup', pullRequestNumber,
+            type: 'merge_conflict', pullRequestNumber,
         } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state');
@@ -361,6 +267,10 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
     let worktreeInfo: WorktreeInfo | undefined;
     let octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null = null;
     let startingCommentId: number | undefined;
+    let prInfo: MergeTaskPrInfo | undefined;
+    let prDescription: string | null | undefined;
+    let recentComments: Awaited<ReturnType<typeof fetchAllComments>> = [];
+    let jobSucceeded = false;
 
     try {
         octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
@@ -373,11 +283,12 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         });
         startingCommentId = (startingComment as { data: { id: number } }).data.id;
 
-        try {
-            await updateMergeTaskWithPRInfo({ octokit, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger, redisClient });
-        } catch (prError) {
-            correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR info for merge task');
-        }
+        ({ prInfo, prDescription, recentComments } = await fetchMergeTitleContextInfo({
+            octokit, pullRequestNumber, repoOwner, repoName, taskId, correlatedLogger,
+        }));
+        await updateMergeTaskBeforeLocalMerge({
+            prInfo, stateManager, taskId, pullRequestNumber, repoOwner, repoName, baseBranch, headBranch, correlatedLogger,
+        });
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting merge conflict resolution' });
         await ensureGitRepository(correlatedLogger);
@@ -397,13 +308,35 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
             throw new Error(`Merge failed: ${mergeResult.error}`);
         }
 
-        return await handleMergeWithAgent({
+        if ((mergeResult.conflictedFiles?.length ?? 0) > 0 || prInfo) {
+            await updateMergeTaskAfterLocalMerge({
+                mergeResult,
+                mergeTitleInfo: prInfo ?? { prTitle: 'Untitled pull request', linkedIssueNumber: null },
+                prDescription,
+                recentComments,
+                worktreeInfo,
+                githubToken,
+                stateManager,
+                taskId,
+                pullRequestNumber,
+                repoOwner,
+                repoName,
+                baseBranch,
+                headBranch,
+                correlationId,
+                correlatedLogger,
+            });
+        }
+
+        const result = await handleMergeWithAgent({
             conflictedFiles: mergeResult.conflictedFiles,
             worktreeInfo, branchName: headBranch, baseBranch,
             pullRequestNumber, repoUrl, repoOwner, repoName,
             githubToken, octokit, startingCommentId,
-            stateManager, taskId, correlationId, correlatedLogger,
+            stateManager, taskId, correlationId, correlatedLogger, redisClient,
         });
+        jobSucceeded = result.status === 'complete';
+        return result;
 
     } catch (error) {
         return await handleMergeJobError(error as Error, {
@@ -418,7 +351,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
 
         if (localRepoPath && worktreeInfo) {
             try {
-                await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, { deleteBranch: false, success: true });
+                await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, { deleteBranch: false, success: jobSucceeded });
             } catch (cleanupError) {
                 correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
             }

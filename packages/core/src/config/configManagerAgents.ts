@@ -208,6 +208,37 @@ function removeDeprecatedModels(agent: AgentConfig): boolean {
     return true;
 }
 
+function addMissingSupportedModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
+    if (!agent.supportedModels) {
+        return false;
+    }
+
+    const missingModels = models.filter(m => !agent.supportedModels.includes(m));
+    if (missingModels.length === 0) {
+        return false;
+    }
+
+    agent.supportedModels = [...missingModels, ...agent.supportedModels];
+    logger.info({ agentAlias: agent.alias, addedModels: missingModels }, logMessage);
+    return true;
+}
+
+function removeDeprecatedSupportedModels(agent: AgentConfig): boolean {
+    if (!agent.supportedModels) {
+        return false;
+    }
+
+    const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
+    const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
+    if (removedModels.length === 0) {
+        return false;
+    }
+
+    agent.supportedModels = validModels;
+    logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
+    return true;
+}
+
 /**
  * Migrates agent configurations to include CLI version fields and new models.
  */

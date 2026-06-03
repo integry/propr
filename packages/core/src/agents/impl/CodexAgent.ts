@@ -30,6 +30,10 @@ const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_
 // Container path for Codex config
 const CONTAINER_CONFIG_PATH = '/home/node/.codex';
 
+type CodexExecutionOutput = Awaited<ReturnType<typeof executeDockerCommand>>;
+type CodexParsedOutput = ReturnType<typeof parseCodexStreamOutput>;
+type CodexUsageMetrics = Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
+
 export class CodexAgent implements Agent {
     readonly config: AgentConfig;
     private readonly maxTurns: number;
@@ -84,14 +88,14 @@ export class CodexAgent implements Agent {
             const parsedOutput = parseCodexStreamOutput(result.stdout);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
 
-            const response = this.buildTaskResponse({ result, parsedOutput, executionTime, modelUsed, prompt, usageMetrics });
+            const response = this.buildTaskExecutionResult({ parsedOutput, result, executionTime, modelUsed, prompt, usageMetrics });
 
             await this.persistTaskLog({
                 response, parsedOutput, executionTime, modelUsed, prompt, usageMetrics,
                 issueRef, repo, taskId, prNumber, isRetry, retryReason
             });
 
-            this.logTaskOutcome({ response, result, parsedOutput, issueRef, modelUsed, worktreePath, worktreeGitContent });
+            this.handleTaskCompletion({ response, issueNumber: issueRef.number, result, parsedOutput, modelUsed, worktreePath, worktreeGitContent });
 
             return response;
         } catch (error) {
@@ -102,13 +106,13 @@ export class CodexAgent implements Agent {
         }
     }
 
-    private buildTaskResponse(params: {
-        result: { stdout: string; stderr?: string; exitCode: number | null };
-        parsedOutput: ReturnType<typeof parseCodexStreamOutput>;
+    private buildTaskExecutionResult(params: {
+        parsedOutput: CodexParsedOutput;
+        result: CodexExecutionOutput;
         executionTime: number; modelUsed: string; prompt: string;
-        usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
+        usageMetrics: CodexUsageMetrics;
     }): AgentExecutionResult {
-        const { result, parsedOutput, executionTime, modelUsed, prompt, usageMetrics } = params;
+        const { parsedOutput, result, executionTime, modelUsed, prompt, usageMetrics } = params;
         return {
             success: parsedOutput.success && result.exitCode === 0,
             executionTimeMs: executionTime,
@@ -130,9 +134,9 @@ export class CodexAgent implements Agent {
     }
 
     private async persistTaskLog(params: {
-        response: AgentExecutionResult; parsedOutput: ReturnType<typeof parseCodexStreamOutput>;
+        response: AgentExecutionResult; parsedOutput: CodexParsedOutput;
         executionTime: number; modelUsed: string; prompt: string;
-        usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
+        usageMetrics: CodexUsageMetrics;
         issueRef: AgentTaskOptions['issueRef']; repo: string;
         taskId?: string; prNumber?: number; isRetry: boolean; retryReason?: string;
     }): Promise<void> {
@@ -153,23 +157,26 @@ export class CodexAgent implements Agent {
         await persistLlmLog(logEntry);
     }
 
-    private logTaskOutcome(params: {
+    private handleTaskCompletion(params: {
         response: AgentExecutionResult;
-        result: { exitCode: number | null; stderr?: string };
-        parsedOutput: ReturnType<typeof parseCodexStreamOutput>;
-        issueRef: AgentTaskOptions['issueRef']; modelUsed: string;
-        worktreePath: string; worktreeGitContent: string | null;
+        issueNumber: number;
+        result: CodexExecutionOutput;
+        parsedOutput: CodexParsedOutput;
+        modelUsed: string;
+        worktreePath: string;
+        worktreeGitContent: string | null;
     }): void {
-        const { response, result, parsedOutput, issueRef, modelUsed, worktreePath, worktreeGitContent } = params;
+        const { response, issueNumber, result, parsedOutput, modelUsed, worktreePath, worktreeGitContent } = params;
         if (!response.success) {
             logger.error({
-                issueNumber: issueRef.number, exitCode: result.exitCode,
+                issueNumber, exitCode: result.exitCode,
                 stderr: result.stderr, agentAlias: this.config.alias, error: parsedOutput.error
             }, 'Codex agent execution failed');
-        } else {
-            logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Codex agent execution succeeded');
-            verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
+            return;
         }
+
+        logger.info({ issueNumber, model: modelUsed, agentAlias: this.config.alias }, 'Codex agent execution succeeded');
+        verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
     }
 
     private handleTaskError(params: {
@@ -192,7 +199,7 @@ export class CodexAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
@@ -216,7 +223,7 @@ export class CodexAgent implements Agent {
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
                 async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: 1800000, stdinData: analysisPrompt, taskId
+                    timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId
                 }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
