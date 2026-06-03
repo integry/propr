@@ -416,14 +416,24 @@ describe('VibeAgent Docker args', () => {
 
     test('entrypoint forces Vibe runtime home after dropping privileges', () => {
         const script = fs.readFileSync(path.resolve('scripts/vibe-entrypoint.sh'), 'utf8');
+        const suExecIndex = script.indexOf('command -v su-exec');
+        const sudoIndex = script.indexOf('command -v sudo', suExecIndex);
 
         assert.match(script, /export HOME="\$RUNTIME_VIBE_HOME"/);
         assert.match(script, /env HOME="\$RUNTIME_VIBE_HOME" VIBE_HOME="\$RUNTIME_VIBE_HOME"/);
+        assert.ok(suExecIndex !== -1, 'entrypoint should support su-exec for restricted containers');
+        assert.ok(sudoIndex > suExecIndex, 'entrypoint should prefer su-exec before sudo');
         assert.match(script, /normalize_vibe_config_paths/);
         assert.match(script, /ensure_runtime_dirs/);
         assert.match(script, /chown -R node:node "\$RUNTIME_VIBE_HOME"/);
         assert.match(script, /bypass_tool_permissions = true/);
         assert.doesNotMatch(script, /sudo -E -u node -H/);
+    });
+
+    test('Vibe image installs su-exec for no-new-privileges user switching', () => {
+        const dockerfile = fs.readFileSync(path.resolve('Dockerfile.vibe'), 'utf8');
+
+        assert.match(dockerfile, /apk add --no-cache[^\n]*su-exec/);
     });
 
     test('propagates Mistral API key through the explicit credential path', () => {

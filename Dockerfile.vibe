@@ -12,7 +12,7 @@ FROM ${BASE_IMAGE}
 ARG CLI_VERSION=2.12.1
 
 USER root
-RUN apk add --no-cache bash python3 sudo
+RUN apk add --no-cache bash python3 sudo su-exec
 COPY --from=uv-bin /uv /uvx /usr/local/bin/
 ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin

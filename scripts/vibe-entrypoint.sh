@@ -301,11 +301,11 @@ if [ $# -gt 0 ]; then
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2
         cd /home/node/workspace
-        if command -v sudo >/dev/null 2>&1; then
-            exec sudo -E -u node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
-        fi
         if command -v su-exec >/dev/null 2>&1; then
             exec su-exec node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
+        fi
+        if command -v sudo >/dev/null 2>&1; then
+            exec sudo -E -u node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
         fi
         echo "Cannot switch to node user: sudo or su-exec is required" >&2
         exit 127
