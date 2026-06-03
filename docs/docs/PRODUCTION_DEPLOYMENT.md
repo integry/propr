@@ -23,6 +23,8 @@ cp packages/api/client/.env.example packages/api/client/.env
 
 ### Required Environment Variables
 
+These variables are always required regardless of which coding agent you use.
+
 ```bash
 # GitHub App Configuration
 GH_APP_ID=your-github-app-id
@@ -35,22 +37,6 @@ GH_CLIENT_SECRET=your-github-client-secret
 GH_OAUTH_CLIENT_ID=your-oauth-client-id
 GH_OAUTH_CLIENT_SECRET=your-oauth-client-secret
 GH_OAUTH_CALLBACK_URL=https://yourdomain.com/api/auth/github/callback
-
-# Claude API
-ANTHROPIC_API_KEY=your-anthropic-api-key
-
-# Optional Mistral Vibe agent support
-MISTRAL_API_KEY=your-mistral-api-key
-# Host path to the Vibe credential directory. Must be an absolute path.
-# The launcher reads this from the .env file or from a `-e` flag.
-HOST_VIBE_DIR=/home/propr/.vibe
-# Required whenever Vibe agents are enabled (MISTRAL_API_KEY or HOST_VIBE_DIR
-# is set). The prompt cache directory must be host-visible so spawned agent
-# containers can bind-mount prompt files. Both vars should point to the same
-# host directory. Create it before starting:
-#   mkdir -p /tmp/propr-vibe-prompts
-VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
-HOST_VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
 
 # Security
 SESSION_SECRET=generate-a-strong-secret-here
@@ -67,6 +53,31 @@ REDIS_PORT=6379
 
 # Logging
 LOG_LEVEL=info
+```
+
+### Agent Credentials (set only the agents you use)
+
+Each agent type requires its own credentials. You only need to configure the
+agents you plan to use — at least one is required.
+
+```bash
+# Claude agent (set if using Claude)
+ANTHROPIC_API_KEY=your-anthropic-api-key
+
+# Mistral Vibe agent (set if using Vibe)
+# Option A: API-key auth (simplest)
+MISTRAL_API_KEY=your-mistral-api-key
+# Option B: config-file auth (set HOST_VIBE_DIR to the host path of your
+# .vibe credential directory instead of / in addition to MISTRAL_API_KEY)
+# HOST_VIBE_DIR=/home/propr/.vibe
+
+# Required whenever Vibe agents are enabled (MISTRAL_API_KEY or HOST_VIBE_DIR
+# is set). The prompt cache directory must be host-visible so spawned agent
+# containers can bind-mount prompt files. Both vars should point to the same
+# host directory. Create it before starting:
+#   mkdir -p /tmp/propr-vibe-prompts
+VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
+HOST_VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts
 ```
 
 ## Building Agent Images
@@ -280,7 +291,7 @@ docker-compose exec redis redis-cli LRANGE system:activity:log 0 10
 ## Security Recommendations
 
 1. **Use strong secrets** for SESSION_SECRET
-2. **Enable HTTPS** for all production deployments — auth redirects require HTTPS for all non-localhost targets. HTTP is only permitted for `localhost`, `127.0.0.1`, and `::1` to support local development. Internal or preview deployments using HTTP hostnames must use HTTPS or be accessed via a loopback address.
+2. **Enable HTTPS** for all production deployments — auth redirects require HTTPS for all non-localhost targets by default. HTTP is only permitted for `localhost`, `127.0.0.1`, and `::1` to support local development. Internal or preview deployments that use HTTP hostnames can set `AUTH_ALLOW_HTTP_REDIRECT=true` to allow HTTP redirects to allowed hosts.
 3. **Restrict access** using ALLOWED_ORGS
 4. **Regular updates** of Docker images and dependencies
 5. **Monitor logs** for suspicious activity

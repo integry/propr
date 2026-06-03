@@ -97,12 +97,13 @@ services:
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
       # Vibe prompt cache: required when MISTRAL_API_KEY is set.
       # Both vars should point to the same host directory.
-      # Create before starting: mkdir -p /tmp/propr-vibe-prompts
+      # PREFLIGHT: create before starting: mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"
       VIBE_PROMPT_CACHE_DIR: ${VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
-      # Optional: set to mount a Vibe config directory for config-file auth
-      # (not required when using MISTRAL_API_KEY alone).
-      VIBE_CONFIG_PATH: ${VIBE_CONFIG_PATH:-}
+      # Config-file auth: uncomment VIBE_CONFIG_PATH below AND the HOST_VIBE_DIR
+      # volume mount further down. Both must be set together. API-key auth
+      # (MISTRAL_API_KEY) does not require either.
+      # VIBE_CONFIG_PATH: ${HOST_VIBE_DIR}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
@@ -111,11 +112,13 @@ services:
       - ./repos:/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
       - propr-sqlite-data:/app/data
-      # Vibe prompt cache bind mount (create dir before starting)
+      # Vibe prompt cache bind mount.
+      # PREFLIGHT: mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"
       - ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}:/tmp/propr-vibe-prompts
-      # Optional: Vibe config directory for config-file auth. Uncomment and
-      # set HOST_VIBE_DIR in .env to use config-based auth instead of API key.
-      # Create the directory before starting: mkdir -p /path/to/.vibe
+      # Config-file auth for Vibe (instead of MISTRAL_API_KEY). To enable:
+      #   1. Set HOST_VIBE_DIR in .env to the host path of your .vibe directory.
+      #   2. Uncomment the volume mount below.
+      #   3. Uncomment VIBE_CONFIG_PATH in the environment section above.
       # - ${HOST_VIBE_DIR}:${HOST_VIBE_DIR}:ro
     depends_on:
       redis:

@@ -63,21 +63,24 @@ function isLocalHttpRedirectHost(hostname: string): boolean {
     return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
 }
 
-// HTTPS is required for all non-local redirect targets. HTTP is only permitted
-// for localhost/127.0.0.1/::1 to support local development. Internal or preview
-// deployments using HTTP hostnames must either use HTTPS or be accessed via a
-// loopback address.
+// HTTPS is required for all non-local redirect targets by default. HTTP is only
+// permitted for localhost/127.0.0.1/::1 to support local development.
+//
+// Set AUTH_ALLOW_HTTP_REDIRECT=true for internal or preview deployments that use
+// HTTP hostnames (e.g. http://staging.internal). The redirect target must still
+// be on an allowed host.
 //
 // Note: the allowlist validates hostnames only — all ports on an allowed host
 // are trusted. This is intentional for environments where the same host serves
 // multiple services on different ports (e.g. API on :4000, UI on :5173).
 export function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
     if (!redirectTo) return undefined;
+    const allowHttp = process.env.AUTH_ALLOW_HTTP_REDIRECT === 'true';
     try {
         const url = new URL(redirectTo);
         const hostname = normalizeHostname(url.hostname);
         if (url.protocol === 'https:' && isAllowedRedirectHost(hostname)) return url.toString();
-        if (url.protocol === 'http:' && isLocalHttpRedirectHost(hostname) && isAllowedRedirectHost(hostname)) return url.toString();
+        if (url.protocol === 'http:' && isAllowedRedirectHost(hostname) && (allowHttp || isLocalHttpRedirectHost(hostname))) return url.toString();
     } catch {
         // Invalid URL, ignore.
     }

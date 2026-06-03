@@ -19,7 +19,7 @@ ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin
 RUN if [ "$CLI_VERSION" = "latest" ]; then \
       uv tool install mistral-vibe; \
-    elif printf '%s' "$CLI_VERSION" | grep -Eq '^[0-9][A-Za-z0-9.!+_-]*$'; then \
+    elif printf '%s' "$CLI_VERSION" | grep -Eq '^[0-9A-Za-z][A-Za-z0-9.!+_-]*$'; then \
       uv tool install "mistral-vibe==${CLI_VERSION}"; \
     else \
       uv tool install "${CLI_VERSION}"; \

@@ -240,8 +240,8 @@ function ensureNetwork() {
 function pullImages() {
     const skipAgentPull = process.env.PROPR_SKIP_AGENT_PULL === 'true'
         || process.env.PROPR_SKIP_AGENT_PULL === '1';
-    const strictAgentPull = process.env.PROPR_STRICT_AGENT_PULL === 'true'
-        || process.env.PROPR_STRICT_AGENT_PULL === '1';
+    const strictAgentPull = process.env.PROPR_STRICT_AGENT_PULL !== 'false'
+        && process.env.PROPR_STRICT_AGENT_PULL !== '0';
     console.log('\npulling images…');
     const failedAgentImages = [];
     for (const [key, tag] of Object.entries(manifest.images)) {
@@ -280,16 +280,16 @@ function pullImages() {
             for (const tag of failedAgentImages) {
                 console.error(`    - ${tag}`);
             }
-            console.error('  Build locally with scripts/build-agent-images.sh or push to the registry.');
+            console.error('  Build locally with scripts/build-images.sh or push to the registry.');
+            console.error('  Set PROPR_STRICT_AGENT_PULL=false to allow startup without all agent images.\n');
             process.exit(1);
         }
-        console.warn(`\nWARNING: ${failedAgentImages.length} agent image(s) could not be pulled:`);
+        console.warn(`\nWARNING: ${failedAgentImages.length} agent image(s) could not be pulled (strict mode disabled):`);
         for (const tag of failedAgentImages) {
             console.warn(`    - ${tag}`);
         }
         console.warn('  Jobs using these agents will fail until images are available.');
-        console.warn('  Build locally with scripts/build-agent-images.sh or push to the registry.');
-        console.warn('  Set PROPR_STRICT_AGENT_PULL=true to make this a fatal error.\n');
+        console.warn('  Build locally with scripts/build-images.sh or push to the registry.\n');
     }
 }
 
@@ -311,9 +311,19 @@ function validateEnv() {
     }
     const mistralApiKey = process.env.MISTRAL_API_KEY || envFileValue('MISTRAL_API_KEY');
     const vibeConfigPath = process.env.VIBE_CONFIG_PATH || envFileValue('VIBE_CONFIG_PATH');
-    const vibeEnabled = !!(HOST_VIBE_DIR || mistralApiKey || vibeConfigPath);
+    if (vibeConfigPath && !HOST_VIBE_DIR) {
+        console.error(
+            'ERROR: VIBE_CONFIG_PATH is set but HOST_VIBE_DIR is not. ' +
+            'VIBE_CONFIG_PATH tells the worker where to find Vibe credentials inside the container, ' +
+            'but HOST_VIBE_DIR is required to mount that directory from the host. ' +
+            'Set HOST_VIBE_DIR to the host path of your .vibe directory ' +
+            '(e.g. -e HOST_VIBE_DIR=/home/propr/.vibe).'
+        );
+        process.exit(1);
+    }
+    const vibeEnabled = !!(HOST_VIBE_DIR || mistralApiKey);
     if (vibeEnabled && !HOST_VIBE_PROMPT_CACHE_DIR) {
-        const vibeSource = HOST_VIBE_DIR ? 'HOST_VIBE_DIR' : vibeConfigPath ? 'VIBE_CONFIG_PATH' : 'MISTRAL_API_KEY';
+        const vibeSource = HOST_VIBE_DIR ? 'HOST_VIBE_DIR' : 'MISTRAL_API_KEY';
         console.error(
             'ERROR: Vibe support is enabled (via ' + vibeSource +
             ') but HOST_VIBE_PROMPT_CACHE_DIR is missing. ' +

@@ -203,6 +203,8 @@ export async function addAgent(
     throw new Error(`Agent with alias '${options.alias}' already exists`);
   }
 
+  const configPath = options.configPath || resolveDefaultConfigPath(options.type, apiClient);
+
   // Create new agent config
   const newAgent: AgentConfig = {
     id: crypto.randomUUID(),
@@ -210,7 +212,7 @@ export async function addAgent(
     alias: options.alias,
     enabled: options.enabled !== undefined ? options.enabled : true,
     dockerImage: options.dockerImage || getDefaultDockerImage(options.type),
-    configPath: options.configPath || warnDefaultConfigPath(options.type),
+    configPath,
     supportedModels: options.models,
     defaultModel: options.defaultModel || options.models[0],
   };
@@ -309,10 +311,23 @@ function getDefaultConfigPath(type: AgentType): string {
   }
 }
 
-function warnDefaultConfigPath(type: AgentType): string {
-  const configPath = getDefaultConfigPath(type);
-  console.warn(
-    `Using local config path "${configPath}". If your ProPR server is remote, pass --config-path explicitly.`
-  );
-  return configPath;
+function isRemoteApiUrl(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname;
+    return hostname !== "localhost" && hostname !== "127.0.0.1" && hostname !== "::1";
+  } catch {
+    return false;
+  }
+}
+
+function resolveDefaultConfigPath(type: AgentType, client: ApiClient): string {
+  const baseUrl = client.getBaseUrl();
+  if (isRemoteApiUrl(baseUrl)) {
+    throw new Error(
+      `Cannot infer config path for a remote ProPR server (${baseUrl}). ` +
+      `Pass --config-path explicitly with the host path on the server ` +
+      `(e.g. --config-path /home/propr/.${type}).`
+    );
+  }
+  return getDefaultConfigPath(type);
 }
