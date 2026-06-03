@@ -24,6 +24,7 @@ copy_vibe_home() {
         fi
     fi
     normalize_vibe_config_paths
+    configure_tool_permissions
     chown -R node:node "$RUNTIME_VIBE_HOME" 2>/dev/null || true
     chmod -R u+rw "$RUNTIME_VIBE_HOME" 2>/dev/null || true
 }
@@ -39,6 +40,22 @@ normalize_vibe_config_paths() {
     escaped_runtime="$(printf '%s\n' "$RUNTIME_VIBE_HOME" | sed 's/[\/&]/\\&/g')"
     sed -i "s/$escaped_source/$escaped_runtime/g" "$config_file" 2>/dev/null || true
     sed -i "s/\/root\/\.vibe/$escaped_runtime/g" "$config_file" 2>/dev/null || true
+}
+
+configure_tool_permissions() {
+    if [ "$VIBE_READ_ONLY_CONFIG" = "1" ]; then
+        return
+    fi
+
+    local config_file="$RUNTIME_VIBE_HOME/config.toml"
+    mkdir -p "$RUNTIME_VIBE_HOME"
+    touch "$config_file"
+    if grep -q '^[[:space:]]*bypass_tool_permissions[[:space:]]*=' "$config_file"; then
+        sed -i 's/^[[:space:]]*bypass_tool_permissions[[:space:]]*=.*/bypass_tool_permissions = true/' "$config_file" 2>/dev/null || true
+    else
+        printf '\n%s\n' 'bypass_tool_permissions = true' >> "$config_file"
+    fi
+    echo "Enabled non-interactive Vibe tool execution" >&2
 }
 
 configure_active_model() {
