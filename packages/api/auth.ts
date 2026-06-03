@@ -6,7 +6,7 @@ import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
-import { getValidatedRedirectTo } from './authRedirect.js';
+import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import type { GitHubUser } from './authTypes.js';
 
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
@@ -90,7 +90,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
 
         if (demoModeAtStartup) {
-            res.redirect(redirectTo || `${process.env.FRONTEND_URL}/`);
+            res.redirect(redirectTo || getDefaultRedirectUrl());
             return;
         }
 
@@ -103,7 +103,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
     if (demoModeAtStartup) {
         app.get('/api/auth/github/callback', (req: Request, res: Response) => {
             const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
-            res.redirect(redirectTo || `${process.env.FRONTEND_URL}/`);
+            res.redirect(redirectTo || getDefaultRedirectUrl());
         });
     } else {
         app.get('/api/auth/github/callback',
@@ -116,7 +116,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                     delete (req.session as session.Session & { redirectTo?: string }).redirectTo;
                 }
 
-                const finalRedirect = redirectTo || `${process.env.FRONTEND_URL}/`;
+                const finalRedirect = redirectTo || getDefaultRedirectUrl();
 
                 // Explicitly save session before redirect to ensure cookie is set
                 // This is required when using Redis store with async operations

@@ -100,6 +100,9 @@ services:
       # Create before starting: mkdir -p /tmp/propr-vibe-prompts
       VIBE_PROMPT_CACHE_DIR: ${VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
+      # Optional: set to mount a Vibe config directory for config-file auth
+      # (not required when using MISTRAL_API_KEY alone).
+      VIBE_CONFIG_PATH: ${VIBE_CONFIG_PATH:-}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
@@ -110,6 +113,10 @@ services:
       - propr-sqlite-data:/app/data
       # Vibe prompt cache bind mount (create dir before starting)
       - ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}:/tmp/propr-vibe-prompts
+      # Optional: Vibe config directory for config-file auth. Uncomment and
+      # set HOST_VIBE_DIR in .env to use config-based auth instead of API key.
+      # Create the directory before starting: mkdir -p /path/to/.vibe
+      # - ${HOST_VIBE_DIR}:${HOST_VIBE_DIR}:ro
     depends_on:
       redis:
         condition: service_healthy

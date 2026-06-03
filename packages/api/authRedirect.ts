@@ -67,6 +67,10 @@ function isLocalHttpRedirectHost(hostname: string): boolean {
 // for localhost/127.0.0.1/::1 to support local development. Internal or preview
 // deployments using HTTP hostnames must either use HTTPS or be accessed via a
 // loopback address.
+//
+// Note: the allowlist validates hostnames only — all ports on an allowed host
+// are trusted. This is intentional for environments where the same host serves
+// multiple services on different ports (e.g. API on :4000, UI on :5173).
 export function getValidatedRedirectTo(redirectTo: string | undefined): string | undefined {
     if (!redirectTo) return undefined;
     try {
@@ -78,4 +82,17 @@ export function getValidatedRedirectTo(redirectTo: string | undefined): string |
         // Invalid URL, ignore.
     }
     return undefined;
+}
+
+// Returns a validated FRONTEND_URL for use as a redirect fallback, applying the
+// same HTTPS/allowlist rules as getValidatedRedirectTo. Falls back to '/' if
+// FRONTEND_URL is unset or does not pass validation (e.g. HTTP on a non-local host).
+export function getDefaultRedirectUrl(): string {
+    const frontendUrl = process.env.FRONTEND_URL;
+    if (frontendUrl) {
+        const target = frontendUrl.endsWith('/') ? frontendUrl : `${frontendUrl}/`;
+        const validated = getValidatedRedirectTo(target);
+        if (validated) return validated;
+    }
+    return '/';
 }

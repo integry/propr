@@ -75,10 +75,10 @@ services:
       # IMPORTANT: Create any missing directories before starting:
       #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe
       # Docker will create them as root-owned if they do not exist.
-      - ${HOME}/.claude:${HOME}/.claude
-      - ${HOME}/.gemini:${HOME}/.gemini
-      - ${HOME}/.codex:${HOME}/.codex
-      - ${HOME}/.vibe:${HOME}/.vibe
+      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude
+      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini
+      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex
+      - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
       # Vibe prompt cache: create before starting (mkdir -p /tmp/propr-vibe-prompts)
@@ -87,10 +87,10 @@ services:
     env_file:
       - .env
     environment:
-      - CLAUDE_CONFIG_PATH=${HOME}/.claude
-      - CODEX_CONFIG_PATH=${HOME}/.codex
-      - GEMINI_CONFIG_PATH=${HOME}/.gemini
-      - VIBE_CONFIG_PATH=${HOME}/.vibe
+      - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
+      - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
+      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
       redis:
         condition: service_started
@@ -111,18 +111,18 @@ services:
       - /tmp/git-processor:/tmp/git-processor:ro
       - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts:rw
       - /tmp/claude-logs:/tmp/claude-logs:ro
-      - ${HOME}/.claude:${HOME}/.claude:ro
-      - ${HOME}/.gemini:${HOME}/.gemini:ro
-      - ${HOME}/.codex:${HOME}/.codex:ro
-      - ${HOME}/.vibe:${HOME}/.vibe:ro
+      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
+      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
+      - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
     environment:
-      - CLAUDE_CONFIG_PATH=${HOME}/.claude
-      - CODEX_CONFIG_PATH=${HOME}/.codex
-      - GEMINI_CONFIG_PATH=${HOME}/.gemini
-      - VIBE_CONFIG_PATH=${HOME}/.vibe
+      - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
+      - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
+      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
       redis:
         condition: service_started
@@ -141,19 +141,19 @@ services:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor
-      - ${HOME}/.claude:${HOME}/.claude:ro
-      - ${HOME}/.gemini:${HOME}/.gemini:ro
-      - ${HOME}/.codex:${HOME}/.codex:ro
-      - ${HOME}/.vibe:${HOME}/.vibe:ro
+      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
+      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
+      - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
     env_file:
       - .env
     environment:
-      - CLAUDE_CONFIG_PATH=${HOME}/.claude
-      - CODEX_CONFIG_PATH=${HOME}/.codex
-      - GEMINI_CONFIG_PATH=${HOME}/.gemini
-      - VIBE_CONFIG_PATH=${HOME}/.vibe
+      - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
+      - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
+      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       # How often to scan for repos needing indexing (default: 5 minutes)
       - INDEXING_SCAN_INTERVAL_MS=${INDEXING_SCAN_INTERVAL_MS:-300000}
       # How often to re-index repos (default: 24 hours)
@@ -193,10 +193,10 @@ services:
       # Allow injection of API_PORT for PR preview environments, default to 4000
       - '${API_PORT:-4000}:4000'
     volumes:
-      - ${HOME}/.claude:${HOME}/.claude:ro
-      - ${HOME}/.gemini:${HOME}/.gemini:ro
-      - ${HOME}/.codex:${HOME}/.codex:ro
-      - ${HOME}/.vibe:${HOME}/.vibe:ro
+      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
+      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
+      - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - ./data:/usr/src/app/data
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -210,10 +210,10 @@ services:
       # Use the same env file for environment variable injection
       - ${STAGING_ENV_FILE:-.env}
     environment:
-      - CLAUDE_CONFIG_PATH=${HOME}/.claude
-      - CODEX_CONFIG_PATH=${HOME}/.codex
-      - GEMINI_CONFIG_PATH=${HOME}/.gemini
-      - VIBE_CONFIG_PATH=${HOME}/.vibe
+      - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
+      - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
+      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       - CONFIG_REPO_PATH=/tmp/config_repo
       # Allow injection of API_PUBLIC_URL for PR preview environments
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:4000}

@@ -210,7 +210,7 @@ export async function addAgent(
     alias: options.alias,
     enabled: options.enabled !== undefined ? options.enabled : true,
     dockerImage: options.dockerImage || getDefaultDockerImage(options.type),
-    configPath: options.configPath || getDefaultConfigPath(options.type),
+    configPath: options.configPath || warnDefaultConfigPath(options.type),
     supportedModels: options.models,
     defaultModel: options.defaultModel || options.models[0],
   };
@@ -307,4 +307,12 @@ function getDefaultConfigPath(type: AgentType): string {
     default:
       return join(home, `.${type}`);
   }
+}
+
+function warnDefaultConfigPath(type: AgentType): string {
+  const configPath = getDefaultConfigPath(type);
+  console.warn(
+    `Using local config path "${configPath}". If your ProPR server is remote, pass --config-path explicitly.`
+  );
+  return configPath;
 }

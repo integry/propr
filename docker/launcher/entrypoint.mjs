@@ -192,7 +192,7 @@ function dockerRunDetached(name, args) {
         throw new Error(`Failed to start ${name}: ${res.stderr}`);
     }
     runningContainers.add(name);
-    console.log(`  ✓ started ${name}`);
+    console.log(`  [ok] started ${name}`);
 }
 
 function latestTagFor(imageTag) {
@@ -209,7 +209,7 @@ function tagAgentLatest(key, imageTag) {
     if (!latestTag || latestTag === imageTag) return;
     const existing = docker(['images', '-q', latestTag], { capture: true });
     if (existing.stdout.trim()) {
-        console.log(`  · retagging ${imageTag} → ${latestTag} (overwriting existing local tag)`);
+        console.log(`  . retagging ${imageTag} -> ${latestTag} (overwriting existing local tag)`);
     }
     const res = docker(['tag', imageTag, latestTag], { capture: true });
     if (res.status !== 0) {
@@ -283,7 +283,7 @@ function pullImages() {
             console.error('  Build locally with scripts/build-agent-images.sh or push to the registry.');
             process.exit(1);
         }
-        console.warn(`\n⚠ WARNING: ${failedAgentImages.length} agent image(s) could not be pulled:`);
+        console.warn(`\nWARNING: ${failedAgentImages.length} agent image(s) could not be pulled:`);
         for (const tag of failedAgentImages) {
             console.warn(`    - ${tag}`);
         }
@@ -448,7 +448,7 @@ function shutdown(code = 0) {
         try {
             docker(['stop', '-t', '10', name], { capture: true });
             docker(['rm', name], { capture: true });
-            console.log(`  ✓ stopped ${name}`);
+            console.log(`  [ok] stopped ${name}`);
         } catch (e) {
             console.error(`  ! failed to stop ${name}: ${e.message}`);
         }
@@ -485,7 +485,7 @@ async function main() {
     startUI();
     startDocs();
 
-    console.log(`\n✓ stack up. streaming logs… (Ctrl-C to stop)`);
+    console.log(`\n[ok] stack up. streaming logs... (Ctrl-C to stop)`);
     streamLogs();
 
     // Keep process alive until signal.

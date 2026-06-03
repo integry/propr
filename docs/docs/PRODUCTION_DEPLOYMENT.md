@@ -120,24 +120,24 @@ docker run --rm -it \
 #### Option B: Docker Compose
 
 ```bash
-# Build and start all services
-docker-compose up -d
+# Build and start all services (production compose)
+docker-compose -f docker-compose.prod.yml up -d
 
 # Check service status
-docker-compose ps
+docker-compose -f docker-compose.prod.yml ps
 
 # View logs
-docker-compose logs -f
+docker-compose -f docker-compose.prod.yml logs -f
 ```
 
-> **Note:** `docker-compose.yml` mounts all agent credential directories
-> unconditionally. Create any missing directories before starting
-> (`mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts`)
-> to avoid Docker creating them as root-owned.
+> **Note:** Use `docker-compose.prod.yml` for production deployments.
+> The root `docker-compose.yml` is intended for development and mounts all
+> agent credential directories unconditionally, which may expose dev defaults.
 >
-> A minimal `docker-compose.prod.yml` is also provided for simpler setups
-> that do not require per-agent credential mounts. For full Vibe support,
-> use the primary `docker-compose.yml` or the launcher (Option A).
+> For Vibe config-file auth (instead of API key auth), uncomment the
+> `HOST_VIBE_DIR` volume mount in `docker-compose.prod.yml` and set the
+> variable in your `.env`. For full multi-agent development environments,
+> use the root `docker-compose.yml` or the launcher (Option A).
 
 ### 2. SSL/TLS Configuration (Recommended)
 

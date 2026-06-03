@@ -117,6 +117,10 @@ Or set a default model in `~/.vibe/settings.json`:
 
 ## Configuration
 
+> **Note:** The directory layout and settings keys below are inferred from
+> observed CLI behavior and may change between Vibe releases. Refer to the
+> official Mistral Vibe documentation for the current contract.
+
 Vibe configuration lives in `~/.vibe/`:
 
 ```
@@ -126,7 +130,7 @@ Vibe configuration lives in `~/.vibe/`:
   history/           # Session history
 ```
 
-### Settings reference
+### Settings reference (inferred)
 
 | Key | Default | Description |
 |-----|---------|-------------|
