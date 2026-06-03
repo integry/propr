@@ -1,15 +1,13 @@
-# Mistral Vibe agent image. Extends propr/agent-base (alpine + common tooling).
+# Mistral Vibe agent image. Extends the ProPR agent base image (alpine + common tooling).
 # The CLI is installed at build time through uv and exercised with --version as
 # a smoke test so install regressions fail the build.
 
-# BASE_TAG must match the exact version of propr/agent-base built alongside
-# this agent image. scripts/build-images.sh passes it automatically; a direct
-# `docker build` must override it (e.g. --build-arg BASE_TAG=latest) because
-# the pinned default below is only valid for release builds.
-ARG BASE_TAG=0.8.1
+# BASE_IMAGE must point at the exact agent-base image built alongside this
+# agent image. scripts/build-images.sh passes it automatically.
+ARG BASE_IMAGE=propr/agent-base:latest
 ARG UV_VERSION=0.8.17
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
-FROM propr/agent-base:${BASE_TAG}
+FROM ${BASE_IMAGE}
 
 ARG CLI_VERSION=2.12.1
 

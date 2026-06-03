@@ -47,10 +47,14 @@ const AGENT_DOCKERFILES: Record<string, string> = {
 // Default project root - can be overridden via environment variable
 // In Docker container, the app root is /usr/src/app but cwd may be /usr/src/app/packages/api
 const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
-function getAgentBaseTag(): string { return process.env.AGENT_BASE_TAG || process.env.PROPR_AGENT_BASE_TAG || process.env.PROPR_IMAGE_VERSION || '1.0.0'; }
+function getAgentBaseImage(): string {
+    return process.env.AGENT_BASE_IMAGE
+        || process.env.PROPR_AGENT_BASE_IMAGE
+        || `propr/agent-base:${process.env.AGENT_BASE_TAG || process.env.PROPR_AGENT_BASE_TAG || process.env.PROPR_IMAGE_VERSION || 'latest'}`;
+}
 
 function getAgentBuildArgs(agentType: string, dockerImage: string): string[] {
-    const buildArgs = ['--build-arg', `BASE_TAG=${getAgentBaseTag()}`];
+    const buildArgs = ['--build-arg', `BASE_IMAGE=${getAgentBaseImage()}`];
     if (!(agentType in AGENT_DEFAULT_VERSIONS)) return buildArgs;
     const fallbackVersion = AGENT_DEFAULT_VERSIONS[agentType as AgentType];
     const imageTag = dockerImage.includes(':') ? dockerImage.split(':').pop() : undefined;
@@ -475,7 +479,7 @@ export async function ensureVersionedAgentImage(
             'build',
             '-f', dockerfile,
             '--build-arg', `CLI_VERSION=${cliVersion}`,
-            '--build-arg', `BASE_TAG=${getAgentBaseTag()}`,
+            '--build-arg', `BASE_IMAGE=${getAgentBaseImage()}`,
             '-t', imageTag,
             basePath
         ], {
