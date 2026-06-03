@@ -364,7 +364,7 @@ export class VibeAgent implements Agent {
     }
 
     private prepareRuntimeHome(taskId?: string): string {
-        const baseDir = path.join(process.env.VIBE_PROMPT_CACHE_DIR || os.tmpdir(), 'propr-vibe-runtime');
+        const baseDir = path.join(process.env.VIBE_PROMPT_CACHE_DIR || '/tmp/propr-vibe-prompts', 'propr-vibe-runtime');
         fs.mkdirSync(baseDir, { recursive: true, mode: 0o755 });
         const prefix = taskId ? `propr-vibe-home-${taskId.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 80)}-` : 'propr-vibe-home-';
         const runtimeHome = fs.mkdtempSync(path.join(baseDir, prefix));

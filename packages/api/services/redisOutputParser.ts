@@ -348,32 +348,6 @@ function parseLine(line: string, state: ParseState): void {
   }
 }
 
-const VIBE_PROGRESS_PATTERNS = [
-  /Vibe config directory mounted/i,
-  /Vibe configuration found/i,
-  /Executing command: vibe/i,
-  /Running Vibe/i,
-  /Switching to node user/i,
-  /Configured Vibe active model override/i,
-  /Loaded Vibe \.env defaults/i,
-  /Enabled non-interactive Vibe tool execution/i
-];
-
-function isVibeProgressLine(line: string): boolean {
-  return VIBE_PROGRESS_PATTERNS.some(pattern => pattern.test(line));
-}
-
-function parseVibeProgressLines(lines: string[], state: ParseState): void {
-  const timestamp = new Date().toISOString();
-  const seen = new Set<string>();
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || seen.has(trimmed) || !isVibeProgressLine(trimmed)) continue;
-    seen.add(trimmed);
-    state.events.push({ type: 'thought' as const, content: trimmed, timestamp });
-  }
-}
-
 /**
  * Parse Redis output (Codex NDJSON or Gemini JSONL format)
  */
@@ -398,10 +372,6 @@ export function parseRedisOutput(lines: string[]): ParsedRedisOutput {
 
   for (const line of lines) {
     parseLine(line, state);
-  }
-
-  if (state.events.length === 0) {
-    parseVibeProgressLines(lines, state);
   }
 
   // Flush any remaining pending message

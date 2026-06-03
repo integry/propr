@@ -65,7 +65,7 @@ test('parseRedisOutput emits Vibe live events from session JSONL', () => {
     assert.strictEqual(parsed.events[3].content, 'Changed the greeting and verified it.');
 });
 
-test('parseRedisOutput emits Vibe progress when no session messages exist yet', () => {
+test('parseRedisOutput ignores Vibe startup progress when no session messages exist yet', () => {
     const parsed = parseRedisOutput([
         'Skipping firewall setup (would require --privileged Docker flag)',
         'Vibe config directory mounted',
@@ -73,11 +73,7 @@ test('parseRedisOutput emits Vibe progress when no session messages exist yet', 
         'Switching to node user...'
     ]);
 
-    assert.deepStrictEqual(parsed.events.map(event => event.content), [
-        'Vibe config directory mounted',
-        'Executing command: vibe --output json -p',
-        'Switching to node user...'
-    ]);
+    assert.deepStrictEqual(parsed.events, []);
 });
 
 test('parseRedisOutput prefers Vibe session JSONL over startup progress when both are present', () => {
