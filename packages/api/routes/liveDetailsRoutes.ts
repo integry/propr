@@ -14,6 +14,7 @@ import {
   parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult,
+  parseVibeOutputToConversationResult,
   type ClaudeMessageContent,
   type ClaudeMessageContext,
   type ConversationResult,
@@ -151,8 +152,8 @@ export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSes
 interface StoredLogData { files?: Record<string, string>; }
 interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
 interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
-interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; session_id?: string; conversation_id?: string; item?: unknown; }
-export type StoredOutputFormat = 'claude' | 'codex' | 'unknown';
+interface StoredExecutionOutputLine { type?: string; role?: string; message?: unknown; session_id?: string; conversation_id?: string; item?: unknown; reasoning_content?: unknown; tool_calls?: unknown; tool_call_id?: string; }
+export type StoredOutputFormat = 'claude' | 'codex' | 'vibe' | 'unknown';
 export interface ParsedStoredOutput {
   parsed: ConversationResult | null;
   rawFallback: ConversationResult | null;
@@ -219,17 +220,36 @@ export function parseStoredOutputContent(output: string): ParsedStoredOutput {
     const parsed = parseCodexOutputToConversationResult(output);
     return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
   }
+  if (format === 'vibe') {
+    const parsed = parseVibeOutputToConversationResult(output);
+    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
+  }
   const codexParsed = parseCodexOutputToConversationResult(output);
   if (!isConversationResultEmpty(codexParsed)) return { parsed: codexParsed, rawFallback: buildRawOutputConversationResult(output), format: 'codex' };
   const claudeParsed = parseClaudeOutputToConversationResult(output);
   if (!isConversationResultEmpty(claudeParsed)) return { parsed: claudeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'claude' };
+  const vibeParsed = parseVibeOutputToConversationResult(output);
+  if (!isConversationResultEmpty(vibeParsed)) return { parsed: vibeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'vibe' };
   return { parsed: null, rawFallback: buildRawOutputConversationResult(output), format };
 }
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
+  const wholeDocumentFormat = detectParsedStoredOutputFormat(output.trim());
+  if (wholeDocumentFormat !== 'unknown') return wholeDocumentFormat;
+
   const firstLine = output.split('\n').map(line => line.trim()).find(line => line.length > 0);
   if (!firstLine) return 'unknown';
+  return detectParsedStoredOutputFormat(firstLine);
+}
+
+function detectParsedStoredOutputFormat(jsonText: string): StoredOutputFormat {
   try {
-    const parsed = JSON.parse(firstLine) as StoredExecutionOutputLine;
+    const parsed = JSON.parse(jsonText) as StoredExecutionOutputLine | StoredExecutionOutputLine[];
+    if (isVibeTranscript(parsed)) {
+      return 'vibe';
+    }
+    if (Array.isArray(parsed)) {
+      return 'unknown';
+    }
     if (parsed.type === 'message'
       || parsed.type === 'tool_use'
       || parsed.type === 'error'
@@ -250,6 +270,13 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   } catch {
     return 'unknown';
   }
+}
+
+function isVibeTranscript(parsed: StoredExecutionOutputLine | StoredExecutionOutputLine[]): boolean {
+  const events = Array.isArray(parsed) ? parsed : [parsed];
+  if (!events.length) return false;
+  return events.some(event => event.role === 'system' || event.role === 'tool' || event.reasoning_content !== undefined || event.tool_calls !== undefined || event.tool_call_id !== undefined)
+    && events.some(event => event.role === 'assistant' || event.role === 'user' || event.role === 'tool');
 }
 function buildRawOutputConversationResult(output: string): ConversationResult | null {
   const trimmed = output.trim();

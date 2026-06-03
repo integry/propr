@@ -245,7 +245,7 @@ export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { GeminiAgent } from './agents/impl/GeminiAgent.js';
-export { VibeAgent } from './agents/impl/VibeAgent.js';
+export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
 export type {
     Agent,
     AgentConfig,
