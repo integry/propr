@@ -10,20 +10,35 @@ echo "Skipping firewall setup (would require --privileged Docker flag)" >&2
 SOURCE_VIBE_HOME="${VIBE_SOURCE_HOME:-/home/node/.vibe}"
 RUNTIME_VIBE_HOME="${VIBE_RUNTIME_HOME:-/tmp/propr-vibe-home}"
 VIBE_READ_ONLY_CONFIG="${VIBE_READ_ONLY_CONFIG:-0}"
+export HOME="$RUNTIME_VIBE_HOME"
 export VIBE_HOME="$RUNTIME_VIBE_HOME"
 
 copy_vibe_home() {
     mkdir -p "$RUNTIME_VIBE_HOME"
     if [ -d "$SOURCE_VIBE_HOME" ] && [ "$SOURCE_VIBE_HOME" != "$RUNTIME_VIBE_HOME" ]; then
         if [ "$VIBE_READ_ONLY_CONFIG" = "1" ] && [ -f "$SOURCE_VIBE_HOME/config.toml" ]; then
-            ln -sf "$SOURCE_VIBE_HOME/config.toml" "$RUNTIME_VIBE_HOME/config.toml"
-            echo "Linked read-only Vibe config for analysis mode" >&2
+            cp "$SOURCE_VIBE_HOME/config.toml" "$RUNTIME_VIBE_HOME/config.toml" 2>/dev/null || true
+            echo "Copied read-only Vibe config for analysis mode" >&2
         elif [ "$VIBE_READ_ONLY_CONFIG" != "1" ]; then
             cp -a "$SOURCE_VIBE_HOME"/. "$RUNTIME_VIBE_HOME"/ 2>/dev/null || true
         fi
     fi
+    normalize_vibe_config_paths
     chown -R node:node "$RUNTIME_VIBE_HOME" 2>/dev/null || true
     chmod -R u+rw "$RUNTIME_VIBE_HOME" 2>/dev/null || true
+}
+
+normalize_vibe_config_paths() {
+    local config_file="$RUNTIME_VIBE_HOME/config.toml"
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+
+    local escaped_source escaped_runtime
+    escaped_source="$(printf '%s\n' "$SOURCE_VIBE_HOME" | sed 's/[\/&]/\\&/g')"
+    escaped_runtime="$(printf '%s\n' "$RUNTIME_VIBE_HOME" | sed 's/[\/&]/\\&/g')"
+    sed -i "s/$escaped_source/$escaped_runtime/g" "$config_file" 2>/dev/null || true
+    sed -i "s/\/root\/\.vibe/$escaped_runtime/g" "$config_file" 2>/dev/null || true
 }
 
 configure_active_model() {
@@ -264,10 +279,10 @@ if [ $# -gt 0 ]; then
         echo "Switching to node user..." >&2
         cd /home/node/workspace
         if command -v sudo >/dev/null 2>&1; then
-            exec sudo -E -u node -H "$@"
+            exec sudo -E -u node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
         fi
         if command -v su-exec >/dev/null 2>&1; then
-            exec su-exec node "$@"
+            exec su-exec node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
         fi
         echo "Cannot switch to node user: sudo or su-exec is required" >&2
         exit 127

@@ -356,6 +356,15 @@ describe('VibeAgent Docker args', () => {
         }
     });
 
+    test('entrypoint forces Vibe runtime home after dropping privileges', () => {
+        const script = fs.readFileSync(path.resolve('scripts/vibe-entrypoint.sh'), 'utf8');
+
+        assert.match(script, /export HOME="\$RUNTIME_VIBE_HOME"/);
+        assert.match(script, /env HOME="\$RUNTIME_VIBE_HOME" VIBE_HOME="\$RUNTIME_VIBE_HOME"/);
+        assert.match(script, /normalize_vibe_config_paths/);
+        assert.doesNotMatch(script, /sudo -E -u node -H/);
+    });
+
     test('propagates Mistral API key through the explicit credential path', () => {
         const emptyConfigPath = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-vibe-config-'));
         try {
