@@ -55,6 +55,12 @@ interface SetupWizardRightPaneProps {
   hideCostsAndTokens?: boolean;
 }
 
+function getEmptyStateMessage(isNewMode?: boolean, hasData?: boolean): string {
+  if (isNewMode) return 'Context preview will be available after entering a prompt';
+  if (hasData) return 'No files found in repository';
+  return 'Files will be selected after context analysis';
+}
+
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   contextLevel,
   onContextLevelChange,
@@ -110,11 +116,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         ) : (
           <div className="p-3 md:p-5 space-y-4">
             <p className="text-sm text-gray-400 italic">
-              {isNewMode
-                ? 'Context preview will be available after entering a prompt'
-                : preview.data
-                  ? 'No files found in repository'
-                  : 'Files will be selected after context analysis'}
+              {getEmptyStateMessage(isNewMode, !!preview.data)}
             </p>
             {isPreviewLoading && <FileSelectionSkeleton />}
           </div>

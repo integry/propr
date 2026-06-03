@@ -222,6 +222,119 @@ const RefreshIndicator: React.FC<RefreshIndicatorProps> = ({
   );
 };
 
+interface CostPreviewContentProps {
+  data: PreviewResult;
+  contextRepositories?: ContextRepository[];
+  isContextStale?: boolean;
+  isLoading: boolean;
+  hideCostsAndTokens?: boolean;
+  hideRefreshControls?: boolean;
+  timeUntilRefresh?: number | null;
+  isPaused?: boolean;
+  onTogglePause?: () => void;
+  refreshHandler?: () => void;
+}
+
+const CostPreviewContent: React.FC<CostPreviewContentProps> = ({
+  data,
+  contextRepositories,
+  isContextStale,
+  isLoading,
+  hideCostsAndTokens,
+  hideRefreshControls,
+  timeUntilRefresh,
+  isPaused,
+  onTogglePause,
+  refreshHandler,
+}) => {
+  const { stats, smartSelection, warnings } = data;
+  const maxTokens = stats.maxTokens || 200000;
+  const usagePercentage = Math.min(100, (stats.totalTokens / maxTokens) * 100);
+  const actualPercentage = (stats.totalTokens / maxTokens) * 100;
+  const usageColor = getUsageColor(usagePercentage, actualPercentage);
+  const showRefreshIndicator = !!refreshHandler;
+
+  return (
+    <div className="pt-4 border-t border-gray-200 space-y-4">
+      {!hideCostsAndTokens && (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <DollarSign className="w-5 h-5 text-gray-400" />
+              <span className="text-2xl font-bold text-gray-900">
+                ${stats.costEstimate.toFixed(3)}
+              </span>
+            </div>
+            <div className="text-sm text-gray-500">
+              <span className="font-medium">{stats.totalTokens.toLocaleString()}</span> tokens
+            </div>
+            {stats.usageEstimatePercent != null && stats.usageEstimatePercent > 0 && (
+              <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
+                <Activity className="w-3.5 h-3.5" />
+                <span className="font-medium">~{stats.usageEstimatePercent}%</span>
+                <span className="text-amber-500 hidden sm:inline">session usage</span>
+              </div>
+            )}
+          </div>
+          {smartSelection.length > 0 && (
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-indigo-500" />
+              <span className="text-sm font-medium text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full">
+                {smartSelection.filter(f => f.source === 'auto').length} files auto-selected
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+      {!hideCostsAndTokens && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs text-gray-500">
+            <span>Context window usage</span>
+            <span>{usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k</span>
+          </div>
+          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
+              style={{ width: `${usagePercentage}%` }}
+            />
+          </div>
+        </div>
+      )}
+      {contextRepositories && contextRepositories.length > 0 && (
+        <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
+          <BookOpen className="w-4 h-4 text-blue-500" />
+          <span className="text-sm text-gray-600">
+            Including context from {contextRepositories.length} additional
+            {contextRepositories.length === 1 ? ' repository' : ' repositories'}
+          </span>
+        </div>
+      )}
+      {(warnings.length > 0 || showRefreshIndicator) && (
+        <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+          <div className="space-y-1 flex-1">
+            {warnings.map((warning, idx) => (
+              <div key={idx} className="flex items-start gap-2 text-sm text-gray-600">
+                <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
+                <span>{warning}</span>
+              </div>
+            ))}
+          </div>
+          {showRefreshIndicator && (
+            <RefreshIndicator
+              isContextStale={isContextStale}
+              timeUntilRefresh={hideRefreshControls ? null : timeUntilRefresh}
+              isPaused={isPaused}
+              onTogglePause={hideRefreshControls ? undefined : onTogglePause}
+              onManualRefresh={refreshHandler}
+              isLoading={isLoading}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const CostPreview: React.FC<CostPreviewProps> = ({
   preview,
   contextRepositories,
@@ -253,105 +366,18 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
     )
   );
 
-  const { stats, smartSelection, warnings } = preview.data;
-
-  // Use dynamic maxTokens from stats, fallback to 200k if not available (legacy support)
-  const maxTokens = stats.maxTokens || 200000;
-
-  const usagePercentage = Math.min(100, (stats.totalTokens / maxTokens) * 100);
-  const actualPercentage = (stats.totalTokens / maxTokens) * 100;
-  const usageColor = getUsageColor(usagePercentage, actualPercentage);
-  // Always show refresh indicator when manual refresh is available
-  const showRefreshIndicator = !!refreshHandler;
-
   return (
-    <div className="pt-4 border-t border-gray-200 space-y-4">
-      {/* Main stats row */}
-      {!hideCostsAndTokens && (
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <DollarSign className="w-5 h-5 text-gray-400" />
-              <span className="text-2xl font-bold text-gray-900">
-                ${stats.costEstimate.toFixed(3)}
-              </span>
-            </div>
-            <div className="text-sm text-gray-500">
-              <span className="font-medium">{stats.totalTokens.toLocaleString()}</span> tokens
-            </div>
-            {stats.usageEstimatePercent != null && stats.usageEstimatePercent > 0 && (
-              <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
-                <Activity className="w-3.5 h-3.5" />
-                <span className="font-medium">~{stats.usageEstimatePercent}%</span>
-                <span className="text-amber-500 hidden sm:inline">session usage</span>
-              </div>
-            )}
-          </div>
-
-          {smartSelection.length > 0 && (
-            <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-indigo-500" />
-              <span className="text-sm font-medium text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full">
-                {smartSelection.filter(f => f.source === 'auto').length} files auto-selected
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Context window usage bar */}
-      {!hideCostsAndTokens && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs text-gray-500">
-            <span>Context window usage</span>
-            <span>{usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k</span>
-          </div>
-          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
-              style={{ width: `${usagePercentage}%` }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Context repositories indicator */}
-      {contextRepositories && contextRepositories.length > 0 && (
-        <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
-          <BookOpen className="w-4 h-4 text-blue-500" />
-          <span className="text-sm text-gray-600">
-            Including context from {contextRepositories.length} additional
-            {contextRepositories.length === 1 ? ' repository' : ' repositories'}
-          </span>
-        </div>
-      )}
-
-      {/* Warnings and Refresh Indicator - styled as neutral info tips */}
-      {(warnings.length > 0 || showRefreshIndicator) && (
-        <div className="flex items-center justify-between pt-2 border-t border-gray-100">
-          {/* Warnings */}
-          <div className="space-y-1 flex-1">
-            {warnings.map((warning, idx) => (
-              <div key={idx} className="flex items-start gap-2 text-sm text-gray-600">
-                <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
-                <span>{warning}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Compact Refresh Indicator with Pause Control */}
-          {showRefreshIndicator && (
-            <RefreshIndicator
-              isContextStale={isContextStale}
-              timeUntilRefresh={hideRefreshControls ? null : timeUntilRefresh}
-              isPaused={isPaused}
-              onTogglePause={hideRefreshControls ? undefined : onTogglePause}
-              onManualRefresh={refreshHandler}
-              isLoading={preview.isLoading}
-            />
-          )}
-        </div>
-      )}
-    </div>
+    <CostPreviewContent
+      data={preview.data}
+      contextRepositories={contextRepositories}
+      isContextStale={isContextStale}
+      isLoading={preview.isLoading}
+      hideCostsAndTokens={hideCostsAndTokens}
+      hideRefreshControls={hideRefreshControls}
+      timeUntilRefresh={timeUntilRefresh}
+      isPaused={isPaused}
+      onTogglePause={onTogglePause}
+      refreshHandler={refreshHandler}
+    />
   );
 };

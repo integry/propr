@@ -10,6 +10,20 @@ interface IssueCreationProgressIndicatorProps {
   spinnerRotationDegrees?: number;
 }
 
+const StatusIcon: React.FC<{ status: string; spinnerRotationDegrees?: number }> = ({ status, spinnerRotationDegrees }) => {
+  if (status === 'in_progress') {
+    return (
+      <Loader2
+        size={14}
+        className={`text-blue-600 ${spinnerRotationDegrees === undefined ? 'animate-spin' : ''}`}
+        style={spinnerRotationDegrees === undefined ? undefined : { transform: `rotate(${spinnerRotationDegrees}deg)` }}
+      />
+    );
+  }
+  if (status === 'completed') return <Check size={14} className="text-gray-400" />;
+  return <AlertCircle size={14} className="text-red-500" />;
+};
+
 export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndicatorProps> = ({ progress, onDismiss, stableLayout = false, spinnerRotationDegrees }) => {
   if (progress.status === 'idle') return null;
 
@@ -24,17 +38,7 @@ export const IssueCreationProgressIndicator: React.FC<IssueCreationProgressIndic
       <div className="flex items-center gap-3 h-8 px-2.5 py-1.5 bg-slate-50 rounded-md border border-slate-100">
         {/* Status indicator */}
         <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
-          {progress.status === 'in_progress' ? (
-            <Loader2
-              size={14}
-              className={`text-blue-600 ${spinnerRotationDegrees === undefined ? 'animate-spin' : ''}`}
-              style={spinnerRotationDegrees === undefined ? undefined : { transform: `rotate(${spinnerRotationDegrees}deg)` }}
-            />
-          ) : progress.status === 'completed' ? (
-            <Check size={14} className="text-gray-400" />
-          ) : (
-            <AlertCircle size={14} className="text-red-500" />
-          )}
+          <StatusIcon status={progress.status} spinnerRotationDegrees={spinnerRotationDegrees} />
         </div>
 
         {/* Progress bar and status */}

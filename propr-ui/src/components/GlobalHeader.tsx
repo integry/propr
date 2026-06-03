@@ -29,21 +29,28 @@ interface GlobalHeaderProps {
   newPlanPressedOverride?: boolean;
 }
 
-// Main GlobalHeader Component
+function resolveHeaderStats(
+  override: GlobalHeaderProps['headerStatsOverride'],
+  stats: HeaderStats
+) {
+  return {
+    runningCount: override?.runningCount ?? stats.runningCount,
+    runningItems: override?.runningItems ?? stats.runningItems,
+    activePlans: override?.activePlans ?? stats.activePlans,
+    reviewGroups: override?.reviewGroups ?? stats.reviewGroups,
+    systemHealth: override?.systemHealth ?? stats.systemHealth,
+    dismissPlan: override?.dismissPlan ?? stats.dismissPlan,
+    dismissTask: override?.dismissTask ?? stats.dismissTask,
+  };
+}
+
 const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride, newPlanPressedOverride = false }) => {
   const navigate = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
 
-  // Use the centralized header stats hook
   const headerStats = useHeaderStats();
-  const runningCount = headerStatsOverride?.runningCount ?? headerStats.runningCount;
-  const runningItems = headerStatsOverride?.runningItems ?? headerStats.runningItems;
-  const activePlans = headerStatsOverride?.activePlans ?? headerStats.activePlans;
-  const reviewGroups = headerStatsOverride?.reviewGroups ?? headerStats.reviewGroups;
-  const systemHealth = headerStatsOverride?.systemHealth ?? headerStats.systemHealth;
-  const dismissPlan = headerStatsOverride?.dismissPlan ?? headerStats.dismissPlan;
-  const dismissTask = headerStatsOverride?.dismissTask ?? headerStats.dismissTask;
+  const { runningCount, runningItems, activePlans, reviewGroups, systemHealth, dismissPlan, dismissTask } = resolveHeaderStats(headerStatsOverride, headerStats);
 
   // Handle new plan navigation
   const handleNewPlan = useCallback(() => {

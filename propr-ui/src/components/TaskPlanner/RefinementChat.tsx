@@ -3,6 +3,7 @@ import { Send, Bot, User, Loader2, Square } from 'lucide-react';
 import { ChatMessage } from '../../api/proprApi';
 import type { RefinementProgress } from '../../hooks/usePlanRefinement';
 import { useIsMobile } from '../../hooks/useIsMobile';
+import { RefinementProgressBar } from './RefinementProgressBar';
 
 interface Message {
   id: string;
@@ -28,142 +29,125 @@ interface RefinementChatProps {
   stableComposerHeight?: number;
 }
 
-/** Maximum progress percentage to show when execution takes longer than estimated */
-const MAX_PROGRESS_PERCENT = 98;
-
-/** Threshold for showing humorous messages (60 seconds) */
-const LONG_ESTIMATE_THRESHOLD_MS = 60000;
-
-/** Interval for rotating humorous messages (10 seconds) */
-const MESSAGE_ROTATION_INTERVAL_MS = 10000;
-
-/** Humorous messages to display when estimate is > 60 seconds and taking longer than expected */
-const HUMOROUS_MESSAGES = [
-  "It may be slow, but it's worth the wait...",
-  "Reticulating splines...",
-  "Consulting the oracle...",
-  "Teaching AI to be patient...",
-  "Brewing some digital coffee...",
-  "Counting to infinity (almost there)...",
-  "Asking the hamsters to run faster...",
-  "Polishing the response...",
-  "Good things come to those who wait...",
-  "The AI is deep in thought...",
-];
-
-/** Format duration for display (e.g., "1m 30s") */
-const formatDuration = (ms: number): string => {
-  if (ms < 1000) return `${Math.round(ms / 100) / 10}s`;
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes === 0) return `${seconds}s`;
-  if (seconds === 0) return `${minutes}m`;
-  return `${minutes}m ${seconds}s`;
-};
-
-interface RefinementProgressBarProps {
-  startedAt: string;
-  estimatedDuration: number;
+interface ChatMessageItemProps {
+  message: Message;
+  isLast: boolean;
+  refinementProgress?: RefinementProgress;
 }
 
-const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt, estimatedDuration }) => {
-  const [progress, setProgress] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  const [messageIndex, setMessageIndex] = useState(0);
-
-  const startTime = useMemo(() => new Date(startedAt).getTime(), [startedAt]);
-
-  // Determine if this is a long estimate (> 60 seconds)
-  const isLongEstimate = estimatedDuration > LONG_ESTIMATE_THRESHOLD_MS;
-
-  useEffect(() => {
-    const updateProgress = () => {
-      const now = Date.now();
-      const elapsedMs = now - startTime;
-      setElapsed(elapsedMs);
-
-      // Calculate progress percentage, capped at MAX_PROGRESS_PERCENT until completion
-      const rawProgress = (elapsedMs / estimatedDuration) * 100;
-      setProgress(Math.min(rawProgress, MAX_PROGRESS_PERCENT));
-    };
-
-    // Update immediately
-    updateProgress();
-
-    // Update every 500ms for smooth progress
-    const interval = setInterval(updateProgress, 500);
-
-    return () => clearInterval(interval);
-  }, [startTime, estimatedDuration]);
-
-  // Rotate humorous messages every 10 seconds for long estimates
-  useEffect(() => {
-    if (!isLongEstimate) return;
-
-    const rotateMessage = () => {
-      setMessageIndex(prev => (prev + 1) % HUMOROUS_MESSAGES.length);
-    };
-
-    const interval = setInterval(rotateMessage, MESSAGE_ROTATION_INTERVAL_MS);
-
-    return () => clearInterval(interval);
-  }, [isLongEstimate]);
-
-  const remaining = Math.max(0, estimatedDuration - elapsed);
-  const isOverEstimate = elapsed > estimatedDuration;
-
-  // Determine which message to show when over estimate
-  const getOverEstimateMessage = () => {
-    if (isLongEstimate) {
-      return HUMOROUS_MESSAGES[messageIndex];
-    }
-    return "Taking longer than expected...";
-  };
-
-  return (
-    <div className="mt-2 mb-1">
-      {/* Progress bar */}
-      <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
-        <div
-          className="h-full transition-all duration-500 ease-out rounded-full"
-          style={{
-            width: `${progress}%`,
-            backgroundColor: isOverEstimate ? 'rgb(234, 179, 8)' : 'rgb(29, 138, 138)'
-          }}
-        />
-      </div>
-      {/* Progress info */}
-      <div className="flex justify-between mt-1 text-xs text-gray-400">
-        <span>
-          {isOverEstimate ? (
-            <span className="text-yellow-600">{getOverEstimateMessage()}</span>
-          ) : (
-            `~${formatDuration(remaining)} remaining`
-          )}
-        </span>
-        <span>{Math.round(progress)}%</span>
+const ChatMessageItem: React.FC<ChatMessageItemProps> = ({ message, isLast, refinementProgress }) => (
+  <div
+    className={`flex items-start pb-6 ${!isLast ? 'border-b border-slate-100' : ''}`}
+  >
+    <div className="w-10 flex-shrink-0 flex justify-center">
+      <div
+        className={`
+          w-8 h-8 rounded-full flex items-center justify-center
+          ${message.role === 'thinking' ? 'bg-gray-300' : message.role === 'assistant' ? 'bg-gray-700' : 'bg-white border border-slate-200'}
+        `}
+      >
+        {message.role === 'user' ? (
+          <User size={16} className="text-slate-600" />
+        ) : message.role === 'thinking' ? (
+          <Loader2 size={16} className="text-gray-600 animate-spin" />
+        ) : (
+          <Bot size={16} className="text-white" />
+        )}
       </div>
     </div>
-  );
-};
+    <div className="flex-1 min-w-0 ml-3">
+      <div
+        className={`
+          rounded-lg
+          ${message.role === 'user'
+            ? 'bg-white border border-indigo-100 text-slate-800 shadow-sm px-4 py-2 inline-block'
+            : message.role === 'thinking'
+              ? 'bg-slate-200 text-gray-600 italic p-3 w-full max-w-xs'
+              : 'bg-transparent text-gray-800 inline-block'
+          }
+        `}
+      >
+        <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+        {message.role === 'thinking' && refinementProgress?.startedAt && refinementProgress?.estimatedDuration && (
+          <RefinementProgressBar
+            startedAt={refinementProgress.startedAt}
+            estimatedDuration={refinementProgress.estimatedDuration}
+          />
+        )}
+      </div>
+    </div>
+  </div>
+);
+
+interface ChatInputFormProps {
+  isMobile: boolean;
+  effectiveInput: string;
+  effectiveIsLoading: boolean;
+  submitDisabled: boolean;
+  showStopButton: boolean;
+  sendButtonPressed: boolean;
+  stableComposerHeight?: number;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  onSubmit: (e: React.FormEvent) => void;
+  onInputChange: (value: string) => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onStop: () => void;
+}
+
+const ChatInputForm: React.FC<ChatInputFormProps> = ({
+  isMobile, effectiveInput, effectiveIsLoading, submitDisabled,
+  showStopButton, sendButtonPressed, stableComposerHeight,
+  textareaRef, onSubmit, onInputChange, onKeyDown, onStop,
+}) => (
+  <div className={`flex-shrink-0 ${isMobile ? 'm-3' : 'm-4'}`}>
+    <form onSubmit={onSubmit}>
+      <div className={`flex gap-2 items-end bg-white rounded-lg shadow-lg border border-slate-200 ${isMobile ? 'p-3' : 'p-4'}`}>
+        <textarea
+          ref={textareaRef}
+          value={effectiveInput}
+          onChange={e => onInputChange(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Ask the AI to refine the plan..."
+          disabled={effectiveIsLoading}
+          rows={1}
+          className={`flex-1 px-3 py-2 bg-transparent focus:outline-none disabled:bg-gray-50 resize-none min-h-[40px] overflow-y-auto text-sm ${isMobile ? 'max-h-[120px]' : 'max-h-[200px]'}`}
+          style={stableComposerHeight === undefined ? undefined : { height: stableComposerHeight, minHeight: stableComposerHeight, maxHeight: stableComposerHeight }}
+        />
+        {!isMobile && <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>}
+        {showStopButton ? (
+          <button
+            type="button"
+            onClick={onStop}
+            className="p-2 text-white rounded-md bg-red-500 hover:bg-red-600 transition-colors flex items-center justify-center flex-shrink-0"
+            title="Stop refinement"
+          >
+            <Square size={16} />
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={submitDisabled}
+            className={`p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed ${sendButtonPressed ? 'bg-indigo-700 shadow-inner' : 'bg-indigo-600'}`}
+          >
+            <Send size={16} />
+          </button>
+        )}
+      </div>
+    </form>
+  </div>
+);
 
 export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
   const isMobile = useIsMobile();
-  const initialMessagesKey = useMemo(
-    () => initialMessages?.map(m => `${m.id}:${m.role}:${m.content}:${m.timestamp}`).join('|') ?? '',
-    [initialMessages]
-  );
   const syncedMessages = useMemo<Message[]>(
     () => (initialMessages ?? []).map(m => ({
       ...m,
       timestamp: new Date(m.timestamp)
     })),
-    [initialMessagesKey]
+    [initialMessages]
   );
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
-      // Map initial messages directly to internal format - seeded messages from backend should be displayed
       return initialMessages.map(m => ({
         ...m,
         timestamp: new Date(m.timestamp)
@@ -182,7 +166,6 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   const abortControllerRef = useRef<AbortController | null>(null);
   const visibleMessages = syncInitialMessages ? syncedMessages : messages;
 
-  // Auto-resize textarea based on content
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (textarea) {
@@ -190,28 +173,24 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         textarea.style.height = `${stableComposerHeight}px`;
         return;
       }
-      // Reset height to auto to get the correct scrollHeight
       textarea.style.height = 'auto';
-      // Set to scrollHeight, capped by max-height via CSS
       textarea.style.height = `${textarea.scrollHeight}px`;
     }
-  }, []);
+  }, [stableComposerHeight]);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     if (disableAutoScroll) return;
     messagesEndRef.current?.scrollIntoView({ behavior: disableSmoothAutoScroll ? 'auto' : 'smooth' });
-  };
+  }, [disableAutoScroll, disableSmoothAutoScroll]);
 
   useEffect(() => {
     scrollToBottom();
-  }, [visibleMessages, disableSmoothAutoScroll, disableAutoScroll]);
+  }, [visibleMessages, scrollToBottom]);
 
-  // Adjust textarea height when input changes
   useEffect(() => {
     adjustTextareaHeight();
   }, [effectiveInput, adjustTextareaHeight]);
 
-  // Convert messages to ChatMessage format for persistence (excluding 'thinking' messages)
   const toChatMessages = useCallback((msgs: Message[]): ChatMessage[] => {
     return msgs
       .filter(m => m.role !== 'thinking')
@@ -223,7 +202,6 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       }));
   }, []);
 
-  // Handle keyboard shortcuts: Enter to submit, Shift+Enter for new line
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -236,7 +214,6 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-    // Call the backend abort endpoint to stop server-side processing
     if (onStop) {
       try {
         await onStop();
@@ -246,16 +223,9 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     }
   }, [onStop]);
 
-  /**
-   * Build an enriched message for the AI that includes:
-   * 1. Recent conversation history for context
-   * 2. The user's current instruction
-   * 3. Safety instructions to preserve unmodified task data
-   */
   const buildEnrichedMessage = useCallback((userInstruction: string, conversationHistory: Message[]): string => {
     const parts: string[] = [];
 
-    // Get the last 10 messages (excluding thinking messages) for context
     const recentMessages = conversationHistory
       .filter(m => m.role !== 'thinking')
       .slice(-10);
@@ -273,12 +243,10 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       parts.push('');
     }
 
-    // Add the current user instruction
     parts.push('## Current Instruction');
     parts.push(userInstruction);
     parts.push('');
 
-    // Add safety instructions to preserve unmodified task data
     parts.push('---');
     parts.push('');
     parts.push('## IMPORTANT: Data Preservation Rules');
@@ -313,18 +281,14 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     setInput('');
     setIsLoading(true);
 
-    // Create a new AbortController for this request
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    // Save user message immediately
     onMessagesChange?.(toChatMessages(messagesWithUser));
 
-    // Build enriched message with context and safety instructions
     const enrichedMessage = buildEnrichedMessage(userMessage.content, messages);
     const result = await onSendMessage(enrichedMessage, abortController.signal);
 
-    // Clear the abort controller reference
     abortControllerRef.current = null;
 
     const assistantMessage: Message = {
@@ -340,17 +304,14 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     setMessages(finalMessages);
     setIsLoading(false);
 
-    // Save with assistant response
     onMessagesChange?.(toChatMessages(finalMessages));
   };
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-      {/* Header - hidden on mobile since it's shown in the parent bottom sheet */}
       {!isMobile && (
         <div className="px-4 py-3">
           <div className="flex items-center">
-            {/* Fixed 40px icon column to match message gutter alignment */}
             <div className="w-10 flex-shrink-0 flex justify-center">
               <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
                 <Bot size={16} className="text-white" />
@@ -364,7 +325,6 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         </div>
       )}
 
-      {/* Messages area - no border, fills available space */}
       <div
         className="refinement-chat-messages flex-1 overflow-y-auto px-4 pb-4 space-y-4 [scrollbar-gutter:stable]"
         style={{
@@ -384,7 +344,6 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             border-radius: 3px;
           }
         `}</style>
-        {/* Onboarding Card - shown only when chat is empty */}
         {visibleMessages.length === 0 && (
           <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
             <p className="text-sm text-gray-700 whitespace-pre-wrap">
@@ -400,93 +359,30 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
           </div>
         )}
         {visibleMessages.map((message, index) => (
-          <div
+          <ChatMessageItem
             key={message.id}
-            className={`flex items-start pb-6 ${index < visibleMessages.length - 1 ? 'border-b border-slate-100' : ''}`}
-          >
-            {/* Fixed 40px icon column for gutter alignment */}
-            <div className="w-10 flex-shrink-0 flex justify-center">
-              <div
-                className={`
-                  w-8 h-8 rounded-full flex items-center justify-center
-                  ${message.role === 'thinking' ? 'bg-gray-300' : message.role === 'assistant' ? 'bg-gray-700' : 'bg-white border border-slate-200'}
-                `}
-              >
-                {message.role === 'user' ? (
-                  <User size={16} className="text-slate-600" />
-                ) : message.role === 'thinking' ? (
-                  <Loader2 size={16} className="text-gray-600 animate-spin" />
-                ) : (
-                  <Bot size={16} className="text-white" />
-                )}
-              </div>
-            </div>
-            {/* Message text column - never wraps under icon */}
-            <div className="flex-1 min-w-0 ml-3">
-              <div
-                className={`
-                  rounded-lg
-                  ${message.role === 'user'
-                    ? 'bg-white border border-indigo-100 text-slate-800 shadow-sm px-4 py-2 inline-block'
-                    : message.role === 'thinking'
-                      ? 'bg-slate-200 text-gray-600 italic p-3 w-full max-w-xs'
-                      : 'bg-transparent text-gray-800 inline-block'
-                  }
-                `}
-              >
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                {/* Show progress bar for thinking messages when progress data is available */}
-                {message.role === 'thinking' && refinementProgress?.startedAt && refinementProgress?.estimatedDuration && (
-                  <RefinementProgressBar
-                    startedAt={refinementProgress.startedAt}
-                    estimatedDuration={refinementProgress.estimatedDuration}
-                  />
-                )}
-              </div>
-            </div>
-          </div>
+            message={message}
+            isLast={index === visibleMessages.length - 1}
+            refinementProgress={refinementProgress}
+          />
         ))}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input area - floating command bar style with margin */}
-      <div className={`flex-shrink-0 ${isMobile ? 'm-3' : 'm-4'}`}>
-        <form onSubmit={handleSubmit}>
-          <div className={`flex gap-2 items-end bg-white rounded-lg shadow-lg border border-slate-200 ${isMobile ? 'p-3' : 'p-4'}`}>
-            <textarea
-              ref={textareaRef}
-              value={effectiveInput}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask the AI to refine the plan..."
-              disabled={effectiveIsLoading}
-              rows={1}
-              className={`flex-1 px-3 py-2 bg-transparent focus:outline-none disabled:bg-gray-50 resize-none min-h-[40px] overflow-y-auto text-sm ${isMobile ? 'max-h-[120px]' : 'max-h-[200px]'}`}
-              style={stableComposerHeight === undefined ? undefined : { height: stableComposerHeight, minHeight: stableComposerHeight, maxHeight: stableComposerHeight }}
-            />
-            {/* Keyboard shortcut hint - hidden on mobile */}
-            {!isMobile && <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>}
-            {showStopButton ? (
-              <button
-                type="button"
-                onClick={handleStop}
-                className="p-2 text-white rounded-md bg-red-500 hover:bg-red-600 transition-colors flex items-center justify-center flex-shrink-0"
-                title="Stop refinement"
-              >
-                <Square size={16} />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={submitDisabled}
-                className={`p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed ${sendButtonPressed ? 'bg-indigo-700 shadow-inner' : 'bg-indigo-600'}`}
-              >
-                <Send size={16} />
-              </button>
-            )}
-          </div>
-        </form>
-      </div>
+      <ChatInputForm
+        isMobile={isMobile}
+        effectiveInput={effectiveInput}
+        effectiveIsLoading={effectiveIsLoading}
+        submitDisabled={submitDisabled}
+        showStopButton={showStopButton}
+        sendButtonPressed={sendButtonPressed}
+        stableComposerHeight={stableComposerHeight}
+        textareaRef={textareaRef}
+        onSubmit={handleSubmit}
+        onInputChange={setInput}
+        onKeyDown={handleKeyDown}
+        onStop={handleStop}
+      />
     </div>
   );
 };
