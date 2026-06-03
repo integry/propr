@@ -103,8 +103,7 @@ services:
       VIBE_PROMPT_CACHE_DIR: ${VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       # --- Vibe agent (config-file auth, alternative to API-key) ---
-      # Requires BOTH the env var AND the HOST_VIBE_DIR volume mount below.
-      # VIBE_CONFIG_PATH: ${HOST_VIBE_DIR}
+      VIBE_CONFIG_PATH: ${VIBE_CONFIG_PATH:-/root/.vibe}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /usr/src/app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
@@ -117,8 +116,9 @@ services:
       # manual edits. PREFLIGHT: create and own the host directory before starting:
       #   mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"
       - ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}:/tmp/propr-vibe-prompts
-      # Vibe config-file auth — uncomment together with VIBE_CONFIG_PATH above.
-      # - ${HOST_VIBE_DIR}:${HOST_VIBE_DIR}:ro
+      # Vibe config-file auth. Mounts host config to the same path the worker
+      # passes to sibling agent containers.
+      - ${HOST_VIBE_DIR:-/root/.vibe}:${VIBE_CONFIG_PATH:-/root/.vibe}:ro
     depends_on:
       redis:
         condition: service_healthy
