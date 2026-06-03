@@ -1,5 +1,5 @@
 import path from 'path';
-import { AGENT_DEFAULTS, MODEL_INFO_MAP } from '@propr/shared';
+import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from '../agents/version/types.js';
@@ -86,6 +86,7 @@ const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
 
 const CLAUDE_46_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];
 const CODEX_55_MODELS = ['gpt-5.5'];
+const VIBE_CURRENT_MODELS = VIBE_MODELS.map(model => model.id);
 const LEGACY_AGENT_IMAGE_NAMES: Record<AgentConfig['type'], string> = {
     claude: 'propr-claude',
     codex: 'propr-codex',
@@ -222,6 +223,9 @@ export async function migrateAgentConfigs(): Promise<boolean> {
             migrated = migrateLegacyAgentImageName(agent) || migrated;
             if (agent.type === 'claude') {
                 migrated = addMissingModels(agent, CLAUDE_46_MODELS, 'Added Claude 4.6 models to agent') || migrated;
+            }
+            if (agent.type === 'vibe') {
+                migrated = addMissingModels(agent, VIBE_CURRENT_MODELS, 'Added current Mistral Vibe models to agent') || migrated;
             }
             migrated = updateCodexDefaults(agent) || migrated;
             migrated = removeDeprecatedModels(agent) || migrated;

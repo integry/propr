@@ -1,6 +1,6 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
-import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS } from './modelDefinitions.js';
+import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS, type AgentType } from './modelDefinitions.js';
 
 export type ModelAlias = string;
 export type ModelId = string;
@@ -275,16 +275,40 @@ async function getAllCustomLabels(): Promise<string[]> {
  * Resolves a full github label (e.g., "llm-gemini-g3-flash-preview") to an agent alias and model
  * by matching against modelDefinitions' githubLabel field.
  */
+function findAgentByType(agentType: AgentType, agents: { config: AgentConfig }[]): { config: AgentConfig } | null {
+    return agents.find(a => a.config.type === agentType && a.config.enabled) || agents.find(a => a.config.type === agentType) || null;
+}
+
 function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
     for (const modelInfo of ALL_MODELS) {
         if (modelInfo.githubLabel.toLowerCase() === fullLabel) {
             const agentType = getAgentTypeFromModel(modelInfo.id);
-            const agent = agents.find(a => a.config.type === agentType);
-            if (agent) {
-                return { agentAlias: agent.config.alias, model: modelInfo.id };
-            }
+            const agent = findAgentByType(agentType, agents);
+            return { agentAlias: agent?.config.alias || agentType, model: modelInfo.id };
         }
     }
+    return null;
+}
+
+function resolveByAgentTypePrefix(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
+    const lowerLabel = label.toLowerCase();
+    const agentTypes: AgentType[] = ['claude', 'codex', 'gemini', 'vibe'];
+
+    for (const agentType of agentTypes) {
+        if (!lowerLabel.startsWith(`${agentType}-`)) {
+            continue;
+        }
+
+        const modelPart = label.substring(agentType.length + 1);
+        const agent = findAgentByType(agentType, agents);
+        const matchedModel = agent ? findMatchingModel(modelPart, agent.config) : null;
+        const resolvedModel = matchedModel || resolveModelAlias(`${agentType}-${modelPart}`);
+
+        if (getAgentTypeFromModel(resolvedModel) === agentType) {
+            return { agentAlias: agent?.config.alias || agentType, model: resolvedModel };
+        }
+    }
+
     return null;
 }
 
@@ -327,6 +351,13 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
     const githubLabelMatch = resolveByGithubLabel(fullLabel, agents);
     if (githubLabelMatch) {
         return githubLabelMatch;
+    }
+
+    // 1b. Check generated "agentType-modelAlias" labels even when the configured
+    // agent alias is different from the built-in type name.
+    const agentTypePrefixMatch = resolveByAgentTypePrefix(label, agents);
+    if (agentTypePrefixMatch) {
+        return agentTypePrefixMatch;
     }
 
     // 2. Check if label matches an agent alias exactly (use default model)

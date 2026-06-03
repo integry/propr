@@ -95,7 +95,7 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
                 type: 'vibe' as const,
                 alias: 'vibe',
                 enabled: true,
-                supportedModels: ['mistral-medium-3.5', 'devstral-2512', 'devstral-small-latest'],
+                supportedModels: ['mistral-medium-3.5', 'devstral-small'],
                 defaultModel: 'mistral-medium-3.5'
             }
         }
@@ -135,15 +135,28 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     });
 
     await t.test('Step 1: resolves exact githubLabel for vibe models', async () => {
-        const result = await resolveLlmLabel('vibe-medium35');
+        const result = await resolveLlmLabel('vibe-mistral');
         assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
         assert.strictEqual(result.model, 'mistral-medium-3.5', 'Should resolve to correct vibe model');
     });
 
     await t.test('Step 1: resolves exact githubLabel for vibe devstral model', async () => {
-        const result = await resolveLlmLabel('vibe-devstral2');
+        const result = await resolveLlmLabel('vibe-devstral');
         assert.strictEqual(result.agentAlias, 'vibe', 'Should resolve to vibe agent');
-        assert.strictEqual(result.model, 'devstral-2512', 'Should resolve to devstral-2512');
+        assert.strictEqual(result.model, 'devstral-small', 'Should resolve to devstral-small');
+    });
+
+    await t.test('Step 1b: resolves vibe agent-type label when configured alias differs', async () => {
+        const vibeAgent = mockAgentConfigs[3].config;
+        const originalAlias = vibeAgent.alias;
+        vibeAgent.alias = 'mistral-vibe';
+        try {
+            const result = await resolveLlmLabel('vibe-mistral');
+            assert.strictEqual(result.agentAlias, 'mistral-vibe', 'Should resolve to configured vibe agent alias');
+            assert.strictEqual(result.model, 'mistral-medium-3.5', 'Should resolve to correct vibe model');
+        } finally {
+            vibeAgent.alias = originalAlias;
+        }
     });
 
     await t.test('Step 2: resolves agent alias match with default model', async () => {
