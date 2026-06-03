@@ -5,10 +5,9 @@
 import type { Logger } from 'pino';
 import type { WorkerStateManager, IssueJobData, WorktreeInfo, CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
+import type { GitHubToken } from '../githubTypes.js';
 
-export interface GitHubToken {
-  token: string;
-}
+export type { GitHubToken };
 
 export interface JobContext {
   jobId: string | undefined;

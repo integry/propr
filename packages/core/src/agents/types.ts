@@ -110,6 +110,8 @@ export interface AnalyzeOptions {
     repository?: string;
     /** Additional metadata to include in logs */
     metadata?: Record<string, unknown>;
+    /** Optional timeout for lightweight analysis execution. */
+    timeoutMs?: number;
 }
 
 export interface AgentExecutionResult {

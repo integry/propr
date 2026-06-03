@@ -11,6 +11,7 @@ import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
 import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
 import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostProcessingHelpers.js';
+import type { GitHubToken } from './githubTypes.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -18,10 +19,6 @@ type PRValidation = PRValidationResult;
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
 };
-
-interface GitHubToken {
-    token: string;
-}
 
 export interface PostProcessOptions {
     octokit: Octokit;

@@ -85,17 +85,39 @@ const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
 const CLAUDE_46_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];
 const CODEX_55_MODELS = ['gpt-5.5'];
 
-function migrateCodexAgent(agent: AgentConfig): boolean {
-    let migrated = false;
-
-    if (agent.supportedModels) {
-        const missingModels = CODEX_55_MODELS.filter(m => !agent.supportedModels!.includes(m));
-        if (missingModels.length > 0) {
-            agent.supportedModels = [...missingModels, ...agent.supportedModels];
-            migrated = true;
-            logger.info({ agentAlias: agent.alias, addedModels: missingModels }, 'Added GPT-5.5 models to Codex agent');
-        }
+function addMissingSupportedModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
+    if (!agent.supportedModels) {
+        return false;
     }
+
+    const missingModels = models.filter(m => !agent.supportedModels.includes(m));
+    if (missingModels.length === 0) {
+        return false;
+    }
+
+    agent.supportedModels = [...missingModels, ...agent.supportedModels];
+    logger.info({ agentAlias: agent.alias, addedModels: missingModels }, logMessage);
+    return true;
+}
+
+function removeDeprecatedSupportedModels(agent: AgentConfig): boolean {
+    if (!agent.supportedModels) {
+        return false;
+    }
+
+    const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
+    const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
+    if (removedModels.length === 0) {
+        return false;
+    }
+
+    agent.supportedModels = validModels;
+    logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
+    return true;
+}
+
+function migrateCodexAgent(agent: AgentConfig): boolean {
+    let migrated = addMissingSupportedModels(agent, CODEX_55_MODELS, 'Added GPT-5.5 models to Codex agent');
 
     if (!agent.defaultModel || agent.defaultModel === 'gpt-5.4') {
         agent.defaultModel = 'gpt-5.5';
@@ -130,27 +152,14 @@ export async function migrateAgentConfigs(): Promise<boolean> {
             }
 
             if (agent.type === 'claude' && agent.supportedModels) {
-                const missingModels = CLAUDE_46_MODELS.filter(m => !agent.supportedModels.includes(m));
-                if (missingModels.length > 0) {
-                    agent.supportedModels = [...missingModels, ...agent.supportedModels];
-                    migrated = true;
-                    logger.info({ agentAlias: agent.alias, addedModels: missingModels }, 'Added Claude 4.6 models to agent');
-                }
+                migrated = addMissingSupportedModels(agent, CLAUDE_46_MODELS, 'Added Claude 4.6 models to agent') || migrated;
             }
 
             if (agent.type === 'codex') {
                 if (migrateCodexAgent(agent)) migrated = true;
             }
 
-            if (agent.supportedModels) {
-                const validModels = agent.supportedModels.filter(m => MODEL_INFO_MAP[m]);
-                const removedModels = agent.supportedModels.filter(m => !MODEL_INFO_MAP[m]);
-                if (removedModels.length > 0) {
-                    agent.supportedModels = validModels;
-                    migrated = true;
-                    logger.info({ agentAlias: agent.alias, removedModels }, 'Removed deprecated models from agent');
-                }
-            }
+            migrated = removeDeprecatedSupportedModels(agent) || migrated;
         }
 
         if (migrated) {

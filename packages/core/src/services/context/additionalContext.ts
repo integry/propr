@@ -78,6 +78,21 @@ function stripFilePathsFromContext(context: string, repoName: string): string {
   return header + strippedContext;
 }
 
+interface RankedRepositoryFiles {
+  priorityFiles?: string[];
+  fileScores: Record<string, { score: number; reason: string }>;
+}
+
+async function resolveEffectiveAuthToken(authToken: string): Promise<string> {
+  try {
+    // Try to use installation token for private repo access
+    return await getGitHubInstallationToken();
+  } catch {
+    // Fall back to provided auth token
+    return authToken;
+  }
+}
+
 /**
  * Generate context from additional repositories.
  * This content is marked as "example/reference only" and file paths are stripped
@@ -135,13 +150,7 @@ export async function generateAdditionalContext(
 
       // Ensure the repository is cloned
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      let effectiveAuthToken = authToken;
-      try {
-        // Try to use installation token for private repo access
-        effectiveAuthToken = await getGitHubInstallationToken();
-      } catch {
-        // Fall back to provided auth token
-      }
+      const effectiveAuthToken = await resolveEffectiveAuthToken(authToken);
 
       const repoPath = await ensureRepoCloned({
         repoUrl,

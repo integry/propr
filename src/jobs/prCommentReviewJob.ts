@@ -3,27 +3,29 @@ import type { Job } from 'bullmq';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
+import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
 import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { getDefaultModel, loadSettings, NoDefaultModelConfiguredError, loadPrReviewModel } from '@propr/core';
-import {
-    fetchLinkedIssueContext,
-    buildCommentHistory, updateTaskTitleForPR
-} from './prCommentJobHelpers.js';
-import {
-    buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents
-} from './prCommentJobUtils.js';
+import { loadPrReviewModel } from '@propr/core';
+import { fetchLinkedIssueContext, buildCommentHistory, updateTaskTitleForPR } from './prCommentJobHelpers.js';
+import { buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
+import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import {
+    buildDeterministicPrTaskSubtitle,
+    buildPrTaskTitle,
+    buildPrTaskTitleContext,
+    buildPrTaskTitleContextHistoryMetadata,
+    getPrTaskWorkflowLabel,
+    resolvePrTaskWorkflow,
+} from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
-
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 
 export interface ReviewAssignment {
     agentAlias: string;
@@ -57,7 +59,7 @@ export interface PRJobContext {
 interface ProcessingState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     localRepoPath: string | undefined;
-    worktreeInfo: unknown;
+    worktreeInfo: WorktreeInfo | undefined;
     claudeResult: unknown;
     authorsText: string;
     unprocessedComments: UnprocessedComment[];
@@ -88,39 +90,6 @@ export interface JobResult {
     reviewsPosted?: number;
     reviewsFailed?: number;
     [key: string]: unknown;
-}
-
-async function resolveDefaultAgentAndModel(
-    registry: AgentRegistry,
-    correlatedLogger: Logger
-): Promise<{ resolvedAlias: string; resolvedModel: string }> {
-    try {
-        const settings = await loadSettings();
-        if (settings.default_agent_alias) {
-            const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
-            if (configuredAgent && configuredAgent.config.enabled) {
-                const resolvedAlias = settings.default_agent_alias as string;
-                const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
-                if (!resolvedModel) {
-                    throw new NoDefaultModelConfiguredError();
-                }
-                correlatedLogger.debug({ configuredDefaultAgent: resolvedAlias, defaultModel: resolvedModel }, 'Using default agent from settings');
-                return { resolvedAlias, resolvedModel };
-            }
-        }
-    } catch (settingsError) {
-        if (settingsError instanceof NoDefaultModelConfiguredError) throw settingsError;
-        correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
-    }
-
-    const defaultAgent = registry.getDefaultAgent();
-    const resolvedAlias = defaultAgent?.config.alias || 'claude';
-    const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
-    if (!resolvedModel) {
-        throw new NoDefaultModelConfiguredError();
-    }
-    correlatedLogger.debug({ fallbackAgent: resolvedAlias, fallbackModel: resolvedModel }, 'Using fallback default agent');
-    return { resolvedAlias, resolvedModel };
 }
 
 export async function resolveReviewAssignments(
@@ -314,7 +283,7 @@ async function fetchReviewContext(
 ) {
     const { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger } = params;
     const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
-    const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const commentsByTime = [...allComments].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
     const commentHistory = buildCommentHistory(commentsByTime, prData, correlationId);
 
@@ -327,7 +296,7 @@ async function fetchReviewContext(
     const fileContents = formatFileContents(fileContentsMap);
     correlatedLogger.info({ pullRequestNumber, filesWithContent: fileContentsMap.size, contentLength: fileContents.length }, 'Fetched full file contents');
 
-    return { commentHistory, linkedIssueResult, prDiff, fileContents };
+    return { allComments, commentHistory, linkedIssueResult, prDiff, fileContents };
 }
 
 async function handleUltrafixContinuation(
@@ -380,7 +349,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         historyMetadata: { commandMode: 'review' }
     });
 
-    const { commentHistory, linkedIssueResult, prDiff, fileContents } = await fetchReviewContext(
+    const { allComments, commentHistory, linkedIssueResult, prDiff, fileContents } = await fetchReviewContext(
         state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger }
     );
 
@@ -393,14 +362,31 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id)).join(', ')}_`
         : '';
     const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
-    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}`,
-    });
+    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}` });
 
-    job.data.title = `Review: ${prData!.data.title}`;
-    job.data.subtitle = `Code review with ${assignments.map(a => a.label).join(', ')}`;
+    const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
+    const titleContext = buildPrTaskTitleContext({ workflow, pullRequestNumber, prTitle: prData!.data.title, instructionText: job.data.commandInstructions, recentComments: allComments, prDescription: prData!.data.body, excludeCommentIds: state.unprocessedComments.map(comment => comment.id) });
+    const fallbackSubtitle = buildDeterministicPrTaskSubtitle(workflow);
+    const githubToken = await state.octokit.auth({ type: "installation" }) as { token: string };
+    let summaryTitle = fallbackSubtitle;
+    if (titleContext.hasMeaningfulContext) {
+        try {
+            summaryTitle = await generateSummaryTitle({
+                combinedCommentBody, titleContext: titleContext.context, fallbackSubtitle,
+                githubToken,
+                pullRequestNumber, prTitle: prData!.data.title, workflowLabel: getPrTaskWorkflowLabel(workflow),
+                repoOwner, repoName, correlationId, taskId, correlatedLogger,
+            });
+        } catch (titleError) {
+            correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to generate review task subtitle');
+        }
+    }
+    job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
+    job.data.subtitle = titleContext.hasMeaningfulContext ? summaryTitle : fallbackSubtitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
+    await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
+        titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
+    });
 
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();

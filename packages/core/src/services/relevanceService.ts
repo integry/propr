@@ -236,13 +236,15 @@ async function performGitSemanticMining(params: GitSemanticMiningParams): Promis
 /**
  * Phase 2: Keyword-based scoring (Git history + Path matching)
  */
-async function performKeywordScoring(params: {
+interface KeywordScoringParams {
   repoPath: string;
   keywords: string[];
   finalScores: Record<string, AggregatedFileScore>;
   correlationId?: string;
   timeoutMs?: number;
-}): Promise<void> {
+}
+
+async function performKeywordScoring(params: KeywordScoringParams): Promise<void> {
   const { repoPath, keywords, finalScores, correlationId, timeoutMs = TIMEOUT_MS } = params;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
