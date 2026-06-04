@@ -4,7 +4,7 @@
 
 import fs from 'fs-extra';
 import path from 'path';
-import type { Attachment } from '../attachmentService.js';
+import { ensureImageFitsContext, type Attachment } from '../attachmentService.js';
 import type { MinimalLogger, Base64Image, TaskDraftConfig } from '../planning/index.js';
 import type { LoadedImages } from './types.js';
 
@@ -51,6 +51,7 @@ export async function loadImageAttachmentsAsBase64(
       const absolutePath = path.isAbsolute(img.storedPath)
         ? img.storedPath
         : path.join(process.cwd(), img.storedPath);
+      await ensureImageFitsContext(absolutePath, correlatedLogger);
       const imageData = await fs.readFile(absolutePath);
       const base64Data = imageData.toString('base64');
       const imageTokens = calculateBase64Tokens(base64Data.length);
