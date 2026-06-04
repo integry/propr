@@ -48,6 +48,7 @@ interface SaveBatchSummariesOptions {
 
 const BATCH_TOKEN_RATIO = 0.8; // Upper bound based on model context size
 const DEFAULT_MAX_BATCH_TOKENS = 100_000; // Keep prompts well below context limits so agents reliably return JSON
+const DEFAULT_MAX_BATCH_FILES = 20; // Keep JSON responses reliable for repos with many small files
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
 const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100KB max file size
 
@@ -105,8 +106,9 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
   const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(DEFAULT_MAX_BATCH_TOKENS), 10);
   const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
+  const maxBatchFiles = parseInt(process.env.SUMMARIZATION_MAX_BATCH_FILES || String(DEFAULT_MAX_BATCH_FILES), 10);
 
-  log.info({ maxBatchTokens, maxBatchTokensCap, model: modelId }, 'Calculated batch token budget');
+  log.info({ maxBatchTokens, maxBatchTokensCap, maxBatchFiles, model: modelId }, 'Calculated batch budget');
 
   let currentBatch: BatchFile[] = [];
   let currentTokens = 0;
@@ -141,8 +143,8 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
     const estimatedTokens = Math.ceil(content.length / CHARS_PER_TOKEN_ESTIMATE);
 
-    // If adding this file would exceed budget, process current batch first
-    if (currentTokens + estimatedTokens > maxBatchTokens && currentBatch.length > 0) {
+    // If adding this file would exceed batch limits, process current batch first
+    if ((currentTokens + estimatedTokens > maxBatchTokens || currentBatch.length >= maxBatchFiles) && currentBatch.length > 0) {
       batchNumber++;
       log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing batch');
 
