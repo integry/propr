@@ -106,7 +106,7 @@ const SystemStatus: React.FC = () => {
         {renderStatusRow('GitHub Auth', status?.githubAuth)}
         {renderStatusRow('Indexing', status?.indexing, (status?.agents.length || 0) === 0)}
         {status?.agents.map((agent, index) => renderStatusRow(
-          formatAgentLabel(agent),
+          formatAgentLabel(agent, status.agents),
           agent.status,
           index === status.agents.length - 1
         ))}

@@ -31,9 +31,27 @@ describe('SystemHealth dropdown', () => {
     expect(screen.getByText('Redis:')).toBeInTheDocument();
     expect(screen.getByText('GitHub:')).toBeInTheDocument();
     expect(screen.getByText('Indexing:')).toBeInTheDocument();
-    expect(screen.getByText('Codex (codex-prod):')).toBeInTheDocument();
-    expect(screen.getByText('Gemini (gemini-prod):')).toBeInTheDocument();
+    expect(screen.getByText('Codex:')).toBeInTheDocument();
+    expect(screen.getByText('Gemini:')).toBeInTheDocument();
+    expect(screen.queryByText('Codex (codex-prod):')).not.toBeInTheDocument();
+    expect(screen.queryByText('Gemini (gemini-prod):')).not.toBeInTheDocument();
     expect(screen.queryByText('Claude:')).not.toBeInTheDocument();
+  });
+
+  it('includes agent aliases when multiple instances of a type are shown', () => {
+    render(<SystemHealth systemHealth={makeSystemHealth({
+      agents: [
+        { id: 'codex-1', type: 'codex', alias: 'codex-prod', status: 'Ready' },
+        { id: 'codex-2', type: 'codex', alias: 'codex-canary', status: 'Ready' },
+        { id: 'gemini-1', type: 'gemini', alias: 'gemini-prod', status: 'Ready' },
+      ],
+    })} />);
+
+    fireEvent.mouseEnter(screen.getByLabelText('System Status'));
+
+    expect(screen.getByText('Codex (codex-prod):')).toBeInTheDocument();
+    expect(screen.getByText('Codex (codex-canary):')).toBeInTheDocument();
+    expect(screen.getByText('Gemini:')).toBeInTheDocument();
   });
 
   it('marks the overall indicator red when an enabled dynamic agent fails', () => {

@@ -336,7 +336,7 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
             {renderStatusRow('Indexing', systemHealth.indexing)}
             {systemHealth.agents.map(agent => (
               <React.Fragment key={agent.id}>
-                {renderStatusRow(formatAgentLabel(agent), agent.status)}
+                {renderStatusRow(formatAgentLabel(agent, systemHealth.agents), agent.status)}
               </React.Fragment>
             ))}
           </div>
