@@ -44,6 +44,13 @@ interface SaveBatchSummariesOptions {
   branch: string;
 }
 
+export interface SummarizationAgentConfig {
+  agent: Agent;
+  modelOverride?: string;
+  effectiveModel?: string;
+  customPrompt?: string;
+}
+
 // --- Constants ---
 
 const BATCH_TOKEN_RATIO = 0.8; // Upper bound based on model context size
@@ -84,6 +91,7 @@ export interface ProcessBatchesOptions {
   log: Logger;
   modelOverride?: string; // Optional model override for token budgeting and logging
   customPrompt?: string; // Optional custom prompt to override default instructions
+  resolveSummarizationConfig?: () => Promise<SummarizationAgentConfig>;
   branch?: string; // Branch being indexed (defaults to 'HEAD')
 }
 
@@ -100,7 +108,7 @@ export interface ProcessBatchesResult {
  * Returns stats about success/failure for proper status tracking
  */
 export async function processBatches(options: ProcessBatchesOptions): Promise<ProcessBatchesResult> {
-  const { repoPath, fullName, files, agent, log, modelOverride, customPrompt, branch = 'HEAD' } = options;
+  const { repoPath, fullName, files, agent, log, modelOverride, customPrompt, resolveSummarizationConfig, branch = 'HEAD' } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
@@ -117,6 +125,9 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   let failedBatches = 0;
   let filesProcessed = 0;
   let filesFailed = 0;
+
+  const initialConfig: SummarizationAgentConfig = { agent, modelOverride, customPrompt, effectiveModel: modelId };
+  const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
 
   for (const file of files) {
     // Check for cancellation before processing each file
@@ -148,7 +159,18 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       batchNumber++;
       log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing batch');
 
-      const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt, branch });
+      const currentConfig = await getCurrentConfig();
+      logBatchAgentIfChanged(log, initialConfig, currentConfig);
+      const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+      const success = await processSingleBatch({
+        fullName,
+        batch: currentBatch,
+        agent: currentConfig.agent,
+        log,
+        modelUsed: currentModelId,
+        customPrompt: currentConfig.customPrompt,
+        branch
+      });
       const batchFileCount = currentBatch.length;
       const batchInputTokens = currentTokens;
       const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
@@ -193,7 +215,18 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
     batchNumber++;
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
-    const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt, branch });
+    const currentConfig = await getCurrentConfig();
+    logBatchAgentIfChanged(log, initialConfig, currentConfig);
+    const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+    const success = await processSingleBatch({
+      fullName,
+      batch: currentBatch,
+      agent: currentConfig.agent,
+      log,
+      modelUsed: currentModelId,
+      customPrompt: currentConfig.customPrompt,
+      branch
+    });
     const batchFileCount = currentBatch.length;
     const batchInputTokens = currentTokens;
     const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
@@ -225,6 +258,25 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     filesProcessed,
     filesFailed
   };
+}
+
+function logBatchAgentIfChanged(
+  log: Logger,
+  initialConfig: SummarizationAgentConfig,
+  currentConfig: SummarizationAgentConfig
+): void {
+  const initialModel = initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
+  const currentModel = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+  if (initialConfig.agent.config.alias === currentConfig.agent.config.alias && initialModel === currentModel) {
+    return;
+  }
+
+  log.info({
+    previousAgentAlias: initialConfig.agent.config.alias,
+    previousModel: initialModel,
+    currentAgentAlias: currentConfig.agent.config.alias,
+    currentModel
+  }, 'Using updated summarization agent config for batch');
 }
 
 async function publishBatchProgressIfActive(

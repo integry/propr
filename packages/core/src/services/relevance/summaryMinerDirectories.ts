@@ -8,6 +8,7 @@ import { startDirectoryPhase, updateDirectoryProgress, publishProgress, isIndexi
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
 import type { IndexingProgress } from './indexingCancellation.js';
+import type { SummarizationAgentConfig } from './summaryMinerHelpers.js';
 
 // --- Constants ---
 
@@ -30,6 +31,7 @@ export interface AggregateDirectoriesOptions {
   agent: Agent;
   log: Logger;
   modelOverride?: string;
+  resolveSummarizationConfig?: () => Promise<SummarizationAgentConfig>;
   branch?: string;
 }
 
@@ -42,7 +44,7 @@ export interface AggregateDirectoriesOptions {
 export async function aggregateDirectories(
   options: AggregateDirectoriesOptions
 ): Promise<void> {
-  const { fullName, agent, log, modelOverride, branch = 'HEAD' } = options;
+  const { fullName, agent, log, modelOverride, resolveSummarizationConfig, branch = 'HEAD' } = options;
   // Get all file summaries for the specific branch
   const fileSummaries = await db('file_summaries')
     .where('path', 'like', `${fullName}/%`)
@@ -77,6 +79,8 @@ export async function aggregateDirectories(
 
   let totalBatches = 0;
   let dirsProcessed = 0;
+  const initialConfig: SummarizationAgentConfig = { agent, modelOverride, effectiveModel: modelId };
+  const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
 
   // Process each depth level (deepest first so children are available for parents)
   for (const depth of depths) {
@@ -103,11 +107,13 @@ export async function aggregateDirectories(
     totalBatches += batches.length;
 
     for (const batch of batches) {
+      const currentConfig = await getCurrentConfig();
+      logDirectoryBatchAgentIfChanged(log, initialConfig, currentConfig);
       const results = await processDirectoryBatch({
         directories: batch,
-        agent,
+        agent: currentConfig.agent,
         log,
-        modelOverride,
+        modelOverride: currentConfig.modelOverride,
         fullName
       });
 
@@ -124,6 +130,25 @@ export async function aggregateDirectories(
   await deleteStaleDirectorySummaries(fullName, branch, directories, log);
 
   log.info({ directoryCount: totalDirs, batchCount: totalBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
+}
+
+function logDirectoryBatchAgentIfChanged(
+  log: Logger,
+  initialConfig: SummarizationAgentConfig,
+  currentConfig: SummarizationAgentConfig
+): void {
+  const initialModel = initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
+  const currentModel = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+  if (initialConfig.agent.config.alias === currentConfig.agent.config.alias && initialModel === currentModel) {
+    return;
+  }
+
+  log.info({
+    previousAgentAlias: initialConfig.agent.config.alias,
+    previousModel: initialModel,
+    currentAgentAlias: currentConfig.agent.config.alias,
+    currentModel
+  }, 'Using updated summarization agent config for directory batch');
 }
 
 async function handleSkippedDirectory(
