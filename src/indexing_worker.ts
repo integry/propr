@@ -136,6 +136,15 @@ function shouldIndexRepository(repoStatus: RepoStatus | undefined, currentHash?:
     return { shouldIndex: false, reason: 'up to date' };
 }
 
+async function hasIndexedFileSummaries(repoName: string, branch: string): Promise<boolean> {
+    const result = await db('file_summaries')
+        .where('path', 'like', `${repoName}/%`)
+        .andWhere({ branch })
+        .count<{ count: number | string }>('path as count')
+        .first();
+    return Number(result?.count || 0) > 0;
+}
+
 /**
  * Clone a repository and return its local path
  */
@@ -275,6 +284,11 @@ async function processRepositoryForIndexing(
     }
 
     const decision = shouldIndexRepository(repoStatus, currentHash);
+
+    if (!decision.shouldIndex && repoStatus?.indexing_status === 'completed' && !await hasIndexedFileSummaries(repoName, branch)) {
+        decision.shouldIndex = true;
+        decision.reason = 'completed index has no summaries';
+    }
 
     if (!decision.shouldIndex) {
         log.debug({ repository: repoName, branch, reason: decision.reason, currentHash, lastIndexedHash: repoStatus?.last_indexed_hash }, 'Skipping repository');

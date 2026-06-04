@@ -390,7 +390,7 @@ async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Pro
   let results: DirectoryResult[] = [];
 
   try {
-    const analysisResult = await agent.analyze(prompt, { model: modelOverride });
+    const analysisResult = await agent.analyze(prompt, { model: modelOverride, responseFormat: 'json' });
     const response = analysisResult.response;
     results = parseBatchDirectoryResponse(response, directories.map(d => d.dirPath));
     success = results.some(r => r.summary !== null);

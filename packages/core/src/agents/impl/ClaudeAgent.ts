@@ -271,7 +271,7 @@ export class ClaudeAgent implements Agent {
         prompt: string,
         options?: AnalyzeOptions
     ): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text' } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -284,7 +284,9 @@ export class ClaudeAgent implements Agent {
         }, 'Running lightweight analysis via Claude agent...');
 
         const effectiveModel = model || resolveModelAlias('haiku');
-        const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const suffix = responseFormat === 'json'
+            ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
+            : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
         const analysisPrompt = context
             ? `${prompt}\n\nContext:\n${context}${suffix}`
             : `${prompt}${suffix}`;

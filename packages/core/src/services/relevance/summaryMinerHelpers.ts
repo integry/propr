@@ -263,9 +263,13 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   let errorMessage: string | undefined;
 
   try {
-    const analysisResult = await agent.analyze(prompt);
+    const analysisResult = await agent.analyze(prompt, { responseFormat: 'json' });
     const response = analysisResult.response;
     const summaries = parseBatchResponse(response);
+
+    if (summaries.length === 0) {
+      throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
+    }
 
     // Save summaries to DB with the actual model used
     await saveBatchSummaries({ fullName, batch, summaries, modelUsed, branch });
