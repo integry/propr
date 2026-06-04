@@ -3,6 +3,8 @@ import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
 import { AgentRegistry, ClaudeAgent, CodexAgent, GeminiAgent, VibeAgent, getIndexingQueue, loadAgents } from '@propr/core';
 import type { Agent, AgentConfig } from '@propr/core';
+import path from 'node:path';
+import os from 'node:os';
 
 interface StatusRoutesDeps {
   redisClient: RedisClientType;
@@ -66,21 +68,21 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         const activeWorkers = await redisClient.sCard('system:status:workers');
         status.worker = activeWorkers > 0 ? 'running' : 'stopped';
         status.workerCount = activeWorkers;
-
-        const githubAppConfigured = process.env.GH_APP_ID &&
-                                   process.env.GH_PRIVATE_KEY_PATH &&
-                                   process.env.GH_INSTALLATION_ID;
-        status.githubAuth = githubAppConfigured ? 'connected' : 'disconnected';
-
-        const agents = await getAgentStatuses();
-        status.agents = agents;
-        status.claudeAuth = agents.some(agent => agent.type === 'claude' && agent.status === 'connected')
-          ? 'connected'
-          : await checkClaudeStatus(redisClient);
-        status.indexing = await getIndexingStatus();
       } catch {
         status.redis = 'disconnected';
       }
+
+      const githubAppConfigured = process.env.GH_APP_ID &&
+                                 process.env.GH_PRIVATE_KEY_PATH &&
+                                 process.env.GH_INSTALLATION_ID;
+      status.githubAuth = githubAppConfigured ? 'connected' : 'disconnected';
+
+      const agents = await getAgentStatuses();
+      status.agents = agents;
+      status.claudeAuth = agents.some(agent => agent.type === 'claude' && agent.status === 'connected')
+        ? 'connected'
+        : 'disconnected';
+      status.indexing = await getIndexingStatus();
 
       res.json(status);
     } catch (error) {
@@ -93,12 +95,27 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
 }
 
 async function getAgentStatuses(): Promise<AgentStatus[]> {
-  const registry = AgentRegistry.getInstance();
-  await registry.ensureInitialized();
+  let configuredAgents: AgentConfig[];
+  try {
+    configuredAgents = await loadAgents();
+  } catch (error) {
+    console.error('Error loading agent status configuration:', error);
+    return [];
+  }
 
-  const configuredAgents = await loadAgents();
+  const registry = AgentRegistry.getInstance();
+  try {
+    await registry.ensureInitialized();
+  } catch (error) {
+    console.error('Error initializing agent registry for status:', error);
+  }
+
   if (configuredAgents.length === 0) {
-    return Promise.all(registry.getAllAgents().map(agent => buildRegisteredAgentStatus(agent)));
+    const defaultAgent = registry.getAgentById('default-claude-agent') ?? registry.getAgentByAlias('default');
+    if (defaultAgent?.config.type === 'claude') {
+      return [await buildRegisteredAgentStatus(defaultAgent)];
+    }
+    return [buildDisconnectedAgentStatus(getDefaultClaudeConfig())];
   }
 
   const registeredById = new Map(registry.getAllAgents().map(agent => [agent.config.id, agent]));
@@ -109,10 +126,29 @@ async function getAgentStatuses(): Promise<AgentStatus[]> {
     .map(async (config) => {
       const registeredAgent = registeredById.get(config.id) ?? registeredByAlias.get(config.alias);
       if (!registeredAgent) {
-        return buildRegisteredAgentStatus(createStatusAgent(config));
+        return buildConfiguredAgentStatus(config);
       }
       return buildRegisteredAgentStatus(registeredAgent);
     }));
+}
+
+function getDefaultClaudeConfig(): AgentConfig {
+  return {
+    id: 'default-claude-agent',
+    type: 'claude',
+    alias: 'default',
+    enabled: true,
+    dockerImage: process.env.CLAUDE_DOCKER_IMAGE || 'propr/agent-claude:latest',
+    configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
+    supportedModels: [
+      'claude-opus-4-6',
+      'claude-sonnet-4-6',
+      'claude-opus-4-5-20251101',
+      'claude-sonnet-4-5-20250929',
+      'claude-haiku-4-5-20251001'
+    ],
+    defaultModel: process.env.CLAUDE_MODEL || undefined
+  };
 }
 
 function createStatusAgent(config: AgentConfig): Agent {
@@ -127,6 +163,15 @@ function createStatusAgent(config: AgentConfig): Agent {
       return new VibeAgent(config);
     default:
       throw new Error(`Unknown agent type: ${config.type}`);
+  }
+}
+
+async function buildConfiguredAgentStatus(config: AgentConfig): Promise<AgentStatus> {
+  try {
+    return await buildRegisteredAgentStatus(createStatusAgent(config));
+  } catch (error) {
+    console.error('Error checking configured agent status:', error);
+    return buildDisconnectedAgentStatus(config);
   }
 }
 
@@ -145,6 +190,15 @@ async function buildRegisteredAgentStatus(agent: Agent): Promise<AgentStatus> {
   };
 }
 
+function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
+  return {
+    id: config.id,
+    type: config.type,
+    alias: config.alias,
+    status: 'disconnected'
+  };
+}
+
 async function getIndexingStatus(): Promise<ServiceStatus> {
   try {
     const indexingQueue = await getIndexingQueue();
@@ -156,29 +210,4 @@ async function getIndexingStatus(): Promise<ServiceStatus> {
   } catch {
     return 'disconnected';
   }
-}
-
-async function checkClaudeStatus(redisClient: RedisClientType): Promise<string> {
-  try {
-    const recentActivity = await redisClient.lRange('system:activity:log', 0, 20);
-    const oneHourAgo = Date.now() - (60 * 60 * 1000);
-    
-    for (const activityStr of recentActivity) {
-      try {
-        const activity = JSON.parse(activityStr) as { type?: string; status?: string; id?: string; timestamp?: string };
-        const isClaudeActivity = activity.type === 'issue_processed' && 
-            activity.status === 'success' &&
-            activity.id && activity.id.includes('claude-');
-        const isRecent = new Date(activity.timestamp || '').getTime() > oneHourAgo;
-        if (isClaudeActivity && isRecent) {
-          return 'connected';
-        }
-      } catch {
-        continue;
-      }
-    }
-  } catch (err) {
-    console.error('Error checking Claude status:', err);
-  }
-  return 'disconnected';
 }

@@ -59,16 +59,16 @@ const SystemStatus: React.FC = () => {
       case 'authenticated':
       case 'ready':
       case 'active':
-      case 'queued':
+      case 'idle':
         return '#10B981'; // emerald-500 for success states
+      case 'queued':
+        return '#F59E0B'; // amber-500 for pending work
       case 'stopped':
       case 'disconnected':
       case 'failed':
       case 'error':
       case 'unavailable':
         return '#ef4444'; // red-500 for failure states
-      case 'idle':
-        return '#F59E0B'; // amber-500 for warning states
       default:
         return '#64748B'; // slate-500
     }

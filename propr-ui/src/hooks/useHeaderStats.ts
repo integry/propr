@@ -443,7 +443,8 @@ export function useHeaderStats(): HeaderStats {
 
       // 4. Process system health
       const workersStatus = statusResponse.workers.length > 0 ? 'Running' : 'Stopped';
-      const agentsHealthy = statusResponse.agents.every(agent => agent.status === 'Ready');
+      const agentsHealthy = statusResponse.agents.length > 0 &&
+        statusResponse.agents.every(agent => agent.status === 'Ready');
       const health: SystemHealth = {
         daemon: statusResponse.daemon,
         workers: workersStatus,
