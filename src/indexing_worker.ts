@@ -179,7 +179,7 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
 
     // Final check right before queueing to prevent race conditions
     // (the earlier check may be stale due to slow clone operations)
-    const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
+    const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
     const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
         j.data.repository === repoName && (j.data.baseBranch || 'HEAD') === branch
     );
@@ -235,7 +235,7 @@ async function processRepositoryForIndexing(
     }
 
     // Check if job already queued before cloning to save bandwidth
-    const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
+    const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
     const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
         j.data.repository === repoName && (j.data.baseBranch || 'HEAD') === branch
     );

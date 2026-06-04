@@ -32,7 +32,7 @@ interface QueueResummarizationForRepoOptions {
 export async function queueResummarizationForAllRepos(): Promise<number> {
   const monitoredRepos = getEnabledResummarizationTargets(await configManager.loadMonitoredReposRaw());
   const queue = await getIndexingQueue();
-  const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
+  const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
   const queuedRepoBranches = new Set(
     existingJobs.map((job: { data: IndexingJobData }) =>
       getRepoBranchKey(job.data.repository, job.data.baseBranch)
@@ -70,7 +70,7 @@ async function queueResummarizationForRepo({
   const repoBranchKey = getRepoBranchKey(repoFullName, baseBranch);
   const alreadyQueued = queuedRepoBranches
     ? queuedRepoBranches.has(repoBranchKey)
-    : (await queue.getJobs(['waiting', 'active', 'delayed'])).some((j: { data: IndexingJobData }) =>
+    : (await queue.getJobs(['waiting', 'active', 'delayed', 'prioritized'])).some((j: { data: IndexingJobData }) =>
       getRepoBranchKey(j.data.repository, j.data.baseBranch) === repoBranchKey
     );
   if (alreadyQueued) {
@@ -177,7 +177,7 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   }
 
   const queue = await getIndexingQueue();
-  const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed']);
+  const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
   const effectiveBranch = baseBranch || 'HEAD';
   const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
     j.data.repository === repository && (j.data.baseBranch || 'HEAD') === effectiveBranch
@@ -215,7 +215,7 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
 export async function stopIndexingJob(repository: string, branch?: string): Promise<StopIndexingResult> {
   try {
     const queue = await getIndexingQueue();
-    const jobs = await queue.getJobs(['active', 'waiting', 'delayed']);
+    const jobs = await queue.getJobs(['active', 'waiting', 'delayed', 'prioritized']);
     const matchingJobs = jobs.filter((j: { data: IndexingJobData }) => {
       if (j.data.repository !== repository) return false;
       if (branch) {
