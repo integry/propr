@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getQueueStats, getTasks, getSystemStatus } from '../api/proprApi';
+import type { SystemAgentStatus } from '../api/proprTypes';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
 import { useSocket } from '../contexts/useSocket';
 
@@ -54,9 +55,12 @@ interface TaskGroup {
 
 interface SystemHealth {
   daemon: string;
+  workers: string;
   redis: string;
   githubAuth: string;
   claudeAuth: string;
+  indexing: string;
+  agents: SystemAgentStatus[];
   isHealthy: boolean;
 }
 
@@ -159,9 +163,12 @@ export function useHeaderStats(): HeaderStats {
   const [reviewGroups, setReviewGroups] = useState<TaskGroup[]>([]);
   const [systemHealth, setSystemHealth] = useState<SystemHealth>({
     daemon: 'Unknown',
+    workers: 'Unknown',
     redis: 'Unknown',
     githubAuth: 'Unknown',
     claudeAuth: 'Unknown',
+    indexing: 'Unknown',
+    agents: [],
     isHealthy: false,
   });
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -435,16 +442,23 @@ export function useHeaderStats(): HeaderStats {
       setReviewCount(reviewableGroups.length);
 
       // 4. Process system health
+      const workersStatus = statusResponse.workers.length > 0 ? 'Running' : 'Stopped';
+      const agentsHealthy = statusResponse.agents.every(agent => agent.status === 'Ready');
       const health: SystemHealth = {
         daemon: statusResponse.daemon,
+        workers: workersStatus,
         redis: statusResponse.redis,
         githubAuth: statusResponse.githubAuth,
         claudeAuth: statusResponse.claudeAuth,
+        indexing: statusResponse.indexing,
+        agents: statusResponse.agents,
         isHealthy:
           statusResponse.daemon === 'Running' &&
+          workersStatus === 'Running' &&
           statusResponse.redis === 'Connected' &&
           statusResponse.githubAuth === 'Authenticated' &&
-          statusResponse.claudeAuth === 'Authenticated',
+          ['Idle', 'Active', 'Queued', 'Connected'].includes(statusResponse.indexing) &&
+          agentsHealthy,
       };
       setSystemHealth(health);
 

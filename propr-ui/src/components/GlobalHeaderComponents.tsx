@@ -279,8 +279,30 @@ export const TasksButton: React.FC<{ taskGroups: TaskGroup[]; onDismissTask: (ta
 export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] }> = ({ systemHealth }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
-  const getStatusColor = (status?: string): string => { if (!status) return 'bg-gray-400'; const lower = status.toLowerCase(); return (lower === 'running' || lower === 'connected' || lower === 'authenticated') ? 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]'; };
-  const getOverallHealthColor = (): string => { if (systemHealth.isHealthy) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]'; const statuses = [systemHealth.daemon, systemHealth.redis, systemHealth.githubAuth]; const anyDown = statuses.some(s => !['running', 'connected', 'authenticated'].includes(s?.toLowerCase() || '')); if (anyDown) return systemHealth.daemon?.toLowerCase() !== 'running' ? 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]' : 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]'; return 'bg-gray-400'; };
+  const getStatusColor = (status?: string): string => {
+    if (!status) return 'bg-gray-400';
+    const lower = status.toLowerCase();
+    if (['running', 'connected', 'authenticated', 'ready', 'idle', 'active'].includes(lower)) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]';
+    if (lower === 'queued') return 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
+    return 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]';
+  };
+  const getOverallHealthColor = (): string => {
+    if (systemHealth.isHealthy) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]';
+    const coreStatuses = [systemHealth.daemon, systemHealth.workers, systemHealth.redis, systemHealth.githubAuth, systemHealth.indexing];
+    const criticalDown = coreStatuses.some(s => ['stopped', 'disconnected', 'failed', 'unavailable'].includes(s?.toLowerCase() || ''));
+    return criticalDown ? 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]' : 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
+  };
+  const formatAgentLabel = (agent: HeaderStats['systemHealth']['agents'][number]): string => {
+    const alias = agent.alias === 'default' ? '' : ` (${agent.alias})`;
+    return `${agent.type.charAt(0).toUpperCase()}${agent.type.slice(1)}${alias}`;
+  };
+  const renderStatusRow = (label: string, status?: string) => (
+    <div className="flex items-center gap-2 text-sm text-gray-700">
+      <span className={`w-2 h-2 rounded-full ${getStatusColor(status)}`} />
+      <span>{label}:</span>
+      <span className="ml-auto font-medium">{status || 'Unknown'}</span>
+    </div>
+  );
 
   return (
     <div
@@ -300,7 +322,7 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 min-w-[200px] z-[100]">
+        <div className="absolute right-0 top-full bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 min-w-[240px] z-[100]">
           {/* Header section matching other dropdowns */}
           <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
@@ -309,26 +331,16 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
           </div>
           {/* Content */}
           <div className="px-4 py-3 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-gray-700">
-              <span className={`w-2 h-2 rounded-full ${getStatusColor(systemHealth.daemon)}`} />
-              <span>Daemon:</span>
-              <span className="ml-auto font-medium">{systemHealth.daemon || 'Unknown'}</span>
-            </div>
-            <div className="flex items-center gap-2 text-sm text-gray-700">
-              <span className={`w-2 h-2 rounded-full ${getStatusColor(systemHealth.redis)}`} />
-              <span>Redis:</span>
-              <span className="ml-auto font-medium">{systemHealth.redis || 'Unknown'}</span>
-            </div>
-            <div className="flex items-center gap-2 text-sm text-gray-700">
-              <span className={`w-2 h-2 rounded-full ${getStatusColor(systemHealth.githubAuth)}`} />
-              <span>GitHub:</span>
-              <span className="ml-auto font-medium">{systemHealth.githubAuth || 'Unknown'}</span>
-            </div>
-            <div className="flex items-center gap-2 text-sm text-gray-700">
-              <span className={`w-2 h-2 rounded-full ${getStatusColor(systemHealth.claudeAuth)}`} />
-              <span>Claude:</span>
-              <span className="ml-auto font-medium">{systemHealth.claudeAuth || 'Unknown'}</span>
-            </div>
+            {renderStatusRow('Daemon', systemHealth.daemon)}
+            {renderStatusRow('Workers', systemHealth.workers)}
+            {renderStatusRow('Redis', systemHealth.redis)}
+            {renderStatusRow('GitHub', systemHealth.githubAuth)}
+            {renderStatusRow('Indexing', systemHealth.indexing)}
+            {systemHealth.agents.map(agent => (
+              <React.Fragment key={agent.id}>
+                {renderStatusRow(formatAgentLabel(agent), agent.status)}
+              </React.Fragment>
+            ))}
           </div>
         </div>
       )}

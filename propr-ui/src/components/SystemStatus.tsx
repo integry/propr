@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getSystemStatus } from '../api/proprApi';
+import type { SystemAgentStatus } from '../api/proprTypes';
 import { useSocket } from '../contexts/useSocket';
 
 interface Worker {
@@ -13,6 +14,8 @@ interface SystemStatusData {
   redis: string;
   githubAuth: string;
   claudeAuth: string;
+  indexing: string;
+  agents: SystemAgentStatus[];
 }
 
 const SystemStatus: React.FC = () => {
@@ -54,12 +57,15 @@ const SystemStatus: React.FC = () => {
       case 'running':
       case 'connected':
       case 'authenticated':
+      case 'ready':
       case 'active':
+      case 'queued':
         return '#10B981'; // emerald-500 for success states
       case 'stopped':
       case 'disconnected':
       case 'failed':
       case 'error':
+      case 'unavailable':
         return '#ef4444'; // red-500 for failure states
       case 'idle':
         return '#F59E0B'; // amber-500 for warning states
@@ -75,40 +81,39 @@ const SystemStatus: React.FC = () => {
     return `${activeCount}/${totalCount} active`;
   };
 
+  const formatAgentLabel = (agent: SystemAgentStatus): string => {
+    const alias = agent.alias === 'default' ? '' : ` (${agent.alias})`;
+    return `${agent.type.charAt(0).toUpperCase()}${agent.type.slice(1)}${alias}`;
+  };
+
+  const renderStatusRow = (label: string, value?: string, isLast = false) => (
+    <div className={`flex justify-between items-center py-2 ${isLast ? '' : 'border-b border-slate-200'}`}>
+      <span className="font-medium text-slate-600">{label}:</span>
+      <span className="font-semibold" style={{ color: getStatusColor(value) }}>
+        {value || 'Unknown'}
+      </span>
+    </div>
+  );
+
   return (
     <div className="min-w-[300px]">
       <h3 className="section-header mb-6">System Status</h3>
       <div className="flex flex-col gap-3 dashboard-card">
-        <div className="flex justify-between items-center py-2 border-b border-slate-200">
-          <span className="font-medium text-slate-600">Daemon:</span>
-          <span className="font-semibold" style={{ color: getStatusColor(status?.daemon) }}>
-            {status?.daemon || 'Unknown'}
-          </span>
-        </div>
+        {renderStatusRow('Daemon', status?.daemon)}
         <div className="flex justify-between items-center py-2 border-b border-slate-200">
           <span className="font-medium text-slate-600">Workers:</span>
           <span className="font-semibold text-slate-700">
             {getWorkerStatus()}
           </span>
         </div>
-        <div className="flex justify-between items-center py-2 border-b border-slate-200">
-          <span className="font-medium text-slate-600">Redis:</span>
-          <span className="font-semibold" style={{ color: getStatusColor(status?.redis) }}>
-            {status?.redis || 'Unknown'}
-          </span>
-        </div>
-        <div className="flex justify-between items-center py-2 border-b border-slate-200">
-          <span className="font-medium text-slate-600">GitHub Auth:</span>
-          <span className="font-semibold" style={{ color: getStatusColor(status?.githubAuth) }}>
-            {status?.githubAuth || 'Unknown'}
-          </span>
-        </div>
-        <div className="flex justify-between items-center py-2">
-          <span className="font-medium text-slate-600">Claude Auth:</span>
-          <span className="font-semibold" style={{ color: getStatusColor(status?.claudeAuth) }}>
-            {status?.claudeAuth || 'Unknown'}
-          </span>
-        </div>
+        {renderStatusRow('Redis', status?.redis)}
+        {renderStatusRow('GitHub Auth', status?.githubAuth)}
+        {renderStatusRow('Indexing', status?.indexing, (status?.agents.length || 0) === 0)}
+        {status?.agents.map((agent, index) => renderStatusRow(
+          formatAgentLabel(agent),
+          agent.status,
+          index === status.agents.length - 1
+        ))}
       </div>
     </div>
   );
