@@ -88,7 +88,11 @@ const EXCLUDED_PATHS = [
   '.cache/',
   'target/',
   'bin/',
-  'obj/'
+  'obj/',
+  'screenshots/',
+  'uploads/',
+  'release-research/competitors/browser/',
+  'release-research/competitors/raw/'
 ];
 
 /**

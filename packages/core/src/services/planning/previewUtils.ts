@@ -5,7 +5,7 @@
 import crypto from 'crypto';
 import fs from 'fs-extra';
 import path from 'path';
-import { ensureImageFitsContext, type Attachment } from '../attachmentService.js';
+import { loadImageBufferForContext, type Attachment } from '../attachmentService.js';
 import type {
   TaskDraftConfig,
   ContextCache,
@@ -78,8 +78,7 @@ export async function loadImagesFromAttachments(
         const absolutePath = path.isAbsolute(att.storedPath)
           ? att.storedPath
           : path.join(process.cwd(), att.storedPath);
-        await ensureImageFitsContext(absolutePath, correlatedLogger);
-        const data = await fs.readFile(absolutePath);
+        const { buffer: data } = await loadImageBufferForContext(absolutePath, correlatedLogger);
         const base64Data = data.toString('base64');
         base64Images.push({
           name: att.originalName || path.basename(absolutePath),

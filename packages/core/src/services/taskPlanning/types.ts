@@ -16,6 +16,10 @@ export interface LoadedImages {
   totalTokens: number;
 }
 
+export interface LoadImageAttachmentsOptions {
+  maxImageBytes?: number;
+}
+
 /** Chat message structure for seeding refinement chat history */
 export interface ChatHistoryMessage {
   id: string;

@@ -36,6 +36,18 @@ const DEFAULT_CONTEXT_MODEL = 'haiku';
 /** Default model for plan generation (high capability) */
 const DEFAULT_GENERATION_MODEL = 'opus';
 
+const MAX_ATTACHMENT_PERCENT = 0.25;
+const BUDGET_SAFETY_FACTOR = 0.85;
+
+function calculateMaxImageBytesForPlanning(tokenLimit: number, imageCount: number): number | undefined {
+  if (imageCount <= 0) {
+    return undefined;
+  }
+  const attachmentBudgetTokens = Math.floor(tokenLimit * BUDGET_SAFETY_FACTOR * MAX_ATTACHMENT_PERCENT);
+  const perImageTokens = Math.max(1, Math.floor(attachmentBudgetTokens / imageCount));
+  return Math.floor((perImageTokens * 3) / 1.1);
+}
+
 export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> {
   const { draftId, worktreePath, githubToken, correlationId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -52,19 +64,22 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   if (!draft) throw new Error(`Draft not found: ${draftId}`);
   if (!draft.initial_prompt) throw new Error('Draft has no initial prompt');
 
-  // Parse and load attachments - use actual base64 size for accurate token count
-  const attachments = parseAttachments(draft.attachments);
-  const { images: base64Images, totalTokens: imageTokens } = await loadImageAttachmentsAsBase64(attachments, correlatedLogger);
-  const textAttachmentTokens = attachments.filter(a => a.type === 'text').reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
-  const attachmentTokens = imageTokens + textAttachmentTokens;
-  correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length, imageTokens, textAttachmentTokens, attachmentTokens }, 'Loaded attachments from draft');
-
   // Parse context_config - generationModel from draft config takes priority over global setting
   const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
   const config = parseContextConfig(parsedContextConfig, defaultGenerationModel);
   // Use the effective generation model: draft config > global setting
   const generationModel = config.generationModel || defaultGenerationModel;
   correlatedLogger.info({ draftId, granularity: config.granularity, contextLevel: config.contextLevel, tokenLimit: config.tokenLimit, rawContextLevel: parsedContextConfig?.contextLevel, generationModel, draftGenerationModel: config.generationModel }, 'Parsed context config for plan generation');
+
+  // Parse and load attachments after context config so images can be sized for the selected token budget.
+  const attachments = parseAttachments(draft.attachments);
+  const imageAttachmentCount = attachments.filter(a => a.type === 'image').length;
+  const maxImageBytes = calculateMaxImageBytesForPlanning(config.tokenLimit, imageAttachmentCount);
+  const { images: base64Images, totalTokens: imageTokens } = await loadImageAttachmentsAsBase64(attachments, correlatedLogger, { maxImageBytes });
+  const textAttachmentTokens = attachments.filter(a => a.type === 'text').reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
+  const attachmentTokens = imageTokens + textAttachmentTokens;
+  correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length, maxImageBytes, imageTokens, textAttachmentTokens, attachmentTokens }, 'Loaded attachments from draft');
+
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
   const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel });

@@ -17,7 +17,7 @@ const HEAD_CHARS = 5000;
 const TAIL_CHARS = 20000;
 const MAX_IMAGE_DIMENSION = 1024;
 const IMAGE_QUALITY = 80; // WebP quality (0-100)
-const DEFAULT_MAX_OPTIMIZED_IMAGE_BYTES = 96 * 1024;
+const DEFAULT_MAX_OPTIMIZED_IMAGE_BYTES = 512 * 1024;
 const IMAGE_OPTIMIZATION_STEPS = [
   { dimension: MAX_IMAGE_DIMENSION, quality: IMAGE_QUALITY },
   { dimension: 768, quality: 75 },
@@ -40,7 +40,10 @@ function calculateImageTokenEstimate(fileSizeBytes: number): number {
   return Math.ceil(tokenEstimate * 1.1); // 10% buffer for XML overhead
 }
 
-function getMaxOptimizedImageBytes(): number {
+function getMaxOptimizedImageBytes(maxBytes?: number): number {
+  if (maxBytes && Number.isFinite(maxBytes) && maxBytes > 0) {
+    return Math.floor(maxBytes);
+  }
   const configured = Number.parseInt(
     process.env.ATTACHMENT_MAX_OPTIMIZED_IMAGE_BYTES || String(DEFAULT_MAX_OPTIMIZED_IMAGE_BYTES),
     10
@@ -51,9 +54,10 @@ function getMaxOptimizedImageBytes(): number {
 async function optimizeImageForContext(
   input: string | Buffer,
   finalPath: string,
-  logger?: ImageOptimizationLogger
+  logger?: ImageOptimizationLogger,
+  maxBytesOverride?: number
 ): Promise<{ size: number; dimension: number; quality: number; withinLimit: boolean }> {
-  const maxBytes = getMaxOptimizedImageBytes();
+  const maxBytes = getMaxOptimizedImageBytes(maxBytesOverride);
   let lastResult: { size: number; dimension: number; quality: number; withinLimit: boolean } | null = null;
 
   for (const step of IMAGE_OPTIMIZATION_STEPS) {
@@ -87,16 +91,17 @@ async function optimizeImageForContext(
 
 export async function ensureImageFitsContext(
   imagePath: string,
-  logger?: ImageOptimizationLogger
+  logger?: ImageOptimizationLogger,
+  maxBytes?: number
 ): Promise<{ size: number; optimized: boolean }> {
-  const maxBytes = getMaxOptimizedImageBytes();
+  const effectiveMaxBytes = getMaxOptimizedImageBytes(maxBytes);
   const stats = await fs.stat(imagePath);
-  if (stats.size <= maxBytes) {
+  if (stats.size <= effectiveMaxBytes) {
     return { size: stats.size, optimized: false };
   }
 
   const tempPath = `${imagePath}.optimized-${uuidv4()}.webp`;
-  const optimization = await optimizeImageForContext(imagePath, tempPath, logger);
+  const optimization = await optimizeImageForContext(imagePath, tempPath, logger, effectiveMaxBytes);
   await fs.move(tempPath, imagePath, { overwrite: true });
   logger?.info?.({
     path: imagePath,
@@ -107,6 +112,34 @@ export async function ensureImageFitsContext(
   }, 'Downsized stored image attachment to fit context');
 
   return { size: optimization.size, optimized: true };
+}
+
+export async function loadImageBufferForContext(
+  imagePath: string,
+  logger?: ImageOptimizationLogger,
+  maxBytes?: number
+): Promise<{ buffer: Buffer; optimized: boolean; size: number }> {
+  const effectiveMaxBytes = getMaxOptimizedImageBytes(maxBytes);
+  const stats = await fs.stat(imagePath);
+  if (stats.size <= effectiveMaxBytes) {
+    return { buffer: await fs.readFile(imagePath), optimized: false, size: stats.size };
+  }
+
+  const tempPath = `${imagePath}.context-${uuidv4()}.webp`;
+  try {
+    const optimization = await optimizeImageForContext(imagePath, tempPath, logger, effectiveMaxBytes);
+    const buffer = await fs.readFile(tempPath);
+    logger?.info?.({
+      path: imagePath,
+      originalSize: stats.size,
+      optimizedSize: optimization.size,
+      dimension: optimization.dimension,
+      quality: optimization.quality
+    }, 'Created downsized image attachment for context');
+    return { buffer, optimized: true, size: optimization.size };
+  } finally {
+    await fs.remove(tempPath).catch(() => undefined);
+  }
 }
 
 const ALLOWED_TEXT_MIMETYPES = [

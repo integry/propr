@@ -40,7 +40,11 @@ const EXCLUDED_PATHS = [
     '.cache/',
     'target/',
     'bin/',
-    'obj/'
+    'obj/',
+    'screenshots/',
+    'uploads/',
+    'release-research/competitors/browser/',
+    'release-research/competitors/raw/'
 ];
 
 function shouldProcessFile(filePath: string): boolean {
@@ -170,6 +174,10 @@ describe('Summary Miner - shouldProcessFile', () => {
         assert.ok(!shouldProcessFile('.git/HEAD'));
         assert.ok(!shouldProcessFile('__pycache__/module.py'));
         assert.ok(!shouldProcessFile('build/output.js'));
+        assert.ok(!shouldProcessFile('screenshots/dashboard.png'));
+        assert.ok(!shouldProcessFile('uploads/pasted-1776590504037-0.png'));
+        assert.ok(!shouldProcessFile('release-research/competitors/browser/2026-05-29/warp/01-warp-dev.html'));
+        assert.ok(!shouldProcessFile('release-research/competitors/raw/2026-05-26/aider/01.txt'));
     });
 
     test('accepts files in non-excluded nested directories', () => {

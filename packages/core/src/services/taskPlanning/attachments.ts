@@ -4,9 +4,9 @@
 
 import fs from 'fs-extra';
 import path from 'path';
-import { ensureImageFitsContext, type Attachment } from '../attachmentService.js';
+import { loadImageBufferForContext, type Attachment } from '../attachmentService.js';
 import type { MinimalLogger, Base64Image, TaskDraftConfig } from '../planning/index.js';
-import type { LoadedImages } from './types.js';
+import type { LoadedImages, LoadImageAttachmentsOptions } from './types.js';
 
 /**
  * Parse attachments from draft (stored as JSON string in SQLite)
@@ -40,7 +40,8 @@ export function calculateBase64Tokens(base64Length: number): number {
  */
 export async function loadImageAttachmentsAsBase64(
   attachments: Attachment[],
-  correlatedLogger: MinimalLogger
+  correlatedLogger: MinimalLogger,
+  options: LoadImageAttachmentsOptions = {}
 ): Promise<LoadedImages> {
   const base64Images: Base64Image[] = [];
   const imageAttachments = attachments.filter(a => a.type === 'image');
@@ -51,8 +52,7 @@ export async function loadImageAttachmentsAsBase64(
       const absolutePath = path.isAbsolute(img.storedPath)
         ? img.storedPath
         : path.join(process.cwd(), img.storedPath);
-      await ensureImageFitsContext(absolutePath, correlatedLogger);
-      const imageData = await fs.readFile(absolutePath);
+      const { buffer: imageData, optimized } = await loadImageBufferForContext(absolutePath, correlatedLogger, options.maxImageBytes);
       const base64Data = imageData.toString('base64');
       const imageTokens = calculateBase64Tokens(base64Data.length);
       totalTokens += imageTokens;
@@ -62,7 +62,7 @@ export async function loadImageAttachmentsAsBase64(
         mimeType: img.mimeType,
         base64Data,
       });
-      correlatedLogger.info({ imageName: img.originalName, fileSize: imageData.length, base64Length: base64Data.length, tokens: imageTokens }, 'Loaded image attachment');
+      correlatedLogger.info({ imageName: img.originalName, fileSize: imageData.length, base64Length: base64Data.length, tokens: imageTokens, optimized }, 'Loaded image attachment');
     } catch (error) {
       correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image attachment');
     }
