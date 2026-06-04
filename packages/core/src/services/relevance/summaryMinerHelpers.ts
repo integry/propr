@@ -46,7 +46,8 @@ interface SaveBatchSummariesOptions {
 
 // --- Constants ---
 
-const BATCH_TOKEN_RATIO = 0.8; // Use 80% of max tokens for batch
+const BATCH_TOKEN_RATIO = 0.8; // Upper bound based on model context size
+const DEFAULT_MAX_BATCH_TOKENS = 100_000; // Keep prompts well below context limits so agents reliably return JSON
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
 const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100KB max file size
 
@@ -102,9 +103,10 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const maxBatchTokens = Math.floor(maxTokens * BATCH_TOKEN_RATIO);
+  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(DEFAULT_MAX_BATCH_TOKENS), 10);
+  const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
 
-  log.info({ maxBatchTokens, model: modelId }, 'Calculated batch token budget');
+  log.info({ maxBatchTokens, maxBatchTokensCap, model: modelId }, 'Calculated batch token budget');
 
   let currentBatch: BatchFile[] = [];
   let currentTokens = 0;
