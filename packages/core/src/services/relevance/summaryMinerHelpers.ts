@@ -263,7 +263,7 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   let errorMessage: string | undefined;
 
   try {
-    const analysisResult = await agent.analyze(prompt, { responseFormat: 'json' });
+    const analysisResult = await agent.analyze(prompt, { model: modelUsed, responseFormat: 'json' });
     const response = analysisResult.response;
     const summaries = parseBatchResponse(response);
 

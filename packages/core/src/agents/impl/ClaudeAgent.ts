@@ -40,6 +40,41 @@ const DEFAULT_CLAUDE_MAX_TURNS = 1000;
 /** Default timeout for Claude execution in milliseconds */
 const DEFAULT_CLAUDE_TIMEOUT_MS = 300000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
+const GENERIC_CLAUDE_RESULT_TEXTS = new Set(['task completed.', 'task completed']);
+
+function getTextFromClaudeContent(content: unknown): string {
+    if (!Array.isArray(content)) return '';
+    return content
+        .map(block => {
+            if (block && typeof block === 'object' && 'type' in block && (block as { type?: unknown }).type === 'text') {
+                const text = (block as { text?: unknown }).text;
+                return typeof text === 'string' ? text : '';
+            }
+            return '';
+        })
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+}
+
+function getLastAssistantText(conversationLog: Array<{ type?: string; message?: Record<string, unknown> }>): string {
+    for (let index = conversationLog.length - 1; index >= 0; index--) {
+        const entry = conversationLog[index];
+        if (entry?.type !== 'assistant') continue;
+        const text = getTextFromClaudeContent(entry.message?.content);
+        if (text) return text;
+    }
+    return '';
+}
+
+function getClaudeAnalysisText(claudeOutput: ReturnType<typeof parseStreamJsonOutput>): string {
+    const resultText = (claudeOutput.finalResult?.result || '').trim();
+    const assistantText = getLastAssistantText(claudeOutput.conversationLog);
+    if (resultText && !GENERIC_CLAUDE_RESULT_TEXTS.has(resultText.toLowerCase())) {
+        return resultText;
+    }
+    return assistantText || resultText;
+}
 
 /**
  * Parameters for persisting execution logs.
@@ -328,7 +363,7 @@ export class ClaudeAgent implements Agent {
             );
 
             if (claudeOutput.finalResult?.result || claudeOutput.success) {
-                const analysisText = (claudeOutput.finalResult?.result || '').trim();
+                const analysisText = getClaudeAnalysisText(claudeOutput);
                 logger.info({
                     agentAlias: this.config.alias,
                     responseLength: analysisText.length,
