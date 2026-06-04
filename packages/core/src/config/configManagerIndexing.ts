@@ -1,6 +1,8 @@
 import { db } from '../db/connection.js';
 import { getIndexingProgress } from '../services/relevance/indexingCancellation.js';
 import logger from '../utils/logger.js';
+import type { RepoToMonitor } from './configManager.js';
+import type { Knex } from 'knex';
 
 export interface RepositoryIndexingProgress {
     totalFiles: number;
@@ -22,6 +24,120 @@ export interface RepositoryIndexingStatus {
     last_indexed_commit_message: string | null;
     icon_path: string | null;
     progress?: RepositoryIndexingProgress;
+}
+
+export interface RepositoryIndexCleanupResult {
+    repositories: number;
+    file_summaries: number;
+    directory_summaries: number;
+}
+
+interface RepositoryIndexKey {
+    repository: string;
+    branch: string;
+}
+
+const DEFAULT_INDEX_BRANCH = 'HEAD';
+type IndexCleanupDbClient = Knex | Knex.Transaction;
+
+function normalizeIndexBranch(branch?: string): string {
+    return branch?.trim() || DEFAULT_INDEX_BRANCH;
+}
+
+function toRepositoryIndexKey(repo: Pick<RepoToMonitor, 'name' | 'baseBranch'>): RepositoryIndexKey {
+    return { repository: repo.name, branch: normalizeIndexBranch(repo.baseBranch) };
+}
+
+function serializeRepositoryIndexKey({ repository, branch }: RepositoryIndexKey): string {
+    return `${repository}\0${branch}`;
+}
+
+function escapeLikePattern(value: string): string {
+    return value.replace(/[\\%_]/g, match => `\\${match}`);
+}
+
+function whereRepositoryPathPrefix(query: Knex.QueryBuilder, repository: string) {
+    return query.whereRaw('?? LIKE ? ESCAPE ?', ['path', `${escapeLikePattern(repository)}/%`, '\\']);
+}
+
+function deleteFileSummaries(client: IndexCleanupDbClient, repository: string, branch?: string) {
+    const query = whereRepositoryPathPrefix(client('file_summaries'), repository);
+    if (branch) query.andWhere({ branch });
+    return query.delete();
+}
+
+function deleteDirectorySummaries(client: IndexCleanupDbClient, repository: string, branch?: string) {
+    const query = client('directory_summaries')
+        .where(function() {
+            whereRepositoryPathPrefix(this, repository).orWhere('path', repository);
+        });
+    if (branch) query.andWhere({ branch });
+    return query.delete();
+}
+
+function deleteRepositoryRows(client: IndexCleanupDbClient, repository: string, branch?: string) {
+    const query = client('repositories').where({ full_name: repository });
+    if (branch) query.andWhere({ branch });
+    return query.delete();
+}
+
+/**
+ * Clears persisted index data for repository entries that were removed from the
+ * monitored repository config.
+ */
+export async function clearRemovedRepositoryIndexData(
+    previousRepos: Pick<RepoToMonitor, 'name' | 'baseBranch'>[],
+    nextRepos: Pick<RepoToMonitor, 'name' | 'baseBranch'>[],
+    client: IndexCleanupDbClient = db
+): Promise<RepositoryIndexCleanupResult> {
+    const nextKeys = new Set(nextRepos.map(repo => serializeRepositoryIndexKey(toRepositoryIndexKey(repo))));
+    const nextRepositories = new Set(nextRepos.map(repo => repo.name));
+    const removedByRepository = new Map<string, Set<string>>();
+
+    for (const previousRepo of previousRepos) {
+        const key = toRepositoryIndexKey(previousRepo);
+        if (nextKeys.has(serializeRepositoryIndexKey(key))) continue;
+        const branches = removedByRepository.get(key.repository) ?? new Set<string>();
+        branches.add(key.branch);
+        removedByRepository.set(key.repository, branches);
+    }
+
+    const result: RepositoryIndexCleanupResult = {
+        repositories: 0,
+        file_summaries: 0,
+        directory_summaries: 0
+    };
+
+    if (removedByRepository.size === 0) {
+        return result;
+    }
+
+    for (const [repository, branches] of removedByRepository.entries()) {
+        if (!nextRepositories.has(repository)) {
+            result.file_summaries += await deleteFileSummaries(client, repository);
+            result.directory_summaries += await deleteDirectorySummaries(client, repository);
+            result.repositories += await deleteRepositoryRows(client, repository);
+            continue;
+        }
+
+        for (const branch of branches) {
+            result.file_summaries += await deleteFileSummaries(client, repository, branch);
+            result.directory_summaries += await deleteDirectorySummaries(client, repository, branch);
+            result.repositories += await deleteRepositoryRows(client, repository, branch);
+        }
+    }
+
+    if (result.repositories || result.file_summaries || result.directory_summaries) {
+        logger.info({
+            cleanup: result,
+            removed: Array.from(removedByRepository.entries()).map(([repository, branches]) => ({
+                repository,
+                branches: nextRepositories.has(repository) ? Array.from(branches) : 'all'
+            }))
+        }, 'Cleared index data for removed monitored repository entries');
+    }
+
+    return result;
 }
 
 /**
