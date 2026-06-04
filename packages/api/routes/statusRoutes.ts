@@ -1,14 +1,28 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
-import { AgentRegistry, ClaudeAgent, CodexAgent, GeminiAgent, VibeAgent, getIndexingQueue, loadAgents } from '@propr/core';
+import { AgentRegistry, getIndexingQueue as loadIndexingQueue, loadAgents as loadAgentConfigs } from '@propr/core';
 import type { Agent, AgentConfig } from '@propr/core';
 import path from 'node:path';
 import os from 'node:os';
 
 interface StatusRoutesDeps {
   redisClient: RedisClientType;
+  agentRegistry?: StatusAgentRegistry;
+  loadAgents?: () => Promise<AgentConfig[]>;
+  getIndexingQueue?: () => Promise<IndexingStatusQueue>;
+  agentStatusCacheTtlMs?: number;
+  agentHealthTimeoutMs?: number;
+  now?: () => number;
 }
+
+interface IndexingStatusQueue {
+  getJobCounts(...statuses: Array<'active' | 'waiting' | 'delayed' | 'failed'>): Promise<Record<string, number>>;
+}
+
+type StatusAgentRegistry = Pick<AgentRegistry, 'ensureInitialized' | 'getAllAgents' | 'getAgentById' | 'getAgentByAlias'> & {
+  createAgentFromConfig(config: AgentConfig): Agent;
+};
 
 type ServiceStatus = 'connected' | 'disconnected' | 'active' | 'queued' | 'idle' | 'failed' | 'unknown';
 
@@ -20,7 +34,16 @@ interface AgentStatus {
 }
 
 export function createStatusRoutes(deps: StatusRoutesDeps) {
-  const { redisClient } = deps;
+  const {
+    redisClient,
+    agentRegistry = AgentRegistry.getInstance() as StatusAgentRegistry,
+    loadAgents = loadAgentConfigs,
+    getIndexingQueue = loadIndexingQueue,
+    agentStatusCacheTtlMs = 5000,
+    agentHealthTimeoutMs = 1500,
+    now = Date.now
+  } = deps;
+  let agentStatusCache: { expiresAt: number; statuses: AgentStatus[] } | undefined;
 
   async function getStatus(req: Request, res: Response): Promise<void> {
     try {
@@ -77,12 +100,12 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
                                  process.env.GH_INSTALLATION_ID;
       status.githubAuth = githubAppConfigured ? 'connected' : 'disconnected';
 
-      const agents = await getAgentStatuses();
+      const agents = await getCachedAgentStatuses();
       status.agents = agents;
       status.claudeAuth = agents.some(agent => agent.type === 'claude' && agent.status === 'connected')
         ? 'connected'
         : 'disconnected';
-      status.indexing = await getIndexingStatus();
+      status.indexing = await getIndexingStatus(getIndexingQueue);
 
       res.json(status);
     } catch (error) {
@@ -92,9 +115,27 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
   }
 
   return { getStatus };
+
+  async function getCachedAgentStatuses(): Promise<AgentStatus[]> {
+    const currentTime = now();
+    if (agentStatusCache && agentStatusCache.expiresAt > currentTime) {
+      return agentStatusCache.statuses;
+    }
+
+    const statuses = await getAgentStatuses(loadAgents, agentRegistry, agentHealthTimeoutMs);
+    agentStatusCache = {
+      statuses,
+      expiresAt: currentTime + agentStatusCacheTtlMs
+    };
+    return statuses;
+  }
 }
 
-async function getAgentStatuses(): Promise<AgentStatus[]> {
+async function getAgentStatuses(
+  loadAgents: () => Promise<AgentConfig[]>,
+  registry: StatusAgentRegistry,
+  healthTimeoutMs: number
+): Promise<AgentStatus[]> {
   let configuredAgents: AgentConfig[];
   try {
     configuredAgents = await loadAgents();
@@ -103,7 +144,6 @@ async function getAgentStatuses(): Promise<AgentStatus[]> {
     return [];
   }
 
-  const registry = AgentRegistry.getInstance();
   try {
     await registry.ensureInitialized();
   } catch (error) {
@@ -113,7 +153,7 @@ async function getAgentStatuses(): Promise<AgentStatus[]> {
   if (configuredAgents.length === 0) {
     const defaultAgent = registry.getAgentById('default-claude-agent') ?? registry.getAgentByAlias('default');
     if (defaultAgent?.config.type === 'claude') {
-      return [await buildRegisteredAgentStatus(defaultAgent)];
+      return [await buildRegisteredAgentStatus(defaultAgent, healthTimeoutMs)];
     }
     return [buildDisconnectedAgentStatus(getDefaultClaudeConfig())];
   }
@@ -126,9 +166,9 @@ async function getAgentStatuses(): Promise<AgentStatus[]> {
     .map(async (config) => {
       const registeredAgent = registeredById.get(config.id) ?? registeredByAlias.get(config.alias);
       if (!registeredAgent) {
-        return buildConfiguredAgentStatus(config);
+        return buildConfiguredAgentStatus(config, registry, healthTimeoutMs);
       }
-      return buildRegisteredAgentStatus(registeredAgent);
+      return buildRegisteredAgentStatus(registeredAgent, healthTimeoutMs);
     }));
 }
 
@@ -151,34 +191,23 @@ function getDefaultClaudeConfig(): AgentConfig {
   };
 }
 
-function createStatusAgent(config: AgentConfig): Agent {
-  switch (config.type) {
-    case 'claude':
-      return new ClaudeAgent(config);
-    case 'codex':
-      return new CodexAgent(config);
-    case 'gemini':
-      return new GeminiAgent(config);
-    case 'vibe':
-      return new VibeAgent(config);
-    default:
-      throw new Error(`Unknown agent type: ${config.type}`);
-  }
-}
-
-async function buildConfiguredAgentStatus(config: AgentConfig): Promise<AgentStatus> {
+async function buildConfiguredAgentStatus(
+  config: AgentConfig,
+  registry: StatusAgentRegistry,
+  healthTimeoutMs: number
+): Promise<AgentStatus> {
   try {
-    return await buildRegisteredAgentStatus(createStatusAgent(config));
+    return await buildRegisteredAgentStatus(registry.createAgentFromConfig(config), healthTimeoutMs);
   } catch (error) {
     console.error('Error checking configured agent status:', error);
     return buildDisconnectedAgentStatus(config);
   }
 }
 
-async function buildRegisteredAgentStatus(agent: Agent): Promise<AgentStatus> {
+async function buildRegisteredAgentStatus(agent: Agent, healthTimeoutMs: number): Promise<AgentStatus> {
   let healthy = false;
   try {
-    healthy = await agent.healthCheck();
+    healthy = await withTimeout(agent.healthCheck(), healthTimeoutMs, false);
   } catch {
     healthy = false;
   }
@@ -190,6 +219,20 @@ async function buildRegisteredAgentStatus(agent: Agent): Promise<AgentStatus> {
   };
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>(resolve => {
+        timeout = setTimeout(() => resolve(fallback), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
   return {
     id: config.id,
@@ -199,7 +242,7 @@ function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
   };
 }
 
-async function getIndexingStatus(): Promise<ServiceStatus> {
+async function getIndexingStatus(getIndexingQueue: () => Promise<IndexingStatusQueue>): Promise<ServiceStatus> {
   try {
     const indexingQueue = await getIndexingQueue();
     const counts = await indexingQueue.getJobCounts('active', 'waiting', 'delayed', 'failed');

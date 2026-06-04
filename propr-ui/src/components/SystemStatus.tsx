@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { getSystemStatus } from '../api/proprApi';
 import type { SystemAgentStatus } from '../api/proprTypes';
 import { useSocket } from '../contexts/useSocket';
+import { formatAgentLabel } from '../utils/agentStatus';
 
 interface Worker {
   id: number;
@@ -79,11 +80,6 @@ const SystemStatus: React.FC = () => {
     const activeCount = status.workers.filter((w: Worker) => w.status === 'active').length;
     const totalCount = status.workers.length;
     return `${activeCount}/${totalCount} active`;
-  };
-
-  const formatAgentLabel = (agent: SystemAgentStatus): string => {
-    const alias = agent.alias === 'default' ? '' : ` (${agent.alias})`;
-    return `${agent.type.charAt(0).toUpperCase()}${agent.type.slice(1)}${alias}`;
   };
 
   const renderStatusRow = (label: string, value?: string, isLast = false) => (

@@ -84,6 +84,8 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
         return 'Failed';
       case 'connected':
         return 'Connected';
+      case 'disconnected':
+        return 'Unavailable';
       default:
         return 'Unavailable';
     }

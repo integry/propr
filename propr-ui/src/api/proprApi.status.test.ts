@@ -59,4 +59,26 @@ describe('getSystemStatus', () => {
       claudeAuth: 'Authenticated',
     });
   });
+
+  it('maps disconnected indexing explicitly to unavailable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        daemon: 'running',
+        redis: 'connected',
+        workerCount: 1,
+        githubAuth: 'connected',
+        claudeAuth: 'connected',
+        indexing: 'disconnected',
+        agents: [],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    await expect(getSystemStatus()).resolves.toMatchObject({
+      indexing: 'Unavailable',
+      agents: [],
+    });
+  });
 });

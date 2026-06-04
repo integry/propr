@@ -35,4 +35,12 @@ describe('SystemHealth dropdown', () => {
     expect(screen.getByText('Gemini (gemini-prod):')).toBeInTheDocument();
     expect(screen.queryByText('Claude:')).not.toBeInTheDocument();
   });
+
+  it('marks the overall indicator red when an enabled dynamic agent fails', () => {
+    const { container } = render(<SystemHealth systemHealth={makeSystemHealth()} />);
+
+    const indicator = container.querySelector('button[aria-label="System Status"] span.bg-red-500');
+
+    expect(indicator).toBeInTheDocument();
+  });
 });

@@ -284,7 +284,7 @@ export class AgentRegistry {
      * Creates an agent instance from configuration.
      * This is the factory method that handles different agent types.
      */
-    private createAgentFromConfig(config: AgentConfig): Agent {
+    createAgentFromConfig(config: AgentConfig): Agent {
         switch (config.type) {
             case 'claude':
                 return new ClaudeAgent(config);

@@ -4,6 +4,7 @@ import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, Check
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
+import { formatAgentLabel } from '../utils/agentStatus';
 
 interface TaskGroup { key: string; repoOwner: string; repoName: string; prNumber?: number; issueNumber?: number; latestTask: { id: string; status: string; createdAt: string; title?: string; }; allTasks: unknown[]; }
 
@@ -289,12 +290,9 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
   const getOverallHealthColor = (): string => {
     if (systemHealth.isHealthy) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]';
     const coreStatuses = [systemHealth.daemon, systemHealth.workers, systemHealth.redis, systemHealth.githubAuth, systemHealth.indexing];
-    const criticalDown = coreStatuses.some(s => ['stopped', 'disconnected', 'failed', 'unavailable'].includes(s?.toLowerCase() || ''));
+    const agentStatuses = systemHealth.agents.map(agent => agent.status);
+    const criticalDown = [...coreStatuses, ...agentStatuses].some(s => ['stopped', 'disconnected', 'failed', 'unavailable'].includes(s?.toLowerCase() || ''));
     return criticalDown ? 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]' : 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
-  };
-  const formatAgentLabel = (agent: HeaderStats['systemHealth']['agents'][number]): string => {
-    const alias = agent.alias === 'default' ? '' : ` (${agent.alias})`;
-    return `${agent.type.charAt(0).toUpperCase()}${agent.type.slice(1)}${alias}`;
   };
   const renderStatusRow = (label: string, status?: string) => (
     <div className="flex items-center gap-2 text-sm text-gray-700">
