@@ -207,6 +207,7 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
         }
     );
 
+    await updateRepositoryStatus(repoName, 'indexing', branch);
     log.info({ repository: repoName, branch, reason, jobCorrelationId }, 'Queued repository for indexing');
 }
 
