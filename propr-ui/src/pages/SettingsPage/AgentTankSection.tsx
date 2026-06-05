@@ -78,8 +78,8 @@ const AgentTankSection: React.FC<AgentTankSectionProps> = ({
         </div>
 
         {/* Daemon URL */}
-        <div className={`grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4 items-start ${settings.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
-          <label className="block text-xs font-medium text-gray-600 pt-1.5" htmlFor="agent_tank_url">
+        <div className={`grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2 md:gap-4 items-start ${settings.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
+          <label className="block text-xs font-medium text-gray-600 md:pt-1.5" htmlFor="agent_tank_url">
             Daemon URL
           </label>
           <div>

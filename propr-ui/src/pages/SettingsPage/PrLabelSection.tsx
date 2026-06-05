@@ -20,8 +20,8 @@ const PrLabelSection: React.FC<PrLabelSectionProps> = ({
         Automatically added to all ProPR PRs. Used to monitor for follow-up comments.
       </p>
 
-      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4 items-start">
-        <label className="block text-xs font-medium text-gray-600 pt-1.5" htmlFor="pr_label">
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2 md:gap-4 items-start">
+        <label className="block text-xs font-medium text-gray-600 md:pt-1.5" htmlFor="pr_label">
           Label Name
         </label>
         <div>
