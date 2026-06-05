@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import os from 'node:os';
 import { AGENT_TYPES } from '@propr/shared';
 import {
     AGENT_DEFAULTS,
@@ -32,6 +33,56 @@ function createAntigravityConfig(overrides: Partial<AgentConfig> = {}): AgentCon
     };
 }
 
+const antigravityEnvKeys = ['ANTIGRAVITY_CONFIG_PATH', 'GEMINI_CONFIG_PATH'] as const;
+
+function withAntigravityEnv(env: Partial<Record<typeof antigravityEnvKeys[number], string>>, fn: () => void): void {
+    const previous = new Map<typeof antigravityEnvKeys[number], string | undefined>();
+    for (const key of antigravityEnvKeys) {
+        previous.set(key, process.env[key]);
+        delete process.env[key];
+    }
+    for (const [key, value] of Object.entries(env)) {
+        process.env[key as typeof antigravityEnvKeys[number]] = value;
+    }
+
+    try {
+        fn();
+    } finally {
+        for (const key of antigravityEnvKeys) {
+            const value = previous.get(key);
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+    }
+}
+
+function buildDockerArgs(agent: AntigravityAgent, params: {
+    worktreePath?: string;
+    githubToken?: string;
+    modelName?: string;
+    issueNumber?: number;
+    outputFormat?: 'stream-json' | 'text';
+    taskId?: string;
+} = {}): string[] {
+    return (agent as unknown as {
+        buildDockerArgs(params: {
+            worktreePath: string;
+            githubToken: string;
+            modelName?: string;
+            issueNumber: number;
+            outputFormat?: 'stream-json' | 'text';
+            taskId?: string;
+        }): string[];
+    }).buildDockerArgs({
+        worktreePath: params.worktreePath || '/tmp/workspace',
+        githubToken: params.githubToken || 'token',
+        modelName: params.modelName,
+        issueNumber: params.issueNumber ?? 123,
+        outputFormat: params.outputFormat,
+        taskId: params.taskId
+    });
+}
+
 test('Antigravity is the canonical selectable agent type', () => {
     assert.ok(AGENT_TYPES.includes('antigravity'));
     assert.equal(AGENT_TYPES.includes('gemini' as never), false);
@@ -52,6 +103,54 @@ test('AgentRegistry creates AntigravityAgent for antigravity configs', () => {
     const registry = AgentRegistry.getInstance();
     const agent = registry.createAgentFromConfig(createAntigravityConfig());
     assert.ok(agent instanceof AntigravityAgent);
+});
+
+test('Antigravity execution invokes agy with stream JSON output', () => {
+    withAntigravityEnv({}, () => {
+        const agent = new AntigravityAgent(createAntigravityConfig());
+        const args = buildDockerArgs(agent, { modelName: 'antigravity:antigravity-gemini-3-pro-preview' });
+        const imageIndex = args.indexOf('propr/agent-antigravity:latest');
+        const entrypointIndex = args.indexOf('/home/node/antigravity-entrypoint.sh');
+
+        assert.ok(imageIndex > -1);
+        assert.ok(entrypointIndex > imageIndex);
+        assert.equal(args[entrypointIndex + 1], 'agy');
+        assert.ok(args.includes('--output-format'));
+        assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json');
+        assert.ok(args.includes('-m'));
+        assert.equal(args[args.indexOf('-m') + 1], 'gemini-3-pro-preview');
+    });
+});
+
+test('Antigravity config path prefers ANTIGRAVITY_CONFIG_PATH over legacy GEMINI_CONFIG_PATH', () => {
+    withAntigravityEnv({
+        ANTIGRAVITY_CONFIG_PATH: '/tmp/antigravity-config',
+        GEMINI_CONFIG_PATH: '/tmp/gemini-config'
+    }, () => {
+        const agent = new AntigravityAgent(createAntigravityConfig({ configPath: '/tmp/stored-config' }));
+        const args = buildDockerArgs(agent);
+
+        assert.ok(args.includes('/tmp/antigravity-config:/home/node/.antigravity:rw'));
+        assert.equal(args.includes('/tmp/gemini-config:/home/node/.antigravity:rw'), false);
+    });
+});
+
+test('Antigravity config path falls back to legacy GEMINI_CONFIG_PATH temporarily', () => {
+    withAntigravityEnv({ GEMINI_CONFIG_PATH: '/tmp/gemini-config' }, () => {
+        const agent = new AntigravityAgent(createAntigravityConfig({ configPath: '/tmp/stored-config' }));
+        const args = buildDockerArgs(agent);
+
+        assert.ok(args.includes('/tmp/gemini-config:/home/node/.antigravity:rw'));
+    });
+});
+
+test('Antigravity config path uses stored config when no env override is set', () => {
+    withAntigravityEnv({}, () => {
+        const agent = new AntigravityAgent(createAntigravityConfig({ configPath: '~/.antigravity-test' }));
+        const args = buildDockerArgs(agent);
+
+        assert.ok(args.includes(`${os.homedir()}/.antigravity-test:/home/node/.antigravity:rw`));
+    });
 });
 
 test('Antigravity labels resolve to Antigravity models', async () => {
