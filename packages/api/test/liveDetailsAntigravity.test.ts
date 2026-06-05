@@ -13,3 +13,19 @@ test('stored output detection recognizes Antigravity stream JSON', () => {
 
   assert.equal(detectStoredOutputFormat(output), 'antigravity');
 });
+
+test('stored output detection keeps Codex message JSONL classified as Codex', () => {
+  const output = [
+    JSON.stringify({ type: 'message', role: 'assistant', content: 'Codex says hi' })
+  ].join('\n');
+
+  assert.equal(detectStoredOutputFormat(output), 'codex');
+});
+
+test('stored output detection keeps Codex result JSONL classified as Codex', () => {
+  const output = [
+    JSON.stringify({ type: 'result', result: 'Success', status: 'success' })
+  ].join('\n');
+
+  assert.equal(detectStoredOutputFormat(output), 'codex');
+});

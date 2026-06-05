@@ -50,10 +50,7 @@ function detectParsedStoredOutputFormat(jsonText: string): StoredOutputFormat {
 
 function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
   return parsed.type === 'init'
-    || parsed.type === 'tool_use'
-    || parsed.type === 'tool_result'
-    || parsed.type === 'result'
-    || (parsed.type === 'message' && typeof parsed.role === 'string');
+    || parsed.type === 'tool_result';
 }
 
 function isVibeTranscript(parsed: StoredExecutionOutputLine | StoredExecutionOutputLine[]): boolean {

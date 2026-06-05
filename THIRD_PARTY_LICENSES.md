@@ -33,6 +33,12 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/openai/codex
 
+## Antigravity CLI (installed in propr/agent-antigravity image)
+
+Installed from the official Antigravity CLI installer.
+Source: https://antigravity.google/cli/install.sh
+Provider: Google Antigravity.
+
 ## mistral-vibe (installed in propr/agent-vibe image)
 
 Licensed under the Apache License, Version 2.0.

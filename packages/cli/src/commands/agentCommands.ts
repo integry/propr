@@ -216,7 +216,7 @@ JSON File Format:
 Examples:
   $ propr agent add my-claude -t claude -m claude-sonnet-4-20250514
   $ propr agent add prod-agent -t claude -m claude-sonnet-4-20250514,claude-opus-4-20250514 -d claude-sonnet-4-20250514
-  $ propr agent add test-agent -t antigravity -m antigravity-gemini-2.5-pro --disabled
+  $ propr agent add test-agent -t antigravity -m antigravity-gemini-3-pro-preview --disabled
   $ propr agent add --file agent-config.json
   $ cat config.json | propr agent add --file -
 `)

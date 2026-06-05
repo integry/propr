@@ -44,6 +44,7 @@ Bundled third-party components
 
 4. Antigravity CLI
    Upstream:   https://antigravity.google/cli/install.sh
+   Provider:   Google Antigravity
    Installed via the official Antigravity CLI installer.
 
 5. GitHub CLI (gh)
