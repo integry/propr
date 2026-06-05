@@ -42,7 +42,7 @@ export class AntigravityAgent implements Agent {
 
     constructor(config: AgentConfig) {
         this.config = config;
-        this.timeoutMs = parseInt(process.env.ANTIGRAVITY_TIMEOUT_MS || process.env.GEMINI_TIMEOUT_MS || String(DEFAULT_ANTIGRAVITY_TIMEOUT_MS), 10);
+        this.timeoutMs = parseInt(process.env.ANTIGRAVITY_TIMEOUT_MS || String(DEFAULT_ANTIGRAVITY_TIMEOUT_MS), 10);
     }
 
     private getRuntimeName(): 'antigravity' {
@@ -310,7 +310,7 @@ export class AntigravityAgent implements Agent {
             this.config.dockerImage, this.getCliCommand(), '--yolo', '--skip-trust', '--output-format', outputFormat
         ];
         if (modelName) {
-            // Strip agent prefix if present (e.g., "gemini:gemini-3-flash-preview" -> "gemini-3-flash-preview")
+            // Strip agent prefix if present (e.g., "antigravity:antigravity-gemini-3-flash-preview" -> "antigravity-gemini-3-flash-preview")
             const unscopedModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
             const cleanModelName = runtimeName === 'antigravity' && unscopedModelName.startsWith('antigravity-')
                 ? unscopedModelName.slice('antigravity-'.length)

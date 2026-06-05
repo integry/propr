@@ -17,7 +17,7 @@ describe('getSystemStatus', () => {
         indexing: 'active',
         agents: [
           { id: 'codex-1', type: 'codex', alias: 'codex-prod', status: 'connected' },
-          { id: 'gemini-1', type: 'gemini', alias: 'gemini-prod', status: 'disconnected' },
+          { id: 'antigravity-1', type: 'antigravity', alias: 'antigravity-prod', status: 'disconnected' },
         ],
       }), {
         status: 200,
@@ -34,7 +34,7 @@ describe('getSystemStatus', () => {
       indexing: 'Active',
       agents: [
         { id: 'codex-1', type: 'codex', alias: 'codex-prod', status: 'Ready' },
-        { id: 'gemini-1', type: 'gemini', alias: 'gemini-prod', status: 'Failed' },
+        { id: 'antigravity-1', type: 'antigravity', alias: 'antigravity-prod', status: 'Failed' },
       ],
     });
   });

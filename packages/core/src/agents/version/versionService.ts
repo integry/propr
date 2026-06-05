@@ -59,7 +59,7 @@ export function getDockerTagComponent(value: string): string {
 /**
  * Resolves a version specification to an actual semver version.
  *
- * @param agentType - The agent type (claude, codex, gemini)
+ * @param agentType - The agent type (claude, codex, antigravity, vibe)
  * @param versionType - How the version is specified
  * @param versionSpec - The version specification (tag name, version number, or custom input)
  * @returns The resolved semver version

@@ -71,7 +71,7 @@ export interface EstimationOptions {
  * Strip agent prefix from model name if present.
  * Model names should be used as-is for matching, but agent prefixes should be ignored.
  * e.g., 'claude:claude-opus-4-5-20251101' -> 'claude-opus-4-5-20251101'
- * e.g., 'gemini:gemini-3-pro-preview' -> 'gemini-3-pro-preview'
+ * e.g., 'antigravity:antigravity-gemini-3-pro-preview' -> 'antigravity-gemini-3-pro-preview'
  * e.g., 'opus' -> 'opus' (no change for aliases)
  */
 function stripAgentPrefix(modelName: string): string {

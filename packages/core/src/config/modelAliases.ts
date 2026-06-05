@@ -130,14 +130,6 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
         return modelNameOrAlias;
     }
 
-    // 2b. Legacy raw Gemini model IDs are now Antigravity model IDs.
-    if (lowerCaseModel.startsWith('gemini-')) {
-        const antigravityModelId = `antigravity-${lowerCaseModel}`;
-        if (MODEL_INFO_MAP[antigravityModelId]) {
-            return antigravityModelId;
-        }
-    }
-
     // 3. Check if it matches a shortAlias in MODEL_INFO_MAP (e.g., "mistral" -> "mistral-medium-3.5")
     for (const modelInfo of ALL_MODELS) {
         if (modelInfo.shortAlias.toLowerCase() === lowerCaseModel) {
@@ -149,9 +141,7 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     // This handles labels like "llm-vibe-mistral" where the prefix indicates agent type
     const dashIdx = lowerCaseModel.indexOf('-');
     if (dashIdx > 0) {
-        const possibleAgentType = lowerCaseModel.substring(0, dashIdx) === 'gemini'
-            ? 'antigravity'
-            : lowerCaseModel.substring(0, dashIdx);
+        const possibleAgentType = lowerCaseModel.substring(0, dashIdx);
         const possibleAlias = lowerCaseModel.substring(dashIdx + 1);
         const candidateModels = possibleAgentType in AGENT_MODELS
             ? AGENT_MODELS[possibleAgentType as AgentType]
@@ -298,7 +288,7 @@ async function getAllCustomLabels(): Promise<string[]> {
 }
 
 /**
- * Resolves a full github label (e.g., "llm-gemini-g3-flash-preview") to an agent alias and model
+ * Resolves a full github label (e.g., "llm-antigravity-g3-flash-preview") to an agent alias and model
  * by matching against modelDefinitions' githubLabel field.
  */
 function findAgentByType(agentType: AgentType, agents: { config: AgentConfig }[]): { config: AgentConfig } | null {
@@ -306,11 +296,8 @@ function findAgentByType(agentType: AgentType, agents: { config: AgentConfig }[]
 }
 
 function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
-    const compatibilityLabel = fullLabel.startsWith('llm-gemini-')
-        ? fullLabel.replace('llm-gemini-', 'llm-antigravity-')
-        : fullLabel;
     for (const modelInfo of ALL_MODELS) {
-        if (modelInfo.githubLabel.toLowerCase() === compatibilityLabel) {
+        if (modelInfo.githubLabel.toLowerCase() === fullLabel) {
             const agentType = getAgentTypeFromModel(modelInfo.id);
             const agent = findAgentByType(agentType, agents);
             return { agentAlias: agent?.config.alias || agentType, model: modelInfo.id };
@@ -321,15 +308,14 @@ function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }
 
 function resolveByAgentTypePrefix(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
     const lowerLabel = label.toLowerCase();
-    const agentTypes: Array<AgentType | 'gemini'> = ['claude', 'codex', 'antigravity', 'gemini', 'vibe'];
+    const agentTypes: AgentType[] = ['claude', 'codex', 'antigravity', 'vibe'];
 
-    for (const labelAgentType of agentTypes) {
-        if (!lowerLabel.startsWith(`${labelAgentType}-`)) {
+    for (const agentType of agentTypes) {
+        if (!lowerLabel.startsWith(`${agentType}-`)) {
             continue;
         }
 
-        const agentType: AgentType = labelAgentType === 'gemini' ? 'antigravity' : labelAgentType;
-        const modelPart = label.substring(labelAgentType.length + 1);
+        const modelPart = label.substring(agentType.length + 1);
         const agent = findAgentByType(agentType, agents);
         const matchedModel = agent ? findMatchingModel(modelPart, agent.config) : null;
         const resolvedModel = matchedModel || resolveModelAlias(`${agentType}-${modelPart}`);
@@ -351,23 +337,23 @@ function resolveScopedAgentModel(label: string, agents: { config: AgentConfig }[
     const explicitAlias = label.substring(0, colonIdx);
     const explicitModel = label.substring(colonIdx + 1);
     const resolvedModel = resolveModelAlias(explicitModel);
-    const canonicalAlias = explicitAlias.toLowerCase() === 'gemini' ? 'antigravity' : explicitAlias.toLowerCase();
+    const canonicalAlias = explicitAlias.toLowerCase();
     const agent = agents.find(a => a.config.alias.toLowerCase() === canonicalAlias)
         || agents.find(a => a.config.type === canonicalAlias);
     return agent ? { agentAlias: agent.config.alias, model: resolvedModel } : null;
 }
 
 /**
- * Resolves an LLM label (e.g., "gemini-pro", "claude-opus", "codex") to an agent alias and model.
+ * Resolves an LLM label (e.g., "antigravity-pro", "claude-opus", "codex") to an agent alias and model.
  *
  * Resolution order:
- * 1. Check if label matches a githubLabel from modelDefinitions (exact match for labels like "gemini-g3-flash-preview")
- * 2. Check if label matches an agent alias directly (e.g., "gemini" -> gemini agent with default model)
- * 3. Check if label starts with an agent alias (e.g., "gemini-pro" -> gemini agent, find matching model)
+ * 1. Check if label matches a githubLabel from modelDefinitions (exact match for labels like "antigravity-g3-flash-preview")
+ * 2. Check if label matches an agent alias directly (e.g., "antigravity" -> antigravity agent with default model)
+ * 3. Check if label starts with an agent alias (e.g., "antigravity-pro" -> antigravity agent, find matching model)
  * 4. Check static MODEL_ALIASES for backwards compatibility (e.g., "opus" -> claude agent)
  * 5. Fall back to default agent with the label as the model name
  *
- * @param label - The LLM label without the "llm-" prefix (e.g., "gemini-pro", "claude-opus", "opus")
+ * @param label - The LLM label without the "llm-" prefix (e.g., "antigravity-pro", "claude-opus", "opus")
  * @returns Object with agentAlias and model
  */
 async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
@@ -386,7 +372,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
     const fullLabel = `llm-${lowerLabel}`;
 
     // 1. Check if label matches a githubLabel from modelDefinitions exactly
-    // This ensures labels like "gemini-g3-flash-preview" correctly resolve to "gemini-3-flash-preview"
+    // This ensures labels like "antigravity-g3-flash-preview" correctly resolve to "antigravity-gemini-3-flash-preview"
     const githubLabelMatch = resolveByGithubLabel(fullLabel, agents);
     if (githubLabelMatch) {
         return githubLabelMatch;
@@ -409,11 +395,11 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         }
     }
 
-    // 3. Check if label starts with an agent alias (e.g., "gemini-pro", "claude-opus")
+    // 3. Check if label starts with an agent alias (e.g., "antigravity-pro", "claude-opus")
     for (const agent of agents) {
         const aliasLower = agent.config.alias.toLowerCase();
         if (lowerLabel.startsWith(aliasLower + '-')) {
-            const modelPart = label.substring(aliasLower.length + 1); // e.g., "pro" from "gemini-pro"
+            const modelPart = label.substring(aliasLower.length + 1); // e.g., "pro" from "antigravity-pro"
             const matchedModel = findMatchingModel(modelPart, agent.config);
             return {
                 agentAlias: agent.config.alias,
@@ -441,12 +427,11 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
 
 /**
  * Determines the agent type from a model ID.
- * E.g., "gemini-3-flash-preview" -> "gemini", "claude-opus-4-5-20251101" -> "claude"
+ * E.g., "antigravity-gemini-3-flash-preview" -> "antigravity", "claude-opus-4-5-20251101" -> "claude"
  */
 function getAgentTypeFromModel(modelId: string): AgentType {
     const lowerModel = modelId.toLowerCase();
     if (lowerModel.startsWith('antigravity')) return 'antigravity';
-    if (lowerModel.startsWith('gemini')) return 'antigravity';
     if (lowerModel.startsWith('claude')) return 'claude';
     if (lowerModel.startsWith('mistral') || lowerModel.startsWith('devstral') || lowerModel.includes('vibe')) return 'vibe';
     if (lowerModel.startsWith('gpt') || lowerModel.includes('codex')) return 'codex';
@@ -499,7 +484,7 @@ function findMatchingModel(shortName: string, config: AgentConfig): string | nul
  * A single concrete review assignment: agent/model pair with display label.
  */
 export interface ReviewAssignment {
-    /** Agent alias (e.g., "claude", "gemini", "codex") */
+    /** Agent alias (e.g., "claude", "antigravity", "codex") */
     agentAlias: string;
     /** Resolved model ID (e.g., "claude-opus-4-6", "gemini-3-pro-preview") */
     model: string;

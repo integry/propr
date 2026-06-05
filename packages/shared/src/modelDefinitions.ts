@@ -62,9 +62,6 @@ export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'antigravity-opus-4-8', name: 'Antigravity Opus 4.8', shortName: 'Antigravity Opus 4.8', shortAlias: 'opus48', githubLabel: 'llm-antigravity-opus48', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.8' },
   { id: 'antigravity-opus-4-7', name: 'Antigravity Opus 4.7', shortName: 'Antigravity Opus 4.7', shortAlias: 'opus47', githubLabel: 'llm-antigravity-opus47', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.7' },
 ];
-/** @deprecated Use ANTIGRAVITY_MODELS. Retained only for legacy imports during the Gemini-to-Antigravity migration. */
-export const GEMINI_MODELS: ModelInfo[] = ANTIGRAVITY_MODELS;
-
 // Mistral Vibe coding models
 // Available models from `vibe /model`: mistral-medium-3.5, devstral-small, local
 export const VIBE_MODELS: ModelInfo[] = [

@@ -28,7 +28,7 @@ Examples:
 ```text
 llm-claude-sonnet46
 llm-codex-gpt54
-llm-gemini-pro
+llm-antigravity-pro
 ```
 
 ## Natural Follow-Up

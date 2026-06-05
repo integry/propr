@@ -14,7 +14,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR=$PWD/repos \
   -e HOST_CLAUDE_DIR=$HOME/.claude \
   -e HOST_CODEX_DIR=$HOME/.codex \
-  -e HOST_GEMINI_DIR=$HOME/.gemini \
+  -e HOST_ANTIGRAVITY_DIR=$HOME/.antigravity \
   propr/launcher:latest
 ```
 

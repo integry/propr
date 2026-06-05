@@ -83,7 +83,7 @@ export async function buildClaudeDockerImage(): Promise<boolean> {
  * Ensures an agent's Docker image exists, building it if necessary.
  * This is called when agents are registered to ensure their images are ready.
  *
- * @param agentType - The type of agent ('claude', 'codex', 'gemini')
+ * @param agentType - The type of agent ('claude', 'codex', 'antigravity', 'vibe')
  * @param dockerImage - The expected Docker image name (e.g., 'propr/agent-codex:latest')
  * @returns true if image exists or was built successfully, false otherwise
  */

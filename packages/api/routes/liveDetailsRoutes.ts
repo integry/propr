@@ -19,8 +19,8 @@ import { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetails
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 interface HistoryEntryWithSessionMetadata { state?: string; timestamp?: string; metadata?: { sessionId?: string }; }
-const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'gemini_execution']);
-const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'gemini_execution', 'vibe_execution']);
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution']);
+const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'vibe_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
   async function getLiveDetails(req: Request, res: Response): Promise<void> {

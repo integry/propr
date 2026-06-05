@@ -20,7 +20,7 @@ Start with a GitHub issue, a Planner Studio draft, or a pull request comment.
 
 Use different coding agents without changing the rest of the workflow.
 
-- [Agent routing](./agent-routing.md): use Claude Code, Codex, Gemini, subscription-backed credentials, or API-backed credentials from the same GitHub flow.
+- [Agent routing](./agent-routing.md): use Claude Code, Codex, Antigravity, subscription-backed credentials, or API-backed credentials from the same GitHub flow.
 - [Isolated and safe execution](./execution-safety.md): run agents in controlled containers and separate worktrees.
 - [Self-hosted operation](./self-hosting.md): run ProPR from published images or from source while using your own credentials.
 

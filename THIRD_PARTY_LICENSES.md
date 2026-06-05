@@ -33,10 +33,10 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/openai/codex
 
-## @google/gemini-cli (installed in propr/agent-gemini image)
+## free-antigravity-cli (installed in propr/agent-antigravity image)
 
 Licensed under the Apache License, Version 2.0.
-Source: https://github.com/google-gemini/gemini-cli
+Source: https://www.npmjs.com/package/free-antigravity-cli
 
 ## mistral-vibe (installed in propr/agent-vibe image)
 

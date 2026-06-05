@@ -1,6 +1,6 @@
 export interface SystemAgentStatus {
   id: string;
-  type: 'claude' | 'codex' | 'antigravity' | 'gemini' | 'vibe' | string;
+  type: 'claude' | 'codex' | 'antigravity' | 'vibe' | string;
   alias: string;
   status: string;
 }
