@@ -54,7 +54,7 @@ export class AntigravityAgent implements Agent {
     }
 
     private getCliCommand(): string {
-        return this.getRuntimeName();
+        return 'agy';
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {

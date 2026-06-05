@@ -28,6 +28,7 @@ import {
 } from './pypiClient.js';
 
 const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
+const INSTALLER_AGENT_TYPES = new Set<AgentType>(['antigravity']);
 
 function validatePyPiCustomVersion(versionSpec: string, packageName: string): string {
     const trimmedVersionSpec = versionSpec.trim();
@@ -43,6 +44,23 @@ function resolvePyPiTag(agentType: AgentType, packageName: string, versionSpec: 
         throw new Error(`Unknown tag '${versionSpec}' for PyPI-backed package ${packageName}`);
     }
     return versionSpec === 'latest' ? getLatestPyPiVersion(packageName) : AGENT_DEFAULT_VERSIONS[agentType];
+}
+
+function resolveInstallerVersion(agentType: AgentType, versionType: CliVersionType, versionSpec?: string): string {
+    if (versionType === 'default') {
+        return AGENT_DEFAULT_VERSIONS[agentType];
+    }
+    if (!versionSpec) {
+        throw new Error('Version spec required');
+    }
+    const trimmedVersionSpec = versionSpec.trim();
+    if (!trimmedVersionSpec) {
+        throw new Error('Version spec required');
+    }
+    if (versionType === 'tag' && !AGENT_CLI_TAGS[agentType].includes(trimmedVersionSpec)) {
+        throw new Error(`Unknown tag '${trimmedVersionSpec}' for installer-backed CLI ${AGENT_CLI_PACKAGES[agentType]}`);
+    }
+    return trimmedVersionSpec;
 }
 
 export function getDockerTagComponent(value: string): string {
@@ -70,6 +88,10 @@ export async function resolveVersion(
     versionSpec?: string
 ): Promise<string> {
     const packageName = AGENT_CLI_PACKAGES[agentType];
+
+    if (INSTALLER_AGENT_TYPES.has(agentType)) {
+        return resolveInstallerVersion(agentType, versionType, versionSpec);
+    }
 
     if (PYPI_AGENT_TYPES.has(agentType)) {
         switch (versionType) {
@@ -133,6 +155,19 @@ export async function getAvailableVersions(agentType: AgentType): Promise<Availa
     const tagNames = AGENT_CLI_TAGS[agentType];
 
     try {
+        if (INSTALLER_AGENT_TYPES.has(agentType)) {
+            return {
+                agentType,
+                packageName,
+                defaultVersion,
+                availableTags: tagNames.map(tag => ({
+                    tag,
+                    version: tag === 'latest' ? 'latest' : defaultVersion
+                })),
+                recentVersions: []
+            };
+        }
+
         if (PYPI_AGENT_TYPES.has(agentType)) {
             const [latestVersion, recentVersions] = await Promise.all([
                 getLatestPyPiVersion(packageName),

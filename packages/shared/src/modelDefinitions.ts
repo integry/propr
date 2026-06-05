@@ -122,8 +122,8 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     configPath: '~/.antigravity',
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
-    npmPackage: 'free-antigravity-cli',
-    defaultCliVersion: '0.1.0'
+    npmPackage: 'antigravity-cli',
+    defaultCliVersion: 'latest'
   },
   vibe: {
     dockerImage: 'propr/agent-vibe:latest',

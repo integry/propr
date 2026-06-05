@@ -5,13 +5,13 @@
 ARG BASE_IMAGE=propr/agent-base:latest
 FROM ${BASE_IMAGE}
 
-ARG CLI_PACKAGE=free-antigravity-cli
 ARG CLI_VERSION=latest
 
-USER root
-RUN npm install -g ${CLI_PACKAGE}@${CLI_VERSION}
-RUN antigravity --version
 USER node
+ENV PATH="/home/node/.local/bin:${PATH}" \
+    AGY_CLI_DISABLE_AUTO_UPDATE=true
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+RUN agy --version
 
 RUN git config --global user.name "ProPR Antigravity Bot" \
     && git config --global user.email "antigravity-bot@propr.dev" \
