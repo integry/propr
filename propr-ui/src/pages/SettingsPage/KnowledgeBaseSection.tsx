@@ -39,8 +39,8 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
 
       <div className="space-y-3">
         {/* Enable Toggle */}
-        <div className="flex items-start">
-          <div className="flex items-center h-5">
+        <div className="flex items-start gap-3">
+          <div className="flex h-5 items-start pt-0.5">
             <input
               type="checkbox"
               id="summarization_enabled"
@@ -49,36 +49,37 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
               className="h-4 w-4 cursor-pointer rounded border-gray-300 text-primary-600 focus:ring-primary-500"
             />
           </div>
-          <div className="ml-3">
+          <div>
             <label
               htmlFor="summarization_enabled"
               className="text-xs font-medium text-gray-700 cursor-pointer"
             >
               Enable Semantic Codebase Indexing
             </label>
-            <p className="text-xs text-gray-500">
+            <p className="text-[11px] text-slate-500">
               Allows AI to search your codebase by meaning, not just filenames. Requires a configured Agent.
             </p>
           </div>
         </div>
 
         {/* Custom Prompt */}
-        <div className={settings.enabled ? '' : 'opacity-50 pointer-events-none'}>
-          <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="custom_prompt">
+        <div className={`grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2 md:gap-4 items-start ${settings.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
+          <label className="block text-xs font-medium text-gray-600 md:pt-1.5" htmlFor="custom_prompt">
             Custom Summary Prompt (Optional)
           </label>
-          <textarea
-            id="custom_prompt"
-            value={settings.custom_prompt || settings.default_prompt || ''}
-            onChange={handlePromptChange}
-            rows={4}
-            className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border disabled:bg-gray-100 disabled:cursor-not-allowed"
-            placeholder="Enter custom summarization instructions..."
-            disabled={!settings.enabled}
-          />
-          <p className="mt-1 text-xs text-gray-500">
-            Define specific goals for the AI when summarizing files.
-          </p>
+          <div>
+            <textarea
+              id="custom_prompt"
+              value={settings.custom_prompt || settings.default_prompt || ''}
+              onChange={handlePromptChange}
+              rows={3}
+              className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border disabled:bg-gray-100 disabled:cursor-not-allowed"
+              placeholder="Enter custom summarization instructions..."
+              disabled={!settings.enabled}
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Define specific goals for the AI when summarizing files.
+            </p>
           {/* Reindex button - secondary ghost style */}
           {onReindexAll && (
             <button
@@ -105,6 +106,7 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
               )}
             </button>
           )}
+          </div>
         </div>
 
         {/* Warning if enabled but no agent selected */}
