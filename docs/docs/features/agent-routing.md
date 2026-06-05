@@ -6,6 +6,8 @@ sidebar_position: 4
 
 ProPR can route work to different coding agents without forcing you to change the rest of the workflow. The same issue intake, planning, PR creation, comment handling, and task history apply whether the selected agent is Claude Code, Codex, Antigravity, or another configured backend.
 
+Antigravity is a multi-model CLI agent. In ProPR it can expose model IDs for different backing models through the same Antigravity container and credential mount, so labels route to Antigravity model choices instead of to a Google-only agent.
+
 ## What Routing Solves
 
 Different agents are better at different work. You may also have a mix of subscription access, API access, and provider-specific limits. ProPR treats the agent and model as routing decisions, not as separate workflows.
@@ -46,7 +48,8 @@ Examples:
 ```text
 llm-claude-sonnet46
 llm-codex-gpt54
-llm-antigravity-pro
+llm-antigravity-gemini-pro
+llm-antigravity-opus
 ```
 
 The exact IDs available in your deployment come from AI Agents in the Web UI.
