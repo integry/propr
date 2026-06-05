@@ -10,7 +10,11 @@ ARG CLI_VERSION=latest
 USER node
 ENV PATH="/home/node/.local/bin:${PATH}" \
     AGY_CLI_DISABLE_AUTO_UPDATE=true
-RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+RUN if [ "$CLI_VERSION" != "latest" ]; then \
+        echo "Antigravity CLI installer only supports CLI_VERSION=latest; got CLI_VERSION=$CLI_VERSION" >&2; \
+        exit 1; \
+    fi \
+    && curl -fsSL https://antigravity.google/cli/install.sh | bash
 RUN agy --version
 
 RUN git config --global user.name "ProPR Antigravity Bot" \

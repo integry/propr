@@ -14,7 +14,7 @@ export type { CliVersionType } from '../../config/configManager.js';
 export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
     claude: '@anthropic-ai/claude-code',
     codex: '@openai/codex',
-    antigravity: 'antigravity-cli',
+    antigravity: 'https://antigravity.google/cli/install.sh',
     vibe: 'mistral-vibe'
 } as const;
 
@@ -25,7 +25,7 @@ export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
 export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
     claude: ['stable', 'latest', 'next'],
     codex: ['latest', 'alpha'],
-    antigravity: ['latest', 'preview'],
+    antigravity: ['latest'],
     vibe: ['latest']
 };
 

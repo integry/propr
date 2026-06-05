@@ -122,7 +122,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     configPath: '~/.antigravity',
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
-    npmPackage: 'antigravity-cli',
+    npmPackage: 'https://antigravity.google/cli/install.sh',
     defaultCliVersion: 'latest'
   },
   vibe: {

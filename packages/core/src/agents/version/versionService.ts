@@ -57,7 +57,10 @@ function resolveInstallerVersion(agentType: AgentType, versionType: CliVersionTy
     if (!trimmedVersionSpec) {
         throw new Error('Version spec required');
     }
-    if (versionType === 'tag' && !AGENT_CLI_TAGS[agentType].includes(trimmedVersionSpec)) {
+    if (versionType !== 'tag') {
+        throw new Error(`Installer-backed CLI ${AGENT_CLI_PACKAGES[agentType]} only supports the latest version`);
+    }
+    if (!AGENT_CLI_TAGS[agentType].includes(trimmedVersionSpec)) {
         throw new Error(`Unknown tag '${trimmedVersionSpec}' for installer-backed CLI ${AGENT_CLI_PACKAGES[agentType]}`);
     }
     return trimmedVersionSpec;
