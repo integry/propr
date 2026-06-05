@@ -49,6 +49,9 @@ const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR || envFileValue('HOST_CLAUDE
 const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR  || envFileValue('HOST_CODEX_DIR')  || undefined;
 const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR || envFileValue('HOST_GEMINI_DIR') || undefined;
 const HOST_OPENCODE_LEGACY_DIR = process.env.HOST_OPENCODE_LEGACY_DIR || envFileValue('HOST_OPENCODE_LEGACY_DIR') || undefined;
+// HOST_OPENCODE_DIR is a compatibility alias for HOST_OPENCODE_XDG_DIR. Prefer
+// HOST_OPENCODE_XDG_DIR in new deployments because it names the current
+// OpenCode config location explicitly.
 const HOST_OPENCODE_XDG_DIR = process.env.HOST_OPENCODE_XDG_DIR || process.env.HOST_OPENCODE_DIR || envFileValue('HOST_OPENCODE_XDG_DIR') || envFileValue('HOST_OPENCODE_DIR') || undefined;
 const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR   || envFileValue('HOST_VIBE_DIR')   || undefined;
 
@@ -377,6 +380,8 @@ function validateEnv() {
         ['HOST_CLAUDE_DIR', HOST_CLAUDE_DIR],
         ['HOST_CODEX_DIR', HOST_CODEX_DIR],
         ['HOST_GEMINI_DIR', HOST_GEMINI_DIR],
+        ['HOST_OPENCODE_LEGACY_DIR', HOST_OPENCODE_LEGACY_DIR],
+        ['HOST_OPENCODE_XDG_DIR', HOST_OPENCODE_XDG_DIR],
         ['HOST_VIBE_DIR', HOST_VIBE_DIR],
     ];
     const invalidCredentialPath = credentialDirs

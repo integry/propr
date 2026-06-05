@@ -321,19 +321,19 @@ docker run --rm \
   -e PROPR_DATA_DIR=$PWD/data \
   -e PROPR_LOGS_DIR=$PWD/logs \
   -e PROPR_REPOS_DIR=$PWD/repos \
-  -e HOST_CLAUDE_DIR=$HOME/.claude \
-  -e HOST_CODEX_DIR=$HOME/.codex \
-  -e HOST_GEMINI_DIR=$HOME/.gemini \
-  -e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode \
+  -e HOST_CLAUDE_DIR=/home/your-user/.claude \
+  -e HOST_CODEX_DIR=/home/your-user/.codex \
+  -e HOST_GEMINI_DIR=/home/your-user/.gemini \
+  -e HOST_OPENCODE_XDG_DIR=/home/your-user/.config/opencode \
   propr/launcher:latest
 ```
 
 Paths are passed as host paths (not mounted into the launcher) because the
 launcher uses the host docker daemon via the mounted socket to spawn sibling
 containers — any `-v` values it passes need to resolve on the host.
-Pass `HOST_OPENCODE_LEGACY_DIR=$HOME/.opencode` only for OpenCode agents whose
-saved `configPath` is `~/.opencode`. `HOST_OPENCODE_DIR` is accepted as an alias
-for `HOST_OPENCODE_XDG_DIR`.
+Pass `HOST_OPENCODE_LEGACY_DIR=/home/your-user/.opencode` only for OpenCode agents whose
+saved `configPath` is `/home/your-user/.opencode`. `HOST_OPENCODE_DIR` is accepted as a compatibility alias
+for `HOST_OPENCODE_XDG_DIR`. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
 
 The launcher pulls redis + app + ui images on first run and orchestrates them
 via the mounted docker socket. See `.env.example` for required configuration.

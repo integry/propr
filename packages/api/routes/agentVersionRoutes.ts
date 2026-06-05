@@ -36,6 +36,9 @@ interface AgentVersionRouteDeps {
 
 /**
  * Creates the agent version management routes.
+ *
+ * @internal deps exists for route tests; production callers should use the
+ * default service wiring.
  */
 export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = {}) {
     const versionService = {

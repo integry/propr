@@ -7,7 +7,7 @@
 # PREFLIGHT: Before starting, create credential and cache directories for ALL
 # agents you intend to use (Docker will create missing directories as root-owned
 # otherwise, which can cause write failures):
-#   mkdir -p ~/.claude ~/.codex ~/.gemini /tmp/propr-vibe-prompts
+#   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.opencode ~/.config/opencode ~/.local/share/opencode /tmp/propr-vibe-prompts
 #
 # For Vibe support, also create:
 #   mkdir -p ~/.vibe
@@ -76,8 +76,11 @@ services:
       # Mount agent credentials at the same path on both sides so the worker
       # can pass host-valid paths when spawning sibling agent containers.
       # IMPORTANT: Create any missing directories before starting:
-      #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.opencode ~/.vibe
+      #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.opencode ~/.config/opencode ~/.local/share/opencode ~/.vibe
       # Docker will create them as root-owned if they do not exist.
+      # OpenCode's ~/.local/share/opencode mount is visible to app services
+      # only; spawned OpenCode agent containers still mount the saved
+      # OPENCODE_CONFIG_PATH/configPath unless XDG_DATA_HOME is configured.
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex
@@ -96,6 +99,7 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
       redis:
@@ -132,6 +136,7 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
       redis:
@@ -166,6 +171,7 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       # How often to scan for repos needing indexing (default: 5 minutes)
       - INDEXING_SCAN_INTERVAL_MS=${INDEXING_SCAN_INTERVAL_MS:-300000}
@@ -230,6 +236,7 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       - CONFIG_REPO_PATH=/tmp/config_repo
       # Allow injection of API_PUBLIC_URL for PR preview environments

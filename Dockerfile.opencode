@@ -6,7 +6,9 @@
 ARG BASE_TAG
 FROM propr/agent-base:${BASE_TAG}
 
-ARG CLI_VERSION=latest
+# Keep this default aligned with AGENT_DEFAULT_VERSIONS.opencode for
+# reproducible direct builds. scripts/build-images.sh may override it.
+ARG CLI_VERSION=1.15.12
 
 USER root
 RUN apk add --no-cache su-exec \
@@ -35,4 +37,4 @@ RUN git config --global user.name "ProPR OpenCode Bot" \
     && git config --global init.defaultBranch main \
     && git config --global --add safe.directory '*'
 
-ENTRYPOINT ["/home/node/opencode-entrypoint.sh"]
+ENTRYPOINT ["/sbin/tini", "--", "/home/node/opencode-entrypoint.sh"]

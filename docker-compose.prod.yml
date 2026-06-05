@@ -40,6 +40,8 @@ services:
       DB_FILENAME: /app/data/propr.sqlite
       GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
+      OPENCODE_CONFIG_PATH: ${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}
+      OPENCODE_LEGACY_CONFIG_PATH: ${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}
     volumes:
       - propr-sqlite-data:/app/data
       # Agent config mounts used by version resolution and image listing
@@ -48,9 +50,9 @@ services:
       - ~/.claude:/root/.claude:ro
       - ~/.codex:/root/.codex:ro
       - ~/.gemini:/root/.gemini:ro
-      - ~/.opencode:/root/.opencode:ro
-      - ~/.config/opencode:/root/.config/opencode:ro
-      - ~/.local/share/opencode:/root/.local/share/opencode:ro
+      - ${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}:${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}:ro
+      - ${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}:${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}:ro
+      - ${HOST_OPENCODE_DATA_DIR:-${HOME:?HOME must be set}/.local/share/opencode}:${HOST_OPENCODE_DATA_DIR:-${HOME:?HOME must be set}/.local/share/opencode}:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -113,6 +115,8 @@ services:
       HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       # --- Vibe agent (config-file auth, alternative to API-key) ---
       VIBE_CONFIG_PATH: ${VIBE_CONFIG_PATH:-/root/.vibe}
+      OPENCODE_CONFIG_PATH: ${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}
+      OPENCODE_LEGACY_CONFIG_PATH: ${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /usr/src/app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
@@ -124,9 +128,14 @@ services:
       - ~/.claude:/root/.claude:ro
       - ~/.codex:/root/.codex:ro
       - ~/.gemini:/root/.gemini:ro
-      - ~/.opencode:/root/.opencode:ro
-      - ~/.config/opencode:/root/.config/opencode:ro
-      - ~/.local/share/opencode:/root/.local/share/opencode:ro
+      # Mount OpenCode credential paths at identical host/container paths.
+      # The worker spawns sibling agent containers through the host Docker
+      # socket, so OPENCODE_CONFIG_PATH must be host-valid.
+      - ${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}:${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}:ro
+      - ${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}:${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}:ro
+      # Service-side visibility only; runtime OpenCode agents mount the saved
+      # configPath unless XDG_DATA_HOME points under OPENCODE_CONFIG_PATH.
+      - ${HOST_OPENCODE_DATA_DIR:-${HOME:?HOME must be set}/.local/share/opencode}:${HOST_OPENCODE_DATA_DIR:-${HOME:?HOME must be set}/.local/share/opencode}:ro
       # Comment out unused credential mounts to avoid Docker creating empty
       # host directories for agents you do not use. The OpenCode agent runtime
       # still mounts only the saved agent configPath; for file auth, prefer the

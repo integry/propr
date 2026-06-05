@@ -164,6 +164,53 @@ describe('OpenCode live details parsing', () => {
         });
     });
 
+    test('deduplicates Redis OpenCode tool updates and keeps sessionless tool events', () => {
+        const sessionlessToolLine = JSON.stringify({
+            type: 'tool',
+            timestamp: 1767036061199,
+            callID: 'call_sessionless',
+            tool: 'bash',
+            state: {
+                status: 'completed',
+                input: { command: 'pwd' },
+                output: '/repo\n',
+                metadata: { output: '/repo\n', exit: 0 },
+            },
+        });
+        const result = parseRedisOutput([opencodeToolLine, opencodeToolLine, sessionlessToolLine]);
+
+        assert.deepStrictEqual(result.events, [
+            {
+                type: 'tool_use',
+                toolName: 'bash',
+                input: { command: 'echo hello', description: 'Print hello' },
+                id: 'call_1',
+                timestamp: '2025-12-29T19:21:01.199Z',
+            },
+            {
+                type: 'tool_result',
+                toolUseId: 'call_1',
+                result: 'hello\n',
+                isError: false,
+                timestamp: '2025-12-29T19:21:01.199Z',
+            },
+            {
+                type: 'tool_use',
+                toolName: 'bash',
+                input: { command: 'pwd' },
+                id: 'call_sessionless',
+                timestamp: '2025-12-29T19:21:01.199Z',
+            },
+            {
+                type: 'tool_result',
+                toolUseId: 'call_sessionless',
+                result: '/repo\n',
+                isError: false,
+                timestamp: '2025-12-29T19:21:01.199Z',
+            },
+        ]);
+    });
+
     test('keeps OpenCode nested response usage even without text content', () => {
         const result = parseRedisOutput([
             JSON.stringify({

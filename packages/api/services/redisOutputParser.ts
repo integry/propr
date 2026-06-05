@@ -21,6 +21,8 @@ interface ParseState {
   syntheticTimestampBaseMs: number | null;
   syntheticTimestampIndex: number;
   seenEventFingerprints: Set<string>;
+  emittedOpenCodeToolUseIds: Set<string>;
+  emittedOpenCodeToolResultIds: Set<string>;
 }
 
 interface OpenCodeRedisEventUsage {
@@ -33,7 +35,7 @@ interface OpenCodeRedisEvent {
   message?: { role?: string; content?: unknown; text?: string; delta?: string; parts?: OpenCodeRedisPart[]; usage?: Record<string, unknown> };
   response?: { content?: unknown; text?: string; delta?: string; usage?: Record<string, unknown> };
   tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
-  output?: string; result?: string; status?: string; id?: string; tool_id?: string; error?: string | { message?: string; name?: string; data?: { message?: string } };
+  output?: string; result?: string; status?: string; id?: string; callID?: string; tool_id?: string; error?: string | { message?: string; name?: string; data?: { message?: string } };
   usage?: Record<string, unknown>; stats?: Record<string, unknown>; tokens?: Record<string, unknown>;
 }
 
@@ -218,7 +220,7 @@ function processOpenCodeEvent(
       timestamp
     });
   }
-  const toolEvents = extractOpenCodeToolEvents(event, timestamp);
+  const toolEvents = extractOpenCodeToolEvents(event, timestamp, state);
   if (toolEvents.length) {
     flushPendingMessage(state, timestamp);
     state.events.push(...toolEvents);
@@ -240,7 +242,29 @@ interface OpenCodeRedisPart {
 type OpenCodeRedisToolSource = OpenCodeRedisEvent & Pick<OpenCodeRedisPart, 'callID' | 'state'>;
 
 function isOpenCodeEvent(event: OpenCodeRedisEvent): boolean {
-  return isOpenCodeJsonlEvent(event);
+  return isOpenCodeJsonlEvent(event) || hasOpenCodeToolShape(event);
+}
+
+function hasOpenCodeToolShape(event: OpenCodeRedisEvent): boolean {
+  if (hasOpenCodeToolSourceShape(event)) return true;
+  if (hasOpenCodeToolSourceShape(event.part)) return true;
+  return (event.parts ?? []).some(hasOpenCodeToolSourceShape);
+}
+
+function hasOpenCodeToolSourceShape(source: (OpenCodeRedisEvent | OpenCodeRedisPart) | undefined): boolean {
+  if (!source) return false;
+  const type = source?.type?.toLowerCase();
+  if (!type || (!isOpenCodeToolUseType(type) && !isOpenCodeToolResultType(type))) return false;
+  const toolSource = source as OpenCodeRedisToolSource;
+  return Boolean(
+    toolSource.callID
+    || toolSource.tool_id
+    || toolSource.id
+    || toolSource.tool
+    || toolSource.tool_name
+    || toolSource.name
+    || toolSource.state
+  );
 }
 
 function extractOpenCodeAssistantText(event: OpenCodeRedisEvent): string {
@@ -328,26 +352,37 @@ function hasOpenCodeSessionId(event: OpenCodeRedisEvent): boolean {
   return Boolean(event.sessionID || event.sessionId || event.session_id);
 }
 
-function extractOpenCodeToolEvents(event: OpenCodeRedisEvent, timestamp: string): ConversationEvent[] {
-  if (!hasOpenCodeSessionId(event)) return [];
+interface OpenCodeRedisToolTracker {
+  emittedToolUseIds: Set<string>;
+  emittedToolResultIds: Set<string>;
+}
+
+function extractOpenCodeToolEvents(event: OpenCodeRedisEvent, timestamp: string, state: ParseState): ConversationEvent[] {
   const events: ConversationEvent[] = [];
-  if (!event.part) appendOpenCodeToolEvent(events, event, timestamp);
-  appendOpenCodeToolEvent(events, event.part, timestamp);
-  for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp);
+  const tracker: OpenCodeRedisToolTracker = {
+    emittedToolUseIds: state.emittedOpenCodeToolUseIds,
+    emittedToolResultIds: state.emittedOpenCodeToolResultIds
+  };
+  if (!event.part) appendOpenCodeToolEvent(events, event, timestamp, tracker);
+  appendOpenCodeToolEvent(events, event.part, timestamp, tracker);
+  for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp, tracker);
   return events;
 }
 
-function appendOpenCodeToolEvent(events: ConversationEvent[], source: (OpenCodeRedisEvent | OpenCodeRedisPart) | undefined, timestamp: string): void {
+function appendOpenCodeToolEvent(events: ConversationEvent[], source: (OpenCodeRedisEvent | OpenCodeRedisPart) | undefined, timestamp: string, tracker: OpenCodeRedisToolTracker): void {
   if (!source?.type) return;
   const type = source.type.toLowerCase();
   const sourceWithState = source as OpenCodeRedisToolSource;
   if (isOpenCodeToolResultType(type)) {
-    appendOpenCodeToolResultEvent(events, sourceWithState, timestamp);
+    appendOpenCodeToolResultEvent(events, sourceWithState, timestamp, tracker.emittedToolResultIds);
     return;
   }
   if (!isOpenCodeToolUseType(type)) return;
+  const toolId = getOpenCodeToolId(sourceWithState);
+  if (toolId && tracker.emittedToolUseIds.has(toolId)) return;
+  if (toolId) tracker.emittedToolUseIds.add(toolId);
   events.push(buildOpenCodeToolUseEvent(sourceWithState, timestamp));
-  if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp);
+  if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp, tracker.emittedToolResultIds);
 }
 
 function isOpenCodeToolUseType(type: string): boolean { return OPEN_CODE_TOOL_USE_TYPES.includes(type); }
@@ -358,13 +393,19 @@ function buildOpenCodeToolUseEvent(source: OpenCodeRedisToolSource, timestamp: s
   return { type: 'tool_use' as const, toolName: source.tool_name || source.tool || source.name, input: source.parameters || source.input || source.args || source.state?.input, id: getOpenCodeToolId(source), timestamp };
 }
 
-function appendOpenCodeCompletedToolResult(events: ConversationEvent[], source: OpenCodeRedisToolSource, timestamp: string): void {
+function appendOpenCodeCompletedToolResult(events: ConversationEvent[], source: OpenCodeRedisToolSource, timestamp: string, emittedToolResultIds: Set<string>): void {
   if (!source.state || !['completed', 'error'].includes(source.state.status ?? '')) return;
+  const toolId = getOpenCodeToolId(source);
+  if (toolId && emittedToolResultIds.has(toolId)) return;
+  if (toolId) emittedToolResultIds.add(toolId);
   events.push({ type: 'tool_result' as const, toolUseId: getOpenCodeToolId(source), result: truncateContent(extractOpenCodeToolResult(source)), isError: isOpenCodeToolStateError(source), timestamp });
 }
 
-function appendOpenCodeToolResultEvent(events: ConversationEvent[], source: OpenCodeRedisToolSource, timestamp: string): void {
-  events.push({ type: 'tool_result' as const, toolUseId: getOpenCodeToolId(source), result: truncateContent(source.output || source.result), isError: source.status === 'error', timestamp });
+function appendOpenCodeToolResultEvent(events: ConversationEvent[], source: OpenCodeRedisToolSource, timestamp: string, emittedToolResultIds: Set<string>): void {
+  const toolId = getOpenCodeToolId(source);
+  if (toolId && emittedToolResultIds.has(toolId)) return;
+  if (toolId) emittedToolResultIds.add(toolId);
+  events.push({ type: 'tool_result' as const, toolUseId: toolId, result: truncateContent(source.output || source.result), isError: source.status === 'error', timestamp });
 }
 
 function getOpenCodeToolId(source: OpenCodeRedisToolSource): string | undefined { return source.tool_id || source.callID || source.id; }
@@ -651,7 +692,9 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     pendingAssistantTimestamp: null,
     syntheticTimestampBaseMs: Number.isNaN(executionStartMs) ? null : executionStartMs,
     syntheticTimestampIndex: 0,
-    seenEventFingerprints: new Set()
+    seenEventFingerprints: new Set(),
+    emittedOpenCodeToolUseIds: new Set(),
+    emittedOpenCodeToolResultIds: new Set()
   };
 
   if (parseVibeTranscriptOutput(lines.join('\n'), state)) {

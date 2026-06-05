@@ -1,11 +1,28 @@
 import { createClient, type RedisClientType } from 'redis';
 import type { Request } from 'express';
+import { createHash } from 'crypto';
 import type { GitHubUser } from './authUser.js';
 
 let tokenCacheClient: RedisClientType | null = null;
 const TOKEN_CACHE_PREFIX = 'propr:bearer:';
 const TOKEN_CACHE_TTL_SECONDS = 300;
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
+interface GitHubProfileResponse {
+    id: number;
+    login: string;
+    name: string | null;
+    email: string | null;
+    avatar_url: string | null;
+}
+
+interface GitHubTokenRefreshResponse {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    error?: string;
+    error_description?: string;
+}
 
 async function getTokenCacheClient(): Promise<RedisClientType> {
     if (!tokenCacheClient) {
@@ -18,10 +35,16 @@ async function getTokenCacheClient(): Promise<RedisClientType> {
     return tokenCacheClient;
 }
 
+function tokenCacheKey(token: string): string {
+    const digest = createHash('sha256').update(token).digest('hex');
+    return `${TOKEN_CACHE_PREFIX}${digest}`;
+}
+
 export async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
     try {
         const redis = await getTokenCacheClient();
-        const cached = await redis.get(`${TOKEN_CACHE_PREFIX}${token}`);
+        const cacheKey = tokenCacheKey(token);
+        const cached = await redis.get(cacheKey);
         if (cached) return JSON.parse(cached) as GitHubUser;
 
         const response = await fetch('https://api.github.com/user', {
@@ -33,7 +56,7 @@ export async function validateGitHubToken(token: string): Promise<GitHubUser | n
         });
         if (!response.ok) return null;
 
-        const profile = await response.json() as { id: number; login: string; name: string | null; email: string | null; avatar_url: string | null };
+        const profile = await response.json() as GitHubProfileResponse;
         const user: GitHubUser = {
             id: String(profile.id),
             login: profile.login,
@@ -44,7 +67,7 @@ export async function validateGitHubToken(token: string): Promise<GitHubUser | n
             accessToken: token,
         };
 
-        await redis.set(`${TOKEN_CACHE_PREFIX}${token}`, JSON.stringify(user), { EX: TOKEN_CACHE_TTL_SECONDS });
+        await redis.set(cacheKey, JSON.stringify(user), { EX: TOKEN_CACHE_TTL_SECONDS });
         return user;
     } catch (error) {
         console.error('Bearer token validation error:', error);
@@ -112,7 +135,7 @@ export async function refreshGitHubTokenIfNeeded(req: Request, force = false): P
             return false;
         }
 
-        const data = await response.json() as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string; error_description?: string };
+        const data = await response.json() as GitHubTokenRefreshResponse;
         if (data.error) {
             console.error(`GitHub token refresh error: ${data.error} - ${data.error_description}`);
             if (isUnrecoverableRefreshError(data.error)) await markGitHubSessionReauthRequired(req, data.error);

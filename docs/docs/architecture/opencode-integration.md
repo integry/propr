@@ -68,7 +68,7 @@ OpenCode agents are normal ProPR agent configs:
   "alias": "opencode",
   "enabled": true,
   "dockerImage": "propr/agent-opencode:latest",
-  "configPath": "~/.config/opencode",
+  "configPath": "/home/your-user/.config/opencode",
   "supportedModels": ["opencode-go/kimi-k2.6"],
   "defaultModel": "opencode-go/kimi-k2.6",
   "envVars": {
@@ -85,7 +85,7 @@ propr agent add opencode \
   -m opencode-go/kimi-k2.6 \
   -d opencode-go/kimi-k2.6 \
   --docker-image propr/agent-opencode:latest \
-  --config-path ~/.config/opencode
+  --config-path /home/your-user/.config/opencode
 ```
 
 Use `opencode-go/kimi-k2.6` for OpenCode Go Kimi, or replace it with another model ID from the provider configured in OpenCode. The `envVars` block is required only when using copied `opencode auth login` credentials under the mounted config tree; provider-key env vars can be supplied there instead.
@@ -143,11 +143,11 @@ In development compose, the worker mounts these read-write (matching Claude, Cod
 For launcher-based production deployments, pass the host paths explicitly:
 
 ```bash
--e HOST_OPENCODE_LEGACY_DIR=$HOME/.opencode
--e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode
+-e HOST_OPENCODE_LEGACY_DIR=/home/your-user/.opencode
+-e HOST_OPENCODE_XDG_DIR=/home/your-user/.config/opencode
 ```
 
-Pass `HOST_OPENCODE_LEGACY_DIR` only for agents whose saved `configPath` is `~/.opencode`. `HOST_OPENCODE_DIR` is accepted as an alias for `HOST_OPENCODE_XDG_DIR`.
+Pass `HOST_OPENCODE_LEGACY_DIR` only for agents whose saved `configPath` is `/home/your-user/.opencode`. `HOST_OPENCODE_DIR` is accepted as a compatibility alias for `HOST_OPENCODE_XDG_DIR`. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
 
 Before assigning work to OpenCode, verify:
 

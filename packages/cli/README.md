@@ -194,7 +194,7 @@ propr agent list                                         # List configured agent
 propr agent add my-claude -t claude -m model1,model2     # Add an agent
 propr agent add my-agent -t claude -m model -d model     # With default model
 propr agent add test -t gemini -m gemini-pro --disabled   # Add in disabled state
-propr agent add opencode -t opencode -m opencode-go/kimi-k2.6 -d opencode-go/kimi-k2.6 --config-path ~/.config/opencode
+propr agent add opencode -t opencode -m opencode-go/kimi-k2.6 -d opencode-go/kimi-k2.6 --config-path /home/your-user/.config/opencode
 propr agent add --file agent-config.json                 # From JSON file
 cat config.json | propr agent add --file -               # From stdin
 propr agent delete my-agent                              # Delete (with confirmation)
@@ -225,7 +225,7 @@ OpenCode Go is optional. The example model `opencode-go/kimi-k2.6` uses OpenCode
   "models": ["opencode-go/kimi-k2.6"],
   "defaultModel": "opencode-go/kimi-k2.6",
   "dockerImage": "propr/agent-opencode:latest",
-  "configPath": "~/.config/opencode",
+  "configPath": "/home/your-user/.config/opencode",
   "enabled": true,
   "envVars": {
     "XDG_DATA_HOME": "/home/node/.config/opencode/xdg-data"
