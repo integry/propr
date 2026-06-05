@@ -35,6 +35,7 @@ function detectParsedStoredOutputFormat(jsonText: string): StoredOutputFormat {
     if (isAntigravityStreamEvent(parsed)) return 'antigravity';
     if (parsed.type === 'message'
       || parsed.type === 'tool_use'
+      || parsed.type === 'tool_result'
       || parsed.type === 'error'
       || parsed.type === 'result'
       || parsed.type === 'turn.started'
@@ -56,12 +57,20 @@ function detectParsedStoredOutputFormat(jsonText: string): StoredOutputFormat {
 }
 
 function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
-  return parsed.type === 'init'
-    || parsed.type === 'tool_result'
-    || (parsed.type === 'result' && parsed.stats !== undefined)
-    || ((parsed.type === 'message' || parsed.type === 'result')
-      && typeof parsed.model === 'string'
-      && /^(antigravity-|gemini-)/.test(parsed.model));
+  return ((parsed.type === 'init' || parsed.type === 'message' || parsed.type === 'result') && hasAntigravityModel(parsed))
+    || (parsed.type === 'result' && hasAntigravityStats(parsed.stats));
+}
+
+function hasAntigravityModel(parsed: StoredExecutionOutputLine): boolean {
+  return typeof parsed.model === 'string' && /^(antigravity-|gemini-)/.test(parsed.model);
+}
+
+function hasAntigravityStats(stats: unknown): boolean {
+  if (typeof stats !== 'object' || stats === null || Array.isArray(stats)) {
+    return false;
+  }
+  const tokenStats = stats as { input_tokens?: unknown; output_tokens?: unknown };
+  return typeof tokenStats.input_tokens === 'number' || typeof tokenStats.output_tokens === 'number';
 }
 
 function isVibeTranscript(parsed: StoredExecutionOutputLine | StoredExecutionOutputLine[]): boolean {

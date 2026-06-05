@@ -197,6 +197,30 @@ function updateCodexDefaults(agent: AgentConfig): boolean {
     return migrated;
 }
 
+function updateAntigravityDefaults(agent: AgentConfig): boolean {
+    let migrated = false;
+
+    if (agent.type !== 'antigravity') {
+        return false;
+    }
+
+    if (agent.cliVersionType && agent.cliVersion !== 'latest') {
+        agent.cliVersion = 'latest';
+        migrated = true;
+    }
+
+    if (agent.cliVersionResolved !== AGENT_DEFAULT_VERSIONS.antigravity) {
+        agent.cliVersionResolved = AGENT_DEFAULT_VERSIONS.antigravity;
+        migrated = true;
+    }
+
+    if (migrated) {
+        logger.info({ agentAlias: agent.alias, cliVersion: agent.cliVersionResolved }, 'Updated Antigravity CLI version to latest');
+    }
+
+    return migrated;
+}
+
 function removeDeprecatedModels(agent: AgentConfig): boolean {
     if (!agent.supportedModels) {
         return false;
@@ -230,6 +254,7 @@ export async function migrateAgentConfigs(): Promise<boolean> {
                 migrated = addMissingModels(agent, VIBE_CURRENT_MODELS, 'Added current Mistral Vibe models to agent') || migrated;
             }
             migrated = updateCodexDefaults(agent) || migrated;
+            migrated = updateAntigravityDefaults(agent) || migrated;
             migrated = removeDeprecatedModels(agent) || migrated;
         }
 

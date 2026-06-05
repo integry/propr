@@ -11,7 +11,7 @@ import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/doc
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
 import { computeContentHash, generateImageTag, getDockerTagComponent } from './version/versionService.js';
-import { AGENT_IMAGE_NAMES } from './version/types.js';
+import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from './version/types.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -234,9 +234,11 @@ export class AgentRegistry {
      * Uses versioned image if version config is present, otherwise uses default.
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
-        const cliVersionResolved = config.type === 'antigravity'
-            ? 'latest'
-            : config.cliVersionResolved;
+        if (config.type === 'antigravity') {
+            config.cliVersion = 'latest';
+            config.cliVersionResolved = AGENT_DEFAULT_VERSIONS.antigravity;
+        }
+        const cliVersionResolved = config.cliVersionResolved;
         if (this.isManagedVersionedImage(config, cliVersionResolved)) {
             const contentHash = computeContentHash(config.type);
             const expectedImageTag = generateImageTag(config.type, cliVersionResolved!, contentHash);
@@ -263,7 +265,7 @@ export class AgentRegistry {
             const contentHash = computeContentHash(config.type);
             const result = await ensureVersionedAgentImage(
                 config.type,
-                config.cliVersionResolved,
+                cliVersionResolved!,
                 contentHash
             );
             if (result.success && result.imageTag !== config.dockerImage) {

@@ -35,10 +35,27 @@ test('stored output detection keeps Codex result JSONL classified as Codex', () 
   assert.equal(detectStoredOutputFormat(output), 'codex');
 });
 
-test('stored output detection recognizes Antigravity JSONL when init is missing', () => {
+test('stored output detection keeps Codex tool result JSONL classified as Codex', () => {
+  const output = [
+    JSON.stringify({ type: 'tool_result', result: 'package.json contents', timestamp: '2026-06-05T13:00:02.000Z' })
+  ].join('\n');
+
+  assert.equal(detectStoredOutputFormat(output), 'codex');
+});
+
+test('stored output detection does not treat generic init JSONL as Antigravity', () => {
+  const output = [
+    JSON.stringify({ type: 'init', timestamp: '2026-06-05T13:00:00.000Z' })
+  ].join('\n');
+
+  assert.equal(detectStoredOutputFormat(output), 'unknown');
+});
+
+test('stored output detection recognizes Antigravity JSONL from result stats when init is missing', () => {
   const output = [
     JSON.stringify({ type: 'message', role: 'assistant', content: 'done', timestamp: '2026-06-05T13:00:01.000Z' }),
-    JSON.stringify({ type: 'tool_result', result: 'package.json contents', timestamp: '2026-06-05T13:00:02.000Z' })
+    JSON.stringify({ type: 'tool_result', result: 'package.json contents', timestamp: '2026-06-05T13:00:02.000Z' }),
+    JSON.stringify({ type: 'result', status: 'success', stats: { input_tokens: 10, output_tokens: 2 }, timestamp: '2026-06-05T13:00:03.000Z' })
   ].join('\n');
 
   assert.equal(detectStoredOutputFormat(output), 'antigravity');
