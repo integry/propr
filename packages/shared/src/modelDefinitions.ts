@@ -18,8 +18,12 @@ export interface ModelInfo {
 }
 
 // Claude models (newest first within each tier, then by capability: Opus > Sonnet > Haiku)
-// 4.6 models require newer Claude Code versions; 4.5 models work with older versions
+// 4.8/4.7/4.6 models require newer Claude Code versions; 4.5 models work with older versions
 export const CLAUDE_MODELS: ModelInfo[] = [
+  // Claude 4.8 series
+  { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', shortName: 'Claude Opus 4.8', shortAlias: 'opus48', githubLabel: 'llm-claude-opus48', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.8' },
+  // Claude 4.7 series
+  { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', shortName: 'Claude Opus 4.7', shortAlias: 'opus47', githubLabel: 'llm-claude-opus47', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.7' },
   // Claude 4.6 series (1M context for Opus/Sonnet)
   { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', shortName: 'Claude Opus 4.6', shortAlias: 'opus46', githubLabel: 'llm-claude-opus46', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.6', minAgentVersion: '2.1.50' },
   { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', shortName: 'Claude Sonnet 4.6', shortAlias: 'sonnet46', githubLabel: 'llm-claude-sonnet46', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-4.6', minAgentVersion: '2.1.45' },
@@ -29,20 +33,25 @@ export const CLAUDE_MODELS: ModelInfo[] = [
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortName: 'Claude Haiku', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku', contextWindow: '200K', maxTokens: 200000, openRouterId: 'anthropic/claude-haiku-4.5' },
 ];
 
-// Codex (OpenAI) models - ChatGPT Plus/Pro available models
-// Note: Available models depend on account type (ChatGPT login vs API key)
-// Recommended: gpt-5.5 (default), gpt-5.4-mini (fast/subagents), gpt-5.3-codex (industry-leading coding)
+// Codex (OpenAI) models - availability depends on account type (ChatGPT login vs API key)
+// Recommended: gpt-5.5 (default), gpt-5.4-mini/nano (fast/subagents), gpt-5.3-codex (agentic coding)
 export const CODEX_MODELS: ModelInfo[] = [
-  { id: 'gpt-5.5', name: 'GPT-5.5', shortName: 'GPT-5.5', shortAlias: 'gpt55', githubLabel: 'llm-codex-gpt55', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.5' },
-  { id: 'gpt-5.4', name: 'GPT-5.4', shortName: 'GPT-5.4', shortAlias: 'gpt54', githubLabel: 'llm-codex-gpt54', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.4' },
+  { id: 'gpt-5.5', name: 'GPT-5.5', shortName: 'GPT-5.5', shortAlias: 'gpt55', githubLabel: 'llm-codex-gpt55', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.5' },
+  { id: 'gpt-5.5-pro', name: 'GPT-5.5 Pro', shortName: 'GPT-5.5 Pro', shortAlias: 'gpt55-pro', githubLabel: 'llm-codex-gpt55-pro', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.5-pro' },
+  { id: 'gpt-5.4', name: 'GPT-5.4', shortName: 'GPT-5.4', shortAlias: 'gpt54', githubLabel: 'llm-codex-gpt54', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.4' },
+  { id: 'gpt-5.4-pro', name: 'GPT-5.4 Pro', shortName: 'GPT-5.4 Pro', shortAlias: 'gpt54-pro', githubLabel: 'llm-codex-gpt54-pro', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.4-pro' },
   { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', shortName: 'GPT-5.4 Mini', shortAlias: 'gpt54-mini', githubLabel: 'llm-codex-gpt54-mini', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.4-mini' },
+  { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano', shortName: 'GPT-5.4 Nano', shortAlias: 'gpt54-nano', githubLabel: 'llm-codex-gpt54-nano', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.4-nano' },
   { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', shortName: 'GPT-5.3 Codex', shortAlias: 'gpt53-codex', githubLabel: 'llm-codex-gpt53-codex', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.3-codex' },
   { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', shortName: 'Codex Spark', shortAlias: 'codex-spark', githubLabel: 'llm-codex-spark', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.3-codex-spark' },
   { id: 'gpt-5.2', name: 'GPT-5.2', shortName: 'GPT-5.2', shortAlias: 'gpt52', githubLabel: 'llm-codex-gpt52', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.2' },
+  { id: 'gpt-5-mini', name: 'GPT-5 Mini', shortName: 'GPT-5 Mini', shortAlias: 'gpt5-mini', githubLabel: 'llm-codex-gpt5-mini', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5-mini' },
+  { id: 'gpt-5-nano', name: 'GPT-5 Nano', shortName: 'GPT-5 Nano', shortAlias: 'gpt5-nano', githubLabel: 'llm-codex-gpt5-nano', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5-nano' },
 ];
 
 // Gemini models
 export const GEMINI_MODELS: ModelInfo[] = [
+  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview', shortName: 'Gemini 3.1 Pro', shortAlias: 'g31-pro-preview', githubLabel: 'llm-gemini-g31-pro-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.1-pro-preview' },
   { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', shortName: 'Gemini 3 Preview', shortAlias: 'pro-preview', githubLabel: 'llm-gemini-pro-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3-pro-preview' },
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview', shortName: 'Gemini 3 Flash', shortAlias: 'g3-flash-preview', githubLabel: 'llm-gemini-g3-flash-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3-flash-preview' },
   { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortName: 'Gemini Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-pro' },
@@ -95,7 +104,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.85'
+    defaultCliVersion: '2.1.165'
   },
   codex: {
     dockerImage: 'propr/agent-codex:latest',
@@ -103,7 +112,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
     npmPackage: '@openai/codex',
-    defaultCliVersion: '0.133.0'
+    defaultCliVersion: '0.137.0'
   },
   gemini: {
     dockerImage: 'propr/agent-gemini:latest',
@@ -111,7 +120,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: GEMINI_MODELS.map(m => m.id),
     defaultAlias: 'gemini',
     npmPackage: '@google/gemini-cli',
-    defaultCliVersion: '0.35.1'
+    defaultCliVersion: '0.45.1'
   },
   vibe: {
     dockerImage: 'propr/agent-vibe:latest',

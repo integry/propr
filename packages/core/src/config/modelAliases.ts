@@ -41,16 +41,26 @@ export interface LlmLabelResolution {
 /**
  * Static model aliases for backwards compatibility.
  * These map short names to full Claude model IDs.
- * Default aliases (opus, sonnet) point to latest 4.6 versions.
+ * Default aliases (opus, sonnet) point to the latest versions for each tier.
  * Use opus45/sonnet45 aliases for older Claude Code versions.
  */
 const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
-    // Default aliases point to latest (4.6)
-    'opus': 'claude-opus-4-6',
-    'claude-opus': 'claude-opus-4-6',
+    // Default aliases point to latest tier models
+    'opus': 'claude-opus-4-8',
+    'claude-opus': 'claude-opus-4-8',
+
+    // Explicit 4.8 aliases
+    'opus48': 'claude-opus-4-8',
+    'opus-4-8': 'claude-opus-4-8',
+    'claude-opus-4-8': 'claude-opus-4-8',
 
     'sonnet': 'claude-sonnet-4-6',
     'claude-sonnet': 'claude-sonnet-4-6',
+
+    // Explicit 4.7 aliases
+    'opus47': 'claude-opus-4-7',
+    'opus-4-7': 'claude-opus-4-7',
+    'claude-opus-4-7': 'claude-opus-4-7',
 
     // Explicit 4.6 aliases
     'opus46': 'claude-opus-4-6',
