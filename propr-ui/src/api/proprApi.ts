@@ -70,12 +70,38 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
   const data: StatusResponse = await response.json();
   const workers: { id: number; status: string }[] = [];
   for (let i = 0; i < (data.workerCount || 0); i++) workers.push({ id: i + 1, status: 'active' });
+  const mapAuthStatus = (status?: string) => status === 'connected' ? 'Authenticated' : 'Failed';
+  const mapAgentStatus = (status?: string) => status === 'connected' ? 'Ready' : 'Failed';
+  const mapIndexingStatus = (status?: string) => {
+    switch (status) {
+      case 'active':
+        return 'Active';
+      case 'queued':
+        return 'Queued';
+      case 'idle':
+        return 'Idle';
+      case 'failed':
+        return 'Failed';
+      case 'connected':
+        return 'Connected';
+      case 'disconnected':
+        return 'Unavailable';
+      default:
+        return 'Unavailable';
+    }
+  };
+  const agents = (data.agents || []).map(agent => ({
+    ...agent,
+    status: mapAgentStatus(agent.status),
+  }));
   return {
     daemon: data.daemon === 'running' ? 'Running' : 'Stopped',
     workers,
     redis: data.redis === 'connected' ? 'Connected' : 'Disconnected',
-    githubAuth: data.githubAuth === 'connected' ? 'Authenticated' : 'Failed',
-    claudeAuth: data.claudeAuth === 'connected' ? 'Authenticated' : 'Failed',
+    githubAuth: mapAuthStatus(data.githubAuth),
+    claudeAuth: mapAuthStatus(data.claudeAuth),
+    indexing: mapIndexingStatus(data.indexing),
+    agents,
   };
 };
 
