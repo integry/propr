@@ -22,8 +22,8 @@ export { UsageLimitError };
 const DEFAULT_GEMINI_TIMEOUT_MS = 300000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
-// Container path for Gemini config
-const CONTAINER_CONFIG_PATH = '/home/node/.gemini';
+const GEMINI_CONTAINER_CONFIG_PATH = '/home/node/.gemini';
+const ANTIGRAVITY_CONTAINER_CONFIG_PATH = '/home/node/.antigravity';
 
 // Gemini JSONL event types (from --output-format stream-json)
 interface GeminiInitEvent { type: 'init'; timestamp: string; session_id: string; model: string }
@@ -46,6 +46,18 @@ export class GeminiAgent implements Agent {
         this.timeoutMs = parseInt(process.env.GEMINI_TIMEOUT_MS || String(DEFAULT_GEMINI_TIMEOUT_MS), 10);
     }
 
+    private getRuntimeName(): 'antigravity' {
+        return 'antigravity';
+    }
+
+    private getContainerConfigPath(): string {
+        return this.getRuntimeName() === 'antigravity' ? ANTIGRAVITY_CONTAINER_CONFIG_PATH : GEMINI_CONTAINER_CONFIG_PATH;
+    }
+
+    private getCliCommand(): string {
+        return this.getRuntimeName();
+    }
+
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber } = options;
         const startTime = Date.now();
@@ -66,7 +78,7 @@ export class GeminiAgent implements Agent {
 
             // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
-                'gemini',
+                this.getRuntimeName(),
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData,
                     taskId, streamToRedis: true
@@ -166,7 +178,7 @@ export class GeminiAgent implements Agent {
 
             // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
-                'gemini',
+                this.getRuntimeName(),
                 async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData, taskId }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
@@ -290,22 +302,26 @@ export class GeminiAgent implements Agent {
         const timestamp = Date.now().toString(36);
         const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
         const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
-        const containerName = `${this.config.alias || 'gemini'}-${taskType}-${shortTaskId}`;
+        const runtimeName = this.getRuntimeName();
+        const containerName = `${this.config.alias || runtimeName}-${taskType}-${shortTaskId}`;
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
-            '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
+            '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
             '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'GEMINI_CLI=1', '-e', 'GEMINI_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
-            this.config.dockerImage, 'gemini', '--yolo', '--skip-trust', '--output-format', outputFormat
+            this.config.dockerImage, this.getCliCommand(), '--yolo', '--skip-trust', '--output-format', outputFormat
         ];
         if (modelName) {
             // Strip agent prefix if present (e.g., "gemini:gemini-3-flash-preview" -> "gemini-3-flash-preview")
-            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+            const unscopedModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+            const cleanModelName = runtimeName === 'antigravity' && unscopedModelName.startsWith('antigravity-')
+                ? unscopedModelName.slice('antigravity-'.length)
+                : unscopedModelName;
             dockerArgs.push('-m', cleanModelName);
             logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Gemini agent');
         }
         else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Gemini agent will use default'); }
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Gemini agent');
-        return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'gemini');
+        return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, runtimeName);
     }
 
     /** Handles an assistant message event, updating current and last complete assistant messages. */

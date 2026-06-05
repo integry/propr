@@ -188,6 +188,6 @@ export type AgentType = SharedAgentType;
 export const CONTAINER_CONFIG_PATHS: Record<AgentType, string> = {
     claude: '/home/node/.claude',
     codex: '/home/node/.codex',
-    gemini: '/home/node/.gemini',
+    antigravity: '/home/node/.antigravity',
     vibe: '/home/node/.vibe'
 };

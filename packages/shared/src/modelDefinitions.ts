@@ -2,8 +2,8 @@
 // This file provides a single source of truth for model information
 // Both backend (packages/core) and frontend (propr-ui) import from this package
 
-export type AgentType = 'claude' | 'codex' | 'gemini' | 'vibe';
-export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'gemini', 'vibe'];
+export type AgentType = 'claude' | 'codex' | 'antigravity' | 'vibe';
+export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'antigravity', 'vibe'];
 
 export interface ModelInfo {
   id: string;
@@ -49,15 +49,20 @@ export const CODEX_MODELS: ModelInfo[] = [
   { id: 'gpt-5-nano', name: 'GPT-5 Nano', shortName: 'GPT-5 Nano', shortAlias: 'gpt5-nano', githubLabel: 'llm-codex-gpt5-nano', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5-nano' },
 ];
 
-// Gemini models
-export const GEMINI_MODELS: ModelInfo[] = [
-  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview', shortName: 'Gemini 3.1 Pro', shortAlias: 'g31-pro-preview', githubLabel: 'llm-gemini-g31-pro-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.1-pro-preview' },
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', shortName: 'Gemini 3 Preview', shortAlias: 'pro-preview', githubLabel: 'llm-gemini-pro-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3-pro-preview' },
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview', shortName: 'Gemini 3 Flash', shortAlias: 'g3-flash-preview', githubLabel: 'llm-gemini-g3-flash-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3-flash-preview' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortName: 'Gemini Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-pro' },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', shortName: 'Gemini Flash', shortAlias: 'flash', githubLabel: 'llm-gemini-flash', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-flash' },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', shortName: 'Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-gemini-flash-lite', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-flash-lite' },
+// Antigravity models. Antigravity can route to multiple model families, so
+// these IDs are intentionally namespaced instead of treating every model as a
+// Google/Gemini model.
+export const ANTIGRAVITY_MODELS: ModelInfo[] = [
+  { id: 'antigravity-gemini-3.1-pro-preview', name: 'Antigravity Gemini 3.1 Pro Preview', shortName: 'Antigravity Gemini 3.1 Pro', shortAlias: 'g31-pro-preview', githubLabel: 'llm-antigravity-g31-pro-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.1-pro-preview' },
+  { id: 'antigravity-gemini-3-pro-preview', name: 'Antigravity Gemini 3 Pro Preview', shortName: 'Antigravity Gemini 3', shortAlias: 'pro-preview', githubLabel: 'llm-antigravity-pro-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3-pro-preview' },
+  { id: 'antigravity-gemini-3-flash-preview', name: 'Antigravity Gemini 3 Flash Preview', shortName: 'Antigravity Gemini Flash', shortAlias: 'g3-flash-preview', githubLabel: 'llm-antigravity-g3-flash-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3-flash-preview' },
+  { id: 'antigravity-gemini-2.5-pro', name: 'Antigravity Gemini 2.5 Pro', shortName: 'Antigravity Gemini Pro', shortAlias: 'pro', githubLabel: 'llm-antigravity-pro', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-pro' },
+  { id: 'antigravity-gemini-2.5-flash', name: 'Antigravity Gemini 2.5 Flash', shortName: 'Antigravity Gemini Flash', shortAlias: 'flash', githubLabel: 'llm-antigravity-flash', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-flash' },
+  { id: 'antigravity-gemini-2.5-flash-lite', name: 'Antigravity Gemini 2.5 Flash Lite', shortName: 'Antigravity Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-antigravity-flash-lite', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-flash-lite' },
+  { id: 'antigravity-opus-4-8', name: 'Antigravity Opus 4.8', shortName: 'Antigravity Opus 4.8', shortAlias: 'opus48', githubLabel: 'llm-antigravity-opus48', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.8' },
+  { id: 'antigravity-opus-4-7', name: 'Antigravity Opus 4.7', shortName: 'Antigravity Opus 4.7', shortAlias: 'opus47', githubLabel: 'llm-antigravity-opus47', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.7' },
 ];
+export const GEMINI_MODELS: ModelInfo[] = ANTIGRAVITY_MODELS;
 
 // Mistral Vibe coding models
 // Available models from `vibe /model`: mistral-medium-3.5, devstral-small, local
@@ -67,13 +72,13 @@ export const VIBE_MODELS: ModelInfo[] = [
 ];
 
 // All models combined
-export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS, ...VIBE_MODELS];
+export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...ANTIGRAVITY_MODELS, ...VIBE_MODELS];
 
 // Map of agent types to their models
 export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
   claude: CLAUDE_MODELS,
   codex: CODEX_MODELS,
-  gemini: GEMINI_MODELS,
+  antigravity: ANTIGRAVITY_MODELS,
   vibe: VIBE_MODELS,
 };
 
@@ -114,13 +119,13 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     npmPackage: '@openai/codex',
     defaultCliVersion: '0.137.0'
   },
-  gemini: {
-    dockerImage: 'propr/agent-gemini:latest',
-    configPath: '~/.gemini',
-    defaultModels: GEMINI_MODELS.map(m => m.id),
-    defaultAlias: 'gemini',
-    npmPackage: '@google/gemini-cli',
-    defaultCliVersion: '0.45.1'
+  antigravity: {
+    dockerImage: 'propr/agent-antigravity:latest',
+    configPath: '~/.antigravity',
+    defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
+    defaultAlias: 'antigravity',
+    npmPackage: '@google/antigravity-cli',
+    defaultCliVersion: '0.1.0'
   },
   vibe: {
     dockerImage: 'propr/agent-vibe:latest',
@@ -136,6 +141,6 @@ export const AGENT_DEFAULTS: Record<AgentType, {
 export const typeBadgeColors: Record<AgentType, string> = {
   claude: 'bg-orange-100 text-orange-800 border-orange-300',
   codex: 'bg-green-100 text-green-800 border-green-300',
-  gemini: 'bg-blue-100 text-blue-800 border-blue-300',
+  antigravity: 'bg-violet-100 text-violet-800 border-violet-300',
   vibe: 'bg-red-100 text-red-700 border-red-400'  // Mistral Vibe brand orange-red (#FA500F)
 };

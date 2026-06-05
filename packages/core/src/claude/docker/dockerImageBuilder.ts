@@ -10,7 +10,7 @@ import { executeDockerCommand } from './dockerExecutor.js';
 const AGENT_DOCKERFILES: Record<string, string> = {
     'claude': 'Dockerfile.claude',
     'codex': 'Dockerfile.codex',
-    'gemini': 'Dockerfile.gemini',
+    'antigravity': 'Dockerfile.antigravity',
     'vibe': 'Dockerfile.vibe'
 };
 

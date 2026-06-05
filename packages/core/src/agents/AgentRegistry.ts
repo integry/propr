@@ -4,7 +4,7 @@ import logger from '../utils/logger.js';
 import { Agent, AgentConfig, AgentType } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
-import { GeminiAgent } from './impl/GeminiAgent.js';
+import { AntigravityAgent } from './impl/AntigravityAgent.js';
 import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
 import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/docker/dockerExecutor.js';
@@ -290,8 +290,8 @@ export class AgentRegistry {
                 return new ClaudeAgent(config);
             case 'codex':
                 return new CodexAgent(config);
-            case 'gemini':
-                return new GeminiAgent(config);
+            case 'antigravity':
+                return new AntigravityAgent(config);
             case 'vibe':
                 return new VibeAgent(config);
             default:

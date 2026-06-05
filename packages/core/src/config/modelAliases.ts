@@ -1,6 +1,6 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
-import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS, type AgentType } from './modelDefinitions.js';
+import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS, AGENT_MODELS, type AgentType } from './modelDefinitions.js';
 
 export type ModelAlias = string;
 export type ModelId = string;
@@ -141,8 +141,14 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     // This handles labels like "llm-vibe-mistral" where the prefix indicates agent type
     const dashIdx = lowerCaseModel.indexOf('-');
     if (dashIdx > 0) {
+        const possibleAgentType = lowerCaseModel.substring(0, dashIdx) === 'gemini'
+            ? 'antigravity'
+            : lowerCaseModel.substring(0, dashIdx);
         const possibleAlias = lowerCaseModel.substring(dashIdx + 1);
-        for (const modelInfo of ALL_MODELS) {
+        const candidateModels = possibleAgentType in AGENT_MODELS
+            ? AGENT_MODELS[possibleAgentType as AgentType]
+            : ALL_MODELS;
+        for (const modelInfo of candidateModels) {
             if (modelInfo.shortAlias.toLowerCase() === possibleAlias) {
                 return modelInfo.id;
             }
@@ -156,7 +162,7 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
  * Selects the preferred default model for an agent type when no explicit default is set.
  * Preference rules:
  * - Claude: prefer Opus, then Sonnet (skip Haiku)
- * - Gemini: prefer Pro models (skip Flash)
+ * - Antigravity: prefer Pro models, then Opus-class models
  * - Codex (OpenAI): prefer GPT (skip mini/spark variants)
  */
 function getPreferredModelForAgent(config: AgentConfig): string | null {
@@ -174,10 +180,12 @@ function getPreferredModelForAgent(config: AgentConfig): string | null {
             if (sonnet) return sonnet;
             break;
         }
-        case 'gemini': {
+        case 'antigravity': {
             // Prefer Pro (not Flash)
             const pro = models.find((_m, i) => lowerModels[i].includes('pro'));
             if (pro) return pro;
+            const opus = models.find((_m, i) => lowerModels[i].includes('opus'));
+            if (opus) return opus;
             break;
         }
         case 'codex': {
@@ -290,8 +298,11 @@ function findAgentByType(agentType: AgentType, agents: { config: AgentConfig }[]
 }
 
 function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
+    const compatibilityLabel = fullLabel.startsWith('llm-gemini-')
+        ? fullLabel.replace('llm-gemini-', 'llm-antigravity-')
+        : fullLabel;
     for (const modelInfo of ALL_MODELS) {
-        if (modelInfo.githubLabel.toLowerCase() === fullLabel) {
+        if (modelInfo.githubLabel.toLowerCase() === compatibilityLabel) {
             const agentType = getAgentTypeFromModel(modelInfo.id);
             const agent = findAgentByType(agentType, agents);
             return { agentAlias: agent?.config.alias || agentType, model: modelInfo.id };
@@ -302,14 +313,15 @@ function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }
 
 function resolveByAgentTypePrefix(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
     const lowerLabel = label.toLowerCase();
-    const agentTypes: AgentType[] = ['claude', 'codex', 'gemini', 'vibe'];
+    const agentTypes: Array<AgentType | 'gemini'> = ['claude', 'codex', 'antigravity', 'gemini', 'vibe'];
 
-    for (const agentType of agentTypes) {
-        if (!lowerLabel.startsWith(`${agentType}-`)) {
+    for (const labelAgentType of agentTypes) {
+        if (!lowerLabel.startsWith(`${labelAgentType}-`)) {
             continue;
         }
 
-        const modelPart = label.substring(agentType.length + 1);
+        const agentType: AgentType = labelAgentType === 'gemini' ? 'antigravity' : labelAgentType;
+        const modelPart = label.substring(labelAgentType.length + 1);
         const agent = findAgentByType(agentType, agents);
         const matchedModel = agent ? findMatchingModel(modelPart, agent.config) : null;
         const resolvedModel = matchedModel || resolveModelAlias(`${agentType}-${modelPart}`);
@@ -414,9 +426,9 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
  * Determines the agent type from a model ID.
  * E.g., "gemini-3-flash-preview" -> "gemini", "claude-opus-4-5-20251101" -> "claude"
  */
-function getAgentTypeFromModel(modelId: string): 'claude' | 'codex' | 'gemini' | 'vibe' {
+function getAgentTypeFromModel(modelId: string): AgentType {
     const lowerModel = modelId.toLowerCase();
-    if (lowerModel.startsWith('gemini')) return 'gemini';
+    if (lowerModel.startsWith('antigravity')) return 'antigravity';
     if (lowerModel.startsWith('claude')) return 'claude';
     if (lowerModel.startsWith('mistral') || lowerModel.startsWith('devstral') || lowerModel.includes('vibe')) return 'vibe';
     if (lowerModel.startsWith('gpt') || lowerModel.includes('codex')) return 'codex';

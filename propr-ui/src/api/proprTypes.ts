@@ -1,6 +1,6 @@
 export interface SystemAgentStatus {
   id: string;
-  type: 'claude' | 'codex' | 'gemini' | 'vibe' | string;
+  type: 'claude' | 'codex' | 'antigravity' | 'gemini' | 'vibe' | string;
   alias: string;
   status: string;
 }
@@ -87,7 +87,7 @@ export interface DeleteTaskResponse {
 
 export interface AgentConfig {
   id: string;
-  type: 'claude' | 'codex' | 'gemini' | 'vibe';
+  type: 'claude' | 'codex' | 'antigravity' | 'vibe';
   alias: string;
   enabled: boolean;
   dockerImage: string;

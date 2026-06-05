@@ -1,5 +1,5 @@
 import path from 'path';
-import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS } from '@propr/shared';
+import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS, type AgentType } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from '../agents/version/types.js';
@@ -16,7 +16,7 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
  */
 export interface AgentConfig {
     id: string;
-    type: 'claude' | 'codex' | 'gemini' | 'vibe';
+    type: AgentType;
     alias: string;
     enabled: boolean;
     dockerImage: string;
@@ -36,7 +36,7 @@ export interface AgentConfig {
 export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
     claude: '~/.claude',
     codex: '~/.codex',
-    gemini: '~/.gemini',
+    antigravity: '~/.antigravity',
     vibe: '~/.vibe'
 };
 
@@ -63,9 +63,10 @@ export function getDefaultConfigPath(agentType: AgentConfig['type']): string {
  * Returns an empty array if no agents are configured.
  */
 export async function loadAgents(): Promise<AgentConfig[]> {
-    const agents = await getConfig<AgentConfig[]>('agents', []);
+    const agents = await getConfig<Array<AgentConfig | (Omit<AgentConfig, 'type'> & { type: 'gemini' })>>('agents', []);
+    const normalizedAgents = agents.map(normalizeLegacyAgentConfig);
     logger.info({ agentCount: agents.length }, 'Successfully loaded agents configuration');
-    return agents;
+    return normalizedAgents;
 }
 
 /**
@@ -80,23 +81,58 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
 const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
     claude: AGENT_DEFAULT_VERSIONS.claude,
     codex: AGENT_DEFAULT_VERSIONS.codex,
-    gemini: AGENT_DEFAULT_VERSIONS.gemini,
+    antigravity: AGENT_DEFAULT_VERSIONS.antigravity,
     vibe: AGENT_DEFAULT_VERSIONS.vibe
 };
 
 const CURRENT_DEFAULT_MODELS: Record<AgentConfig['type'], string[]> = {
     claude: AGENT_DEFAULTS.claude.defaultModels,
     codex: AGENT_DEFAULTS.codex.defaultModels,
-    gemini: AGENT_DEFAULTS.gemini.defaultModels,
+    antigravity: AGENT_DEFAULTS.antigravity.defaultModels,
     vibe: AGENT_DEFAULTS.vibe.defaultModels
 };
 const VIBE_CURRENT_MODELS = VIBE_MODELS.map(model => model.id);
-const LEGACY_AGENT_IMAGE_NAMES: Record<AgentConfig['type'], string> = {
-    claude: 'propr-claude',
-    codex: 'propr-codex',
-    gemini: 'propr-gemini',
-    vibe: 'propr-vibe'
+const LEGACY_AGENT_IMAGE_NAMES: Record<AgentConfig['type'], string[]> = {
+    claude: ['propr-claude'],
+    codex: ['propr-codex'],
+    antigravity: ['propr-gemini', 'propr-antigravity'],
+    vibe: ['propr-vibe']
 };
+
+function normalizeLegacyModelId(modelId: string): string {
+    if (modelId.startsWith('antigravity-')) {
+        return modelId;
+    }
+    if (modelId.startsWith('gemini-')) {
+        return `antigravity-${modelId}`;
+    }
+    return modelId;
+}
+
+function normalizeLegacyConfigPath(configPath: string): string {
+    if (configPath === '~/.gemini') {
+        return '~/.antigravity';
+    }
+    return configPath.replace(/\/\.gemini$/, '/.antigravity');
+}
+
+export function normalizeLegacyAgentConfig(agent: AgentConfig | (Omit<AgentConfig, 'type'> & { type: 'gemini' })): AgentConfig {
+    if (agent.type !== 'gemini') {
+        return agent;
+    }
+
+    return {
+        ...agent,
+        type: 'antigravity',
+        dockerImage: agent.dockerImage?.replace(/^propr\/agent-gemini(?=:|$)/, 'propr/agent-antigravity'),
+        configPath: normalizeLegacyConfigPath(agent.configPath),
+        supportedModels: agent.supportedModels?.map(normalizeLegacyModelId) || [],
+        defaultModel: agent.defaultModel ? normalizeLegacyModelId(agent.defaultModel) : agent.defaultModel,
+        modelCustomLabels: agent.modelCustomLabels
+            ? Object.fromEntries(Object.entries(agent.modelCustomLabels).map(([modelId, label]) => [normalizeLegacyModelId(modelId), label]))
+            : agent.modelCustomLabels
+    };
+}
 
 function migrateCliVersion(agent: AgentConfig): boolean {
     if (agent.cliVersionType) {
@@ -145,16 +181,18 @@ function applyDefaultAgentFields(agent: AgentConfig): boolean {
 }
 
 function migrateLegacyAgentImageName(agent: AgentConfig): boolean {
-    const legacyName = LEGACY_AGENT_IMAGE_NAMES[agent.type];
+    const legacyNames = LEGACY_AGENT_IMAGE_NAMES[agent.type];
     const currentName = AGENT_IMAGE_NAMES[agent.type];
 
-    if (!agent.dockerImage?.startsWith(`${legacyName}:`)) {
-        return false;
+    for (const legacyName of legacyNames) {
+        if (agent.dockerImage?.startsWith(`${legacyName}:`)) {
+            agent.dockerImage = `${currentName}:${agent.dockerImage.slice(legacyName.length + 1)}`;
+            logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Migrated agent Docker image to registry namespace');
+            return true;
+        }
     }
 
-    agent.dockerImage = `${currentName}:${agent.dockerImage.slice(legacyName.length + 1)}`;
-    logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Migrated agent Docker image to registry namespace');
-    return true;
+    return false;
 }
 
 function addMissingModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
@@ -216,8 +254,10 @@ function removeDeprecatedModels(agent: AgentConfig): boolean {
  */
 export async function migrateAgentConfigs(): Promise<boolean> {
     try {
-        const agents = await loadAgents();
+        const rawAgents = await getConfig<Array<AgentConfig | (Omit<AgentConfig, 'type'> & { type: 'gemini' })>>('agents', []);
+        const agents = rawAgents.map(normalizeLegacyAgentConfig);
         let migrated = false;
+        migrated = rawAgents.some((agent, index) => agent !== agents[index] || agent.type !== agents[index].type) || migrated;
 
         for (const agent of agents) {
             migrated = migrateCliVersion(agent) || migrated;

@@ -8,7 +8,7 @@ import { Bot, User, Send } from 'lucide-react';
 const selectedBadgeColors: Record<AgentType, string> = {
   claude: 'bg-orange-500 text-white border-orange-600 shadow-md ring-2 ring-orange-300',
   codex: 'bg-green-500 text-white border-green-600 shadow-md ring-2 ring-green-300',
-  gemini: 'bg-blue-500 text-white border-blue-600 shadow-md ring-2 ring-blue-300',
+  antigravity: 'bg-violet-500 text-white border-violet-600 shadow-md ring-2 ring-violet-300',
   vibe: 'bg-pink-500 text-white border-pink-600 shadow-md ring-2 ring-pink-300'
 };
 
