@@ -286,7 +286,7 @@ export class AgentRegistry {
      * Creates an agent instance from configuration.
      * This is the factory method that handles different agent types.
      */
-    private createAgentFromConfig(config: AgentConfig): Agent {
+    createAgentFromConfig(config: AgentConfig): Agent {
         switch (config.type) {
             case 'claude':
                 return new ClaudeAgent(config);
@@ -316,6 +316,8 @@ export class AgentRegistry {
             dockerImage: process.env.CLAUDE_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude,
             configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
             supportedModels: [
+                'claude-opus-4-8',
+                'claude-opus-4-7',
                 'claude-opus-4-6',
                 'claude-sonnet-4-6',
                 'claude-opus-4-5-20251101',

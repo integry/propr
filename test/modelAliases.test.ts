@@ -7,8 +7,8 @@ import type { AgentConfig } from '@propr/core';
 
 test('Model Aliases Configuration', async (t) => {
     await t.test('should resolve known aliases to full model IDs', () => {
-        // Default aliases point to 4.6 models
-        assert.strictEqual(resolveModelAlias('opus'), 'claude-opus-4-6');
+        // Default aliases point to the latest tier models
+        assert.strictEqual(resolveModelAlias('opus'), 'claude-opus-4-8');
         assert.strictEqual(resolveModelAlias('sonnet'), 'claude-sonnet-4-6');
         // Explicit 4.5 aliases
         assert.strictEqual(resolveModelAlias('opus45'), 'claude-opus-4-5-20251101');
@@ -17,7 +17,7 @@ test('Model Aliases Configuration', async (t) => {
     });
 
     await t.test('should handle case-insensitive aliases', () => {
-        assert.strictEqual(resolveModelAlias('OPUS'), 'claude-opus-4-6');
+        assert.strictEqual(resolveModelAlias('OPUS'), 'claude-opus-4-8');
         assert.strictEqual(resolveModelAlias('Sonnet'), 'claude-sonnet-4-6');
         assert.strictEqual(resolveModelAlias('HAIKU'), 'claude-haiku-4-5-20251001');
     });
@@ -45,7 +45,9 @@ test('Model Aliases Configuration', async (t) => {
     });
 
     await t.test('should handle explicit version aliases', () => {
-        // 4.6 aliases
+        // 4.8/4.7/4.6 aliases
+        assert.strictEqual(resolveModelAlias('opus48'), 'claude-opus-4-8');
+        assert.strictEqual(resolveModelAlias('opus47'), 'claude-opus-4-7');
         assert.strictEqual(resolveModelAlias('opus46'), 'claude-opus-4-6');
         assert.strictEqual(resolveModelAlias('sonnet46'), 'claude-sonnet-4-6');
         // 4.5 aliases
@@ -65,7 +67,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'claude' as const,
                 alias: 'claude',
                 enabled: true,
-                supportedModels: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                supportedModels: ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
                 defaultModel: 'claude-sonnet-4-6'
             }
         },
@@ -75,7 +77,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'gemini' as const,
                 alias: 'gemini',
                 enabled: true,
-                supportedModels: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview'],
+                supportedModels: ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview'],
                 defaultModel: 'gemini-2.5-pro'
             }
         },
@@ -85,7 +87,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2'],
+                supportedModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
                 defaultModel: 'gpt-5.5'
             }
         },
@@ -251,7 +253,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
     await t.test('Step 6: resolves static MODEL_ALIASES for backwards compatibility (opus)', async () => {
         const result = await resolveLlmLabel('opus');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default (claude) agent');
-        assert.strictEqual(result.model, 'claude-opus-4-6', 'Should resolve to claude-opus-4-6 from static aliases');
+        assert.strictEqual(result.model, 'claude-opus-4-8', 'Should resolve to claude-opus-4-8 from static aliases');
     });
 
     await t.test('Step 6: resolves static MODEL_ALIASES for sonnet', async () => {
@@ -590,7 +592,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'claude' as const,
                 alias: 'claude',
                 enabled: true,
-                supportedModels: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                supportedModels: ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
                 defaultModel: 'claude-sonnet-4-6'
             }
         },
@@ -600,7 +602,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'gemini' as const,
                 alias: 'gemini',
                 enabled: true,
-                supportedModels: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3-pro-preview'],
+                supportedModels: ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3-pro-preview'],
                 defaultModel: 'gemini-2.5-pro'
             }
         },
@@ -610,7 +612,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2'],
+                supportedModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
                 defaultModel: 'gpt-5.5'
             }
         },

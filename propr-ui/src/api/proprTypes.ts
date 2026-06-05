@@ -1,9 +1,18 @@
+export interface SystemAgentStatus {
+  id: string;
+  type: 'claude' | 'codex' | 'gemini' | 'vibe' | string;
+  alias: string;
+  status: string;
+}
+
 export interface SystemStatus {
   daemon: string;
   workers: { id: number; status: string }[];
   redis: string;
   githubAuth: string;
   claudeAuth: string;
+  indexing: string;
+  agents: SystemAgentStatus[];
 }
 
 export interface StatusResponse {
@@ -12,6 +21,8 @@ export interface StatusResponse {
   redis: string;
   githubAuth: string;
   claudeAuth: string;
+  indexing?: string;
+  agents?: SystemAgentStatus[];
 }
 
 export interface TaskAnalysisResponse {

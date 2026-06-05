@@ -36,9 +36,9 @@ export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
  * These are used when cliVersionType is 'default'.
  */
 export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
-    claude: '2.1.85',
-    codex: '0.133.0',
-    gemini: '0.35.1',
+    claude: '2.1.165',
+    codex: '0.137.0',
+    gemini: '0.45.1',
     opencode: '1.15.12',
     vibe: '2.12.1'
 };

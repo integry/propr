@@ -71,7 +71,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleImplementIssue, handleGlobalAgentChange, handleGlobalModelChange,
     handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
     handleAgentChange, handleModelChange,
-    handleRunUltrafixChange, handleUltrafixGoalChange, handleUltrafixMaxCyclesChange,
     handleIssueMultiToggle, handleIssueMultiModelChange,
     handleRefresh, getUnmergedIssuesBefore,
   } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete });
@@ -116,8 +115,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       setImplementingAll(false);
     }
   }, [draftId, pendingCount, useEpic, autoMerge, handleRefresh, isSavingExecutionSettings, isReadOnly]);
-
-  const showIssueUltrafixControls = issues.length >= 2;
 
   useEffect(() => { onIssuesChange?.(issues); }, [issues, onIssuesChange]);
 
@@ -220,16 +217,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             onImplement={handleImplementIssue}
             onAgentChange={handleAgentChange}
             onModelChange={handleModelChange}
-            onRunUltrafixChange={handleRunUltrafixChange}
-            onUltrafixGoalChange={handleUltrafixGoalChange}
-            onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange}
-            plannerRunUltrafix={runUltrafix}
-            plannerUltrafixGoal={ultrafixGoal}
-            plannerUltrafixMaxCycles={ultrafixMaxCycles}
             implementing={implementingIssue === issue.issue_number}
             disableImplementation={isSavingExecutionSettings || isReadOnly}
             isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
-            showUltrafixControls={showIssueUltrafixControls}
             onImplementWithWarning={handleImplementWithWarning}
             inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
             inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
@@ -269,15 +259,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     onImplement={handleImplementIssue}
                     onAgentChange={handleAgentChange}
                     onModelChange={handleModelChange}
-                    onRunUltrafixChange={handleRunUltrafixChange}
-                    onUltrafixGoalChange={handleUltrafixGoalChange}
-                    onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange}
-                    plannerRunUltrafix={runUltrafix}
-                    plannerUltrafixGoal={ultrafixGoal}
-                    plannerUltrafixMaxCycles={ultrafixMaxCycles}
                     implementing={false}
                     disableImplementation={isSavingExecutionSettings || isReadOnly}
-                    showUltrafixControls={showIssueUltrafixControls}
                     task={issueTaskMap[issue.issue_number]}
                     draftId={draftId}
                   />
