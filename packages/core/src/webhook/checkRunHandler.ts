@@ -1,7 +1,6 @@
 import logger from '../utils/logger.js';
-import { findPlanIssueByRepoAndPR, findPlanIssueByRepoAndNumber, updatePlanIssueByPR, PlanIssueStatus } from '../config/planIssueManager.js';
-import { isEpicBranch, extractFirstIssueIdFromEpicBranch } from '../services/taskExecutionService.js';
-import { triggerNextPendingIssue } from './planIssueTracking.js';
+import { findPlanIssueByRepoAndPR, updatePlanIssueByPR, PlanIssueStatus } from '../config/planIssueManager.js';
+import { isEpicBranch } from '../services/taskExecutionService.js';
 import {
     mergePR,
     deleteBranch,
@@ -58,49 +57,6 @@ interface PRMergeContext extends PRContext {
 }
 
 /**
- * Handles epic PR check completion by triggering the next pending issue.
- */
-async function handleEpicPRCheckCompletion(ctx: PRContext, epicBranchName: string): Promise<void> {
-    const { owner, repoName, log } = ctx;
-    try {
-        const firstIssueId = extractFirstIssueIdFromEpicBranch(epicBranchName);
-        if (!firstIssueId) {
-            log.warn({ owner, repoName, epicBranchName }, 'Could not extract first issue ID from epic branch name');
-            return;
-        }
-
-        const repository = `${owner}/${repoName}`;
-        const planIssue = await findPlanIssueByRepoAndNumber(repository, firstIssueId);
-        if (!planIssue || !planIssue.draft_id) {
-            log.debug({ owner, repoName, firstIssueId, epicBranchName }, 'No plan issue found for epic branch first issue');
-            return;
-        }
-
-        const epicLabel = `base-${epicBranchName}`;
-        await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, log);
-        log.info({ owner, repoName, epicBranchName, draftId: planIssue.draft_id }, 'Triggered next pending issue after epic PR checks passed');
-    } catch (error) {
-        log.error({ owner, repoName, epicBranchName, error: (error as Error).message }, 'Failed to handle epic PR check completion');
-    }
-}
-
-/**
- * Handles epic PRs that don't have auto-merge label - triggers next issue if checks pass.
- */
-async function handleEpicPRWithoutAutoMerge(ctx: PRMergeContext): Promise<void> {
-    const { owner, repoName, prNumber, headSha, prInfo, log } = ctx;
-    const currentPrHead = await getCurrentPRHead(owner, repoName, prNumber);
-    if (currentPrHead !== headSha) return;
-
-    const allChecksPassing = await areAllChecksPassing(owner, repoName, headSha);
-    if (allChecksPassing) {
-        log.info({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'Epic PR checks passed, triggering next pending issue');
-        await handleEpicPRCheckCompletion(ctx, prInfo.headBranch);
-    }
-    log.debug({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'Epic PR does not have auto-merge label, skipping merge');
-}
-
-/**
  * Determines if a PR should be auto-merged based on labels.
  */
 export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
@@ -134,7 +90,7 @@ export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
 
     if (isEpicBranch(prInfo.headBranch)) {
         if (!prInfo.hasLabel) {
-            await handleEpicPRWithoutAutoMerge(ctx);
+            log.debug({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'Epic PR does not have auto-merge label, skipping merge');
             return false;
         }
         return true;
