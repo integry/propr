@@ -34,12 +34,14 @@ else
     echo "WARNING: Antigravity config directory not mounted at /home/node/.antigravity" >&2
 fi
 
-if [ ! -f "/home/node/.antigravity/oauth_creds.json" ]; then
-    echo "Warning: Antigravity OAuth credentials not found" >&2
-    echo "Ensure Antigravity config directory is properly mounted" >&2
-    echo "Expected path: /home/node/.antigravity/oauth_creds.json" >&2
-else
-    echo "Antigravity authentication configuration found" >&2
+if [ -d "/home/node/.antigravity" ]; then
+    auth_files=$(find /home/node/.antigravity -maxdepth 2 -type f \( -iname '*auth*' -o -iname '*oauth*' -o -iname '*credential*' -o -iname '*token*' \) 2>/dev/null | head -n 1)
+    if [ -n "$auth_files" ]; then
+        echo "Antigravity authentication-related configuration found" >&2
+    else
+        echo "Warning: no obvious Antigravity authentication files found under /home/node/.antigravity" >&2
+        echo "Ensure the Antigravity config directory is properly mounted and initialized" >&2
+    fi
 fi
 
 git config --global --add safe.directory '*' 2>/dev/null || echo "Git safe directory config already set" >&2

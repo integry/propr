@@ -197,10 +197,10 @@ Argument:
   alias    Unique identifier for the agent (required unless using --file)
 
 Agent Types:
-  claude    Anthropic Claude models
-  codex     OpenAI Codex models
+  claude       Anthropic Claude models
+  codex        OpenAI Codex models
   antigravity  Antigravity models
-  vibe      Mistral Vibe models
+  vibe         Mistral Vibe models
 
 JSON File Format:
   {

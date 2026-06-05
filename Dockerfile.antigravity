@@ -5,10 +5,11 @@
 ARG BASE_IMAGE=propr/agent-base:latest
 FROM ${BASE_IMAGE}
 
+ARG CLI_PACKAGE=free-antigravity-cli
 ARG CLI_VERSION=latest
 
 USER root
-RUN npm install -g @google/antigravity-cli@${CLI_VERSION}
+RUN npm install -g ${CLI_PACKAGE}@${CLI_VERSION}
 RUN antigravity --version
 USER node
 

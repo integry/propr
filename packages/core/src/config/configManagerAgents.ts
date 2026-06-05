@@ -110,28 +110,36 @@ function normalizeLegacyModelId(modelId: string): string {
 }
 
 function normalizeLegacyConfigPath(configPath: string): string {
-    if (configPath === '~/.gemini') {
+    const normalizedPath = configPath.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (normalizedPath === '~/.gemini' || normalizedPath === '$HOME/.gemini' || normalizedPath === '${HOME}/.gemini') {
         return '~/.antigravity';
     }
-    return configPath.replace(/\/\.gemini$/, '/.antigravity');
+    return normalizedPath.replace(/\/\.gemini$/, '/.antigravity');
 }
 
-export function normalizeLegacyAgentConfig(agent: AgentConfig | (Omit<AgentConfig, 'type'> & { type: 'gemini' })): AgentConfig {
+function normalizeLegacyAgentConfigWithMigration(agent: AgentConfig | (Omit<AgentConfig, 'type'> & { type: 'gemini' })): { agent: AgentConfig; migrated: boolean } {
     if (agent.type !== 'gemini') {
-        return agent;
+        return { agent, migrated: false };
     }
 
     return {
-        ...agent,
-        type: 'antigravity',
-        dockerImage: agent.dockerImage?.replace(/^propr\/agent-gemini(?=:|$)/, 'propr/agent-antigravity'),
-        configPath: normalizeLegacyConfigPath(agent.configPath),
-        supportedModels: agent.supportedModels?.map(normalizeLegacyModelId) || [],
-        defaultModel: agent.defaultModel ? normalizeLegacyModelId(agent.defaultModel) : agent.defaultModel,
-        modelCustomLabels: agent.modelCustomLabels
-            ? Object.fromEntries(Object.entries(agent.modelCustomLabels).map(([modelId, label]) => [normalizeLegacyModelId(modelId), label]))
-            : agent.modelCustomLabels
+        migrated: true,
+        agent: {
+            ...agent,
+            type: 'antigravity',
+            dockerImage: agent.dockerImage?.replace(/^propr\/agent-gemini(?=:|$)/, 'propr/agent-antigravity'),
+            configPath: normalizeLegacyConfigPath(agent.configPath),
+            supportedModels: agent.supportedModels?.map(normalizeLegacyModelId) || [],
+            defaultModel: agent.defaultModel ? normalizeLegacyModelId(agent.defaultModel) : agent.defaultModel,
+            modelCustomLabels: agent.modelCustomLabels
+                ? Object.fromEntries(Object.entries(agent.modelCustomLabels).map(([modelId, label]) => [normalizeLegacyModelId(modelId), label]))
+                : agent.modelCustomLabels
+        }
     };
+}
+
+export function normalizeLegacyAgentConfig(agent: AgentConfig | (Omit<AgentConfig, 'type'> & { type: 'gemini' })): AgentConfig {
+    return normalizeLegacyAgentConfigWithMigration(agent).agent;
 }
 
 function migrateCliVersion(agent: AgentConfig): boolean {
@@ -255,9 +263,9 @@ function removeDeprecatedModels(agent: AgentConfig): boolean {
 export async function migrateAgentConfigs(): Promise<boolean> {
     try {
         const rawAgents = await getConfig<Array<AgentConfig | (Omit<AgentConfig, 'type'> & { type: 'gemini' })>>('agents', []);
-        const agents = rawAgents.map(normalizeLegacyAgentConfig);
-        let migrated = false;
-        migrated = rawAgents.some((agent, index) => agent !== agents[index] || agent.type !== agents[index].type) || migrated;
+        const normalizedResults = rawAgents.map(normalizeLegacyAgentConfigWithMigration);
+        const agents = normalizedResults.map(result => result.agent);
+        let migrated = normalizedResults.some(result => result.migrated);
 
         for (const agent of agents) {
             migrated = migrateCliVersion(agent) || migrated;

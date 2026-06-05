@@ -130,6 +130,14 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
         return modelNameOrAlias;
     }
 
+    // 2b. Legacy raw Gemini model IDs are now Antigravity model IDs.
+    if (lowerCaseModel.startsWith('gemini-')) {
+        const antigravityModelId = `antigravity-${lowerCaseModel}`;
+        if (MODEL_INFO_MAP[antigravityModelId]) {
+            return antigravityModelId;
+        }
+    }
+
     // 3. Check if it matches a shortAlias in MODEL_INFO_MAP (e.g., "mistral" -> "mistral-medium-3.5")
     for (const modelInfo of ALL_MODELS) {
         if (modelInfo.shortAlias.toLowerCase() === lowerCaseModel) {
@@ -334,6 +342,21 @@ function resolveByAgentTypePrefix(label: string, agents: { config: AgentConfig }
     return null;
 }
 
+function resolveScopedAgentModel(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
+    const colonIdx = label.indexOf(':');
+    if (colonIdx <= 0 || colonIdx >= label.length - 1) {
+        return null;
+    }
+
+    const explicitAlias = label.substring(0, colonIdx);
+    const explicitModel = label.substring(colonIdx + 1);
+    const resolvedModel = resolveModelAlias(explicitModel);
+    const canonicalAlias = explicitAlias.toLowerCase() === 'gemini' ? 'antigravity' : explicitAlias.toLowerCase();
+    const agent = agents.find(a => a.config.alias.toLowerCase() === canonicalAlias)
+        || agents.find(a => a.config.type === canonicalAlias);
+    return agent ? { agentAlias: agent.config.alias, model: resolvedModel } : null;
+}
+
 /**
  * Resolves an LLM label (e.g., "gemini-pro", "claude-opus", "codex") to an agent alias and model.
  *
@@ -354,15 +377,9 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
     const agents = registry.getAllAgents();
 
     // 0. Handle explicit "agentAlias:modelId" format (used by settings UI for pr_review_model)
-    const colonIdx = label.indexOf(':');
-    if (colonIdx > 0 && colonIdx < label.length - 1) {
-        const explicitAlias = label.substring(0, colonIdx);
-        const explicitModel = label.substring(colonIdx + 1);
-        const resolvedModel = resolveModelAlias(explicitModel);
-        const agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
-        if (agent) {
-            return { agentAlias: agent.config.alias, model: resolvedModel };
-        }
+    const scopedAgentModel = resolveScopedAgentModel(label, agents);
+    if (scopedAgentModel) {
+        return scopedAgentModel;
     }
 
     const lowerLabel = label.toLowerCase();
@@ -429,6 +446,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
 function getAgentTypeFromModel(modelId: string): AgentType {
     const lowerModel = modelId.toLowerCase();
     if (lowerModel.startsWith('antigravity')) return 'antigravity';
+    if (lowerModel.startsWith('gemini')) return 'antigravity';
     if (lowerModel.startsWith('claude')) return 'claude';
     if (lowerModel.startsWith('mistral') || lowerModel.startsWith('devstral') || lowerModel.includes('vibe')) return 'vibe';
     if (lowerModel.startsWith('gpt') || lowerModel.includes('codex')) return 'codex';

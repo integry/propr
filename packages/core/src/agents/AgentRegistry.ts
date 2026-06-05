@@ -1,7 +1,7 @@
 import path from 'path';
 import os from 'os';
 import logger from '../utils/logger.js';
-import { Agent, AgentConfig, AgentType } from './types.js';
+import { Agent, AgentConfig } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
 import { AntigravityAgent } from './impl/AntigravityAgent.js';
@@ -235,8 +235,8 @@ export class AgentRegistry {
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
         if (this.isManagedVersionedImage(config)) {
-            const contentHash = computeContentHash(config.type as AgentType);
-            const expectedImageTag = generateImageTag(config.type as AgentType, config.cliVersionResolved!, contentHash);
+            const contentHash = computeContentHash(config.type);
+            const expectedImageTag = generateImageTag(config.type, config.cliVersionResolved!, contentHash);
             const result = await ensureVersionedAgentImage(
                 config.type,
                 config.cliVersionResolved!,
@@ -257,7 +257,7 @@ export class AgentRegistry {
 
         // Fallback: versioned build (dev flow) — requires Dockerfile on disk.
         if (config.cliVersionType && config.cliVersionResolved) {
-            const contentHash = computeContentHash(config.type as AgentType);
+            const contentHash = computeContentHash(config.type);
             const result = await ensureVersionedAgentImage(
                 config.type,
                 config.cliVersionResolved,
@@ -273,7 +273,7 @@ export class AgentRegistry {
 
     private isManagedVersionedImage(config: AgentConfig): boolean {
         if (!config.cliVersionType || !config.cliVersionResolved) return false;
-        const managedImageName = AGENT_IMAGE_NAMES[config.type as AgentType];
+        const managedImageName = AGENT_IMAGE_NAMES[config.type];
         if (!managedImageName || !config.dockerImage?.startsWith(`${managedImageName}:`)) return false;
         const tag = config.dockerImage.slice(managedImageName.length + 1);
         const versionTag = getDockerTagComponent(config.cliVersionResolved);

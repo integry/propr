@@ -9,7 +9,7 @@ import {
 } from '../src/config/modelDefinitions.js';
 import { normalizeLegacyAgentConfig } from '../src/config/configManagerAgents.js';
 import { getModelHardLimit } from '../src/config/modelLimits.js';
-import { resolveLlmLabel } from '../src/config/modelAliases.js';
+import { resolveLlmLabel, resolveModelAlias } from '../src/config/modelAliases.js';
 import { AgentRegistry } from '../src/agents/AgentRegistry.js';
 import { AntigravityAgent } from '../src/agents/impl/AntigravityAgent.js';
 import type { Agent, AgentConfig } from '../src/agents/types.js';
@@ -74,6 +74,32 @@ test('legacy Gemini agent configs migrate to Antigravity configs', () => {
     });
 });
 
+test('legacy Gemini config path variants migrate to Antigravity paths', () => {
+    const trailingSlash = normalizeLegacyAgentConfig({
+        id: 'legacy-gemini',
+        type: 'gemini',
+        alias: 'gemini-prod',
+        enabled: true,
+        dockerImage: 'propr/agent-gemini:latest',
+        configPath: '/home/propr/.gemini/',
+        supportedModels: ['gemini-3-pro-preview']
+    });
+    const windowsPath = normalizeLegacyAgentConfig({
+        ...trailingSlash,
+        type: 'gemini',
+        configPath: 'C:\\Users\\propr\\.gemini\\'
+    });
+    const homeEnvPath = normalizeLegacyAgentConfig({
+        ...trailingSlash,
+        type: 'gemini',
+        configPath: '$HOME/.gemini'
+    });
+
+    assert.equal(trailingSlash.configPath, '/home/propr/.antigravity');
+    assert.equal(windowsPath.configPath, 'C:/Users/propr/.antigravity');
+    assert.equal(homeEnvPath.configPath, '~/.antigravity');
+});
+
 test('AgentRegistry creates AntigravityAgent for antigravity configs', () => {
     const registry = AgentRegistry.getInstance();
     const agent = registry.createAgentFromConfig(createAntigravityConfig());
@@ -97,6 +123,20 @@ test('legacy llm-gemini labels resolve to Antigravity models', async () => {
 
     const resolution = await resolveLlmLabel('gemini-pro-preview');
     assert.deepEqual(resolution, {
+        agentAlias: 'antigravity',
+        model: 'antigravity-gemini-3-pro-preview'
+    });
+
+    assert.equal(resolveModelAlias('gemini-3-pro-preview'), 'antigravity-gemini-3-pro-preview');
+
+    const prefixedResolution = await resolveLlmLabel('llm-gemini-pro-preview'.replace(/^llm-/, ''));
+    assert.deepEqual(prefixedResolution, {
+        agentAlias: 'antigravity',
+        model: 'antigravity-gemini-3-pro-preview'
+    });
+
+    const scopedResolution = await resolveLlmLabel('gemini:gemini-3-pro-preview');
+    assert.deepEqual(scopedResolution, {
         agentAlias: 'antigravity',
         model: 'antigravity-gemini-3-pro-preview'
     });
