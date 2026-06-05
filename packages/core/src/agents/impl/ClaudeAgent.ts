@@ -6,6 +6,8 @@
  * lightweight analysis, and health checks.
  */
 
+/* eslint-disable max-lines */
+
 import logger from '../../utils/logger.js';
 import {
     Agent,
