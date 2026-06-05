@@ -60,7 +60,20 @@ npm install -g @anthropic-ai/claude-code
 claude login
 ```
 
-Use equivalent setup for Codex or Antigravity if you plan to enable them.
+For Antigravity, install the official CLI and complete a login on the host before starting ProPR:
+
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+agy login
+```
+
+Antigravity stores CLI configuration and credentials under `~/.antigravity`. The launcher command below passes that directory with `HOST_ANTIGRAVITY_DIR` so worker containers can mount the authenticated CLI state.
+
+Use equivalent setup for Codex if you plan to enable it.
+
+## Migration From Gemini
+
+ProPR no longer supports the old Gemini agent setup. Replace any `HOST_GEMINI_DIR` or `GEMINI_TIMEOUT_MS` configuration with `HOST_ANTIGRAVITY_DIR` and `ANTIGRAVITY_TIMEOUT_MS`, replace `~/.gemini` mounts with `~/.antigravity`, replace `propr/agent-gemini` with `propr/agent-antigravity`, and update labels such as `llm-gemini-*` to configured Antigravity labels such as `llm-antigravity-gemini-pro` or `llm-antigravity-opus`.
 
 ## Start ProPR
 

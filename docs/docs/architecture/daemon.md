@@ -72,7 +72,8 @@ Model labels route work to configured models:
 ```text
 llm-claude-sonnet46
 llm-codex-gpt54
-llm-antigravity-pro
+llm-antigravity-gemini-pro
+llm-antigravity-opus
 ```
 
 The exact model labels available in a deployment come from AI Agents in the Web UI.

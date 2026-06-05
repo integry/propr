@@ -87,6 +87,8 @@ GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
 
 Adjust agent defaults and routing in the Web UI. Environment variables are mainly for install-time paths, secrets, and service wiring.
 
+Antigravity replaces the old Gemini-specific worker runtime settings. Use `ANTIGRAVITY_TIMEOUT_MS` for Antigravity runs and configure Antigravity model labels such as `llm-antigravity-gemini-pro` and `llm-antigravity-opus` in AI Agents.
+
 ## Monitoring
 
 Important worker signals:

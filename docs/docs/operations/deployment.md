@@ -11,7 +11,7 @@ You need:
 - Docker
 - A runtime directory such as `/srv/propr`
 - A GitHub App and private key
-- Agent credentials
+- Agent credentials, such as Antigravity CLI state in `~/.antigravity`
 - Public URLs for the Web UI and OAuth callback
 - TLS through your reverse proxy or ingress
 
@@ -34,6 +34,19 @@ GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
 ```
 
 Manage repositories, labels, branches, and agents in the Web UI after startup.
+
+For Antigravity agents, install the CLI on the host and authenticate before launching the stack:
+
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+agy login
+```
+
+Use `HOST_ANTIGRAVITY_DIR="$HOME/.antigravity"` so the launcher can mount the authenticated CLI state into Antigravity worker runs.
+
+## Migration From Gemini
+
+Gemini-specific runtime configuration is deprecated and not supported by the Antigravity runtime. Replace `HOST_GEMINI_DIR` with `HOST_ANTIGRAVITY_DIR`, `GEMINI_TIMEOUT_MS` with `ANTIGRAVITY_TIMEOUT_MS`, `~/.gemini` with `~/.antigravity`, and `propr/agent-gemini` with `propr/agent-antigravity`. Update model labels from `llm-gemini-*` to configured Antigravity labels such as `llm-antigravity-gemini-pro` or `llm-antigravity-opus`.
 
 ## Start The Stack
 

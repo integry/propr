@@ -28,7 +28,8 @@ Examples:
 ```text
 llm-claude-sonnet46
 llm-codex-gpt54
-llm-antigravity-pro
+llm-antigravity-gemini-pro
+llm-antigravity-opus
 ```
 
 ## Natural Follow-Up
