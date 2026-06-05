@@ -250,6 +250,8 @@ export function parseStoredOutputContent(output: string): ParsedStoredOutput {
     return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
   }
   if (format === 'codex' || format === 'antigravity') {
+    // Antigravity currently emits Codex-compatible JSONL for live details; the
+    // format detector keeps its stored-output classification explicit.
     const parsed = parseCodexOutputToConversationResult(output);
     return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
   }

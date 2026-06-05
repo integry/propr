@@ -137,6 +137,14 @@ claude login
 ```
 
 Use equivalent login and credential setup for Codex or Antigravity if those are the agents you plan to enable.
+For Antigravity, install the official CLI and authenticate before mounting the credential directory:
+
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+agy login
+```
+
+Set `HOST_ANTIGRAVITY_DIR="$HOME/.antigravity"` when starting the launcher so the worker can mount the authenticated CLI state.
 
 ### 5. Start From Prebuilt Images
 

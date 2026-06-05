@@ -38,8 +38,10 @@ Source: https://github.com/openai/codex
 Installed from the official Antigravity CLI installer.
 Source: https://antigravity.google/cli/install.sh
 Provider: Google Antigravity.
-The installer does not publish a separate license or checksum in the ProPR
-build inputs.
+The installer does not publish a separate license, historical version artifact,
+or checksum in the ProPR build inputs. ProPR Antigravity agent images install
+the current upstream CLI at image build time and cannot be reproduced from a
+pinned Antigravity CLI version.
 
 ## mistral-vibe (installed in propr/agent-vibe image)
 

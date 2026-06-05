@@ -17,7 +17,12 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   const wholeDocumentFormat = detectParsedStoredOutputFormat(output.trim());
   if (wholeDocumentFormat !== 'unknown') return wholeDocumentFormat;
 
-  const firstLine = output.split('\n').map(line => line.trim()).find(line => line.length > 0);
+  const lines = output.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  if (lines.some(line => detectParsedStoredOutputFormat(line) === 'antigravity')) {
+    return 'antigravity';
+  }
+
+  const firstLine = lines[0];
   if (!firstLine) return 'unknown';
   return detectParsedStoredOutputFormat(firstLine);
 }

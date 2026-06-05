@@ -234,15 +234,15 @@ export class AgentRegistry {
      * Uses versioned image if version config is present, otherwise uses default.
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
-        if (config.type === 'antigravity') {
-            config.cliVersionResolved = 'latest';
-        }
-        if (this.isManagedVersionedImage(config)) {
+        const cliVersionResolved = config.type === 'antigravity'
+            ? 'latest'
+            : config.cliVersionResolved;
+        if (this.isManagedVersionedImage(config, cliVersionResolved)) {
             const contentHash = computeContentHash(config.type);
-            const expectedImageTag = generateImageTag(config.type, config.cliVersionResolved!, contentHash);
+            const expectedImageTag = generateImageTag(config.type, cliVersionResolved!, contentHash);
             const result = await ensureVersionedAgentImage(
                 config.type,
-                config.cliVersionResolved!,
+                cliVersionResolved!,
                 contentHash
             );
             if (result.success) {
@@ -274,12 +274,12 @@ export class AgentRegistry {
         return false;
     }
 
-    private isManagedVersionedImage(config: AgentConfig): boolean {
-        if (!config.cliVersionType || !config.cliVersionResolved) return false;
+    private isManagedVersionedImage(config: AgentConfig, cliVersionResolved = config.cliVersionResolved): boolean {
+        if (!config.cliVersionType || !cliVersionResolved) return false;
         const managedImageName = AGENT_IMAGE_NAMES[config.type];
         if (!managedImageName || !config.dockerImage?.startsWith(`${managedImageName}:`)) return false;
         const tag = config.dockerImage.slice(managedImageName.length + 1);
-        const versionTag = getDockerTagComponent(config.cliVersionResolved);
+        const versionTag = getDockerTagComponent(cliVersionResolved);
         return tag.startsWith(`${versionTag}-`) && /-[0-9a-f]{6}$/i.test(tag);
     }
 

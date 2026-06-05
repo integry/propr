@@ -35,6 +35,15 @@ test('stored output detection keeps Codex result JSONL classified as Codex', () 
   assert.equal(detectStoredOutputFormat(output), 'codex');
 });
 
+test('stored output detection recognizes Antigravity JSONL when init is missing', () => {
+  const output = [
+    JSON.stringify({ type: 'message', role: 'assistant', content: 'done', timestamp: '2026-06-05T13:00:01.000Z' }),
+    JSON.stringify({ type: 'tool_result', result: 'package.json contents', timestamp: '2026-06-05T13:00:02.000Z' })
+  ].join('\n');
+
+  assert.equal(detectStoredOutputFormat(output), 'antigravity');
+});
+
 test('stored output detection recognizes truncated Antigravity result JSON', () => {
   const output = JSON.stringify({
     type: 'result',
