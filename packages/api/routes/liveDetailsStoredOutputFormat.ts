@@ -5,6 +5,8 @@ interface StoredExecutionOutputLine {
   role?: string;
   session_id?: string;
   conversation_id?: string;
+  model?: string;
+  stats?: unknown;
   item?: unknown;
   reasoning_content?: unknown;
   tool_calls?: unknown;
@@ -50,7 +52,11 @@ function detectParsedStoredOutputFormat(jsonText: string): StoredOutputFormat {
 
 function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
   return parsed.type === 'init'
-    || parsed.type === 'tool_result';
+    || parsed.type === 'tool_result'
+    || (parsed.type === 'result' && parsed.stats !== undefined)
+    || ((parsed.type === 'message' || parsed.type === 'result')
+      && typeof parsed.model === 'string'
+      && /^(antigravity-|gemini-)/.test(parsed.model));
 }
 
 function isVibeTranscript(parsed: StoredExecutionOutputLine | StoredExecutionOutputLine[]): boolean {

@@ -234,6 +234,9 @@ export class AgentRegistry {
      * Uses versioned image if version config is present, otherwise uses default.
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
+        if (config.type === 'antigravity') {
+            config.cliVersionResolved = 'latest';
+        }
         if (this.isManagedVersionedImage(config)) {
             const contentHash = computeContentHash(config.type);
             const expectedImageTag = generateImageTag(config.type, config.cliVersionResolved!, contentHash);

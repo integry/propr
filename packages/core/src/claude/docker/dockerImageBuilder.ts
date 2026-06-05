@@ -30,6 +30,9 @@ function getAgentBuildArgs(agentType: string, dockerImage: string): string[] {
     const buildArgs = ['--build-arg', `BASE_IMAGE=${getAgentBaseImage()}`];
     if (!(agentType in AGENT_DEFAULT_VERSIONS)) return buildArgs;
     const fallbackVersion = AGENT_DEFAULT_VERSIONS[agentType as AgentType];
+    if (agentType === 'antigravity') {
+        return [...buildArgs, '--build-arg', `CLI_VERSION=${fallbackVersion}`];
+    }
     const imageTag = dockerImage.includes(':') ? dockerImage.split(':').pop() : undefined;
     const cliVersion = !imageTag || imageTag === 'latest' ? fallbackVersion : imageTag.split('-')[0] || fallbackVersion;
     return [...buildArgs, '--build-arg', `CLI_VERSION=${cliVersion}`];

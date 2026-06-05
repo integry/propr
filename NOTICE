@@ -45,7 +45,8 @@ Bundled third-party components
 4. Antigravity CLI
    Upstream:   https://antigravity.google/cli/install.sh
    Provider:   Google Antigravity
-   Installed via the official Antigravity CLI installer.
+   Installed via the official Antigravity CLI installer. The installer does
+   not publish a separate license or checksum in the ProPR build inputs.
 
 5. GitHub CLI (gh)
    License:    MIT

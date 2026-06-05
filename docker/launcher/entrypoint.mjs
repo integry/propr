@@ -49,6 +49,22 @@ const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR || envFileValue('HOST_CLAUDE
 const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR  || envFileValue('HOST_CODEX_DIR')  || undefined;
 const HOST_ANTIGRAVITY_DIR = process.env.HOST_ANTIGRAVITY_DIR || envFileValue('HOST_ANTIGRAVITY_DIR') || undefined;
 const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR   || envFileValue('HOST_VIBE_DIR')   || undefined;
+warnLegacyGeminiEnv();
+
+function hasEnvFileValue(name) {
+    return envFileValue(name) !== undefined;
+}
+
+function warnLegacyGeminiEnv() {
+    if (HOST_ANTIGRAVITY_DIR) return;
+    const legacyDir = process.env.HOST_GEMINI_DIR || envFileValue('HOST_GEMINI_DIR');
+    if (legacyDir) {
+        console.warn('WARNING: HOST_GEMINI_DIR is no longer used. Set HOST_ANTIGRAVITY_DIR to mount Antigravity credentials.');
+    }
+    if (process.env.GEMINI_TIMEOUT_MS || hasEnvFileValue('GEMINI_TIMEOUT_MS')) {
+        console.warn('WARNING: GEMINI_TIMEOUT_MS is no longer used. Use Antigravity agent configuration instead.');
+    }
+}
 
 function envFileValue(name) {
     if (!existsSync(ENV_FILE_LOCAL)) return undefined;
