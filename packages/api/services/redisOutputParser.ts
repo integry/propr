@@ -142,10 +142,10 @@ function processCodexEvent(
 }
 
 /**
- * Process Gemini events (message, tool_use, tool_result, result)
+ * Process Antigravity events (message, tool_use, tool_result, result)
  */
-function processGeminiEvent(
-  event: { type?: string; role?: string; delta?: boolean; content?: string; tool_name?: string; parameters?: unknown; tool_id?: string; output?: string; status?: string; stats?: { input_tokens?: number; output_tokens?: number } },
+function processAntigravityEvent(
+  event: { type?: string; role?: string; delta?: boolean; content?: string; tool_name?: string; parameters?: unknown; tool_id?: string; output?: string; result?: unknown; status?: string; stats?: { input_tokens?: number; output_tokens?: number } },
   timestamp: string,
   state: ParseState
 ): void {
@@ -172,10 +172,11 @@ function processGeminiEvent(
     return;
   }
   if (event.type === 'tool_result') {
+    const result = textFromValue(event.output) || textFromValue(event.result) || '';
     state.events.push({
       type: 'tool_result' as const,
       toolUseId: event.tool_id,
-      result: truncateContent(event.output),
+      result: truncateContent(result),
       isError: event.status === 'error',
       timestamp
     });
@@ -370,18 +371,27 @@ function parseVibeTranscriptOutput(output: string, state: ParseState): boolean {
 function parseLine(line: string, state: ParseState): void {
   try {
     const event = JSON.parse(line);
+    const timestamp = event.timestamp || getNextSyntheticTimestamp(state);
+    const isAntigravityStreamEvent = event.type === 'init'
+      || event.type === 'message'
+      || event.type === 'tool_use'
+      || event.type === 'tool_result'
+      || (event.type === 'result' && event.stats);
+
+    if (isAntigravityStreamEvent) {
+      processAntigravityEvent(event, timestamp, state);
+      return;
+    }
+
     if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
-      const timestamp = event.timestamp || getNextSyntheticTimestamp(state);
       processVibeEvent(event, timestamp, state);
       return;
     }
 
-    const timestamp = event.timestamp || new Date().toISOString();
-
     // Try Codex event processing first
     if (!processCodexEvent(event, timestamp, state)) {
-      // Fall back to Gemini event processing
-      processGeminiEvent(event, timestamp, state);
+      // Fall back to Antigravity stream event processing
+      processAntigravityEvent(event, timestamp, state);
     }
   } catch {
     // Skip non-JSON lines
@@ -389,7 +399,7 @@ function parseLine(line: string, state: ParseState): void {
 }
 
 /**
- * Parse Redis output (Codex NDJSON or Gemini JSONL format)
+ * Parse Redis output (Codex NDJSON or Antigravity JSONL format)
  */
 export function parseRedisOutput(lines: string[], options: RedisOutputParseOptions = {}): ParsedRedisOutput {
   const executionStartMs = options.executionStartTimestamp ? new Date(options.executionStartTimestamp).getTime() : NaN;
