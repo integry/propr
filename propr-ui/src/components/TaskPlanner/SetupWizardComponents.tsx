@@ -41,7 +41,8 @@ export const ModelSelector: React.FC<{
   generationModel: string | null;
   onModelChange: (value: string | null) => void;
   modelName?: string;
-}> = ({ agents, generationModel, onModelChange, modelName }) => {
+  disabled?: boolean;
+}> = ({ agents, generationModel, onModelChange, modelName, disabled }) => {
   const enabledAgents = agents.filter(agent => agent.enabled);
 
   if (enabledAgents.length === 0) {
@@ -65,20 +66,21 @@ export const ModelSelector: React.FC<{
   };
 
   return (
-    <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-gray-600 min-w-0 flex-1 sm:flex-initial">
-      <span className="text-gray-500 hidden sm:inline">Model:</span>
+    <div className={`flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm min-w-0 flex-1 sm:flex-initial ${disabled ? 'text-gray-400' : 'text-gray-600'}`}>
+      <span className={`${disabled ? 'text-gray-400' : 'text-gray-500'} hidden sm:inline`}>Model:</span>
       <div className="relative inline-flex items-center flex-1 sm:flex-initial max-w-[180px] sm:max-w-[200px]">
         {selectedAgent && (
           <ProviderLogo
             provider={selectedAgent}
-            className="w-4 h-4 absolute left-2 pointer-events-none z-10"
+            className={`w-4 h-4 absolute left-2 pointer-events-none z-10 ${disabled ? 'opacity-40 grayscale' : ''}`}
           />
         )}
         <select
           value={generationModel || ''}
           onChange={handleChange}
-          className={`appearance-none bg-white border border-gray-200 rounded-md text-xs sm:text-sm py-1 sm:py-1.5 pr-6 sm:pr-7 text-gray-700 hover:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate w-full ${selectedAgent ? 'pl-7' : 'pl-2'}`}
-          title="Select AI model for plan generation"
+          disabled={disabled}
+          className={`appearance-none border rounded-md text-xs sm:text-sm py-1 sm:py-1.5 pr-6 sm:pr-7 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-colors truncate w-full disabled:bg-gray-100 disabled:border-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed disabled:pointer-events-none ${disabled ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed pointer-events-none' : 'bg-white border-gray-200 text-gray-700 hover:border-gray-300 cursor-pointer'} ${selectedAgent ? 'pl-7' : 'pl-2'}`}
+          title={disabled ? 'Model is locked while plan generation is running' : 'Select AI model for plan generation'}
         >
           <option value="">{modelName ? `${modelName}` : 'Default'}</option>
           {modelOptions.map(opt => (
@@ -87,7 +89,7 @@ export const ModelSelector: React.FC<{
             </option>
           ))}
         </select>
-        <ChevronDown className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-400 absolute right-1.5 sm:right-2 pointer-events-none" />
+        <ChevronDown className={`w-3.5 h-3.5 sm:w-4 sm:h-4 absolute right-1.5 sm:right-2 pointer-events-none ${disabled ? 'text-gray-300' : 'text-gray-400'}`} />
       </div>
     </div>
   );

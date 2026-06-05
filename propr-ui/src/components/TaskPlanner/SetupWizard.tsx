@@ -185,6 +185,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
               generationModel={config.generationModel}
               onModelChange={handleModelChange}
               modelName={stats?.modelName}
+              disabled={isGenerating}
             />
             <button
               onClick={handleExportContext}
