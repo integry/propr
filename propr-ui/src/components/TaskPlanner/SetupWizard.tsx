@@ -141,7 +141,6 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           onContextLevelChange={setContextLevel}
           smartSelection={contextRefresh.preview.data?.smartSelection}
           isPreviewLoading={contextRefresh.preview.isLoading}
-          stats={stats}
           contextRepositories={config.contextRepositories}
           availableRepos={availableRepos}
           onAddContextRepo={handleAddContextRepo}
