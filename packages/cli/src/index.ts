@@ -2,6 +2,9 @@
 
 import { Command } from "commander";
 import { config } from "dotenv";
+import { readFileSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { createConfigManager } from "./config/index.js";
 import {
   createIssueCommand,
@@ -68,12 +71,16 @@ export type {
 // Load environment variables
 config();
 
+const packageJson = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")
+) as { version?: string };
+
 const program = new Command();
 
 program
   .name("propr")
   .description("CLI for interacting with the ProPR backend - AI-powered automated implementation of GitHub issues and pull requests")
-  .version("1.0.0")
+  .version(packageJson.version ?? "0.0.0")
   .option("-p, --project <project>", "Specify the target project (owner/repo)")
   .addHelpText("before", `
 ProPR CLI - AI-Powered GitHub Issue Implementation
