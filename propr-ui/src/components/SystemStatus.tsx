@@ -3,6 +3,7 @@ import { getSystemStatus } from '../api/proprApi';
 import type { SystemAgentStatus } from '../api/proprTypes';
 import { useSocket } from '../contexts/useSocket';
 import { formatAgentLabel } from '../utils/agentStatus';
+import { ProviderLogo } from './ui/ProviderLogo';
 
 interface Worker {
   id: number;
@@ -75,6 +76,28 @@ const SystemStatus: React.FC = () => {
     }
   };
 
+  const getStatusTextColorClass = (status?: string): string => {
+    switch (status?.toLowerCase()) {
+      case 'running':
+      case 'connected':
+      case 'authenticated':
+      case 'ready':
+      case 'active':
+      case 'idle':
+        return 'text-emerald-500';
+      case 'queued':
+        return 'text-amber-500';
+      case 'stopped':
+      case 'disconnected':
+      case 'failed':
+      case 'error':
+      case 'unavailable':
+        return 'text-red-500';
+      default:
+        return 'text-slate-500';
+    }
+  };
+
   const getWorkerStatus = () => {
     if (!status?.workers || status.workers.length === 0) return 'No workers';
     const activeCount = status.workers.filter((w: Worker) => w.status === 'active').length;
@@ -91,10 +114,27 @@ const SystemStatus: React.FC = () => {
     </div>
   );
 
+  const renderAgentStatusRow = (agent: SystemAgentStatus, isLast = false) => (
+    <div className={`flex justify-between items-center py-2 ${isLast ? '' : 'border-b border-slate-200'}`}>
+      <span className="font-medium text-slate-600 flex items-center gap-2">
+        <ProviderLogo provider={agent.type || agent.alias} className={`w-4 h-4 flex-shrink-0 ${getStatusTextColorClass(agent.status)}`} />
+        {formatAgentLabel(agent, status?.agents || [])}:
+      </span>
+      <span className="font-semibold" style={{ color: getStatusColor(agent.status) }}>
+        {agent.status || 'Unknown'}
+      </span>
+    </div>
+  );
+
+  const hasAgents = (status?.agents.length || 0) > 0;
+
   return (
     <div className="min-w-[300px]">
       <h3 className="section-header mb-6">System Status</h3>
       <div className="flex flex-col gap-3 dashboard-card">
+        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+          Services
+        </div>
         {renderStatusRow('Daemon', status?.daemon)}
         <div className="flex justify-between items-center py-2 border-b border-slate-200">
           <span className="font-medium text-slate-600">Workers:</span>
@@ -104,12 +144,18 @@ const SystemStatus: React.FC = () => {
         </div>
         {renderStatusRow('Redis', status?.redis)}
         {renderStatusRow('GitHub Auth', status?.githubAuth)}
-        {renderStatusRow('Indexing', status?.indexing, (status?.agents.length || 0) === 0)}
-        {status?.agents.map((agent, index) => renderStatusRow(
-          formatAgentLabel(agent, status.agents),
-          agent.status,
-          index === status.agents.length - 1
-        ))}
+        {renderStatusRow('Indexing', status?.indexing, !hasAgents)}
+        {hasAgents && (
+          <div className="pt-3 mt-1 border-t border-slate-100">
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
+              Coding agents
+            </div>
+            {status?.agents.map((agent, index) => renderAgentStatusRow(
+              agent,
+              index === status.agents.length - 1
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

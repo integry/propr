@@ -22,10 +22,12 @@ function makeSystemHealth(overrides: Partial<HeaderStats['systemHealth']> = {}):
 
 describe('SystemHealth dropdown', () => {
   it('renders core services, indexing, and dynamic agents without a hardcoded Claude row', () => {
-    render(<SystemHealth systemHealth={makeSystemHealth()} />);
+    const { container } = render(<SystemHealth systemHealth={makeSystemHealth()} />);
 
     fireEvent.mouseEnter(screen.getByLabelText('System Status'));
 
+    expect(screen.getByText('Services')).toBeInTheDocument();
+    expect(screen.getByText('Coding agents')).toBeInTheDocument();
     expect(screen.getByText('Daemon:')).toBeInTheDocument();
     expect(screen.getByText('Workers:')).toBeInTheDocument();
     expect(screen.getByText('Redis:')).toBeInTheDocument();
@@ -36,6 +38,7 @@ describe('SystemHealth dropdown', () => {
     expect(screen.queryByText('Codex (codex-prod):')).not.toBeInTheDocument();
     expect(screen.queryByText('Gemini (gemini-prod):')).not.toBeInTheDocument();
     expect(screen.queryByText('Claude:')).not.toBeInTheDocument();
+    expect(container.querySelectorAll('span.rounded-full')).toHaveLength(6);
   });
 
   it('includes agent aliases when multiple instances of a type are shown', () => {

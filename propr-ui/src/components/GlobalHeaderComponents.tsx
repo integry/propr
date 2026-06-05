@@ -5,6 +5,7 @@ import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
 import { formatAgentLabel } from '../utils/agentStatus';
+import { ProviderLogo } from './ui/ProviderLogo';
 
 interface TaskGroup { key: string; repoOwner: string; repoName: string; prNumber?: number; issueNumber?: number; latestTask: { id: string; status: string; createdAt: string; title?: string; }; allTasks: unknown[]; }
 
@@ -294,6 +295,13 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
     const criticalDown = [...coreStatuses, ...agentStatuses].some(s => ['stopped', 'disconnected', 'failed', 'unavailable'].includes(s?.toLowerCase() || ''));
     return criticalDown ? 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]' : 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
   };
+  const getStatusTextColor = (status?: string): string => {
+    if (!status) return 'text-gray-400';
+    const lower = status.toLowerCase();
+    if (['running', 'connected', 'authenticated', 'ready', 'idle', 'active'].includes(lower)) return 'text-green-500';
+    if (lower === 'queued') return 'text-amber-500';
+    return 'text-red-500';
+  };
   const renderStatusRow = (label: string, status?: string) => (
     <div className="flex items-center gap-2 text-sm text-gray-700">
       <span className={`w-2 h-2 rounded-full ${getStatusColor(status)}`} />
@@ -301,6 +309,14 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
       <span className="ml-auto font-medium">{status || 'Unknown'}</span>
     </div>
   );
+  const renderAgentStatusRow = (agent: HeaderStats['systemHealth']['agents'][number]) => (
+    <div className="flex items-center gap-2 text-sm text-gray-700">
+      <ProviderLogo provider={agent.type || agent.alias} className={`w-3.5 h-3.5 flex-shrink-0 ${getStatusTextColor(agent.status)}`} />
+      <span>{formatAgentLabel(agent, systemHealth.agents)}:</span>
+      <span className="ml-auto font-medium">{agent.status || 'Unknown'}</span>
+    </div>
+  );
+  const hasAgents = systemHealth.agents.length > 0;
 
   return (
     <div
@@ -329,16 +345,26 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
           </div>
           {/* Content */}
           <div className="px-4 py-3 space-y-2">
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+              Services
+            </div>
             {renderStatusRow('Daemon', systemHealth.daemon)}
             {renderStatusRow('Workers', systemHealth.workers)}
             {renderStatusRow('Redis', systemHealth.redis)}
             {renderStatusRow('GitHub', systemHealth.githubAuth)}
             {renderStatusRow('Indexing', systemHealth.indexing)}
-            {systemHealth.agents.map(agent => (
-              <React.Fragment key={agent.id}>
-                {renderStatusRow(formatAgentLabel(agent, systemHealth.agents), agent.status)}
-              </React.Fragment>
-            ))}
+            {hasAgents && (
+              <div className="pt-2 mt-2 border-t border-slate-100 space-y-2">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  Coding agents
+                </div>
+                {systemHealth.agents.map(agent => (
+                  <React.Fragment key={agent.id}>
+                    {renderAgentStatusRow(agent)}
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
