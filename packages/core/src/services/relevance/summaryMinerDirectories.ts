@@ -1,5 +1,8 @@
 import path from 'path';
 import crypto from 'crypto';
+
+/* eslint-disable max-lines */
+
 import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';

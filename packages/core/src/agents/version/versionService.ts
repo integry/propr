@@ -28,6 +28,7 @@ import {
 } from './pypiClient.js';
 
 const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
+const INSTALLER_AGENT_TYPES = new Set<AgentType>(['antigravity']);
 
 function validatePyPiCustomVersion(versionSpec: string, packageName: string): string {
     const trimmedVersionSpec = versionSpec.trim();
@@ -45,6 +46,26 @@ function resolvePyPiTag(agentType: AgentType, packageName: string, versionSpec: 
     return versionSpec === 'latest' ? getLatestPyPiVersion(packageName) : AGENT_DEFAULT_VERSIONS[agentType];
 }
 
+function resolveInstallerVersion(agentType: AgentType, versionType: CliVersionType, versionSpec?: string): string {
+    if (versionType === 'default') {
+        return AGENT_DEFAULT_VERSIONS[agentType];
+    }
+    if (!versionSpec) {
+        throw new Error('Version spec required');
+    }
+    const trimmedVersionSpec = versionSpec.trim();
+    if (!trimmedVersionSpec) {
+        throw new Error('Version spec required');
+    }
+    if (versionType !== 'tag') {
+        throw new Error(`Installer-backed CLI ${AGENT_CLI_PACKAGES[agentType]} only supports the latest version`);
+    }
+    if (!AGENT_CLI_TAGS[agentType].includes(trimmedVersionSpec)) {
+        throw new Error(`Unknown tag '${trimmedVersionSpec}' for installer-backed CLI ${AGENT_CLI_PACKAGES[agentType]}`);
+    }
+    return trimmedVersionSpec;
+}
+
 export function getDockerTagComponent(value: string): string {
     const trimmed = value.trim();
     const normalized = trimmed.replace(/[^A-Za-z0-9_.-]/g, '-').replace(/^[.-]+/, '').slice(0, 96);
@@ -59,7 +80,7 @@ export function getDockerTagComponent(value: string): string {
 /**
  * Resolves a version specification to an actual semver version.
  *
- * @param agentType - The agent type (claude, codex, gemini)
+ * @param agentType - The agent type (claude, codex, antigravity, vibe)
  * @param versionType - How the version is specified
  * @param versionSpec - The version specification (tag name, version number, or custom input)
  * @returns The resolved semver version
@@ -70,6 +91,10 @@ export async function resolveVersion(
     versionSpec?: string
 ): Promise<string> {
     const packageName = AGENT_CLI_PACKAGES[agentType];
+
+    if (INSTALLER_AGENT_TYPES.has(agentType)) {
+        return resolveInstallerVersion(agentType, versionType, versionSpec);
+    }
 
     if (PYPI_AGENT_TYPES.has(agentType)) {
         switch (versionType) {
@@ -133,6 +158,19 @@ export async function getAvailableVersions(agentType: AgentType): Promise<Availa
     const tagNames = AGENT_CLI_TAGS[agentType];
 
     try {
+        if (INSTALLER_AGENT_TYPES.has(agentType)) {
+            return {
+                agentType,
+                packageName,
+                defaultVersion,
+                availableTags: tagNames.map(tag => ({
+                    tag,
+                    version: tag === 'latest' ? 'latest' : defaultVersion
+                })),
+                recentVersions: []
+            };
+        }
+
         if (PYPI_AGENT_TYPES.has(agentType)) {
             const [latestVersion, recentVersions] = await Promise.all([
                 getLatestPyPiVersion(packageName),

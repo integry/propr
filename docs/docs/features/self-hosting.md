@@ -27,7 +27,7 @@ Typical host credential directories:
 
 - Claude: `~/.claude`
 - Codex: `~/.codex`
-- Gemini: `~/.gemini`
+- Antigravity: `~/.antigravity`
 
 The launcher mounts those directories into the relevant containers when you pass the matching `HOST_*` environment variables.
 

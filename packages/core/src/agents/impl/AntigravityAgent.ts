@@ -19,11 +19,10 @@ import os from 'os';
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
 
-const DEFAULT_GEMINI_TIMEOUT_MS = 300000;
+const DEFAULT_ANTIGRAVITY_TIMEOUT_MS = 300000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
-// Container path for Gemini config
-const CONTAINER_CONFIG_PATH = '/home/node/.gemini';
+const ANTIGRAVITY_CONTAINER_CONFIG_PATH = '/home/node/.antigravity';
 
 // Gemini JSONL event types (from --output-format stream-json)
 interface GeminiInitEvent { type: 'init'; timestamp: string; session_id: string; model: string }
@@ -37,13 +36,25 @@ type GeminiEvent = GeminiInitEvent | GeminiMessageEvent | GeminiToolUseEvent | G
 // Using String.fromCharCode() to construct the pattern dynamically, avoiding literal control chars
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
 
-export class GeminiAgent implements Agent {
+export class AntigravityAgent implements Agent {
     readonly config: AgentConfig;
     private readonly timeoutMs: number;
 
     constructor(config: AgentConfig) {
         this.config = config;
-        this.timeoutMs = parseInt(process.env.GEMINI_TIMEOUT_MS || String(DEFAULT_GEMINI_TIMEOUT_MS), 10);
+        this.timeoutMs = parseInt(process.env.ANTIGRAVITY_TIMEOUT_MS || String(DEFAULT_ANTIGRAVITY_TIMEOUT_MS), 10);
+    }
+
+    private getRuntimeName(): 'antigravity' {
+        return 'antigravity';
+    }
+
+    private getContainerConfigPath(): string {
+        return ANTIGRAVITY_CONTAINER_CONFIG_PATH;
+    }
+
+    private getCliCommand(): string {
+        return 'agy';
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
@@ -54,7 +65,7 @@ export class GeminiAgent implements Agent {
         logger.info({
             issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
             worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason
-        }, isRetry ? 'Starting Gemini agent execution (RETRY)...' : 'Starting Gemini agent execution...');
+        }, isRetry ? 'Starting Antigravity agent execution (RETRY)...' : 'Starting Antigravity agent execution...');
 
         try {
             const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
@@ -66,7 +77,7 @@ export class GeminiAgent implements Agent {
 
             // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
-                'gemini',
+                this.getRuntimeName(),
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData,
                     taskId, streamToRedis: true
@@ -94,7 +105,7 @@ export class GeminiAgent implements Agent {
         taskId?: string; prNumber?: number; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
     }): Promise<AgentExecutionResult> {
         const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics } = opts;
-        logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Gemini agent execution completed');
+        logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Antigravity agent execution completed');
         const { sessionId, modelUsed: parsedModel, summary, conversationLog, tokenUsage } = this.parseGeminiJsonl(result.stdout);
         if (sessionId && onSessionId) onSessionId(sessionId);
         if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
@@ -135,15 +146,15 @@ export class GeminiAgent implements Agent {
         });
         await persistLlmLog(logEntry);
 
-        if (!response.success) logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias }, 'Gemini agent execution failed');
-        else { logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Gemini agent execution succeeded'); verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent); }
+        if (!response.success) logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias }, 'Antigravity agent execution failed');
+        else { logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Antigravity agent execution succeeded'); verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent); }
         return response;
     }
 
     private handleExecutionError(error: unknown, executionTime: number, issueRef: { number: number; repoOwner: string; repoName: string }, effectiveModel: string | undefined): AgentExecutionResult {
         if (error instanceof UsageLimitError) throw error;
         const err = error as Error;
-        logger.error({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during Gemini agent execution');
+        logger.error({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during Antigravity agent execution');
         return {
             success: false, error: err.message, executionTimeMs: executionTime,
             logs: (error as { stderr?: string }).stderr || err.message, modifiedFiles: [],
@@ -154,8 +165,8 @@ export class GeminiAgent implements Agent {
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text' } = options || {};
         const startTime = Date.now();
-        logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Gemini agent...');
-        const effectiveModel = model || 'gemini-2.5-flash';
+        logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Antigravity agent...');
+        const effectiveModel = model || 'antigravity-gemini-2.5-flash';
         const suffix = responseFormat === 'json'
             ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
             : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
@@ -166,7 +177,7 @@ export class GeminiAgent implements Agent {
 
             // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
-                'gemini',
+                this.getRuntimeName(),
                 async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData, taskId }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
@@ -245,7 +256,7 @@ export class GeminiAgent implements Agent {
     }
 
     async healthCheck(): Promise<boolean> {
-        logger.debug({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Running health check for Gemini agent...');
+        logger.debug({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Running health check for Antigravity agent...');
         try {
             const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage], { timeout: 10000 });
             const imageExists = !!result.stdout.trim();
@@ -257,10 +268,10 @@ export class GeminiAgent implements Agent {
         }
     }
 
-    /** Strips ANSI escape codes from output (Gemini CLI is a TUI that produces ANSI-formatted output). */
+    /** Strips ANSI escape codes from output (Antigravity CLI is a TUI that produces ANSI-formatted output). */
     private stripAnsiCodes(text: string): string { return text.replace(ANSI_REGEX, ''); }
 
-    /** Extracts the meaningful result from Gemini CLI output, filtering TUI elements. */
+    /** Extracts the meaningful result from Antigravity CLI output, filtering TUI elements. */
     private extractGeminiResult(cleanedOutput: string): string | undefined {
         const resultLines: string[] = [];
         let inResponse = false;
@@ -275,7 +286,7 @@ export class GeminiAgent implements Agent {
         return result || undefined;
     }
 
-    /** Builds Docker arguments for running Gemini in a container. */
+    /** Builds Docker arguments for running Antigravity in a container. */
     private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; outputFormat?: 'stream-json' | 'text'; environment?: Record<string, string>; taskId?: string; executionType?: string }): string[] {
         const { worktreePath, githubToken, modelName, issueNumber, outputFormat = 'stream-json', environment, taskId, executionType } = params;
         const configPath = resolveConfigPath(this.config.configPath);
@@ -290,22 +301,26 @@ export class GeminiAgent implements Agent {
         const timestamp = Date.now().toString(36);
         const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
         const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
-        const containerName = `${this.config.alias || 'gemini'}-${taskType}-${shortTaskId}`;
+        const runtimeName = this.getRuntimeName();
+        const containerName = `${this.config.alias || runtimeName}-${taskType}-${shortTaskId}`;
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
-            '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'GEMINI_CLI=1', '-e', 'GEMINI_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
-            this.config.dockerImage, 'gemini', '--yolo', '--skip-trust', '--output-format', outputFormat
+            '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
+            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
+            this.config.dockerImage, this.getCliCommand(), '--yolo', '--skip-trust', '--output-format', outputFormat
         ];
         if (modelName) {
-            // Strip agent prefix if present (e.g., "gemini:gemini-3-flash-preview" -> "gemini-3-flash-preview")
-            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+            // Strip agent prefix if present (e.g., "antigravity:antigravity-gemini-3-flash-preview" -> "antigravity-gemini-3-flash-preview")
+            const unscopedModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+            const cleanModelName = runtimeName === 'antigravity' && unscopedModelName.startsWith('antigravity-')
+                ? unscopedModelName.slice('antigravity-'.length)
+                : unscopedModelName;
             dockerArgs.push('-m', cleanModelName);
-            logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Gemini agent');
+            logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Antigravity agent');
         }
-        else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Gemini agent will use default'); }
-        logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Gemini agent');
-        return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'gemini');
+        else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Antigravity agent will use default'); }
+        logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Antigravity agent');
+        return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, runtimeName);
     }
 
     /** Handles an assistant message event, updating current and last complete assistant messages. */

@@ -8,7 +8,7 @@
     "docs": "propr/docs:0.8.1",
     "agent-claude": "propr/agent-claude:0.8.1",
     "agent-codex": "propr/agent-codex:0.8.1",
-    "agent-gemini": "propr/agent-gemini:0.8.1",
+    "agent-antigravity": "propr/agent-antigravity:0.8.1",
     "agent-vibe": "propr/agent-vibe:0.8.1",
     "redis": "redis:7-alpine"
   }

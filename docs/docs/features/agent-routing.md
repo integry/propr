@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # Agent Routing
 
-ProPR can route work to different coding agents without forcing you to change the rest of the workflow. The same issue intake, planning, PR creation, comment handling, and task history apply whether the selected agent is Claude Code, Codex, Gemini, or another configured backend.
+ProPR can route work to different coding agents without forcing you to change the rest of the workflow. The same issue intake, planning, PR creation, comment handling, and task history apply whether the selected agent is Claude Code, Codex, Antigravity, or another configured backend.
 
 ## What Routing Solves
 
@@ -46,7 +46,7 @@ Examples:
 ```text
 llm-claude-sonnet46
 llm-codex-gpt54
-llm-gemini-pro
+llm-antigravity-pro
 ```
 
 The exact IDs available in your deployment come from AI Agents in the Web UI.

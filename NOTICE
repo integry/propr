@@ -42,10 +42,14 @@ Bundled third-party components
    Upstream:   https://github.com/openai/codex
    Copyright (c) OpenAI. Licensed under the Apache License, Version 2.0.
 
-4. @google/gemini-cli
-   License:    Apache License 2.0
-   Upstream:   https://github.com/google-gemini/gemini-cli
-   Copyright (c) Google LLC. Licensed under the Apache License, Version 2.0.
+4. Antigravity CLI
+   Upstream:   https://antigravity.google/cli/install.sh
+   Provider:   Google Antigravity
+   Installed via the official Antigravity CLI installer. The installer does
+   not publish a separate license, historical version artifact, or checksum in
+   the ProPR build inputs. ProPR Antigravity agent images therefore install the
+   current upstream CLI at image build time and cannot be reproduced from a
+   pinned Antigravity CLI version.
 
 5. GitHub CLI (gh)
    License:    MIT

@@ -73,12 +73,12 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         },
         {
             config: {
-                id: 'gemini-agent-1',
-                type: 'gemini' as const,
-                alias: 'gemini',
+                id: 'antigravity-agent-1',
+                type: 'antigravity' as const,
+                alias: 'antigravity',
                 enabled: true,
-                supportedModels: ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview'],
-                defaultModel: 'gemini-2.5-pro'
+                supportedModels: ['antigravity-gemini-antigravity-3.1-pro-preview', 'antigravity-gemini-2.5-pro', 'antigravity-gemini-2.5-flash', 'antigravity-gemini-3-flash-preview'],
+                defaultModel: 'antigravity-gemini-2.5-pro'
             }
         },
         {
@@ -123,11 +123,11 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'claude-opus-4-6', 'Should resolve to exact model from modelDefinitions');
     });
 
-    await t.test('Step 1: resolves exact githubLabel for gemini models', async () => {
-        // "gemini-g3-flash-preview" should match the githubLabel "llm-gemini-g3-flash-preview"
-        const result = await resolveLlmLabel('gemini-g3-flash-preview');
-        assert.strictEqual(result.agentAlias, 'gemini', 'Should resolve to gemini agent');
-        assert.strictEqual(result.model, 'gemini-3-flash-preview', 'Should resolve to correct gemini model');
+    await t.test('Step 1: resolves exact githubLabel for antigravity models', async () => {
+        // "antigravity-g3-flash-preview" should match the githubLabel "llm-antigravity-g3-flash-preview"
+        const result = await resolveLlmLabel('antigravity-g3-flash-preview');
+        assert.strictEqual(result.agentAlias, 'antigravity', 'Should resolve to antigravity agent');
+        assert.strictEqual(result.model, 'antigravity-gemini-3-flash-preview', 'Should resolve to correct antigravity model');
     });
 
     await t.test('Step 1: resolves exact githubLabel for codex models', async () => {
@@ -162,10 +162,10 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     });
 
     await t.test('Step 2: resolves agent alias match with default model', async () => {
-        // Just "gemini" should return the default gemini model
-        const result = await resolveLlmLabel('gemini');
-        assert.strictEqual(result.agentAlias, 'gemini', 'Should resolve to gemini agent');
-        assert.strictEqual(result.model, 'gemini-2.5-pro', 'Should use default model for agent');
+        // Just "antigravity" should return the default antigravity model
+        const result = await resolveLlmLabel('antigravity');
+        assert.strictEqual(result.agentAlias, 'antigravity', 'Should resolve to antigravity agent');
+        assert.strictEqual(result.model, 'antigravity-gemini-2.5-pro', 'Should use default model for agent');
     });
 
     await t.test('Step 2: resolves claude alias to default model', async () => {
@@ -186,10 +186,10 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'mistral-medium-3.5', 'Should use vibe default model');
     });
 
-    await t.test('Step 3: resolves agent prefix match (e.g., gemini-flash)', async () => {
-        // "gemini-flash" should resolve to gemini agent with flash model
-        const result = await resolveLlmLabel('gemini-flash');
-        assert.strictEqual(result.agentAlias, 'gemini', 'Should resolve to gemini agent');
+    await t.test('Step 3: resolves agent prefix match (e.g., antigravity-flash)', async () => {
+        // "antigravity-flash" should resolve to antigravity agent with flash model
+        const result = await resolveLlmLabel('antigravity-flash');
+        assert.strictEqual(result.agentAlias, 'antigravity', 'Should resolve to antigravity agent');
         assert.ok(result.model.includes('flash'), 'Should resolve to a flash model');
     });
 
@@ -238,8 +238,8 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
         assert.strictEqual(path1.agentAlias, 'claude', 'githubLabel match returns correct agent');
 
         // Path 2: agent alias match - returns that agent
-        const path2 = await resolveLlmLabel('gemini');
-        assert.strictEqual(path2.agentAlias, 'gemini', 'agent alias match returns correct agent');
+        const path2 = await resolveLlmLabel('antigravity');
+        assert.strictEqual(path2.agentAlias, 'antigravity', 'agent alias match returns correct agent');
 
         // Path 3: prefix match - returns matching agent
         const path3 = await resolveLlmLabel('codex-gpt54');
@@ -264,7 +264,7 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     });
 
     await t.test('resolution includes both agentAlias and model', async () => {
-        const result = await resolveLlmLabel('gemini-pro');
+        const result = await resolveLlmLabel('antigravity-pro');
 
         assert.ok('agentAlias' in result, 'Result should have agentAlias property');
         assert.ok('model' in result, 'Result should have model property');
@@ -315,13 +315,13 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
         assert.strictEqual(findMatchingModel('Sonnet46', config), 'claude-sonnet-4-6');
     });
 
-    await t.test('matches exact shortAlias for gemini models', () => {
-        const config = createMockConfig(['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview']);
+    await t.test('matches exact shortAlias for antigravity models', () => {
+        const config = createMockConfig(['antigravity-gemini-2.5-pro', 'antigravity-gemini-2.5-flash', 'antigravity-gemini-3-flash-preview']);
 
-        // shortAlias for gemini models: pro, flash, g3-flash-preview
-        assert.strictEqual(findMatchingModel('pro', config), 'gemini-2.5-pro');
-        assert.strictEqual(findMatchingModel('flash', config), 'gemini-2.5-flash');
-        assert.strictEqual(findMatchingModel('g3-flash-preview', config), 'gemini-3-flash-preview');
+        // shortAlias for antigravity models: pro, flash, g3-flash-preview
+        assert.strictEqual(findMatchingModel('pro', config), 'antigravity-gemini-2.5-pro');
+        assert.strictEqual(findMatchingModel('flash', config), 'antigravity-gemini-2.5-flash');
+        assert.strictEqual(findMatchingModel('g3-flash-preview', config), 'antigravity-gemini-3-flash-preview');
     });
 
     await t.test('matches exact shortAlias for codex models', () => {
@@ -362,20 +362,20 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
         assert.strictEqual(findMatchingModel('sonnet45', config), 'claude-sonnet-4-5-20250929');
     });
 
-    await t.test('matches partial model ID for gemini', () => {
-        const config = createMockConfig(['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']);
+    await t.test('matches partial model ID for antigravity', () => {
+        const config = createMockConfig(['antigravity-gemini-2.5-pro', 'antigravity-gemini-2.5-flash', 'antigravity-gemini-2.5-flash-lite']);
 
         // Partial match on model ID
-        assert.strictEqual(findMatchingModel('2.5-pro', config), 'gemini-2.5-pro');
-        assert.strictEqual(findMatchingModel('flash-lite', config), 'gemini-2.5-flash-lite');
+        assert.strictEqual(findMatchingModel('2.5-pro', config), 'antigravity-gemini-2.5-pro');
+        assert.strictEqual(findMatchingModel('flash-lite', config), 'antigravity-gemini-2.5-flash-lite');
     });
 
     await t.test('matches partial shortAlias (contains)', () => {
-        const config = createMockConfig(['gemini-3-flash-preview']);
+        const config = createMockConfig(['antigravity-gemini-3-flash-preview']);
 
         // shortAlias is 'g3-flash-preview', partial match should work
-        assert.strictEqual(findMatchingModel('g3-flash', config), 'gemini-3-flash-preview');
-        assert.strictEqual(findMatchingModel('flash-prev', config), 'gemini-3-flash-preview');
+        assert.strictEqual(findMatchingModel('g3-flash', config), 'antigravity-gemini-3-flash-preview');
+        assert.strictEqual(findMatchingModel('flash-prev', config), 'antigravity-gemini-3-flash-preview');
     });
 
     await t.test('returns null when no match is found', () => {
@@ -399,10 +399,10 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
 
     await t.test('prioritizes exact model ID match over partial match', () => {
         // If we have models like "flash" and "flash-lite", exact match should win
-        const config = createMockConfig(['gemini-2.5-flash', 'gemini-2.5-flash-lite']);
+        const config = createMockConfig(['antigravity-gemini-2.5-flash', 'antigravity-gemini-2.5-flash-lite']);
 
-        // 'flash' is shortAlias for gemini-2.5-flash, should match first
-        assert.strictEqual(findMatchingModel('flash', config), 'gemini-2.5-flash');
+        // 'flash' is shortAlias for antigravity-gemini-2.5-flash, should match first
+        assert.strictEqual(findMatchingModel('flash', config), 'antigravity-gemini-2.5-flash');
     });
 
     await t.test('prioritizes exact shortAlias over partial model ID match', () => {
@@ -453,17 +453,17 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName('gpt-5.2'), 'GPT-5.2');
     });
 
-    await t.test('returns correct short name for Gemini models', () => {
-        // Gemini 3 Pro Preview
-        assert.strictEqual(getModelShortName('gemini-3-pro-preview'), 'Gemini 3 Preview');
-        // Gemini 3 Flash Preview
-        assert.strictEqual(getModelShortName('gemini-3-flash-preview'), 'Gemini 3 Flash');
-        // Gemini 2.5 Pro
-        assert.strictEqual(getModelShortName('gemini-2.5-pro'), 'Gemini Pro');
-        // Gemini 2.5 Flash
-        assert.strictEqual(getModelShortName('gemini-2.5-flash'), 'Gemini Flash');
-        // Gemini 2.5 Flash Lite
-        assert.strictEqual(getModelShortName('gemini-2.5-flash-lite'), 'Flash Lite');
+    await t.test('returns correct short name for Antigravity models', () => {
+        // Antigravity 3 Pro Preview
+        assert.strictEqual(getModelShortName('antigravity-gemini-3-pro-preview'), 'Antigravity 3 Preview');
+        // Antigravity 3 Flash Preview
+        assert.strictEqual(getModelShortName('antigravity-gemini-3-flash-preview'), 'Antigravity 3 Flash');
+        // Antigravity 2.5 Pro
+        assert.strictEqual(getModelShortName('antigravity-gemini-2.5-pro'), 'Antigravity Pro');
+        // Antigravity 2.5 Flash
+        assert.strictEqual(getModelShortName('antigravity-gemini-2.5-flash'), 'Antigravity Flash');
+        // Antigravity 2.5 Flash Lite
+        assert.strictEqual(getModelShortName('antigravity-gemini-2.5-flash-lite'), 'Flash Lite');
     });
 
     await t.test('returns correct short name for Vibe (Mistral) models', () => {
@@ -506,12 +506,12 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
             'gpt-5.3-codex': 'GPT-5.3 Codex',
             'gpt-5.3-codex-spark': 'Codex Spark',
             'gpt-5.2': 'GPT-5.2',
-            // 5 Gemini models
-            'gemini-3-pro-preview': 'Gemini 3 Preview',
-            'gemini-3-flash-preview': 'Gemini 3 Flash',
-            'gemini-2.5-pro': 'Gemini Pro',
-            'gemini-2.5-flash': 'Gemini Flash',
-            'gemini-2.5-flash-lite': 'Flash Lite',
+            // 5 Antigravity models
+            'antigravity-gemini-3-pro-preview': 'Antigravity 3 Preview',
+            'antigravity-gemini-3-flash-preview': 'Antigravity 3 Flash',
+            'antigravity-gemini-2.5-pro': 'Antigravity Pro',
+            'antigravity-gemini-2.5-flash': 'Antigravity Flash',
+            'antigravity-gemini-2.5-flash-lite': 'Flash Lite',
             // 3 Vibe (Mistral) models
             'mistral-medium-3.5': 'Mistral Medium 3.5',
             'devstral-2512': 'Devstral 2',
@@ -534,7 +534,7 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
     });
 
     await t.test('ALL_MODELS array matches the 19 expected models', () => {
-        // Verify ALL_MODELS contains all 19 models (5 Claude + 6 Codex + 5 Gemini + 3 Vibe)
+        // Verify ALL_MODELS contains all 19 models (5 Claude + 6 Codex + 5 Antigravity + 3 Vibe)
         assert.strictEqual(ALL_MODELS.length, 19, `Expected 19 models in ALL_MODELS but found ${ALL_MODELS.length}`);
 
         // Verify each model in ALL_MODELS has a valid shortName
@@ -570,12 +570,12 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         },
         {
             config: {
-                id: 'gemini-agent-1',
-                type: 'gemini' as const,
-                alias: 'gemini',
+                id: 'antigravity-agent-1',
+                type: 'antigravity' as const,
+                alias: 'antigravity',
                 enabled: true,
-                supportedModels: ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3-pro-preview'],
-                defaultModel: 'gemini-2.5-pro'
+                supportedModels: ['antigravity-gemini-antigravity-3.1-pro-preview', 'antigravity-gemini-2.5-pro', 'antigravity-gemini-2.5-flash', 'antigravity-gemini-3-flash-preview', 'antigravity-gemini-3-pro-preview'],
+                defaultModel: 'antigravity-gemini-2.5-pro'
             }
         },
         {
@@ -624,17 +624,17 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
     });
 
     await t.test('/review with two distinct models resolves to two assignments', async () => {
-        const results = await resolveReviewModels(['gemini-3-pro-preview', 'gpt-5.4']);
+        const results = await resolveReviewModels(['antigravity-gemini-3-pro-preview', 'gpt-5.4']);
         assert.strictEqual(results.length, 2, 'Should resolve to two assignments');
 
         const agentAliases = results.map(r => r.agentAlias);
-        assert.ok(agentAliases.includes('gemini'), 'Should include gemini agent');
+        assert.ok(agentAliases.includes('antigravity'), 'Should include antigravity agent');
         assert.ok(agentAliases.includes('codex'), 'Should include codex agent');
     });
 
-    await t.test('/review llm-gemini-3-pro-preview gpt-54 resolves correctly (llm- prefix handled upstream)', async () => {
+    await t.test('/review llm-antigravity-3-pro-preview gpt-54 resolves correctly (llm- prefix handled upstream)', async () => {
         // The slash command parser strips "llm-" prefix, so we test with the stripped versions
-        const results = await resolveReviewModels(['gemini-pro-preview', 'codex-gpt54']);
+        const results = await resolveReviewModels(['antigravity-pro-preview', 'codex-gpt54']);
         assert.strictEqual(results.length, 2, 'Should resolve to two assignments');
     });
 
@@ -645,8 +645,8 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
     });
 
     await t.test('equivalent model references deduplicate', async () => {
-        // "gemini" and "gemini" both resolve to the same default model
-        const results = await resolveReviewModels(['gemini', 'gemini']);
+        // "antigravity" and "antigravity" both resolve to the same default model
+        const results = await resolveReviewModels(['antigravity', 'antigravity']);
         assert.strictEqual(results.length, 1, 'Same model via same alias should deduplicate');
     });
 
@@ -689,10 +689,10 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         assert.strictEqual(claudeResults[0].agentAlias, 'claude');
         assert.strictEqual(claudeResults[0].model, 'claude-sonnet-4-6');
 
-        // gemini -> default enabled Gemini agent/model
-        const geminiResults = await resolveReviewModels(['gemini']);
-        assert.strictEqual(geminiResults[0].agentAlias, 'gemini');
-        assert.strictEqual(geminiResults[0].model, 'gemini-2.5-pro');
+        // antigravity -> default enabled Antigravity agent/model
+        const geminiResults = await resolveReviewModels(['antigravity']);
+        assert.strictEqual(geminiResults[0].agentAlias, 'antigravity');
+        assert.strictEqual(geminiResults[0].model, 'antigravity-gemini-2.5-pro');
 
         // codex -> default enabled Codex agent/model
         const codexResults = await resolveReviewModels(['codex']);
@@ -706,7 +706,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
     });
 
     await t.test('assignments include display-friendly labels', async () => {
-        const results = await resolveReviewModels(['claude', 'gemini', 'codex', 'vibe']);
+        const results = await resolveReviewModels(['claude', 'antigravity', 'codex', 'vibe']);
         assert.strictEqual(results.length, 4);
 
         for (const result of results) {
@@ -718,8 +718,8 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         const claudeAssignment = results.find(r => r.agentAlias === 'claude');
         assert.strictEqual(claudeAssignment?.displayLabel, 'Claude Sonnet 4.6');
 
-        const geminiAssignment = results.find(r => r.agentAlias === 'gemini');
-        assert.strictEqual(geminiAssignment?.displayLabel, 'Gemini 2.5 Pro');
+        const geminiAssignment = results.find(r => r.agentAlias === 'antigravity');
+        assert.strictEqual(geminiAssignment?.displayLabel, 'Antigravity 2.5 Pro');
 
         const codexAssignment = results.find(r => r.agentAlias === 'codex');
         assert.strictEqual(codexAssignment?.displayLabel, 'GPT-5.5');

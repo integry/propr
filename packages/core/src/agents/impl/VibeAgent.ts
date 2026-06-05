@@ -173,6 +173,7 @@ export class VibeAgent implements Agent {
         }
     }
 
+    // eslint-disable-next-line complexity
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, responseFormat = 'text' } = options || {};
         const startTime = Date.now();

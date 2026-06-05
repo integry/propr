@@ -28,7 +28,7 @@ function formatType(type: string): string {
   const typeMap: Record<string, string> = {
     claude: "Claude",
     codex: "Codex",
-    gemini: "Gemini",
+    antigravity: "Antigravity",
     vibe: "Mistral Vibe",
   };
   return typeMap[type?.toLowerCase()] || type;
@@ -184,7 +184,7 @@ Examples:
   agent
     .command("add [alias]")
     .description("Add a new AI agent configuration for code implementation")
-    .option("-t, --type <type>", "Agent type (claude, codex, gemini, or vibe)")
+    .option("-t, --type <type>", "Agent type (claude, codex, antigravity, or vibe)")
     .option("-m, --model <models>", "Comma-separated list of supported models")
     .option("-d, --default-model <model>", "Default model to use (defaults to first model)")
     .option("--docker-image <image>", "Docker image for the agent")
@@ -197,10 +197,10 @@ Argument:
   alias    Unique identifier for the agent (required unless using --file)
 
 Agent Types:
-  claude    Anthropic Claude models
-  codex     OpenAI Codex models
-  gemini    Google Gemini models
-  vibe      Mistral Vibe models
+  claude       Anthropic Claude models
+  codex        OpenAI Codex models
+  antigravity  Antigravity models
+  vibe         Mistral Vibe models
 
 JSON File Format:
   {
@@ -216,7 +216,7 @@ JSON File Format:
 Examples:
   $ propr agent add my-claude -t claude -m claude-sonnet-4-20250514
   $ propr agent add prod-agent -t claude -m claude-sonnet-4-20250514,claude-opus-4-20250514 -d claude-sonnet-4-20250514
-  $ propr agent add test-agent -t gemini -m gemini-pro --disabled
+  $ propr agent add test-agent -t antigravity -m antigravity-gemini-3-pro-preview --disabled
   $ propr agent add --file agent-config.json
   $ cat config.json | propr agent add --file -
 `)

@@ -103,8 +103,6 @@ Antigravity CLI operates in tandem with Antigravity 2.0, sharing configurations 
 Shared agent harness: Both environments run on the exact same agent core. Any enhancements to multi-step reasoning, tool usage, or code comprehension apply across both platforms.
 Shared settings sync: Your core preferences, permissions, and security configurations synchronize automatically across both interfaces. Updating a permission rule or standard configuration in one platform immediately updates the other.
 Conversation export: Seamlessly move active conversations between platforms. If a terminal session grows in complexity and requires visual orchestration, export the conversation to Antigravity 2.0 to continue with the visual editor interface.
-Migrating from Gemini CLI
-If you are transitioning from Gemini CLI, the onboarding process supports a one-time import to automatically migrate your existing Gemini CLI extensions, skills, and settings. To learn more, read Migrating from Gemini CLI.
 
 Next steps
 Explore the guides below to set up your environment and begin working with autonomous agents:
@@ -290,7 +288,7 @@ Using AGY CLI
 Settings
 Antigravity CLI provides a flexible configuration system to customize workspace behavior, safety restrictions, editor preferences, visual style, and performance.
 
-Configuration File: Stored in a plain JSON file ~/.gemini/antigravity-cli/settings.json.
+Configuration File: Stored in a plain JSON file ~/.antigravity/settings.json.
 Settings Panel: Type /config or /settings to open a full-screen overlay menu listing all available options.
 Select a setting to open its list of options or a text input field.
 Immediately save your selection to the disk and return to the main list.
@@ -314,7 +312,7 @@ Auto-Save Resume	When you close the CLI, it automatically prints the exact comma
 Keybindings
 AGY CLI allows for custom keybindings. You can edit them by typing /keybindings or modifying the JSON file directly.
 
-File Location: ~/.gemini/antigravity-cli/keybindings.json.
+File Location: ~/.antigravity/keybindings.json.
 Reset: To reset to default, delete the keybindings.json file.
 Default Keybindings
 
@@ -358,10 +356,10 @@ Antigravity CLI Features
 Plugins
 How Plugins Work Plugins are namespaced bundles that can contain skills, agents, rules, MCP servers, and hooks as a single deployable unit.
 
-When you install a plugin, the CLI stages the files in your home directory under ~/.gemini/antigravity-cli/plugins/<plugin_name>/. The Antigravity Agent automatically discovers and loads these staged customizations.
+When you install a plugin, the CLI stages the files in your home directory under ~/.antigravity/plugins/<plugin_name>/. The Antigravity Agent automatically discovers and loads these staged customizations.
 
 ￼content_copy
-~/.gemini/antigravity-cli/
+~/.antigravity/
 ├── plugins/
 │   └── <plugin_name>/
 │       ├── plugin.json         # Required marker file
@@ -378,7 +376,7 @@ The Terminal Sandbox is a lightweight security isolation mechanism that protects
 
 Rather than running heavy virtual machines or containers, the CLI leverages native operating system features (nsjail on Linux, sandbox-exec on macOS, and AppContainer on Windows) to enforce strict containment boundaries with zero startup overhead.
 
-Configuration You can configure the sandbox behavior in your settings.json file (located at ~/.gemini/antigravity-cli/settings.json):
+Configuration You can configure the sandbox behavior in your settings.json file (located at ~/.antigravity/settings.json):
 
 json
 ￼content_copy
@@ -410,7 +408,7 @@ Command	Category	Purpose
 /logout	Account	Log out of your Google session and clear cached credentials.
 
 Advanced Customization via `settings.json`
-For power users, several slash commands support deep customization via your ~/.gemini/antigravity-cli/settings.json configuration:
+For power users, several slash commands support deep customization via your ~/.antigravity/settings.json configuration:
 
 Fine-Grained Permissions: Instead of global levels, define specific allowed/denied commands:
 ￼content_copy
@@ -448,69 +446,17 @@ lightbulb
 Tip: You can approve a pending subagent permission instantly using ctrl+k without ever having to switch away from the main conversation.
 Antigravity CLI
 >
-Gemini Migration
-Migrating from Gemini CLI
-Convert your legacy configurations, import Gemini CLI extensions as native plugins, adapt custom skills paths, and reformat Model Context Protocol configurations.
-
-Overview
-Antigravity CLI preserves backward compatibility with the core developer-experience constructs popularized by Gemini CLI. To ensure a seamless upgrade, the CLI offers automatic onboarding conversion alongside explicit CLI migration command sequences.
-
-First-launch onboarding
-When you execute agy for the first time in an environment containing legacy configurations, the CLI automatically detects your existing profiles. An interactive checklist prompts you to choose which assets to migrate:
-
-Auto-conversion: Select the extensions and global configurations you wish to convert.
-Keyring storage: The CLI migrates your active session tokens securely into your operating system's native keyring storage.
-Settings alignment: Default visual parameters and rendering buffers map automatically to your new settings profile.
-info
-Partial Parity: While we preserve support for workspace skills, rules, and MCP servers, certain customized terminal themes or experimental visual overlays from Gemini CLI may not be supported.
-Converting extensions to plugins
-Since Gemini CLI launched, the industry has standardized on the term plugins. You can manually convert your legacy Gemini extensions to native Antigravity plugins by executing:
-
-bash
-￼content_copy
-agy plugin import gemini
-This utility searches your legacy local directories, parses your extension manifests, and converts files into native layout blocks.
-
-Expected import output
-text
-￼content_copy
-[ok]   conductor-tools
-       - skills     : skipped (none detected)
-       - agents     : skipped (none detected)
-       ✔ commands   : 4 legacy commands converted to skills
-       - mcpServers : skipped (none detected)
-[ok]   google-workspace
-       ✔ skills     : 5 skills processed
-       - agents     : skipped (none detected)
-       ✔ commands   : 2 legacy commands converted to skills
-       ✔ mcpServers : 1 server definition migrated to mcp_config.json
-Context files and workspace rules
-Both CLI platforms utilize identical workspace context rules. No modifications are needed to your existing rule documents:
-
-Workspace local context: The agent continues to parse and enforce rule constraints defined inside your active directory's GEMINI.md and AGENTS.md files.
-Global developer context: The agent automatically consults and enforces your global constraints located at ~/.gemini/GEMINI.md.
-Updated skills paths
-While global shared skills remain in your user home directory, the target folder path for local workspace-specific skills has been updated.
-
-Configuration	Gemini CLI	Antigravity CLI
-Global shared path	~/.gemini/skills/	~/.gemini/antigravity-cli/skills/
-Workspace project path	.gemini/skills/	.agents/skills/
-
-warning
-Action Required: If your project contains custom workspace skills defined in .gemini/skills/, you must manually rename or relocate the folder to .agents/skills/ for the Antigravity agent to recognize them as active slash commands.
 MCP config formatting changes
 Antigravity CLI separates Model Context Protocol servers into dedicated, lightweight JSON profiles instead of nesting them inside your primary preferences configuration.
 
 Directory mapping
-Legacy Gemini Config: Servers were declared inline within ~/.gemini/settings.json.
 Antigravity CLI Config: Servers are defined inside a standalone mcp_config.json profile:
-Global servers: ~/.gemini/config/mcp_config.json
+Global servers: ~/.antigravity/config/mcp_config.json
 Workspace servers: .agents/mcp_config.json
 Required schema updates
-When manually migrating remote websocket or SSE server definitions, update the URI key parameter to match the current standard:
+When configuring remote websocket or SSE server definitions, use the current URI key parameter:
 
-Legacy schema keys: url or httpUrl
-Modern schema key: serverUrl
+Schema key: serverUrl
 json
 ￼content_copy
 {
@@ -911,7 +857,7 @@ The persistent settings are saved in a plain JSON format:
 
 text
 ￼content_copy
-~/.gemini/antigravity-cli/settings.json
+~/.antigravity/settings.json
 The CLI leverages sparse persistence by writing only values to disk that differ from their system defaults. This keeps your configuration file clean, minimal, and fully forward-compatible with future updates.
 
 The interactive settings panel
@@ -963,7 +909,7 @@ Custom maps are stored alongside your primary settings profile:
 
 text
 ￼content_copy
-~/.gemini/antigravity-cli/keybindings.json
+~/.antigravity/keybindings.json
 Format and customization
 The JSON structure maps a single TUI command action to an array of hotkey sequences:
 
@@ -990,7 +936,7 @@ To revert all keys back to system defaults, simply delete the keybindings profil
 
 bash
 ￼content_copy
-rm ~/.gemini/antigravity-cli/keybindings.json
+rm ~/.antigravity/keybindings.json
 Next steps
 Now that you have configured your environment, review security controls and extensibility options:
 
@@ -1040,14 +986,14 @@ Custom status line scripting
 For advanced terminal layouts or custom status bar displays, you can route active agent metadata into a custom script.
 
 Configuration
-Add a statusLine configuration block to your ~/.gemini/antigravity-cli/settings.json file:
+Add a statusLine configuration block to your ~/.antigravity/settings.json file:
 
 json
 ￼content_copy
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.gemini/antigravity-cli/statusline.sh"
+    "command": "~/.antigravity/statusline.sh"
   }
 }
 Whenever the agent state changes, the TUI executes your command script, pipes a detailed state JSON payload directly to the script's stdin, reads your formatted string from stdout, and renders the result in the prompt's status line. Full ANSI color codes are supported.
@@ -1085,8 +1031,8 @@ json
   "cwd": "/home/user/my-project",
   "conversation_id": "12345678-abcd-ef01-2345-6789abcdef01",
   "model": {
-    "id": "Gemini",
-    "display_name": "Gemini"
+    "id": "Antigravity",
+    "display_name": "Antigravity"
   },
   "workspace": {
     "current_dir": "/home/user/my-project",
@@ -1124,11 +1070,11 @@ json
 Example script
 You can download a complete, layout-adaptive script from the official statusline.sh example on GitHub. This script renders state badges, handles active branches, and formats context window progress bars dynamically.
 
-Save the script to ~/.gemini/antigravity-cli/statusline.sh and make it executable:
+Save the script to ~/.antigravity/statusline.sh and make it executable:
 
 bash
 ￼content_copy
-chmod +x ~/.gemini/antigravity-cli/statusline.sh
+chmod +x ~/.antigravity/statusline.sh
 See also
 Terminal Title Customization: Configure dynamic window titles.
 Settings, Rendering & Keybindings: Customize keyboard hotkeys and buffers.
@@ -1174,7 +1120,7 @@ Write a codebase rule file
 Create a GEMINI.md or AGENTS.md file at your workspace root to outline specific directory standards, styling paradigms, test command parameters, and deprecation warnings. The agent automatically parses these rules on startup and consults them before suggesting changes.
 
 Establish structured permissions
-Tune your safety barriers in ~/.gemini/antigravity-cli/settings.json based on your project risk level:
+Tune your safety barriers in ~/.antigravity/settings.json based on your project risk level:
 
 request-review (Default): Prompts you before executing any write operations, bash commands, or remote network calls.
 proceed-in-sandbox: Restricts all terminal executions to a secure sandbox containment ring. Safe commands execute autonomously, while risky commands prompt for reviews.
@@ -1321,12 +1267,12 @@ text
 ￼content_copy
 Warning: another background updater process is already active (update.lock)
 Cause
-Antigravity CLI contains a native, statically linked self-updater that runs in the background. It uses a 15-minute Time-To-Live (TTL) debounce marker (last_check.timestamp) and an advisory lock (update.lock) inside ~/.gemini/antigravity-cli/updater/ to prevent concurrent process collisions. If a background updater process hangs, crashes without releasing the lock, or has insufficient user filesystem permissions inside the executable directory, subsequent updates are blocked.
+Antigravity CLI contains a native, statically linked self-updater that runs in the background. It uses a 15-minute Time-To-Live (TTL) debounce marker (last_check.timestamp) and an advisory lock (update.lock) inside ~/.antigravity/updater/ to prevent concurrent process collisions. If a background updater process hangs, crashes without releasing the lock, or has insufficient user filesystem permissions inside the executable directory, subsequent updates are blocked.
 
 Resolution
 Release the advisory lock: Purge the background lock file manually:
 ￼content_copy
-  rm -f ~/.gemini/antigravity-cli/updater/update.lock
+  rm -f ~/.antigravity/updater/update.lock
 Opt-out/Disable auto-updates: Set the AGY_CLI_DISABLE_AUTO_UPDATE environment variable to true inside your shell profile (~/.bashrc or ~/.zshrc):
 ￼content_copy
   export AGY_CLI_DISABLE_AUTO_UPDATE=true

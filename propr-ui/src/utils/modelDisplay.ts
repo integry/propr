@@ -2,9 +2,11 @@ import { MODEL_INFO_MAP } from '../config/modelDefinitions';
 
 interface ModelDisplayNameOptions {
   compactGemini?: boolean;
+  compactAntigravity?: boolean;
 }
 
 const GEMINI_PREFIX = 'gemini-';
+const ANTIGRAVITY_PREFIX = 'antigravity-';
 
 function toTitleCase(value: string): string {
   if (!value) return value;
@@ -24,6 +26,10 @@ export function formatGeminiModelVariant(modelId: string): string {
 
 export function getModelDisplayName(modelId: string, options: ModelDisplayNameOptions = {}): string {
   const modelInfo = MODEL_INFO_MAP[modelId];
+
+  if (options.compactAntigravity && modelId.startsWith(ANTIGRAVITY_PREFIX)) {
+    return modelInfo?.name.replace(/^Antigravity\s+/i, '') || modelId.slice(ANTIGRAVITY_PREFIX.length);
+  }
 
   if (options.compactGemini && modelId.startsWith(GEMINI_PREFIX)) {
     return modelInfo?.name.replace(/^Gemini\s+/i, '') || formatGeminiModelVariant(modelId);

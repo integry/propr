@@ -68,7 +68,7 @@ IMAGES=(
   "agent-base|docker/Dockerfile.agent-base|."
   "agent-claude|Dockerfile.claude|."
   "agent-codex|Dockerfile.codex|."
-  "agent-gemini|Dockerfile.gemini|."
+  "agent-antigravity|Dockerfile.antigravity|."
   "agent-vibe|Dockerfile.vibe|."
 )
 
@@ -84,7 +84,7 @@ should_build() {
 include_agent_base_when_needed() {
   [[ -z "$ONLY" ]] && return
   should_build "agent-base" && return
-  for agent_name in agent-claude agent-codex agent-gemini agent-vibe; do
+  for agent_name in agent-claude agent-codex agent-antigravity agent-vibe; do
     if should_build "$agent_name"; then
       ONLY="agent-base,$ONLY"
       return
@@ -151,7 +151,7 @@ image_title() {
     agent-base) echo "ProPR Agent Base" ;;
     agent-claude) echo "ProPR Claude Code Agent" ;;
     agent-codex) echo "ProPR Codex Agent" ;;
-    agent-gemini) echo "ProPR Gemini Agent" ;;
+    agent-antigravity) echo "ProPR Antigravity Agent" ;;
     launcher) echo "ProPR Launcher" ;;
     *) echo "ProPR $1" ;;
   esac
@@ -165,7 +165,7 @@ image_description() {
     agent-base) echo "Shared base image for ProPR coding agent execution containers." ;;
     agent-claude) echo "Claude Code execution container for ProPR agent runs." ;;
     agent-codex) echo "OpenAI Codex execution container for ProPR agent runs." ;;
-    agent-gemini) echo "Google Gemini CLI execution container for ProPR agent runs." ;;
+    agent-antigravity) echo "Antigravity execution container for ProPR agent runs." ;;
     launcher) echo "Single-command launcher that starts and manages the ProPR Docker stack." ;;
     *) echo "ProPR production image." ;;
   esac
@@ -189,7 +189,7 @@ write_manifest() {
     "docs": "$runtime_ns/${runtime_prefix}docs:$VERSION",
     "agent-claude": "$runtime_ns/${runtime_prefix}agent-claude:$VERSION",
     "agent-codex": "$runtime_ns/${runtime_prefix}agent-codex:$VERSION",
-    "agent-gemini": "$runtime_ns/${runtime_prefix}agent-gemini:$VERSION",
+    "agent-antigravity": "$runtime_ns/${runtime_prefix}agent-antigravity:$VERSION",
     "agent-vibe": "$runtime_ns/${runtime_prefix}agent-vibe:$VERSION",
     "redis": "redis:7-alpine"
   }
@@ -217,7 +217,7 @@ build_image() {
   fi
 
   # Agent images extend agent-base — pin to the exact image built in this run.
-  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini || "$name" == agent-vibe ]]; then
+  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-antigravity || "$name" == agent-vibe ]]; then
     build_args+=("--build-arg" "BASE_IMAGE=$(agent_base_image)")
   fi
   if [[ "$name" == agent-vibe ]]; then

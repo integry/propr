@@ -60,7 +60,7 @@ export interface UsageSnapshot {
  * enables easy DB querying and report generation.
  */
 export interface UsageMetricRecord {
-  /** The agent name (e.g. "claude", "gemini", "codex"). */
+  /** The agent name (e.g. "claude", "antigravity", "codex"). */
   agent: string;
   /** The metric key (e.g. "session", "weeklyAll", "fiveHour"). */
   metricKey: string;

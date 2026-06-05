@@ -13,7 +13,7 @@ function makeSystemHealth(overrides: Partial<HeaderStats['systemHealth']> = {}):
     indexing: 'Idle',
     agents: [
       { id: 'codex-1', type: 'codex', alias: 'codex-prod', status: 'Ready' },
-      { id: 'gemini-1', type: 'gemini', alias: 'gemini-prod', status: 'Failed' },
+      { id: 'antigravity-1', type: 'antigravity', alias: 'antigravity-prod', status: 'Failed' },
     ],
     isHealthy: false,
     ...overrides,
@@ -34,9 +34,9 @@ describe('SystemHealth dropdown', () => {
     expect(screen.getByText('GitHub:')).toBeInTheDocument();
     expect(screen.getByText('Indexing:')).toBeInTheDocument();
     expect(screen.getByText('Codex:')).toBeInTheDocument();
-    expect(screen.getByText('Gemini:')).toBeInTheDocument();
+    expect(screen.getByText('Antigravity:')).toBeInTheDocument();
     expect(screen.queryByText('Codex (codex-prod):')).not.toBeInTheDocument();
-    expect(screen.queryByText('Gemini (gemini-prod):')).not.toBeInTheDocument();
+    expect(screen.queryByText('Antigravity (antigravity-prod):')).not.toBeInTheDocument();
     expect(screen.queryByText('Claude:')).not.toBeInTheDocument();
     expect(container.querySelectorAll('span.rounded-full')).toHaveLength(6);
   });
@@ -46,7 +46,7 @@ describe('SystemHealth dropdown', () => {
       agents: [
         { id: 'codex-1', type: 'codex', alias: 'codex-prod', status: 'Ready' },
         { id: 'codex-2', type: 'codex', alias: 'codex-canary', status: 'Ready' },
-        { id: 'gemini-1', type: 'gemini', alias: 'gemini-prod', status: 'Ready' },
+        { id: 'antigravity-1', type: 'antigravity', alias: 'antigravity-prod', status: 'Ready' },
       ],
     })} />);
 
@@ -54,7 +54,7 @@ describe('SystemHealth dropdown', () => {
 
     expect(screen.getByText('Codex (codex-prod):')).toBeInTheDocument();
     expect(screen.getByText('Codex (codex-canary):')).toBeInTheDocument();
-    expect(screen.getByText('Gemini:')).toBeInTheDocument();
+    expect(screen.getByText('Antigravity:')).toBeInTheDocument();
   });
 
   it('marks the overall indicator red when an enabled dynamic agent fails', () => {

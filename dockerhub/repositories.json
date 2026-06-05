@@ -35,8 +35,8 @@
     "overview": "agent-codex.md"
   },
   {
-    "name": "agent-gemini",
-    "description": "Google Gemini CLI execution container for ProPR agent runs.",
-    "overview": "agent-gemini.md"
+    "name": "agent-antigravity",
+    "description": "Antigravity execution container for ProPR agent runs.",
+    "overview": "agent-antigravity.md"
   }
 ]

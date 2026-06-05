@@ -45,7 +45,7 @@ export async function findExecutionStartTimestampForTask(
       };
       const history = Array.isArray(state.history) ? state.history : [];
       const entry = history.find(
-        h => h.timestamp && (h.state === 'claude_execution' || h.state === 'codex_execution' || h.state === 'gemini_execution' || h.state === 'vibe_execution')
+        h => h.timestamp && (h.state === 'claude_execution' || h.state === 'codex_execution' || h.state === 'antigravity_execution' || h.state === 'vibe_execution')
       ) || history.find(h => h.timestamp && (h.state ?? '').endsWith('_execution'));
       if (entry?.timestamp) return entry.timestamp;
     }

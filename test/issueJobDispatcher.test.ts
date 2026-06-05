@@ -219,7 +219,7 @@ describe('issueJobDispatcher - handleDispatch Core Logic', () => {
 
         test('should generate same job ID for same inputs (deduplication)', () => {
             const issueRef = { repoOwner: 'org', repoName: 'repo', number: 123 };
-            const agentModel = { agentAlias: 'gemini', model: 'gemini-2.5-pro' };
+            const agentModel = { agentAlias: 'antigravity', model: 'antigravity-gemini-2.5-pro' };
             const baseBranch = 'develop';
 
             const jobId1 = generateChildJobId(issueRef, agentModel, baseBranch);
@@ -927,7 +927,7 @@ describe('issueJobDispatcher - Label Resolution', () => {
      */
     interface MockAgentConfig {
         alias: string;
-        type: 'claude' | 'codex' | 'gemini' | 'vibe';
+        type: 'claude' | 'codex' | 'antigravity' | 'vibe';
         defaultModel: string;
         supportedModels: string[];
     }
@@ -963,7 +963,7 @@ describe('issueJobDispatcher - Label Resolution', () => {
             }
         }
 
-        // Check if label starts with an agent alias (e.g., "gemini-pro")
+        // Check if label starts with an agent alias (e.g., "antigravity-pro")
         for (const agent of agents) {
             const aliasLower = agent.alias.toLowerCase();
             if (lowerLabel.startsWith(aliasLower + '-')) {
@@ -1083,8 +1083,8 @@ describe('issueJobDispatcher - Label Resolution', () => {
         });
 
         test('should parse agent-prefixed model', () => {
-            const llm = parseLlmFromLabel('llm-gemini-pro');
-            assert.strictEqual(llm, 'gemini-pro');
+            const llm = parseLlmFromLabel('llm-antigravity-pro');
+            assert.strictEqual(llm, 'antigravity-pro');
         });
 
         test('should parse model with date suffix', () => {
@@ -1107,10 +1107,10 @@ describe('issueJobDispatcher - Label Resolution', () => {
                 supportedModels: ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-4-5']
             },
             {
-                alias: 'gemini',
-                type: 'gemini',
-                defaultModel: 'gemini-2.5-pro',
-                supportedModels: ['gemini-2.5-pro', 'gemini-3-flash-preview']
+                alias: 'antigravity',
+                type: 'antigravity',
+                defaultModel: 'antigravity-gemini-2.5-pro',
+                supportedModels: ['antigravity-gemini-2.5-pro', 'antigravity-gemini-3-flash-preview']
             },
             {
                 alias: 'codex',
@@ -1127,18 +1127,18 @@ describe('issueJobDispatcher - Label Resolution', () => {
             assert.strictEqual(result.model, 'claude-sonnet-4-5');
         });
 
-        test('should resolve gemini agent alias to default model', () => {
-            const result = mockResolveLlmLabel('gemini', mockAgents, 'default');
+        test('should resolve antigravity agent alias to default model', () => {
+            const result = mockResolveLlmLabel('antigravity', mockAgents, 'default');
 
-            assert.strictEqual(result.agentAlias, 'gemini');
-            assert.strictEqual(result.model, 'gemini-2.5-pro');
+            assert.strictEqual(result.agentAlias, 'antigravity');
+            assert.strictEqual(result.model, 'antigravity-gemini-2.5-pro');
         });
 
-        test('should resolve agent-prefixed model: gemini-pro', () => {
-            const result = mockResolveLlmLabel('gemini-pro', mockAgents, 'default');
+        test('should resolve agent-prefixed model: antigravity-pro', () => {
+            const result = mockResolveLlmLabel('antigravity-pro', mockAgents, 'default');
 
-            assert.strictEqual(result.agentAlias, 'gemini');
-            assert.strictEqual(result.model, 'gemini-2.5-pro');
+            assert.strictEqual(result.agentAlias, 'antigravity');
+            assert.strictEqual(result.model, 'antigravity-gemini-2.5-pro');
         });
 
         test('should resolve agent-prefixed model: claude-opus', () => {
@@ -1204,12 +1204,12 @@ describe('issueJobDispatcher - Label Resolution', () => {
                 }
             },
             {
-                alias: 'gemini-dev',
-                type: 'gemini',
-                defaultModel: 'gemini-2.5-pro',
-                supportedModels: ['gemini-2.5-pro'],
+                alias: 'antigravity-dev',
+                type: 'antigravity',
+                defaultModel: 'antigravity-gemini-2.5-pro',
+                supportedModels: ['antigravity-gemini-2.5-pro'],
                 modelCustomLabels: {
-                    'gemini-2.5-pro': 'custom-gemini'
+                    'antigravity-gemini-2.5-pro': 'custom-antigravity'
                 }
             },
             {
@@ -1237,12 +1237,12 @@ describe('issueJobDispatcher - Label Resolution', () => {
             assert.strictEqual(result.model, 'claude-sonnet-4-5');
         });
 
-        test('should resolve gemini custom label', () => {
-            const result = mockResolveCustomLabel('custom-gemini', mockAgentsWithCustomLabels);
+        test('should resolve antigravity custom label', () => {
+            const result = mockResolveCustomLabel('custom-antigravity', mockAgentsWithCustomLabels);
 
             assert.ok(result !== null);
-            assert.strictEqual(result.agentAlias, 'gemini-dev');
-            assert.strictEqual(result.model, 'gemini-2.5-pro');
+            assert.strictEqual(result.agentAlias, 'antigravity-dev');
+            assert.strictEqual(result.model, 'antigravity-gemini-2.5-pro');
         });
 
         test('should return null for non-matching label', () => {
@@ -1279,15 +1279,15 @@ describe('issueJobDispatcher - Label Resolution', () => {
                 }
             },
             {
-                alias: 'gemini',
-                type: 'gemini',
-                defaultModel: 'gemini-2.5-pro',
-                supportedModels: ['gemini-2.5-pro', 'gemini-3-flash-preview']
+                alias: 'antigravity',
+                type: 'antigravity',
+                defaultModel: 'antigravity-gemini-2.5-pro',
+                supportedModels: ['antigravity-gemini-2.5-pro', 'antigravity-gemini-3-flash-preview']
             }
         ];
 
         test('should correctly build agentModelsToProcess from mixed labels', () => {
-            const labels = ['AI', 'llm-opus', 'llm-gemini', 'enterprise-bot', 'bug'];
+            const labels = ['AI', 'llm-opus', 'llm-antigravity', 'enterprise-bot', 'bug'];
             const agentModelsToProcess: { agentAlias: string; model: string; label: string | null }[] = [];
 
             // Extract and process llm- labels
@@ -1318,7 +1318,7 @@ describe('issueJobDispatcher - Label Resolution', () => {
                 }
             }
 
-            // Should have 3 agent models: opus, gemini, enterprise-bot
+            // Should have 3 agent models: opus, antigravity, enterprise-bot
             assert.strictEqual(agentModelsToProcess.length, 3);
 
             // Verify llm-opus resolved correctly
@@ -1326,11 +1326,11 @@ describe('issueJobDispatcher - Label Resolution', () => {
             assert.ok(opusEntry);
             assert.strictEqual(opusEntry.model, 'claude-opus-4-5');
 
-            // Verify llm-gemini resolved correctly
-            const geminiEntry = agentModelsToProcess.find(a => a.label === 'llm-gemini');
+            // Verify llm-antigravity resolved correctly
+            const geminiEntry = agentModelsToProcess.find(a => a.label === 'llm-antigravity');
             assert.ok(geminiEntry);
-            assert.strictEqual(geminiEntry.agentAlias, 'gemini');
-            assert.strictEqual(geminiEntry.model, 'gemini-2.5-pro');
+            assert.strictEqual(geminiEntry.agentAlias, 'antigravity');
+            assert.strictEqual(geminiEntry.model, 'antigravity-gemini-2.5-pro');
 
             // Verify enterprise-bot resolved correctly
             const customEntry = agentModelsToProcess.find(a => a.label === 'enterprise-bot');
@@ -1476,7 +1476,7 @@ describe('issueJobDispatcher - Matrix Expansion Edge Cases', () => {
             ];
             const agents: AgentModelToProcess[] = [
                 { agentAlias: 'claude', model: 'opus', label: null },
-                { agentAlias: 'gemini', model: 'pro', label: null }
+                { agentAlias: 'antigravity', model: 'pro', label: null }
             ];
 
             const combos = generateMatrixCombinations(bases, agents);
@@ -1493,7 +1493,7 @@ describe('issueJobDispatcher - Matrix Expansion Edge Cases', () => {
             const agents: AgentModelToProcess[] = [
                 { agentAlias: 'claude', model: 'opus', label: null },
                 { agentAlias: 'claude', model: 'sonnet', label: null },
-                { agentAlias: 'gemini', model: 'pro', label: null }
+                { agentAlias: 'antigravity', model: 'pro', label: null }
             ];
 
             const combos = generateMatrixCombinations(bases, agents);
@@ -1567,7 +1567,7 @@ describe('issueJobDispatcher - Matrix Expansion Edge Cases', () => {
             const agents: AgentModelToProcess[] = [
                 { agentAlias: 'claude', model: 'opus', label: null },
                 { agentAlias: 'claude', model: 'sonnet', label: null },
-                { agentAlias: 'gemini', model: 'pro', label: null },
+                { agentAlias: 'antigravity', model: 'pro', label: null },
                 { agentAlias: 'codex', model: 'mini', label: null }
             ];
 
@@ -1610,7 +1610,7 @@ describe('issueJobDispatcher - Matrix Expansion Edge Cases', () => {
             ];
             const agents: AgentModelToProcess[] = [
                 { agentAlias: 'claude', model: 'opus', label: null },
-                { agentAlias: 'gemini', model: 'pro', label: null }
+                { agentAlias: 'antigravity', model: 'pro', label: null }
             ];
 
             const jobIds = new Set<string>();

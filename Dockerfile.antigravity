@@ -1,0 +1,32 @@
+# Antigravity CLI agent image. Extends the ProPR agent base image (common
+# tooling plus Node runtime). The CLI is installed at build time and exercised
+# with --version as a smoke test.
+
+ARG BASE_IMAGE=propr/agent-base:latest
+FROM ${BASE_IMAGE}
+
+ARG CLI_VERSION=latest
+
+USER node
+ENV PATH="/home/node/.local/bin:${PATH}" \
+    AGY_CLI_DISABLE_AUTO_UPDATE=true
+# The official Antigravity installer does not expose historical version
+# artifacts or checksums, so ProPR builds this image only with CLI_VERSION=latest.
+RUN if [ "$CLI_VERSION" != "latest" ]; then \
+        echo "Antigravity CLI installer only supports CLI_VERSION=latest; got CLI_VERSION=$CLI_VERSION" >&2; \
+        exit 1; \
+    fi \
+    && curl -fsSL https://antigravity.google/cli/install.sh | bash
+RUN agy --version
+
+RUN git config --global user.name "ProPR Antigravity Bot" \
+    && git config --global user.email "antigravity-bot@propr.dev" \
+    && git config --global init.defaultBranch main \
+    && git config --global --add safe.directory '*'
+
+COPY --chown=node:node scripts/antigravity-entrypoint.sh /home/node/antigravity-entrypoint.sh
+USER root
+RUN chmod +x /home/node/antigravity-entrypoint.sh
+USER node
+
+ENTRYPOINT ["/home/node/antigravity-entrypoint.sh"]
