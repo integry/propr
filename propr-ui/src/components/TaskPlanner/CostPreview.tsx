@@ -307,7 +307,7 @@ const CostPreviewContent: React.FC<CostPreviewContentProps> = ({
         </div>
       )}
       {(warnings.length > 0 || showRefreshIndicator) && (
-        <div className="flex items-center justify-between gap-2 bg-slate-50 border-t border-slate-200 pt-2 text-xs text-slate-500">
+        <div className="flex items-center justify-between gap-2 bg-slate-50 border-t border-slate-200 pt-2 pb-1 text-xs text-slate-500">
           <div className="space-y-1 min-w-0 flex-1">
             {warnings.map((warning, idx) => (
               <div key={idx} className="flex items-center gap-1.5 min-w-0">
