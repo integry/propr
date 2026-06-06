@@ -1,15 +1,43 @@
-# Antigravity CLI agent image. Extends the ProPR agent base image (common
-# tooling plus Node runtime). The CLI is installed at build time and exercised
-# with --version as a smoke test.
+# Antigravity CLI agent image.
+#
+# Antigravity's installer currently publishes a linux_amd64 manifest for glibc
+# but not linux_amd64_musl, so this image uses Debian slim instead of the shared
+# Alpine agent base used by the other agent images.
 
-ARG BASE_IMAGE=propr/agent-base:latest
-FROM ${BASE_IMAGE}
+FROM node:20-slim
 
 ARG CLI_VERSION=latest
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        coreutils \
+        curl \
+        gh \
+        git \
+        iptables \
+        procps \
+        sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers \
+    && mkdir -p /home/node/workspace \
+    && chown -R node:node /home/node
+
+COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/gh-wrapper
+
+COPY NOTICE /usr/share/licenses/propr/NOTICE
+COPY THIRD_PARTY_LICENSES.md /usr/share/licenses/propr/THIRD_PARTY_LICENSES.md
+
 USER node
+WORKDIR /home/node/workspace
 ENV PATH="/home/node/.local/bin:${PATH}" \
-    AGY_CLI_DISABLE_AUTO_UPDATE=true
+    AGY_CLI_DISABLE_AUTO_UPDATE=true \
+    NODE_OPTIONS="--max-old-space-size=8192"
+
 # The official Antigravity installer does not expose historical version
 # artifacts or checksums, so ProPR builds this image only with CLI_VERSION=latest.
 RUN if [ "$CLI_VERSION" != "latest" ]; then \
@@ -22,6 +50,7 @@ RUN if [ "$CLI_VERSION" != "latest" ]; then \
     && bash -n /tmp/antigravity-install.sh \
     && bash /tmp/antigravity-install.sh \
     && rm -f /tmp/antigravity-install.sh
+
 RUN mkdir -p /home/node/.local/share/propr \
     && agy --version | tee /home/node/.local/share/propr/antigravity-cli-version.txt \
     && cp /tmp/antigravity-install.sha256 /home/node/.local/share/propr/antigravity-installer.sha256 \

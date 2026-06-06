@@ -84,7 +84,7 @@ should_build() {
 include_agent_base_when_needed() {
   [[ -z "$ONLY" ]] && return
   should_build "agent-base" && return
-  for agent_name in agent-claude agent-codex agent-antigravity agent-vibe; do
+  for agent_name in agent-claude agent-codex agent-vibe; do
     if should_build "$agent_name"; then
       ONLY="agent-base,$ONLY"
       return
@@ -217,7 +217,7 @@ build_image() {
   fi
 
   # Agent images extend agent-base — pin to the exact image built in this run.
-  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-antigravity || "$name" == agent-vibe ]]; then
+  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-vibe ]]; then
     build_args+=("--build-arg" "BASE_IMAGE=$(agent_base_image)")
   fi
   if [[ "$name" == agent-vibe ]]; then
