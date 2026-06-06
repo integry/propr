@@ -453,6 +453,9 @@ These commands use the `scripts/compose.sh` script which wraps Docker Compose op
 - **indexing-worker** and **analysis-worker**: Optional support workers in the development Compose stack
 
 All services are configured in `docker-compose.yml` with proper networking and volume management.
+For OpenCode development, create `~/.opencode`, `~/.config/opencode`, and
+`~/.local/share/opencode`, then add `-f docker-compose.opencode.yml` to include
+the optional OpenCode credential mounts.
 
 ## Redis Setup
 

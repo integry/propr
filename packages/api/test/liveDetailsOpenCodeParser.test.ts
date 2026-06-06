@@ -52,3 +52,30 @@ test('parseOpenCodeOutputToConversationResult separates structured assistant tex
   assert.equal(result?.events[0]?.type, 'message');
   assert.equal(result?.events[0]?.content, 'First part.\nSecond part.');
 });
+
+test('detectStoredOutputFormat recognizes whole-document pretty OpenCode JSON', async () => {
+  const { detectStoredOutputFormat } = await import('../routes/liveDetailsStoredOutputFormat.js');
+  const output = JSON.stringify({
+    type: 'message',
+    sessionID: 'opencode-session',
+    message: {
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'OpenCode response' }]
+    }
+  }, null, 2);
+
+  assert.equal(detectStoredOutputFormat(output), 'opencode');
+});
+
+test('detectStoredOutputFormat recognizes whole-document pretty Claude JSON arrays', async () => {
+  const { detectStoredOutputFormat } = await import('../routes/liveDetailsStoredOutputFormat.js');
+  const output = JSON.stringify([
+    {
+      conversation_id: 'claude-session',
+      role: 'assistant',
+      message: { content: [{ type: 'text', text: 'Claude response' }] }
+    }
+  ], null, 2);
+
+  assert.equal(detectStoredOutputFormat(output), 'claude');
+});

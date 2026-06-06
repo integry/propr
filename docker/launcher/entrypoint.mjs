@@ -11,7 +11,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import { resolve, dirname, isAbsolute } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(readFileSync(resolve(__dirname, 'manifest.json'), 'utf8'));
@@ -131,7 +131,7 @@ const HOST_VIBE_PROMPT_CACHE_DIR = process.env.HOST_VIBE_PROMPT_CACHE_DIR
 // <CONFIG_PATH> resolves correctly on the host. Mounting at HOST:HOST keeps
 // the paths identical end-to-end so the agent spawner doesn't need to do
 // any path translation.
-function agentCredentialArgs() {
+export function agentCredentialArgs() {
     const args = [];
     if (HOST_CLAUDE_DIR) {
         args.push('-v', `${HOST_CLAUDE_DIR}:${HOST_CLAUDE_DIR}`);
@@ -566,7 +566,9 @@ async function main() {
     await new Promise(() => {});
 }
 
-main().catch((e) => {
-    console.error('launcher failed:', e.message);
-    shutdown(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    main().catch((e) => {
+        console.error('launcher failed:', e.message);
+        shutdown(1);
+    });
+}

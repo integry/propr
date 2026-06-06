@@ -33,7 +33,7 @@ const CODEX_STORED_OUTPUT_TYPES = new Set([
 const CLAUDE_STORED_OUTPUT_TYPES = new Set(['assistant', 'user']);
 
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
-  const wholeDocumentFormat = detectVibeTranscriptFormat(output.trim());
+  const wholeDocumentFormat = detectWholeDocumentStoredOutputFormat(output.trim());
   if (wholeDocumentFormat !== 'unknown') return wholeDocumentFormat;
 
   let detectedFormat: StoredOutputFormat = 'unknown';
@@ -49,14 +49,38 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   return detectedFormat;
 }
 
-function detectVibeTranscriptFormat(jsonText: string): StoredOutputFormat {
+function detectWholeDocumentStoredOutputFormat(jsonText: string): StoredOutputFormat {
+  if (!jsonText) return 'unknown';
   try {
-    const parsed = JSON.parse(jsonText) as StoredExecutionOutputLine | StoredExecutionOutputLine[];
-    if (isVibeTranscript(parsed)) return 'vibe';
+    const events = normalizeStoredOutputEvents(JSON.parse(jsonText));
+    if (!events.length) return 'unknown';
+    if (isVibeTranscript(events)) return 'vibe';
+    return detectStoredOutputEvents(events);
   } catch {
     // Not valid JSON, ignore
   }
   return 'unknown';
+}
+
+function normalizeStoredOutputEvents(parsed: unknown): StoredExecutionOutputLine[] {
+  const values = Array.isArray(parsed) ? parsed : [parsed];
+  return values.filter(isStoredOutputObject);
+}
+
+function isStoredOutputObject(value: unknown): value is StoredExecutionOutputLine {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function detectStoredOutputEvents(events: StoredExecutionOutputLine[]): StoredOutputFormat {
+  let detectedFormat: StoredOutputFormat = 'unknown';
+  for (const event of events) {
+    const immediateFormat = getImmediateStoredOutputFormat(event);
+    if (immediateFormat) return immediateFormat;
+    const deferredFormat = getDeferredStoredOutputFormat(event);
+    if (deferredFormat === 'opencode') return 'opencode';
+    if (detectedFormat === 'unknown') detectedFormat = deferredFormat;
+  }
+  return detectedFormat;
 }
 
 function parseStoredOutputLine(line: string): StoredExecutionOutputLine | null {
