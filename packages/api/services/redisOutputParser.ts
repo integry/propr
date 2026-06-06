@@ -1,4 +1,5 @@
 import type { ConversationEvent, TodoItem, TokenUsageInfo } from '@propr/shared';
+import { parseVibeTranscriptOutput, processVibeEvent } from './redisOutputParserVibe.js';
 
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
@@ -25,26 +26,28 @@ interface ParseState {
   seenEventFingerprints: Set<string>;
 }
 
-interface VibeToolCall {
-  id?: string;
-  function?: {
-    name?: string;
-    arguments?: unknown;
-  };
-}
-
-interface VibeTranscriptEvent {
+interface CodexEvent {
+  type?: string;
   role?: string;
   content?: unknown;
-  reasoning_content?: unknown;
-  tool_calls?: VibeToolCall[];
-  tool_call_id?: string;
-  name?: string;
+  tool?: string;
+  params?: unknown;
+  message?: string;
   result?: unknown;
-  output?: unknown;
-  error?: unknown;
-  usage?: { input_tokens?: number; output_tokens?: number };
-  token_usage?: { input_tokens?: number; output_tokens?: number };
+  is_error?: boolean;
+  status?: string;
+  item?: CodexItem;
+  usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number };
+}
+
+interface CodexItem {
+  type?: string;
+  text?: string;
+  command?: string;
+  aggregated_output?: string;
+  exit_code?: number;
+  changes?: Array<{ kind: string; path: string }>;
+  items?: Array<{ text: string; completed: boolean }>;
 }
 
 /** Max content length for truncation */
@@ -74,7 +77,7 @@ function parseTodoItems(items: Array<{ text: string; completed: boolean }>): Tod
  * Process Codex item.completed event
  */
 function processCodexItem(
-  item: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number; changes?: Array<{ kind: string; path: string }>; items?: Array<{ text: string; completed: boolean }> },
+  item: CodexItem,
   timestamp: string,
   events: ConversationEvent[]
 ): TodoItem[] | null {
@@ -119,67 +122,74 @@ function processCodexItem(
 /**
  * Process Codex events (item.completed, item.updated, turn.completed)
  */
-function processCodexEvent(
-  event: {
-    type?: string;
-    role?: string;
-    content?: unknown;
-    tool?: string;
-    params?: unknown;
-    message?: string;
-    result?: unknown;
-    is_error?: boolean;
-    status?: string;
-    item?: { type?: string; items?: Array<{ text: string; completed: boolean }> };
-    usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number };
-  },
-  timestamp: string,
-  state: ParseState
-): boolean {
-  if (event.type === 'message' && event.role === 'assistant') {
-    const content = textFromValue(event.content);
-    if (content) {
-      state.events.push({ type: 'thought' as const, content: truncateContent(content), timestamp });
-    }
-    return true;
+function processCodexMessage(event: CodexEvent, timestamp: string, state: ParseState): boolean {
+  if (event.role !== 'assistant') return false;
+  const content = textFromValue(event.content);
+  if (content) state.events.push({ type: 'thought' as const, content: truncateContent(content), timestamp });
+  return true;
+}
+
+function processCodexToolUse(event: CodexEvent, timestamp: string, state: ParseState): boolean {
+  if (!event.tool) return false;
+  state.events.push({
+    type: 'tool_use' as const,
+    toolName: event.tool,
+    input: event.params as Record<string, unknown> | undefined,
+    timestamp
+  });
+  return true;
+}
+
+function processCodexToolResult(event: CodexEvent, timestamp: string, state: ParseState): boolean {
+  state.events.push({
+    type: 'tool_result' as const,
+    result: truncateContent(textFromValue(event.message) || textFromValue(event.result) || textFromValue(event.content) || 'Execution error'),
+    isError: event.type === 'error' || Boolean(event.is_error) || event.status === 'error',
+    timestamp
+  });
+  return true;
+}
+
+function processCodexItemCompleted(event: CodexEvent, timestamp: string, state: ParseState): boolean {
+  if (!event.item) return false;
+  const updatedTodos = processCodexItem(event.item, timestamp, state.events);
+  if (updatedTodos) state.todos = updatedTodos;
+  return true;
+}
+
+function processCodexItemUpdated(event: CodexEvent, _timestamp: string, state: ParseState): boolean {
+  if (event.item?.type !== 'todo_list' || !event.item.items) return false;
+  state.todos = parseTodoItems(event.item.items);
+  return true;
+}
+
+function processCodexTurnCompleted(event: CodexEvent, _timestamp: string, state: ParseState): boolean {
+  if (!event.usage) return false;
+  state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
+  state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
+  return true;
+}
+
+function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseState): boolean {
+  switch (event.type) {
+    case 'message':
+      return processCodexMessage(event, timestamp, state);
+    case 'tool_use':
+      return processCodexToolUse(event, timestamp, state);
+    case 'error':
+    case 'tool_result':
+      return processCodexToolResult(event, timestamp, state);
+    case 'result':
+      return true;
+    case 'item.completed':
+      return processCodexItemCompleted(event, timestamp, state);
+    case 'item.updated':
+      return processCodexItemUpdated(event, timestamp, state);
+    case 'turn.completed':
+      return processCodexTurnCompleted(event, timestamp, state);
+    default:
+      return false;
   }
-  if (event.type === 'tool_use' && event.tool) {
-    state.events.push({
-      type: 'tool_use' as const,
-      toolName: event.tool,
-      input: event.params as Record<string, unknown> | undefined,
-      timestamp
-    });
-    return true;
-  }
-  if (event.type === 'error' || event.type === 'tool_result') {
-    state.events.push({
-      type: 'tool_result' as const,
-      result: truncateContent(textFromValue(event.message) || textFromValue(event.result) || textFromValue(event.content) || 'Execution error'),
-      isError: event.type === 'error' || Boolean(event.is_error) || event.status === 'error',
-      timestamp
-    });
-    return true;
-  }
-  if (event.type === 'result') {
-    return true;
-  }
-  if (event.type === 'item.completed' && event.item) {
-    const item = event.item as { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number; changes?: Array<{ kind: string; path: string }>; items?: Array<{ text: string; completed: boolean }> };
-    const updatedTodos = processCodexItem(item, timestamp, state.events);
-    if (updatedTodos) state.todos = updatedTodos;
-    return true;
-  }
-  if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item?.items) {
-    state.todos = parseTodoItems(event.item.items);
-    return true;
-  }
-  if (event.type === 'turn.completed' && event.usage) {
-    state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
-    state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
-    return true;
-  }
-  return false;
 }
 
 /**
@@ -257,153 +267,11 @@ function textFromValue(value: unknown): string | undefined {
   return undefined;
 }
 
-function parseToolInput(input: unknown): Record<string, unknown> | undefined {
-  if (!input) return undefined;
-  if (typeof input === 'object') return input as Record<string, unknown>;
-  if (typeof input !== 'string') return undefined;
-  try {
-    const parsed = JSON.parse(input);
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined;
-  } catch {
-    return { arguments: input };
-  }
-}
-
-function isGenericVibeCompletionContent(content: string): boolean {
-  return /^task completed\.?$/i.test(content.trim());
-}
-
 function getNextSyntheticTimestamp(state: ParseState): string {
   if (state.syntheticTimestampBaseMs === null) return new Date().toISOString();
   const timestamp = new Date(state.syntheticTimestampBaseMs + state.syntheticTimestampIndex * 1000).toISOString();
   state.syntheticTimestampIndex += 1;
   return timestamp;
-}
-
-function pushEvent(state: ParseState, event: ConversationEvent): void {
-  const fingerprint = JSON.stringify({
-    type: event.type,
-    content: event.content,
-    toolName: event.toolName,
-    input: event.input,
-    toolUseId: event.toolUseId,
-    result: event.result,
-    isError: event.isError
-  });
-  if (state.seenEventFingerprints.has(fingerprint)) return;
-  state.seenEventFingerprints.add(fingerprint);
-  state.events.push(event);
-}
-
-function processVibeAssistantEvent(event: VibeTranscriptEvent, timestamp: string, state: ParseState): void {
-  const reasoning = textFromValue(event.reasoning_content);
-  if (reasoning) pushEvent(state, { type: 'thought' as const, content: truncateContent(reasoning), timestamp });
-
-  const content = textFromValue(event.content);
-  if (content && !isGenericVibeCompletionContent(content)) {
-    pushEvent(state, { type: 'thought' as const, content: truncateContent(content), timestamp });
-  }
-
-  for (const toolCall of event.tool_calls || []) {
-    pushEvent(state, {
-      type: 'tool_use' as const,
-      toolName: toolCall.function?.name || 'tool',
-      input: parseToolInput(toolCall.function?.arguments),
-      id: toolCall.id,
-      timestamp
-    });
-  }
-}
-
-function processVibeEvent(event: VibeTranscriptEvent, timestamp: string, state: ParseState): void {
-  if (event.role === 'system') return;
-
-  const usage = event.usage || event.token_usage;
-  if (usage) {
-    state.tokenUsage.input_tokens += usage.input_tokens ?? 0;
-    state.tokenUsage.output_tokens += usage.output_tokens ?? 0;
-  }
-
-  if (event.role === 'assistant') {
-    processVibeAssistantEvent(event, timestamp, state);
-    return;
-  }
-
-  if (event.role === 'tool') {
-    const result = textFromValue(event.content) || textFromValue(event.result) || textFromValue(event.output) || textFromValue(event.error);
-    if (result) {
-      pushEvent(state, {
-        type: 'tool_result' as const,
-        toolUseId: event.tool_call_id,
-        result: truncateContent(result),
-        isError: result.includes('<tool_error>') || Boolean(event.error),
-        timestamp
-      });
-    }
-  }
-}
-
-function extractCompleteJsonObjectsFromArray(output: string): string[] {
-  const arrayStart = output.indexOf('[');
-  if (arrayStart === -1) return [];
-
-  const objects: string[] = [];
-  let depth = 0;
-  let objectStart = -1;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = arrayStart + 1; index < output.length; index += 1) {
-    const char = output[index];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-    if (char === '{') {
-      if (depth === 0) objectStart = index;
-      depth += 1;
-      continue;
-    }
-    if (char === '}') {
-      depth -= 1;
-      if (depth === 0 && objectStart !== -1) {
-        objects.push(output.slice(objectStart, index + 1));
-        objectStart = -1;
-      }
-    }
-  }
-
-  return objects;
-}
-
-function parseVibeTranscriptOutput(output: string, state: ParseState): boolean {
-  const objects = extractCompleteJsonObjectsFromArray(output);
-  if (objects.length === 0) return false;
-
-  let handled = false;
-  for (const objectText of objects) {
-    try {
-      const event = JSON.parse(objectText) as VibeTranscriptEvent;
-      if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
-        processVibeEvent(event, getNextSyntheticTimestamp(state), state);
-        handled = true;
-      }
-    } catch {
-      // Ignore incomplete or malformed objects; later Redis updates may complete them.
-    }
-  }
-  return handled;
 }
 
 function hasAntigravityModelMetadata(event: { model?: unknown }): boolean {
