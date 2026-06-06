@@ -14,32 +14,44 @@ else
     echo "GitHub CLI will use GH_TOKEN environment variable for authentication" >&2
 fi
 
-if [ -d "/home/node/.antigravity" ]; then
-    echo "Antigravity config directory mounted" >&2
-    echo "Contents of /home/node/.antigravity:" >&2
-    ls -la /home/node/.antigravity/ >&2
+prepare_antigravity_config_dir() {
+    local config_dir="$1"
+    local required="$2"
 
-    if command -v sudo >/dev/null 2>&1; then
-        echo "Fixing ownership of Antigravity config files..." >&2
-        sudo chown -R node:node /home/node/.antigravity 2>/dev/null || echo "Could not change ownership" >&2
+    if [ -d "$config_dir" ]; then
+        echo "Antigravity config directory mounted at $config_dir" >&2
+        echo "Contents of $config_dir:" >&2
+        ls -la "$config_dir/" >&2
+
+        if command -v sudo >/dev/null 2>&1; then
+            echo "Fixing ownership of Antigravity config files in $config_dir..." >&2
+            sudo chown -R node:node "$config_dir" 2>/dev/null || echo "Could not change ownership" >&2
+        fi
+
+        for dir in tmp antigravity-cli/log antigravity-cli/cache config/projects; do
+            if [ ! -d "$config_dir/$dir" ]; then
+                echo "Creating missing directory: $config_dir/$dir" >&2
+                mkdir -p "$config_dir/$dir" 2>/dev/null || echo "Could not create $dir (permission issue)" >&2
+            fi
+        done
+        return 0
     fi
 
-    for dir in tmp; do
-        if [ ! -d "/home/node/.antigravity/$dir" ]; then
-            echo "Creating missing directory: /home/node/.antigravity/$dir" >&2
-            mkdir -p "/home/node/.antigravity/$dir" 2>/dev/null || echo "Could not create $dir (permission issue)" >&2
-        fi
-    done
-else
-    echo "WARNING: Antigravity config directory not mounted at /home/node/.antigravity" >&2
-fi
+    if [ "$required" = "1" ]; then
+        echo "WARNING: Antigravity config directory not mounted at $config_dir" >&2
+    fi
+    return 1
+}
 
-if [ -d "/home/node/.antigravity" ]; then
-    auth_files=$(find /home/node/.antigravity -maxdepth 2 -type f \( -iname '*auth*' -o -iname '*oauth*' -o -iname '*credential*' -o -iname '*token*' \) 2>/dev/null | head -n 1)
+prepare_antigravity_config_dir "/home/node/.gemini" "1" || true
+prepare_antigravity_config_dir "/home/node/.antigravity" "0" >/dev/null 2>&1 || true
+
+if [ -d "/home/node/.gemini" ]; then
+    auth_files=$(find /home/node/.gemini -maxdepth 3 -type f \( -iname '*auth*' -o -iname '*oauth*' -o -iname '*credential*' -o -iname '*token*' \) 2>/dev/null | head -n 1)
     if [ -n "$auth_files" ]; then
         echo "Antigravity authentication-related configuration found" >&2
     else
-        echo "Warning: no obvious Antigravity authentication files found under /home/node/.antigravity" >&2
+        echo "Warning: no obvious Antigravity authentication files found under /home/node/.gemini" >&2
         echo "Ensure the Antigravity config directory is properly mounted and initialized" >&2
     fi
 fi

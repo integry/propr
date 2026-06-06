@@ -14,9 +14,9 @@ function createAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     alias: 'antigravity',
     enabled: true,
     dockerImage: 'propr/agent-antigravity:latest',
-    configPath: '~/.antigravity',
-    supportedModels: ['antigravity-gemini-3-pro-preview'],
-    defaultModel: 'antigravity-gemini-3-pro-preview',
+    configPath: '~/.gemini',
+    supportedModels: ['antigravity-gemini-3.5-flash-medium'],
+    defaultModel: 'antigravity-gemini-3.5-flash-medium',
     ...overrides
   };
 }

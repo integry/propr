@@ -101,7 +101,7 @@ should_build() {
 include_agent_base_when_needed() {
   [[ -z "$ONLY" ]] && return
   should_build "agent-base" && return
-  for agent_name in agent-claude agent-codex agent-antigravity agent-vibe; do
+  for agent_name in agent-claude agent-codex agent-vibe; do
     if should_build "$agent_name"; then
       ONLY="agent-base,$ONLY"
       return

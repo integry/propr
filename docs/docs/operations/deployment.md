@@ -11,7 +11,7 @@ You need:
 - Docker
 - A runtime directory such as `/srv/propr`
 - A GitHub App and private key
-- Agent credentials, such as Antigravity CLI state in `~/.antigravity`
+- Agent credentials, such as Antigravity CLI state in `~/.gemini`
 - Public URLs for the Web UI and OAuth callback
 - TLS through your reverse proxy or ingress
 
@@ -42,7 +42,7 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy login
 ```
 
-Use `HOST_ANTIGRAVITY_DIR="$HOME/.antigravity"` so the launcher can mount the authenticated CLI state into Antigravity worker runs.
+Use `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` so the launcher can mount the authenticated CLI state into Antigravity worker runs.
 
 ## Start The Stack
 
@@ -59,7 +59,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR="$PWD/repos" \
   -e HOST_CLAUDE_DIR="$HOME/.claude" \
   -e HOST_CODEX_DIR="$HOME/.codex" \
-  -e HOST_ANTIGRAVITY_DIR="$HOME/.antigravity" \
+  -e HOST_ANTIGRAVITY_DIR="$HOME/.gemini" \
   propr/launcher:latest
 ```
 

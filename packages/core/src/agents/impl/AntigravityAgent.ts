@@ -22,15 +22,29 @@ export { UsageLimitError };
 const DEFAULT_ANTIGRAVITY_TIMEOUT_MS = 300000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
-const ANTIGRAVITY_CONTAINER_CONFIG_PATH = '/home/node/.antigravity';
+const ANTIGRAVITY_CONTAINER_CONFIG_PATH = '/home/node/.gemini';
+const ANTIGRAVITY_CONTAINER_WORKSPACE_PATH = '/home/node/workspace';
+const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = {
+    'antigravity-gemini-3.5-flash-medium': 'Gemini 3.5 Flash (Medium)',
+    'antigravity-gemini-3.5-flash-high': 'Gemini 3.5 Flash (High)',
+    'antigravity-gemini-3.5-flash-low': 'Gemini 3.5 Flash (Low)',
+    'antigravity-gemini-3.1-pro-low': 'Gemini 3.1 Pro (Low)',
+    'antigravity-gemini-3.1-pro-high': 'Gemini 3.1 Pro (High)',
+    'antigravity-claude-sonnet-4.6-thinking': 'Claude Sonnet 4.6 (Thinking)',
+    'antigravity-claude-opus-4.6-thinking': 'Claude Opus 4.6 (Thinking)',
+    'antigravity-gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)'
+};
 
-// Antigravity JSONL event types (from --output-format stream-json)
+// Antigravity JSONL event types. The current CLI prints plain text in
+// non-interactive mode, but keep JSONL parsing for forward compatibility.
 interface AntigravityInitEvent { type: 'init'; timestamp: string; session_id: string; model: string }
 interface AntigravityMessageEvent { type: 'message'; role: 'user' | 'assistant'; content: string; timestamp: string; delta?: boolean }
 interface AntigravityToolUseEvent { type: 'tool_use'; tool_name: string; tool_id: string; parameters: Record<string, unknown>; timestamp: string }
 interface AntigravityToolResultEvent { type: 'tool_result'; tool_id: string; status: 'success' | 'error'; output: string; timestamp: string }
 interface AntigravityResultEvent { type: 'result'; status: 'success' | 'error'; stats: { total_tokens?: number; input_tokens?: number; output_tokens?: number; duration_ms?: number; tool_calls?: number }; timestamp: string }
 type AntigravityEvent = AntigravityInitEvent | AntigravityMessageEvent | AntigravityToolUseEvent | AntigravityToolResultEvent | AntigravityResultEvent | { type: 'error'; message: string; timestamp: string }
+interface AntigravityTranscriptEvent { step_index?: number; source: string; type: string; status?: string; created_at?: string; content?: string }
+type AntigravityOutputEvent = AntigravityEvent | AntigravityTranscriptEvent;
 
 // ANSI escape code regex for stripping terminal formatting from TUI output
 // Using String.fromCharCode() to construct the pattern dynamically, avoiding literal control chars
@@ -110,7 +124,13 @@ export class AntigravityAgent implements Agent {
     }): Promise<AgentExecutionResult> {
         const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics } = opts;
         logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Antigravity agent execution completed');
-        const { sessionId, modelUsed: parsedModel, summary, conversationLog, tokenUsage } = this.parseAntigravityJsonl(result.stdout);
+        const parsedOutput = this.parseAntigravityJsonl(result.stdout);
+        const sessionOutput = await this.readPersistedSessionOutput(worktreePath, parsedOutput.sessionId);
+        const sessionId = sessionOutput.sessionId || parsedOutput.sessionId;
+        const parsedModel = parsedOutput.modelUsed;
+        const summary = sessionOutput.summary || parsedOutput.summary;
+        const conversationLog = sessionOutput.conversationLog.length > 0 ? sessionOutput.conversationLog : parsedOutput.conversationLog;
+        const tokenUsage = parsedOutput.tokenUsage;
         if (sessionId && onSessionId) onSessionId(sessionId);
         if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
         const modelUsed = parsedModel || effectiveModel || 'unknown';
@@ -170,14 +190,13 @@ export class AntigravityAgent implements Agent {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text' } = options || {};
         const startTime = Date.now();
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Antigravity agent...');
-        const effectiveModel = model || 'antigravity-gemini-2.5-flash';
+        const effectiveModel = model || 'antigravity-gemini-3.5-flash-medium';
         const suffix = responseFormat === 'json'
             ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
             : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
         const stdinData = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
-            // Use stream-json to get token usage metrics
-            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/antigravity-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, outputFormat: 'stream-json', taskId, executionType });
+            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/antigravity-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, taskId, executionType });
 
             // Wrap execution with Agent Tank usage tracking
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -290,9 +309,17 @@ export class AntigravityAgent implements Agent {
         return result || undefined;
     }
 
+    private buildAntigravityShellCommand(): string {
+        return [
+            'set -e',
+            'prompt="$(cat)"',
+            `exec ${this.getCliCommand()} --dangerously-skip-permissions "$@" --print "$prompt"`
+        ].join('\n');
+    }
+
     /** Builds Docker arguments for running Antigravity in a container. */
-    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; outputFormat?: 'stream-json' | 'text'; environment?: Record<string, string>; taskId?: string; executionType?: string }): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, outputFormat = 'stream-json', environment, taskId, executionType } = params;
+    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string }): string[] {
+        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType } = params;
         const configPath = this.getHostConfigPath();
         const envVars: string[] = [];
         if (this.config.envVars) {
@@ -311,15 +338,16 @@ export class AntigravityAgent implements Agent {
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
             '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
-            this.config.dockerImage, this.getCliCommand(), '--yolo', '--skip-trust', '--output-format', outputFormat
+            this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(), 'propr-antigravity'
         ];
         if (modelName) {
             // Strip agent prefix if present (e.g., "antigravity:antigravity-gemini-3-flash-preview" -> "antigravity-gemini-3-flash-preview")
             const unscopedModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
-            const cleanModelName = runtimeName === 'antigravity' && unscopedModelName.startsWith('antigravity-')
-                ? unscopedModelName.slice('antigravity-'.length)
-                : unscopedModelName;
-            dockerArgs.push('-m', cleanModelName);
+            const cleanModelName = ANTIGRAVITY_MODEL_LABELS[unscopedModelName]
+                || (runtimeName === 'antigravity' && unscopedModelName.startsWith('antigravity-')
+                    ? unscopedModelName.slice('antigravity-'.length)
+                    : unscopedModelName);
+            dockerArgs.push('--model', cleanModelName);
             logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Antigravity agent');
         }
         else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Antigravity agent will use default'); }
@@ -331,6 +359,19 @@ export class AntigravityAgent implements Agent {
     private handleAssistantMessage(msgEvent: AntigravityMessageEvent, current: string, last: string): { current: string; last: string } {
         if (msgEvent.delta) return { current: current + msgEvent.content, last };
         return { current: '', last: msgEvent.content };
+    }
+
+    private isAntigravityTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent {
+        const candidate = event as Partial<AntigravityTranscriptEvent>;
+        return typeof candidate.source === 'string'
+            && typeof candidate.type === 'string'
+            && !['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(candidate.type);
+    }
+
+    private updateFromTranscriptEvent(event: AntigravityTranscriptEvent, state: { lastCompleteAssistantMessage: string }): void {
+        if (event.source === 'MODEL' && typeof event.content === 'string' && event.content.trim()) {
+            state.lastCompleteAssistantMessage = event.content;
+        }
     }
 
     /** Processes a single parsed Antigravity event, extracting metadata and tracking assistant messages. */
@@ -359,20 +400,73 @@ export class AntigravityAgent implements Agent {
         }
     }
 
-    /** Parses Antigravity JSONL output from streaming JSON format. Extracts session ID, model, summary, and conversation log. */
-    private parseAntigravityJsonl(output: string): { sessionId: string | undefined; modelUsed: string | undefined; summary: string | undefined; conversationLog: AntigravityEvent[]; tokenUsage: { input_tokens?: number; output_tokens?: number } } {
-        const events: AntigravityEvent[] = [];
+    private getLastConversationsPath(): string {
+        return path.join(this.getHostConfigPath(), 'antigravity-cli', 'cache', 'last_conversations.json');
+    }
+
+    private async readLastConversationId(worktreePath: string): Promise<string | undefined> {
+        try {
+            const lastConversationsPath = this.getLastConversationsPath();
+            const raw = await fs.promises.readFile(lastConversationsPath, 'utf8');
+            const conversations = JSON.parse(raw) as Record<string, unknown>;
+            const candidates = [
+                ANTIGRAVITY_CONTAINER_WORKSPACE_PATH,
+                worktreePath,
+                path.resolve(worktreePath)
+            ];
+            for (const key of candidates) {
+                const sessionId = conversations[key];
+                if (typeof sessionId === 'string' && sessionId.trim()) return sessionId;
+            }
+        } catch (error) {
+            logger.debug({ error: (error as Error).message, agentAlias: this.config.alias }, 'Could not read Antigravity last conversations cache');
+        }
+        return undefined;
+    }
+
+    private async readTranscriptForSession(sessionId: string): Promise<string | undefined> {
+        const transcriptPath = path.join(this.getHostConfigPath(), 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+        try {
+            return await fs.promises.readFile(transcriptPath, 'utf8');
+        } catch (error) {
+            logger.debug({ sessionId, transcriptPath, error: (error as Error).message, agentAlias: this.config.alias }, 'Could not read Antigravity transcript');
+            return undefined;
+        }
+    }
+
+    private async readPersistedSessionOutput(worktreePath: string, parsedSessionId?: string): Promise<{ sessionId: string | undefined; summary: string | undefined; conversationLog: AntigravityOutputEvent[] }> {
+        const sessionId = parsedSessionId || await this.readLastConversationId(worktreePath);
+        if (!sessionId) return { sessionId: undefined, summary: undefined, conversationLog: [] };
+
+        const transcript = await this.readTranscriptForSession(sessionId);
+        if (!transcript) return { sessionId, summary: undefined, conversationLog: [] };
+
+        const parsed = this.parseAntigravityJsonl(transcript);
+        return { sessionId, summary: parsed.summary, conversationLog: parsed.conversationLog };
+    }
+
+    /** Parses Antigravity output. JSONL is supported when present; otherwise plain text is used as the summary. */
+    private parseAntigravityJsonl(output: string): { sessionId: string | undefined; modelUsed: string | undefined; summary: string | undefined; conversationLog: AntigravityOutputEvent[]; tokenUsage: { input_tokens?: number; output_tokens?: number } } {
+        const events: AntigravityOutputEvent[] = [];
         const state = { sessionId: undefined as string | undefined, modelUsed: undefined as string | undefined, tokenUsage: {} as { input_tokens?: number; output_tokens?: number }, currentAssistantMessage: '', lastCompleteAssistantMessage: '' };
+        let sawJsonEvent = false;
         for (const line of output.split('\n')) {
             if (!line.trim()) continue;
-            try { const event = JSON.parse(line) as AntigravityEvent; events.push(event); this.processAntigravityEvent(event, state); }
+            try {
+                const event = JSON.parse(line) as AntigravityOutputEvent;
+                events.push(event);
+                sawJsonEvent = true;
+                if (this.isAntigravityTranscriptEvent(event)) this.updateFromTranscriptEvent(event, state);
+                else this.processAntigravityEvent(event as AntigravityEvent, state);
+            }
             catch { logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Antigravity output'); }
         }
         if (state.currentAssistantMessage) state.lastCompleteAssistantMessage = state.currentAssistantMessage;
-        return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: state.lastCompleteAssistantMessage || undefined, conversationLog: events, tokenUsage: state.tokenUsage };
+        const plainTextSummary = sawJsonEvent ? undefined : this.extractAntigravityResult(this.stripAnsiCodes(output));
+        return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: state.lastCompleteAssistantMessage || plainTextSummary || undefined, conversationLog: events, tokenUsage: state.tokenUsage };
     }
 
-    private async writeConversationFile(sessionId: string, events: AntigravityEvent[]): Promise<void> {
+    private async writeConversationFile(sessionId: string, events: AntigravityOutputEvent[]): Promise<void> {
         try {
             const projectDir = path.join(os.homedir(), '.claude', 'projects', '-home-node-workspace');
             await fs.promises.mkdir(projectDir, { recursive: true });
@@ -385,16 +479,17 @@ export class AntigravityAgent implements Agent {
     }
 
     /** Flushes pending message to result array and returns null. */
-    private flushPendingMessage(result: AntigravityEvent[], pending: { content: string; timestamp: string; role: 'user' | 'assistant' } | null): null {
+    private flushPendingMessage(result: AntigravityOutputEvent[], pending: { content: string; timestamp: string; role: 'user' | 'assistant' } | null): null {
         if (pending) result.push({ type: 'message', role: pending.role, content: pending.content, timestamp: pending.timestamp } as AntigravityMessageEvent);
         return null;
     }
 
     /** Aggregates consecutive delta messages into single messages. Antigravity streams assistant responses as multiple delta events. */
-    private aggregateDeltaMessages(events: AntigravityEvent[]): AntigravityEvent[] {
-        const result: AntigravityEvent[] = [];
+    private aggregateDeltaMessages(events: AntigravityOutputEvent[]): AntigravityOutputEvent[] {
+        const result: AntigravityOutputEvent[] = [];
         let pending: { content: string; timestamp: string; role: 'user' | 'assistant' } | null = null;
         for (const event of events) {
+            if (this.isAntigravityTranscriptEvent(event)) { pending = this.flushPendingMessage(result, pending); result.push(event); continue; }
             if (event.type !== 'message') { pending = this.flushPendingMessage(result, pending); result.push(event); continue; }
             const msgEvent = event as AntigravityMessageEvent;
             if (msgEvent.role !== 'assistant') { pending = this.flushPendingMessage(result, pending); result.push(event); continue; }
@@ -407,7 +502,11 @@ export class AntigravityAgent implements Agent {
         return result;
     }
 
-    private convertEventToClaudeFormat(event: AntigravityEvent): unknown {
+    private convertEventToClaudeFormat(event: AntigravityOutputEvent): unknown {
+        if (this.isAntigravityTranscriptEvent(event)) {
+            const role = event.source === 'MODEL' ? 'assistant' : event.source === 'USER_EXPLICIT' ? 'user' : 'system';
+            return { type: role, timestamp: event.created_at, message: { content: [{ type: 'text', text: event.content || '' }] }, antigravity: { source: event.source, type: event.type, status: event.status, step_index: event.step_index } };
+        }
         if (event.type === 'message') { const e = event as AntigravityMessageEvent; return { type: e.role === 'assistant' ? 'assistant' : 'user', timestamp: e.timestamp, message: { content: [{ type: 'text', text: e.content }] } }; }
         if (event.type === 'tool_use') { const e = event as AntigravityToolUseEvent; return { type: 'assistant', timestamp: e.timestamp, message: { content: [{ type: 'tool_use', name: e.tool_name, id: e.tool_id, input: e.parameters }] } }; }
         if (event.type === 'tool_result') { const e = event as AntigravityToolResultEvent; return { type: 'user', timestamp: e.timestamp, message: { content: [{ type: 'tool_result', tool_use_id: e.tool_id, content: e.output, is_error: e.status === 'error' }] } }; }

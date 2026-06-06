@@ -126,7 +126,7 @@ LAUNCHER_ARGS=(
 )
 [ -d "$HOME/.claude" ] && LAUNCHER_ARGS+=(-e "HOST_CLAUDE_DIR=$HOME/.claude")
 [ -d "$HOME/.codex" ]  && LAUNCHER_ARGS+=(-e "HOST_CODEX_DIR=$HOME/.codex")
-[ -d "$HOME/.antigravity" ] && LAUNCHER_ARGS+=(-e "HOST_ANTIGRAVITY_DIR=$HOME/.antigravity")
+[ -d "$HOME/.gemini" ] && LAUNCHER_ARGS+=(-e "HOST_ANTIGRAVITY_DIR=$HOME/.gemini")
 
 OPENCODE_LEGACY_CFG="$HOME/.opencode"
 OPENCODE_XDG_CFG="$HOME/.config/opencode"
