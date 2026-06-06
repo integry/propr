@@ -1,6 +1,6 @@
 /* eslint-disable max-lines */
 import type { ConversationEvent, TodoItem, TokenUsageInfo } from '@propr/shared';
-import { isOpenCodeJsonlEvent, normalizeOpenCodeTimestamp, normalizeOpenCodeUsage } from '@propr/core';
+import { isOpenCodeJsonlEvent, normalizeOpenCodeUsage } from '@propr/core';
 import { parseVibeTranscriptOutput, processVibeEvent } from './redisOutputParserVibe.js';
 
 /** Result from parsing Redis output */
@@ -626,11 +626,6 @@ function parseLine(line: string, state: ParseState): void {
     // Skip non-JSON lines
   }
 }
-
-function normalizeEventTimestamp(timestamp: unknown): string {
-  return normalizeOpenCodeTimestamp(timestamp, new Date().toISOString());
-}
-
 function shouldProcessOpenCodeBeforeCodex(event: OpenCodeRedisEvent): boolean {
   return hasOpenCodeSessionId(event) && isOpenCodeEvent(event);
 }
