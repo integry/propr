@@ -11,7 +11,7 @@ after(async () => {
 
 test('stored output detection recognizes Antigravity stream JSON', () => {
   const output = [
-    JSON.stringify({ type: 'init', timestamp: '2026-06-05T13:00:00.000Z', session_id: 'session-1', model: 'gemini-3-pro-preview' }),
+    JSON.stringify({ type: 'init', timestamp: '2026-06-05T13:00:00.000Z', session_id: 'session-1', model: 'antigravity-gemini-3-pro-preview' }),
     JSON.stringify({ type: 'message', role: 'assistant', content: 'done', timestamp: '2026-06-05T13:00:01.000Z' }),
     JSON.stringify({ type: 'result', status: 'success', stats: { input_tokens: 10, output_tokens: 2 }, timestamp: '2026-06-05T13:00:02.000Z' })
   ].join('\n');
@@ -77,7 +77,7 @@ test('stored output detection recognizes Antigravity message JSON with model met
     type: 'message',
     role: 'assistant',
     content: 'done',
-    model: 'gemini-3-pro-preview',
+    model: 'antigravity-gemini-3-pro-preview',
     timestamp: '2026-06-05T13:00:01.000Z'
   });
 
@@ -90,7 +90,7 @@ test('stored output parsing renders Antigravity stream events through live detai
   process.env.GH_INSTALLATION_ID = process.env.GH_INSTALLATION_ID || '1';
   const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
   const output = [
-    JSON.stringify({ type: 'init', timestamp: '2026-06-05T13:00:00.000Z', session_id: 'session-1', model: 'gemini-3-pro-preview' }),
+    JSON.stringify({ type: 'init', timestamp: '2026-06-05T13:00:00.000Z', session_id: 'session-1', model: 'antigravity-gemini-3-pro-preview' }),
     JSON.stringify({ type: 'message', role: 'assistant', content: 'I will inspect the repo.', timestamp: '2026-06-05T13:00:01.000Z' }),
     JSON.stringify({ type: 'tool_result', result: 'package.json contents', timestamp: '2026-06-05T13:00:02.000Z' }),
     JSON.stringify({ type: 'result', status: 'success', stats: { input_tokens: 10, output_tokens: 2 }, timestamp: '2026-06-05T13:00:03.000Z' })

@@ -44,10 +44,6 @@ agy login
 
 Use `HOST_ANTIGRAVITY_DIR="$HOME/.antigravity"` so the launcher can mount the authenticated CLI state into Antigravity worker runs.
 
-## Migration From Gemini
-
-Gemini-specific runtime configuration is deprecated and not supported by the Antigravity runtime. Replace `HOST_GEMINI_DIR` with `HOST_ANTIGRAVITY_DIR`, `GEMINI_TIMEOUT_MS` with `ANTIGRAVITY_TIMEOUT_MS`, `~/.gemini` with `~/.antigravity`, and `propr/agent-gemini` with `propr/agent-antigravity`. Update model labels from `llm-gemini-*` to configured Antigravity labels such as `llm-antigravity-gemini-pro` or `llm-antigravity-opus`.
-
 ## Start The Stack
 
 From the runtime directory:

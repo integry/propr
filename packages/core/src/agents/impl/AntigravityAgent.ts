@@ -58,7 +58,7 @@ export class AntigravityAgent implements Agent {
     }
 
     private getHostConfigPath(): string {
-        return resolveConfigPath(process.env.ANTIGRAVITY_CONFIG_PATH || process.env.GEMINI_CONFIG_PATH || this.config.configPath);
+        return resolveConfigPath(process.env.ANTIGRAVITY_CONFIG_PATH || this.config.configPath);
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {

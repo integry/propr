@@ -9,6 +9,4 @@ Most users do not run this image directly. It is used as the base for:
 - `propr/agent-codex`
 - `propr/agent-antigravity`
 
-Migration note: Gemini-specific agent images are not part of the current runtime; Antigravity runs use `propr/agent-antigravity`.
-
 Source: https://github.com/integry/propr

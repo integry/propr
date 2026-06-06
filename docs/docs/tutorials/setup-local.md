@@ -71,10 +71,6 @@ Antigravity stores CLI configuration and credentials under `~/.antigravity`. The
 
 Use equivalent setup for Codex if you plan to enable it.
 
-## Migration From Gemini
-
-ProPR no longer supports the old Gemini agent setup. Replace any `HOST_GEMINI_DIR` or `GEMINI_TIMEOUT_MS` configuration with `HOST_ANTIGRAVITY_DIR` and `ANTIGRAVITY_TIMEOUT_MS`, replace `~/.gemini` mounts with `~/.antigravity`, replace `propr/agent-gemini` with `propr/agent-antigravity`, and update labels such as `llm-gemini-*` to configured Antigravity labels such as `llm-antigravity-gemini-pro` or `llm-antigravity-opus`.
-
 ## Start ProPR
 
 ```bash

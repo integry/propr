@@ -144,7 +144,7 @@ export function humanizeMetricKey(key: string): string {
  * Examples of delta shapes handled:
  *   Claude:  { session: { percent: 16 }, weeklyAll: { percent: 4 } }
  *   Codex:   { fiveHour: { percentUsed: 3 }, weekly: { percentUsed: 1 } }
- *   Gemini:  { models: [...] } — array entries are mapped by model name
+ *   Antigravity: { models: [...] } - array entries are mapped by model name
  */
 export function extractMetricRecords(
     agent: string,
@@ -188,7 +188,7 @@ export function extractMetricRecords(
             }
         }
 
-        // Array (Gemini models array)
+        // Array of per-model usage records
         if (Array.isArray(value)) {
             extractArrayMetricRecords(agent, key, value, records);
         }

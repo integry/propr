@@ -62,7 +62,7 @@ function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
 }
 
 function hasAntigravityModel(parsed: StoredExecutionOutputLine): boolean {
-  return typeof parsed.model === 'string' && /^(antigravity-|gemini-)/.test(parsed.model);
+  return typeof parsed.model === 'string' && parsed.model.startsWith('antigravity-');
 }
 
 function hasAntigravityStats(stats: unknown): boolean {

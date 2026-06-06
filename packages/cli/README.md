@@ -192,14 +192,14 @@ Manage AI agent configurations for code implementation.
 propr agent list                                         # List configured agents
 propr agent add my-claude -t claude -m model1,model2     # Add an agent
 propr agent add my-agent -t claude -m model -d model     # With default model
-propr agent add test -t gemini -m gemini-pro --disabled   # Add in disabled state
+propr agent add test -t antigravity -m antigravity-gemini-3-pro-preview --disabled   # Add in disabled state
 propr agent add --file agent-config.json                 # From JSON file
 cat config.json | propr agent add --file -               # From stdin
 propr agent delete my-agent                              # Delete (with confirmation)
 propr agent delete my-agent --force                      # Delete without confirmation
 ```
 
-**Agent types:** `claude`, `codex`, `gemini`
+**Agent types:** `claude`, `codex`, `antigravity`
 
 **JSON file format** for `--file`:
 
@@ -398,7 +398,7 @@ propr todo list -p org3/repo3
 
 ## E2E Testing
 
-End-to-end tests run against a live ProPR instance and exercise the full workflow: system health, repo management, todo CRUD, plan lifecycle (create → generate → finalize), and multi-model implementation across all agents (Claude, Gemini, Codex).
+End-to-end tests run against a live ProPR instance and exercise the full workflow: system health, repo management, todo CRUD, plan lifecycle (create → generate → finalize), and multi-model implementation across all agents (Claude, Antigravity, Codex).
 
 ### Prerequisites
 
@@ -459,7 +459,7 @@ The report includes:
 
 - **Plans** — ID, name, status, prompt, issues with their agent/model/task assignments
 - **Multi-model parallel results** — all models implementing the same issue simultaneously, with state, duration, tokens, PR number, history entries, and log counts
-- **Single-model results** — grouped by agent (Claude, Gemini, Codex), showing each model's performance on its own issue
+- **Single-model results** — grouped by agent (Claude, Antigravity, Codex), showing each model's performance on its own issue
 - **Totals** — models tested, tasks created, completion rate, token usage
 
 ### File Structure

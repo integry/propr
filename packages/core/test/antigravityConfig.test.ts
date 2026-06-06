@@ -33,7 +33,7 @@ function createAntigravityConfig(overrides: Partial<AgentConfig> = {}): AgentCon
     };
 }
 
-const antigravityEnvKeys = ['ANTIGRAVITY_CONFIG_PATH', 'GEMINI_CONFIG_PATH'] as const;
+const antigravityEnvKeys = ['ANTIGRAVITY_CONFIG_PATH'] as const;
 
 function withAntigravityEnv(env: Partial<Record<typeof antigravityEnvKeys[number], string>>, fn: () => void): void {
     const previous = new Map<typeof antigravityEnvKeys[number], string | undefined>();
@@ -122,25 +122,12 @@ test('Antigravity execution invokes agy with stream JSON output', () => {
     });
 });
 
-test('Antigravity config path prefers ANTIGRAVITY_CONFIG_PATH over legacy GEMINI_CONFIG_PATH', () => {
-    withAntigravityEnv({
-        ANTIGRAVITY_CONFIG_PATH: '/tmp/antigravity-config',
-        GEMINI_CONFIG_PATH: '/tmp/gemini-config'
-    }, () => {
+test('Antigravity config path uses ANTIGRAVITY_CONFIG_PATH env override', () => {
+    withAntigravityEnv({ ANTIGRAVITY_CONFIG_PATH: '/tmp/antigravity-config' }, () => {
         const agent = new AntigravityAgent(createAntigravityConfig({ configPath: '/tmp/stored-config' }));
         const args = buildDockerArgs(agent);
 
         assert.ok(args.includes('/tmp/antigravity-config:/home/node/.antigravity:rw'));
-        assert.equal(args.includes('/tmp/gemini-config:/home/node/.antigravity:rw'), false);
-    });
-});
-
-test('Antigravity config path falls back to legacy GEMINI_CONFIG_PATH temporarily', () => {
-    withAntigravityEnv({ GEMINI_CONFIG_PATH: '/tmp/gemini-config' }, () => {
-        const agent = new AntigravityAgent(createAntigravityConfig({ configPath: '/tmp/stored-config' }));
-        const args = buildDockerArgs(agent);
-
-        assert.ok(args.includes('/tmp/gemini-config:/home/node/.antigravity:rw'));
     });
 });
 

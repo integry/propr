@@ -4,7 +4,7 @@ import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts'
 
 test('parseRedisOutput normalizes Antigravity stream JSON events', () => {
     const parsed = parseRedisOutput([
-        JSON.stringify({ type: 'init', timestamp: '2026-06-05T13:00:00.000Z', session_id: 'session-1', model: 'gemini-3-pro-preview' }),
+        JSON.stringify({ type: 'init', timestamp: '2026-06-05T13:00:00.000Z', session_id: 'session-1', model: 'antigravity-gemini-3-pro-preview' }),
         JSON.stringify({ type: 'message', role: 'assistant', delta: true, content: 'I will ', timestamp: '2026-06-05T13:00:01.000Z' }),
         JSON.stringify({ type: 'message', role: 'assistant', delta: true, content: 'inspect the repo.', timestamp: '2026-06-05T13:00:02.000Z' }),
         JSON.stringify({ type: 'tool_use', tool_name: 'read_file', tool_id: 'tool-1', parameters: { path: 'package.json' }, timestamp: '2026-06-05T13:00:03.000Z' }),

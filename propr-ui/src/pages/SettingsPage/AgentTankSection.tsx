@@ -72,7 +72,7 @@ const AgentTankSection: React.FC<AgentTankSectionProps> = ({
               Enable Agent Tank Integration
             </label>
             <p className="text-[11px] text-slate-500">
-              Track active session and rate limit usage for Claude, Antigravity, Gemini, and Codex CLI tools.
+              Track active session and rate limit usage for Claude, Antigravity, and Codex CLI tools.
             </p>
           </div>
         </div>
