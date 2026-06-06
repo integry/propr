@@ -112,8 +112,8 @@ export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) =
   );
 };
 
-export interface ImplementButtonProps { implementing: boolean; disabled?: boolean; hasAgent: boolean; isFirstPending: boolean; pressed?: boolean; onClick: () => void; }
-export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, disabled = false, hasAgent, isFirstPending, pressed = false, onClick }) => (
+export interface ImplementButtonProps { implementing: boolean; disabled?: boolean; hasAgent: boolean; isFirstPending: boolean; pressed?: boolean; label?: string; onClick: () => void; }
+export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, disabled = false, hasAgent, isFirstPending, pressed = false, label = 'Implement', onClick }) => (
   <button
     onClick={onClick}
     disabled={implementing || disabled || !hasAgent}
@@ -139,7 +139,7 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
     ) : (
       <>
         <Play size={14} className={!isFirstPending && hasAgent ? 'opacity-60' : ''} />
-        <span className="hidden sm:inline">Implement</span>
+        <span className="hidden sm:inline">{label}</span>
       </>
     )}
   </button>
@@ -183,6 +183,8 @@ export interface RowActionsProps {
   onModelChange: (issueNumber: number, modelName: string | null) => void;
   disableImplementation?: boolean;
   implementButtonPressed?: boolean;
+  showImplementButton?: boolean;
+  implementButtonLabel?: string;
   handleMultiToggle: (multi: boolean) => void;
   handleMultiModelChange: (models: AgentModelPair[]) => void;
   handleImplementClick: () => void;
@@ -204,6 +206,8 @@ export const RowActions: React.FC<RowActionsProps> = ({
   onModelChange,
   disableImplementation = false,
   implementButtonPressed = false,
+  showImplementButton = true,
+  implementButtonLabel = 'Implement',
   handleMultiToggle,
   handleMultiModelChange,
   handleImplementClick,
@@ -229,13 +233,14 @@ export const RowActions: React.FC<RowActionsProps> = ({
           onMultiConfirm={handleImplementClick}
         />
       )}
-      {isPending && (
+      {isPending && showImplementButton && (
         <ImplementButton
           implementing={implementing}
           disabled={disableImplementation}
           hasAgent={hasAgent}
           isFirstPending={isFirstPending}
           pressed={implementButtonPressed}
+          label={implementButtonLabel}
           onClick={handleImplementClick}
         />
       )}
