@@ -10,7 +10,7 @@ interface StoredExecutionOutputLine {
   session_id?: string;
   conversation_id?: string;
   model?: string;
-  stats?: unknown;
+  stats?: Record<string, unknown>;
   item?: unknown;
   part?: unknown;
   parts?: unknown[];
