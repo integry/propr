@@ -124,6 +124,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
         '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', 'XDG_DATA_HOME=/home/node/.local/share', ...envVars,
         '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
     ];
+    appendOpenCodeDataMount(dockerArgs);
 
     if (modelName) {
         const cleanModelName = modelName.startsWith('opencode:') ? modelName.slice('opencode:'.length) : modelName;
@@ -132,6 +133,19 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     }
 
     return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, 'opencode');
+}
+
+function appendOpenCodeDataMount(dockerArgs: string[]): void {
+    const hostDataPath = process.env.HOST_OPENCODE_DATA_DIR;
+    if (!hostDataPath) return;
+    dockerArgs.splice(
+        dockerArgs.indexOf('-w'),
+        0,
+        '-v',
+        `${hostDataPath}:/home/node/.local/share/opencode:ro`,
+        '-e',
+        'XDG_DATA_HOME=/home/node/.local/share'
+    );
 }
 
 function buildEnvVars(config: AgentConfig): string[] {

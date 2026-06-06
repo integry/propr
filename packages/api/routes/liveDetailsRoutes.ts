@@ -4,7 +4,6 @@ import { Knex } from 'knex';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
-import { isOpenCodeJsonlEvent } from '@propr/core';
 import { validateTaskId } from './validation.js';
 import {
   isConversationResultEmpty,
@@ -16,7 +15,10 @@ import {
 } from './liveDetailsCodexParser.js';
 import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
+import { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 import { parseRedisOutput } from '../services/redisOutputParser.js';
+
+export { detectStoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 interface HistoryEntryWithSessionMetadata { state?: string; timestamp?: string; metadata?: { sessionId?: string }; }
@@ -181,20 +183,6 @@ export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSes
   return null;
 }
 interface StoredLogData { files?: Record<string, string>; }
-interface StoredExecutionOutputLine { type?: string; role?: string; message?: { parts?: unknown[] } | unknown; response?: unknown; sessionID?: string; sessionId?: string; session_id?: string; conversation_id?: string; item?: unknown; part?: unknown; parts?: unknown[]; reasoning_content?: unknown; tool_calls?: unknown; tool_call_id?: string; }
-export type StoredOutputFormat = 'claude' | 'codex' | 'opencode' | 'vibe' | 'unknown';
-const CODEX_STORED_OUTPUT_TYPES = new Set([
-  'message',
-  'tool_use',
-  'error',
-  'result',
-  'turn.started',
-  'turn.completed',
-  'item.started',
-  'item.updated',
-  'item.completed'
-]);
-const CLAUDE_STORED_OUTPUT_TYPES = new Set(['assistant', 'user']);
 // Keep Codex first for unknown streams because its result-only usage envelope overlaps OpenCode.
 const STORED_OUTPUT_FALLBACK_ORDER: StoredOutputFormat[] = ['codex', 'claude', 'opencode', 'vibe'];
 export interface ParsedStoredOutput {
@@ -283,50 +271,6 @@ function parseStoredOutputForFormat(output: string, format: StoredOutputFormat):
   if (format === 'opencode') return parseOpenCodeOutputToConversationResult(output);
   if (format === 'vibe') return parseVibeOutputToConversationResult(output);
   return null;
-}
-export function detectStoredOutputFormat(output: string): StoredOutputFormat {
-  // Try whole-document vibe detection first
-  const wholeDocumentFormat = detectVibeTranscriptFormat(output.trim());
-  if (wholeDocumentFormat !== 'unknown') return wholeDocumentFormat;
-
-  let detectedFormat: StoredOutputFormat = 'unknown';
-  for (const line of output.split('\n')) {
-    const parsed = parseStoredOutputLine(line);
-    if (!parsed) continue;
-    const immediateFormat = getImmediateStoredOutputFormat(parsed);
-    if (immediateFormat) return immediateFormat;
-    if (detectedFormat === 'unknown') detectedFormat = getDeferredStoredOutputFormat(parsed);
-  }
-  return detectedFormat;
-}
-function detectVibeTranscriptFormat(jsonText: string): StoredOutputFormat {
-  try {
-    const parsed = JSON.parse(jsonText) as StoredExecutionOutputLine | StoredExecutionOutputLine[];
-    if (isVibeTranscript(parsed)) return 'vibe';
-  } catch {
-    // Not valid JSON, ignore
-  }
-  return 'unknown';
-}
-function parseStoredOutputLine(line: string): StoredExecutionOutputLine | null { if (!line.trim()) return null; try { return JSON.parse(line) as StoredExecutionOutputLine; } catch { return null; } }
-function getImmediateStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat | null { if (isClaudeStoredOutputLine(parsed)) return 'claude'; if (isStrongOpenCodeStoredOutputLine(parsed)) return 'opencode'; return !isCodexStoredOutputLine(parsed) && isOpenCodeStoredOutputLine(parsed) ? 'opencode' : null; }
-function getDeferredStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat { return isCodexStoredOutputLine(parsed) ? 'codex' : 'unknown'; }
-function isStrongOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean { return Boolean((parsed.sessionID || parsed.session_id) && isOpenCodeStoredOutputLine(parsed)); }
-function isOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
-  return isOpenCodeJsonlEvent(parsed);
-}
-function isCodexStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
-  return Boolean((parsed.type && CODEX_STORED_OUTPUT_TYPES.has(parsed.type)) || parsed.item !== undefined);
-}
-function isClaudeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
-  return Boolean((parsed.type && CLAUDE_STORED_OUTPUT_TYPES.has(parsed.type)) || (parsed.conversation_id && !parsed.type));
-}
-
-function isVibeTranscript(parsed: StoredExecutionOutputLine | StoredExecutionOutputLine[]): boolean {
-  const events = Array.isArray(parsed) ? parsed : [parsed];
-  if (!events.length) return false;
-  return events.some(event => event.role === 'system' || event.role === 'tool' || event.reasoning_content !== undefined || event.tool_calls !== undefined || event.tool_call_id !== undefined)
-    && events.some(event => event.role === 'assistant' || event.role === 'user' || event.role === 'tool');
 }
 function buildRawOutputConversationResult(output: string): ConversationResult | null {
   const trimmed = output.trim();

@@ -40,19 +40,11 @@ services:
       DB_FILENAME: /app/data/propr.sqlite
       GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
-      OPENCODE_CONFIG_PATH: ${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}
-      OPENCODE_LEGACY_CONFIG_PATH: ${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}
     volumes:
       - propr-sqlite-data:/app/data
-      # Agent config mounts used by version resolution and image listing
-      # Comment out unused credential mounts to avoid Docker creating empty
-      # host directories for agents you do not use.
-      - ~/.claude:/root/.claude:ro
-      - ~/.codex:/root/.codex:ro
-      - ~/.gemini:/root/.gemini:ro
-      - ${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}:${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}:ro
-      - ${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}:${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}:ro
-      - ${HOST_OPENCODE_DATA_DIR:-${HOME:?HOME must be set}/.local/share/opencode}:${HOST_OPENCODE_DATA_DIR:-${HOME:?HOME must be set}/.local/share/opencode}:ro
+      # Add agent credential mounts with a deployment-specific override file.
+      # Keeping them out of the base production compose file avoids Docker
+      # creating missing host credential directories as root-owned folders.
     depends_on:
       redis:
         condition: service_healthy
@@ -115,8 +107,6 @@ services:
       HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       # --- Vibe agent (config-file auth, alternative to API-key) ---
       VIBE_CONFIG_PATH: ${VIBE_CONFIG_PATH:-/root/.vibe}
-      OPENCODE_CONFIG_PATH: ${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}
-      OPENCODE_LEGACY_CONFIG_PATH: ${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /usr/src/app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
@@ -125,21 +115,9 @@ services:
       - ./repos:/usr/src/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
       - propr-sqlite-data:/usr/src/app/data
-      - ~/.claude:/root/.claude:ro
-      - ~/.codex:/root/.codex:ro
-      - ~/.gemini:/root/.gemini:ro
-      # Mount OpenCode credential paths at identical host/container paths.
-      # The worker spawns sibling agent containers through the host Docker
-      # socket, so OPENCODE_CONFIG_PATH must be host-valid.
-      - ${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}:${HOST_OPENCODE_LEGACY_DIR:-${HOME:?HOME must be set}/.opencode}:ro
-      - ${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}:${HOST_OPENCODE_XDG_DIR:-${HOME:?HOME must be set}/.config/opencode}:ro
-      # Service-side visibility only; runtime OpenCode agents mount the saved
-      # configPath unless XDG_DATA_HOME points under OPENCODE_CONFIG_PATH.
-      - ${HOST_OPENCODE_DATA_DIR:-${HOME:?HOME must be set}/.local/share/opencode}:${HOST_OPENCODE_DATA_DIR:-${HOME:?HOME must be set}/.local/share/opencode}:ro
-      # Comment out unused credential mounts to avoid Docker creating empty
-      # host directories for agents you do not use. The OpenCode agent runtime
-      # still mounts only the saved agent configPath; for file auth, prefer the
-      # xdg-data workaround described in docs/docs/architecture/opencode-integration.md.
+      # Add agent credential mounts with a deployment-specific override file.
+      # The launcher conditionally mounts HOST_* credential directories and is
+      # the preferred production path for agent credential auth.
       # Vibe prompt cache — mounted by default so API-key auth works without
       # manual edits. PREFLIGHT: create and own the host directory before starting:
       #   mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"

@@ -53,6 +53,7 @@ const HOST_OPENCODE_LEGACY_DIR = process.env.HOST_OPENCODE_LEGACY_DIR || envFile
 // HOST_OPENCODE_XDG_DIR in new deployments because it names the current
 // OpenCode config location explicitly.
 const HOST_OPENCODE_XDG_DIR = process.env.HOST_OPENCODE_XDG_DIR || process.env.HOST_OPENCODE_DIR || envFileValue('HOST_OPENCODE_XDG_DIR') || envFileValue('HOST_OPENCODE_DIR') || undefined;
+const HOST_OPENCODE_DATA_DIR = process.env.HOST_OPENCODE_DATA_DIR || envFileValue('HOST_OPENCODE_DATA_DIR') || undefined;
 const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR   || envFileValue('HOST_VIBE_DIR')   || undefined;
 
 function envFileValue(name) {
@@ -144,9 +145,6 @@ function agentCredentialArgs() {
         args.push('-v', `${HOST_GEMINI_DIR}:${HOST_GEMINI_DIR}`);
         args.push('-e', `GEMINI_CONFIG_PATH=${HOST_GEMINI_DIR}`);
     }
-    // Launcher does not mount ~/.local/share/opencode directly. File-based
-    // OpenCode auth should be synced under HOST_OPENCODE_XDG_DIR and exposed
-    // to the agent with XDG_DATA_HOME, or supplied as provider env vars.
     if (HOST_OPENCODE_LEGACY_DIR) {
         args.push('-v', `${HOST_OPENCODE_LEGACY_DIR}:${HOST_OPENCODE_LEGACY_DIR}`);
         args.push('-e', `OPENCODE_LEGACY_CONFIG_PATH=${HOST_OPENCODE_LEGACY_DIR}`);
@@ -156,6 +154,10 @@ function agentCredentialArgs() {
         args.push('-e', `OPENCODE_CONFIG_PATH=${HOST_OPENCODE_XDG_DIR}`);
     } else if (HOST_OPENCODE_LEGACY_DIR) {
         args.push('-e', `OPENCODE_CONFIG_PATH=${HOST_OPENCODE_LEGACY_DIR}`);
+    }
+    if (HOST_OPENCODE_DATA_DIR) {
+        args.push('-v', `${HOST_OPENCODE_DATA_DIR}:${HOST_OPENCODE_DATA_DIR}:ro`);
+        args.push('-e', `HOST_OPENCODE_DATA_DIR=${HOST_OPENCODE_DATA_DIR}`);
     }
     if (HOST_VIBE_DIR) {
         args.push('-v', `${HOST_VIBE_DIR}:${HOST_VIBE_DIR}`);
@@ -382,6 +384,7 @@ function validateEnv() {
         ['HOST_GEMINI_DIR', HOST_GEMINI_DIR],
         ['HOST_OPENCODE_LEGACY_DIR', HOST_OPENCODE_LEGACY_DIR],
         ['HOST_OPENCODE_XDG_DIR', HOST_OPENCODE_XDG_DIR],
+        ['HOST_OPENCODE_DATA_DIR', HOST_OPENCODE_DATA_DIR],
         ['HOST_VIBE_DIR', HOST_VIBE_DIR],
     ];
     const invalidCredentialPath = credentialDirs

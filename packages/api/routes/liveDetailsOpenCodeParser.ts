@@ -129,14 +129,14 @@ function joinOpenCodeTextValues(values: unknown[], trim = true): string {
     seen.add(value);
     parts.push(value);
   }
-  const text = parts.join('');
+  const text = parts.join(trim ? '\n' : '');
   return trim ? text.trim() : text;
 }
 
 function joinOpenCodeTextGroups(first: string, second: string): string {
   if (!first) return second;
   if (!second || first === second) return first;
-  return `${first}${second}`;
+  return `${first}\n${second}`;
 }
 
 function extractOpenCodeEventError(event: OpenCodeEvent): string {
