@@ -1,10 +1,10 @@
 import path from 'path';
 import os from 'os';
 import logger from '../utils/logger.js';
-import { Agent, AgentConfig, AgentType } from './types.js';
+import { Agent, AgentConfig } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
-import { GeminiAgent } from './impl/GeminiAgent.js';
+import { AntigravityAgent } from './impl/AntigravityAgent.js';
 import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
 import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
@@ -12,7 +12,7 @@ import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/doc
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
 import { computeContentHash, generateImageTag, getDockerTagComponent } from './version/versionService.js';
-import { AGENT_IMAGE_NAMES } from './version/types.js';
+import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 
 /**
@@ -236,12 +236,17 @@ export class AgentRegistry {
      * Uses versioned image if version config is present, otherwise uses default.
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
-        if (this.isManagedVersionedImage(config)) {
-            const contentHash = computeContentHash(config.type as AgentType);
-            const expectedImageTag = generateImageTag(config.type as AgentType, config.cliVersionResolved!, contentHash);
+        if (config.type === 'antigravity') {
+            config.cliVersion = 'latest';
+            config.cliVersionResolved = AGENT_DEFAULT_VERSIONS.antigravity;
+        }
+        const cliVersionResolved = config.cliVersionResolved;
+        if (this.isManagedVersionedImage(config, cliVersionResolved)) {
+            const contentHash = computeContentHash(config.type);
+            const expectedImageTag = generateImageTag(config.type, cliVersionResolved!, contentHash);
             const result = await ensureVersionedAgentImage(
                 config.type,
-                config.cliVersionResolved!,
+                cliVersionResolved!,
                 contentHash
             );
             if (result.success) {
@@ -259,10 +264,10 @@ export class AgentRegistry {
 
         // Fallback: versioned build (dev flow) — requires Dockerfile on disk.
         if (config.cliVersionType && config.cliVersionResolved) {
-            const contentHash = computeContentHash(config.type as AgentType);
+            const contentHash = computeContentHash(config.type);
             const result = await ensureVersionedAgentImage(
                 config.type,
-                config.cliVersionResolved,
+                cliVersionResolved!,
                 contentHash
             );
             if (result.success && result.imageTag !== config.dockerImage) {
@@ -273,12 +278,12 @@ export class AgentRegistry {
         return false;
     }
 
-    private isManagedVersionedImage(config: AgentConfig): boolean {
-        if (!config.cliVersionType || !config.cliVersionResolved) return false;
-        const managedImageName = AGENT_IMAGE_NAMES[config.type as AgentType];
+    private isManagedVersionedImage(config: AgentConfig, cliVersionResolved = config.cliVersionResolved): boolean {
+        if (!config.cliVersionType || !cliVersionResolved) return false;
+        const managedImageName = AGENT_IMAGE_NAMES[config.type];
         if (!managedImageName || !config.dockerImage?.startsWith(`${managedImageName}:`)) return false;
         const tag = config.dockerImage.slice(managedImageName.length + 1);
-        const versionTag = getDockerTagComponent(config.cliVersionResolved);
+        const versionTag = getDockerTagComponent(cliVersionResolved);
         return tag.startsWith(`${versionTag}-`) && /-[0-9a-f]{6}$/i.test(tag);
     }
 
@@ -292,8 +297,8 @@ export class AgentRegistry {
                 return new ClaudeAgent(config);
             case 'codex':
                 return new CodexAgent(config);
-            case 'gemini':
-                return new GeminiAgent(config);
+            case 'antigravity':
+                return new AntigravityAgent(config);
             case 'opencode':
                 return new OpenCodeAgent(config);
             case 'vibe':

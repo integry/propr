@@ -42,12 +42,12 @@ const DOCS_ENABLED = process.env.DOCS_ENABLED === 'true';
 
 // Host paths for per-CLI credential directories. Launcher is in a container
 // and can't read the host's $HOME, so the invoker must pass these in. The
-// worker and api containers mount them so the spawned claude/codex/gemini/opencode/vibe
+// worker and api containers mount them so the spawned claude/codex/antigravity/opencode/vibe
 // agent containers can find the user's login state.
 // Each variable can be set as a launcher `-e` flag OR in the mounted .env file.
 const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR || envFileValue('HOST_CLAUDE_DIR') || undefined;
 const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR  || envFileValue('HOST_CODEX_DIR')  || undefined;
-const HOST_GEMINI_DIR = process.env.HOST_GEMINI_DIR || envFileValue('HOST_GEMINI_DIR') || undefined;
+const HOST_ANTIGRAVITY_DIR = process.env.HOST_ANTIGRAVITY_DIR || envFileValue('HOST_ANTIGRAVITY_DIR') || undefined;
 const HOST_OPENCODE_LEGACY_DIR = process.env.HOST_OPENCODE_LEGACY_DIR || envFileValue('HOST_OPENCODE_LEGACY_DIR') || undefined;
 // HOST_OPENCODE_DIR is a compatibility alias for HOST_OPENCODE_XDG_DIR. Prefer
 // HOST_OPENCODE_XDG_DIR in new deployments because it names the current
@@ -141,9 +141,9 @@ export function agentCredentialArgs({ opencodeDataReadWrite = false } = {}) {
         args.push('-v', `${HOST_CODEX_DIR}:${HOST_CODEX_DIR}`);
         args.push('-e', `CODEX_CONFIG_PATH=${HOST_CODEX_DIR}`);
     }
-    if (HOST_GEMINI_DIR) {
-        args.push('-v', `${HOST_GEMINI_DIR}:${HOST_GEMINI_DIR}`);
-        args.push('-e', `GEMINI_CONFIG_PATH=${HOST_GEMINI_DIR}`);
+    if (HOST_ANTIGRAVITY_DIR) {
+        args.push('-v', `${HOST_ANTIGRAVITY_DIR}:${HOST_ANTIGRAVITY_DIR}`);
+        args.push('-e', `ANTIGRAVITY_CONFIG_PATH=${HOST_ANTIGRAVITY_DIR}`);
     }
     if (HOST_OPENCODE_LEGACY_DIR) {
         args.push('-v', `${HOST_OPENCODE_LEGACY_DIR}:${HOST_OPENCODE_LEGACY_DIR}`);
@@ -382,7 +382,7 @@ function validateEnv() {
     const credentialDirs = [
         ['HOST_CLAUDE_DIR', HOST_CLAUDE_DIR],
         ['HOST_CODEX_DIR', HOST_CODEX_DIR],
-        ['HOST_GEMINI_DIR', HOST_GEMINI_DIR],
+        ['HOST_ANTIGRAVITY_DIR', HOST_ANTIGRAVITY_DIR],
         ['HOST_OPENCODE_LEGACY_DIR', HOST_OPENCODE_LEGACY_DIR],
         ['HOST_OPENCODE_XDG_DIR', HOST_OPENCODE_XDG_DIR],
         ['HOST_OPENCODE_DATA_DIR', HOST_OPENCODE_DATA_DIR],

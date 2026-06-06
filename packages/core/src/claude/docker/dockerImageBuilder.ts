@@ -10,7 +10,7 @@ import { executeDockerCommand } from './dockerExecutor.js';
 const AGENT_DOCKERFILES: Record<string, string> = {
     'claude': 'Dockerfile.claude',
     'codex': 'Dockerfile.codex',
-    'gemini': 'Dockerfile.gemini',
+    'antigravity': 'Dockerfile.antigravity',
     'vibe': 'Dockerfile.vibe'
 };
 
@@ -30,6 +30,9 @@ function getAgentBuildArgs(agentType: string, dockerImage: string): string[] {
     const buildArgs = ['--build-arg', `BASE_IMAGE=${getAgentBaseImage()}`];
     if (!(agentType in AGENT_DEFAULT_VERSIONS)) return buildArgs;
     const fallbackVersion = AGENT_DEFAULT_VERSIONS[agentType as AgentType];
+    if (agentType === 'antigravity') {
+        return [...buildArgs, '--build-arg', `CLI_VERSION=${fallbackVersion}`];
+    }
     const imageTag = dockerImage.includes(':') ? dockerImage.split(':').pop() : undefined;
     const cliVersion = !imageTag || imageTag === 'latest' ? fallbackVersion : imageTag.split('-')[0] || fallbackVersion;
     return [...buildArgs, '--build-arg', `CLI_VERSION=${cliVersion}`];
@@ -83,7 +86,7 @@ export async function buildClaudeDockerImage(): Promise<boolean> {
  * Ensures an agent's Docker image exists, building it if necessary.
  * This is called when agents are registered to ensure their images are ready.
  *
- * @param agentType - The type of agent ('claude', 'codex', 'gemini')
+ * @param agentType - The type of agent ('claude', 'codex', 'antigravity', 'vibe')
  * @param dockerImage - The expected Docker image name (e.g., 'propr/agent-codex:latest')
  * @returns true if image exists or was built successfully, false otherwise
  */

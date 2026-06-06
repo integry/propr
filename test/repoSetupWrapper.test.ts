@@ -32,17 +32,17 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         const wrapped = wrapDockerRunArgsWithRepoSetup([
             'run', '--rm',
             '-e', 'PROPR_REPO_SETUP=0',
-            'propr/agent-gemini:latest',
-            'gemini', '--yolo'
-        ], 'propr/agent-gemini:latest', 'gemini');
+            'propr/agent-antigravity:latest',
+            'antigravity', '--yolo'
+        ], 'propr/agent-antigravity:latest', 'antigravity');
 
-        assert.ok(wrapped.includes('PROPR_AGENT_TYPE=gemini'));
+        assert.ok(wrapped.includes('PROPR_AGENT_TYPE=antigravity'));
         assert.ok(wrapped.includes('PROPR_WORKSPACE=/home/node/workspace'));
-        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/gemini'));
+        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/antigravity'));
         assert.ok(wrapped.includes('PROPR_REPO_SETUP=0'));
 
-        const imageIndex = wrapped.indexOf('propr/agent-gemini:latest');
-        assert.strictEqual(wrapped[imageIndex + 3], '/home/node/gemini-entrypoint.sh');
+        const imageIndex = wrapped.indexOf('propr/agent-antigravity:latest');
+        assert.strictEqual(wrapped[imageIndex + 3], '/home/node/antigravity-entrypoint.sh');
     });
 
     test('maps Vibe to the Vibe entrypoint', () => {

@@ -27,12 +27,12 @@ const mockAgentConfigs = [
     },
     {
         config: {
-            id: 'gemini-agent-1',
-            type: 'gemini' as const,
-            alias: 'gemini',
+            id: 'antigravity-agent-1',
+            type: 'antigravity' as const,
+            alias: 'antigravity',
             enabled: true,
-            supportedModels: ['gemini-2.5-pro', 'gemini-2.5-flash'],
-            defaultModel: 'gemini-2.5-pro',
+            supportedModels: ['antigravity-gemini-2.5-pro', 'antigravity-gemini-2.5-flash'],
+            defaultModel: 'antigravity-gemini-2.5-pro',
         },
     },
 ];
@@ -61,7 +61,7 @@ const { resolveReviewAssignments } = await import('../src/jobs/prCommentReviewJo
 test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
 
     await t.test('uses explicit requestedModels when provided, ignoring pr_review_model', async () => {
-        mockPrReviewModel = 'gemini-2.5-pro';
+        mockPrReviewModel = 'antigravity-gemini-2.5-pro';
         mockLoadPrReviewModel.mock.resetCalls();
 
         const assignments = await resolveReviewAssignments(['claude-opus-4-6'], null, mockLogger as any);
@@ -74,7 +74,7 @@ test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
     });
 
     await t.test('uses llm parameter when no requestedModels, ignoring pr_review_model', async () => {
-        mockPrReviewModel = 'gemini-2.5-pro';
+        mockPrReviewModel = 'antigravity-gemini-2.5-pro';
         mockLoadPrReviewModel.mock.resetCalls();
 
         const assignments = await resolveReviewAssignments(undefined, 'claude-sonnet-4-6', mockLogger as any);
@@ -86,14 +86,14 @@ test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
     });
 
     await t.test('falls back to pr_review_model when no requestedModels and no llm', async () => {
-        mockPrReviewModel = 'gemini-2.5-pro';
+        mockPrReviewModel = 'antigravity-gemini-2.5-pro';
         mockLoadPrReviewModel.mock.resetCalls();
 
         const assignments = await resolveReviewAssignments(undefined, null, mockLogger as any);
 
         assert.strictEqual(assignments.length, 1);
-        assert.strictEqual(assignments[0].model, 'gemini-2.5-pro');
-        assert.strictEqual(assignments[0].agentAlias, 'gemini');
+        assert.strictEqual(assignments[0].model, 'antigravity-gemini-2.5-pro');
+        assert.strictEqual(assignments[0].agentAlias, 'antigravity');
         assert.strictEqual(mockLoadPrReviewModel.mock.callCount(), 1);
     });
 

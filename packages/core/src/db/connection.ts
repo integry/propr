@@ -8,6 +8,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 type KnexEnvironment = 'development' | 'production' | 'test';
+type BetterSqliteConnection = { pragma: (arg: string) => unknown };
+
+const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30000;
+
+function getSqliteBusyTimeoutMs(): number {
+    const parsed = Number(process.env.SQLITE_BUSY_TIMEOUT_MS);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
+}
+
+function configureSqliteConnection(conn: BetterSqliteConnection): void {
+    conn.pragma(`busy_timeout = ${getSqliteBusyTimeoutMs()}`);
+    conn.pragma('journal_mode = WAL');
+    conn.pragma('synchronous = NORMAL');
+    conn.pragma('foreign_keys = ON');
+}
 
 // Get database filename from env or use default
 function getDbFilename(): string {
@@ -44,8 +59,8 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
                 tableName: 'knex_migrations'
             },
             pool: {
-                afterCreate: (conn: { pragma: (arg: string) => void }, done: (err: Error | null) => void) => {
-                    conn.pragma('foreign_keys = ON');
+                afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
+                    configureSqliteConnection(conn);
                     done(null);
                 }
             }
@@ -61,8 +76,8 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
                 tableName: 'knex_migrations'
             },
             pool: {
-                afterCreate: (conn: { pragma: (arg: string) => void }, done: (err: Error | null) => void) => {
-                    conn.pragma('foreign_keys = ON');
+                afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
+                    configureSqliteConnection(conn);
                     done(null);
                 }
             }
@@ -78,8 +93,8 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
                 tableName: 'knex_migrations'
             },
             pool: {
-                afterCreate: (conn: { pragma: (arg: string) => void }, done: (err: Error | null) => void) => {
-                    conn.pragma('foreign_keys = ON');
+                afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
+                    configureSqliteConnection(conn);
                     done(null);
                 }
             }

@@ -1,6 +1,6 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
-import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS } from './modelDefinitions.js';
+import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS, AGENT_MODELS, type AgentType } from './modelDefinitions.js';
 
 export type ModelAlias = string;
 export type ModelId = string;
@@ -150,8 +150,12 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     // This handles labels like "llm-vibe-mistral" where the prefix indicates agent type
     const dashIdx = lowerCaseModel.indexOf('-');
     if (dashIdx > 0) {
+        const possibleAgentType = lowerCaseModel.substring(0, dashIdx);
         const possibleAlias = lowerCaseModel.substring(dashIdx + 1);
-        for (const modelInfo of ALL_MODELS) {
+        const candidateModels = possibleAgentType in AGENT_MODELS
+            ? AGENT_MODELS[possibleAgentType as AgentType]
+            : ALL_MODELS;
+        for (const modelInfo of candidateModels) {
             if (modelInfo.shortAlias.toLowerCase() === possibleAlias) {
                 return modelInfo.id;
             }
@@ -165,7 +169,7 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
  * Selects the preferred default model for an agent type when no explicit default is set.
  * Preference rules:
  * - Claude: prefer Opus, then Sonnet (skip Haiku)
- * - Gemini: prefer Pro models (skip Flash)
+ * - Antigravity: prefer Pro models, then Opus-class models
  * - Codex (OpenAI): prefer GPT (skip mini/spark variants)
  * - OpenCode: prefer the configured Kimi default
  */
@@ -184,10 +188,12 @@ function getPreferredModelForAgent(config: AgentConfig): string | null {
             if (sonnet) return sonnet;
             break;
         }
-        case 'gemini': {
+        case 'antigravity': {
             // Prefer Pro (not Flash)
             const pro = models.find((_m, i) => lowerModels[i].includes('pro'));
             if (pro) return pro;
+            const opus = models.find((_m, i) => lowerModels[i].includes('opus'));
+            if (opus) return opus;
             break;
         }
         case 'codex': {
@@ -242,12 +248,12 @@ function getDefaultModel(): ModelId | null {
 
 /**
  * Determines the agent type from a model ID.
- * E.g., "gemini-3-flash-preview" -> "gemini", "claude-opus-4-5-20251101" -> "claude"
+ * E.g., "antigravity-gemini-3-flash-preview" -> "antigravity", "claude-opus-4-5-20251101" -> "claude"
  */
-function getAgentTypeFromModel(modelId: string): 'claude' | 'codex' | 'gemini' | 'opencode' | 'vibe' {
+function getAgentTypeFromModel(modelId: string): AgentType {
     const lowerModel = modelId.toLowerCase();
     if (isOpenCodeModelId(lowerModel)) return 'opencode';
-    if (lowerModel.startsWith('gemini')) return 'gemini';
+    if (lowerModel.startsWith('antigravity')) return 'antigravity';
     if (lowerModel.startsWith('claude')) return 'claude';
     if (lowerModel.startsWith('mistral') || lowerModel.startsWith('devstral') || lowerModel.includes('vibe')) return 'vibe';
     if (lowerModel.startsWith('gpt') || lowerModel.includes('codex')) return 'codex';

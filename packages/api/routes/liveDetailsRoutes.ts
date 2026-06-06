@@ -22,8 +22,8 @@ export { detectStoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 interface HistoryEntryWithSessionMetadata { state?: string; timestamp?: string; metadata?: { sessionId?: string }; }
-const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'opencode_execution']);
-const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'vibe_execution', 'opencode_execution']);
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'opencode_execution']);
+const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'vibe_execution', 'opencode_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
@@ -267,7 +267,7 @@ function parseStoredOutputWithFormat(output: string, format: StoredOutputFormat,
 }
 function parseStoredOutputForFormat(output: string, format: StoredOutputFormat): ConversationResult | null {
   if (format === 'claude') return parseClaudeOutputToConversationResult(output);
-  if (format === 'codex') return parseCodexOutputToConversationResult(output);
+  if (format === 'codex' || format === 'antigravity') return parseCodexOutputToConversationResult(output);
   if (format === 'opencode') return parseOpenCodeOutputToConversationResult(output);
   if (format === 'vibe') return parseVibeOutputToConversationResult(output);
   return null;

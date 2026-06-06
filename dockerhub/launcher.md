@@ -3,6 +3,8 @@
 The launcher starts a complete self-hosted ProPR stack from prebuilt Docker images.
 It uses the mounted Docker socket to pull and run the app, web UI, docs, Redis, and
 agent execution containers with the image versions baked into the launcher manifest.
+For Antigravity agent runs, authenticate the Antigravity CLI on the host and pass
+`HOST_ANTIGRAVITY_DIR=$HOME/.antigravity`.
 
 ```bash
 docker run --rm \
@@ -14,7 +16,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR=$PWD/repos \
   -e HOST_CLAUDE_DIR=$HOME/.claude \
   -e HOST_CODEX_DIR=$HOME/.codex \
-  -e HOST_GEMINI_DIR=$HOME/.gemini \
+  -e HOST_ANTIGRAVITY_DIR=$HOME/.antigravity \
   propr/launcher:latest
 ```
 

@@ -9,6 +9,8 @@ interface StoredExecutionOutputLine {
   sessionId?: string;
   session_id?: string;
   conversation_id?: string;
+  model?: string;
+  stats?: unknown;
   item?: unknown;
   part?: unknown;
   parts?: unknown[];
@@ -17,7 +19,7 @@ interface StoredExecutionOutputLine {
   tool_call_id?: string;
 }
 
-export type StoredOutputFormat = 'claude' | 'codex' | 'opencode' | 'vibe' | 'unknown';
+export type StoredOutputFormat = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'unknown';
 
 const CODEX_STORED_OUTPUT_TYPES = new Set([
   'message',
@@ -36,8 +38,17 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   const wholeDocumentFormat = detectWholeDocumentStoredOutputFormat(output.trim());
   if (wholeDocumentFormat !== 'unknown') return wholeDocumentFormat;
 
+  const lines = output.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  // Check for antigravity stream events across all lines
+  if (lines.some(line => {
+    const parsed = parseStoredOutputLine(line);
+    return parsed && isAntigravityStreamEvent(parsed);
+  })) {
+    return 'antigravity';
+  }
+
   let detectedFormat: StoredOutputFormat = 'unknown';
-  for (const line of output.split('\n')) {
+  for (const line of lines) {
     const parsed = parseStoredOutputLine(line);
     if (!parsed) continue;
     const immediateFormat = getImmediateStoredOutputFormat(parsed);
@@ -74,6 +85,7 @@ function isStoredOutputObject(value: unknown): value is StoredExecutionOutputLin
 function detectStoredOutputEvents(events: StoredExecutionOutputLine[]): StoredOutputFormat {
   let detectedFormat: StoredOutputFormat = 'unknown';
   for (const event of events) {
+    if (isAntigravityStreamEvent(event)) return 'antigravity';
     const immediateFormat = getImmediateStoredOutputFormat(event);
     if (immediateFormat) return immediateFormat;
     const deferredFormat = getDeferredStoredOutputFormat(event);
@@ -100,6 +112,15 @@ function getImmediateStoredOutputFormat(parsed: StoredExecutionOutputLine): Stor
 function getDeferredStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat {
   if (isStrongOpenCodeStoredOutputLine(parsed)) return 'opencode';
   return isCodexStoredOutputLine(parsed) ? 'codex' : 'unknown';
+}
+
+function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
+  return (parsed.type === 'init' || parsed.type === 'message' || parsed.type === 'result')
+    && hasAntigravityModel(parsed);
+}
+
+function hasAntigravityModel(parsed: StoredExecutionOutputLine): boolean {
+  return typeof parsed.model === 'string' && parsed.model.trim().length > 0;
 }
 
 function isStrongOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {

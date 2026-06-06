@@ -33,10 +33,15 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/openai/codex
 
-## @google/gemini-cli (installed in propr/agent-gemini image)
+## Antigravity CLI (installed in propr/agent-antigravity image)
 
-Licensed under the Apache License, Version 2.0.
-Source: https://github.com/google-gemini/gemini-cli
+Installed from the official Antigravity CLI installer.
+Source: https://antigravity.google/cli/install.sh
+Provider: Google Antigravity.
+The installer does not publish a separate license, historical version artifact,
+or checksum in the ProPR build inputs. ProPR Antigravity agent images install
+the current upstream CLI at image build time and cannot be reproduced from a
+pinned Antigravity CLI version.
 
 ## mistral-vibe (installed in propr/agent-vibe image)
 

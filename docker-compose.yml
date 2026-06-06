@@ -7,7 +7,7 @@
 # PREFLIGHT: Before starting, create credential and cache directories for the
 # agents you intend to use (Docker will create missing directories as root-owned
 # otherwise, which can cause write failures):
-#   mkdir -p ~/.claude ~/.codex ~/.gemini /tmp/propr-vibe-prompts
+#   mkdir -p ~/.claude ~/.codex ~/.antigravity /tmp/propr-vibe-prompts
 #
 # For Vibe support, also create:
 #   mkdir -p ~/.vibe
@@ -81,10 +81,10 @@ services:
       # Mount agent credentials at the same path on both sides so the worker
       # can pass host-valid paths when spawning sibling agent containers.
       # IMPORTANT: Create any missing directories before starting:
-      #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe
+      #   mkdir -p ~/.claude ~/.codex ~/.antigravity ~/.vibe
       # Docker will create them as root-owned if they do not exist.
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude
-      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini
+      - ${HOME:?HOME must be set}/.antigravity:${HOME:?HOME must be set}/.antigravity
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -97,7 +97,7 @@ services:
     environment:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
-      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.antigravity
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
@@ -123,7 +123,7 @@ services:
       - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts:rw
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
-      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.antigravity:${HOME:?HOME must be set}/.antigravity:ro
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -132,7 +132,7 @@ services:
     environment:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
-      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.antigravity
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
@@ -155,7 +155,7 @@ services:
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
-      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.antigravity:${HOME:?HOME must be set}/.antigravity:ro
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -165,7 +165,7 @@ services:
     environment:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
-      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.antigravity
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
@@ -209,7 +209,7 @@ services:
       - '${API_PORT:-4000}:4000'
     volumes:
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
-      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.antigravity:${HOME:?HOME must be set}/.antigravity:ro
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - ./data:/usr/src/app/data
@@ -228,7 +228,7 @@ services:
     environment:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
-      - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.antigravity
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe

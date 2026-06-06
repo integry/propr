@@ -71,7 +71,7 @@ export interface EstimationOptions {
  * Strip agent prefix from model name if present.
  * Model names should be used as-is for matching, but agent prefixes should be ignored.
  * e.g., 'claude:claude-opus-4-5-20251101' -> 'claude-opus-4-5-20251101'
- * e.g., 'gemini:gemini-3-pro-preview' -> 'gemini-3-pro-preview'
+ * e.g., 'antigravity:antigravity-gemini-3-pro-preview' -> 'antigravity-gemini-3-pro-preview'
  * e.g., 'opus' -> 'opus' (no change for aliases)
  */
 function stripAgentPrefix(modelName: string): string {
@@ -131,7 +131,7 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
     // - Aliases passed that need to match stored full IDs (e.g., 'opus' matches 'claude-opus-4-5-20251101')
     //
     // We prefer estimated_input_tokens (calculated from prompt, reliable for single-turn)
-    // over input_tokens (agent-reported, may be cumulative for multi-turn agents like Gemini)
+    // over input_tokens (agent-reported, may be cumulative for multi-turn agents)
     const recentLogs = await db('llm_logs')
       .select('duration_ms', 'input_tokens', 'estimated_input_tokens')
       .where('execution_type', executionType)

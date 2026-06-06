@@ -80,7 +80,7 @@ export class TaskWatcherManager {
     const agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
 
     let conversationPath: string;
-    if (agentType === 'codex' || agentType === 'gemini' || agentType === 'vibe') {
+    if (agentType === 'codex' || agentType === 'antigravity' || agentType === 'vibe') {
       console.log(`[TaskWatcher] ${agentType} task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
       await this.startRedisWatcher(taskId);
       return;

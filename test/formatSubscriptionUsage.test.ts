@@ -33,7 +33,7 @@ describe('formatSubscriptionUsage', () => {
     test('renders single record', () => {
         const result = formatSubscriptionUsage({
             records: [
-                { agent: 'gemini', metricKey: 'Daily', metricValue: 5 },
+                { agent: 'antigravity', metricKey: 'Daily', metricValue: 5 },
             ],
         });
         assert.strictEqual(result, 'Daily +5%');

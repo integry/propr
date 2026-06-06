@@ -15,6 +15,7 @@ ProPR connects to your GitHub repositories and keeps the pull request as the cen
 - **Web UI Dashboard**: Configure GitHub repositories, labels, agents, and defaults, then track task activity, queue health, repository status, usage, and live run details from the browser
 - **Planner Studio**: Build draft plans, attach extra context, generate structured implementation steps, refine them, and run approved work
 - **Multi-Agent Support**: Configure supported coding agents, choose different models, and use the right agent for review or implementation
+- **Antigravity Routing**: Run Antigravity as a multi-model CLI agent with labels such as `llm-antigravity-gemini-pro` and `llm-antigravity-opus`
 - **GitHub PR Automation**: Use slash commands like `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix` for follow-up work on pull requests after the main setup is already handled in the UI
 - **End-to-End GitHub Flow**: Detect issues, create isolated worktrees and branches, implement changes, and open linked pull requests automatically
 - **Production Operations**: Run with retries, state tracking, Docker-isolated agent runs, and real-time dashboard visibility

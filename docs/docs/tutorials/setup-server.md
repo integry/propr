@@ -45,6 +45,7 @@ The GitHub OAuth App callback URL must match.
 ## Start The Launcher
 
 Use the same launcher command as local setup, but run it from `/srv/propr` or your chosen server directory.
+Authenticate Antigravity on the host first with `agy login`; the launcher mounts `HOST_ANTIGRAVITY_DIR="$HOME/.antigravity"` for Antigravity agent runs.
 
 ```bash
 docker run --rm \
@@ -57,7 +58,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR="$PWD/repos" \
   -e HOST_CLAUDE_DIR="$HOME/.claude" \
   -e HOST_CODEX_DIR="$HOME/.codex" \
-  -e HOST_GEMINI_DIR="$HOME/.gemini" \
+  -e HOST_ANTIGRAVITY_DIR="$HOME/.antigravity" \
   propr/launcher:latest
 ```
 

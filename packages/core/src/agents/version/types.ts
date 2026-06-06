@@ -14,7 +14,7 @@ export type { CliVersionType } from '../../config/configManager.js';
 export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
     claude: '@anthropic-ai/claude-code',
     codex: '@openai/codex',
-    gemini: '@google/gemini-cli',
+    antigravity: 'https://antigravity.google/cli/install.sh',
     opencode: 'opencode-ai',
     vibe: 'mistral-vibe'
 } as const;
@@ -26,7 +26,7 @@ export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
 export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
     claude: ['stable', 'latest', 'next'],
     codex: ['latest', 'alpha'],
-    gemini: ['latest', 'preview'],
+    antigravity: ['latest'],
     opencode: ['latest', 'beta', 'dev'],
     vibe: ['latest']
 };
@@ -38,7 +38,7 @@ export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
 export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     claude: '2.1.165',
     codex: '0.137.0',
-    gemini: '0.45.1',
+    antigravity: 'latest',
     opencode: '1.15.12',
     vibe: '2.12.1'
 };
@@ -49,7 +49,7 @@ export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
 export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
     claude: 'propr/agent-claude',
     codex: 'propr/agent-codex',
-    gemini: 'propr/agent-gemini',
+    antigravity: 'propr/agent-antigravity',
     opencode: 'propr/agent-opencode',
     vibe: 'propr/agent-vibe'
 };
@@ -71,9 +71,9 @@ export const DOCKER_CONTENT_FILES: Record<AgentType, string[]> = {
         'scripts/init-firewall.sh',
         'scripts/gh-wrapper.sh'
     ],
-    gemini: [
-        'Dockerfile.gemini',
-        'scripts/gemini-entrypoint.sh',
+    antigravity: [
+        'Dockerfile.antigravity',
+        'scripts/antigravity-entrypoint.sh',
         'scripts/init-firewall.sh',
         'scripts/gh-wrapper.sh'
     ],

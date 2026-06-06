@@ -510,8 +510,8 @@ describe('compactConversationLog')
 ```
 describe('resolveLlmLabel')  // NEW - the 5-step resolution
   ✦ resolves exact githubLabel match from modelDefinitions
-  ✦ resolves agent alias match (e.g., "gemini" → default gemini model)
-  ✦ resolves agent prefix match (e.g., "gemini-flash" → specific model)
+  ✦ resolves agent alias match (e.g., "antigravity" -> default Antigravity model)
+  ✦ resolves agent prefix match (e.g., "antigravity-flash" -> specific model)
   ✦ resolves static MODEL_ALIASES (backwards compat)
   ✦ falls back to label as model name
   ✦ returns correct agent type for each resolution path
