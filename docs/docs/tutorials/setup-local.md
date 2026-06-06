@@ -67,7 +67,7 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy login
 ```
 
-Antigravity stores CLI configuration and credentials under `~/.antigravity`. The launcher command below passes that directory with `HOST_ANTIGRAVITY_DIR` so worker containers can mount the authenticated CLI state.
+Antigravity stores CLI configuration and credentials under `~/.gemini`. The launcher command below passes that directory with `HOST_ANTIGRAVITY_DIR` so worker containers can mount the authenticated CLI state.
 
 Use equivalent setup for Codex if you plan to enable it.
 
@@ -84,7 +84,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR="$PWD/repos" \
   -e HOST_CLAUDE_DIR="$HOME/.claude" \
   -e HOST_CODEX_DIR="$HOME/.codex" \
-  -e HOST_ANTIGRAVITY_DIR="$HOME/.antigravity" \
+  -e HOST_ANTIGRAVITY_DIR="$HOME/.gemini" \
   propr/launcher:latest
 ```
 

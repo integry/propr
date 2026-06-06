@@ -33,7 +33,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
             'run', '--rm',
             '-e', 'PROPR_REPO_SETUP=0',
             'propr/agent-antigravity:latest',
-            'antigravity', '--yolo'
+            'agy', '--dangerously-skip-permissions'
         ], 'propr/agent-antigravity:latest', 'antigravity');
 
         assert.ok(wrapped.includes('PROPR_AGENT_TYPE=antigravity'));

@@ -36,7 +36,7 @@ export interface AgentConfig {
 export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
     claude: '~/.claude',
     codex: '~/.codex',
-    antigravity: '~/.antigravity',
+    antigravity: '~/.gemini',
     vibe: '~/.vibe'
 };
 

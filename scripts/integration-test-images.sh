@@ -8,7 +8,7 @@
 #     (npm run images:build)
 #   - Agent images pulled or built locally (propr/agent-{claude,codex,antigravity})
 #   - `gh auth login` or PROPR_E2E_TOKEN
-#   - Mounted agent credentials on the host ($HOME/.claude, /.codex, /.antigravity
+#   - Mounted agent credentials on the host ($HOME/.claude, /.codex, /.gemini
 #     as applicable for the tests being run)
 #
 # Env:
@@ -125,7 +125,7 @@ LAUNCHER_ARGS=(
 )
 [ -d "$HOME/.claude" ] && LAUNCHER_ARGS+=(-e "HOST_CLAUDE_DIR=$HOME/.claude")
 [ -d "$HOME/.codex" ]  && LAUNCHER_ARGS+=(-e "HOST_CODEX_DIR=$HOME/.codex")
-[ -d "$HOME/.antigravity" ] && LAUNCHER_ARGS+=(-e "HOST_ANTIGRAVITY_DIR=$HOME/.antigravity")
+[ -d "$HOME/.gemini" ] && LAUNCHER_ARGS+=(-e "HOST_ANTIGRAVITY_DIR=$HOME/.gemini")
 
 LAUNCHER_ARGS+=("$LAUNCHER_TAG")
 
@@ -178,7 +178,7 @@ echo "▸ configuring agents"
 # containers via docker socket, the bind mount resolves correctly on the host.
 CLAUDE_CFG="${HOME}/.claude"
 CODEX_CFG="${HOME}/.codex"
-ANTIGRAVITY_CFG="${HOME}/.antigravity"
+ANTIGRAVITY_CFG="${HOME}/.gemini"
 agents_payload=$(cat <<JSON
 {"agents":[
   {"id":"itest-claude","type":"claude","alias":"claude","enabled":true,

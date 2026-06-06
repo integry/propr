@@ -303,7 +303,7 @@ function getDefaultConfigPath(type: AgentType): string {
     case "codex":
       return join(home, ".codex");
     case "antigravity":
-      return join(home, ".antigravity");
+      return join(home, ".gemini");
     case "vibe":
       return join(home, ".vibe");
     default:
