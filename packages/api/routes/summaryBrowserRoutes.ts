@@ -243,10 +243,12 @@ async function getIndexingStatus(req: Request, res: Response): Promise<void> {
     const fileCount = parseInt(String(fileStats?.count || 0), 10);
     const directoryCount = parseInt(String(dirStats?.count || 0), 10);
 
+    const hasSummaries = fileCount + directoryCount > 0;
+
     res.json({
       repository,
       branch,
-      indexed: repoRecord.indexing_status === 'completed',
+      indexed: repoRecord.indexing_status === 'completed' || hasSummaries,
       indexingStatus: repoRecord.indexing_status,
       totalEntries: fileCount + directoryCount,
       fileCount,

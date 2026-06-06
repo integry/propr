@@ -1,25 +1,14 @@
 import React from 'react';
-import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace } from '../../api/proprApi';
+import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace, PreviewResult } from '../../api/proprApi';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';
 import { ContextRepositoriesSection, IndexedRepository } from './ContextRepositoriesSection';
 import { CostPreview } from './CostPreview';
 
-interface PreviewStats {
-  totalTokens?: number;
-  costEstimate?: number;
-  modelName?: string;
-  modelMaxContextTokens?: number;
-}
-
 interface PreviewState {
   isLoading: boolean;
-  data: {
-    stats: PreviewStats;
-    smartSelection: SmartFileInfo[];
-    warnings: string[];
-  } | null;
+  data: PreviewResult | null;
   error: string | null;
   lastSynced: Date | null;
 }
@@ -29,7 +18,6 @@ interface SetupWizardRightPaneProps {
   onContextLevelChange: (level: number) => void;
   smartSelection: SmartFileInfo[] | undefined;
   isPreviewLoading: boolean;
-  stats: PreviewStats | undefined;
   // Context repositories props
   contextRepositories: ContextRepository[];
   availableRepos: IndexedRepository[];
@@ -66,7 +54,6 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   onContextLevelChange,
   smartSelection,
   isPreviewLoading,
-  stats,
   contextRepositories,
   availableRepos,
   onAddContextRepo,
@@ -109,9 +96,6 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         {hasSmartSelection ? (
           <SmartFileSelection
             smartSelection={smartSelection ?? []}
-            totalTokens={stats?.totalTokens}
-            costEstimate={stats?.costEstimate}
-            hideCostsAndTokens={hideCostsAndTokens}
             onExcludeFile={onExcludeFile}
           />
         ) : (

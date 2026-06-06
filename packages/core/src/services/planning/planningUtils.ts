@@ -8,6 +8,7 @@ import { getModelPricing } from '../pricingService.js';
 
 import {
   CLAUDE_CODE_OVERHEAD,
+  CODEX_PLANNER_INPUT_LIMIT_CHARS,
   type MinimalLogger,
   type TaskDraftConfig,
   type ParsedContextConfig,
@@ -37,6 +38,17 @@ export function parseContextConfig(contextConfig: TaskDraftConfig | null, modelI
 
 export function getDefaultModelLimit(): number {
   return MODEL_LIMITS['default'];
+}
+
+export function getRawInputCharLimit(modelId?: string): number | null {
+  const modelLower = modelId?.toLowerCase().trim() || '';
+  if (!modelLower) return null;
+
+  const agentAlias = modelLower.includes(':') ? modelLower.split(':')[0] : '';
+  const modelName = modelLower.includes(':') ? modelLower.split(':').slice(1).join(':') : modelLower;
+  const isCodex = agentAlias === 'codex' || modelName.includes('codex') || modelName.startsWith('gpt-');
+
+  return isCodex ? CODEX_PLANNER_INPUT_LIMIT_CHARS : null;
 }
 
 export async function validatePromptTokens(

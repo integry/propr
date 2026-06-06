@@ -5,12 +5,27 @@ import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 
+type ImageOptimizationLogger = {
+  debug?: (obj: unknown, msg?: string) => void;
+  info?: (obj: unknown, msg?: string) => void;
+  warn?: (obj: unknown, msg?: string) => void;
+};
+
 const STORAGE_ROOT = path.join(process.cwd(), 'storage', 'drafts');
 const MAX_TEXT_CHARS = 100000;
 const HEAD_CHARS = 5000;
 const TAIL_CHARS = 20000;
 const MAX_IMAGE_DIMENSION = 1024;
 const IMAGE_QUALITY = 80; // WebP quality (0-100)
+const DEFAULT_MAX_OPTIMIZED_IMAGE_BYTES = 512 * 1024;
+const IMAGE_OPTIMIZATION_STEPS = [
+  { dimension: MAX_IMAGE_DIMENSION, quality: IMAGE_QUALITY },
+  { dimension: 768, quality: 75 },
+  { dimension: 640, quality: 70 },
+  { dimension: 512, quality: 65 },
+  { dimension: 384, quality: 60 },
+  { dimension: 320, quality: 55 }
+];
 
 /**
  * Calculate token estimate for an image based on file size.
@@ -23,6 +38,108 @@ function calculateImageTokenEstimate(fileSizeBytes: number): number {
   const base64Size = Math.ceil(fileSizeBytes * 4 / 3);
   const tokenEstimate = Math.ceil(base64Size / 4);
   return Math.ceil(tokenEstimate * 1.1); // 10% buffer for XML overhead
+}
+
+function getMaxOptimizedImageBytes(maxBytes?: number): number {
+  if (maxBytes && Number.isFinite(maxBytes) && maxBytes > 0) {
+    return Math.floor(maxBytes);
+  }
+  const configured = Number.parseInt(
+    process.env.ATTACHMENT_MAX_OPTIMIZED_IMAGE_BYTES || String(DEFAULT_MAX_OPTIMIZED_IMAGE_BYTES),
+    10
+  );
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_MAX_OPTIMIZED_IMAGE_BYTES;
+}
+
+async function optimizeImageForContext(
+  input: string | Buffer,
+  finalPath: string,
+  logger?: ImageOptimizationLogger,
+  maxBytesOverride?: number
+): Promise<{ size: number; dimension: number; quality: number; withinLimit: boolean }> {
+  const maxBytes = getMaxOptimizedImageBytes(maxBytesOverride);
+  let lastResult: { size: number; dimension: number; quality: number; withinLimit: boolean } | null = null;
+
+  for (const step of IMAGE_OPTIMIZATION_STEPS) {
+    await sharp(input)
+      .resize({
+        width: step.dimension,
+        height: step.dimension,
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .webp({ quality: step.quality })
+      .toFile(finalPath);
+
+    const stats = await fs.stat(finalPath);
+    lastResult = {
+      size: stats.size,
+      dimension: step.dimension,
+      quality: step.quality,
+      withinLimit: stats.size <= maxBytes
+    };
+
+    if (lastResult.withinLimit) {
+      logger?.debug?.({ ...lastResult, maxBytes }, 'Optimized image attachment within size limit');
+      return lastResult;
+    }
+  }
+
+  logger?.warn?.({ ...lastResult, maxBytes }, 'Optimized image attachment still exceeds size limit at lowest quality');
+  return lastResult!;
+}
+
+export async function ensureImageFitsContext(
+  imagePath: string,
+  logger?: ImageOptimizationLogger,
+  maxBytes?: number
+): Promise<{ size: number; optimized: boolean }> {
+  const effectiveMaxBytes = getMaxOptimizedImageBytes(maxBytes);
+  const stats = await fs.stat(imagePath);
+  if (stats.size <= effectiveMaxBytes) {
+    return { size: stats.size, optimized: false };
+  }
+
+  const tempPath = `${imagePath}.optimized-${uuidv4()}.webp`;
+  const optimization = await optimizeImageForContext(imagePath, tempPath, logger, effectiveMaxBytes);
+  await fs.move(tempPath, imagePath, { overwrite: true });
+  logger?.info?.({
+    path: imagePath,
+    originalSize: stats.size,
+    optimizedSize: optimization.size,
+    dimension: optimization.dimension,
+    quality: optimization.quality
+  }, 'Downsized stored image attachment to fit context');
+
+  return { size: optimization.size, optimized: true };
+}
+
+export async function loadImageBufferForContext(
+  imagePath: string,
+  logger?: ImageOptimizationLogger,
+  maxBytes?: number
+): Promise<{ buffer: Buffer; optimized: boolean; size: number }> {
+  const effectiveMaxBytes = getMaxOptimizedImageBytes(maxBytes);
+  const stats = await fs.stat(imagePath);
+  if (stats.size <= effectiveMaxBytes) {
+    return { buffer: await fs.readFile(imagePath), optimized: false, size: stats.size };
+  }
+
+  const tempPath = `${imagePath}.context-${uuidv4()}.webp`;
+  try {
+    const optimization = await optimizeImageForContext(imagePath, tempPath, logger, effectiveMaxBytes);
+    const buffer = await fs.readFile(tempPath);
+    logger?.info?.({
+      path: imagePath,
+      originalSize: stats.size,
+      optimizedSize: optimization.size,
+      dimension: optimization.dimension,
+      quality: optimization.quality
+    }, 'Created downsized image attachment for context');
+    return { buffer, optimized: true, size: optimization.size };
+  } finally {
+    await fs.remove(tempPath).catch(() => undefined);
+  }
 }
 
 const ALLOWED_TEXT_MIMETYPES = [
@@ -131,18 +248,8 @@ export class AttachmentService {
     let fileSize = 0;
 
     if (isImage) {
-      await sharp(file.path)
-        .resize({
-          width: MAX_IMAGE_DIMENSION,
-          height: MAX_IMAGE_DIMENSION,
-          fit: 'inside',
-          withoutEnlargement: true
-        })
-        .webp({ quality: IMAGE_QUALITY })
-        .toFile(finalPath);
-
-      const stats = await fs.stat(finalPath);
-      fileSize = stats.size;
+      const optimization = await optimizeImageForContext(file.path, finalPath);
+      fileSize = optimization.size;
       tokenEstimate = calculateImageTokenEstimate(fileSize);
     } else {
       let content = await fs.readFile(file.path, 'utf-8');
@@ -298,17 +405,9 @@ export class AttachmentService {
       const buffer = Buffer.from(arrayBuffer);
 
       // Process and optimize the image using sharp
-      await sharp(buffer)
-        .resize({
-          width: MAX_IMAGE_DIMENSION,
-          height: MAX_IMAGE_DIMENSION,
-          fit: 'inside',
-          withoutEnlargement: true
-        })
-        .webp({ quality: IMAGE_QUALITY })
-        .toFile(finalPath);
+      const optimization = await optimizeImageForContext(buffer, finalPath, logger);
 
-      logger?.debug?.({ url, savedTo: finalPath }, 'Successfully downloaded and optimized remote image');
+      logger?.debug?.({ url, savedTo: finalPath, imageSize: optimization.size }, 'Successfully downloaded and optimized remote image');
 
       return finalPath;
     } catch (error) {

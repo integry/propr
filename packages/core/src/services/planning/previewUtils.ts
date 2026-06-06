@@ -5,7 +5,7 @@
 import crypto from 'crypto';
 import fs from 'fs-extra';
 import path from 'path';
-import type { Attachment } from '../attachmentService.js';
+import { loadImageBufferForContext, type Attachment } from '../attachmentService.js';
 import type {
   TaskDraftConfig,
   ContextCache,
@@ -75,15 +75,17 @@ export async function loadImagesFromAttachments(
   for (const att of attachments) {
     if (att.mimeType?.startsWith('image/') && att.storedPath) {
       try {
-        const data = await fs.readFile(att.storedPath);
+        const absolutePath = path.isAbsolute(att.storedPath)
+          ? att.storedPath
+          : path.join(process.cwd(), att.storedPath);
+        const { buffer: data } = await loadImageBufferForContext(absolutePath, correlatedLogger);
         const base64Data = data.toString('base64');
         base64Images.push({
-          name: att.originalName || path.basename(att.storedPath),
+          name: att.originalName || path.basename(absolutePath),
           mimeType: att.mimeType,
           base64Data
         });
-        // Rough estimate: ~750 tokens per 100KB for images
-        imageTokens += Math.ceil(data.length / 100000 * 750);
+        imageTokens += Math.ceil((base64Data.length / 4) * 1.1);
       } catch (err) {
         correlatedLogger.warn({ path: att.storedPath, error: (err as Error).message }, 'Failed to load image attachment');
       }

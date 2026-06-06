@@ -44,9 +44,18 @@ interface SaveBatchSummariesOptions {
   branch: string;
 }
 
+export interface SummarizationAgentConfig {
+  agent: Agent;
+  modelOverride?: string;
+  effectiveModel?: string;
+  customPrompt?: string;
+}
+
 // --- Constants ---
 
-const BATCH_TOKEN_RATIO = 0.8; // Use 80% of max tokens for batch
+const BATCH_TOKEN_RATIO = 0.8; // Upper bound based on model context size
+const DEFAULT_MAX_BATCH_TOKENS = 100_000; // Keep prompts well below context limits so agents reliably return JSON
+const DEFAULT_MAX_BATCH_FILES = 20; // Keep JSON responses reliable for repos with many small files
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
 const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100KB max file size
 
@@ -82,6 +91,7 @@ export interface ProcessBatchesOptions {
   log: Logger;
   modelOverride?: string; // Optional model override for token budgeting and logging
   customPrompt?: string; // Optional custom prompt to override default instructions
+  resolveSummarizationConfig?: () => Promise<SummarizationAgentConfig>;
   branch?: string; // Branch being indexed (defaults to 'HEAD')
 }
 
@@ -98,13 +108,15 @@ export interface ProcessBatchesResult {
  * Returns stats about success/failure for proper status tracking
  */
 export async function processBatches(options: ProcessBatchesOptions): Promise<ProcessBatchesResult> {
-  const { repoPath, fullName, files, agent, log, modelOverride, customPrompt, branch = 'HEAD' } = options;
+  const { repoPath, fullName, files, agent, log, modelOverride, customPrompt, resolveSummarizationConfig, branch = 'HEAD' } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const maxBatchTokens = Math.floor(maxTokens * BATCH_TOKEN_RATIO);
+  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(DEFAULT_MAX_BATCH_TOKENS), 10);
+  const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
+  const maxBatchFiles = parseInt(process.env.SUMMARIZATION_MAX_BATCH_FILES || String(DEFAULT_MAX_BATCH_FILES), 10);
 
-  log.info({ maxBatchTokens, model: modelId }, 'Calculated batch token budget');
+  log.info({ maxBatchTokens, maxBatchTokensCap, maxBatchFiles, model: modelId }, 'Calculated batch budget');
 
   let currentBatch: BatchFile[] = [];
   let currentTokens = 0;
@@ -113,6 +125,9 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   let failedBatches = 0;
   let filesProcessed = 0;
   let filesFailed = 0;
+
+  const initialConfig: SummarizationAgentConfig = { agent, modelOverride, customPrompt, effectiveModel: modelId };
+  const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
 
   for (const file of files) {
     // Check for cancellation before processing each file
@@ -139,12 +154,23 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
     const estimatedTokens = Math.ceil(content.length / CHARS_PER_TOKEN_ESTIMATE);
 
-    // If adding this file would exceed budget, process current batch first
-    if (currentTokens + estimatedTokens > maxBatchTokens && currentBatch.length > 0) {
+    // If adding this file would exceed batch limits, process current batch first
+    if ((currentTokens + estimatedTokens > maxBatchTokens || currentBatch.length >= maxBatchFiles) && currentBatch.length > 0) {
       batchNumber++;
       log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing batch');
 
-      const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt, branch });
+      const currentConfig = await getCurrentConfig();
+      logBatchAgentIfChanged(log, initialConfig, currentConfig);
+      const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+      const success = await processSingleBatch({
+        fullName,
+        batch: currentBatch,
+        agent: currentConfig.agent,
+        log,
+        modelUsed: currentModelId,
+        customPrompt: currentConfig.customPrompt,
+        branch
+      });
       const batchFileCount = currentBatch.length;
       const batchInputTokens = currentTokens;
       const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
@@ -189,7 +215,18 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
     batchNumber++;
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
-    const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt, branch });
+    const currentConfig = await getCurrentConfig();
+    logBatchAgentIfChanged(log, initialConfig, currentConfig);
+    const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+    const success = await processSingleBatch({
+      fullName,
+      batch: currentBatch,
+      agent: currentConfig.agent,
+      log,
+      modelUsed: currentModelId,
+      customPrompt: currentConfig.customPrompt,
+      branch
+    });
     const batchFileCount = currentBatch.length;
     const batchInputTokens = currentTokens;
     const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
@@ -221,6 +258,25 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     filesProcessed,
     filesFailed
   };
+}
+
+function logBatchAgentIfChanged(
+  log: Logger,
+  initialConfig: SummarizationAgentConfig,
+  currentConfig: SummarizationAgentConfig
+): void {
+  const initialModel = initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
+  const currentModel = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+  if (initialConfig.agent.config.alias === currentConfig.agent.config.alias && initialModel === currentModel) {
+    return;
+  }
+
+  log.info({
+    previousAgentAlias: initialConfig.agent.config.alias,
+    previousModel: initialModel,
+    currentAgentAlias: currentConfig.agent.config.alias,
+    currentModel
+  }, 'Using updated summarization agent config for batch');
 }
 
 async function publishBatchProgressIfActive(
@@ -263,9 +319,13 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   let errorMessage: string | undefined;
 
   try {
-    const analysisResult = await agent.analyze(prompt);
+    const analysisResult = await agent.analyze(prompt, { model: modelUsed, responseFormat: 'json' });
     const response = analysisResult.response;
     const summaries = parseBatchResponse(response);
+
+    if (summaries.length === 0) {
+      throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
+    }
 
     // Save summaries to DB with the actual model used
     await saveBatchSummaries({ fullName, batch, summaries, modelUsed, branch });

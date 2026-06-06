@@ -8,7 +8,7 @@ import { parseLlmJson, JsonParseError } from '../../utils/jsonUtils.js';
 import logger from '../../utils/logger.js';
 import { estimateLlmDuration } from '../../utils/llmEstimation.js';
 import {
-  updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, PlanningFailedError, getModelHardLimit
+  updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, PlanningFailedError, getModelHardLimit, getRawInputCharLimit
 } from '../planning/index.js';
 import { enforceGranularity } from './granularity.js';
 import type { Plan } from '../../claude/prompts/plannerPrompts.js';
@@ -24,6 +24,14 @@ export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPl
   // Use model's hard limit for validation (context level is a guideline, not a hard limit)
   const modelHardLimit = getModelHardLimit(model);
   correlatedLogger.info({ model, tokenLimit, modelHardLimit, contextLength: fullContext.length }, 'Calling LLM for plan generation');
+
+  const rawInputCharLimit = getRawInputCharLimit(model);
+  if (rawInputCharLimit !== null && fullContext.length > rawInputCharLimit) {
+    throw new PlanningFailedError(
+      `Prompt exceeds agent input size: ${fullContext.length} characters (limit: ${rawInputCharLimit}). ` +
+      `Regenerate the plan with less context or remove large attachments.`
+    );
+  }
 
   // Validate token count before sending to LLM (use model's hard limit, not user's context level)
   const validation = await validatePromptTokens(fullContext, modelHardLimit, correlatedLogger, model);
