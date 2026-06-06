@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
-import { AgentModelPair, PlanIssue, implementAllIssues } from '../../api/planIssuesApi';
+import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import SequentialWarningDialog from './SequentialWarningDialog';
@@ -58,7 +58,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
   const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
   const [pendingImplementModels, setPendingImplementModels] = useState<AgentModelPair[] | undefined>(undefined);
-  const [implementingAll, setImplementingAll] = useState(false);
   const hasInitializedMergedView = useRef(false);
 
   const {
@@ -103,19 +102,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     return getUnmergedIssuesBefore(pendingImplementIssue);
   }, [pendingImplementIssue, getUnmergedIssuesBefore]);
 
-  const handleImplementAll = useCallback(async () => {
-    if (pendingCount === 0 || isSavingExecutionSettings || isReadOnly) return;
-    setImplementingAll(true);
-    try {
-      await implementAllIssues(draftId, { useEpic, autoMerge });
-      handleRefresh();
-    } catch (err) {
-      console.error('Failed to implement all issues:', err);
-    } finally {
-      setImplementingAll(false);
-    }
-  }, [draftId, pendingCount, useEpic, autoMerge, handleRefresh, isSavingExecutionSettings, isReadOnly]);
-
   useEffect(() => { onIssuesChange?.(issues); }, [issues, onIssuesChange]);
 
   useEffect(() => {
@@ -128,6 +114,21 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       if (activeIssues.length === 0 && mergedIssues.length > 0) setShowMerged(true);
     }
   }, [loading, issues.length, activeIssues.length, mergedIssues.length]);
+
+  const firstVisiblePendingIssueNumber = useMemo(
+    () => activeIssues.find(issue => issue.status === 'pending')?.issue_number ?? null,
+    [activeIssues]
+  );
+
+  const firstEpicIssueNumber = useMemo(
+    () => issues.reduce<number | null>(
+      (firstIssueNumber, issue) => firstIssueNumber === null
+        ? issue.issue_number
+        : Math.min(firstIssueNumber, issue.issue_number),
+      null
+    ),
+    [issues]
+  );
 
   if (loading) {
     return (
@@ -201,9 +202,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           ultrafixMaxCycles={ultrafixMaxCycles}
           onUltrafixMaxCyclesChange={onUltrafixMaxCyclesChange}
           tasks={tasks}
-          pendingCount={pendingCount}
-          implementingAll={implementingAll}
-          handleImplementAll={handleImplementAll}
           disableImplementation={isSavingExecutionSettings || isReadOnly}
         />
       )}
@@ -220,6 +218,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             implementing={implementingIssue === issue.issue_number}
             disableImplementation={isSavingExecutionSettings || isReadOnly}
             isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
+            showImplementButton={!useEpic || issue.issue_number === firstVisiblePendingIssueNumber}
+            implementButtonLabel={useEpic && issue.issue_number === firstEpicIssueNumber ? 'Implement Epic' : 'Implement'}
             onImplementWithWarning={handleImplementWithWarning}
             inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
             inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}

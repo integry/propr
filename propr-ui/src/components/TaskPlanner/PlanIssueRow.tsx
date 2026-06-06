@@ -36,6 +36,8 @@ interface PlanIssueRowProps {
   /** Draft ID for attachment URLs */
   draftId?: string;
   implementButtonPressed?: boolean;
+  showImplementButton?: boolean;
+  implementButtonLabel?: string;
 }
 
 export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
@@ -55,7 +57,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   onMultiModelChange: onMultiModelChangeProp,
   task,
   draftId,
-  implementButtonPressed = false
+  implementButtonPressed = false,
+  showImplementButton = true,
+  implementButtonLabel = 'Implement'
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -157,6 +161,8 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               onModelChange={onModelChange}
               disableImplementation={disableImplementation}
               implementButtonPressed={implementButtonPressed}
+              showImplementButton={showImplementButton}
+              implementButtonLabel={implementButtonLabel}
               handleMultiToggle={handleMultiToggle}
               handleMultiModelChange={handleMultiModelChange}
               handleImplementClick={handleImplementClick}
