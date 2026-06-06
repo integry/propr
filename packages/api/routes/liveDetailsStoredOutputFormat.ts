@@ -42,7 +42,9 @@ export function detectStoredOutputFormat(output: string): StoredOutputFormat {
     if (!parsed) continue;
     const immediateFormat = getImmediateStoredOutputFormat(parsed);
     if (immediateFormat) return immediateFormat;
-    if (detectedFormat === 'unknown') detectedFormat = getDeferredStoredOutputFormat(parsed);
+    const deferredFormat = getDeferredStoredOutputFormat(parsed);
+    if (deferredFormat === 'opencode') return 'opencode';
+    if (detectedFormat === 'unknown') detectedFormat = deferredFormat;
   }
   return detectedFormat;
 }
@@ -72,19 +74,26 @@ function getImmediateStoredOutputFormat(parsed: StoredExecutionOutputLine): Stor
 }
 
 function getDeferredStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat {
-  if (isCodexStoredOutputLine(parsed)) return 'codex';
-  return isStrongOpenCodeStoredOutputLine(parsed) ? 'opencode' : 'unknown';
+  if (isStrongOpenCodeStoredOutputLine(parsed)) return 'opencode';
+  return isCodexStoredOutputLine(parsed) ? 'codex' : 'unknown';
 }
 
 function isStrongOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
   if (!isOpenCodeJsonlEvent(parsed)) return false;
   if (parsed.sessionID || parsed.sessionId) return true;
-  return Boolean(parsed.session_id && hasOpenCodeSpecificShape(parsed));
+  return Boolean(parsed.session_id && hasOpenCodeSpecificShape(parsed))
+    || hasOpenCodeAssistantPartsShape(parsed);
 }
 
 function hasOpenCodeSpecificShape(parsed: StoredExecutionOutputLine): boolean {
   const type = typeof parsed.type === 'string' ? parsed.type.toLowerCase() : '';
   return Boolean(parsed.part || parsed.parts || parsed.response || type.startsWith('tool_'));
+}
+
+function hasOpenCodeAssistantPartsShape(parsed: StoredExecutionOutputLine): boolean {
+  if (!parsed.message || typeof parsed.message !== 'object') return false;
+  const message = parsed.message as { role?: unknown; parts?: unknown[] };
+  return message.role === 'assistant' && Array.isArray(message.parts) && message.parts.length > 0;
 }
 
 function isCodexStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {

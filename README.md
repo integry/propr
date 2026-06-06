@@ -325,6 +325,7 @@ docker run --rm \
   -e HOST_CODEX_DIR=/home/your-user/.codex \
   -e HOST_GEMINI_DIR=/home/your-user/.gemini \
   -e HOST_OPENCODE_XDG_DIR=/home/your-user/.config/opencode \
+  -e HOST_OPENCODE_DATA_DIR=/home/your-user/.local/share/opencode \
   propr/launcher:latest
 ```
 
@@ -333,7 +334,9 @@ launcher uses the host docker daemon via the mounted socket to spawn sibling
 containers — any `-v` values it passes need to resolve on the host.
 Pass `HOST_OPENCODE_LEGACY_DIR=/home/your-user/.opencode` only for OpenCode agents whose
 saved `configPath` is `/home/your-user/.opencode`. `HOST_OPENCODE_DIR` is accepted as a compatibility alias
-for `HOST_OPENCODE_XDG_DIR`. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
+for `HOST_OPENCODE_XDG_DIR`. OpenCode auth from `opencode auth login` normally lives under
+`~/.local/share/opencode`, so pass `HOST_OPENCODE_DATA_DIR` or provide provider API keys
+through the agent config. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
 
 The launcher pulls redis + app + ui images on first run and orchestrates them
 via the mounted docker socket. See `.env.example` for required configuration.

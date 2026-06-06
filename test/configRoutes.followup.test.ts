@@ -1624,8 +1624,8 @@ describe('config route follow-up helpers', () => {
         ].join('\n'));
 
         assert.deepStrictEqual(result?.events, [
-            { type: 'thought', content: 'First answer', timestamp: '2026-05-05T00:00:00.000Z' },
-            { type: 'thought', content: 'Second answer', timestamp: '2026-05-05T00:00:02.000Z' },
+            { type: 'message', content: 'First answer', timestamp: '2026-05-05T00:00:00.000Z' },
+            { type: 'message', content: 'Second answer', timestamp: '2026-05-05T00:00:02.000Z' },
         ]);
     });
 
@@ -1638,7 +1638,7 @@ describe('config route follow-up helpers', () => {
 
         assert.deepStrictEqual(result?.events, [
             { type: 'thought', content: 'Hello world', timestamp: '2026-05-05T00:00:00.000Z' },
-            { type: 'thought', content: 'Done', timestamp: '2026-05-05T00:00:02.000Z' },
+            { type: 'message', content: 'Done', timestamp: '2026-05-05T00:00:02.000Z' },
         ]);
     });
 
@@ -1648,7 +1648,7 @@ describe('config route follow-up helpers', () => {
         );
 
         assert.deepStrictEqual(result?.events, [
-            { type: 'thought', content: 'Duplicated', timestamp: result?.events[0].timestamp },
+            { type: 'message', content: 'Duplicated', timestamp: result?.events[0].timestamp },
         ]);
     });
 
@@ -1658,7 +1658,7 @@ describe('config route follow-up helpers', () => {
         );
 
         assert.deepStrictEqual(result?.events, [
-            { type: 'thought', content: 'Duplicated', timestamp: result?.events[0].timestamp },
+            { type: 'message', content: 'Duplicated', timestamp: result?.events[0].timestamp },
         ]);
     });
 
@@ -1697,7 +1697,7 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(parsed.format, 'opencode');
         assert.deepStrictEqual(parsed.parsed?.events, [
-            { type: 'thought', content: 'OpenCode says hi', timestamp: parsed.parsed?.events[0].timestamp },
+            { type: 'message', content: 'OpenCode says hi', timestamp: parsed.parsed?.events[0].timestamp },
         ]);
     });
 
@@ -2093,7 +2093,7 @@ describe('config route follow-up helpers', () => {
         ]);
 
         assert.deepStrictEqual(result.events, [
-            { type: 'thought', content: 'hi', timestamp: '2026-05-05T00:00:00.000Z' },
+            { type: 'message', content: 'hi', timestamp: '2026-05-05T00:00:00.000Z' },
         ]);
     });
 
@@ -2103,7 +2103,7 @@ describe('config route follow-up helpers', () => {
         ]);
 
         assert.deepStrictEqual(result.events, [
-            { type: 'thought', content: 'Duplicated', timestamp: result.events[0].timestamp },
+            { type: 'message', content: 'Duplicated', timestamp: result.events[0].timestamp },
         ]);
     });
 
@@ -2113,7 +2113,7 @@ describe('config route follow-up helpers', () => {
         ]);
 
         assert.deepStrictEqual(result.events, [
-            { type: 'thought', content: 'Duplicated', timestamp: result.events[0].timestamp },
+            { type: 'message', content: 'Duplicated', timestamp: result.events[0].timestamp },
         ]);
     });
 

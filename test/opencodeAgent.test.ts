@@ -1,5 +1,8 @@
-import { after, describe, test } from 'node:test';
+import { after, afterEach, describe, test } from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
@@ -8,6 +11,10 @@ import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.
 
 after(async () => {
     await closeConnection();
+});
+
+afterEach(() => {
+    delete process.env.HOST_OPENCODE_DATA_DIR;
 });
 
 function createAgent(): OpenCodeAgent {
@@ -296,5 +303,36 @@ describe('OpenCodeAgent Docker args', () => {
         assert.ok(args.includes('/tmp/worktree:/home/node/workspace:ro'));
         assert.ok(args.includes('/tmp/opencode-analysis-config-test:/home/node/.config/opencode:ro'));
         assert.ok(!args.includes('--dangerously-skip-permissions'));
+    });
+
+    test('infers default OpenCode auth data mount from the saved XDG config path', () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-home-'));
+        const configPath = path.join(home, '.config/opencode');
+        const dataPath = path.join(home, '.local/share/opencode');
+        fs.mkdirSync(dataPath, { recursive: true });
+        const agent = createAgent();
+        agent.config.configPath = configPath;
+
+        const args = buildDockerArgs(agent, 'opencode-go/kimi-k2.6');
+
+        assert.ok(args.includes(`${dataPath}:/home/node/.local/share/opencode:rw`));
+        assert.strictEqual(args[args.lastIndexOf('-e') + 1], 'XDG_DATA_HOME=/home/node/.local/share');
+        fs.rmSync(home, { recursive: true, force: true });
+    });
+
+    test('uses HOST_OPENCODE_DATA_DIR for read-only analysis mounts', () => {
+        process.env.HOST_OPENCODE_DATA_DIR = '/host/opencode-data';
+        const args = buildOpenCodeDockerArgs({
+            config: createAgent().config,
+            worktreePath: '/tmp/worktree',
+            githubToken: 'token',
+            issueNumber: 0,
+            readOnlyWorkspace: true,
+            allowDangerousPermissions: false,
+            configPath: '/tmp/opencode-analysis-config-test',
+            ensureConfigPath: () => undefined
+        });
+
+        assert.ok(args.includes('/host/opencode-data:/home/node/.local/share/opencode:ro'));
     });
 });

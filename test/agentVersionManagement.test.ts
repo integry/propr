@@ -1,9 +1,10 @@
 import { afterEach, describe, test } from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
 import { AGENT_DEFAULTS } from '@propr/shared';
 import { AGENT_IMAGE_NAMES, AGENT_TYPES, DEFAULT_AGENT_DOCKER_IMAGES, VERSIONED_AGENT_IMAGE_NAMES } from '../packages/core/src/agents/constants.js';
 import { CONTAINER_CONFIG_PATHS } from '../packages/core/src/agents/types.js';
-import { AGENT_DEFAULT_VERSIONS, AGENT_NPM_PACKAGES, AGENT_NPM_TAGS } from '../packages/core/src/agents/version/types.js';
+import { AGENT_CLI_PACKAGES, AGENT_CLI_TAGS, AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.js';
 import { generateImageTag, getAvailableVersions, resolveVersion } from '../packages/core/src/agents/version/versionService.js';
 import { clearNpmCache } from '../packages/core/src/agents/version/npmClient.js';
 
@@ -20,8 +21,8 @@ describe('agent version management', () => {
         assert.strictEqual(CONTAINER_CONFIG_PATHS.opencode, '/home/node/.config/opencode');
         assert.strictEqual(AGENT_DEFAULTS.opencode.configPath, '~/.config/opencode');
         assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
-        assert.strictEqual(AGENT_NPM_PACKAGES.opencode, 'opencode-ai');
-        assert.deepStrictEqual(AGENT_NPM_TAGS.opencode, ['latest', 'beta', 'dev']);
+        assert.strictEqual(AGENT_CLI_PACKAGES.opencode, 'opencode-ai');
+        assert.deepStrictEqual(AGENT_CLI_TAGS.opencode, ['latest', 'beta', 'dev']);
         assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.15.12');
         assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.15.12');
         assert.strictEqual(AGENT_IMAGE_NAMES.opencode, 'propr/agent-opencode');
@@ -55,6 +56,11 @@ describe('agent version management', () => {
             generateImageTag('opencode', '1.15.12', 'abc123'),
             'propr-opencode:1.15.12-abc123'
         );
+    });
+
+    test('keeps the OpenCode Dockerfile CLI fallback aligned with core metadata', () => {
+        const dockerfile = fs.readFileSync('Dockerfile.opencode', 'utf8');
+        assert.match(dockerfile, new RegExp(`^ARG CLI_VERSION=${AGENT_DEFAULT_VERSIONS.opencode}$`, 'm'));
     });
 
     test('returns OpenCode package tags and default version metadata', async () => {

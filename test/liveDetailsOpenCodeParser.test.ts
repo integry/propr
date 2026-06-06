@@ -125,6 +125,28 @@ describe('OpenCode live details parsing', () => {
         ]);
     });
 
+    test('emits confirmed assistant envelopes as message events', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'message',
+            timestamp: '2026-05-05T00:00:00.000Z',
+            message: { role: 'assistant', content: 'Final answer' },
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'message', content: 'Final answer', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('filters generic OpenCode tool events without a tool name or id', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'tool',
+            timestamp: '2026-05-05T00:00:00.000Z',
+            state: { status: 'pending' },
+        }));
+
+        assert.strictEqual(result, null);
+    });
+
     test('recognizes actual OpenCode output in stored output detection', () => {
         const parsed = parseStoredOutputContent([opencodeToolLine, opencodeStepFinishLine].join('\n'));
 
@@ -135,6 +157,19 @@ describe('OpenCode live details parsing', () => {
             cache_creation_input_tokens: 3,
             cache_read_input_tokens: 21415,
         });
+    });
+
+    test('recognizes OpenCode assistant parts without session identifiers', () => {
+        const parsed = parseStoredOutputContent(JSON.stringify({
+            type: 'message',
+            message: { role: 'assistant', parts: [{ type: 'text', text: 'OpenCode assistant parts' }] },
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.strictEqual(parsed.format, 'opencode');
+        assert.deepStrictEqual(parsed.parsed?.events, [
+            { type: 'message', content: 'OpenCode assistant parts', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
     });
 
     test('parses actual OpenCode tool and token events from Redis output', () => {

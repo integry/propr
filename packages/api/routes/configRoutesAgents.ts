@@ -1,6 +1,4 @@
-/* eslint-disable max-lines */
 import { Request, Response } from 'express';
-import { RedisClientType } from 'redis';
 import { db, logger } from '@propr/core';
 import * as configManager from '@propr/core';
 import {
@@ -13,61 +11,7 @@ import {
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
 import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
-
-type ApplyAgentsUpdateBody =
-  | { success: true; agents: AgentConfig[]; warning?: string; committed?: boolean; out_of_sync?: boolean }
-  | { error: string; success?: never; agents?: never; committed?: boolean; out_of_sync?: boolean };
-
-interface ApplyAgentsUpdateResult {
-  status: number;
-  body: ApplyAgentsUpdateBody;
-}
-interface AgentsRoutesDeps {
-  redisClient: RedisClientType;
-  publishConfigUpdate: (subtype: string) => Promise<void>;
-  logActivityHelper: (description: string, idSuffix: string, type: string, username?: string) => Promise<void>;
-  /** @internal Test-only override for the agent-update function. */
-  applyAgentsUpdateFn?: (params: ApplyAgentsUpdateParams) => Promise<ApplyAgentsUpdateResult>;
-}
-interface AgentConfigStore {
-  loadAgents: typeof configManager.loadAgents;
-  loadSettings: typeof configManager.loadSettings;
-  loadSettingsRecord?: () => Promise<Record<string, unknown>>;
-  handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
-}
-interface AgentRegistrySync {
-  refresh: () => Promise<void>;
-  setDefaultAgentAlias: (alias: string | null) => void;
-}
-interface ApplyAgentsUpdateParams {
-  agents: AgentConfig[];
-  processedAgents?: AgentConfig[];
-  username?: string;
-  publishConfigUpdate: AgentsRoutesDeps['publishConfigUpdate'];
-  logActivityHelper: AgentsRoutesDeps['logActivityHelper'];
-  configStore?: AgentConfigStore;
-  registry?: AgentRegistrySync;
-  lock?: ConfigLockContext;
-}
-interface PublishAgentUpdatesParams {
-  processedAgents: AgentConfig[];
-  defaultChanged: boolean;
-  publishConfigUpdate: AgentsRoutesDeps['publishConfigUpdate'];
-  logActivityHelper: AgentsRoutesDeps['logActivityHelper'];
-  username?: string;
-}
-interface PersistAgentConfigurationResult {
-  settingsWereUpdated: boolean;
-}
-interface RollbackAgentConfigStateParams {
-  configStore: AgentConfigStore;
-  registry: AgentRegistrySync;
-  previousAgents: AgentConfig[];
-  currentDefault: string | undefined;
-  defaultChanged: boolean;
-  lock?: ConfigLockContext;
-  errorContext?: string;
-}
+import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
 async function rollbackAgentConfigState({
   configStore,
   registry,

@@ -115,9 +115,10 @@ services:
       - ./repos:/usr/src/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
       - propr-sqlite-data:/usr/src/app/data
-      # Add agent credential mounts with a deployment-specific override file.
-      # The launcher conditionally mounts HOST_* credential directories and is
-      # the preferred production path for agent credential auth.
+      # Add Claude/Codex/Gemini/OpenCode credential mounts with a deployment-
+      # specific override file. The launcher conditionally mounts HOST_*
+      # credential directories and is the preferred production path for agent
+      # credential auth. Vibe keeps the legacy defaults below for compatibility.
       # Vibe prompt cache — mounted by default so API-key auth works without
       # manual edits. PREFLIGHT: create and own the host directory before starting:
       #   mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"

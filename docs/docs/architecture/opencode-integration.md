@@ -39,20 +39,21 @@ Install OpenCode on the host and initialize the directories ProPR can mount:
 curl -fsSL https://opencode.ai/install | bash
 # or: npm install -g opencode-ai
 
-mkdir -p ~/.config/opencode ~/.config/opencode/xdg-data/opencode
+mkdir -p ~/.config/opencode ~/.local/share/opencode
 opencode --version
 opencode auth login
 ```
 
-OpenCode's current config location is `~/.config/opencode`. Configure new agents with that path. Legacy deployments can keep using `~/.opencode` by saving the agent `configPath` as `~/.opencode`; the saved `configPath` is the single path mounted into the OpenCode agent container.
+OpenCode's current config location is `~/.config/opencode`. Configure new agents with that path. Legacy deployments can keep using `~/.opencode` by saving the agent `configPath` as `~/.opencode`.
 
 Operators must provide their own credentials. OpenCode Go is an optional OpenCode provider/model source, separate from the OpenCode CLI; users can authenticate OpenCode Go or configure any other provider supported by OpenCode.
 
 OpenCode stores provider auth in `~/.local/share/opencode/auth.json`. Deployments must make credentials available to the OpenCode agent container by either:
 
 - Passing provider API keys as agent `envVars`.
+- Using the default development compose mounts with a saved `configPath` under `/home/your-user/.config/opencode`; ProPR infers `/home/your-user/.local/share/opencode` and mounts it into spawned OpenCode agent containers when that directory exists.
 - Setting `HOST_OPENCODE_DATA_DIR=/home/your-user/.local/share/opencode` when using the production launcher. The worker will mount that host directory into spawned OpenCode agent containers at `/home/node/.local/share/opencode`.
-- Copying or syncing `~/.local/share/opencode/auth.json` to `~/.config/opencode/xdg-data/opencode/auth.json` and setting `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` in the OpenCode agent `envVars`. Re-sync this file after changing providers or refreshing OpenCode auth.
+- Copying or syncing `~/.local/share/opencode/auth.json` to `~/.config/opencode/xdg-data/opencode/auth.json` and setting `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` in the OpenCode agent `envVars` only when the normal data-dir mount is unavailable. Re-sync this file after changing providers or refreshing OpenCode auth.
 
 ```bash
 mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
@@ -72,9 +73,7 @@ OpenCode agents are normal ProPR agent configs:
   "configPath": "/home/your-user/.config/opencode",
   "supportedModels": ["opencode-go/kimi-k2.6"],
   "defaultModel": "opencode-go/kimi-k2.6",
-  "envVars": {
-    "XDG_DATA_HOME": "/home/node/.config/opencode/xdg-data"
-  }
+  "envVars": {}
 }
 ```
 
@@ -101,7 +100,7 @@ At runtime, ProPR mounts the configured host config path into the agent containe
 <configPath>:/home/node/.config/opencode
 ```
 
-If `HOST_OPENCODE_DATA_DIR` is set in the worker environment, ProPR also mounts that host directory into the OpenCode agent container at `/home/node/.local/share/opencode`. Without that setting, file-based auth must live under the mounted config path with `XDG_DATA_HOME` pointed at that location, or credentials must be passed as provider env vars.
+If `HOST_OPENCODE_DATA_DIR` is set in the worker environment, ProPR also mounts that host directory into the OpenCode agent container at `/home/node/.local/share/opencode`. When `HOST_OPENCODE_DATA_DIR` is not set, ProPR infers the matching host data path for default config paths like `/home/your-user/.config/opencode` and mounts it when the directory exists. Without either data mount, file-based auth must live under the mounted config path with `XDG_DATA_HOME` pointed at that location, or credentials must be passed as provider env vars.
 
 The OpenCode container receives:
 
@@ -139,7 +138,7 @@ For Docker Compose development, the compose files mount:
 ~/.local/share/opencode
 ```
 
-In development compose, the worker mounts these read-write (matching Claude, Codex, and Gemini mounts) so the OpenCode agent containers can access credentials at runtime. Read-only services like the analysis-worker and API mount them with `:ro`. The base production compose file does not mount agent credential directories by default; add them with a deployment-specific override file, or use the launcher.
+In development compose, the worker mounts these read-write (matching Claude, Codex, and Gemini mounts) so the OpenCode agent containers can access credentials and refresh auth metadata at runtime. Read-only services like the analysis-worker and API mount them with `:ro`. The base production compose file does not mount agent credential directories by default; add them with a deployment-specific override file, or use the launcher.
 
 For launcher-based production deployments, pass the host paths explicitly:
 
@@ -149,7 +148,7 @@ For launcher-based production deployments, pass the host paths explicitly:
 -e HOST_OPENCODE_DATA_DIR=/home/your-user/.local/share/opencode
 ```
 
-Pass `HOST_OPENCODE_LEGACY_DIR` only for agents whose saved `configPath` is `/home/your-user/.opencode`. `HOST_OPENCODE_DIR` is accepted as a compatibility alias for `HOST_OPENCODE_XDG_DIR`. `HOST_OPENCODE_DATA_DIR` supports normal `opencode auth login` credentials without copying `auth.json` into the config tree. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
+Pass `HOST_OPENCODE_LEGACY_DIR` only for agents whose saved `configPath` is `/home/your-user/.opencode`. `HOST_OPENCODE_DIR` is accepted as a compatibility alias for `HOST_OPENCODE_XDG_DIR`. `HOST_OPENCODE_DATA_DIR` supports normal `opencode auth login` credentials without copying `auth.json` into the config tree and is mounted read-write so the CLI can refresh auth metadata. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
 
 Before assigning work to OpenCode, verify:
 

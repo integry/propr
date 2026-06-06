@@ -156,7 +156,7 @@ function agentCredentialArgs() {
         args.push('-e', `OPENCODE_CONFIG_PATH=${HOST_OPENCODE_LEGACY_DIR}`);
     }
     if (HOST_OPENCODE_DATA_DIR) {
-        args.push('-v', `${HOST_OPENCODE_DATA_DIR}:${HOST_OPENCODE_DATA_DIR}:ro`);
+        args.push('-v', `${HOST_OPENCODE_DATA_DIR}:${HOST_OPENCODE_DATA_DIR}:rw`);
         args.push('-e', `HOST_OPENCODE_DATA_DIR=${HOST_OPENCODE_DATA_DIR}`);
     }
     if (HOST_VIBE_DIR) {

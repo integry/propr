@@ -37,7 +37,7 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
       } else {
         flushPendingAssistantMessage(eventTimestamp);
         hasAssistantMessageEvents = true;
-        events.push({ type: 'thought', content: assistantMessage, timestamp: eventTimestamp });
+        events.push(buildOpenCodeAssistantTextEvent(event, assistantMessage, eventTimestamp));
       }
     }
     if (event.type?.toLowerCase() === 'error' || event.error) {
@@ -57,6 +57,13 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
   }
   const tokenUsage = buildOpenCodeTokenUsage(parsed);
   return events.length || tokenUsage ? { events, todos: [], currentTask: null, tokenUsage } : null;
+}
+
+function buildOpenCodeAssistantTextEvent(event: OpenCodeEvent, content: string, timestamp: string): Record<string, unknown> {
+  const type = event.message?.role === 'assistant' && event.type?.toLowerCase() === 'message'
+    ? 'message'
+    : 'thought';
+  return { type, content, timestamp };
 }
 
 function getOpenCodeEventTimestamp(event: OpenCodeEvent, fallback: string): string {
@@ -168,6 +175,8 @@ function appendOpenCodeToolEvent(events: Array<Record<string, unknown>>, source:
   }
   if (!isOpenCodeToolUseType(type)) return;
   const toolId = getOpenCodeToolId(sourceWithState);
+  const toolName = getOpenCodeToolName(sourceWithState);
+  if (!toolId && !toolName) return;
   if (toolId && tracker.emittedToolUseIds.has(toolId)) return;
   if (toolId) tracker.emittedToolUseIds.add(toolId);
   events.push(buildOpenCodeToolUseEvent(sourceWithState, timestamp));
@@ -207,11 +216,15 @@ function isOpenCodeToolResultType(type: string): boolean {
 function buildOpenCodeToolUseEvent(source: OpenCodeToolSource, timestamp: string): Record<string, unknown> {
   return {
     type: 'tool_use',
-    toolName: source.tool_name || source.tool || source.name,
+    toolName: getOpenCodeToolName(source),
     input: source.parameters || source.input || source.args || source.state?.input,
     id: getOpenCodeToolId(source),
     timestamp
   };
+}
+
+function getOpenCodeToolName(source: OpenCodeToolSource): string | undefined {
+  return source.tool_name || source.tool || source.name;
 }
 
 function appendOpenCodeCompletedToolResult(events: Array<Record<string, unknown>>, source: OpenCodeToolSource, timestamp: string, emittedToolResultIds: Set<string>): void {

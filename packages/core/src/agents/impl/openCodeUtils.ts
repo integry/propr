@@ -108,6 +108,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     ensureConfigPath(configPath);
     const envVars = buildEnvVars(config);
+    const dataMount = resolveOpenCodeDataMount(configPath, config.envVars, readOnlyWorkspace ? 'ro' : 'rw');
     const timestamp = Date.now().toString(36);
     const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
@@ -124,7 +125,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
         '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', 'XDG_DATA_HOME=/home/node/.local/share', ...envVars,
         '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
     ];
-    appendOpenCodeDataMount(dockerArgs);
+    appendOpenCodeDataMount(dockerArgs, dataMount);
 
     if (modelName) {
         const cleanModelName = modelName.startsWith('opencode:') ? modelName.slice('opencode:'.length) : modelName;
@@ -135,17 +136,36 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, 'opencode');
 }
 
-function appendOpenCodeDataMount(dockerArgs: string[]): void {
-    const hostDataPath = process.env.HOST_OPENCODE_DATA_DIR;
-    if (!hostDataPath) return;
+interface OpenCodeDataMount { hostPath: string; mode: 'ro' | 'rw'; }
+
+function appendOpenCodeDataMount(dockerArgs: string[], dataMount: OpenCodeDataMount | null): void {
+    if (!dataMount) return;
     dockerArgs.splice(
         dockerArgs.indexOf('-w'),
         0,
         '-v',
-        `${hostDataPath}:/home/node/.local/share/opencode:ro`,
+        `${dataMount.hostPath}:/home/node/.local/share/opencode:${dataMount.mode}`,
         '-e',
         'XDG_DATA_HOME=/home/node/.local/share'
     );
+}
+
+function resolveOpenCodeDataMount(configPath: string, envVars: AgentConfig['envVars'], mode: 'ro' | 'rw'): OpenCodeDataMount | null {
+    const configuredHostDataPath = process.env.HOST_OPENCODE_DATA_DIR;
+    if (configuredHostDataPath) return { hostPath: configuredHostDataPath, mode };
+    if (envVars?.XDG_DATA_HOME) return null;
+    const inferredHostDataPath = inferOpenCodeDataPath(configPath);
+    return inferredHostDataPath && fs.existsSync(inferredHostDataPath)
+        ? { hostPath: inferredHostDataPath, mode }
+        : null;
+}
+
+function inferOpenCodeDataPath(configPath: string): string | null {
+    const normalized = configPath.replace(/\/+$/, '');
+    if (normalized.endsWith('/.config/opencode')) {
+        return `${normalized.slice(0, -'/.config/opencode'.length)}/.local/share/opencode`;
+    }
+    return null;
 }
 
 function buildEnvVars(config: AgentConfig): string[] {

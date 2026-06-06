@@ -78,9 +78,8 @@ services:
       # IMPORTANT: Create any missing directories before starting:
       #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.opencode ~/.config/opencode ~/.local/share/opencode ~/.vibe
       # Docker will create them as root-owned if they do not exist.
-      # OpenCode's ~/.local/share/opencode mount is visible to app services
-      # only; spawned OpenCode agent containers still mount the saved
-      # OPENCODE_CONFIG_PATH/configPath unless XDG_DATA_HOME is configured.
+      # OpenCode's ~/.local/share/opencode mount is also inferred by spawned
+      # OpenCode agent containers for default ~/.config/opencode configs.
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex
