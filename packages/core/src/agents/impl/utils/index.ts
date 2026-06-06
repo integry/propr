@@ -28,3 +28,8 @@ export {
     type UsageTrackingMetrics,
     type UsageMetricRecord
 } from './usageTrackingWrapper.js';
+
+export {
+    getClaudeAnalysisText,
+    type PersistLogsParams
+} from './claudeOutputHelpers.js';
