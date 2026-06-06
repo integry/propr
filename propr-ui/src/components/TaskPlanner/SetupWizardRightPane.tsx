@@ -29,7 +29,6 @@ interface SetupWizardRightPaneProps {
   onContextLevelChange: (level: number) => void;
   smartSelection: SmartFileInfo[] | undefined;
   isPreviewLoading: boolean;
-  stats: PreviewStats | undefined;
   // Context repositories props
   contextRepositories: ContextRepository[];
   availableRepos: IndexedRepository[];
@@ -66,7 +65,6 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   onContextLevelChange,
   smartSelection,
   isPreviewLoading,
-  stats,
   contextRepositories,
   availableRepos,
   onAddContextRepo,
@@ -108,9 +106,6 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         {smartSelection && smartSelection.length > 0 ? (
           <SmartFileSelection
             smartSelection={smartSelection}
-            totalTokens={stats?.totalTokens}
-            costEstimate={stats?.costEstimate}
-            hideCostsAndTokens={hideCostsAndTokens}
             onExcludeFile={onExcludeFile}
           />
         ) : (
