@@ -37,7 +37,9 @@ const MobileStickySummary: React.FC<{
   actionBarProps: React.ComponentProps<typeof ActionBar>;
   todos: React.ComponentProps<typeof ProgressBar>['todos'];
 }> = ({ title, contextStripProps, actionBarProps, todos }) => (
-  <div className="sm:hidden sticky top-0 z-20 bg-white">
+  // Page-local sticky UI should sit below the global header dropdown stacking
+  // context while remaining sticky within the task details route.
+  <div className="sm:hidden sticky top-0 z-10 bg-white">
     <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
       <div className="flex flex-col gap-2">
         <div className="truncate text-xs font-semibold text-slate-700">{title}</div>
@@ -195,8 +197,8 @@ const TaskDetails: React.FC = () => {
         </div>
       </header>
 
-      {/* Desktop sticky header shell */}
-      <header className="hidden sm:block flex-shrink-0 sticky top-0 z-20 bg-white">
+      {/* Desktop sticky header shell; keep below global navigation overlays. */}
+      <header className="hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white">
         <div className="px-6 py-3 border-b border-slate-100">
           <TaskHeader {...headerProps} />
         </div>
