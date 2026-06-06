@@ -1,6 +1,13 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { getAuthenticatedOctokit, getModelHardLimit } from '@propr/core';
+import {
+    calculateCostWithCachePricing,
+    getAuthenticatedOctokit,
+    getDetailedUsageStats,
+    getModelHardLimit,
+    getModelPricing,
+    getOpenRouterId,
+} from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { TaskStates } from '@propr/core';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
@@ -200,8 +207,9 @@ async function runSingleReview(
             executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,
         }, 'Review analysis completed');
 
+        const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
         const reviewCommentBody = analysisResult.success
-            ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles })
+            ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles, costUsd })
             : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
 
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -223,6 +231,28 @@ async function runSingleReview(
         }
 
         return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg, prompt: reviewPrompt };
+    }
+}
+
+async function calculateReviewCost(
+    analysisResult: AnalysisResult,
+    model: string,
+    correlatedLogger: Logger
+): Promise<number | undefined> {
+    if (!analysisResult.tokenUsage) return undefined;
+
+    const detailedStats = getDetailedUsageStats({ tokenUsage: analysisResult.tokenUsage });
+    if (detailedStats.totalTokens <= 0) return undefined;
+
+    try {
+        const openRouterId = getOpenRouterId(model);
+        const pricing = await getModelPricing(openRouterId);
+        return pricing
+            ? calculateCostWithCachePricing(model, detailedStats, pricing)
+            : undefined;
+    } catch (error) {
+        correlatedLogger.warn({ model, error: (error as Error).message }, 'Failed to calculate review cost for comment');
+        return undefined;
     }
 }
 
