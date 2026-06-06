@@ -33,3 +33,14 @@ export {
     getClaudeAnalysisText,
     type PersistLogsParams
 } from './claudeOutputHelpers.js';
+
+export {
+    parseAntigravityJsonl,
+    aggregateDeltaMessages,
+    convertEventToClaudeFormat,
+    ANTIGRAVITY_MODEL_LABELS,
+    type AntigravityOutputEvent,
+    type AntigravityParsedOutput,
+    type AntigravityEvent,
+    type AntigravityTranscriptEvent
+} from './antigravityOutputParser.js';

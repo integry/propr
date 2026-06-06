@@ -14,6 +14,7 @@ import { getModelHardLimit } from '../src/config/modelLimits.js';
 import { resolveLlmLabel, resolveModelAlias } from '../src/config/modelAliases.js';
 import { AgentRegistry } from '../src/agents/AgentRegistry.js';
 import { AntigravityAgent } from '../src/agents/impl/AntigravityAgent.js';
+import { parseAntigravityJsonl } from '../src/agents/impl/utils/antigravityOutputParser.js';
 import type { Agent, AgentConfig } from '../src/agents/types.js';
 import { db } from '../src/db/connection.js';
 
@@ -127,17 +128,13 @@ test('Antigravity execution invokes agy with print-mode CLI flags', () => {
 });
 
 test('Antigravity output parser falls back to plain print output', () => {
-    const agent = new AntigravityAgent(createAntigravityConfig());
-    const parsed = (agent as unknown as {
-        parseAntigravityJsonl(output: string): { summary?: string; conversationLog: unknown[] };
-    }).parseAntigravityJsonl('antigravity-ok\n');
+    const parsed = parseAntigravityJsonl('antigravity-ok\n');
 
     assert.equal(parsed.summary, 'antigravity-ok');
     assert.deepEqual(parsed.conversationLog, []);
 });
 
 test('Antigravity output parser reads real transcript JSONL events', () => {
-    const agent = new AntigravityAgent(createAntigravityConfig());
     const transcript = [
         JSON.stringify({
             step_index: 0,
@@ -157,9 +154,7 @@ test('Antigravity output parser reads real transcript JSONL events', () => {
         })
     ].join('\n');
 
-    const parsed = (agent as unknown as {
-        parseAntigravityJsonl(output: string): { summary?: string; conversationLog: unknown[] };
-    }).parseAntigravityJsonl(transcript);
+    const parsed = parseAntigravityJsonl(transcript);
 
     assert.equal(parsed.summary, 'transcript-ok');
     assert.equal(parsed.conversationLog.length, 2);
