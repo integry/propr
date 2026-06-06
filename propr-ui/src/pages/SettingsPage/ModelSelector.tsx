@@ -1,5 +1,6 @@
 import React from 'react';
-import { AgentType, AGENT_MODELS, MODEL_INFO_MAP, ModelInfo } from '../../config/modelDefinitions';
+import { AgentType } from '../../config/modelDefinitions';
+import { buildSelectableModels } from './modelSelectionHelpers';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
@@ -20,50 +21,6 @@ interface ModelSelectorProps {
   onSelectAll: () => void;
   onDeselectAll: () => void;
   onCustomLabelChange: (modelId: string, label: string) => void;
-}
-
-function toTitleCase(value: string): string {
-  return value
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map(part => {
-      const upper = part.toUpperCase();
-      if (upper === 'GPT') return 'GPT';
-      if (upper === 'OPENAI') return 'OpenAI';
-      return part.charAt(0).toUpperCase() + part.slice(1);
-    })
-    .join(' ');
-}
-
-function buildSyntheticModel(agentType: AgentType, modelId: string): ModelInfo {
-  const providerSeparator = modelId.includes('/') ? '/' : modelId.includes(':') ? ':' : '';
-  const [provider, rawName] = providerSeparator ? modelId.split(providerSeparator, 2) : ['', modelId];
-  const shortAlias = (rawName || modelId).toLowerCase().replace(/[^a-z0-9-]+/g, '');
-  const labelModelId = modelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  const providerPrefix = provider ? `${toTitleCase(provider)} ` : '';
-
-  return {
-    id: modelId,
-    name: `${providerPrefix}${toTitleCase(rawName || modelId)}`,
-    shortName: toTitleCase(rawName || modelId),
-    shortAlias,
-    githubLabel: `llm-${agentType}-${labelModelId}`,
-    contextWindow: '',
-    maxTokens: 0,
-    openRouterId: modelId,
-  };
-}
-
-export function buildSelectableModels(agentType: AgentType, modelIds: string[]): ModelInfo[] {
-  const staticModels = AGENT_MODELS[agentType] || [];
-  const modelMap = new Map<string, ModelInfo>();
-  for (const model of staticModels) modelMap.set(model.id, model);
-  for (const modelId of modelIds) {
-    if (!modelMap.has(modelId)) {
-      modelMap.set(modelId, MODEL_INFO_MAP[modelId] || buildSyntheticModel(agentType, modelId));
-    }
-  }
-  return Array.from(modelMap.values());
 }
 
 const ModelSelector: React.FC<ModelSelectorProps> = ({

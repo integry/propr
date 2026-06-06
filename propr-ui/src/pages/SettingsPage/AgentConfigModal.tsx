@@ -4,7 +4,8 @@ import { AgentConfig, CliVersionType, getOpenCodeModels } from '../../api/proprA
 import { AgentType, AGENT_DEFAULTS, AGENT_DISPLAY_ORDER } from '../../config/modelDefinitions';
 import { getAgentVersions, AvailableVersionsResponse } from '../../api/agentVersionApi';
 import CliVersionSelector from './CliVersionSelector';
-import ModelSelector, { buildSelectableModels } from './ModelSelector';
+import ModelSelector from './ModelSelector';
+import { buildSelectableModels } from './modelSelectionHelpers';
 
 interface AgentConfigModalProps {
   agent: AgentConfig | null;
