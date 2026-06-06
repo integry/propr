@@ -1192,7 +1192,7 @@ describe('handleCheckRunEvent', () => {
         assert.strictEqual(updateCall.arguments[2].status, 'merged');
     });
 
-    test('triggers next issue for epic branch without auto-merge label', async () => {
+    test('does not trigger next issue for epic branch without auto-merge label', async () => {
         resetMocks();
         mockFindPlanIssueByRepoAndNumber.mock.mockImplementation(async () => ({
             id: 'plan-123',
@@ -1222,12 +1222,11 @@ describe('handleCheckRunEvent', () => {
         const payload = createMockCheckRunPayload({ headSha: 'abc123sha' });
         await handleCheckRunEvent(payload, 'test-correlation-id');
 
-        // Should not merge but should trigger next issue
         const mergeCall = mockOctokit.request.mock.calls.find((call: { arguments: [string] }) =>
             call.arguments[0].includes('merge')
         );
         assert.strictEqual(mergeCall, undefined, 'Should not merge epic PR without label');
-        assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 1, 'Should trigger next issue');
+        assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 0, 'Should not trigger next issue until previous child PR is merged');
     });
 
     test('merges epic branch when it has auto-merge label', async () => {
@@ -1561,7 +1560,6 @@ describe('shouldAutoMergePR', () => {
 
     test('returns false for epic branch without auto-merge label', async () => {
         resetMocks();
-        // Mock getCurrentPRHead and areAllChecksPassing for handleEpicPRWithoutAutoMerge
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
             if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
                 return {
@@ -1605,7 +1603,7 @@ describe('shouldAutoMergePR', () => {
         assert.strictEqual(result, false);
     });
 
-    test('epic branch triggers handleEpicPRWithoutAutoMerge when no label', async () => {
+    test('epic branch without auto-merge label does not trigger next issue from checks', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
             if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
@@ -1631,8 +1629,7 @@ describe('shouldAutoMergePR', () => {
 
         await shouldAutoMergePR(ctx);
 
-        // Should have triggered the next pending issue
-        assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 1);
+        assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 0);
     });
 
     test('returns true when only linked issue has label (PR label false)', async () => {

@@ -2869,3 +2869,36 @@ describe('triggerNextPendingIssue', () => {
         });
     });
 });
+
+function simulateShouldTriggerNextIssueAfterMerge(issueLabels: string[]): boolean {
+    const hasAutoMerge = issueLabels.includes('auto-merge');
+    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
+    const isEpicSequentialMerge = !!epicLabel;
+    return hasAutoMerge || isEpicSequentialMerge;
+}
+
+describe('handleMergedPRNextIssueTrigger', () => {
+    test('triggers next pending issue for epic-labeled child PR without auto-merge label', () => {
+        const issueLabels = ['AI', 'AI-done', 'llm-codex-gpt55', 'base-1520-epic-migrate-platform-4ct'];
+
+        const shouldTrigger = simulateShouldTriggerNextIssueAfterMerge(issueLabels);
+
+        assert.strictEqual(shouldTrigger, true);
+    });
+
+    test('triggers next pending issue for explicit auto-merge label', () => {
+        const issueLabels = ['AI', 'AI-done', 'auto-merge'];
+
+        const shouldTrigger = simulateShouldTriggerNextIssueAfterMerge(issueLabels);
+
+        assert.strictEqual(shouldTrigger, true);
+    });
+
+    test('does not trigger next pending issue without auto-merge or epic label', () => {
+        const issueLabels = ['AI', 'AI-done', 'llm-codex-gpt55'];
+
+        const shouldTrigger = simulateShouldTriggerNextIssueAfterMerge(issueLabels);
+
+        assert.strictEqual(shouldTrigger, false);
+    });
+});

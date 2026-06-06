@@ -16,6 +16,26 @@ interface GeneralSettingsSectionProps {
   className?: string;
 }
 
+const CompactNumberField = ({
+  label,
+  htmlFor,
+  helperText,
+  children
+}: {
+  label: string;
+  htmlFor: string;
+  helperText: string;
+  children: React.ReactNode;
+}) => (
+  <div>
+    <label className="block text-xs font-medium text-gray-700 mb-1" htmlFor={htmlFor}>
+      {label}
+    </label>
+    {children}
+    <p className="mt-1 text-[11px] text-slate-500">{helperText}</p>
+  </div>
+);
+
 const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
   settings,
   onSettingChange,
@@ -27,10 +47,12 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
       <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-4">General Configuration</h4>
 
       <div className="space-y-4">
-        <div className="space-y-1.5">
-          <label className="block text-sm font-medium text-gray-700" htmlFor="worker_concurrency">
-            Worker Concurrency
-          </label>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+          <CompactNumberField
+            label="Worker Concurrency"
+            htmlFor="worker_concurrency"
+            helperText="Number of issues to process simultaneously."
+          >
           <input
             type="number"
             id="worker_concurrency"
@@ -39,22 +61,22 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             onChange={onSettingChange}
             onBlur={onBlur}
             placeholder="2"
-            className="max-w-[80px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
+            className="w-full max-w-[90px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
           />
-          <p className="text-xs text-gray-500">Number of issues to process simultaneously.</p>
-        </div>
+          </CompactNumberField>
 
-        <div className="space-y-1.5">
-          <label className="block text-sm font-medium text-gray-700" htmlFor="auto_followup_score_threshold">
-            Auto-Followup Score Threshold
-          </label>
+          <CompactNumberField
+            label="Auto-Followup Score Threshold"
+            htmlFor="auto_followup_score_threshold"
+            helperText="Post a retry follow-up when critique score is at or below this threshold. Set to 0 to disable."
+          >
           <select
             id="auto_followup_score_threshold"
             name="auto_followup_score_threshold"
             value={settings.auto_followup_score_threshold}
             onChange={onSettingChange}
             onBlur={onBlur}
-            className="max-w-[150px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
+            className="w-full max-w-[160px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
           >
             <option value={0}>Disabled</option>
             <option value={1}>1 (Very Low)</option>
@@ -67,13 +89,11 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             <option value={8}>8</option>
             <option value={9}>9 (High)</option>
           </select>
-          <p className="text-xs text-gray-500">
-            When an implementation critique score is at or below this threshold, automatically post a follow-up comment to trigger a retry. Set to 0 to disable.
-          </p>
+          </CompactNumberField>
         </div>
 
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2">
+        <div className="flex items-start gap-3">
+          <div className="flex h-5 items-start pt-0.5">
             <input
               type="checkbox"
               id="auto_resolve_merge_conflicts"
@@ -83,30 +103,33 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
               onBlur={onBlur}
               className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
             />
+          </div>
+          <div>
             <label className="text-sm font-medium text-gray-700" htmlFor="auto_resolve_merge_conflicts">
               Auto-Resolve Merge Conflicts
             </label>
+            <p className="text-[11px] text-slate-500">
+              When enabled, the system will automatically merge the PR base branch into contributor branches and ask an agent to resolve any conflicts. Disable this to prevent automatic mutation of open pull requests.
+            </p>
           </div>
-          <p className="text-xs text-gray-500">
-            When enabled, the system will automatically merge the PR base branch into contributor branches and ask an agent to resolve any conflicts. Disable this to prevent automatic mutation of open pull requests.
-          </p>
         </div>
 
         {/* Ultrafix Settings */}
         <div className="border-t border-gray-200 pt-4 mt-4">
           <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-3">Ultrafix</h4>
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="block text-sm font-medium text-gray-700" htmlFor="ultrafix_rating_goal">
-                Rating Goal
-              </label>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+            <CompactNumberField
+              label="Rating Goal"
+              htmlFor="ultrafix_rating_goal"
+              helperText="Target quality rating (1-10)."
+            >
               <select
                 id="ultrafix_rating_goal"
                 name="ultrafix_rating_goal"
                 value={settings.ultrafix_rating_goal}
                 onChange={onSettingChange}
                 onBlur={onBlur}
-                className="max-w-[150px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
+                className="w-full max-w-[150px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
               >
                 {Array.from({ length: 10 }, (_, i) => i + 1).map(n => (
                   <option key={n} value={n}>
@@ -114,15 +137,13 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
                   </option>
                 ))}
               </select>
-              <p className="text-xs text-gray-500">
-                Target quality rating (1-10). Ultrafix will keep iterating until this score is reached.
-              </p>
-            </div>
+            </CompactNumberField>
 
-            <div className="space-y-1.5">
-              <label className="block text-sm font-medium text-gray-700" htmlFor="ultrafix_max_cycles">
-                Max Cycles
-              </label>
+            <CompactNumberField
+              label="Max Cycles"
+              htmlFor="ultrafix_max_cycles"
+              helperText="Maximum fix-review cycles before stopping."
+            >
               <input
                 type="number"
                 id="ultrafix_max_cycles"
@@ -132,17 +153,15 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
                 onBlur={onBlur}
                 min={1}
                 placeholder="5"
-                className="max-w-[80px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
+                className="w-full max-w-[90px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
               />
-              <p className="text-xs text-gray-500">
-                Maximum number of fix-review cycles before stopping (positive integer).
-              </p>
-            </div>
+            </CompactNumberField>
 
-            <div className="space-y-1.5">
-              <label className="block text-sm font-medium text-gray-700" htmlFor="ultrafix_pause_seconds">
-                Pause Between Cycles (seconds)
-              </label>
+            <CompactNumberField
+              label="Pause Between Cycles"
+              htmlFor="ultrafix_pause_seconds"
+              helperText="Seconds to wait between each ultrafix cycle."
+            >
               <input
                 type="number"
                 id="ultrafix_pause_seconds"
@@ -152,12 +171,9 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
                 onBlur={onBlur}
                 min={0}
                 placeholder="60"
-                className="max-w-[80px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
+                className="w-full max-w-[90px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
               />
-              <p className="text-xs text-gray-500">
-                Seconds to wait between each ultrafix cycle (non-negative integer).
-              </p>
-            </div>
+            </CompactNumberField>
           </div>
         </div>
       </div>

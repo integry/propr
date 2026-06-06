@@ -54,8 +54,8 @@ const AgentTankSection: React.FC<AgentTankSectionProps> = ({
 
       <div className="space-y-3">
         {/* Enable Toggle */}
-        <div className="flex items-start">
-          <div className="flex items-center h-5">
+        <div className="flex items-start gap-3">
+          <div className="flex h-5 items-start pt-0.5">
             <input
               type="checkbox"
               id="agent_tank_enabled"
@@ -64,37 +64,39 @@ const AgentTankSection: React.FC<AgentTankSectionProps> = ({
               className="h-4 w-4 cursor-pointer rounded border-gray-300 text-primary-600 focus:ring-primary-500"
             />
           </div>
-          <div className="ml-3">
+          <div>
             <label
               htmlFor="agent_tank_enabled"
               className="text-xs font-medium text-gray-700 cursor-pointer"
             >
               Enable Agent Tank Integration
             </label>
-            <p className="text-xs text-gray-500">
-              Track active session and rate limit usage for Claude, Antigravity, and Codex CLI tools.
+            <p className="text-[11px] text-slate-500">
+              Track active session and rate limit usage for Claude, Antigravity, Gemini, and Codex CLI tools.
             </p>
           </div>
         </div>
 
         {/* Daemon URL */}
-        <div className={settings.enabled ? '' : 'opacity-50 pointer-events-none'}>
-          <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="agent_tank_url">
+        <div className={`grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2 md:gap-4 items-start ${settings.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
+          <label className="block text-xs font-medium text-gray-600 md:pt-1.5" htmlFor="agent_tank_url">
             Daemon URL
           </label>
-          <input
-            type="text"
-            id="agent_tank_url"
-            value={settings.url}
-            onChange={handleUrlChange}
-            onBlur={onBlur}
-            disabled={!settings.enabled}
-            placeholder="http://0.0.0.0:3456"
-            className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border disabled:bg-gray-100 disabled:cursor-not-allowed"
-          />
-          <p className="mt-1 text-xs text-gray-500">
-            The URL where the Agent Tank HTTP server is running.
-          </p>
+          <div>
+            <input
+              type="text"
+              id="agent_tank_url"
+              value={settings.url}
+              onChange={handleUrlChange}
+              onBlur={onBlur}
+              disabled={!settings.enabled}
+              placeholder="http://0.0.0.0:3456"
+              className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border disabled:bg-gray-100 disabled:cursor-not-allowed"
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              The URL where the Agent Tank HTTP server is running.
+            </p>
+          </div>
         </div>
 
         {/* Connection Status */}
