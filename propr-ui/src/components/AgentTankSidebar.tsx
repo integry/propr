@@ -7,6 +7,50 @@ import { getModelDisplayName } from '../utils/modelDisplay';
 // Refresh interval in milliseconds (60 seconds)
 const REFRESH_INTERVAL = 60000;
 
+// Visible provider labels keyed by Agent Tank provider key (presentation only).
+// The underlying provider keys (e.g. "agy") are preserved for API payloads/lookups.
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  agy: 'Antigravity',
+};
+
+// Order providers appear in the status list. Codex must appear before Antigravity.
+// Unknown providers retain their original relative order after these.
+const PROVIDER_ORDER = ['claude', 'gemini', 'codex', 'agy'];
+
+function getProviderRank(name: string): number {
+  const idx = PROVIDER_ORDER.indexOf(name.toLowerCase());
+  return idx === -1 ? PROVIDER_ORDER.length : idx;
+}
+
+// Map Antigravity thinking-level suffixes to compact bold badges.
+const ANTIGRAVITY_LEVEL_BADGES: Record<string, string> = {
+  medium: 'M',
+  high: 'H',
+  low: 'L',
+};
+
+// Shorten an Antigravity model name for display while keeping the full name for tooltips.
+// `(Medium)` -> bold `M`, `(High)` -> bold `H`, `(Low)` -> bold `L`, `(Thinking)` removed.
+function formatAntigravityModelLabel(fullName: string): { display: React.ReactNode; plain: string } {
+  const withoutThinking = fullName.replace(/\s*\(Thinking\)/gi, '').trim();
+  const levelMatch = withoutThinking.match(/\s*\((Medium|High|Low)\)/i);
+
+  if (levelMatch) {
+    const badge = ANTIGRAVITY_LEVEL_BADGES[levelMatch[1].toLowerCase()];
+    const base = withoutThinking.replace(levelMatch[0], '').trim();
+    return {
+      display: (
+        <>
+          {base} <strong className="font-bold">{badge}</strong>
+        </>
+      ),
+      plain: `${base} ${badge}`,
+    };
+  }
+
+  return { display: withoutThinking, plain: withoutThinking };
+}
+
 // Get status color based on percentage
 function getStatusColor(percent: number): string {
   if (percent <= 50) return 'bg-green-500';
@@ -23,6 +67,10 @@ function getTextColor(percent: number): string {
 
 interface UsageMetric {
   label: string;
+  // Optional rich display (e.g. bold thinking-level badge). Falls back to `label`.
+  displayLabel?: React.ReactNode;
+  // Optional explicit tooltip text (e.g. full Antigravity model name).
+  title?: string;
   percent: number;
   resetsIn?: string;
 }
@@ -54,14 +102,29 @@ function getAllMetrics(agent: AgentUsageData): UsageMetric[] {
       resetsIn: agent.usage.weeklySonnet.resetsIn
     });
   }
-  // Gemini models
+  // Gemini / Antigravity models
   if (agent.usage.models) {
+    const isAntigravity = agent.name.toLowerCase() === 'agy';
     for (const model of agent.usage.models) {
-      metrics.push({
-        label: getModelDisplayName(model.model, { compactGemini: true }),
-        percent: model.percentUsed,
-        resetsIn: model.resetsIn
-      });
+      if (isAntigravity) {
+        // Keep the full model name (incl. "Gemini" prefix and thinking level) for the tooltip,
+        // but shorten the visible label.
+        const fullName = getModelDisplayName(model.model);
+        const { display, plain } = formatAntigravityModelLabel(fullName);
+        metrics.push({
+          label: plain,
+          displayLabel: display,
+          title: fullName,
+          percent: model.percentUsed,
+          resetsIn: model.resetsIn
+        });
+      } else {
+        metrics.push({
+          label: getModelDisplayName(model.model, { compactGemini: true }),
+          percent: model.percentUsed,
+          resetsIn: model.resetsIn
+        });
+      }
     }
   }
 
@@ -101,9 +164,9 @@ const MetricRow: React.FC<MetricRowProps> = ({ metric, compact = false }) => (
   <div className={`flex items-center justify-between ${compact ? 'py-0.5' : 'py-1'}`}>
     <span
       className="text-[10px] text-gray-500 truncate max-w-[100px]"
-      title={metric.resetsIn ? `Resets in ${metric.resetsIn}` : metric.label}
+      title={metric.title ?? (metric.resetsIn ? `Resets in ${metric.resetsIn}` : metric.label)}
     >
-      {metric.label}
+      {metric.displayLabel ?? metric.label}
     </span>
     <div className="flex items-center gap-1.5">
       <div className={`${compact ? 'w-10' : 'w-12'} h-1.5 bg-gray-200 rounded-full overflow-hidden`}>
@@ -132,7 +195,8 @@ const AgentRow: React.FC<AgentRowProps> = ({ agent, expanded, onToggle }) => {
 
   if (!primaryMetric && !agent.error) return null;
 
-  const displayName = agent.name.charAt(0).toUpperCase() + agent.name.slice(1);
+  const displayName = PROVIDER_DISPLAY_NAMES[agent.name.toLowerCase()]
+    ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1));
 
   return (
     <div className="py-1">
@@ -223,7 +287,9 @@ const AgentTankSidebar: React.FC = () => {
   if (!data?.enabled) return null;
   if (!data.agents || Object.keys(data.agents).length === 0) return null;
 
-  const agents = Object.values(data.agents).filter(a => a.usage || a.error);
+  const agents = Object.values(data.agents)
+    .filter(a => a.usage || a.error)
+    .sort((a, b) => getProviderRank(a.name) - getProviderRank(b.name));
   if (agents.length === 0) return null;
 
   return (
