@@ -1128,11 +1128,14 @@ describe('config route follow-up helpers', () => {
                 dockerImage: 'claude:image',
                 configPath: '/tmp/claude',
                 supportedModels: [' claude-sonnet-4-6 ', 'claude-opus-4-6'],
+                cliVersionType: 'default',
+                cliVersion: 'latest',
             },
         ] as never);
 
         assert.deepStrictEqual(normalized[0]?.supportedModels, ['claude-sonnet-4-6', 'claude-opus-4-6']);
         assert.strictEqual(normalized[0]?.alias, 'agent-1');
+        assert.strictEqual(normalized[0]?.cliVersion, undefined);
     });
 
     test('applyAgentsUpdate accepts agents without dockerImage and derives it server-side', async () => {

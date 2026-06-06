@@ -355,6 +355,13 @@ export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
   await handleApiResponse(response);
 };
 
+export const getOpenCodeModels = async (agentId?: string): Promise<{ models: string[] }> => {
+  const params = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
+  const response = await apiFetch(`${API_BASE_URL}/api/agents/opencode/models${params}`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 
 export * from './plannerApi';
 export * from './taskStatsApi';

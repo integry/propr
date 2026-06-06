@@ -222,7 +222,10 @@ function updateAntigravityDefaults(agent: AgentConfig): boolean {
         migrated = true;
     }
 
-    if (agent.cliVersionType && agent.cliVersion !== 'latest') {
+    if (agent.cliVersionType === 'default' && agent.cliVersion !== undefined) {
+        delete agent.cliVersion;
+        migrated = true;
+    } else if (agent.cliVersionType && agent.cliVersionType !== 'default' && agent.cliVersion !== 'latest') {
         agent.cliVersion = 'latest';
         migrated = true;
     }

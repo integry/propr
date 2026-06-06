@@ -123,7 +123,7 @@ test('Antigravity execution invokes agy with print-mode CLI flags', () => {
         assert.ok(!args.includes('--yolo'));
         assert.ok(!args.includes('--skip-trust'));
         assert.ok(args.includes('--model'));
-        assert.equal(args[args.indexOf('--model') + 1], 'Gemini 3.1 Pro (High)');
+        assert.equal(args[args.indexOf('--model') + 1], 'antigravity-gemini-3.1-pro-high');
     });
 });
 

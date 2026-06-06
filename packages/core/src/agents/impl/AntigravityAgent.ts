@@ -14,7 +14,6 @@ import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/ind
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import {
     parseAntigravityJsonl, aggregateDeltaMessages, convertEventToClaudeFormat,
-    ANTIGRAVITY_MODEL_LABELS,
     type AntigravityOutputEvent
 } from './utils/antigravityOutputParser.js';
 import fs from 'fs';
@@ -252,9 +251,7 @@ export class AntigravityAgent implements Agent {
             this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(), 'propr-antigravity'
         ];
         if (modelName) {
-            const unscopedModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
-            const cleanModelName = ANTIGRAVITY_MODEL_LABELS[unscopedModelName]
-                || (runtimeName === 'antigravity' && unscopedModelName.startsWith('antigravity-') ? unscopedModelName.slice('antigravity-'.length) : unscopedModelName);
+            const cleanModelName = modelName.startsWith(`${runtimeName}:`) ? modelName.slice(`${runtimeName}:`.length) : modelName;
             dockerArgs.push('--model', cleanModelName);
             logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Antigravity agent');
         } else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Antigravity agent will use default'); }

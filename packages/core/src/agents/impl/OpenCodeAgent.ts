@@ -8,6 +8,7 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
+import { DEFAULT_AGENT_DOCKER_IMAGES } from '../constants.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
@@ -45,7 +46,7 @@ export class OpenCodeAgent implements Agent {
             });
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
+            const dockerArgs = await this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
@@ -114,9 +115,10 @@ export class OpenCodeAgent implements Agent {
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         const analysisWorkspace = this.ensureAnalysisWorkspace();
         const analysisConfigPath = this.createAnalysisConfigSnapshot();
+        const analysisDataPath = this.resolveAnalysisDataPath();
 
         try {
-            const dockerArgs = this.buildDockerArgs({ worktreePath: analysisWorkspace, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, allowDangerousPermissions: false, configPath: analysisConfigPath });
+            const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: false, allowDangerousPermissions: false, configPath: analysisConfigPath, promptMode: 'direct', dataPath: analysisDataPath });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
                 async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData: analysisPrompt, taskId })
@@ -264,15 +266,29 @@ export class OpenCodeAgent implements Agent {
         const sourceConfigPath = resolveConfigPath(this.config.configPath);
         const snapshotPath = fs.mkdtempSync('/tmp/opencode-analysis-config-');
         try {
-            if (fs.existsSync(sourceConfigPath)) {
-                fs.cpSync(sourceConfigPath, snapshotPath, { recursive: true, force: true });
+            if (!this.isUsableAnalysisConfigPath(sourceConfigPath)) {
+                fs.rmSync(snapshotPath, { recursive: true, force: true });
+                logger.info({ sourceConfigPath, agentAlias: this.config.alias }, 'OpenCode config path is not visible to this process; mounting host config path directly for analysis');
+                return sourceConfigPath;
             }
+            fs.cpSync(sourceConfigPath, snapshotPath, { recursive: true, force: true });
             const runAsNode = process.getuid?.() === 0;
             if (runAsNode) fs.chownSync(snapshotPath, 1000, 1000);
         } catch (error) {
             logger.warn({ sourceConfigPath, snapshotPath, agentAlias: this.config.alias, error: (error as Error).message }, 'Failed to copy OpenCode config for analysis');
         }
         return snapshotPath;
+    }
+
+    private isUsableAnalysisConfigPath(configPath: string): boolean {
+        if (!fs.existsSync(configPath)) return false;
+        try {
+            const stat = fs.statSync(configPath);
+            if (!stat.isDirectory()) return true;
+            return fs.readdirSync(configPath).length > 0;
+        } catch {
+            return false;
+        }
     }
 
     private cleanupAnalysisConfigSnapshot(configPath: string): void {
@@ -284,12 +300,38 @@ export class OpenCodeAgent implements Agent {
         }
     }
 
-    private buildDockerArgs(params: Omit<OpenCodeDockerArgsParams, 'config' | 'ensureConfigPath'>): string[] {
+    private resolveAnalysisDataPath(): string | undefined {
+        if (process.env.HOST_OPENCODE_DATA_DIR) return undefined;
+        if (this.config.envVars?.XDG_DATA_HOME) return undefined;
+        const sourceConfigPath = resolveConfigPath(this.config.configPath).replace(/\/+$/, '');
+        if (!sourceConfigPath.endsWith('/.config/opencode')) return undefined;
+        return `${sourceConfigPath.slice(0, -'/.config/opencode'.length)}/.local/share/opencode`;
+    }
+
+    private async buildDockerArgs(params: Omit<OpenCodeDockerArgsParams, 'config' | 'ensureConfigPath'>): Promise<string[]> {
+        const dockerImage = await this.resolveRuntimeDockerImage();
         return buildOpenCodeDockerArgs({
             ...params,
-            config: this.config,
+            config: { ...this.config, dockerImage },
             ensureConfigPath: (configPath) => this.ensureHostConfigPath(configPath)
         });
+    }
+
+    private async resolveRuntimeDockerImage(): Promise<string> {
+        if (process.env.OPENCODE_DOCKER_IMAGE) return process.env.OPENCODE_DOCKER_IMAGE;
+        const configuredImage = this.config.dockerImage;
+        if (!configuredImage || configuredImage === DEFAULT_AGENT_DOCKER_IMAGES.opencode) {
+            return DEFAULT_AGENT_DOCKER_IMAGES.opencode;
+        }
+        try {
+            const result = await executeDockerCommand('docker', ['image', 'inspect', configuredImage], { timeout: 10000 });
+            if (result.exitCode === 0 && result.stdout.trim()) {
+                return configuredImage;
+            }
+        } catch (error) {
+            logger.warn({ agentAlias: this.config.alias, dockerImage: configuredImage, error: (error as Error).message }, 'Configured OpenCode image not available locally, falling back to latest image');
+        }
+        return DEFAULT_AGENT_DOCKER_IMAGES.opencode;
     }
 
     private ensureHostConfigPath(configPath: string): void {

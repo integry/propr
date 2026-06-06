@@ -237,7 +237,11 @@ export class AgentRegistry {
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
         if (config.type === 'antigravity') {
-            config.cliVersion = 'latest';
+            if (config.cliVersionType === 'default') {
+                delete config.cliVersion;
+            } else {
+                config.cliVersion = 'latest';
+            }
             config.cliVersionResolved = AGENT_DEFAULT_VERSIONS.antigravity;
         }
         const cliVersionResolved = config.cliVersionResolved;

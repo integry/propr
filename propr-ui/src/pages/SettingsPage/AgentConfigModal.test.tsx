@@ -13,6 +13,12 @@ vi.mock('../../api/agentVersionApi', () => ({
   }),
 }));
 
+vi.mock('../../api/proprApi', () => ({
+  getOpenCodeModels: vi.fn().mockResolvedValue({
+    models: ['openai/gpt-5.5', 'openai/gpt-5.5-fast'],
+  }),
+}));
+
 describe('AgentConfigModal', () => {
   it('shows OpenCode and populates OpenCode defaults from shared agent definitions', () => {
     const onSave = vi.fn();
@@ -49,5 +55,45 @@ describe('AgentConfigModal', () => {
       cliVersionType: 'default',
       cliVersionResolved: AGENT_DEFAULTS.opencode.defaultCliVersion,
     }));
+  });
+
+  it('adds discovered OpenCode provider models to the supported model selector', async () => {
+    render(
+      <AgentConfigModal
+        agent={null}
+        existingAliases={[]}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }));
+
+    expect(await screen.findByText('OpenAI GPT 5.5')).toBeInTheDocument();
+    expect(screen.getByText('openai/gpt-5.5')).toBeInTheDocument();
+    expect(screen.getByText('llm-opencode-openai-gpt-5-5')).toBeInTheDocument();
+  });
+
+  it('shows OpenCode models already saved on an agent even when they are not static defaults', async () => {
+    render(
+      <AgentConfigModal
+        agent={{
+          id: 'agent-opencode-openai',
+          type: 'opencode',
+          alias: 'opencode',
+          enabled: true,
+          dockerImage: AGENT_DEFAULTS.opencode.dockerImage,
+          configPath: AGENT_DEFAULTS.opencode.configPath,
+          supportedModels: ['openai/gpt-5.5'],
+          defaultModel: 'openai/gpt-5.5',
+        }}
+        existingAliases={['opencode']}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    expect(await screen.findByText('OpenAI GPT 5.5')).toBeInTheDocument();
+    expect(screen.getByText('openai/gpt-5.5')).toBeInTheDocument();
   });
 });

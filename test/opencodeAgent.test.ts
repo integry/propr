@@ -306,7 +306,7 @@ describe('OpenCodeAgent Docker args', () => {
         assert.strictEqual(args[args.indexOf('--format') + 1], 'json');
     });
 
-    test('can mount a temporary config path for read-only analysis', () => {
+    test('keeps workspace read-only while allowing OpenCode config writes during analysis', () => {
         const args = buildOpenCodeDockerArgs({
             config: createAgent().config,
             worktreePath: '/tmp/worktree',
@@ -320,8 +320,48 @@ describe('OpenCodeAgent Docker args', () => {
 
         assert.ok(args.includes('-v'));
         assert.ok(args.includes('/tmp/worktree:/home/node/workspace:ro'));
-        assert.ok(args.includes('/tmp/opencode-analysis-config-test:/home/node/.config/opencode:ro'));
+        assert.ok(args.includes('/tmp/opencode-analysis-config-test:/home/node/.config/opencode:rw'));
         assert.ok(!args.includes('--dangerously-skip-permissions'));
+    });
+
+    test('uses direct stdin prompt mode for lightweight analysis', () => {
+        const args = buildOpenCodeDockerArgs({
+            config: createAgent().config,
+            worktreePath: '/tmp/worktree',
+            githubToken: 'token',
+            issueNumber: 0,
+            modelName: 'openai/gpt-5.5',
+            readOnlyWorkspace: false,
+            allowDangerousPermissions: false,
+            promptMode: 'direct',
+            configPath: '/tmp/opencode-analysis-config-test',
+            ensureConfigPath: () => undefined
+        });
+        const shellIndex = args.indexOf('/bin/sh');
+
+        assert.ok(shellIndex > -1);
+        assert.strictEqual(args[shellIndex + 1], '-lc');
+        assert.match(args[shellIndex + 2], /opencode run "\$@" -- "\$prompt"/);
+        assert.strictEqual(args[shellIndex + 3], 'propr-opencode-direct');
+        assert.ok(!args.includes('opencode-run'));
+        assert.strictEqual(args[args.indexOf('--format') + 1], 'json');
+        assert.strictEqual(args[args.indexOf('--model') + 1], 'openai/gpt-5.5');
+    });
+
+    test('can mount real OpenCode data alongside an analysis config snapshot', () => {
+        const args = buildOpenCodeDockerArgs({
+            config: createAgent().config,
+            worktreePath: '/tmp/worktree',
+            githubToken: 'token',
+            issueNumber: 0,
+            readOnlyWorkspace: false,
+            configPath: '/tmp/opencode-analysis-config-test',
+            dataPath: '/tmp/opencode-real-data-test',
+            ensureConfigPath: () => undefined
+        });
+
+        assert.ok(args.includes('/tmp/opencode-analysis-config-test:/home/node/.config/opencode:rw'));
+        assert.ok(args.includes('/tmp/opencode-real-data-test:/home/node/.local/share/opencode:rw'));
     });
 
     test('infers default OpenCode auth data mount from the saved XDG config path', () => {
@@ -339,7 +379,7 @@ describe('OpenCodeAgent Docker args', () => {
         fs.rmSync(home, { recursive: true, force: true });
     });
 
-    test('uses HOST_OPENCODE_DATA_DIR for read-only analysis mounts', () => {
+    test('uses HOST_OPENCODE_DATA_DIR as a writable analysis state mount', () => {
         process.env.HOST_OPENCODE_DATA_DIR = '/host/opencode-data';
         const args = buildOpenCodeDockerArgs({
             config: createAgent().config,
@@ -352,7 +392,7 @@ describe('OpenCodeAgent Docker args', () => {
             ensureConfigPath: () => undefined
         });
 
-        assert.ok(args.includes('/host/opencode-data:/home/node/.local/share/opencode:ro'));
+        assert.ok(args.includes('/host/opencode-data:/home/node/.local/share/opencode:rw'));
     });
 
     test('opencode-run keeps prompt attachment separate from the final message', () => {

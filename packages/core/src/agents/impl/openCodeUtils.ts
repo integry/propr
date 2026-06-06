@@ -52,6 +52,7 @@ interface ExtractedOpenCodeText { streamParts: string[]; assistantMessage?: stri
 export interface OpenCodeDockerArgsParams {
     config: AgentConfig; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number;
     taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; allowDangerousPermissions?: boolean; configPath?: string;
+    promptMode?: 'file' | 'direct'; dataPath?: string;
     ensureConfigPath?: (configPath: string) => void;
 }
 
@@ -104,18 +105,18 @@ export function parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
 export const parseOpenCodeStreamOutput = parseOpenCodeJsonl;
 
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
-    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, allowDangerousPermissions = true, ensureConfigPath = ensureDirectory } = params;
+    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, allowDangerousPermissions = true, promptMode = 'file', dataPath, ensureConfigPath = ensureDirectory } = params;
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     ensureConfigPath(configPath);
     const envVars = buildEnvVars(config);
-    const dataMount = resolveOpenCodeDataMount(configPath, config.envVars, readOnlyWorkspace ? 'ro' : 'rw');
+    const dataMount = resolveOpenCodeDataMount(configPath, config.envVars, dataPath);
     const timestamp = Date.now().toString(36);
     const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId);
     const workspaceMode = readOnlyWorkspace ? 'ro' : 'rw';
-    const configMode = readOnlyWorkspace ? 'ro' : 'rw';
-    const commandArgs = ['opencode-run', '--format', 'json'];
+    const configMode = 'rw';
+    const commandArgs = buildOpenCodeCommandArgs(promptMode);
     if (allowDangerousPermissions) commandArgs.push('--dangerously-skip-permissions');
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
@@ -136,6 +137,20 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, 'opencode');
 }
 
+function buildOpenCodeCommandArgs(promptMode: 'file' | 'direct'): string[] {
+    if (promptMode === 'direct') {
+        return [
+            '/bin/sh',
+            '-lc',
+            'prompt="$(cat)"; out="$(mktemp)"; opencode run "$@" -- "$prompt" > "$out"; status=$?; cat "$out"; if [ "$status" -ne 0 ] || ! grep -q \'"type":"text"\' "$out"; then latest="$(ls -t /home/node/.local/share/opencode/log/*.log 2>/dev/null | head -1)"; [ -n "$latest" ] && tail -80 "$latest" >&2; fi; rm -f "$out"; exit "$status"',
+            'propr-opencode-direct',
+            '--format',
+            'json'
+        ];
+    }
+    return ['opencode-run', '--format', 'json'];
+}
+
 interface OpenCodeDataMount { hostPath: string; mode: 'ro' | 'rw'; }
 
 function appendOpenCodeDataMount(dockerArgs: string[], dataMount: OpenCodeDataMount | null): void {
@@ -150,13 +165,14 @@ function appendOpenCodeDataMount(dockerArgs: string[], dataMount: OpenCodeDataMo
     );
 }
 
-function resolveOpenCodeDataMount(configPath: string, envVars: AgentConfig['envVars'], mode: 'ro' | 'rw'): OpenCodeDataMount | null {
+function resolveOpenCodeDataMount(configPath: string, envVars: AgentConfig['envVars'], explicitHostDataPath?: string): OpenCodeDataMount | null {
     const configuredHostDataPath = process.env.HOST_OPENCODE_DATA_DIR;
-    if (configuredHostDataPath) return { hostPath: configuredHostDataPath, mode };
+    if (configuredHostDataPath) return { hostPath: configuredHostDataPath, mode: 'rw' };
+    if (explicitHostDataPath) return { hostPath: explicitHostDataPath, mode: 'rw' };
     if (envVars?.XDG_DATA_HOME) return null;
     const inferredHostDataPath = inferOpenCodeDataPath(configPath);
     return inferredHostDataPath && fs.existsSync(inferredHostDataPath)
-        ? { hostPath: inferredHostDataPath, mode }
+        ? { hostPath: inferredHostDataPath, mode: 'rw' }
         : null;
 }
 

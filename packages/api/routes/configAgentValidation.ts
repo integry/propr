@@ -20,10 +20,11 @@ export function normalizeAgentsConfig(agents: AgentConfig[]): AgentConfig[] {
     if (!isAgentRecord(agent)) {
       return agent;
     }
+    const cliVersionType = typeof agent.cliVersionType === 'string' ? agent.cliVersionType : undefined;
     return {
       ...agent,
       alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias,
-      cliVersion: typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion,
+      cliVersion: cliVersionType === 'default' ? undefined : (typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion),
       supportedModels: Array.isArray(agent.supportedModels)
         ? agent.supportedModels.map(model => typeof model === 'string' ? normalizeSupportedModel(model) : model)
         : agent.supportedModels

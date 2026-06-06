@@ -1,5 +1,5 @@
 import React from 'react';
-import { AgentType, AGENT_MODELS } from '../../config/modelDefinitions';
+import { AgentType, AGENT_MODELS, MODEL_INFO_MAP, ModelInfo } from '../../config/modelDefinitions';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
@@ -12,6 +12,7 @@ interface ModelSelectorProps {
   agentType: AgentType;
   supportedModels: string[];
   defaultModel?: string;
+  availableModelIds?: string[];
   modelCustomLabels?: Record<string, string>;
   errors: Record<string, string>;
   onModelToggle: (modelId: string) => void;
@@ -21,11 +22,57 @@ interface ModelSelectorProps {
   onCustomLabelChange: (modelId: string, label: string) => void;
 }
 
+function toTitleCase(value: string): string {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map(part => {
+      const upper = part.toUpperCase();
+      if (upper === 'GPT') return 'GPT';
+      if (upper === 'OPENAI') return 'OpenAI';
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(' ');
+}
+
+function buildSyntheticModel(agentType: AgentType, modelId: string): ModelInfo {
+  const providerSeparator = modelId.includes('/') ? '/' : modelId.includes(':') ? ':' : '';
+  const [provider, rawName] = providerSeparator ? modelId.split(providerSeparator, 2) : ['', modelId];
+  const shortAlias = (rawName || modelId).toLowerCase().replace(/[^a-z0-9-]+/g, '');
+  const labelModelId = modelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const providerPrefix = provider ? `${toTitleCase(provider)} ` : '';
+
+  return {
+    id: modelId,
+    name: `${providerPrefix}${toTitleCase(rawName || modelId)}`,
+    shortName: toTitleCase(rawName || modelId),
+    shortAlias,
+    githubLabel: `llm-${agentType}-${labelModelId}`,
+    contextWindow: '',
+    maxTokens: 0,
+    openRouterId: modelId,
+  };
+}
+
+export function buildSelectableModels(agentType: AgentType, modelIds: string[]): ModelInfo[] {
+  const staticModels = AGENT_MODELS[agentType] || [];
+  const modelMap = new Map<string, ModelInfo>();
+  for (const model of staticModels) modelMap.set(model.id, model);
+  for (const modelId of modelIds) {
+    if (!modelMap.has(modelId)) {
+      modelMap.set(modelId, MODEL_INFO_MAP[modelId] || buildSyntheticModel(agentType, modelId));
+    }
+  }
+  return Array.from(modelMap.values());
+}
+
 const ModelSelector: React.FC<ModelSelectorProps> = ({
-  agentType, supportedModels, defaultModel, modelCustomLabels,
+  agentType, supportedModels, defaultModel, availableModelIds = [], modelCustomLabels,
   errors, onModelToggle, onDefaultModelChange, onSelectAll, onDeselectAll, onCustomLabelChange
-}) => (
-  <div>
+}) => {
+  const models = buildSelectableModels(agentType, [...availableModelIds, ...supportedModels, ...(defaultModel ? [defaultModel] : [])]);
+
+  return <div>
     <div className="flex justify-between items-center mb-1.5">
       <label className="block text-gray-700 font-medium text-sm">
         Supported Models
@@ -43,7 +90,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     <div className={`border rounded-md p-3 bg-gray-50 max-h-80 overflow-y-auto ${
       errors.supportedModels ? 'border-red-500' : 'border-gray-300'
     }`}>
-      {AGENT_MODELS[agentType].map(model => {
+      {models.map(model => {
         const isSupported = supportedModels.includes(model.id);
         const isDefault = defaultModel === model.id;
         const modelCustomLabel = modelCustomLabels?.[model.id] || '';
@@ -105,6 +152,6 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
       Checkboxes enable models, radio buttons select the default. Custom labels allow alternative trigger names.
     </p>
   </div>
-);
+};
 
 export default ModelSelector;

@@ -77,7 +77,7 @@ describe('OpenCode API routes', () => {
         assert.equal((res.body?.agents as Array<Record<string, unknown>>)[0]?.type, 'opencode');
     });
 
-    test('POST /api/config/agents rejects malformed OpenCode CLI version payloads before applying config', async () => {
+    test('POST /api/config/agents normalizes stale default OpenCode CLI version payloads before applying config', async () => {
         const redisClient = {
             set: mock.fn(async () => 'OK')
         };
@@ -107,12 +107,11 @@ describe('OpenCode API routes', () => {
             }
         } as never, res as never);
 
-        assert.equal(res.statusCode, 400);
-        assert.deepEqual(res.body, {
-            error: "Agent 'opencode-1' must not set cliVersion when cliVersionType is 'default'"
-        });
-        assert.equal(applyAgentsUpdateFn.mock.calls.length, 0);
-        assert.equal(redisClient.set.mock.calls.length, 0);
+        assert.equal(res.statusCode, 200);
+        assert.deepEqual(res.body, { success: true });
+        assert.equal(applyAgentsUpdateFn.mock.calls.length, 1);
+        const appliedAgents = applyAgentsUpdateFn.mock.calls[0].arguments[0].processedAgents;
+        assert.strictEqual(appliedAgents[0].cliVersion, undefined);
     });
 
     test('GET /api/agents/versions/opencode returns OpenCode version metadata', async () => {
