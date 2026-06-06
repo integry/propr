@@ -72,8 +72,7 @@ interface ExecutionOptionsToolbarProps {
   runUltrafix?: boolean; onRunUltrafixChange?: (value: boolean) => void;
   ultrafixGoal?: number | null; onUltrafixGoalChange?: (value: number | null) => void;
   ultrafixMaxCycles?: number | null; onUltrafixMaxCyclesChange?: (value: number | null) => void;
-  tasks: PlanTask[]; pendingCount: number;
-  implementingAll: boolean; handleImplementAll: () => void;
+  tasks: PlanTask[];
   disableImplementation?: boolean;
 }
 
@@ -130,7 +129,7 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
   handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
   autoMerge, onAutoMergeChange, useEpic, onUseEpicChange,
   runUltrafix, onRunUltrafixChange, ultrafixGoal, onUltrafixGoalChange, ultrafixMaxCycles, onUltrafixMaxCyclesChange,
-  tasks, pendingCount, implementingAll, handleImplementAll, disableImplementation = false,
+  tasks, disableImplementation = false,
 }) => {
   const ultrafixEnabled = runUltrafix || false;
   const showGlobalAgentControls = tasks.length >= 2;
@@ -192,22 +191,6 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
           )}
         </div>
       </div>
-      {pendingCount >= 2 && autoMerge && useEpic && (
-        <div className="flex items-center justify-end pt-1 border-t border-slate-200/50">
-          <button
-            onClick={handleImplementAll}
-            disabled={implementingAll || !globalAgent || disableImplementation}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md bg-green-600 text-white shadow-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title={!globalAgent ? 'Select an agent first' : 'Start sequential implementation: each issue will be processed and merged before the next one starts'}
-          >
-            {implementingAll ? (
-              <><Loader2 size={16} className="animate-spin" /><span>Starting sequence...</span></>
-            ) : (
-              <><CheckCircle size={16} /><span>Run All Sequentially ({pendingCount})</span></>
-            )}
-          </button>
-        </div>
-      )}
     </div>
   );
 };

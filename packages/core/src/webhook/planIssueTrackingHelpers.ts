@@ -1,8 +1,54 @@
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
-import { migrateRepositoryReferences } from '../services/repositoryMigrationService.js';
+import { detectRepositoryRename, migrateRepositoryReferences } from '../services/repositoryMigrationService.js';
 import { db } from '../db/connection.js';
+
+type WebhookMigrationMatch = {
+    repository: string;
+};
+
+async function migrateIfVerifiedRename(
+    oldRepository: string,
+    currentRepository: string,
+    log: ReturnType<typeof logger.withCorrelation>,
+    context: Record<string, unknown>
+): Promise<boolean> {
+    if (oldRepository === currentRepository) return false;
+
+    let rename: { renamed: boolean; currentName: string };
+    try {
+        rename = await detectRepositoryRename(oldRepository);
+    } catch (error) {
+        log.debug({
+            oldRepository,
+            currentRepository,
+            ...context,
+            error: (error as Error).message
+        }, 'Skipping repository migration; old repository rename could not be verified');
+        return false;
+    }
+
+    if (!rename.renamed || rename.currentName.toLowerCase() !== currentRepository.toLowerCase()) {
+        log.debug({
+            oldRepository,
+            currentRepository,
+            detectedCurrentName: rename.currentName,
+            renamed: rename.renamed,
+            ...context
+        }, 'Skipping repository migration; webhook issue/PR number matched a different repository');
+        return false;
+    }
+
+    log.warn({ currentRepository, oldRepository, ...context },
+        'Repository rename verified from webhook - initiating migration');
+
+    const result = await migrateRepositoryReferences(oldRepository, currentRepository);
+    log.info({ oldRepository, currentRepository, tablesUpdated: result.tablesUpdated,
+        rowsAffected: result.rowsAffected, success: result.success },
+        'Repository migration completed from webhook detection');
+    return true;
+}
 
 /**
  * Checks if there are database records with old repository names that need migration.
@@ -15,38 +61,29 @@ export async function checkAndMigrateRepositoryFromWebhook(
     log: ReturnType<typeof logger.withCorrelation>
 ): Promise<void> {
     try {
-        const mismatchedRecord = await db('plan_issues')
+        const mismatchedIssueRecords = await db('plan_issues')
+            .distinct('repository')
             .where('issue_number', issueOrPrNumber)
-            .whereNot('repository', currentRepository)
-            .first();
+            .whereNot('repository', currentRepository) as WebhookMigrationMatch[];
 
-        if (!mismatchedRecord) {
-            const mismatchedByPR = await db('plan_issues')
-                .where('pr_number', issueOrPrNumber)
-                .whereNot('repository', currentRepository)
-                .first();
-
-            if (!mismatchedByPR) return;
-
-            const oldRepository = mismatchedByPR.repository;
-            log.warn({ currentRepository, oldRepository, prNumber: issueOrPrNumber },
-                'Repository rename detected from webhook (by PR number) - initiating migration');
-
-            const result = await migrateRepositoryReferences(oldRepository, currentRepository);
-            log.info({ oldRepository, currentRepository, tablesUpdated: result.tablesUpdated,
-                rowsAffected: result.rowsAffected, success: result.success },
-                'Repository migration completed from webhook detection');
-            return;
+        for (const record of mismatchedIssueRecords) {
+            const migrated = await migrateIfVerifiedRename(record.repository, currentRepository, log, {
+                issueNumber: issueOrPrNumber
+            });
+            if (migrated) return;
         }
 
-        const oldRepository = mismatchedRecord.repository;
-        log.warn({ currentRepository, oldRepository, issueNumber: issueOrPrNumber },
-            'Repository rename detected from webhook - initiating migration');
+        const mismatchedPrRecords = await db('plan_issues')
+            .distinct('repository')
+            .where('pr_number', issueOrPrNumber)
+            .whereNot('repository', currentRepository) as WebhookMigrationMatch[];
 
-        const result = await migrateRepositoryReferences(oldRepository, currentRepository);
-        log.info({ oldRepository, currentRepository, tablesUpdated: result.tablesUpdated,
-            rowsAffected: result.rowsAffected, success: result.success },
-            'Repository migration completed from webhook detection');
+        for (const record of mismatchedPrRecords) {
+            const migrated = await migrateIfVerifiedRename(record.repository, currentRepository, log, {
+                prNumber: issueOrPrNumber
+            });
+            if (migrated) return;
+        }
     } catch (error) {
         log.debug({ currentRepository, issueOrPrNumber, error: (error as Error).message },
             'Repository rename check failed (non-fatal)');
