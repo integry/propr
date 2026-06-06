@@ -27,9 +27,9 @@ Typical host credential directories:
 
 - Claude: `~/.claude`
 - Codex: `~/.codex`
-- Gemini: `~/.gemini`
+- Antigravity: `~/.antigravity`
 
-The launcher mounts those directories into the relevant containers when you pass the matching `HOST_*` environment variables.
+The launcher mounts those directories into the relevant containers when you pass the matching `HOST_*` environment variables. For Antigravity, install the CLI, run `agy login` on the host, and pass `HOST_ANTIGRAVITY_DIR="$HOME/.antigravity"`.
 
 ## Local Or Server
 

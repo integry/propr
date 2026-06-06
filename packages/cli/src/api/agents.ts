@@ -12,15 +12,15 @@ import { ApiClient, createApiClient } from "./index.js";
 /**
  * Agent type identifier.
  */
-export type AgentType = "claude" | "codex" | "gemini" | "vibe";
+export type AgentType = "claude" | "codex" | "antigravity" | "vibe";
 
-export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "gemini", "vibe"] as const;
+export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "antigravity", "vibe"] as const;
 
 // Keep in sync with packages/core/src/agents/version/types.ts AGENT_IMAGE_NAMES
 const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
   claude: "propr/agent-claude",
   codex: "propr/agent-codex",
-  gemini: "propr/agent-gemini",
+  antigravity: "propr/agent-antigravity",
   vibe: "propr/agent-vibe",
 };
 
@@ -34,7 +34,7 @@ export interface AgentConfig {
   id: string;
 
   /**
-   * The agent type (claude, codex, gemini, or vibe).
+   * The agent type (claude, codex, antigravity, or vibe).
    */
   type: AgentType;
 
@@ -99,7 +99,7 @@ export interface AddAgentOptions {
   alias: string;
 
   /**
-   * The agent type (claude, codex, gemini, or vibe).
+   * The agent type (claude, codex, antigravity, or vibe).
    */
   type: AgentType;
 
@@ -302,8 +302,8 @@ function getDefaultConfigPath(type: AgentType): string {
       return join(home, ".claude");
     case "codex":
       return join(home, ".codex");
-    case "gemini":
-      return join(home, ".gemini");
+    case "antigravity":
+      return join(home, ".antigravity");
     case "vibe":
       return join(home, ".vibe");
     default:

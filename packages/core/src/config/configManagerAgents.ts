@@ -1,5 +1,5 @@
 import path from 'path';
-import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS } from '@propr/shared';
+import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS, type AgentType } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from '../agents/version/types.js';
@@ -16,7 +16,7 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
  */
 export interface AgentConfig {
     id: string;
-    type: 'claude' | 'codex' | 'gemini' | 'vibe';
+    type: AgentType;
     alias: string;
     enabled: boolean;
     dockerImage: string;
@@ -36,7 +36,7 @@ export interface AgentConfig {
 export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
     claude: '~/.claude',
     codex: '~/.codex',
-    gemini: '~/.gemini',
+    antigravity: '~/.antigravity',
     vibe: '~/.vibe'
 };
 
@@ -80,22 +80,22 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
 const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
     claude: AGENT_DEFAULT_VERSIONS.claude,
     codex: AGENT_DEFAULT_VERSIONS.codex,
-    gemini: AGENT_DEFAULT_VERSIONS.gemini,
+    antigravity: AGENT_DEFAULT_VERSIONS.antigravity,
     vibe: AGENT_DEFAULT_VERSIONS.vibe
 };
 
 const CURRENT_DEFAULT_MODELS: Record<AgentConfig['type'], string[]> = {
     claude: AGENT_DEFAULTS.claude.defaultModels,
     codex: AGENT_DEFAULTS.codex.defaultModels,
-    gemini: AGENT_DEFAULTS.gemini.defaultModels,
+    antigravity: AGENT_DEFAULTS.antigravity.defaultModels,
     vibe: AGENT_DEFAULTS.vibe.defaultModels
 };
 const VIBE_CURRENT_MODELS = VIBE_MODELS.map(model => model.id);
-const LEGACY_AGENT_IMAGE_NAMES: Record<AgentConfig['type'], string> = {
-    claude: 'propr-claude',
-    codex: 'propr-codex',
-    gemini: 'propr-gemini',
-    vibe: 'propr-vibe'
+const LEGACY_AGENT_IMAGE_NAMES: Record<AgentConfig['type'], string[]> = {
+    claude: ['propr-claude'],
+    codex: ['propr-codex'],
+    antigravity: ['propr-antigravity'],
+    vibe: ['propr-vibe']
 };
 
 function migrateCliVersion(agent: AgentConfig): boolean {
@@ -145,16 +145,18 @@ function applyDefaultAgentFields(agent: AgentConfig): boolean {
 }
 
 function migrateLegacyAgentImageName(agent: AgentConfig): boolean {
-    const legacyName = LEGACY_AGENT_IMAGE_NAMES[agent.type];
+    const legacyNames = LEGACY_AGENT_IMAGE_NAMES[agent.type];
     const currentName = AGENT_IMAGE_NAMES[agent.type];
 
-    if (!agent.dockerImage?.startsWith(`${legacyName}:`)) {
-        return false;
+    for (const legacyName of legacyNames) {
+        if (agent.dockerImage?.startsWith(`${legacyName}:`)) {
+            agent.dockerImage = `${currentName}:${agent.dockerImage.slice(legacyName.length + 1)}`;
+            logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Migrated agent Docker image to registry namespace');
+            return true;
+        }
     }
 
-    agent.dockerImage = `${currentName}:${agent.dockerImage.slice(legacyName.length + 1)}`;
-    logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Migrated agent Docker image to registry namespace');
-    return true;
+    return false;
 }
 
 function addMissingModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
@@ -195,6 +197,30 @@ function updateCodexDefaults(agent: AgentConfig): boolean {
     return migrated;
 }
 
+function updateAntigravityDefaults(agent: AgentConfig): boolean {
+    let migrated = false;
+
+    if (agent.type !== 'antigravity') {
+        return false;
+    }
+
+    if (agent.cliVersionType && agent.cliVersion !== 'latest') {
+        agent.cliVersion = 'latest';
+        migrated = true;
+    }
+
+    if (agent.cliVersionResolved !== AGENT_DEFAULT_VERSIONS.antigravity) {
+        agent.cliVersionResolved = AGENT_DEFAULT_VERSIONS.antigravity;
+        migrated = true;
+    }
+
+    if (migrated) {
+        logger.info({ agentAlias: agent.alias, cliVersion: agent.cliVersionResolved }, 'Updated Antigravity CLI version to latest');
+    }
+
+    return migrated;
+}
+
 function removeDeprecatedModels(agent: AgentConfig): boolean {
     if (!agent.supportedModels) {
         return false;
@@ -216,7 +242,7 @@ function removeDeprecatedModels(agent: AgentConfig): boolean {
  */
 export async function migrateAgentConfigs(): Promise<boolean> {
     try {
-        const agents = await loadAgents();
+        const agents = await getConfig<AgentConfig[]>('agents', []);
         let migrated = false;
 
         for (const agent of agents) {
@@ -228,6 +254,7 @@ export async function migrateAgentConfigs(): Promise<boolean> {
                 migrated = addMissingModels(agent, VIBE_CURRENT_MODELS, 'Added current Mistral Vibe models to agent') || migrated;
             }
             migrated = updateCodexDefaults(agent) || migrated;
+            migrated = updateAntigravityDefaults(agent) || migrated;
             migrated = removeDeprecatedModels(agent) || migrated;
         }
 

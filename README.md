@@ -16,7 +16,7 @@ A production-ready automated system that monitors GitHub issues, runs configured
 - **Model-Specific Enqueueing**: Separate jobs for different agent/model labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, and `llm-gemini-pro`
+- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, `llm-antigravity-gemini-pro`, and `llm-antigravity-opus`
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -136,7 +136,15 @@ npm install -g @anthropic-ai/claude-code
 claude login
 ```
 
-Use equivalent login and credential setup for Codex or Gemini if those are the agents you plan to enable.
+Use equivalent login and credential setup for Codex or Antigravity if those are the agents you plan to enable.
+For Antigravity, install the official CLI and authenticate before mounting the credential directory:
+
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+agy login
+```
+
+Set `HOST_ANTIGRAVITY_DIR="$HOME/.antigravity"` when starting the launcher so the worker can mount the authenticated CLI state.
 
 ### 5. Start From Prebuilt Images
 
@@ -151,7 +159,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR="$PWD/repos" \
   -e HOST_CLAUDE_DIR="$HOME/.claude" \
   -e HOST_CODEX_DIR="$HOME/.codex" \
-  -e HOST_GEMINI_DIR="$HOME/.gemini" \
+  -e HOST_ANTIGRAVITY_DIR="$HOME/.antigravity" \
   propr/launcher:latest
 ```
 
@@ -196,7 +204,7 @@ propr/
 ├── scripts/
 │   ├── claude-entrypoint.sh     # Docker entrypoint for Claude execution
 │   ├── codex-entrypoint.sh      # Docker entrypoint for Codex execution
-│   ├── gemini-entrypoint.sh     # Docker entrypoint for Gemini execution
+│   ├── antigravity-entrypoint.sh # Docker entrypoint for Antigravity execution
 │   ├── init-firewall.sh         # Security and firewall setup
 │   ├── fix-issue-labels.js      # Manual issue label management utility
 │   └── list-repo-configs.js     # Repository configuration display utility
@@ -322,7 +330,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR=$PWD/repos \
   -e HOST_CLAUDE_DIR=$HOME/.claude \
   -e HOST_CODEX_DIR=$HOME/.codex \
-  -e HOST_GEMINI_DIR=$HOME/.gemini \
+  -e HOST_ANTIGRAVITY_DIR=$HOME/.antigravity \
   propr/launcher:latest
 ```
 
@@ -344,7 +352,7 @@ via the mounted docker socket. See `.env.example` for required configuration.
 | `propr/agent-base` | Shared base for agent images | ~220 MB |
 | `propr/agent-claude` | Claude Code execution container | ~315 MB |
 | `propr/agent-codex` | OpenAI Codex execution container | ~470 MB |
-| `propr/agent-gemini` | Google Gemini CLI execution container | ~380 MB |
+| `propr/agent-antigravity` | Antigravity execution container | ~380 MB |
 
 Images are also mirrored to GHCR. The current GitHub Actions release workflow
 publishes under `ghcr.io/integry/propr-*`; this namespace can be changed later
@@ -493,7 +501,8 @@ npm test
 Add labels to GitHub issues to specify which enabled agent/model pair should process them:
 - `llm-claude-sonnet46` - Use the configured Claude Sonnet 4.6 model
 - `llm-codex-gpt54` - Use the configured Codex GPT-5.4 model
-- `llm-gemini-pro` - Use the configured Gemini Pro model
+- `llm-antigravity-gemini-pro` - Use the configured Antigravity Gemini Pro model
+- `llm-antigravity-opus` - Use the configured Antigravity Opus model
 - Multiple model labels can be used together for multi-model processing
 
 To target a non-default branch for direct labeled issue execution, add a `base-<branch>` label before processing starts.

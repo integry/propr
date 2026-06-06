@@ -107,6 +107,7 @@ export interface ProcessBatchesResult {
  * Processes files in batches, respecting token limits
  * Returns stats about success/failure for proper status tracking
  */
+// eslint-disable-next-line complexity
 export async function processBatches(options: ProcessBatchesOptions): Promise<ProcessBatchesResult> {
   const { repoPath, fullName, files, agent, log, modelOverride, customPrompt, resolveSummarizationConfig, branch = 'HEAD' } = options;
   // Calculate budget based on model limits (use override if provided)

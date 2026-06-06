@@ -162,8 +162,8 @@ function appendToolUseConversationEvent(event: ReturnType<typeof parseCodexStrea
   return true;
 }
 function appendErrorConversationEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
-  if (event.type !== 'error') return false;
-  pushCodexToolResultEvent(events, event.message || event.result || 'Execution error', true, timestamp);
+  if (event.type !== 'error' && event.type !== 'tool_result') return false;
+  pushCodexToolResultEvent(events, event.message || event.result || event.content || 'Execution error', event.type === 'error' || !!event.is_error || event.status === 'error', timestamp);
   return true;
 }
 function appendStartedCommandEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, pendingCommandStarts: Map<string, string[]>, timestamp?: string): boolean {

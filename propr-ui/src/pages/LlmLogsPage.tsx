@@ -280,7 +280,7 @@ const LlmLogsPage: React.FC = () => {
                 >
                   Agent Tank
                 </a>{' '}
-                to monitor active session and rate limit usage for Claude, Gemini, and Codex CLI tools.
+                to monitor active session and rate limit usage for Claude, Antigravity, and Codex CLI tools.
                 Enable it in Settings to see usage deltas per LLM call.
               </p>
             </div>

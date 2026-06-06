@@ -3,7 +3,6 @@
  */
 
 import crypto from 'crypto';
-import fs from 'fs-extra';
 import path from 'path';
 import { loadImageBufferForContext, type Attachment } from '../attachmentService.js';
 import type {

@@ -258,7 +258,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  {type}
+                  {type === 'antigravity' ? 'Antigravity' : type}
                 </button>
               ))}
             </div>
@@ -327,7 +327,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               id="alias"
               value={formData.alias}
               onChange={(e) => setFormData(prev => ({ ...prev, alias: e.target.value.toLowerCase() }))}
-              placeholder="e.g., primary-claude, fast-gemini"
+              placeholder="e.g., primary-claude, fast-antigravity"
               className={`w-full px-3 py-1.5 bg-gray-50 text-gray-900 border rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm ${
                 errors.alias ? 'border-red-500' : 'border-gray-300'
               }`}

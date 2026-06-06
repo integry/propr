@@ -231,7 +231,7 @@ describe('Issue Detection Deduplication - Integration Tests', () => {
             const base = { owner: 'testowner', repo: 'testrepo', issue: 42, branch: 'main' };
 
             const jobId1 = generateChildJobId(base.owner, base.repo, base.issue, 'claude', 'claude-sonnet-4-20250514', base.branch);
-            const jobId2 = generateChildJobId(base.owner, base.repo, base.issue, 'gemini', 'gemini-2.0-flash', base.branch);
+            const jobId2 = generateChildJobId(base.owner, base.repo, base.issue, 'antigravity', 'antigravity-gemini-2.5-flash', base.branch);
 
             assert.notStrictEqual(jobId1, jobId2, 'Different agents should have different childJobIds');
         });
@@ -252,7 +252,7 @@ describe('Issue Detection Deduplication - Integration Tests', () => {
             const branches = ['main', 'develop'];
             const agents = [
                 { alias: 'claude', model: 'claude-sonnet-4-20250514' },
-                { alias: 'gemini', model: 'gemini-2.0-flash' }
+                { alias: 'antigravity', model: 'antigravity-gemini-2.5-flash' }
             ];
 
             const jobIds = new Set<string>();
@@ -328,14 +328,14 @@ describe('Issue Detection Deduplication - Integration Tests', () => {
                 baseBranch: 'main'
             }, { jobId: childJob1Id });
 
-            const childJob2Id = generateChildJobId(owner, repo, issue, 'gemini', 'gemini-2.0-flash', 'main');
+            const childJob2Id = generateChildJobId(owner, repo, issue, 'antigravity', 'antigravity-gemini-2.5-flash', 'main');
             const childJob2 = await mockQueue.add('processGitHubIssue', {
                 repoOwner: owner,
                 repoName: repo,
                 number: issue,
                 isChildJob: true,
-                agentAlias: 'gemini',
-                modelName: 'gemini-2.0-flash',
+                agentAlias: 'antigravity',
+                modelName: 'antigravity-gemini-2.5-flash',
                 baseBranch: 'main'
             }, { jobId: childJob2Id });
 
@@ -547,8 +547,8 @@ describe('Issue Detection Deduplication - Integration Tests', () => {
             const childConfigs = [
                 { agent: 'claude', model: 'claude-sonnet-4-20250514', branch: 'main' },
                 { agent: 'claude', model: 'claude-sonnet-4-20250514', branch: 'develop' },
-                { agent: 'gemini', model: 'gemini-2.0-flash', branch: 'main' },
-                { agent: 'gemini', model: 'gemini-2.0-flash', branch: 'develop' }
+                { agent: 'antigravity', model: 'antigravity-gemini-2.5-flash', branch: 'main' },
+                { agent: 'antigravity', model: 'antigravity-gemini-2.5-flash', branch: 'develop' }
             ];
 
             const childJobs: (MockJob | null)[] = [];

@@ -22,16 +22,16 @@ const CONTEXT_LEVELS: ContextLevelOption[] = [
 const AGENT_LABELS: Record<AgentType, string> = {
   claude: 'Claude',
   codex: 'Codex (OpenAI)',
-  gemini: 'Gemini',
+  antigravity: 'Antigravity',
   vibe: 'Mistral Vibe',
 };
 
 // Agent order for display
-const AGENT_ORDER: AgentType[] = ['claude', 'gemini', 'codex', 'vibe'];
+const AGENT_ORDER: AgentType[] = ['claude', 'antigravity', 'codex', 'vibe'];
 
 /**
  * Converts a model ID to agent:model format for proper routing.
- * e.g., 'gemini-2.5-flash' -> 'gemini:gemini-2.5-flash'
+ * e.g., 'antigravity-gemini-2.5-flash' -> 'antigravity:antigravity-gemini-2.5-flash'
  */
 function getAgentModelFormat(agentType: AgentType, modelId: string): string {
   return `${agentType}:${modelId}`;
@@ -39,7 +39,7 @@ function getAgentModelFormat(agentType: AgentType, modelId: string): string {
 
 /**
  * Parses an agent:model format string back to its components.
- * e.g., 'gemini:gemini-2.5-flash' -> { agent: 'gemini', model: 'gemini-2.5-flash' }
+ * e.g., 'antigravity:antigravity-gemini-2.5-flash' -> { agent: 'antigravity', model: 'antigravity-gemini-2.5-flash' }
  */
 function parseAgentModel(value: string): { agent: AgentType | null; model: string } {
   if (value.includes(':')) {
@@ -81,7 +81,7 @@ export interface ModelContextSelectorProps {
  * Compact selector component for model and context level.
  * Used in Chat and Improvements panels.
  *
- * Models are grouped by agent (Claude, Gemini, Codex) and the selected value
+ * Models are grouped by agent (Claude, Antigravity, Codex) and the selected value
  * uses the agent:model format for proper routing to the correct LLM backend.
  */
 const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({

@@ -39,6 +39,23 @@ test('Vibe tag versions validate against configured tags before resolving latest
     );
 });
 
+test('Antigravity installer versions only allow latest', async () => {
+    globalThis.fetch = async () => {
+        throw new Error('fetch should not be called for installer-backed CLI versions');
+    };
+
+    assert.equal(await resolveVersion('antigravity', 'default'), 'latest');
+    assert.equal(await resolveVersion('antigravity', 'tag', 'latest'), 'latest');
+    await assert.rejects(
+        () => resolveVersion('antigravity', 'tag', 'preview'),
+        /Unknown tag 'preview'/
+    );
+    await assert.rejects(
+        () => resolveVersion('antigravity', 'specific', '1.2.3'),
+        /only supports the latest version/
+    );
+});
+
 test('Docker image tags are safe for custom Python install specs', () => {
     const component = getDockerTagComponent('mistral-vibe @ https://packages.example.test/builds/vibe.whl');
 
