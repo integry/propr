@@ -19,6 +19,7 @@ interface ParseState {
   todos: TodoItem[];
   tokenUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number };
   pendingAssistantMessage: string;
+  antigravityStreamActive: boolean;
   syntheticTimestampBaseMs: number | null;
   syntheticTimestampIndex: number;
   seenEventFingerprints: Set<string>;
@@ -119,10 +120,50 @@ function processCodexItem(
  * Process Codex events (item.completed, item.updated, turn.completed)
  */
 function processCodexEvent(
-  event: { type?: string; item?: { type?: string; items?: Array<{ text: string; completed: boolean }> }; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } },
+  event: {
+    type?: string;
+    role?: string;
+    content?: unknown;
+    tool?: string;
+    params?: unknown;
+    message?: string;
+    result?: unknown;
+    is_error?: boolean;
+    status?: string;
+    item?: { type?: string; items?: Array<{ text: string; completed: boolean }> };
+    usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number };
+  },
   timestamp: string,
   state: ParseState
 ): boolean {
+  if (event.type === 'message' && event.role === 'assistant') {
+    const content = textFromValue(event.content);
+    if (content) {
+      state.events.push({ type: 'thought' as const, content: truncateContent(content), timestamp });
+    }
+    return true;
+  }
+  if (event.type === 'tool_use' && event.tool) {
+    state.events.push({
+      type: 'tool_use' as const,
+      toolName: event.tool,
+      input: event.params as Record<string, unknown> | undefined,
+      timestamp
+    });
+    return true;
+  }
+  if (event.type === 'error' || event.type === 'tool_result') {
+    state.events.push({
+      type: 'tool_result' as const,
+      result: truncateContent(textFromValue(event.message) || textFromValue(event.result) || textFromValue(event.content) || 'Execution error'),
+      isError: event.type === 'error' || Boolean(event.is_error) || event.status === 'error',
+      timestamp
+    });
+    return true;
+  }
+  if (event.type === 'result') {
+    return true;
+  }
   if (event.type === 'item.completed' && event.item) {
     const item = event.item as { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number; changes?: Array<{ kind: string; path: string }>; items?: Array<{ text: string; completed: boolean }> };
     const updatedTodos = processCodexItem(item, timestamp, state.events);
@@ -365,6 +406,44 @@ function parseVibeTranscriptOutput(output: string, state: ParseState): boolean {
   return handled;
 }
 
+function hasAntigravityModelMetadata(event: { model?: unknown }): boolean {
+  return typeof event.model === 'string' && event.model.trim().length > 0;
+}
+
+function isAntigravityStreamEvent(
+  event: {
+    type?: string;
+    model?: unknown;
+    tool_name?: unknown;
+    parameters?: unknown;
+    tool_id?: unknown;
+    output?: unknown;
+  },
+  state: ParseState
+): boolean {
+  if (event.type === 'init') {
+    return hasAntigravityModelMetadata(event);
+  }
+  if (state.antigravityStreamActive) {
+    return event.type === 'message'
+      || event.type === 'tool_use'
+      || event.type === 'tool_result'
+      || event.type === 'result';
+  }
+  if ((event.type === 'message' || event.type === 'result') && hasAntigravityModelMetadata(event)) {
+    return true;
+  }
+  if (event.type === 'tool_use') {
+    return typeof event.tool_name === 'string'
+      || event.parameters !== undefined
+      || typeof event.tool_id === 'string';
+  }
+  if (event.type === 'tool_result') {
+    return typeof event.tool_id === 'string' || event.output !== undefined;
+  }
+  return false;
+}
+
 /**
  * Parse a single line of Redis output
  */
@@ -372,24 +451,19 @@ function parseLine(line: string, state: ParseState): void {
   try {
     const event = JSON.parse(line);
     const timestamp = event.timestamp || getNextSyntheticTimestamp(state);
-    const isAntigravityStreamEvent = event.type === 'init'
-      || event.type === 'message'
-      || event.type === 'tool_use'
-      || event.type === 'tool_result'
-      || (event.type === 'result' && event.stats);
 
-    if (isAntigravityStreamEvent) {
+    if (isAntigravityStreamEvent(event, state)) {
+      state.antigravityStreamActive = true;
       processAntigravityEvent(event, timestamp, state);
-      return;
-    }
-
-    if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
-      processVibeEvent(event, timestamp, state);
       return;
     }
 
     // Try Codex event processing first
     if (!processCodexEvent(event, timestamp, state)) {
+      if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
+        processVibeEvent(event, timestamp, state);
+        return;
+      }
       // Fall back to Antigravity stream event processing
       processAntigravityEvent(event, timestamp, state);
     }
@@ -408,6 +482,7 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     todos: [],
     tokenUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
     pendingAssistantMessage: '',
+    antigravityStreamActive: false,
     syntheticTimestampBaseMs: Number.isNaN(executionStartMs) ? null : executionStartMs,
     syntheticTimestampIndex: 0,
     seenEventFingerprints: new Set()

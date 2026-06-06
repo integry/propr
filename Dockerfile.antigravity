@@ -16,8 +16,16 @@ RUN if [ "$CLI_VERSION" != "latest" ]; then \
         echo "Antigravity CLI installer only supports CLI_VERSION=latest; got CLI_VERSION=$CLI_VERSION" >&2; \
         exit 1; \
     fi \
-    && curl -fsSL https://antigravity.google/cli/install.sh | bash
-RUN agy --version
+    && curl -fsSL -o /tmp/antigravity-install.sh https://antigravity.google/cli/install.sh \
+    && test -s /tmp/antigravity-install.sh \
+    && sha256sum /tmp/antigravity-install.sh | tee /tmp/antigravity-install.sha256 \
+    && bash -n /tmp/antigravity-install.sh \
+    && bash /tmp/antigravity-install.sh \
+    && rm -f /tmp/antigravity-install.sh
+RUN mkdir -p /home/node/.local/share/propr \
+    && agy --version | tee /home/node/.local/share/propr/antigravity-cli-version.txt \
+    && cp /tmp/antigravity-install.sha256 /home/node/.local/share/propr/antigravity-installer.sha256 \
+    && rm -f /tmp/antigravity-install.sha256
 
 RUN git config --global user.name "ProPR Antigravity Bot" \
     && git config --global user.email "antigravity-bot@propr.dev" \

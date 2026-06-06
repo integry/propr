@@ -57,20 +57,12 @@ function detectParsedStoredOutputFormat(jsonText: string): StoredOutputFormat {
 }
 
 function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
-  return ((parsed.type === 'init' || parsed.type === 'message' || parsed.type === 'result') && hasAntigravityModel(parsed))
-    || (parsed.type === 'result' && hasAntigravityStats(parsed.stats));
+  return (parsed.type === 'init' || parsed.type === 'message' || parsed.type === 'result')
+    && hasAntigravityModel(parsed);
 }
 
 function hasAntigravityModel(parsed: StoredExecutionOutputLine): boolean {
-  return typeof parsed.model === 'string' && parsed.model.startsWith('antigravity-');
-}
-
-function hasAntigravityStats(stats: unknown): boolean {
-  if (typeof stats !== 'object' || stats === null || Array.isArray(stats)) {
-    return false;
-  }
-  const tokenStats = stats as { input_tokens?: unknown; output_tokens?: unknown };
-  return typeof tokenStats.input_tokens === 'number' || typeof tokenStats.output_tokens === 'number';
+  return typeof parsed.model === 'string' && parsed.model.trim().length > 0;
 }
 
 function isVibeTranscript(parsed: StoredExecutionOutputLine | StoredExecutionOutputLine[]): boolean {

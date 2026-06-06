@@ -37,6 +37,22 @@ test('parseRedisOutput handles Antigravity tool_result output and error status',
     ]);
 });
 
+test('parseRedisOutput keeps generic Codex JSONL events out of Antigravity routing', () => {
+    const parsed = parseRedisOutput([
+        JSON.stringify({ type: 'message', role: 'assistant', content: 'Task completed.', timestamp: '2026-06-05T13:00:01.000Z' }),
+        JSON.stringify({ type: 'tool_use', tool: 'shell', params: { command: 'npm test' }, timestamp: '2026-06-05T13:00:02.000Z' }),
+        JSON.stringify({ type: 'tool_result', result: 'tests passed', status: 'success', timestamp: '2026-06-05T13:00:03.000Z' }),
+        JSON.stringify({ type: 'result', result: 'Success', status: 'success', timestamp: '2026-06-05T13:00:04.000Z' })
+    ]);
+
+    assert.deepStrictEqual(parsed.events, [
+        { type: 'thought', content: 'Task completed.', timestamp: '2026-06-05T13:00:01.000Z' },
+        { type: 'tool_use', toolName: 'shell', input: { command: 'npm test' }, timestamp: '2026-06-05T13:00:02.000Z' },
+        { type: 'tool_result', result: 'tests passed', isError: false, timestamp: '2026-06-05T13:00:03.000Z' }
+    ]);
+    assert.strictEqual(parsed.tokenUsage, null);
+});
+
 test('parseRedisOutput emits Vibe live events from a partial JSON transcript array', () => {
     const output = `[
   {
