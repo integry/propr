@@ -62,6 +62,7 @@ export function buildReviewComment(
     assignment: ReviewAssignment,
     analysisResult: AnalysisResult,
     taskUrl?: string,
+    options: { omittedDiffFiles?: string[] } = {},
 ): string {
     const { model, label } = assignment;
     const { response, executionTimeMs, tokenUsage, modelUsed } = analysisResult;
@@ -84,6 +85,9 @@ export function buildReviewComment(
     if (taskUrl) {
         comment += `\n[View Task](${taskUrl})`;
     }
+    if (options.omittedDiffFiles && options.omittedDiffFiles.length > 0) {
+        comment += formatOmittedDiffFilesForComment(options.omittedDiffFiles);
+    }
 
     // --- /fix instructions ---
     comment += `\n\n---\n`;
@@ -96,6 +100,27 @@ export function buildReviewComment(
     comment += `\n<!-- propr:ai-review model="${effectiveModel}" -->`;
 
     return comment;
+}
+
+function formatOmittedDiffFilesForComment(omittedFiles: string[]): string {
+    const maxListedFiles = 50;
+    const listedFiles = omittedFiles.slice(0, maxListedFiles).map(filename => `  - \`${filename}\``).join('\n');
+    const remainingCount = omittedFiles.length - maxListedFiles;
+    const remainingNote = remainingCount > 0 ? `\n  - ...and ${remainingCount} more` : '';
+
+    return [
+        '',
+        '',
+        '<details>',
+        '<summary>Files omitted from review diff</summary>',
+        '',
+        `${omittedFiles.length} file${omittedFiles.length === 1 ? ' was' : 's were'} omitted from the prompt diff due to the review context budget. Large, binary, generated, and lockfile changes are deprioritized.`,
+        '',
+        listedFiles,
+        remainingNote,
+        '',
+        '</details>',
+    ].join('\n');
 }
 
 /**

@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { getAuthenticatedOctokit } from '@propr/core';
+import { getAuthenticatedOctokit, getModelHardLimit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { TaskStates } from '@propr/core';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
@@ -10,7 +10,7 @@ import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { loadPrReviewModel } from '@propr/core';
 import { fetchLinkedIssueContext, buildCommentHistory, updateTaskTitleForPR } from './prCommentJobHelpers.js';
-import { buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents } from './prCommentJobUtils.js';
+import { buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiffWithMetadata, formatFileContents } from './prCommentJobUtils.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
@@ -42,6 +42,11 @@ export interface ReviewResult {
 }
 
 interface PRData { data: { head: { ref: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
+
+const MIN_REVIEW_DIFF_MAX_CHARS = 100000;
+const MAX_REVIEW_DIFF_MAX_CHARS = 1200000;
+const REVIEW_DIFF_CHARS_PER_TOKEN_ESTIMATE = 2;
+const REVIEW_DIFF_CONTEXT_RATIO = 0.7;
 
 export interface PRJobContext {
     pullRequestNumber: number;
@@ -162,6 +167,7 @@ interface RunReviewsContext {
     originalTaskSpec: string;
     commandInstructions?: string;
     prDiff: string;
+    omittedDiffFiles: string[];
     fileContents: string;
     correlatedLogger: Logger;
 }
@@ -195,7 +201,7 @@ async function runSingleReview(
         }, 'Review analysis completed');
 
         const reviewCommentBody = analysisResult.success
-            ? buildReviewComment(assignment, analysisResult, taskUrl)
+            ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles })
             : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
 
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -279,9 +285,9 @@ function getWebUiTaskUrl(taskId: string): string {
 async function fetchReviewContext(
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
     prData: PRData,
-    params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlationId: string; correlatedLogger: Logger }
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; reviewAssignments: ReviewAssignment[]; correlationId: string; correlatedLogger: Logger }
 ) {
-    const { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger } = params;
+    const { repoOwner, repoName, pullRequestNumber, reviewAssignments, correlationId, correlatedLogger } = params;
     const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = [...allComments].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
@@ -289,14 +295,41 @@ async function fetchReviewContext(
 
     correlatedLogger.info({ pullRequestNumber }, 'Fetching PR diff for review');
     const prFiles = await fetchPRFiles({ octokit, repoOwner, repoName, pullRequestNumber });
-    const prDiff = formatPRDiff(prFiles);
-    correlatedLogger.info({ pullRequestNumber, fileCount: prFiles.length, diffLength: prDiff.length }, 'Fetched PR diff');
+    const diffMaxChars = resolveReviewDiffMaxChars(reviewAssignments.map(assignment => assignment.model));
+    const { diff: prDiff, omittedFiles: omittedDiffFiles } = formatPRDiffWithMetadata(prFiles, diffMaxChars);
+    correlatedLogger.info({
+        pullRequestNumber,
+        fileCount: prFiles.length,
+        diffMaxChars,
+        diffLength: prDiff.length,
+        omittedDiffFileCount: omittedDiffFiles.length,
+    }, 'Fetched PR diff');
 
     const fileContentsMap = await fetchPRFileContents({ octokit, repoOwner, repoName, prHeadRef: prData.data.head.ref, files: prFiles });
     const fileContents = formatFileContents(fileContentsMap);
     correlatedLogger.info({ pullRequestNumber, filesWithContent: fileContentsMap.size, contentLength: fileContents.length }, 'Fetched full file contents');
 
-    return { allComments, commentHistory, linkedIssueResult, prDiff, fileContents };
+    return { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents };
+}
+
+function resolveReviewDiffMaxChars(models: string[]): number {
+    const envOverride = Number.parseInt(process.env.PR_REVIEW_DIFF_MAX_CHARS || '', 10);
+    if (Number.isFinite(envOverride) && envOverride > 0) {
+        return clamp(envOverride, MIN_REVIEW_DIFF_MAX_CHARS, MAX_REVIEW_DIFF_MAX_CHARS);
+    }
+
+    const hardLimits = models.length > 0
+        ? models.map(model => getModelHardLimit(model))
+        : [getModelHardLimit(undefined)];
+    const smallestHardLimit = Math.min(...hardLimits);
+    const diffTokenBudget = Math.floor(smallestHardLimit * REVIEW_DIFF_CONTEXT_RATIO);
+    const maxChars = diffTokenBudget * REVIEW_DIFF_CHARS_PER_TOKEN_ESTIMATE;
+
+    return clamp(maxChars, MIN_REVIEW_DIFF_MAX_CHARS, MAX_REVIEW_DIFF_MAX_CHARS);
+}
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
 }
 
 async function handleUltrafixContinuation(
@@ -349,12 +382,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         historyMetadata: { commandMode: 'review' }
     });
 
-    const { allComments, commentHistory, linkedIssueResult, prDiff, fileContents } = await fetchReviewContext(
-        state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger }
-    );
-
     const assignments = await resolveReviewAssignments(job.data.requestedModels, llm, correlatedLogger);
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
+
+    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents } = await fetchReviewContext(
+        state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, reviewAssignments: assignments, correlationId, correlatedLogger }
+    );
 
     // Filter out ultrafix synthetic comments (id: 0) from displayed IDs
     const realComments = state.unprocessedComments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
@@ -394,7 +427,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const reviewCtx: RunReviewsContext = {
         registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
         taskId, taskUrl, combinedCommentBody, commentHistory,
-        originalTaskSpec: linkedIssueResult.context || '', commandInstructions: job.data.commandInstructions, prDiff, fileContents, correlatedLogger,
+        originalTaskSpec: linkedIssueResult.context || '',
+        commandInstructions: job.data.commandInstructions,
+        prDiff,
+        omittedDiffFiles,
+        fileContents,
+        correlatedLogger,
     };
 
     const reviewResults: ReviewResult[] = [];
