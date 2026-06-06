@@ -45,9 +45,9 @@ services:
       # Add agent credential mounts with a deployment-specific override file.
       # Keeping them out of the base production compose file avoids Docker
       # creating missing host credential directories as root-owned folders.
-      # Example OpenCode override:
+      # Example OpenCode override (API only reads config/auth metadata):
       #   - /home/propr/.config/opencode:/home/propr/.config/opencode:ro
-      #   - /home/propr/.local/share/opencode:/home/propr/.local/share/opencode:rw
+      #   - /home/propr/.local/share/opencode:/home/propr/.local/share/opencode:ro
     depends_on:
       redis:
         condition: service_healthy

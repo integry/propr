@@ -131,7 +131,7 @@ const HOST_VIBE_PROMPT_CACHE_DIR = process.env.HOST_VIBE_PROMPT_CACHE_DIR
 // <CONFIG_PATH> resolves correctly on the host. Mounting at HOST:HOST keeps
 // the paths identical end-to-end so the agent spawner doesn't need to do
 // any path translation.
-export function agentCredentialArgs() {
+export function agentCredentialArgs({ opencodeDataReadWrite = false } = {}) {
     const args = [];
     if (HOST_CLAUDE_DIR) {
         args.push('-v', `${HOST_CLAUDE_DIR}:${HOST_CLAUDE_DIR}`);
@@ -156,7 +156,8 @@ export function agentCredentialArgs() {
         args.push('-e', `OPENCODE_CONFIG_PATH=${HOST_OPENCODE_LEGACY_DIR}`);
     }
     if (HOST_OPENCODE_DATA_DIR) {
-        args.push('-v', `${HOST_OPENCODE_DATA_DIR}:${HOST_OPENCODE_DATA_DIR}:rw`);
+        const dataMode = opencodeDataReadWrite ? 'rw' : 'ro';
+        args.push('-v', `${HOST_OPENCODE_DATA_DIR}:${HOST_OPENCODE_DATA_DIR}:${dataMode}`);
         args.push('-e', `HOST_OPENCODE_DATA_DIR=${HOST_OPENCODE_DATA_DIR}`);
     }
     if (HOST_VIBE_DIR) {
@@ -445,7 +446,8 @@ function startApp() {
         '-e', 'STAGING_ENV_FILE=/usr/src/app/.env',
     ]);
 
-    const creds = agentCredentialArgs();
+    const workerCreds = agentCredentialArgs({ opencodeDataReadWrite: true });
+    const readOnlyCreds = agentCredentialArgs();
     const vibePrompts = vibePromptCacheArgs();
 
     removeIfExists(`${STACK}-worker`);
@@ -454,13 +456,13 @@ function startApp() {
         '-v', '/tmp/claude-logs:/tmp/claude-logs',
         '--ulimit', 'nofile=65536:65536',
         ...vibePrompts,
-        ...creds,
+        ...workerCreds,
     ]);
 
     removeIfExists(`${STACK}-analysis-worker`);
     appContainer(`${STACK}-analysis-worker`, ['dist/src/analysis_worker.js'], [
         ...vibePrompts,
-        ...creds,
+        ...readOnlyCreds,
     ]);
 
     removeIfExists(`${STACK}-indexing-worker`);
@@ -468,7 +470,7 @@ function startApp() {
         '-v', '/tmp/claude-logs:/tmp/claude-logs',
         '-e', `INDEXING_SCAN_INTERVAL_MS=${process.env.INDEXING_SCAN_INTERVAL_MS || '300000'}`,
         '-e', `INDEXING_REINDEX_INTERVAL_MS=${process.env.INDEXING_REINDEX_INTERVAL_MS || '86400000'}`,
-        ...creds,
+        ...readOnlyCreds,
     ]);
 
     removeIfExists(`${STACK}-api`);
@@ -478,7 +480,7 @@ function startApp() {
         '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
         '--ulimit', 'nofile=65536:65536',
         ...vibePrompts,
-        ...creds,
+        ...readOnlyCreds,
         '-e', `API_PUBLIC_URL=${process.env.API_PUBLIC_URL || `http://localhost:${API_PORT}`}`,
         '-e', `FRONTEND_URL=${process.env.FRONTEND_URL || `http://localhost:${UI_PORT}`}`,
         '-e', `GH_OAUTH_CALLBACK_URL=${process.env.GH_OAUTH_CALLBACK_URL || `http://localhost:${API_PORT}/api/auth/github/callback`}`,

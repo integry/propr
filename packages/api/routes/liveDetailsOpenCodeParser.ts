@@ -84,6 +84,17 @@ function extractOpenCodeAssistantMessage(event: OpenCodeEvent): string | null {
 function extractOpenCodeStructuredText(event: OpenCodeEvent, eventType: string | undefined): string | null {
   const isConfirmedAssistant = event.message?.role === 'assistant';
   const includeTopLevel = isConfirmedAssistant || !eventType || !isOpenCodeToolRelatedType(eventType);
+
+  // When both top-level parts and message parts exist, prefer message parts to
+  // avoid emitting duplicate content when the same text appears in both places.
+  if (isConfirmedAssistant && includeTopLevel) {
+    const messageText = extractOpenCodeConfirmedAssistantText(event.message!, !isOpenCodeStreamingTextEvent(event));
+    if (messageText) {
+      const responseText = joinOpenCodeTextValues([event.response?.text, event.response?.delta, event.response?.content]);
+      return joinOpenCodeTextGroups(messageText, responseText) || null;
+    }
+  }
+
   const topLevelPartsText = includeTopLevel
     ? joinOpenCodePartsText([...(event.part ? [event.part] : []), ...(event.parts ?? [])], false)
     : '';
