@@ -20,6 +20,19 @@ test('detectStoredOutputFormat keeps Codex message streams with session_id as co
   assert.equal(detectStoredOutputFormat(output), 'codex');
 });
 
+test('detectStoredOutputFormat does not classify bare conversation_id JSON as Claude', async () => {
+  const { detectStoredOutputFormat } = await import('../routes/liveDetailsStoredOutputFormat.js');
+  assert.equal(detectStoredOutputFormat('{"conversation_id":"provider-session"}\n'), 'unknown');
+});
+
+test('detectStoredOutputFormat keeps Claude-shaped conversation_id JSON as Claude', async () => {
+  const { detectStoredOutputFormat } = await import('../routes/liveDetailsStoredOutputFormat.js');
+  assert.equal(
+    detectStoredOutputFormat('{"conversation_id":"claude-session","role":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n'),
+    'claude'
+  );
+});
+
 test('parseOpenCodeOutputToConversationResult separates structured assistant text parts', async () => {
   const { parseOpenCodeOutputToConversationResult } = await import('../routes/liveDetailsOpenCodeParser.js');
   const output = JSON.stringify({
@@ -36,6 +49,6 @@ test('parseOpenCodeOutputToConversationResult separates structured assistant tex
 
   const result = parseOpenCodeOutputToConversationResult(output);
 
-  assert.equal(result?.events[0]?.type, 'thought');
+  assert.equal(result?.events[0]?.type, 'message');
   assert.equal(result?.events[0]?.content, 'First part.\nSecond part.');
 });

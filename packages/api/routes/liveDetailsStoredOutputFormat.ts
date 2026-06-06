@@ -101,7 +101,17 @@ function isCodexStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
 }
 
 function isClaudeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
-  return Boolean((parsed.type && CLAUDE_STORED_OUTPUT_TYPES.has(parsed.type)) || (parsed.conversation_id && !parsed.type));
+  return Boolean((parsed.type && CLAUDE_STORED_OUTPUT_TYPES.has(parsed.type)) || isClaudeConversationEnvelope(parsed));
+}
+
+function isClaudeConversationEnvelope(parsed: StoredExecutionOutputLine): boolean {
+  if (!parsed.conversation_id || parsed.type) return false;
+  if (parsed.role === 'assistant' || parsed.role === 'user') return true;
+  const message = parsed.message as { role?: unknown; content?: unknown } | undefined;
+  return Boolean(
+    message
+    && (message.role === 'assistant' || message.role === 'user' || Array.isArray(message.content))
+  );
 }
 
 function isVibeTranscript(parsed: StoredExecutionOutputLine | StoredExecutionOutputLine[]): boolean {

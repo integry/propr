@@ -137,6 +137,43 @@ describe('OpenCode live details parsing', () => {
         ]);
     });
 
+    test('emits complete assistant parts as one message event', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'message',
+            timestamp: '2026-05-05T00:00:00.000Z',
+            message: {
+                role: 'assistant',
+                parts: [
+                    { type: 'text', text: 'First sentence.' },
+                    { type: 'text', text: 'Second sentence.' },
+                ],
+            },
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'message', content: 'First sentence.\nSecond sentence.', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('continues to concatenate explicit OpenCode delta parts', () => {
+        const result = parseOpenCodeOutputToConversationResult([
+            JSON.stringify({
+                type: 'message_delta',
+                timestamp: '2026-05-05T00:00:00.000Z',
+                message: { role: 'assistant', delta: 'Hello ' },
+            }),
+            JSON.stringify({
+                type: 'part_delta',
+                timestamp: '2026-05-05T00:00:01.000Z',
+                part: { type: 'text_delta', delta: 'world' },
+            }),
+        ].join('\n'));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'Hello world', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
     test('filters generic OpenCode tool events without a tool name or id', () => {
         const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
             type: 'tool',

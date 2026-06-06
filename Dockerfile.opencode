@@ -1,16 +1,17 @@
 # OpenCode agent image. Extends propr/agent-base (alpine + common tooling).
 
-# BASE_TAG should match the version of propr/agent-base built alongside this
-# agent image. scripts/build-images.sh passes it automatically; this default
-# keeps direct local builds valid.
-ARG BASE_TAG=0.8.1
-FROM propr/agent-base:${BASE_TAG}
+# BASE_IMAGE must point at the exact agent-base image built alongside this
+# agent image. scripts/build-images.sh passes it automatically.
+ARG BASE_IMAGE=propr/agent-base:latest
+FROM ${BASE_IMAGE}
 
 # Keep this default aligned with AGENT_DEFAULT_VERSIONS.opencode for
 # reproducible direct builds. scripts/build-images.sh may override it.
 ARG CLI_VERSION=1.15.12
 
 USER root
+# su-exec is used by scripts/opencode-entrypoint.sh when Docker starts the
+# container as root so it can drop back to the node user after setup.
 RUN apk add --no-cache su-exec \
     && npm install -g opencode-ai@${CLI_VERSION}
 # Smoke-test the binary and verify the installed CLI exposes the flags the

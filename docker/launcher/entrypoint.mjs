@@ -393,6 +393,30 @@ function validateEnv() {
         console.error(`ERROR: ${invalidCredentialPath}`);
         process.exit(1);
     }
+    warnAboutOpenCodeCredentialPaths();
+}
+
+function warnAboutOpenCodeCredentialPaths() {
+    const hasOpenCodeConfig = Boolean(HOST_OPENCODE_XDG_DIR || HOST_OPENCODE_LEGACY_DIR);
+    if (hasOpenCodeConfig && !HOST_OPENCODE_DATA_DIR) {
+        console.warn(
+            'WARNING: OpenCode config is mounted but HOST_OPENCODE_DATA_DIR is not set. ' +
+            'OpenCode login state is usually stored under ~/.local/share/opencode; ' +
+            'set HOST_OPENCODE_DATA_DIR to that host path if authenticated runs cannot see credentials.'
+        );
+    }
+    for (const [name, value] of [
+        ['HOST_OPENCODE_XDG_DIR', HOST_OPENCODE_XDG_DIR],
+        ['HOST_OPENCODE_LEGACY_DIR', HOST_OPENCODE_LEGACY_DIR],
+        ['HOST_OPENCODE_DATA_DIR', HOST_OPENCODE_DATA_DIR],
+    ]) {
+        if (value && !existsSync(value)) {
+            console.warn(
+                `WARNING: ${name} (${value}) is not visible inside the launcher container. ` +
+                'If this path is missing on the Docker host, Docker may create an empty root-owned bind-mount directory.'
+            );
+        }
+    }
 }
 
 function startRedis() {

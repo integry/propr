@@ -88,15 +88,17 @@ function extractOpenCodeStructuredText(event: OpenCodeEvent, eventType: string |
     ? joinOpenCodePartsText([...(event.part ? [event.part] : []), ...(event.parts ?? [])], false)
     : '';
   const responseText = joinOpenCodeTextValues([event.response?.text, event.response?.delta, event.response?.content]);
-  const messageText = isConfirmedAssistant ? extractOpenCodeConfirmedAssistantText(event.message!) : '';
+  const messageText = isConfirmedAssistant
+    ? extractOpenCodeConfirmedAssistantText(event.message!, !isOpenCodeStreamingTextEvent(event))
+    : '';
   const combined = joinOpenCodeTextGroups(topLevelPartsText, joinOpenCodeTextGroups(messageText, responseText));
   return combined || null;
 }
 
-function extractOpenCodeConfirmedAssistantText(message: NonNullable<OpenCodeEvent['message']>): string {
+function extractOpenCodeConfirmedAssistantText(message: NonNullable<OpenCodeEvent['message']>, trim = true): string {
   return message.parts?.length
-    ? joinOpenCodePartsText(message.parts)
-    : joinOpenCodeTextValues([message.text, message.delta, message.content]);
+    ? joinOpenCodePartsText(message.parts, trim)
+    : joinOpenCodeTextValues([message.text, message.delta, message.content], trim);
 }
 
 function extractOpenCodeBareText(event: OpenCodeEvent, eventType: string | undefined): string | null {
@@ -115,13 +117,19 @@ function isOpenCodeToolRelatedType(type: string): boolean {
 
 function isOpenCodeStreamingTextEvent(event: OpenCodeEvent): boolean {
   const type = event.type?.toLowerCase();
-  return type === 'delta' || Boolean(event.part || event.parts?.length);
+  if (type && ['delta', 'text_delta', 'message_delta', 'part_delta'].includes(type)) return true;
+  if (typeof event.delta === 'string' || typeof event.response?.delta === 'string' || typeof event.message?.delta === 'string') return true;
+  const parts = [...(event.part ? [event.part] : []), ...(event.parts ?? []), ...(event.message?.parts ?? [])];
+  return parts.some(part => {
+    const partType = part.type?.toLowerCase();
+    return typeof part.delta === 'string' || partType === 'delta' || partType === 'text_delta';
+  });
 }
 
 function joinOpenCodePartsText(parts: Array<{ type?: string; text?: string; delta?: string; content?: unknown }>, trim = true): string {
   const values = parts.flatMap(part => {
     const partType = part.type?.toLowerCase();
-    if (partType && !['text', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return [];
+    if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return [];
     return [part.text, part.delta, part.content];
   });
   return joinOpenCodeTextValues(values, trim);
