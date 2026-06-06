@@ -15,7 +15,7 @@ describe('shared model definitions', () => {
         assert.strictEqual(AGENT_DEFAULTS.opencode.dockerImage, 'propr/agent-opencode:latest');
         assert.strictEqual(AGENT_DEFAULTS.opencode.configPath, '~/.config/opencode');
         assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
-        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.15.12');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.16.2');
     });
 
     test('every default agent model is present in the shared model catalog', () => {
@@ -29,11 +29,12 @@ describe('shared model definitions', () => {
         }
     });
 
-    test('OpenCode defaults use OpenCode provider model ids', () => {
+    test('OpenCode defaults use unauthenticated OpenCode free model ids', () => {
         const modelIds = new Set(OPENCODE_MODELS.map(model => model.id));
-        assert.ok(modelIds.has('opencode-go/kimi-k2.6'));
+        assert.ok(modelIds.has('opencode/minimax-m3-free'));
         for (const modelId of AGENT_DEFAULTS.opencode.defaultModels) {
-            assert.ok(modelId.startsWith('opencode-go/'), `${modelId} should use the OpenCode provider prefix`);
+            assert.ok(modelId.startsWith('opencode/'), `${modelId} should use the built-in OpenCode provider prefix`);
+            assert.ok(modelId.includes('free') || modelId === 'opencode/big-pickle', `${modelId} should be usable without provider login`);
             assert.ok(modelIds.has(modelId), `${modelId} should exist in OPENCODE_MODELS`);
         }
     });

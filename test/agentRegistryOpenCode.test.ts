@@ -16,8 +16,8 @@ const opencodeConfig: AgentConfig = {
     enabled: true,
     dockerImage: 'propr/agent-opencode:latest',
     configPath: '~/.config/opencode',
-    supportedModels: ['opencode-go/kimi-k2.6'],
-    defaultModel: 'opencode-go/kimi-k2.6'
+    supportedModels: ['opencode/minimax-m3-free'],
+    defaultModel: 'opencode/minimax-m3-free'
 };
 
 let AgentRegistry: typeof import('../packages/core/src/agents/AgentRegistry.js').AgentRegistry;
@@ -26,6 +26,7 @@ let ClaudeAgent: typeof import('../packages/core/src/agents/impl/ClaudeAgent.js'
 let runMigrations: typeof import('../packages/core/src/db/connection.js').runMigrations;
 let closeConnection: typeof import('../packages/core/src/db/connection.js').closeConnection;
 let saveAgents: typeof import('../packages/core/src/config/configManager.js').saveAgents;
+let loadAgents: typeof import('../packages/core/src/config/configManager.js').loadAgents;
 let saveSettings: typeof import('../packages/core/src/config/configManager.js').saveSettings;
 
 before(async () => {
@@ -33,7 +34,7 @@ before(async () => {
     ({ OpenCodeAgent } = await import('../packages/core/src/agents/impl/OpenCodeAgent.js'));
     ({ ClaudeAgent } = await import('../packages/core/src/agents/impl/ClaudeAgent.js'));
     ({ runMigrations, closeConnection } = await import('../packages/core/src/db/connection.js'));
-    ({ saveAgents, saveSettings } = await import('../packages/core/src/config/configManager.js'));
+    ({ saveAgents, loadAgents, saveSettings } = await import('../packages/core/src/config/configManager.js'));
     await runMigrations();
 });
 
@@ -88,6 +89,23 @@ test('AgentRegistry registers enabled OpenCode configs by alias', async () => {
         registry.getAllAgents().some(registeredAgent => registeredAgent instanceof OpenCodeAgent),
         'AgentRegistry factory should construct an OpenCodeAgent from an OpenCode config'
     );
+});
+
+test('AgentRegistry preserves dynamic OpenCode provider models during migration', async () => {
+    await saveAgents([{
+        ...opencodeConfig,
+        supportedModels: ['openai/gpt-5.5'],
+        defaultModel: 'openai/gpt-5.5'
+    }]);
+
+    const registry = AgentRegistry.getInstance();
+    skipImageChecks(registry);
+
+    await registry.refresh();
+
+    const [savedAgent] = await loadAgents();
+    assert.ok(savedAgent.supportedModels.includes('openai/gpt-5.5'));
+    assert.strictEqual(savedAgent.defaultModel, 'openai/gpt-5.5');
 });
 
 test('AgentRegistry keeps default Claude fallback when no agents are configured', async () => {

@@ -46,7 +46,9 @@ opencode auth login
 
 OpenCode's current config location is `~/.config/opencode`. Configure new agents with that path. Legacy deployments can keep using `~/.opencode` by saving the agent `configPath` as `~/.opencode`.
 
-Operators must provide their own credentials. OpenCode Go is an optional OpenCode provider/model source, separate from the OpenCode CLI; users can authenticate OpenCode Go or configure any other provider supported by OpenCode.
+OpenCode includes built-in free models that can run without provider login. Operators only need to provide credentials for OpenCode Go or any other authenticated provider/model source they configure.
+
+The OpenCode model list is dynamic. Run `opencode models` on the host after changing auth providers, then add any desired authenticated provider IDs, such as `openai/gpt-5.5`, to that OpenCode agent's `supportedModels`. ProPR keeps only the built-in free OpenCode models as defaults and does not add authenticated provider models automatically.
 
 OpenCode stores provider auth in `~/.local/share/opencode/auth.json`. Deployments must make credentials available to the OpenCode agent container by either:
 
@@ -71,8 +73,8 @@ OpenCode agents are normal ProPR agent configs:
   "enabled": true,
   "dockerImage": "propr/agent-opencode:latest",
   "configPath": "/home/your-user/.config/opencode",
-  "supportedModels": ["opencode-go/kimi-k2.6"],
-  "defaultModel": "opencode-go/kimi-k2.6",
+  "supportedModels": ["opencode/minimax-m3-free"],
+  "defaultModel": "opencode/minimax-m3-free",
   "envVars": {}
 }
 ```
@@ -82,15 +84,15 @@ The equivalent CLI command is:
 ```bash
 propr agent add opencode \
   -t opencode \
-  -m opencode-go/kimi-k2.6 \
-  -d opencode-go/kimi-k2.6 \
+  -m opencode/minimax-m3-free \
+  -d opencode/minimax-m3-free \
   --docker-image propr/agent-opencode:latest \
   --config-path /home/your-user/.config/opencode
 ```
 
-Use `opencode-go/kimi-k2.6` for OpenCode Go Kimi, or replace it with another model ID from the provider configured in OpenCode. The `envVars` block is required only when using copied `opencode auth login` credentials under the mounted config tree; provider-key env vars can be supplied there instead.
+Use `opencode/minimax-m3-free` for the built-in free OpenCode model, or replace it with another model ID from `opencode models` after authenticating providers in OpenCode. The `envVars` block is required only when using copied `opencode auth login` credentials under the mounted config tree; provider-key env vars can be supplied there instead.
 
-With the default `MODEL_LABEL_PATTERN=^llm-(.+)$`, the GitHub label `llm-opencode-kimi-k26` maps to `opencode-go/kimi-k2.6` through ProPR's model catalog when an enabled OpenCode agent supports that model.
+With the default `MODEL_LABEL_PATTERN=^llm-(.+)$`, the GitHub label `llm-opencode-minimax-m3-free` maps to `opencode/minimax-m3-free` through ProPR's model catalog when an enabled OpenCode agent supports that model.
 
 ## Container Execution
 

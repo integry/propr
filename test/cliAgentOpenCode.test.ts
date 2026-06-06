@@ -23,7 +23,7 @@ describe("CLI OpenCode agent support", () => {
     const addCommand = agentCommand.commands.find((command) => command.name() === "add");
 
     assert.ok(addCommand);
-    assert.match(addCommand.helpInformation(), /Agent type \(claude, codex, gemini, opencode\)/);
+    assert.match(addCommand.helpInformation(), /Agent type \(claude, codex, antigravity,\s+opencode, vibe\)/);
   });
 
   test("addAgent applies OpenCode Docker image and config path defaults", async () => {
@@ -50,7 +50,7 @@ describe("CLI OpenCode agent support", () => {
       {
         alias: "opencode",
         type: "opencode",
-        models: ["opencode-go/kimi-k2.6"],
+        models: ["opencode/minimax-m3-free"],
       },
       client
     );
@@ -65,8 +65,8 @@ describe("CLI OpenCode agent support", () => {
         enabled: true,
         dockerImage: "propr/agent-opencode:latest",
         configPath: "/root/.config/opencode",
-        supportedModels: ["opencode-go/kimi-k2.6"],
-        defaultModel: "opencode-go/kimi-k2.6",
+        supportedModels: ["opencode/minimax-m3-free"],
+        defaultModel: "opencode/minimax-m3-free",
       }],
     });
   });

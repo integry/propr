@@ -23,8 +23,8 @@ describe('agent version management', () => {
         assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
         assert.strictEqual(AGENT_CLI_PACKAGES.opencode, 'opencode-ai');
         assert.deepStrictEqual(AGENT_CLI_TAGS.opencode, ['latest', 'beta', 'dev']);
-        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.15.12');
-        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.15.12');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.16.2');
+        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.16.2');
         assert.strictEqual(AGENT_IMAGE_NAMES.opencode, 'propr/agent-opencode');
         assert.strictEqual(DEFAULT_AGENT_DOCKER_IMAGES.opencode, 'propr/agent-opencode:latest');
         assert.strictEqual(VERSIONED_AGENT_IMAGE_NAMES.opencode, 'propr-opencode');
@@ -53,8 +53,8 @@ describe('agent version management', () => {
 
     test('generates OpenCode-specific image tags', () => {
         assert.strictEqual(
-            generateImageTag('opencode', '1.15.12', 'abc123'),
-            'propr-opencode:1.15.12-abc123'
+            generateImageTag('opencode', '1.16.2', 'abc123'),
+            'propr-opencode:1.16.2-abc123'
         );
     });
 
@@ -66,14 +66,14 @@ describe('agent version management', () => {
     test('returns OpenCode package tags and default version metadata', async () => {
         globalThis.fetch = (async () => new Response(JSON.stringify({
             name: 'opencode-ai',
-            'dist-tags': { latest: '1.15.12', beta: '1.16.0-beta.1', dev: '1.16.0-dev.1' },
+            'dist-tags': { latest: '1.16.2', beta: '1.17.0-beta.1', dev: '1.17.0-dev.1' },
             versions: {
-                '1.15.12': { name: 'opencode-ai', version: '1.15.12' },
-                '1.15.11': { name: 'opencode-ai', version: '1.15.11' }
+                '1.16.2': { name: 'opencode-ai', version: '1.16.2' },
+                '1.16.1': { name: 'opencode-ai', version: '1.16.1' }
             },
             time: {
-                '1.15.12': '2026-05-29T00:00:00.000Z',
-                '1.15.11': '2026-05-28T00:00:00.000Z'
+                '1.16.2': '2026-06-05T00:00:00.000Z',
+                '1.16.1': '2026-06-04T00:00:00.000Z'
             }
         }), {
             status: 200,
@@ -84,11 +84,11 @@ describe('agent version management', () => {
 
         assert.strictEqual(metadata.agentType, 'opencode');
         assert.strictEqual(metadata.packageName, 'opencode-ai');
-        assert.strictEqual(metadata.defaultVersion, '1.15.12');
+        assert.strictEqual(metadata.defaultVersion, '1.16.2');
         assert.deepStrictEqual(metadata.availableTags, [
-            { tag: 'latest', version: '1.15.12' },
-            { tag: 'beta', version: '1.16.0-beta.1' },
-            { tag: 'dev', version: '1.16.0-dev.1' }
+            { tag: 'latest', version: '1.16.2' },
+            { tag: 'beta', version: '1.17.0-beta.1' },
+            { tag: 'dev', version: '1.17.0-dev.1' }
         ]);
     });
 });

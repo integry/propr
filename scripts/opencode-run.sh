@@ -22,4 +22,4 @@ prompt_file="$(mktemp -t opencode-prompt.XXXXXX.md)"
 chmod 600 "$prompt_file"
 printf '%s' "$prompt" > "$prompt_file"
 
-opencode run "$@" --file "$prompt_file" "Read the attached prompt file and follow its instructions exactly."
+opencode run "$@" --file "$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run. Follow the instructions in that file exactly."

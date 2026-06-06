@@ -294,7 +294,7 @@ function getRoutedOpenCodeModelName(modelId: string): string | null {
 
 function isOpenCodeModelId(modelId: string): boolean {
     const lowerModel = modelId.toLowerCase();
-    return lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
+    return lowerModel.startsWith('opencode/') || lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
 }
 
 function getReviewDisplayLabel(modelId: string): string {

@@ -16,7 +16,7 @@ A production-ready automated system that monitors GitHub issues, runs configured
 - **Model-Specific Enqueueing**: Separate jobs for different agent/model labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, `llm-opencode-kimi-k26`, `llm-antigravity-gemini-pro`, and `llm-antigravity-opus`
+- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, `llm-opencode-minimax-m3-free`, `llm-antigravity-gemini-pro`, and `llm-antigravity-opus`
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -144,7 +144,7 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy login
 ```
 
-Set `HOST_ANTIGRAVITY_DIR="$HOME/.antigravity"` when starting the launcher so the worker can mount the authenticated CLI state.
+Set `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` when starting the launcher so the worker can mount the authenticated CLI state.
 
 ### 5. Start From Prebuilt Images
 
@@ -159,7 +159,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR="$PWD/repos" \
   -e HOST_CLAUDE_DIR="$HOME/.claude" \
   -e HOST_CODEX_DIR="$HOME/.codex" \
-  -e HOST_ANTIGRAVITY_DIR="$HOME/.antigravity" \
+  -e HOST_ANTIGRAVITY_DIR="$HOME/.gemini" \
   propr/launcher:latest
 ```
 
@@ -331,7 +331,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR=$PWD/repos \
   -e HOST_CLAUDE_DIR=$HOME/.claude \
   -e HOST_CODEX_DIR=$HOME/.codex \
-  -e HOST_ANTIGRAVITY_DIR=$HOME/.antigravity \
+  -e HOST_ANTIGRAVITY_DIR=$HOME/.gemini \
   -e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode \
   -e HOST_OPENCODE_DATA_DIR=$HOME/.local/share/opencode \
   propr/launcher:latest
@@ -514,7 +514,7 @@ npm test
 Add labels to GitHub issues to specify which enabled agent/model pair should process them:
 - `llm-claude-sonnet46` - Use the configured Claude Sonnet 4.6 model
 - `llm-codex-gpt54` - Use the configured Codex GPT-5.4 model
-- `llm-opencode-kimi-k26` - Use the configured OpenCode Kimi K2.6 model
+- `llm-opencode-minimax-m3-free` - Use the configured OpenCode MiniMax M3 Free model
 - `llm-antigravity-gemini-pro` - Use the configured Antigravity Gemini Pro model
 - `llm-antigravity-opus` - Use the configured Antigravity Opus model
 - Multiple model labels can be used together for multi-model processing

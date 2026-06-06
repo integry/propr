@@ -1,9 +1,25 @@
 import { test, after, mock, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { resolveModelAlias, getDefaultModel, getPreferredModelForAgent, MODEL_ALIASES, resolveLlmLabel, ALL_MODELS, findMatchingModel, getModelShortName, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from '@propr/core';
 import type { ReviewAssignment } from '@propr/core';
-import { AgentRegistry } from '@propr/core';
 import type { AgentConfig } from '@propr/core';
+
+process.env.NODE_ENV = 'test';
+
+const {
+    resolveModelAlias,
+    getDefaultModel,
+    getPreferredModelForAgent,
+    MODEL_ALIASES,
+    resolveLlmLabel,
+    ALL_MODELS,
+    findMatchingModel,
+    getModelShortName,
+    resolveReviewModels,
+    validatePrReviewModelValue,
+    ReviewModelResolutionError,
+    NoDefaultModelConfiguredError,
+    AgentRegistry
+} = await import('@propr/core');
 
 test('Model Aliases Configuration', async (t) => {
     await t.test('should resolve known aliases to full model IDs', () => {
@@ -97,7 +113,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'opencode' as const,
                 alias: 'opencode',
                 enabled: true,
-                supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode:kimi-k2.6']
+                supportedModels: ['opencode/minimax-m3-free', 'openai/gpt-5.5', 'opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode:kimi-k2.6']
             }
         },
         {
@@ -151,15 +167,21 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
     });
 
     await t.test('Step 3: resolves exact githubLabel for OpenCode models', async () => {
-        const result = await resolveLlmLabel('opencode-kimi-k26');
+        const result = await resolveLlmLabel('opencode-minimax-m3-free');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
-        assert.strictEqual(result.model, 'opencode-go/kimi-k2.6', 'Should resolve to correct OpenCode model');
+        assert.strictEqual(result.model, 'opencode/minimax-m3-free', 'Should resolve to correct OpenCode model');
     });
 
     await t.test('Step 1: resolves routed OpenCode model IDs without stripping the route prefix', async () => {
         const result = await resolveLlmLabel('opencode:kimi-k2.6');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
         assert.strictEqual(result.model, 'opencode:kimi-k2.6', 'Should preserve routed OpenCode model ID');
+    });
+
+    await t.test('Step 1: resolves dynamic OpenCode provider model IDs from supported models', async () => {
+        const result = await resolveLlmLabel('openai/gpt-5.5');
+        assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to configured OpenCode agent');
+        assert.strictEqual(result.model, 'openai/gpt-5.5', 'Should preserve dynamic OpenCode provider model ID');
     });
 
     await t.test('Step 2: resolves explicit agentAlias:modelId labels', async () => {
@@ -221,7 +243,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
     await t.test('Step 4: resolves opencode alias to preferred model', async () => {
         const result = await resolveLlmLabel('opencode');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
-        assert.strictEqual(result.model, 'opencode-go/kimi-k2.6', 'Should use preferred OpenCode model');
+        assert.strictEqual(result.model, 'opencode/minimax-m3-free', 'Should use preferred OpenCode model');
     });
 
     await t.test('Step 2: resolves vibe alias to default model', async () => {
@@ -526,8 +548,8 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
     });
 
     await t.test('returns correct short name for OpenCode models', () => {
-        assert.strictEqual(getModelShortName('opencode-go/kimi-k2.6'), 'Kimi K2.6');
-        assert.strictEqual(getModelShortName('opencode-go/glm-5.1'), 'GLM-5.1');
+        assert.strictEqual(getModelShortName('opencode/minimax-m3-free'), 'MiniMax M3 Free');
+        assert.strictEqual(getModelShortName('opencode/big-pickle'), 'Big Pickle');
     });
 
     await t.test('returns correct short name for Vibe (Mistral) models', () => {
@@ -622,7 +644,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'opencode' as const,
                 alias: 'opencode',
                 enabled: true,
-                supportedModels: ['opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode:kimi-k2.6']
+                supportedModels: ['opencode/minimax-m3-free', 'openai/gpt-5.5', 'opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode:kimi-k2.6']
             }
         },
         {
@@ -745,7 +767,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         // opencode -> preferred enabled OpenCode agent/model
         const opencodeResults = await resolveReviewModels(['opencode']);
         assert.strictEqual(opencodeResults[0].agentAlias, 'opencode');
-        assert.strictEqual(opencodeResults[0].model, 'opencode-go/kimi-k2.6');
+        assert.strictEqual(opencodeResults[0].model, 'opencode/minimax-m3-free');
 
         // vibe -> default enabled Vibe agent/model
         const vibeResults = await resolveReviewModels(['vibe']);
@@ -754,11 +776,34 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
     });
 
     await t.test('OpenCode labels resolve to configured OpenCode agent models', async () => {
-        const results = await resolveReviewModels(['opencode-kimi-k26']);
+        const results = await resolveReviewModels(['opencode-minimax-m3-free']);
         assert.strictEqual(results.length, 1);
         assert.strictEqual(results[0].agentAlias, 'opencode');
-        assert.strictEqual(results[0].model, 'opencode-go/kimi-k2.6');
-        assert.strictEqual(results[0].displayLabel, 'Kimi K2.6');
+        assert.strictEqual(results[0].model, 'opencode/minimax-m3-free');
+        assert.strictEqual(results[0].displayLabel, 'MiniMax M3 Free');
+    });
+
+    await t.test('dynamic OpenCode provider model IDs resolve through /review validation', async () => {
+        const results = await resolveReviewModels(['openai/gpt-5.5']);
+        assert.strictEqual(results.length, 1);
+        assert.strictEqual(results[0].agentAlias, 'opencode');
+        assert.strictEqual(results[0].model, 'openai/gpt-5.5');
+        assert.strictEqual(results[0].displayLabel, 'GPT 5 5');
+    });
+
+    await t.test('dynamic OpenCode provider labels resolve through configured OpenCode models', async () => {
+        const results = await resolveReviewModels(['opencode-gpt-5.5']);
+        assert.strictEqual(results.length, 1);
+        assert.strictEqual(results[0].agentAlias, 'opencode');
+        assert.strictEqual(results[0].model, 'openai/gpt-5.5');
+    });
+
+    await t.test('dynamic OpenCode provider models validate for pr_review_model', async () => {
+        const explicit = await validatePrReviewModelValue('opencode:openai/gpt-5.5');
+        assert.strictEqual(explicit.valid, true);
+
+        const direct = await validatePrReviewModelValue('openai/gpt-5.5');
+        assert.strictEqual(direct.valid, true);
     });
 
     await t.test('routed OpenCode model IDs resolve through /review validation', async () => {
@@ -766,7 +811,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         assert.strictEqual(results.length, 1);
         assert.strictEqual(results[0].agentAlias, 'opencode');
         assert.strictEqual(results[0].model, 'opencode:kimi-k2.6');
-        assert.strictEqual(results[0].displayLabel, 'Kimi K2.6');
+        assert.strictEqual(results[0].displayLabel, 'kimi-k2.6');
     });
 
     await t.test('unsupported routed OpenCode model IDs fail review validation', async () => {

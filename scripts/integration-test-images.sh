@@ -8,7 +8,7 @@
 #     (npm run images:build)
 #   - Agent images pulled or built locally (propr/agent-{claude,codex,antigravity,opencode})
 #   - `gh auth login` or PROPR_E2E_TOKEN
-#   - Mounted agent credentials on the host ($HOME/.claude, /.codex, /.antigravity,
+#   - Mounted agent credentials on the host ($HOME/.claude, /.codex, /.gemini,
 #     and /.config/opencode or /.opencode as applicable for the tests being run)
 #
 # Env:
@@ -195,15 +195,15 @@ echo "▸ configuring agents"
 # containers via docker socket, the bind mount resolves correctly on the host.
 CLAUDE_CFG="${HOME}/.claude"
 CODEX_CFG="${HOME}/.codex"
-ANTIGRAVITY_CFG="${HOME}/.antigravity"
+ANTIGRAVITY_CFG="${HOME}/.gemini"
 OPENCODE_AGENT_JSON=""
 if [ -n "$OPENCODE_CFG" ]; then
   OPENCODE_AGENT_JSON=$(cat <<JSON
 ,
   {"id":"itest-opencode","type":"opencode","alias":"opencode","enabled":true,
    "dockerImage":"propr/agent-opencode:latest","configPath":"${OPENCODE_CFG}",
-   "supportedModels":["opencode-go/kimi-k2.6"],
-   "defaultModel":"opencode-go/kimi-k2.6"}
+   "supportedModels":["opencode/minimax-m3-free"],
+   "defaultModel":"opencode/minimax-m3-free"}
 JSON
 )
 fi

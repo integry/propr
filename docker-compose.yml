@@ -97,7 +97,7 @@ services:
     environment:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
-      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.antigravity
+      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
@@ -132,7 +132,7 @@ services:
     environment:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
-      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.antigravity
+      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
@@ -165,7 +165,7 @@ services:
     environment:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
-      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.antigravity
+      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
@@ -228,7 +228,7 @@ services:
     environment:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
-      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.antigravity
+      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe

@@ -14,7 +14,9 @@ fi
 
 opencode_config_dir="${OPENCODE_CONFIG_DIR:-${OPENCODE_CONFIG_PATH:-/home/node/.config/opencode}}"
 opencode_legacy_config_dir="${OPENCODE_LEGACY_CONFIG_DIR:-${OPENCODE_LEGACY_CONFIG_PATH:-/home/node/.opencode}}"
-opencode_data_dir="${XDG_DATA_HOME:-/home/node/.local/share}/opencode"
+xdg_data_home="${XDG_DATA_HOME:-/home/node/.local/share}"
+xdg_state_home="${XDG_STATE_HOME:-/home/node/.local/state}"
+opencode_data_dir="$xdg_data_home/opencode"
 
 if [ ! -d "$opencode_config_dir" ] && [ -d "$opencode_legacy_config_dir" ]; then
     echo "Using legacy OpenCode config directory at $opencode_legacy_config_dir" >&2
@@ -24,18 +26,18 @@ fi
 
 if [ -d "$opencode_config_dir" ]; then
     echo "OpenCode config directory available at $opencode_config_dir" >&2
-    mkdir -p "$opencode_data_dir"
+    mkdir -p "$opencode_data_dir" "$xdg_state_home"
     if [ "$(id -u)" = "0" ]; then
-        chown -R node:node "$opencode_data_dir" 2>/dev/null || true
-        chmod -R u+rw "$opencode_data_dir" 2>/dev/null || true
+        chown -R node:node "$xdg_data_home" "$xdg_state_home" 2>/dev/null || true
+        chmod -R u+rwX "$xdg_data_home" "$xdg_state_home" 2>/dev/null || true
         echo "Skipping OpenCode config ownership changes to avoid mutating host bind mounts" >&2
     fi
 else
     echo "WARNING: OpenCode config directory not mounted at $opencode_config_dir" >&2
-    mkdir -p "$opencode_config_dir" "$opencode_data_dir"
+    mkdir -p "$opencode_config_dir" "$opencode_data_dir" "$xdg_state_home"
     if [ "$(id -u)" = "0" ]; then
-        chown -R node:node "$opencode_config_dir" "$opencode_data_dir" 2>/dev/null || true
-        chmod -R u+rw "$opencode_config_dir" "$opencode_data_dir" 2>/dev/null || true
+        chown -R node:node "$opencode_config_dir" "$xdg_data_home" "$xdg_state_home" 2>/dev/null || true
+        chmod -R u+rwX "$opencode_config_dir" "$xdg_data_home" "$xdg_state_home" 2>/dev/null || true
     fi
 fi
 

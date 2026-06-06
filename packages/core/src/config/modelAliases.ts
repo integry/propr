@@ -16,7 +16,19 @@ export { MODEL_SHORT_NAMES };
 export function getModelShortName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
     const modelInfo = MODEL_INFO_MAP[modelId];
-    return modelInfo?.shortName || 'AI';
+    if (modelInfo?.shortName) return modelInfo.shortName;
+    const normalized = modelId.substring(modelId.lastIndexOf(':') + 1);
+    const leaf = normalized.substring(normalized.lastIndexOf('/') + 1);
+    return leaf
+        .split(/[-_.]+/)
+        .filter(Boolean)
+        .map(part => {
+            const lower = part.toLowerCase();
+            if (/^gpt$/.test(lower)) return 'GPT';
+            if (/^ai$/.test(lower)) return 'AI';
+            return lower.charAt(0).toUpperCase() + lower.slice(1);
+        })
+        .join(' ') || 'AI';
 }
 
 /**
@@ -27,7 +39,7 @@ export function getModelShortName(modelId: string | undefined): string {
 export function getModelName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
     const modelInfo = MODEL_INFO_MAP[modelId];
-    return modelInfo?.name || 'AI';
+    return modelInfo?.name || getModelShortName(modelId);
 }
 
 /**
@@ -98,11 +110,16 @@ function getOpenRouterId(internalModelId: ModelId): string {
 
 function isOpenCodeModelId(modelId: string): boolean {
     const lowerModel = modelId.toLowerCase();
-    return lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
+    return lowerModel.startsWith('opencode/') || lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
 }
 
 function isOpenCodeKimiModel(modelId: string): boolean {
     return isOpenCodeModelId(modelId) && modelId.toLowerCase().includes('kimi-k2.6');
+}
+
+function isOpenCodeFreeModel(modelId: string): boolean {
+    const lowerModel = modelId.toLowerCase();
+    return lowerModel.startsWith('opencode/') && lowerModel.includes('free');
 }
 
 /**
@@ -171,7 +188,7 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
  * - Claude: prefer Opus, then Sonnet (skip Haiku)
  * - Antigravity: prefer Pro models, then Opus-class models
  * - Codex (OpenAI): prefer GPT (skip mini/spark variants)
- * - OpenCode: prefer the configured Kimi default
+ * - OpenCode: prefer built-in free models, then the configured Kimi default
  */
 function getPreferredModelForAgent(config: AgentConfig): string | null {
     const models = config.supportedModels;
@@ -207,6 +224,8 @@ function getPreferredModelForAgent(config: AgentConfig): string | null {
             break;
         }
         case 'opencode': {
+            const free = models.find(isOpenCodeFreeModel);
+            if (free) return free;
             const kimi = models.find(isOpenCodeKimiModel);
             if (kimi) return kimi;
             break;

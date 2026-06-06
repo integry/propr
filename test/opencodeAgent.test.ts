@@ -25,8 +25,8 @@ function createAgent(): OpenCodeAgent {
         enabled: true,
         dockerImage: 'propr/agent-opencode:latest',
         configPath: '/tmp/opencode-config',
-        supportedModels: ['opencode-go/kimi-k2.6'],
-        defaultModel: 'opencode-go/kimi-k2.6'
+        supportedModels: ['opencode/minimax-m3-free'],
+        defaultModel: 'opencode/minimax-m3-free'
     };
     return new OpenCodeAgent(config);
 }
@@ -56,24 +56,24 @@ describe('OpenCodeAgent JSONL parsing', () => {
 
     test('collects text from original text part events', () => {
         const parsed = parseOutput([
-            JSON.stringify({ type: 'text', sessionID: 'session-a', model: 'opencode-go/kimi-k2.6', part: { type: 'text', text: 'hello ' } }),
+            JSON.stringify({ type: 'text', sessionID: 'session-a', model: 'opencode/minimax-m3-free', part: { type: 'text', text: 'hello ' } }),
             JSON.stringify({ type: 'text', part: { type: 'text', text: 'world' } })
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'hello world');
         assert.strictEqual(parsed.sessionId, 'session-a');
-        assert.strictEqual(parsed.modelUsed, 'opencode-go/kimi-k2.6');
+        assert.strictEqual(parsed.modelUsed, 'opencode/minimax-m3-free');
     });
 
     test('prefers assistant message text over unrelated delta shapes', () => {
         const parsed = parseOutput([
-            JSON.stringify({ type: 'message', message: { role: 'assistant', model: 'opencode-go/kimi-k2.6', content: 'first ' } }),
+            JSON.stringify({ type: 'message', message: { role: 'assistant', model: 'opencode/minimax-m3-free', content: 'first ' } }),
             JSON.stringify({ type: 'delta', delta: 'second' }),
             JSON.stringify({ type: 'message', message: { role: 'user', content: 'ignored' } })
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'first');
-        assert.strictEqual(parsed.modelUsed, 'opencode-go/kimi-k2.6');
+        assert.strictEqual(parsed.modelUsed, 'opencode/minimax-m3-free');
     });
 
     test('does not duplicate text when message and event-level content match', () => {
@@ -103,15 +103,25 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(parsed.modelUsed, 'initial/model');
     });
 
+    test('parses OpenCode provider/server error streams', () => {
+        const parsed = parseOutput([
+            JSON.stringify({ type: 'error', timestamp: 1780743353227, sessionID: 'ses_1636ccd92ffeqefe412qL8ll1f', error: { name: 'UnknownError', data: { message: '' } } }),
+            JSON.stringify({ type: 'error', timestamp: 1780743353241, sessionID: 'ses_1636ccd92ffeqefe412qL8ll1f', error: { name: 'UnknownError', data: { message: 'Unexpected server error. Check server logs for details.', ref: 'err_12358dd0' } } })
+        ].join('\n'));
+
+        assert.strictEqual(parsed.sessionId, 'ses_1636ccd92ffeqefe412qL8ll1f');
+        assert.strictEqual(parsed.error, 'Unexpected server error. Check server logs for details.');
+    });
+
     test('prefers the final assistant message over duplicate streaming deltas', () => {
         const parsed = parseOutput([
             JSON.stringify({ type: 'delta', delta: 'hello ' }),
             JSON.stringify({ type: 'delta', delta: 'world' }),
-            JSON.stringify({ type: 'message', message: { role: 'assistant', model: 'opencode-go/kimi-k2.6', content: 'hello world' } })
+            JSON.stringify({ type: 'message', message: { role: 'assistant', model: 'opencode/minimax-m3-free', content: 'hello world' } })
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'hello world');
-        assert.strictEqual(parsed.modelUsed, 'opencode-go/kimi-k2.6');
+        assert.strictEqual(parsed.modelUsed, 'opencode/minimax-m3-free');
     });
 
     test('preserves repeated stream text from separate events', () => {
@@ -287,6 +297,15 @@ describe('OpenCodeAgent Docker args', () => {
         assert.ok(routedArgs.includes('--dangerously-skip-permissions'));
     });
 
+    test('uses opencode-run wrapper and JSON output mode', () => {
+        const args = buildDockerArgs(createAgent(), 'opencode/minimax-m3-free');
+        const imageIndex = args.indexOf('propr/agent-opencode:latest');
+
+        assert.ok(imageIndex > -1);
+        assert.ok(args.includes('opencode-run'));
+        assert.strictEqual(args[args.indexOf('--format') + 1], 'json');
+    });
+
     test('can mount a temporary config path for read-only analysis', () => {
         const args = buildOpenCodeDockerArgs({
             config: createAgent().config,
@@ -313,7 +332,7 @@ describe('OpenCodeAgent Docker args', () => {
         const agent = createAgent();
         agent.config.configPath = configPath;
 
-        const args = buildDockerArgs(agent, 'opencode-go/kimi-k2.6');
+        const args = buildDockerArgs(agent, 'opencode/minimax-m3-free');
 
         assert.ok(args.includes(`${dataPath}:/home/node/.local/share/opencode:rw`));
         assert.strictEqual(args[args.lastIndexOf('-e') + 1], 'XDG_DATA_HOME=/home/node/.local/share');
@@ -334,5 +353,11 @@ describe('OpenCodeAgent Docker args', () => {
         });
 
         assert.ok(args.includes('/host/opencode-data:/home/node/.local/share/opencode:ro'));
+    });
+
+    test('opencode-run keeps prompt attachment separate from the final message', () => {
+        const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
+
+        assert.match(script, /opencode run "\$@" --file "\$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run\. Follow the instructions in that file exactly\."/);
     });
 });

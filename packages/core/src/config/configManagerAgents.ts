@@ -37,7 +37,7 @@ export interface AgentConfig {
 export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
     claude: '~/.claude',
     codex: '~/.codex',
-    antigravity: '~/.antigravity',
+    antigravity: '~/.gemini',
     opencode: '~/.config/opencode',
     vibe: '~/.vibe'
 };
@@ -217,6 +217,11 @@ function updateAntigravityDefaults(agent: AgentConfig): boolean {
         return false;
     }
 
+    if (!agent.configPath || agent.configPath === '~/.antigravity' || agent.configPath.endsWith('/.antigravity')) {
+        agent.configPath = '~/.gemini';
+        migrated = true;
+    }
+
     if (agent.cliVersionType && agent.cliVersion !== 'latest') {
         agent.cliVersion = 'latest';
         migrated = true;
@@ -236,6 +241,10 @@ function updateAntigravityDefaults(agent: AgentConfig): boolean {
 
 function removeDeprecatedModels(agent: AgentConfig): boolean {
     if (!agent.supportedModels) {
+        return false;
+    }
+
+    if (agent.type === 'opencode') {
         return false;
     }
 

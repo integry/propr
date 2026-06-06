@@ -45,7 +45,7 @@ describe('OpenCode API routes', () => {
             const [agent] = params.processedAgents ?? [];
             assert.equal(agent?.type, 'opencode');
             assert.equal(agent?.cliVersionType, 'default');
-            assert.equal(agent?.cliVersionResolved, '1.15.12');
+            assert.equal(agent?.cliVersionResolved, '1.16.2');
             return { status: 200, body: { success: true, agents: params.processedAgents } };
         });
         const routes = createAgentsRoutes({
@@ -65,8 +65,8 @@ describe('OpenCode API routes', () => {
                     enabled: true,
                     dockerImage: 'propr/agent-opencode:latest',
                     configPath: '~/.config/opencode',
-                    supportedModels: ['opencode-go/kimi-k2.6'],
-                    defaultModel: 'opencode-go/kimi-k2.6'
+                    supportedModels: ['opencode/minimax-m3-free'],
+                    defaultModel: 'opencode/minimax-m3-free'
                 }]
             }
         } as never, res as never);
@@ -99,8 +99,8 @@ describe('OpenCode API routes', () => {
                     enabled: true,
                     dockerImage: 'propr/agent-opencode:latest',
                     configPath: '~/.config/opencode',
-                    supportedModels: ['opencode-go/kimi-k2.6'],
-                    defaultModel: 'opencode-go/kimi-k2.6',
+                    supportedModels: ['opencode/minimax-m3-free'],
+                    defaultModel: 'opencode/minimax-m3-free',
                     cliVersionType: 'default',
                     cliVersion: 'latest'
                 }]
@@ -120,9 +120,9 @@ describe('OpenCode API routes', () => {
             getAvailableVersions: async agentType => ({
                 agentType,
                 packageName: 'opencode-ai',
-                defaultVersion: '1.15.12',
-                availableTags: [{ tag: 'latest', version: '1.15.12' }],
-                recentVersions: [{ version: '1.15.12', publishedAt: '2026-05-29T00:00:00.000Z' }]
+                defaultVersion: '1.16.2',
+                availableTags: [{ tag: 'latest', version: '1.16.2' }],
+                recentVersions: [{ version: '1.16.2', publishedAt: '2026-06-05T00:00:00.000Z' }]
             })
         });
         const res = createMockResponse();
@@ -133,9 +133,9 @@ describe('OpenCode API routes', () => {
         assert.deepEqual(res.body, {
             agentType: 'opencode',
             packageName: 'opencode-ai',
-            defaultVersion: '1.15.12',
-            availableTags: [{ tag: 'latest', version: '1.15.12' }],
-            recentVersions: [{ version: '1.15.12', publishedAt: '2026-05-29T00:00:00.000Z' }]
+            defaultVersion: '1.16.2',
+            availableTags: [{ tag: 'latest', version: '1.16.2' }],
+            recentVersions: [{ version: '1.16.2', publishedAt: '2026-06-05T00:00:00.000Z' }]
         });
     });
 
@@ -143,7 +143,7 @@ describe('OpenCode API routes', () => {
         const routes = createAgentVersionRoutes({
             listAgentImages: async agentType => {
                 assert.equal(agentType, 'opencode');
-                return ['1.15.12-abc123'];
+                return ['1.16.2-abc123'];
             }
         });
         const res = createMockResponse();
@@ -154,8 +154,8 @@ describe('OpenCode API routes', () => {
         assert.deepEqual(res.body, {
             agentType: 'opencode',
             images: [{
-                tag: '1.15.12-abc123',
-                fullName: 'propr-opencode:1.15.12-abc123'
+                tag: '1.16.2-abc123',
+                fullName: 'propr-opencode:1.16.2-abc123'
             }]
         });
     });
@@ -168,7 +168,7 @@ describe('OpenCode API routes', () => {
 
         assert.equal(res.statusCode, 400);
         assert.deepEqual(res.body, {
-            error: "Invalid agent type 'llama'. Must be one of: claude, codex, gemini, opencode"
+            error: "Invalid agent type 'llama'. Must be one of: antigravity, claude, codex, opencode, vibe"
         });
     });
 });

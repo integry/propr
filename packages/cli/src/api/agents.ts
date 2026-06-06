@@ -304,7 +304,7 @@ function getDefaultConfigPath(type: AgentType): string {
     case "codex":
       return join(home, ".codex");
     case "antigravity":
-      return join(home, ".antigravity");
+      return join(home, ".gemini");
     case "opencode":
       return join(home, ".config", "opencode");
     case "vibe":
@@ -324,7 +324,7 @@ function isRemoteApiUrl(baseUrl: string): boolean {
 }
 
 function resolveDefaultConfigPath(type: AgentType, client: ApiClient): string {
-  const baseUrl = client.getBaseUrl();
+  const baseUrl = typeof client.getBaseUrl === "function" ? client.getBaseUrl() : "http://localhost";
   if (isRemoteApiUrl(baseUrl)) {
     throw new Error(
       `Cannot infer config path for a remote ProPR server (${baseUrl}). ` +
