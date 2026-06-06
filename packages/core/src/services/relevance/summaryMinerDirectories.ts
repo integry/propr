@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import path from 'path';
 import crypto from 'crypto';
 import type { Logger } from 'pino';

@@ -2,7 +2,6 @@
  * Attachment handling utilities for task planning.
  */
 
-import fs from 'fs-extra';
 import path from 'path';
 import { loadImageBufferForContext, type Attachment } from '../attachmentService.js';
 import type { MinimalLogger, Base64Image, TaskDraftConfig } from '../planning/index.js';
