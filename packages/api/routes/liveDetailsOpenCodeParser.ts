@@ -181,6 +181,7 @@ function extractOpenCodeToolEvents(event: OpenCodeEvent, timestamp: string, emit
   if (!event.part) appendOpenCodeToolEvent(events, event, timestamp, tracker);
   appendOpenCodeToolEvent(events, event.part, timestamp, tracker);
   for (const part of event.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp, tracker);
+  for (const part of event.message?.parts ?? []) appendOpenCodeToolEvent(events, part, timestamp, tracker);
   return events;
 }
 
