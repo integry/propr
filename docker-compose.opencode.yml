@@ -26,6 +26,9 @@ services:
       - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode:ro
 
   api:
+    # API-side mounts are read-only: the API reads saved config/auth metadata for
+    # validation and image/version operations. Auth refresh happens in spawned
+    # worker OpenCode agent containers, which mount the data dir read-write.
     volumes:
       - ${HOME:?HOME must be set}/.opencode:${HOME:?HOME must be set}/.opencode:ro
       - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode:ro

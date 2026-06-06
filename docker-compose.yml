@@ -98,6 +98,7 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
@@ -132,6 +133,7 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
@@ -164,6 +166,7 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       # How often to scan for repos needing indexing (default: 5 minutes)
@@ -226,6 +229,7 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - GEMINI_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       - CONFIG_REPO_PATH=/tmp/config_repo

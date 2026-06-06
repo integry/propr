@@ -67,6 +67,20 @@ test('detectStoredOutputFormat recognizes whole-document pretty OpenCode JSON', 
   assert.equal(detectStoredOutputFormat(output), 'opencode');
 });
 
+test('detectStoredOutputFormat recognizes OpenCode assistant parts without session identifiers', async () => {
+  const { detectStoredOutputFormat } = await import('../routes/liveDetailsStoredOutputFormat.js');
+  const output = JSON.stringify({
+    type: 'message',
+    message: {
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'OpenCode response without session metadata' }]
+    },
+    timestamp: '2026-05-05T00:00:00.000Z'
+  });
+
+  assert.equal(detectStoredOutputFormat(output), 'opencode');
+});
+
 test('detectStoredOutputFormat recognizes whole-document pretty Claude JSON arrays', async () => {
   const { detectStoredOutputFormat } = await import('../routes/liveDetailsStoredOutputFormat.js');
   const output = JSON.stringify([

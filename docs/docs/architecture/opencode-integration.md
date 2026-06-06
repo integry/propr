@@ -140,6 +140,8 @@ For Docker Compose development, the compose files mount:
 
 In development compose, the worker mounts these read-write (matching Claude, Codex, and Gemini mounts) so the OpenCode agent containers can access credentials and refresh auth metadata at runtime. Read-only services like the analysis-worker and API mount them with `:ro`. The base production compose file does not mount agent credential directories by default; add them with a deployment-specific override file, or use the launcher.
 
+The API does not refresh OpenCode auth files. Runtime auth refresh is limited to worker-spawned OpenCode agent containers, which receive the OpenCode data directory as a read-write bind mount.
+
 For launcher-based production deployments, pass the host paths explicitly:
 
 ```bash
