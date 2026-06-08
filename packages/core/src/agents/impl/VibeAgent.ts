@@ -175,7 +175,7 @@ export class VibeAgent implements Agent {
 
     // eslint-disable-next-line complexity
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, responseFormat = 'text' } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text' } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'mistral-medium-3.5';
         const suffix = responseFormat === 'json'
@@ -212,7 +212,7 @@ export class VibeAgent implements Agent {
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
                 async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: 1800000,
+                    timeout: timeoutMs ?? parseInt(process.env.VIBE_ANALYSIS_TIMEOUT_MS || '1800000', 10),
                     taskId
                 })
             );
@@ -369,8 +369,9 @@ export class VibeAgent implements Agent {
     private buildPromptMountArgs(promptFilePath: string | undefined, cliArgs: string[]): string[] {
         if (!promptFilePath) return [];
         const hostPromptPath = resolveHostBindPath(promptFilePath);
-        cliArgs.push('--prompt-file', '/tmp/propr-prompt.txt');
-        return ['-v', `${hostPromptPath}:/tmp/propr-prompt.txt:ro`];
+        const containerPromptPath = '/home/node/propr-prompt.txt';
+        cliArgs.push('--prompt-file', containerPromptPath);
+        return ['-v', `${hostPromptPath}:${containerPromptPath}:ro`];
     }
 
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
@@ -380,7 +381,7 @@ export class VibeAgent implements Agent {
         const mistralEnvFileArgs = envFilePath ? ['--env-file', envFilePath] : [];
         const envVars = this.buildDockerEnvVars({ cleanModelName, mode, maxTurns, runtimeHomePath });
 
-        const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId);
+        const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const cliArgs = this.getCliArgs();
         const promptMountArgs = this.buildPromptMountArgs(promptFilePath, cliArgs);

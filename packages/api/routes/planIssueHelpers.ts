@@ -7,7 +7,10 @@ import {
   updatePlanIssue,
   PlanIssueStatus,
   loadSettings,
-  AgentRegistry
+  AgentRegistry,
+  toProprOpenCodeModelId,
+  getIssueQueue,
+  generateCorrelationId
 } from '@propr/core';
 
 export interface ImplementIssueContext {
@@ -50,6 +53,30 @@ export interface ProcessIssueParams {
   implementLabel: string;
   epicLabelName: string | null;
   autoMerge: boolean;
+}
+
+async function enqueueIssueImplementationJob(params: {
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  triggeringLabel: string;
+}): Promise<void> {
+  const { owner, repo, issueNumber, triggeringLabel } = params;
+  const queue = await getIssueQueue();
+  const jobId = `issue-${owner}-${repo}-${issueNumber}`;
+  await queue.add('processGitHubIssue', {
+    repoOwner: owner,
+    repoName: repo,
+    number: issueNumber,
+    triggeringLabel,
+    correlationId: generateCorrelationId()
+  }, {
+    jobId,
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 2000 },
+    removeOnComplete: true,
+    removeOnFail: true
+  });
 }
 
 export interface BatchProcessParams {
@@ -95,7 +122,23 @@ async function getConfiguredDefaultModel(): Promise<string> {
 export async function getLlmLabel(modelName: string | null): Promise<string | null> {
   const effectiveModel = modelName || await getConfiguredDefaultModel();
   const modelInfo = MODEL_INFO_MAP[effectiveModel];
-  return modelInfo?.githubLabel || null;
+  if (modelInfo?.githubLabel) return modelInfo.githubLabel;
+
+  try {
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+    const agent = registry.getAllAgents().find(a =>
+      a.config.supportedModels.some(model => {
+        if (model.toLowerCase() === effectiveModel.toLowerCase()) return true;
+        return a.config.type === 'opencode' && model.toLowerCase() === toProprOpenCodeModelId(effectiveModel).toLowerCase();
+      })
+    );
+    const labelModel = agent?.config.type === 'opencode' ? toProprOpenCodeModelId(effectiveModel) : effectiveModel;
+    return agent ? `llm-${agent.config.alias}:${labelModel}` : null;
+  } catch (err) {
+    logger.warn({ modelName: effectiveModel, error: (err as Error).message }, 'Failed to resolve dynamic LLM label');
+    return null;
+  }
 }
 
 export async function handleMultiAgentImplementation(params: MultiAgentParams): Promise<{
@@ -113,7 +156,8 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
     if (label) newLlmLabels.add(label);
   }
 
-  const labelsToRemove = (oldLlmLabel && !newLlmLabels.has(oldLlmLabel)) ? [oldLlmLabel] : [];
+  const labelsToRemove = [`${implementLabel}-processing`, `${implementLabel}-done`];
+  if (oldLlmLabel && !newLlmLabels.has(oldLlmLabel)) labelsToRemove.push(oldLlmLabel);
   const labelsToAdd = [implementLabel, ...Array.from(newLlmLabels)];
 
   if (epicLabelName) {
@@ -129,6 +173,8 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
     labelsToRemove,
     labelsToAdd
   );
+
+  await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
 
   const primaryModel = models[0];
   await updatePlanIssue(draftId, issueNumber, {
@@ -167,9 +213,13 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
     labelsToAdd.push('auto-merge');
   }
 
-  await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-    owner, repo, issue_number: issueNumber, labels: labelsToAdd
-  });
+  await safeUpdateLabels(
+    { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(`implement-single-${draftId}-${issueNumber}`) },
+    [`${implementLabel}-processing`, `${implementLabel}-done`],
+    labelsToAdd
+  );
+
+  await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
 
   // Update status and also persist agent_alias/model_name if provided
   const updateData: Record<string, unknown> = { status: PlanIssueStatus.PROCESSING };
@@ -280,9 +330,12 @@ export async function processIssueForImplementation(params: ProcessIssueParams):
       labelsToAdd.push('auto-merge');
     }
 
-    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-      owner, repo, issue_number: issue.issue_number, labels: labelsToAdd
-    });
+    await safeUpdateLabels(
+      { octokit, owner, repo, issueNumber: issue.issue_number, logger: logger.withCorrelation(`implement-batch-${draftId}-${issue.issue_number}`) },
+      [`${implementLabel}-processing`, `${implementLabel}-done`],
+      labelsToAdd
+    );
+    await enqueueIssueImplementationJob({ owner, repo, issueNumber: issue.issue_number, triggeringLabel: implementLabel });
     await updatePlanIssue(draftId, issue.issue_number, { status: PlanIssueStatus.PROCESSING });
     return { issueNumber: issue.issue_number, success: true };
   } catch (err) {

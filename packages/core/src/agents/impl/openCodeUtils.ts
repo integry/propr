@@ -4,6 +4,8 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
 import type { AgentConfig, TokenUsage } from '../types.js';
+export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeModelId } from './openCodeModelIds.js';
+import { toOpenCodeExternalModelId, toProprOpenCodeModelId } from './openCodeModelIds.js';
 
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
 const OPEN_CODE_TEXT_EVENT_TYPES = new Set(['text', 'delta', 'completion', 'reasoning']);
@@ -113,7 +115,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     const timestamp = Date.now().toString(36);
     const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
-    const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId);
+    const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId, modelName);
     const workspaceMode = readOnlyWorkspace ? 'ro' : 'rw';
     const configMode = 'rw';
     const commandArgs = buildOpenCodeCommandArgs(promptMode);
@@ -129,7 +131,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     appendOpenCodeDataMount(dockerArgs, dataMount);
 
     if (modelName) {
-        const cleanModelName = modelName.startsWith('opencode:') ? modelName.slice('opencode:'.length) : modelName;
+        const cleanModelName = toOpenCodeExternalModelId(modelName);
         dockerArgs.push('--model', cleanModelName);
         logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: config.alias }, 'Model specified for OpenCode agent');
     }
@@ -145,10 +147,12 @@ function buildOpenCodeCommandArgs(promptMode: 'file' | 'direct'): string[] {
             'prompt="$(cat)"; out="$(mktemp)"; opencode run "$@" -- "$prompt" > "$out"; status=$?; cat "$out"; if [ "$status" -ne 0 ] || ! grep -q \'"type":"text"\' "$out"; then latest="$(ls -t /home/node/.local/share/opencode/log/*.log 2>/dev/null | head -1)"; [ -n "$latest" ] && tail -80 "$latest" >&2; fi; rm -f "$out"; exit "$status"',
             'propr-opencode-direct',
             '--format',
-            'json'
+            'json',
+            '--title',
+            'ProPR analysis'
         ];
     }
-    return ['opencode-run', '--format', 'json'];
+    return ['opencode-run', '--format', 'json', '--title', 'ProPR task'];
 }
 
 interface OpenCodeDataMount { hostPath: string; mode: 'ro' | 'rw'; }
@@ -206,11 +210,11 @@ function applyOpenCodeEvent(event: OpenCodeEvent, state: OpenCodeParseState): vo
 function applyOpenCodeModel(event: OpenCodeEvent, state: OpenCodeParseState): void {
     const assistantModel = event.message?.role === 'assistant' ? event.message.model : undefined;
     if (assistantModel) {
-        state.modelUsed = assistantModel;
+        state.modelUsed = toProprOpenCodeModelId(assistantModel);
         return;
     }
     const type = event.type?.toLowerCase();
-    if (!state.modelUsed && event.model && type !== 'error' && !event.error) state.modelUsed = event.model;
+    if (!state.modelUsed && event.model && type !== 'error' && !event.error) state.modelUsed = toProprOpenCodeModelId(event.model);
 }
 
 function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): void {
@@ -448,8 +452,10 @@ function extractOpenCodeError(event: OpenCodeEvent): string {
     return event.error?.data?.message || event.error?.message || event.error?.name || 'OpenCode execution failed';
 }
 
-function buildOpenCodeContainerName(alias: string, taskType: string, shortTaskId: string): string {
-    const rawName = `${alias}-${taskType}-${shortTaskId}`;
+function buildOpenCodeContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
+    const rawName = modelName
+        ? `${alias}-${taskType}-${modelName}-${shortTaskId}`
+        : `${alias}-${taskType}-${shortTaskId}`;
     const sanitized = rawName.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 120);
     return sanitized || `opencode-${Date.now().toString(36)}`;
 }

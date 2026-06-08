@@ -1,5 +1,6 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
+import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
 import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS, AGENT_MODELS, type AgentType } from './modelDefinitions.js';
 
 export type ModelAlias = string;
@@ -110,7 +111,7 @@ function getOpenRouterId(internalModelId: ModelId): string {
 
 function isOpenCodeModelId(modelId: string): boolean {
     const lowerModel = modelId.toLowerCase();
-    return lowerModel.startsWith('opencode/') || lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
+    return lowerModel.startsWith('opencode-') || lowerModel.startsWith('opencode/') || lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
 }
 
 function isOpenCodeKimiModel(modelId: string): boolean {
@@ -119,7 +120,7 @@ function isOpenCodeKimiModel(modelId: string): boolean {
 
 function isOpenCodeFreeModel(modelId: string): boolean {
     const lowerModel = modelId.toLowerCase();
-    return lowerModel.startsWith('opencode/') && lowerModel.includes('free');
+    return lowerModel.startsWith('opencode-') && !lowerModel.includes('/') && (lowerModel.includes('free') || lowerModel === 'opencode-big-pickle');
 }
 
 /**
@@ -291,6 +292,15 @@ function findMatchingModel(shortName: string, config: AgentConfig): string | nul
     for (const model of config.supportedModels) {
         if (model.toLowerCase() === lowerShort) {
             return model;
+        }
+    }
+
+    if (config.type === 'opencode') {
+        const proprOpenCodeModel = toProprOpenCodeModelId(shortName).toLowerCase();
+        for (const model of config.supportedModels) {
+            if (model.toLowerCase() === proprOpenCodeModel) {
+                return model;
+            }
         }
     }
 

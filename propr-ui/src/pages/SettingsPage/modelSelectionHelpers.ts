@@ -103,10 +103,13 @@ function toTitleCase(value: string): string {
 }
 
 function buildSyntheticModel(agentType: AgentType, modelId: string): ModelInfo {
-  const providerSeparator = modelId.includes('/') ? '/' : modelId.includes(':') ? ':' : '';
-  const [provider, rawName] = providerSeparator ? modelId.split(providerSeparator, 2) : ['', modelId];
+  const displayModelId = agentType === 'opencode' && modelId.startsWith('opencode-') && !modelId.startsWith('opencode-go/')
+    ? modelId.slice('opencode-'.length)
+    : modelId;
+  const providerSeparator = displayModelId.includes('/') ? '/' : displayModelId.includes(':') ? ':' : '';
+  const [provider, rawName] = providerSeparator ? displayModelId.split(providerSeparator, 2) : ['', displayModelId];
   const shortAlias = (rawName || modelId).toLowerCase().replace(/[^a-z0-9-]+/g, '');
-  const labelModelId = modelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const labelModelId = displayModelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   const providerPrefix = provider ? `${toTitleCase(provider)} ` : '';
 
   return {

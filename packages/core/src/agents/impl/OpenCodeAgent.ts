@@ -14,6 +14,7 @@ import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 export { UsageLimitError };
 
 const DEFAULT_OPENCODE_TIMEOUT_MS = 3600000;
+const DEFAULT_OPENCODE_ANALYSIS_ROOT = '/tmp/git-processor/opencode-analysis';
 
 export class OpenCodeAgent implements Agent {
     readonly config: AgentConfig;
@@ -239,7 +240,7 @@ export class OpenCodeAgent implements Agent {
     }
 
     private ensureAnalysisWorkspace(): string {
-        const workspace = fs.mkdtempSync('/tmp/opencode-analysis-');
+        const workspace = this.createAnalysisTempDir('workspace-');
         try {
             const runAsNode = process.getuid?.() === 0;
             if (runAsNode) fs.chownSync(workspace, 1000, 1000);
@@ -254,7 +255,7 @@ export class OpenCodeAgent implements Agent {
     }
 
     private cleanupAnalysisWorkspace(workspace: string): void {
-        if (!workspace.startsWith('/tmp/opencode-analysis-')) return;
+        if (!this.isAnalysisTempPath(workspace)) return;
         try {
             fs.rmSync(workspace, { recursive: true, force: true });
         } catch (cleanupError) {
@@ -264,7 +265,7 @@ export class OpenCodeAgent implements Agent {
 
     private createAnalysisConfigSnapshot(): string {
         const sourceConfigPath = resolveConfigPath(this.config.configPath);
-        const snapshotPath = fs.mkdtempSync('/tmp/opencode-analysis-config-');
+        const snapshotPath = this.createAnalysisTempDir('config-');
         try {
             if (!this.isUsableAnalysisConfigPath(sourceConfigPath)) {
                 fs.rmSync(snapshotPath, { recursive: true, force: true });
@@ -292,12 +293,24 @@ export class OpenCodeAgent implements Agent {
     }
 
     private cleanupAnalysisConfigSnapshot(configPath: string): void {
-        if (!configPath.startsWith('/tmp/opencode-analysis-config-')) return;
+        if (!this.isAnalysisTempPath(configPath)) return;
         try {
             fs.rmSync(configPath, { recursive: true, force: true });
         } catch (cleanupError) {
             logger.warn({ configPath, error: (cleanupError as Error).message }, 'Failed to remove OpenCode analysis config snapshot');
         }
+    }
+
+    private createAnalysisTempDir(prefix: string): string {
+        const root = (process.env.OPENCODE_ANALYSIS_ROOT || DEFAULT_OPENCODE_ANALYSIS_ROOT).replace(/\/+$/, '');
+        fs.mkdirSync(root, { recursive: true, mode: 0o755 });
+        fs.chmodSync(root, 0o755);
+        return fs.mkdtempSync(`${root}/${prefix}`);
+    }
+
+    private isAnalysisTempPath(targetPath: string): boolean {
+        const root = (process.env.OPENCODE_ANALYSIS_ROOT || DEFAULT_OPENCODE_ANALYSIS_ROOT).replace(/\/+$/, '');
+        return targetPath.startsWith(`${root}/`);
     }
 
     private resolveAnalysisDataPath(): string | undefined {

@@ -205,7 +205,7 @@ export const implementAllIssues = async (
   options?: ImplementAllIssuesOptions
 ): Promise<ImplementAllIssuesResponse> => {
   const response = await apiFetch(
-    `${API_BASE_URL}/api/planner/drafts/${draftId}/issues/implement-all`,
+    `${API_BASE_URL}/api/planner/drafts/${draftId}/implement-all`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

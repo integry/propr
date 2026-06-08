@@ -1,7 +1,7 @@
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { handleError } from '@propr/core';
-import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
+import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { resolveModelAlias } from '@propr/core';
 import { loadPrimaryProcessingLabels } from '@propr/core';
@@ -335,6 +335,7 @@ async function enqueuePRCommentJob(
     const { repoFullName, correlationId, redisClient } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
+    const issueQueue = await getIssueQueue();
     const activeJobs = await issueQueue.getActive();
     const waitingJobs = await issueQueue.getWaiting();
     const delayedJobs = await issueQueue.getDelayed();

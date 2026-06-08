@@ -5,6 +5,7 @@ import { getConfig, saveConfig } from './configStore.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from '../agents/constants.js';
 import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from '../agents/version/types.js';
 import { computeContentHash, generateImageTag } from '../agents/version/versionService.js';
+import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
 
 /**
  * CLI version type - how the version is specified.
@@ -242,6 +243,26 @@ function updateAntigravityDefaults(agent: AgentConfig): boolean {
     return migrated;
 }
 
+function normalizeOpenCodeModelIds(agent: AgentConfig): boolean {
+    if (agent.type !== 'opencode' || !agent.supportedModels) {
+        return false;
+    }
+
+    const normalizedModels = agent.supportedModels.map(toProprOpenCodeModelId);
+    const normalizedDefaultModel = agent.defaultModel ? toProprOpenCodeModelId(agent.defaultModel) : agent.defaultModel;
+    const migrated = normalizedModels.some((model, index) => model !== agent.supportedModels[index]) ||
+        normalizedDefaultModel !== agent.defaultModel;
+
+    if (!migrated) {
+        return false;
+    }
+
+    agent.supportedModels = normalizedModels;
+    agent.defaultModel = normalizedDefaultModel;
+    logger.info({ agentAlias: agent.alias, supportedModels: agent.supportedModels, defaultModel: agent.defaultModel }, 'Normalized OpenCode model IDs');
+    return true;
+}
+
 function removeDeprecatedModels(agent: AgentConfig): boolean {
     if (!agent.supportedModels) {
         return false;
@@ -274,7 +295,9 @@ export async function migrateAgentConfigs(): Promise<boolean> {
             migrated = migrateCliVersion(agent) || migrated;
             migrated = applyDefaultAgentFields(agent) || migrated;
             migrated = migrateLegacyAgentImageName(agent) || migrated;
-            migrated = addMissingModels(agent, CURRENT_DEFAULT_MODELS[agent.type], 'Added current default models to agent') || migrated;
+            if (agent.type !== 'opencode') {
+                migrated = addMissingModels(agent, CURRENT_DEFAULT_MODELS[agent.type], 'Added current default models to agent') || migrated;
+            }
 
             if (agent.cliVersionType === 'default' && LEGACY_DEFAULT_DOCKER_IMAGES[agent.type].includes(agent.dockerImage)) {
                 agent.dockerImage = DEFAULT_AGENT_DOCKER_IMAGES[agent.type];
@@ -287,6 +310,7 @@ export async function migrateAgentConfigs(): Promise<boolean> {
             }
             migrated = updateCodexDefaults(agent) || migrated;
             migrated = updateAntigravityDefaults(agent) || migrated;
+            migrated = normalizeOpenCodeModelIds(agent) || migrated;
             migrated = removeDeprecatedModels(agent) || migrated;
         }
 

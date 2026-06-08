@@ -69,14 +69,15 @@ export const ANTIGRAVITY_MODELS: ModelInfo[] = [
 ];
 
 
-// OpenCode built-in free models. IDs use OpenCode config syntax: provider/model.
+// OpenCode built-in free models. IDs are namespaced for ProPR and converted
+// back to OpenCode's provider/model syntax at CLI execution time.
 // These are available from `opencode models` without provider login.
 export const OPENCODE_MODELS: ModelInfo[] = [
-  { id: 'opencode/minimax-m3-free', name: 'MiniMax M3 Free', shortName: 'MiniMax M3 Free', shortAlias: 'minimax-m3-free', githubLabel: 'llm-opencode-minimax-m3-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'minimax/minimax-m3' },
-  { id: 'opencode/deepseek-v4-flash-free', name: 'DeepSeek V4 Flash Free', shortName: 'DeepSeek V4 Flash Free', shortAlias: 'deepseek-v4-flash-free', githubLabel: 'llm-opencode-deepseek-v4-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4-flash' },
-  { id: 'opencode/mimo-v2.5-free', name: 'MiMo V2.5 Free', shortName: 'MiMo V2.5 Free', shortAlias: 'mimo-v25-free', githubLabel: 'llm-opencode-mimo-v25-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.5' },
-  { id: 'opencode/nemotron-3-ultra-free', name: 'Nemotron 3 Ultra Free', shortName: 'Nemotron 3 Ultra Free', shortAlias: 'nemotron-3-ultra-free', githubLabel: 'llm-opencode-nemotron-3-ultra-free', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'nvidia/nemotron-3-ultra' },
-  { id: 'opencode/big-pickle', name: 'Big Pickle', shortName: 'Big Pickle', shortAlias: 'big-pickle', githubLabel: 'llm-opencode-big-pickle', contextWindow: '200K', maxTokens: 200000, openRouterId: 'opencode/big-pickle' },
+  { id: 'opencode-minimax-m3-free', name: 'MiniMax M3 Free', shortName: 'MiniMax M3 Free', shortAlias: 'minimax-m3-free', githubLabel: 'llm-opencode-minimax-m3-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'minimax/minimax-m3' },
+  { id: 'opencode-deepseek-v4-flash-free', name: 'DeepSeek V4 Flash Free', shortName: 'DeepSeek V4 Flash Free', shortAlias: 'deepseek-v4-flash-free', githubLabel: 'llm-opencode-deepseek-v4-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4-flash' },
+  { id: 'opencode-mimo-v2.5-free', name: 'MiMo V2.5 Free', shortName: 'MiMo V2.5 Free', shortAlias: 'mimo-v25-free', githubLabel: 'llm-opencode-mimo-v25-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.5' },
+  { id: 'opencode-nemotron-3-ultra-free', name: 'Nemotron 3 Ultra Free', shortName: 'Nemotron 3 Ultra Free', shortAlias: 'nemotron-3-ultra-free', githubLabel: 'llm-opencode-nemotron-3-ultra-free', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'nvidia/nemotron-3-ultra' },
+  { id: 'opencode-big-pickle', name: 'Big Pickle', shortName: 'Big Pickle', shortAlias: 'big-pickle', githubLabel: 'llm-opencode-big-pickle', contextWindow: '200K', maxTokens: 200000, openRouterId: 'opencode/big-pickle' },
 ];
 
 // Mistral Vibe coding models

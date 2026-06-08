@@ -319,12 +319,13 @@ export function cleanupTempFile(filePath: string | undefined): void {
     } catch { /* best-effort cleanup */ }
 }
 
-export function buildVibeContainerName(alias: string, taskType: string, taskId: string | undefined): string {
+export function buildVibeContainerName(alias: string, taskType: string, taskId: string | undefined, modelName?: string): string {
     const uniqueSuffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const shortTaskId = sanitizeDockerNamePart(taskId?.slice(-8), uniqueSuffix);
     const sanitizedAlias = sanitizeDockerNamePart(alias, 'vibe');
     const sanitizedType = sanitizeDockerNamePart(taskType, 'task');
-    return `${sanitizedAlias}-${sanitizedType}-${shortTaskId}`.slice(0, 128);
+    const sanitizedModel = modelName ? `${sanitizeDockerNamePart(modelName, 'model')}-` : '';
+    return `${sanitizedAlias}-${sanitizedType}-${sanitizedModel}${shortTaskId}`.slice(0, 128);
 }
 
 export function ensureAnalysisWorkspace(): string {

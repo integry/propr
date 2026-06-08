@@ -470,6 +470,7 @@ function startApp() {
         '-v', '/tmp/claude-logs:/tmp/claude-logs',
         '-e', `INDEXING_SCAN_INTERVAL_MS=${process.env.INDEXING_SCAN_INTERVAL_MS || '300000'}`,
         '-e', `INDEXING_REINDEX_INTERVAL_MS=${process.env.INDEXING_REINDEX_INTERVAL_MS || '86400000'}`,
+        ...vibePrompts,
         ...readOnlyCreds,
     ]);
 

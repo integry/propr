@@ -54,7 +54,8 @@ WORKDIR /usr/src/app
 #   docker-cli — spawning agent containers via mounted docker socket
 #   curl/jq  — deploy-pr.sh script
 RUN apk add --no-cache git sudo docker-cli curl jq tini \
-    && mkdir -p /tmp/git-processor
+    && mkdir -p /tmp/git-processor \
+    && git config --system --add safe.directory '*'
 
 # Copy built artifacts and pruned dependencies from the builder.
 COPY --from=builder /build/node_modules ./node_modules

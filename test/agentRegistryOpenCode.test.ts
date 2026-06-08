@@ -16,8 +16,8 @@ const opencodeConfig: AgentConfig = {
     enabled: true,
     dockerImage: 'propr/agent-opencode:latest',
     configPath: '~/.config/opencode',
-    supportedModels: ['opencode/minimax-m3-free'],
-    defaultModel: 'opencode/minimax-m3-free'
+    supportedModels: ['opencode-minimax-m3-free'],
+    defaultModel: 'opencode-minimax-m3-free'
 };
 
 let AgentRegistry: typeof import('../packages/core/src/agents/AgentRegistry.js').AgentRegistry;
@@ -91,7 +91,7 @@ test('AgentRegistry registers enabled OpenCode configs by alias', async () => {
     );
 });
 
-test('AgentRegistry preserves dynamic OpenCode provider models during migration', async () => {
+test('AgentRegistry prefixes dynamic OpenCode provider models during migration', async () => {
     await saveAgents([{
         ...opencodeConfig,
         supportedModels: ['openai/gpt-5.5'],
@@ -104,8 +104,8 @@ test('AgentRegistry preserves dynamic OpenCode provider models during migration'
     await registry.refresh();
 
     const [savedAgent] = await loadAgents();
-    assert.ok(savedAgent.supportedModels.includes('openai/gpt-5.5'));
-    assert.strictEqual(savedAgent.defaultModel, 'openai/gpt-5.5');
+    assert.ok(savedAgent.supportedModels.includes('opencode-openai/gpt-5.5'));
+    assert.strictEqual(savedAgent.defaultModel, 'opencode-openai/gpt-5.5');
 });
 
 test('AgentRegistry keeps default Claude fallback when no agents are configured', async () => {

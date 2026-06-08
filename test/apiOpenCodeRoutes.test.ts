@@ -65,8 +65,8 @@ describe('OpenCode API routes', () => {
                     enabled: true,
                     dockerImage: 'propr/agent-opencode:latest',
                     configPath: '~/.config/opencode',
-                    supportedModels: ['opencode/minimax-m3-free'],
-                    defaultModel: 'opencode/minimax-m3-free'
+                    supportedModels: ['opencode-minimax-m3-free', 'openai/gpt-5.5'],
+                    defaultModel: 'openai/gpt-5.5'
                 }]
             }
         } as never, res as never);
@@ -74,7 +74,10 @@ describe('OpenCode API routes', () => {
         assert.equal(res.statusCode, 200);
         assert.equal(applyAgentsUpdateFn.mock.calls.length, 1);
         assert.equal(redisClient.set.mock.calls.length, 1);
-        assert.equal((res.body?.agents as Array<Record<string, unknown>>)[0]?.type, 'opencode');
+        const appliedAgent = (res.body?.agents as Array<Record<string, unknown>>)[0];
+        assert.equal(appliedAgent?.type, 'opencode');
+        assert.deepEqual(appliedAgent?.supportedModels, ['opencode-minimax-m3-free', 'opencode-openai/gpt-5.5']);
+        assert.equal(appliedAgent?.defaultModel, 'opencode-openai/gpt-5.5');
     });
 
     test('POST /api/config/agents normalizes stale default OpenCode CLI version payloads before applying config', async () => {
@@ -99,8 +102,8 @@ describe('OpenCode API routes', () => {
                     enabled: true,
                     dockerImage: 'propr/agent-opencode:latest',
                     configPath: '~/.config/opencode',
-                    supportedModels: ['opencode/minimax-m3-free'],
-                    defaultModel: 'opencode/minimax-m3-free',
+                    supportedModels: ['opencode-minimax-m3-free'],
+                    defaultModel: 'opencode-minimax-m3-free',
                     cliVersionType: 'default',
                     cliVersion: 'latest'
                 }]

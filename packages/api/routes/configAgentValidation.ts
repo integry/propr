@@ -1,4 +1,4 @@
-import { AGENT_TYPES, validateAgentType, type AgentConfig, type CliVersionType } from '@propr/core';
+import { AGENT_TYPES, toProprOpenCodeModelId, validateAgentType, type AgentConfig, type CliVersionType } from '@propr/core';
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
@@ -7,8 +7,9 @@ export function normalizeAgentAlias(alias: string): string {
   return alias.trim();
 }
 
-function normalizeSupportedModel(model: string): string {
-  return model.trim();
+function normalizeSupportedModel(agentType: AgentConfig['type'], model: string): string {
+  const trimmed = model.trim();
+  return agentType === 'opencode' ? toProprOpenCodeModelId(trimmed) : trimmed;
 }
 
 function isAgentRecord(agent: unknown): agent is Record<string, unknown> {
@@ -25,8 +26,9 @@ export function normalizeAgentsConfig(agents: AgentConfig[]): AgentConfig[] {
       ...agent,
       alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias,
       cliVersion: cliVersionType === 'default' ? undefined : (typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion),
+      defaultModel: typeof agent.defaultModel === 'string' ? normalizeSupportedModel(agent.type, agent.defaultModel) : agent.defaultModel,
       supportedModels: Array.isArray(agent.supportedModels)
-        ? agent.supportedModels.map(model => typeof model === 'string' ? normalizeSupportedModel(model) : model)
+        ? agent.supportedModels.map(model => typeof model === 'string' ? normalizeSupportedModel(agent.type, model) : model)
         : agent.supportedModels
     };
   });

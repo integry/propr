@@ -504,7 +504,7 @@ export async function implementAllIssues(
     body.autoMerge = options.autoMerge;
   }
 
-  const endpoint = `/api/planner/drafts/${encodeURIComponent(draftId)}/issues/implement-all`;
+  const endpoint = `/api/planner/drafts/${encodeURIComponent(draftId)}/implement-all`;
 
   const response = await apiClient.post<ImplementAllIssuesResponse>(endpoint, {
     body,

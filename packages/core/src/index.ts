@@ -248,7 +248,7 @@ export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { AntigravityAgent } from './agents/impl/AntigravityAgent.js';
 export { OpenCodeAgent } from './agents/impl/OpenCodeAgent.js';
-export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './agents/impl/openCodeUtils.js';
+export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput, toOpenCodeExternalModelId, toProprOpenCodeModelId } from './agents/impl/openCodeUtils.js';
 export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
 export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';

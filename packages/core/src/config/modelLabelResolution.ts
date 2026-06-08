@@ -1,5 +1,6 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
+import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
 import { ALL_MODELS, MODEL_INFO_MAP, type AgentType } from './modelDefinitions.js';
 import {
     MODEL_ALIASES,
@@ -96,6 +97,14 @@ function resolveBySupportedModelId(label: string, agents: { config: AgentConfig 
         if (model) {
             return { agentAlias: agent.config.alias, model };
         }
+
+        if (agent.config.type === 'opencode') {
+            const proprOpenCodeModel = toProprOpenCodeModelId(label).toLowerCase();
+            const prefixedModel = agent.config.supportedModels.find(m => m.toLowerCase() === proprOpenCodeModel);
+            if (prefixedModel) {
+                return { agentAlias: agent.config.alias, model: prefixedModel };
+            }
+        }
     }
 
     return null;
@@ -137,7 +146,12 @@ function resolveExplicitAgentModelLabel(label: string, agents: { config: AgentCo
         return null;
     }
 
-    const supportedModel = agent.config.supportedModels.find(m => m.toLowerCase() === resolvedModel.toLowerCase());
+    const candidateModels = agent.config.type === 'opencode'
+        ? [resolvedModel, toProprOpenCodeModelId(resolvedModel)]
+        : [resolvedModel];
+    const supportedModel = agent.config.supportedModels.find(m =>
+        candidateModels.some(candidate => m.toLowerCase() === candidate.toLowerCase())
+    );
     if (!supportedModel) {
         return null;
     }
@@ -193,7 +207,7 @@ function resolveStaticModelAliasLabel(lowerLabel: string): LlmLabelResolution | 
  * Resolves an LLM label (e.g., "gemini-pro", "claude-opus", "codex") to an agent alias and model.
  *
  * Resolution order:
- * 1. Check if label is an exact configured model ID, including routed IDs like "opencode:kimi-k2.6"
+ * 1. Check if label is an exact configured model ID, including prefixed dynamic OpenCode IDs like "opencode-openai/gpt-5.5"
  * 2. Check explicit "agentAlias:modelId" format (used by settings UI for pr_review_model)
  * 3. Check if label matches a githubLabel from modelDefinitions (exact match for labels like "gemini-g3-flash-preview")
  * 4. Check if label matches an agent alias directly (e.g., "gemini" -> gemini agent with default model)
@@ -294,7 +308,7 @@ function getRoutedOpenCodeModelName(modelId: string): string | null {
 
 function isOpenCodeModelId(modelId: string): boolean {
     const lowerModel = modelId.toLowerCase();
-    return lowerModel.startsWith('opencode/') || lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
+    return lowerModel.startsWith('opencode-') || lowerModel.startsWith('opencode/') || lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
 }
 
 function getReviewDisplayLabel(modelId: string): string {

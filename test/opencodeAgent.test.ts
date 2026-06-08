@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
-import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, toOpenCodeExternalModelId, toProprOpenCodeModelId } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.js';
@@ -25,8 +25,8 @@ function createAgent(): OpenCodeAgent {
         enabled: true,
         dockerImage: 'propr/agent-opencode:latest',
         configPath: '/tmp/opencode-config',
-        supportedModels: ['opencode/minimax-m3-free'],
-        defaultModel: 'opencode/minimax-m3-free'
+        supportedModels: ['opencode-minimax-m3-free'],
+        defaultModel: 'opencode-minimax-m3-free'
     };
     return new OpenCodeAgent(config);
 }
@@ -62,7 +62,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
 
         assert.strictEqual(parsed.summary, 'hello world');
         assert.strictEqual(parsed.sessionId, 'session-a');
-        assert.strictEqual(parsed.modelUsed, 'opencode/minimax-m3-free');
+        assert.strictEqual(parsed.modelUsed, 'opencode-minimax-m3-free');
     });
 
     test('prefers assistant message text over unrelated delta shapes', () => {
@@ -73,7 +73,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'first');
-        assert.strictEqual(parsed.modelUsed, 'opencode/minimax-m3-free');
+        assert.strictEqual(parsed.modelUsed, 'opencode-minimax-m3-free');
     });
 
     test('does not duplicate text when message and event-level content match', () => {
@@ -100,7 +100,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
 
         assert.strictEqual(parsed.summary, 'partial');
         assert.strictEqual(parsed.error, 'rate limited');
-        assert.strictEqual(parsed.modelUsed, 'initial/model');
+        assert.strictEqual(parsed.modelUsed, 'opencode-initial/model');
     });
 
     test('parses OpenCode provider/server error streams', () => {
@@ -121,7 +121,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'hello world');
-        assert.strictEqual(parsed.modelUsed, 'opencode/minimax-m3-free');
+        assert.strictEqual(parsed.modelUsed, 'opencode-minimax-m3-free');
     });
 
     test('preserves repeated stream text from separate events', () => {
@@ -285,20 +285,33 @@ describe('OpenCodeAgent prompt building', () => {
 });
 
 describe('OpenCodeAgent Docker args', () => {
-    test('only strips the opencode route prefix from model names', () => {
+    test('normalizes model names for the OpenCode CLI', () => {
         const agent = createAgent();
         const routedArgs = buildDockerArgs(agent, 'opencode:provider:model');
-        const qualifiedArgs = buildDockerArgs(agent, 'provider:model');
+        const openAiArgs = buildDockerArgs(agent, 'openai/gpt-5.5');
+        const goArgs = buildDockerArgs(agent, 'opencode-go/qwen3.7-max');
+        const freeArgs = buildDockerArgs(agent, 'opencode-minimax-m3-free');
 
         assert.strictEqual(routedArgs[routedArgs.indexOf('--model') + 1], 'provider:model');
-        assert.strictEqual(qualifiedArgs[qualifiedArgs.indexOf('--model') + 1], 'provider:model');
+        assert.strictEqual(openAiArgs[openAiArgs.indexOf('--model') + 1], 'openai/gpt-5.5');
+        assert.strictEqual(goArgs[goArgs.indexOf('--model') + 1], 'opencode-go/qwen3.7-max');
+        assert.strictEqual(freeArgs[freeArgs.indexOf('--model') + 1], 'opencode/minimax-m3-free');
+        assert.strictEqual(normalizeOpenCodeCliModelName('opencode-openai/gpt-5.5'), 'gpt-5.5');
+        assert.strictEqual(normalizeOpenCodeCliModelName('opencode:openai/gpt-5.5'), 'gpt-5.5');
+        assert.strictEqual(toProprOpenCodeModelId('openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeModelId('opencode/minimax-m3-free'), 'opencode-minimax-m3-free');
+        assert.strictEqual(toProprOpenCodeModelId('opencode-go/qwen3.7-max'), 'opencode-go/qwen3.7-max');
+        assert.strictEqual(toOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'openai/gpt-5.5');
+        assert.strictEqual(toOpenCodeExternalModelId('opencode-minimax-m3-free'), 'opencode/minimax-m3-free');
         assert.ok(routedArgs.includes('--name'));
-        assert.match(routedArgs[routedArgs.indexOf('--name') + 1], /^open-code-test-issue-42-12345678$/);
+        assert.match(routedArgs[routedArgs.indexOf('--name') + 1], /^open-code-test-issue-42-opencode-provider-model-12345678$/);
+        assert.match(openAiArgs[openAiArgs.indexOf('--name') + 1], /openai-gpt-5.5-12345678$/);
+        assert.match(goArgs[goArgs.indexOf('--name') + 1], /opencode-go-qwen3.7-max-12345678$/);
         assert.ok(routedArgs.includes('--dangerously-skip-permissions'));
     });
 
     test('uses opencode-run wrapper and JSON output mode', () => {
-        const args = buildDockerArgs(createAgent(), 'opencode/minimax-m3-free');
+        const args = buildDockerArgs(createAgent(), 'opencode-minimax-m3-free');
         const imageIndex = args.indexOf('propr/agent-opencode:latest');
 
         assert.ok(imageIndex > -1);
@@ -330,7 +343,7 @@ describe('OpenCodeAgent Docker args', () => {
             worktreePath: '/tmp/worktree',
             githubToken: 'token',
             issueNumber: 0,
-            modelName: 'openai/gpt-5.5',
+            modelName: 'opencode-openai/gpt-5.5',
             readOnlyWorkspace: false,
             allowDangerousPermissions: false,
             promptMode: 'direct',
@@ -372,7 +385,7 @@ describe('OpenCodeAgent Docker args', () => {
         const agent = createAgent();
         agent.config.configPath = configPath;
 
-        const args = buildDockerArgs(agent, 'opencode/minimax-m3-free');
+        const args = buildDockerArgs(agent, 'opencode-minimax-m3-free');
 
         assert.ok(args.includes(`${dataPath}:/home/node/.local/share/opencode:rw`));
         assert.strictEqual(args[args.lastIndexOf('-e') + 1], 'XDG_DATA_HOME=/home/node/.local/share');

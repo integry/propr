@@ -15,7 +15,7 @@ vi.mock('../../api/agentVersionApi', () => ({
 
 vi.mock('../../api/proprApi', () => ({
   getOpenCodeModels: vi.fn().mockResolvedValue({
-    models: ['openai/gpt-5.5', 'openai/gpt-5.5-fast'],
+    models: ['opencode-openai/gpt-5.5', 'opencode-openai/gpt-5.5-fast'],
   }),
 }));
 
@@ -70,7 +70,7 @@ describe('AgentConfigModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }));
 
     expect(await screen.findByText('OpenAI GPT 5.5')).toBeInTheDocument();
-    expect(screen.getByText('openai/gpt-5.5')).toBeInTheDocument();
+    expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
     expect(screen.getByText('llm-opencode-openai-gpt-5-5')).toBeInTheDocument();
   });
 
@@ -84,8 +84,8 @@ describe('AgentConfigModal', () => {
           enabled: true,
           dockerImage: AGENT_DEFAULTS.opencode.dockerImage,
           configPath: AGENT_DEFAULTS.opencode.configPath,
-          supportedModels: ['openai/gpt-5.5'],
-          defaultModel: 'openai/gpt-5.5',
+          supportedModels: ['opencode-openai/gpt-5.5'],
+          defaultModel: 'opencode-openai/gpt-5.5',
         }}
         existingAliases={['opencode']}
         onClose={vi.fn()}
@@ -94,6 +94,6 @@ describe('AgentConfigModal', () => {
     );
 
     expect(await screen.findByText('OpenAI GPT 5.5')).toBeInTheDocument();
-    expect(screen.getByText('openai/gpt-5.5')).toBeInTheDocument();
+    expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
   });
 });

@@ -243,7 +243,7 @@ export class AntigravityAgent implements Agent {
         const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
         const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const runtimeName = this.getRuntimeName();
-        const containerName = `${this.config.alias || runtimeName}-${taskType}-${shortTaskId}`;
+        const containerName = this.buildContainerName(this.config.alias || runtimeName, taskType, shortTaskId, modelName);
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
@@ -257,6 +257,13 @@ export class AntigravityAgent implements Agent {
         } else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Antigravity agent will use default'); }
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Antigravity agent');
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, runtimeName);
+    }
+
+    private buildContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
+        const rawName = modelName
+            ? `${alias}-${taskType}-${modelName}-${shortTaskId}`
+            : `${alias}-${taskType}-${shortTaskId}`;
+        return rawName.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 120) || `antigravity-${Date.now().toString(36)}`;
     }
 
     private getLastConversationsPath(): string {
