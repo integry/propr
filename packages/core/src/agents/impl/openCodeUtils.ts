@@ -4,7 +4,7 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
 import type { AgentConfig } from '../types.js';
-export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeModelId } from './openCodeModelIds.js';
+export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId } from './openCodeModelIds.js';
 export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './openCodeParsing.js';
 export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from './openCodeParsing.js';
 import { toOpenCodeExternalModelId } from './openCodeModelIds.js';
@@ -137,10 +137,13 @@ function buildEnvVars(config: AgentConfig): string[] {
 }
 
 function buildOpenCodeContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
-    const rawName = modelName
-        ? `${alias}-${taskType}-${modelName}-${shortTaskId}`
-        : `${alias}-${taskType}-${shortTaskId}`;
-    const sanitized = rawName.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 120);
+    const suffix = `-${shortTaskId}`;
+    const rawPrefix = modelName
+        ? `${alias}-${taskType}-${modelName}`
+        : `${alias}-${taskType}`;
+    const maxPrefixLength = Math.max(1, 120 - suffix.length);
+    const sanitizedPrefix = rawPrefix.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, maxPrefixLength).replace(/[^a-zA-Z0-9]+$/, '');
+    const sanitized = `${sanitizedPrefix || 'opencode'}${suffix}`;
     return sanitized || `opencode-${Date.now().toString(36)}`;
 }
 

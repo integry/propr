@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
-import { getAgentRegistry, loadAgents, toProprOpenCodeModelId, type Agent, type AgentRegistry } from '@propr/core';
+import { getAgentRegistry, loadAgents, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, type Agent, type AgentRegistry } from '@propr/core';
 import { AGENT_DEFAULTS } from '@propr/shared';
 
 const execFileAsync = promisify(execFile);
@@ -65,7 +65,7 @@ async function discoverOpenCodeModels(agentId?: string): Promise<string[]> {
     .split(/\r?\n/)
     .map(line => line.trim())
     .filter(line => line && !line.includes(' ') && line.includes('/'))
-    .map(toProprOpenCodeModelId);
+    .map(toProprOpenCodeExternalModelId);
 }
 
 async function hasLocalDockerImage(image: string): Promise<boolean> {

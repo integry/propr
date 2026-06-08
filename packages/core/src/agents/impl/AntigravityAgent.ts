@@ -260,10 +260,13 @@ export class AntigravityAgent implements Agent {
     }
 
     private buildContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
-        const rawName = modelName
-            ? `${alias}-${taskType}-${modelName}-${shortTaskId}`
-            : `${alias}-${taskType}-${shortTaskId}`;
-        return rawName.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 120) || `antigravity-${Date.now().toString(36)}`;
+        const suffix = `-${shortTaskId}`;
+        const rawPrefix = modelName
+            ? `${alias}-${taskType}-${modelName}`
+            : `${alias}-${taskType}`;
+        const maxPrefixLength = Math.max(1, 120 - suffix.length);
+        const sanitizedPrefix = rawPrefix.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, maxPrefixLength).replace(/[^a-zA-Z0-9]+$/, '');
+        return `${sanitizedPrefix || 'antigravity'}${suffix}`;
     }
 
     private getLastConversationsPath(): string {

@@ -1,10 +1,15 @@
+export function toProprOpenCodeExternalModelId(modelName: string): string {
+    if (modelName.startsWith('opencode/')) {
+        return `opencode-${modelName.slice('opencode/'.length)}`;
+    }
+    return `opencode-${modelName}`;
+}
+
 export function toProprOpenCodeModelId(modelName: string): string {
     const withoutRoutePrefix = modelName.startsWith('opencode:') ? modelName.slice('opencode:'.length) : modelName;
+    if (modelName.startsWith('opencode:')) return toProprOpenCodeExternalModelId(withoutRoutePrefix);
     if (withoutRoutePrefix.startsWith('opencode-')) return withoutRoutePrefix;
-    if (withoutRoutePrefix.startsWith('opencode/')) {
-        return `opencode-${withoutRoutePrefix.slice('opencode/'.length)}`;
-    }
-    return `opencode-${withoutRoutePrefix}`;
+    return toProprOpenCodeExternalModelId(withoutRoutePrefix);
 }
 
 export function toOpenCodeExternalModelId(modelName: string): string {

@@ -112,7 +112,7 @@ Source: https://github.com/mistralai/mistral-vibe
       to the Licensor or its representatives, including but not limited to
       communication on electronic mailing lists, source code control systems,
       and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of tracking and improving the Work, but
+      Licensor for the purpose of tracking or improving the Work, but
       excluding communication that is conspicuously marked or otherwise
       designated in writing by the copyright owner as "Not a Contribution."
 

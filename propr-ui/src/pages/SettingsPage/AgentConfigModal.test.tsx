@@ -69,9 +69,9 @@ describe('AgentConfigModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }));
 
-    expect(await screen.findByText('OpenAI GPT 5.5')).toBeInTheDocument();
+    expect(await screen.findByText('Opencode OpenAI GPT 5.5')).toBeInTheDocument();
     expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
-    expect(screen.getByText('llm-opencode-openai-gpt-5-5')).toBeInTheDocument();
+    expect(screen.getByText('llm-opencode:opencode-openai/gpt-5.5')).toBeInTheDocument();
   });
 
   it('shows OpenCode models already saved on an agent even when they are not static defaults', async () => {
@@ -93,7 +93,7 @@ describe('AgentConfigModal', () => {
       />
     );
 
-    expect(await screen.findByText('OpenAI GPT 5.5')).toBeInTheDocument();
+    expect(await screen.findByText('Opencode OpenAI GPT 5.5')).toBeInTheDocument();
     expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
   });
 });

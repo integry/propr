@@ -13,6 +13,8 @@ import {
   generateCorrelationId
 } from '@propr/core';
 
+const MAX_GITHUB_LABEL_LENGTH = 50;
+
 export interface ImplementIssueContext {
   octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
   owner: string;
@@ -68,6 +70,33 @@ async function enqueueIssueImplementationJob(params: {
   });
 }
 
+function shortHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function buildDynamicLlmLabel(agentAlias: string, labelModel: string): string {
+  const canonicalLabel = `llm-${agentAlias}:${labelModel}`;
+  if (canonicalLabel.length <= MAX_GITHUB_LABEL_LENGTH) return canonicalLabel;
+
+  const hash = shortHash(labelModel);
+  const maxAliasLength = Math.max(1, MAX_GITHUB_LABEL_LENGTH - `llm-:-x-${hash}`.length);
+  const labelAlias = agentAlias
+    .replace(/[^a-zA-Z0-9_.-]/g, '-')
+    .slice(0, maxAliasLength)
+    .replace(/[^a-zA-Z0-9]+$/, '') || 'agent';
+  const prefixBudget = MAX_GITHUB_LABEL_LENGTH - `llm-${labelAlias}:-${hash}`.length;
+  const modelPrefix = labelModel
+    .replace(/[^a-zA-Z0-9_.-]/g, '-')
+    .slice(0, Math.max(1, prefixBudget))
+    .replace(/[^a-zA-Z0-9]+$/, '');
+  return `llm-${labelAlias}:${modelPrefix || 'model'}-${hash}`;
+}
+
 /**
  * Gets the default model from the configured default agent.
  * Falls back to 'claude-sonnet-4-6' if no default agent is configured.
@@ -112,7 +141,7 @@ export async function getLlmLabel(modelName: string | null): Promise<string | nu
       })
     );
     const labelModel = agent?.config.type === 'opencode' ? toProprOpenCodeModelId(effectiveModel) : effectiveModel;
-    return agent ? `llm-${agent.config.alias}:${labelModel}` : null;
+    return agent ? buildDynamicLlmLabel(agent.config.alias, labelModel) : null;
   } catch (err) {
     logger.warn({ modelName: effectiveModel, error: (err as Error).message }, 'Failed to resolve dynamic LLM label');
     return null;

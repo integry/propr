@@ -325,7 +325,9 @@ export function buildVibeContainerName(alias: string, taskType: string, taskId: 
     const sanitizedAlias = sanitizeDockerNamePart(alias, 'vibe');
     const sanitizedType = sanitizeDockerNamePart(taskType, 'task');
     const sanitizedModel = modelName ? `${sanitizeDockerNamePart(modelName, 'model')}-` : '';
-    return `${sanitizedAlias}-${sanitizedType}-${sanitizedModel}${shortTaskId}`.slice(0, 128);
+    const suffix = `-${shortTaskId}`;
+    const prefix = `${sanitizedAlias}-${sanitizedType}-${sanitizedModel}`.slice(0, Math.max(1, 128 - suffix.length)).replace(/[^a-zA-Z0-9]+$/, '');
+    return `${prefix}${suffix}`;
 }
 
 export function ensureAnalysisWorkspace(): string {
