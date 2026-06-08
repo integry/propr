@@ -25,4 +25,4 @@ export function normalizeOpenCodeCliModelName(modelName: string): string {
     return slashIndex > 0 ? externalModelId.slice(slashIndex + 1) : externalModelId;
 }
 
-export { shortHash } from '@propr/shared';
+export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';

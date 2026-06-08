@@ -56,4 +56,4 @@ export {
 
 export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
 
-export { shortHash } from './labelUtils.js';
+export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labelUtils.js';

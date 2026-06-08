@@ -9,12 +9,10 @@ import {
   loadSettings,
   AgentRegistry,
   toProprOpenCodeModelId,
-  shortHash,
+  buildDynamicLlmLabel,
   getIssueQueue,
   generateCorrelationId
 } from '@propr/core';
-
-const MAX_GITHUB_LABEL_LENGTH = 50;
 
 export interface ImplementIssueContext {
   octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
@@ -69,24 +67,6 @@ async function enqueueIssueImplementationJob(params: {
     removeOnComplete: true,
     removeOnFail: true
   });
-}
-
-function buildDynamicLlmLabel(agentAlias: string, labelModel: string): string {
-  const canonicalLabel = `llm-${agentAlias}:${labelModel}`;
-  if (canonicalLabel.length <= MAX_GITHUB_LABEL_LENGTH) return canonicalLabel;
-
-  const hash = shortHash(labelModel);
-  const maxAliasLength = Math.max(1, MAX_GITHUB_LABEL_LENGTH - `llm-:-x-${hash}`.length);
-  const labelAlias = agentAlias
-    .replace(/[^a-zA-Z0-9_.-]/g, '-')
-    .slice(0, maxAliasLength)
-    .replace(/[^a-zA-Z0-9]+$/, '') || 'agent';
-  const prefixBudget = MAX_GITHUB_LABEL_LENGTH - `llm-${labelAlias}:-${hash}`.length;
-  const modelPrefix = labelModel
-    .replace(/[^a-zA-Z0-9_.-]/g, '-')
-    .slice(0, Math.max(1, prefixBudget))
-    .replace(/[^a-zA-Z0-9]+$/, '');
-  return `llm-${labelAlias}:${modelPrefix || 'model'}-${hash}`;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
-import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
+import { toProprOpenCodeModelId, shortHash } from '../agents/impl/openCodeModelIds.js';
 import { ALL_MODELS, MODEL_INFO_MAP, type AgentType } from './modelDefinitions.js';
 import {
     MODEL_ALIASES,
@@ -152,11 +152,28 @@ function resolveExplicitAgentModelLabel(label: string, agents: { config: AgentCo
     const supportedModel = agent.config.supportedModels.find(m =>
         candidateModels.some(candidate => m.toLowerCase() === candidate.toLowerCase())
     );
-    if (!supportedModel) {
-        return null;
+    if (supportedModel) {
+        return { agentAlias: agent.config.alias, model: supportedModel };
     }
 
-    return { agentAlias: agent.config.alias, model: supportedModel };
+    // Hashed dynamic labels (e.g. "opencode-provi-<hash>") can't match by name;
+    // recover the original model by matching the hash suffix against supported models.
+    const hashMatch = resolveByHashedModelLabel(explicitModel, agent.config);
+    if (hashMatch) {
+        return { agentAlias: agent.config.alias, model: hashMatch };
+    }
+
+    return null;
+}
+
+function resolveByHashedModelLabel(hashedLabel: string, config: AgentConfig): string | null {
+    const dashIdx = hashedLabel.lastIndexOf('-');
+    if (dashIdx <= 0) return null;
+    const labelHash = hashedLabel.substring(dashIdx + 1);
+    for (const model of config.supportedModels) {
+        if (shortHash(model) === labelHash) return model;
+    }
+    return null;
 }
 
 function resolveAgentAliasLabel(lowerLabel: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {

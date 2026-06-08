@@ -1,5 +1,5 @@
 import { AgentConfig } from '../../api/proprApi';
-import { AgentType, AGENT_MODELS, MODEL_INFO_MAP, ModelInfo, shortHash } from '../../config/modelDefinitions';
+import { AgentType, AGENT_MODELS, MODEL_INFO_MAP, ModelInfo, buildDynamicLlmLabel } from '../../config/modelDefinitions';
 
 export interface ModelOption {
   value: string;
@@ -28,7 +28,6 @@ const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude'];
 
 // Models recommended for PR review (high capability options)
 const RECOMMENDED_PR_REVIEW_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'pro-preview', 'medium35'];
-const MAX_GITHUB_LABEL_LENGTH = 50;
 
 function formatFallbackModelName(modelId: string): string {
   const gptMatch = modelId.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
@@ -104,19 +103,8 @@ function toTitleCase(value: string): string {
 }
 
 function buildSyntheticGithubLabel(agentType: AgentType, modelId: string): string {
-  const canonicalLabel = agentType === 'opencode'
-    ? `llm-opencode:${modelId}`
-    : `llm-${agentType}-${modelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`;
-  if (canonicalLabel.length <= MAX_GITHUB_LABEL_LENGTH) return canonicalLabel;
-
-  const hash = shortHash(modelId);
-  const maxAgentTypeLength = Math.max(1, MAX_GITHUB_LABEL_LENGTH - `llm-:-x-${hash}`.length);
-  const labelAgentType = agentType.slice(0, maxAgentTypeLength);
-  const prefix = modelId
-    .replace(/[^a-zA-Z0-9_.-]/g, '-')
-    .slice(0, Math.max(1, MAX_GITHUB_LABEL_LENGTH - `llm-${labelAgentType}:-${hash}`.length))
-    .replace(/[^a-zA-Z0-9]+$/, '');
-  return `llm-${labelAgentType}:${prefix || 'model'}-${hash}`;
+  if (agentType === 'opencode') return buildDynamicLlmLabel(agentType, modelId);
+  return `llm-${agentType}-${modelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`;
 }
 
 function buildSyntheticModel(agentType: AgentType, modelId: string): ModelInfo {

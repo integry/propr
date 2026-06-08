@@ -414,4 +414,20 @@ describe('OpenCodeAgent Docker args', () => {
 
         assert.match(script, /opencode run "\$@" --file "\$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run\. Follow the instructions in that file exactly\."/);
     });
+
+    test('prevents duplicate opencode- prefix on round-trip conversions', () => {
+        assert.strictEqual(toProprOpenCodeModelId('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeModelId('opencode-minimax-m3-free'), 'opencode-minimax-m3-free');
+        assert.strictEqual(toProprOpenCodeModelId('opencode:opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeExternalModelId('opencode-minimax-m3-free'), 'opencode-minimax-m3-free');
+
+        // Repeated normalization should be idempotent
+        const once = toProprOpenCodeModelId('openai/gpt-5.5');
+        const twice = toProprOpenCodeModelId(once);
+        const thrice = toProprOpenCodeModelId(twice);
+        assert.strictEqual(once, 'opencode-openai/gpt-5.5');
+        assert.strictEqual(twice, 'opencode-openai/gpt-5.5');
+        assert.strictEqual(thrice, 'opencode-openai/gpt-5.5');
+    });
 });

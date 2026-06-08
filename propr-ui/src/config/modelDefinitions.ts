@@ -19,4 +19,6 @@ export {
   AGENT_DEFAULTS,
   typeBadgeColors,
   shortHash,
+  buildDynamicLlmLabel,
+  MAX_GITHUB_LABEL_LENGTH,
 } from '@propr/shared';
