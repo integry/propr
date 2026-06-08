@@ -11,6 +11,8 @@ import { parseRedisOutput } from './redisOutputParser.js';
 import { resolveConfigPath } from '@propr/core';
 import { findAgentConfigForTask, findExecutionStartTimestampForTask } from './taskWatcherLookup.js';
 
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'opencode_execution']);
+
 /** Active task watcher info */
 export interface TaskWatcherInfo {
   watcher: chokidar.FSWatcher | null;
@@ -80,6 +82,10 @@ export class TaskWatcherManager {
     let conversationPath: string;
     if (agentType === 'codex' || agentType === 'antigravity' || agentType === 'vibe') {
       console.log(`[TaskWatcher] ${agentType} task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
+      await this.startRedisWatcher(taskId);
+      return;
+    } else if (agentType === 'opencode') {
+      console.log(`[TaskWatcher] OpenCode task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
       await this.startRedisWatcher(taskId);
       return;
     } else {
@@ -333,6 +339,19 @@ export class TaskWatcherManager {
   }
 
   /**
+   * Check if task has Redis output (indicates Codex/non-Claude agent)
+   */
+  private async hasRedisOutput(taskId: string): Promise<boolean> {
+    if (!this.deps) return false;
+    try {
+      const output = await this.deps.redisClient.get(`agent:output:${taskId}`);
+      return output !== null && output.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Start Redis-based watcher for agents that stream output to Redis
    */
   private async startRedisWatcher(taskId: string): Promise<void> {
@@ -439,8 +458,8 @@ export class TaskWatcherManager {
         const state = JSON.parse(stateData) as {
           history: Array<{ state: string; metadata?: { sessionId?: string } }>
         };
-        const entry = state.history.find(
-          h => h.state === 'claude_execution' && h.metadata?.sessionId
+        const entry = [...state.history].reverse().find(
+          h => LIVE_EXECUTION_STATES.has(h.state) && h.metadata?.sessionId
         );
         if (entry?.metadata?.sessionId) {
           return entry.metadata.sessionId;

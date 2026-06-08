@@ -4,13 +4,18 @@
 # agent containers. In CI or systemd contexts where HOME may be unset, export it
 # explicitly before running docker-compose (e.g., export HOME=/root).
 #
-# PREFLIGHT: Before starting, create credential and cache directories for ALL
+# PREFLIGHT: Before starting, create credential and cache directories for the
 # agents you intend to use (Docker will create missing directories as root-owned
 # otherwise, which can cause write failures):
 #   mkdir -p ~/.claude ~/.codex ~/.gemini /tmp/propr-vibe-prompts
 #
 # For Vibe support, also create:
 #   mkdir -p ~/.vibe
+#
+# For OpenCode support, also create the OpenCode directories and include the
+# override file:
+#   mkdir -p ~/.opencode ~/.config/opencode ~/.local/share/opencode
+#   docker compose -f docker-compose.yml -f docker-compose.opencode.yml up
 #
 # For production deployments that only use a subset of agents, use the launcher
 # (docker/launcher/) which conditionally mounts only configured agent directories.
@@ -93,6 +98,8 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
+      - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
       redis:
@@ -126,6 +133,8 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
+      - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
     depends_on:
       redis:
@@ -157,6 +166,8 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
+      - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       # How often to scan for repos needing indexing (default: 5 minutes)
       - INDEXING_SCAN_INTERVAL_MS=${INDEXING_SCAN_INTERVAL_MS:-300000}
@@ -218,6 +229,8 @@ services:
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
+      # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
+      - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       - CONFIG_REPO_PATH=/tmp/config_repo
       # Allow injection of API_PUBLIC_URL for PR preview environments

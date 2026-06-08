@@ -1,59 +1,117 @@
-export type StoredOutputFormat = 'claude' | 'codex' | 'antigravity' | 'vibe' | 'unknown';
+import { isOpenCodeJsonlEvent } from '@propr/core';
 
 interface StoredExecutionOutputLine {
   type?: string;
   role?: string;
+  message?: { parts?: unknown[] } | unknown;
+  response?: unknown;
+  sessionID?: string;
+  sessionId?: string;
   session_id?: string;
   conversation_id?: string;
   model?: string;
-  stats?: unknown;
+  stats?: Record<string, unknown>;
   item?: unknown;
+  part?: unknown;
+  parts?: unknown[];
   reasoning_content?: unknown;
   tool_calls?: unknown;
   tool_call_id?: string;
 }
 
+export type StoredOutputFormat = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'unknown';
+
+const CODEX_STORED_OUTPUT_TYPES = new Set([
+  'message',
+  'tool_use',
+  'error',
+  'result',
+  'turn.started',
+  'turn.completed',
+  'item.started',
+  'item.updated',
+  'item.completed'
+]);
+const CLAUDE_STORED_OUTPUT_TYPES = new Set(['assistant', 'user']);
+
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
-  const wholeDocumentFormat = detectParsedStoredOutputFormat(output.trim());
+  const wholeDocumentFormat = detectWholeDocumentStoredOutputFormat(output.trim());
   if (wholeDocumentFormat !== 'unknown') return wholeDocumentFormat;
 
   const lines = output.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-  if (lines.some(line => detectParsedStoredOutputFormat(line) === 'antigravity')) {
+  // Check for antigravity stream events across all lines
+  if (lines.some(line => {
+    const parsed = parseStoredOutputLine(line);
+    return parsed && isAntigravityStreamEvent(parsed);
+  })) {
     return 'antigravity';
   }
 
-  const firstLine = lines[0];
-  if (!firstLine) return 'unknown';
-  return detectParsedStoredOutputFormat(firstLine);
+  let detectedFormat: StoredOutputFormat = 'unknown';
+  for (const line of lines) {
+    const parsed = parseStoredOutputLine(line);
+    if (!parsed) continue;
+    const immediateFormat = getImmediateStoredOutputFormat(parsed);
+    if (immediateFormat) return immediateFormat;
+    const deferredFormat = getDeferredStoredOutputFormat(parsed);
+    if (deferredFormat === 'opencode') return 'opencode';
+    if (detectedFormat === 'unknown') detectedFormat = deferredFormat;
+  }
+  return detectedFormat;
 }
 
-function detectParsedStoredOutputFormat(jsonText: string): StoredOutputFormat {
+function detectWholeDocumentStoredOutputFormat(jsonText: string): StoredOutputFormat {
+  if (!jsonText) return 'unknown';
   try {
-    const parsed = JSON.parse(jsonText) as StoredExecutionOutputLine | StoredExecutionOutputLine[];
-    if (isVibeTranscript(parsed)) return 'vibe';
-    if (Array.isArray(parsed)) return 'unknown';
-    if (isAntigravityStreamEvent(parsed)) return 'antigravity';
-    if (parsed.type === 'message'
-      || parsed.type === 'tool_use'
-      || parsed.type === 'tool_result'
-      || parsed.type === 'error'
-      || parsed.type === 'result'
-      || parsed.type === 'turn.started'
-      || parsed.type === 'turn.completed'
-      || parsed.type === 'item.started'
-      || parsed.type === 'item.updated'
-      || parsed.type === 'item.completed'
-      || parsed.item !== undefined) {
-      return 'codex';
-    }
-
-    if (parsed.type === 'assistant' || parsed.type === 'user' || !!parsed.session_id || !!parsed.conversation_id) {
-      return 'claude';
-    }
-    return 'unknown';
+    const events = normalizeStoredOutputEvents(JSON.parse(jsonText));
+    if (!events.length) return 'unknown';
+    if (isVibeTranscript(events)) return 'vibe';
+    return detectStoredOutputEvents(events);
   } catch {
-    return 'unknown';
+    // Not valid JSON, ignore
   }
+  return 'unknown';
+}
+
+function normalizeStoredOutputEvents(parsed: unknown): StoredExecutionOutputLine[] {
+  const values = Array.isArray(parsed) ? parsed : [parsed];
+  return values.filter(isStoredOutputObject);
+}
+
+function isStoredOutputObject(value: unknown): value is StoredExecutionOutputLine {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function detectStoredOutputEvents(events: StoredExecutionOutputLine[]): StoredOutputFormat {
+  let detectedFormat: StoredOutputFormat = 'unknown';
+  for (const event of events) {
+    if (isAntigravityStreamEvent(event)) return 'antigravity';
+    const immediateFormat = getImmediateStoredOutputFormat(event);
+    if (immediateFormat) return immediateFormat;
+    const deferredFormat = getDeferredStoredOutputFormat(event);
+    if (deferredFormat === 'opencode') return 'opencode';
+    if (detectedFormat === 'unknown') detectedFormat = deferredFormat;
+  }
+  return detectedFormat;
+}
+
+function parseStoredOutputLine(line: string): StoredExecutionOutputLine | null {
+  if (!line.trim()) return null;
+  try {
+    return JSON.parse(line) as StoredExecutionOutputLine;
+  } catch {
+    return null;
+  }
+}
+
+function getImmediateStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat | null {
+  if (isClaudeStoredOutputLine(parsed)) return 'claude';
+  return isStrongOpenCodeStoredOutputLine(parsed) && !isCodexStoredOutputLine(parsed) ? 'opencode' : null;
+}
+
+function getDeferredStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat {
+  if (isStrongOpenCodeStoredOutputLine(parsed)) return 'opencode';
+  return isCodexStoredOutputLine(parsed) ? 'codex' : 'unknown';
 }
 
 function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
@@ -63,6 +121,42 @@ function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
 
 function hasAntigravityModel(parsed: StoredExecutionOutputLine): boolean {
   return typeof parsed.model === 'string' && parsed.model.trim().length > 0;
+}
+
+function isStrongOpenCodeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
+  if (!isOpenCodeJsonlEvent(parsed)) return false;
+  if (parsed.sessionID || parsed.sessionId) return true;
+  return Boolean(parsed.session_id && hasOpenCodeSpecificShape(parsed))
+    || hasOpenCodeAssistantPartsShape(parsed);
+}
+
+function hasOpenCodeSpecificShape(parsed: StoredExecutionOutputLine): boolean {
+  const type = typeof parsed.type === 'string' ? parsed.type.toLowerCase() : '';
+  return Boolean(parsed.part || parsed.parts || parsed.response || type.startsWith('tool_'));
+}
+
+function hasOpenCodeAssistantPartsShape(parsed: StoredExecutionOutputLine): boolean {
+  if (!parsed.message || typeof parsed.message !== 'object') return false;
+  const message = parsed.message as { role?: unknown; parts?: unknown[] };
+  return message.role === 'assistant' && Array.isArray(message.parts) && message.parts.length > 0;
+}
+
+function isCodexStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
+  return Boolean((parsed.type && CODEX_STORED_OUTPUT_TYPES.has(parsed.type)) || parsed.item !== undefined);
+}
+
+function isClaudeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
+  return Boolean((parsed.type && CLAUDE_STORED_OUTPUT_TYPES.has(parsed.type)) || isClaudeConversationEnvelope(parsed));
+}
+
+function isClaudeConversationEnvelope(parsed: StoredExecutionOutputLine): boolean {
+  if (!parsed.conversation_id || parsed.type) return false;
+  if (parsed.role === 'assistant' || parsed.role === 'user') return true;
+  const message = parsed.message as { role?: unknown; content?: unknown } | undefined;
+  return Boolean(
+    message
+    && (message.role === 'assistant' || message.role === 'user' || Array.isArray(message.content))
+  );
 }
 
 function isVibeTranscript(parsed: StoredExecutionOutputLine | StoredExecutionOutputLine[]): boolean {

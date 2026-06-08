@@ -5,6 +5,7 @@ import { Agent, AgentConfig } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
 import { AntigravityAgent } from './impl/AntigravityAgent.js';
+import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
 import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
 import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/docker/dockerExecutor.js';
@@ -12,6 +13,7 @@ import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
 import { computeContentHash, generateImageTag, getDockerTagComponent } from './version/versionService.js';
 import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from './version/types.js';
+import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -235,7 +237,11 @@ export class AgentRegistry {
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
         if (config.type === 'antigravity') {
-            config.cliVersion = 'latest';
+            if (config.cliVersionType === 'default') {
+                delete config.cliVersion;
+            } else {
+                config.cliVersion = 'latest';
+            }
             config.cliVersionResolved = AGENT_DEFAULT_VERSIONS.antigravity;
         }
         const cliVersionResolved = config.cliVersionResolved;
@@ -297,6 +303,8 @@ export class AgentRegistry {
                 return new CodexAgent(config);
             case 'antigravity':
                 return new AntigravityAgent(config);
+            case 'opencode':
+                return new OpenCodeAgent(config);
             case 'vibe':
                 return new VibeAgent(config);
             default:
@@ -314,7 +322,7 @@ export class AgentRegistry {
             type: 'claude',
             alias: 'default',
             enabled: true,
-            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || 'propr/agent-claude:latest',
+            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude,
             configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
             supportedModels: [
                 'claude-opus-4-8',

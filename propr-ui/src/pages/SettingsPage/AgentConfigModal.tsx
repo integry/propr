@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Eye, EyeOff, ExternalLink } from 'lucide-react';
-import { AgentConfig, CliVersionType } from '../../api/proprApi';
-import { AgentType, AGENT_TYPES, AGENT_DEFAULTS } from '../../config/modelDefinitions';
+import { AgentConfig, CliVersionType, getOpenCodeModels } from '../../api/proprApi';
+import { AgentType, AGENT_DEFAULTS, AGENT_DISPLAY_ORDER } from '../../config/modelDefinitions';
 import { getAgentVersions, AvailableVersionsResponse } from '../../api/agentVersionApi';
 import CliVersionSelector from './CliVersionSelector';
 import ModelSelector from './ModelSelector';
+import { buildSelectableModels } from './modelSelectionHelpers';
 
 interface AgentConfigModalProps {
   agent: AgentConfig | null;
@@ -20,6 +21,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   onSave
 }) => {
   const isEditing = agent !== null;
+  const getAgentTypeLabel = (type: AgentType) => type === 'opencode' ? 'OpenCode' : type === 'antigravity' ? 'Antigravity' : type;
 
   const [formData, setFormData] = useState<Omit<AgentConfig, 'id'> & { id?: string }>({
     type: 'claude',
@@ -39,6 +41,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [versionData, setVersionData] = useState<AvailableVersionsResponse | null>(null);
   const [versionLoading, setVersionLoading] = useState(false);
+  const [discoveredOpenCodeModels, setDiscoveredOpenCodeModels] = useState<string[]>([]);
 
   // Separate state for API key visibility (password field toggle)
   const [showApiKey, setShowApiKey] = useState(false);
@@ -62,6 +65,27 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   }, [formData.type, loadVersionData]);
 
   useEffect(() => {
+    let cancelled = false;
+    if (formData.type !== 'opencode') {
+      setDiscoveredOpenCodeModels([]);
+      return;
+    }
+
+    getOpenCodeModels(formData.id)
+      .then(data => {
+        if (!cancelled) setDiscoveredOpenCodeModels(data.models);
+      })
+      .catch(error => {
+        console.error('Failed to discover OpenCode models:', error);
+        if (!cancelled) setDiscoveredOpenCodeModels([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [formData.type, formData.id]);
+
+  useEffect(() => {
     if (agent) {
       setFormData({
         id: agent.id,
@@ -75,7 +99,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         modelCustomLabels: agent.modelCustomLabels || {},
         envVars: agent.envVars || {},
         cliVersionType: agent.cliVersionType || 'default',
-        cliVersion: agent.cliVersion,
+        cliVersion: (agent.cliVersionType || 'default') === 'default' ? undefined : agent.cliVersion,
         cliVersionResolved: agent.cliVersionResolved || AGENT_DEFAULTS[agent.type].defaultCliVersion
       });
     }
@@ -141,7 +165,10 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   };
 
   const handleSelectAllModels = () => {
-    const allModels = AGENT_MODELS[formData.type].map(m => m.id);
+    const allModels = buildSelectableModels(
+      formData.type,
+      [...(formData.type === 'opencode' ? discoveredOpenCodeModels : []), ...formData.supportedModels]
+    ).map(m => m.id);
     setFormData(prev => ({ ...prev, supportedModels: allModels }));
   };
 
@@ -208,6 +235,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       }
     }
 
+    const cliVersionType = formData.cliVersionType || 'default';
     const agentToSave: AgentConfig = {
       id: formData.id || crypto.randomUUID(),
       type: formData.type,
@@ -219,8 +247,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       defaultModel: formData.defaultModel,
       modelCustomLabels: Object.keys(cleanedModelCustomLabels).length > 0 ? cleanedModelCustomLabels : undefined,
       envVars: Object.keys(cleanedEnvVars).length > 0 ? cleanedEnvVars : undefined,
-      cliVersionType: formData.cliVersionType,
-      cliVersion: formData.cliVersion,
+      cliVersionType,
+      cliVersion: cliVersionType === 'default' ? undefined : formData.cliVersion,
       cliVersionResolved: formData.cliVersionResolved
     };
 
@@ -246,8 +274,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           {/* Agent Type - Pill Toggle Style */}
           <div>
             <label className="block text-gray-700 mb-1.5 font-medium text-sm">Agent Type</label>
-            <div className="inline-flex bg-gray-100 rounded-full p-1">
-              {AGENT_TYPES.map(type => (
+            <div className="flex flex-wrap gap-1 bg-gray-100 rounded-full p-1 w-fit">
+              {AGENT_DISPLAY_ORDER.map(type => (
                 <button
                   key={type}
                   type="button"
@@ -258,7 +286,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  {type === 'antigravity' ? 'Antigravity' : type}
+                  {getAgentTypeLabel(type)}
                 </button>
               ))}
             </div>
@@ -360,6 +388,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             agentType={formData.type}
             supportedModels={formData.supportedModels}
             defaultModel={formData.defaultModel}
+            availableModelIds={formData.type === 'opencode' ? discoveredOpenCodeModels : undefined}
             modelCustomLabels={formData.modelCustomLabels}
             errors={errors}
             onModelToggle={handleModelToggle}

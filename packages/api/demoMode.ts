@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from '@propr/shared';
 import type { RedisClientType } from 'redis';
+import type { GitHubUser } from './authTypes.js';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 let configuredDemoMode: boolean | null = null;
@@ -22,7 +23,7 @@ function readDemoModeFromEnvironment(): boolean {
   return parseTruthyEnvValue(process.env.PROPR_DEMO_MODE);
 }
 
-export function getDemoUser(): Express.User {
+export function getDemoUser(): GitHubUser {
   return {
     id: 'propr-demo',
     login: 'propr-demo',

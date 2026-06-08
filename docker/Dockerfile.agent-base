@@ -1,6 +1,6 @@
 # Shared base for propr/agent-* images.
 #
-# Contains everything common to Claude / Codex / Antigravity agent containers:
+# Contains everything common to Claude / Codex / Antigravity / OpenCode agent containers:
 # system tools, GitHub CLI, firewall script, gh wrapper, third-party notices.
 # Each concrete agent image extends this with one `npm install -g` and its
 # own entrypoint.

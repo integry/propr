@@ -9,8 +9,9 @@ import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { loadPrReviewModel } from '@propr/core';
-import { fetchLinkedIssueContext, buildCommentHistory, updateTaskTitleForPR } from './prCommentJobHelpers.js';
-import { buildCombinedComment, fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents } from './prCommentJobUtils.js';
+import { updateTaskTitleForPR } from './prCommentJobHelpers.js';
+import { buildCombinedComment } from './prCommentJobUtils.js';
+import { calculateReviewCost, fetchReviewContext, type PRData } from './reviewContextHelpers.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
@@ -40,8 +41,6 @@ export interface ReviewResult {
     error?: string;
     prompt?: string;
 }
-
-interface PRData { data: { head: { ref: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
 
 export interface PRJobContext {
     pullRequestNumber: number;
@@ -162,6 +161,7 @@ interface RunReviewsContext {
     originalTaskSpec: string;
     commandInstructions?: string;
     prDiff: string;
+    omittedDiffFiles: string[];
     fileContents: string;
     correlatedLogger: Logger;
 }
@@ -194,8 +194,9 @@ async function runSingleReview(
             executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,
         }, 'Review analysis completed');
 
+        const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
         const reviewCommentBody = analysisResult.success
-            ? buildReviewComment(assignment, analysisResult, taskUrl)
+            ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles, costUsd })
             : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
 
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -276,29 +277,6 @@ function getWebUiTaskUrl(taskId: string): string {
     return `${webUiUrl}/tasks/${taskId}`;
 }
 
-async function fetchReviewContext(
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
-    prData: PRData,
-    params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlationId: string; correlatedLogger: Logger }
-) {
-    const { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger } = params;
-    const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
-    const commentsByTime = [...allComments].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    const linkedIssueResult = await fetchLinkedIssueContext(octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
-    const commentHistory = buildCommentHistory(commentsByTime, prData, correlationId);
-
-    correlatedLogger.info({ pullRequestNumber }, 'Fetching PR diff for review');
-    const prFiles = await fetchPRFiles({ octokit, repoOwner, repoName, pullRequestNumber });
-    const prDiff = formatPRDiff(prFiles);
-    correlatedLogger.info({ pullRequestNumber, fileCount: prFiles.length, diffLength: prDiff.length }, 'Fetched PR diff');
-
-    const fileContentsMap = await fetchPRFileContents({ octokit, repoOwner, repoName, prHeadRef: prData.data.head.ref, files: prFiles });
-    const fileContents = formatFileContents(fileContentsMap);
-    correlatedLogger.info({ pullRequestNumber, filesWithContent: fileContentsMap.size, contentLength: fileContents.length }, 'Fetched full file contents');
-
-    return { allComments, commentHistory, linkedIssueResult, prDiff, fileContents };
-}
-
 async function handleUltrafixContinuation(
     action: UltrafixAction,
     params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
@@ -349,12 +327,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         historyMetadata: { commandMode: 'review' }
     });
 
-    const { allComments, commentHistory, linkedIssueResult, prDiff, fileContents } = await fetchReviewContext(
-        state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger }
-    );
-
     const assignments = await resolveReviewAssignments(job.data.requestedModels, llm, correlatedLogger);
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
+
+    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents } = await fetchReviewContext(
+        state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, models: assignments.map(a => a.model), correlationId, correlatedLogger }
+    );
 
     // Filter out ultrafix synthetic comments (id: 0) from displayed IDs
     const realComments = state.unprocessedComments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
@@ -394,7 +372,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const reviewCtx: RunReviewsContext = {
         registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
         taskId, taskUrl, combinedCommentBody, commentHistory,
-        originalTaskSpec: linkedIssueResult.context || '', commandInstructions: job.data.commandInstructions, prDiff, fileContents, correlatedLogger,
+        originalTaskSpec: linkedIssueResult.context || '',
+        commandInstructions: job.data.commandInstructions,
+        prDiff,
+        omittedDiffFiles,
+        fileContents,
+        correlatedLogger,
     };
 
     const reviewResults: ReviewResult[] = [];

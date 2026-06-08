@@ -2,8 +2,8 @@
 // This file provides a single source of truth for model information
 // Both backend (packages/core) and frontend (propr-ui) import from this package
 
-export type AgentType = 'claude' | 'codex' | 'antigravity' | 'vibe';
-export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'antigravity', 'vibe'];
+export type AgentType = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe';
+export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'antigravity', 'opencode', 'vibe'];
 
 export interface ModelInfo {
   id: string;
@@ -15,6 +15,11 @@ export interface ModelInfo {
   maxTokens: number;      // Numeric limit for calculations
   openRouterId: string;   // OpenRouter model ID for pricing lookups (e.g., "anthropic/claude-opus-4.5")
   minAgentVersion?: string; // Minimum Claude Code version that supports this model (e.g., "2.1.45")
+}
+
+export interface AgentDisplayInfo {
+  label: string;
+  order: number;
 }
 
 // Claude models (newest first within each tier, then by capability: Opus > Sonnet > Haiku)
@@ -62,6 +67,18 @@ export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'antigravity-claude-opus-4.6-thinking', name: 'Antigravity Claude Opus 4.6 Thinking', shortName: 'Claude Opus 4.6 Thinking', shortAlias: 'opus46-thinking', githubLabel: 'llm-antigravity-opus46-thinking', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.6' },
   { id: 'antigravity-gpt-oss-120b-medium', name: 'Antigravity GPT-OSS 120B Medium', shortName: 'GPT-OSS 120B Medium', shortAlias: 'gpt-oss-120b', githubLabel: 'llm-antigravity-gpt-oss-120b', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-oss-120b' },
 ];
+
+
+// OpenCode built-in free models. IDs use OpenCode config syntax: provider/model.
+// These are available from `opencode models` without provider login.
+export const OPENCODE_MODELS: ModelInfo[] = [
+  { id: 'opencode/minimax-m3-free', name: 'MiniMax M3 Free', shortName: 'MiniMax M3 Free', shortAlias: 'minimax-m3-free', githubLabel: 'llm-opencode-minimax-m3-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'minimax/minimax-m3' },
+  { id: 'opencode/deepseek-v4-flash-free', name: 'DeepSeek V4 Flash Free', shortName: 'DeepSeek V4 Flash Free', shortAlias: 'deepseek-v4-flash-free', githubLabel: 'llm-opencode-deepseek-v4-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4-flash' },
+  { id: 'opencode/mimo-v2.5-free', name: 'MiMo V2.5 Free', shortName: 'MiMo V2.5 Free', shortAlias: 'mimo-v25-free', githubLabel: 'llm-opencode-mimo-v25-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.5' },
+  { id: 'opencode/nemotron-3-ultra-free', name: 'Nemotron 3 Ultra Free', shortName: 'Nemotron 3 Ultra Free', shortAlias: 'nemotron-3-ultra-free', githubLabel: 'llm-opencode-nemotron-3-ultra-free', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'nvidia/nemotron-3-ultra' },
+  { id: 'opencode/big-pickle', name: 'Big Pickle', shortName: 'Big Pickle', shortAlias: 'big-pickle', githubLabel: 'llm-opencode-big-pickle', contextWindow: '200K', maxTokens: 200000, openRouterId: 'opencode/big-pickle' },
+];
+
 // Mistral Vibe coding models
 // Available models from `vibe /model`: mistral-medium-3.5, devstral-small, local
 export const VIBE_MODELS: ModelInfo[] = [
@@ -70,15 +87,27 @@ export const VIBE_MODELS: ModelInfo[] = [
 ];
 
 // All models combined
-export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...ANTIGRAVITY_MODELS, ...VIBE_MODELS];
+export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...ANTIGRAVITY_MODELS, ...OPENCODE_MODELS, ...VIBE_MODELS];
 
 // Map of agent types to their models
 export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
   claude: CLAUDE_MODELS,
   codex: CODEX_MODELS,
   antigravity: ANTIGRAVITY_MODELS,
+  opencode: OPENCODE_MODELS,
   vibe: VIBE_MODELS,
 };
+
+export const AGENT_DISPLAY: Record<AgentType, AgentDisplayInfo> = {
+  claude: { label: 'Claude', order: 10 },
+  antigravity: { label: 'Antigravity', order: 20 },
+  codex: { label: 'Codex (OpenAI)', order: 30 },
+  opencode: { label: 'OpenCode', order: 40 },
+  vibe: { label: 'Vibe', order: 50 },
+};
+
+export const AGENT_DISPLAY_ORDER: AgentType[] = (Object.keys(AGENT_DISPLAY) as AgentType[])
+  .sort((a, b) => AGENT_DISPLAY[a].order - AGENT_DISPLAY[b].order);
 
 // Lookup map for all models by ID
 export const MODEL_INFO_MAP: Record<string, ModelInfo> = {};
@@ -125,6 +154,14 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     npmPackage: 'https://antigravity.google/cli/install.sh',
     defaultCliVersion: 'latest'
   },
+  opencode: {
+    dockerImage: 'propr/agent-opencode:latest',
+    configPath: '~/.config/opencode',
+    defaultModels: OPENCODE_MODELS.map(m => m.id),
+    defaultAlias: 'opencode',
+    npmPackage: 'opencode-ai',
+    defaultCliVersion: '1.16.2'
+  },
   vibe: {
     dockerImage: 'propr/agent-vibe:latest',
     configPath: '~/.vibe',
@@ -140,5 +177,6 @@ export const typeBadgeColors: Record<AgentType, string> = {
   claude: 'bg-orange-100 text-orange-800 border-orange-300',
   codex: 'bg-green-100 text-green-800 border-green-300',
   antigravity: 'bg-violet-100 text-violet-800 border-violet-300',
+  opencode: 'bg-cyan-100 text-cyan-800 border-cyan-300',
   vibe: 'bg-red-100 text-red-700 border-red-400'  // Mistral Vibe brand orange-red (#FA500F)
 };

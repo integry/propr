@@ -16,7 +16,19 @@ export { MODEL_SHORT_NAMES };
 export function getModelShortName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
     const modelInfo = MODEL_INFO_MAP[modelId];
-    return modelInfo?.shortName || 'AI';
+    if (modelInfo?.shortName) return modelInfo.shortName;
+    const normalized = modelId.substring(modelId.lastIndexOf(':') + 1);
+    const leaf = normalized.substring(normalized.lastIndexOf('/') + 1);
+    return leaf
+        .split(/[-_.]+/)
+        .filter(Boolean)
+        .map(part => {
+            const lower = part.toLowerCase();
+            if (/^gpt$/.test(lower)) return 'GPT';
+            if (/^ai$/.test(lower)) return 'AI';
+            return lower.charAt(0).toUpperCase() + lower.slice(1);
+        })
+        .join(' ') || 'AI';
 }
 
 /**
@@ -27,7 +39,7 @@ export function getModelShortName(modelId: string | undefined): string {
 export function getModelName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
     const modelInfo = MODEL_INFO_MAP[modelId];
-    return modelInfo?.name || 'AI';
+    return modelInfo?.name || getModelShortName(modelId);
 }
 
 /**
@@ -96,6 +108,20 @@ function getOpenRouterId(internalModelId: ModelId): string {
     return modelInfo?.openRouterId ?? internalModelId;
 }
 
+function isOpenCodeModelId(modelId: string): boolean {
+    const lowerModel = modelId.toLowerCase();
+    return lowerModel.startsWith('opencode/') || lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
+}
+
+function isOpenCodeKimiModel(modelId: string): boolean {
+    return isOpenCodeModelId(modelId) && modelId.toLowerCase().includes('kimi-k2.6');
+}
+
+function isOpenCodeFreeModel(modelId: string): boolean {
+    const lowerModel = modelId.toLowerCase();
+    return lowerModel.startsWith('opencode/') && lowerModel.includes('free');
+}
+
 /**
  * Error thrown when no default model is configured.
  * Users must configure at least one AI agent with a default model.
@@ -162,6 +188,7 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
  * - Claude: prefer Opus, then Sonnet (skip Haiku)
  * - Antigravity: prefer Pro models, then Opus-class models
  * - Codex (OpenAI): prefer GPT (skip mini/spark variants)
+ * - OpenCode: prefer built-in free models, then the configured Kimi default
  */
 function getPreferredModelForAgent(config: AgentConfig): string | null {
     const models = config.supportedModels;
@@ -194,6 +221,13 @@ function getPreferredModelForAgent(config: AgentConfig): string | null {
                 !lowerModels[i].includes('spark')
             );
             if (gpt) return gpt;
+            break;
+        }
+        case 'opencode': {
+            const free = models.find(isOpenCodeFreeModel);
+            if (free) return free;
+            const kimi = models.find(isOpenCodeKimiModel);
+            if (kimi) return kimi;
             break;
         }
     }
@@ -232,205 +266,12 @@ function getDefaultModel(): ModelId | null {
 }
 
 /**
- * Resolves a custom label to an agent and specific model.
- * Custom labels are now configured per-model, so this finds the exact agent+model combination.
- *
- * @param label - The full label from GitHub (e.g., "my-opus-bot", "custom-helper")
- * @returns The matching agent's alias and specific model, or null if no match
- */
-async function resolveCustomLabel(label: string): Promise<LlmLabelResolution | null> {
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    const agents = registry.getAllAgents();
-    const lowerLabel = label.toLowerCase();
-
-    for (const agent of agents) {
-        // Check modelCustomLabels for this agent
-        if (agent.config.modelCustomLabels) {
-            for (const [modelId, customLabel] of Object.entries(agent.config.modelCustomLabels)) {
-                if (customLabel && customLabel.toLowerCase() === lowerLabel) {
-                    return {
-                        agentAlias: agent.config.alias,
-                        model: modelId
-                    };
-                }
-            }
-        }
-    }
-
-    return null;
-}
-
-/**
- * Gets all custom labels configured across all models in all agents.
- *
- * @returns Array of custom labels
- */
-async function getAllCustomLabels(): Promise<string[]> {
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    const agents = registry.getAllAgents();
-    const customLabels: string[] = [];
-
-    for (const agent of agents) {
-        if (agent.config.enabled && agent.config.modelCustomLabels) {
-            for (const customLabel of Object.values(agent.config.modelCustomLabels)) {
-                if (customLabel) {
-                    customLabels.push(customLabel);
-                }
-            }
-        }
-    }
-
-    return customLabels;
-}
-
-/**
- * Resolves a full github label (e.g., "llm-antigravity-g3-flash-preview") to an agent alias and model
- * by matching against modelDefinitions' githubLabel field.
- */
-function findAgentByType(agentType: AgentType, agents: { config: AgentConfig }[]): { config: AgentConfig } | null {
-    return agents.find(a => a.config.type === agentType && a.config.enabled) || agents.find(a => a.config.type === agentType) || null;
-}
-
-function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
-    for (const modelInfo of ALL_MODELS) {
-        if (modelInfo.githubLabel.toLowerCase() === fullLabel) {
-            const agentType = getAgentTypeFromModel(modelInfo.id);
-            const agent = findAgentByType(agentType, agents);
-            return { agentAlias: agent?.config.alias || agentType, model: modelInfo.id };
-        }
-    }
-    return null;
-}
-
-function resolveByAgentTypePrefix(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
-    const lowerLabel = label.toLowerCase();
-    const agentTypes: AgentType[] = ['claude', 'codex', 'antigravity', 'vibe'];
-
-    for (const agentType of agentTypes) {
-        if (!lowerLabel.startsWith(`${agentType}-`)) {
-            continue;
-        }
-
-        const modelPart = label.substring(agentType.length + 1);
-        const agent = findAgentByType(agentType, agents);
-        const matchedModel = agent ? findMatchingModel(modelPart, agent.config) : null;
-        const resolvedModel = matchedModel || resolveModelAlias(`${agentType}-${modelPart}`);
-
-        if (getAgentTypeFromModel(resolvedModel) === agentType) {
-            return { agentAlias: agent?.config.alias || agentType, model: resolvedModel };
-        }
-    }
-
-    return null;
-}
-
-function resolveScopedAgentModel(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
-    const colonIdx = label.indexOf(':');
-    if (colonIdx <= 0 || colonIdx >= label.length - 1) {
-        return null;
-    }
-
-    const explicitAlias = label.substring(0, colonIdx);
-    const explicitModel = label.substring(colonIdx + 1);
-    const resolvedModel = resolveModelAlias(explicitModel);
-    const canonicalAlias = explicitAlias.toLowerCase();
-    const agent = agents.find(a => a.config.alias.toLowerCase() === canonicalAlias)
-        || agents.find(a => a.config.type === canonicalAlias);
-    return agent ? { agentAlias: agent.config.alias, model: resolvedModel } : null;
-}
-
-/**
- * Resolves an LLM label (e.g., "antigravity-pro", "claude-opus", "codex") to an agent alias and model.
- *
- * Resolution order:
- * 1. Check if label matches a githubLabel from modelDefinitions (exact match for labels like "antigravity-g3-flash-preview")
- * 2. Check if label matches an agent alias directly (e.g., "antigravity" -> antigravity agent with default model)
- * 3. Check if label starts with an agent alias (e.g., "antigravity-pro" -> antigravity agent, find matching model)
- * 4. Check static MODEL_ALIASES for backwards compatibility (e.g., "opus" -> claude agent)
- * 5. Fall back to default agent with the label as the model name
- *
- * @param label - The LLM label without the "llm-" prefix (e.g., "antigravity-pro", "claude-opus", "opus")
- * @returns Object with agentAlias and model
- */
-async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    const agents = registry.getAllAgents();
-
-    // 0. Handle explicit "agentAlias:modelId" format (used by settings UI for pr_review_model)
-    const scopedAgentModel = resolveScopedAgentModel(label, agents);
-    if (scopedAgentModel) {
-        return scopedAgentModel;
-    }
-
-    const lowerLabel = label.toLowerCase();
-    const fullLabel = `llm-${lowerLabel}`;
-
-    // 1. Check if label matches a githubLabel from modelDefinitions exactly
-    // This ensures labels like "antigravity-g3-flash-preview" correctly resolve to "antigravity-gemini-3-flash-preview"
-    const githubLabelMatch = resolveByGithubLabel(fullLabel, agents);
-    if (githubLabelMatch) {
-        return githubLabelMatch;
-    }
-
-    // 1b. Check generated "agentType-modelAlias" labels even when the configured
-    // agent alias is different from the built-in type name.
-    const agentTypePrefixMatch = resolveByAgentTypePrefix(label, agents);
-    if (agentTypePrefixMatch) {
-        return agentTypePrefixMatch;
-    }
-
-    // 2. Check if label matches an agent alias exactly (use default model)
-    for (const agent of agents) {
-        if (agent.config.alias.toLowerCase() === lowerLabel) {
-            return {
-                agentAlias: agent.config.alias,
-                model: agent.config.defaultModel || getPreferredModelForAgent(agent.config) || agent.config.supportedModels[0]
-            };
-        }
-    }
-
-    // 3. Check if label starts with an agent alias (e.g., "antigravity-pro", "claude-opus")
-    for (const agent of agents) {
-        const aliasLower = agent.config.alias.toLowerCase();
-        if (lowerLabel.startsWith(aliasLower + '-')) {
-            const modelPart = label.substring(aliasLower.length + 1); // e.g., "pro" from "antigravity-pro"
-            const matchedModel = findMatchingModel(modelPart, agent.config);
-            return {
-                agentAlias: agent.config.alias,
-                model: matchedModel || agent.config.defaultModel || getPreferredModelForAgent(agent.config) || agent.config.supportedModels[0]
-            };
-        }
-    }
-
-    // 4. Check static MODEL_ALIASES for backwards compatibility
-    if (MODEL_ALIASES[lowerLabel]) {
-        const defaultAgent = registry.getDefaultAgent();
-        return {
-            agentAlias: defaultAgent?.config.alias || 'default',
-            model: MODEL_ALIASES[lowerLabel]
-        };
-    }
-
-    // 5. Fall back to default agent with the label as model name
-    const defaultAgent = registry.getDefaultAgent();
-    return {
-        agentAlias: defaultAgent?.config.alias || 'default',
-        model: label
-    };
-}
-
-/**
  * Determines the agent type from a model ID.
  * E.g., "antigravity-gemini-3-flash-preview" -> "antigravity", "claude-opus-4-5-20251101" -> "claude"
  */
 function getAgentTypeFromModel(modelId: string): AgentType {
     const lowerModel = modelId.toLowerCase();
+    if (isOpenCodeModelId(lowerModel)) return 'opencode';
     if (lowerModel.startsWith('antigravity')) return 'antigravity';
     if (lowerModel.startsWith('claude')) return 'claude';
     if (lowerModel.startsWith('mistral') || lowerModel.startsWith('devstral') || lowerModel.includes('vibe')) return 'vibe';
@@ -480,119 +321,21 @@ function findMatchingModel(shortName: string, config: AgentConfig): string | nul
     return null;
 }
 
-/**
- * A single concrete review assignment: agent/model pair with display label.
- */
-export interface ReviewAssignment {
-    /** Agent alias (e.g., "claude", "antigravity", "codex") */
-    agentAlias: string;
-    /** Resolved model ID (e.g., "claude-opus-4-6", "gemini-3-pro-preview") */
-    model: string;
-    /** Display-friendly label for review comments (e.g., "Claude Opus 4.6", "Gemini Pro") */
-    displayLabel: string;
-}
-
-/**
- * Error thrown when a requested review model cannot be resolved to an enabled agent/model pair.
- */
-export class ReviewModelResolutionError extends Error {
-    /** The token(s) that could not be resolved */
-    unresolvedTokens: string[];
-
-    constructor(unresolvedTokens: string[]) {
-        const tokenList = unresolvedTokens.map(t => `"${t}"`).join(', ');
-        super(`Unable to resolve review model(s): ${tokenList}. No matching enabled agent/model found.`);
-        this.name = 'ReviewModelResolutionError';
-        this.unresolvedTokens = unresolvedTokens;
-    }
-}
-
-/**
- * Resolves an array of `/review` model arguments into concrete, deduplicated review assignments.
- *
- * Each requested label is resolved via `resolveLlmLabel`. The results are deduplicated by
- * agent+model pair, and validated against the agent registry to ensure the resolved agent
- * is actually enabled with the resolved model in its supported list.
- *
- * @param requestedLabels - Normalized model labels (llm- prefix already stripped)
- * @returns Array of unique ReviewAssignment objects
- * @throws ReviewModelResolutionError if any label cannot be resolved to a valid enabled agent/model
- */
-async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAssignment[]> {
-    if (!requestedLabels || requestedLabels.length === 0) {
-        // Default to the default model when /review is called with no arguments
-        const defaultModel = getDefaultModel();
-        if (!defaultModel) {
-            throw new NoDefaultModelConfiguredError();
-        }
-        const registry = AgentRegistry.getInstance();
-        await registry.ensureInitialized();
-        const defaultAgent = registry.getDefaultAgent();
-        if (!defaultAgent) {
-            throw new NoDefaultModelConfiguredError();
-        }
-        const modelInfo = MODEL_INFO_MAP[defaultModel];
-        return [{
-            agentAlias: defaultAgent.config.alias,
-            model: defaultModel,
-            displayLabel: modelInfo?.name || getModelShortName(defaultModel),
-        }];
-    }
-
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    const seen = new Map<string, ReviewAssignment>(); // key: "agentAlias:model"
-    const unresolvedTokens: string[] = [];
-
-    for (const label of requestedLabels) {
-        const resolution = await resolveLlmLabel(label);
-
-        // Validate that the resolved agent exists and is enabled
-        const agent = registry.getAgentByAlias(resolution.agentAlias);
-        if (!agent || !agent.config.enabled) {
-            unresolvedTokens.push(label);
-            continue;
-        }
-
-        // Check that the resolved model is in the agent's supported models
-        // (resolveLlmLabel step 5 fallback can produce arbitrary model strings)
-        const modelSupported = agent.config.supportedModels.some(
-            m => m.toLowerCase() === resolution.model.toLowerCase()
-        );
-        if (!modelSupported) {
-            unresolvedTokens.push(label);
-            continue;
-        }
-
-        const dedupeKey = `${resolution.agentAlias}:${resolution.model}`.toLowerCase();
-        if (!seen.has(dedupeKey)) {
-            const modelInfo = MODEL_INFO_MAP[resolution.model];
-            const displayLabel = modelInfo?.name || getModelShortName(resolution.model);
-            seen.set(dedupeKey, {
-                agentAlias: resolution.agentAlias,
-                model: resolution.model,
-                displayLabel,
-            });
-        }
-    }
-
-    if (unresolvedTokens.length > 0) {
-        throw new ReviewModelResolutionError(unresolvedTokens);
-    }
-
-    return Array.from(seen.values());
-}
-
 export {
     MODEL_ALIASES,
     resolveModelAlias,
     getDefaultModel,
     getPreferredModelForAgent,
     getOpenRouterId,
-    resolveLlmLabel,
-    resolveCustomLabel,
-    getAllCustomLabels,
+    getAgentTypeFromModel,
     findMatchingModel,
-    resolveReviewModels
 };
+
+export {
+    getAllCustomLabels,
+    resolveCustomLabel,
+    resolveLlmLabel,
+    resolveReviewModels,
+    ReviewModelResolutionError,
+    type ReviewAssignment,
+} from './modelLabelResolution.js';

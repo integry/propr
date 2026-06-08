@@ -1,25 +1,14 @@
 import React from 'react';
-import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace } from '../../api/proprApi';
+import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace, PreviewResult } from '../../api/proprApi';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';
 import { ContextRepositoriesSection, IndexedRepository } from './ContextRepositoriesSection';
 import { CostPreview } from './CostPreview';
 
-interface PreviewStats {
-  totalTokens?: number;
-  costEstimate?: number;
-  modelName?: string;
-  modelMaxContextTokens?: number;
-}
-
 interface PreviewState {
   isLoading: boolean;
-  data: {
-    stats: PreviewStats;
-    smartSelection: SmartFileInfo[];
-    warnings: string[];
-  } | null;
+  data: PreviewResult | null;
   error: string | null;
   lastSynced: Date | null;
 }
@@ -86,6 +75,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   const showContextRepositories = !hideContextRepositories;
   const showCostPreview = !hideCostsAndTokens || (preview.isLoading && showPreviewProgress) || !!preview.error;
   const showBottomSection = showContextRepositories || showCostPreview;
+  const hasSmartSelection = !!smartSelection?.length;
 
   return (
     <div
@@ -102,10 +92,10 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
       </div>
 
       {/* Smart file selection - scrollable area, hidden on mobile when empty to save space */}
-      <div className={`flex-1 overflow-auto flex flex-col min-h-0 ${!smartSelection || smartSelection.length === 0 ? 'hidden md:flex' : ''}`}>
-        {smartSelection && smartSelection.length > 0 ? (
+      <div className={`flex-1 overflow-auto flex flex-col min-h-0 ${hasSmartSelection ? '' : 'hidden md:flex'}`}>
+        {hasSmartSelection ? (
           <SmartFileSelection
-            smartSelection={smartSelection}
+            smartSelection={smartSelection ?? []}
             onExcludeFile={onExcludeFile}
           />
         ) : (

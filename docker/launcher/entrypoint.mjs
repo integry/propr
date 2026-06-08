@@ -11,7 +11,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import { resolve, dirname, isAbsolute } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(readFileSync(resolve(__dirname, 'manifest.json'), 'utf8'));
@@ -42,12 +42,18 @@ const DOCS_ENABLED = process.env.DOCS_ENABLED === 'true';
 
 // Host paths for per-CLI credential directories. Launcher is in a container
 // and can't read the host's $HOME, so the invoker must pass these in. The
-// worker and api containers mount them so the spawned claude/codex/antigravity/vibe
+// worker and api containers mount them so the spawned claude/codex/antigravity/opencode/vibe
 // agent containers can find the user's login state.
 // Each variable can be set as a launcher `-e` flag OR in the mounted .env file.
 const HOST_CLAUDE_DIR = process.env.HOST_CLAUDE_DIR || envFileValue('HOST_CLAUDE_DIR') || undefined;
 const HOST_CODEX_DIR  = process.env.HOST_CODEX_DIR  || envFileValue('HOST_CODEX_DIR')  || undefined;
 const HOST_ANTIGRAVITY_DIR = process.env.HOST_ANTIGRAVITY_DIR || envFileValue('HOST_ANTIGRAVITY_DIR') || undefined;
+const HOST_OPENCODE_LEGACY_DIR = process.env.HOST_OPENCODE_LEGACY_DIR || envFileValue('HOST_OPENCODE_LEGACY_DIR') || undefined;
+// HOST_OPENCODE_DIR is a compatibility alias for HOST_OPENCODE_XDG_DIR. Prefer
+// HOST_OPENCODE_XDG_DIR in new deployments because it names the current
+// OpenCode config location explicitly.
+const HOST_OPENCODE_XDG_DIR = process.env.HOST_OPENCODE_XDG_DIR || process.env.HOST_OPENCODE_DIR || envFileValue('HOST_OPENCODE_XDG_DIR') || envFileValue('HOST_OPENCODE_DIR') || undefined;
+const HOST_OPENCODE_DATA_DIR = process.env.HOST_OPENCODE_DATA_DIR || envFileValue('HOST_OPENCODE_DATA_DIR') || undefined;
 const HOST_VIBE_DIR   = process.env.HOST_VIBE_DIR   || envFileValue('HOST_VIBE_DIR')   || undefined;
 
 function envFileValue(name) {
@@ -125,7 +131,7 @@ const HOST_VIBE_PROMPT_CACHE_DIR = process.env.HOST_VIBE_PROMPT_CACHE_DIR
 // <CONFIG_PATH> resolves correctly on the host. Mounting at HOST:HOST keeps
 // the paths identical end-to-end so the agent spawner doesn't need to do
 // any path translation.
-function agentCredentialArgs() {
+export function agentCredentialArgs({ opencodeDataReadWrite = false } = {}) {
     const args = [];
     if (HOST_CLAUDE_DIR) {
         args.push('-v', `${HOST_CLAUDE_DIR}:${HOST_CLAUDE_DIR}`);
@@ -138,6 +144,21 @@ function agentCredentialArgs() {
     if (HOST_ANTIGRAVITY_DIR) {
         args.push('-v', `${HOST_ANTIGRAVITY_DIR}:${HOST_ANTIGRAVITY_DIR}`);
         args.push('-e', `ANTIGRAVITY_CONFIG_PATH=${HOST_ANTIGRAVITY_DIR}`);
+    }
+    if (HOST_OPENCODE_LEGACY_DIR) {
+        args.push('-v', `${HOST_OPENCODE_LEGACY_DIR}:${HOST_OPENCODE_LEGACY_DIR}`);
+        args.push('-e', `OPENCODE_LEGACY_CONFIG_PATH=${HOST_OPENCODE_LEGACY_DIR}`);
+    }
+    if (HOST_OPENCODE_XDG_DIR) {
+        args.push('-v', `${HOST_OPENCODE_XDG_DIR}:${HOST_OPENCODE_XDG_DIR}`);
+        args.push('-e', `OPENCODE_CONFIG_PATH=${HOST_OPENCODE_XDG_DIR}`);
+    } else if (HOST_OPENCODE_LEGACY_DIR) {
+        args.push('-e', `OPENCODE_CONFIG_PATH=${HOST_OPENCODE_LEGACY_DIR}`);
+    }
+    if (HOST_OPENCODE_DATA_DIR) {
+        const dataMode = opencodeDataReadWrite ? 'rw' : 'ro';
+        args.push('-v', `${HOST_OPENCODE_DATA_DIR}:${HOST_OPENCODE_DATA_DIR}:${dataMode}`);
+        args.push('-e', `HOST_OPENCODE_DATA_DIR=${HOST_OPENCODE_DATA_DIR}`);
     }
     if (HOST_VIBE_DIR) {
         args.push('-v', `${HOST_VIBE_DIR}:${HOST_VIBE_DIR}`);
@@ -362,6 +383,9 @@ function validateEnv() {
         ['HOST_CLAUDE_DIR', HOST_CLAUDE_DIR],
         ['HOST_CODEX_DIR', HOST_CODEX_DIR],
         ['HOST_ANTIGRAVITY_DIR', HOST_ANTIGRAVITY_DIR],
+        ['HOST_OPENCODE_LEGACY_DIR', HOST_OPENCODE_LEGACY_DIR],
+        ['HOST_OPENCODE_XDG_DIR', HOST_OPENCODE_XDG_DIR],
+        ['HOST_OPENCODE_DATA_DIR', HOST_OPENCODE_DATA_DIR],
         ['HOST_VIBE_DIR', HOST_VIBE_DIR],
     ];
     const invalidCredentialPath = credentialDirs
@@ -369,6 +393,18 @@ function validateEnv() {
     if (invalidCredentialPath) {
         console.error(`ERROR: ${invalidCredentialPath}`);
         process.exit(1);
+    }
+    warnAboutOpenCodeCredentialPaths();
+}
+
+function warnAboutOpenCodeCredentialPaths() {
+    const hasOpenCodeConfig = Boolean(HOST_OPENCODE_XDG_DIR || HOST_OPENCODE_LEGACY_DIR);
+    if (hasOpenCodeConfig && !HOST_OPENCODE_DATA_DIR) {
+        console.warn(
+            'WARNING: OpenCode config is mounted but HOST_OPENCODE_DATA_DIR is not set. ' +
+            'OpenCode login state is usually stored under ~/.local/share/opencode; ' +
+            'set HOST_OPENCODE_DATA_DIR to that host path if authenticated runs cannot see credentials.'
+        );
     }
 }
 
@@ -410,7 +446,8 @@ function startApp() {
         '-e', 'STAGING_ENV_FILE=/usr/src/app/.env',
     ]);
 
-    const creds = agentCredentialArgs();
+    const workerCreds = agentCredentialArgs({ opencodeDataReadWrite: true });
+    const readOnlyCreds = agentCredentialArgs();
     const vibePrompts = vibePromptCacheArgs();
 
     removeIfExists(`${STACK}-worker`);
@@ -419,13 +456,13 @@ function startApp() {
         '-v', '/tmp/claude-logs:/tmp/claude-logs',
         '--ulimit', 'nofile=65536:65536',
         ...vibePrompts,
-        ...creds,
+        ...workerCreds,
     ]);
 
     removeIfExists(`${STACK}-analysis-worker`);
     appContainer(`${STACK}-analysis-worker`, ['dist/src/analysis_worker.js'], [
         ...vibePrompts,
-        ...creds,
+        ...readOnlyCreds,
     ]);
 
     removeIfExists(`${STACK}-indexing-worker`);
@@ -433,7 +470,7 @@ function startApp() {
         '-v', '/tmp/claude-logs:/tmp/claude-logs',
         '-e', `INDEXING_SCAN_INTERVAL_MS=${process.env.INDEXING_SCAN_INTERVAL_MS || '300000'}`,
         '-e', `INDEXING_REINDEX_INTERVAL_MS=${process.env.INDEXING_REINDEX_INTERVAL_MS || '86400000'}`,
-        ...creds,
+        ...readOnlyCreds,
     ]);
 
     removeIfExists(`${STACK}-api`);
@@ -443,7 +480,7 @@ function startApp() {
         '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
         '--ulimit', 'nofile=65536:65536',
         ...vibePrompts,
-        ...creds,
+        ...readOnlyCreds,
         '-e', `API_PUBLIC_URL=${process.env.API_PUBLIC_URL || `http://localhost:${API_PORT}`}`,
         '-e', `FRONTEND_URL=${process.env.FRONTEND_URL || `http://localhost:${UI_PORT}`}`,
         '-e', `GH_OAUTH_CALLBACK_URL=${process.env.GH_OAUTH_CALLBACK_URL || `http://localhost:${API_PORT}/api/auth/github/callback`}`,
@@ -519,7 +556,9 @@ async function main() {
     await new Promise(() => {});
 }
 
-main().catch((e) => {
-    console.error('launcher failed:', e.message);
-    shutdown(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    main().catch((e) => {
+        console.error('launcher failed:', e.message);
+        shutdown(1);
+    });
+}

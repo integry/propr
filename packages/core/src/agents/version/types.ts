@@ -15,6 +15,7 @@ export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
     claude: '@anthropic-ai/claude-code',
     codex: '@openai/codex',
     antigravity: 'https://antigravity.google/cli/install.sh',
+    opencode: 'opencode-ai',
     vibe: 'mistral-vibe'
 } as const;
 
@@ -26,6 +27,7 @@ export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
     claude: ['stable', 'latest', 'next'],
     codex: ['latest', 'alpha'],
     antigravity: ['latest'],
+    opencode: ['latest', 'beta', 'dev'],
     vibe: ['latest']
 };
 
@@ -37,6 +39,7 @@ export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     claude: '2.1.165',
     codex: '0.137.0',
     antigravity: 'latest',
+    opencode: '1.16.2',
     vibe: '2.12.1'
 };
 
@@ -47,6 +50,7 @@ export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
     claude: 'propr/agent-claude',
     codex: 'propr/agent-codex',
     antigravity: 'propr/agent-antigravity',
+    opencode: 'propr/agent-opencode',
     vibe: 'propr/agent-vibe'
 };
 
@@ -70,6 +74,13 @@ export const DOCKER_CONTENT_FILES: Record<AgentType, string[]> = {
     antigravity: [
         'Dockerfile.antigravity',
         'scripts/antigravity-entrypoint.sh',
+        'scripts/init-firewall.sh',
+        'scripts/gh-wrapper.sh'
+    ],
+    opencode: [
+        'Dockerfile.opencode',
+        'scripts/opencode-entrypoint.sh',
+        'scripts/opencode-run.sh',
         'scripts/init-firewall.sh',
         'scripts/gh-wrapper.sh'
     ],

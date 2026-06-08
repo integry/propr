@@ -8,12 +8,12 @@ import path from 'path';
 import crypto from 'crypto';
 import logger from '../../utils/logger.js';
 import type { AgentType } from '../types.js';
+import { VERSIONED_AGENT_IMAGE_NAMES } from '../constants.js';
 import type { AvailableVersionsResponse, CliVersionType } from './types.js';
 import {
     AGENT_CLI_PACKAGES,
     AGENT_CLI_TAGS,
     AGENT_DEFAULT_VERSIONS,
-    AGENT_IMAGE_NAMES,
     DOCKER_CONTENT_FILES
 } from './types.js';
 import {
@@ -269,7 +269,7 @@ export function computeContentHash(agentType: AgentType, basePath: string = PROJ
  * @returns Docker image tag (e.g., 'propr/agent-claude:2.1.77-a3f2b1')
  */
 export function generateImageTag(agentType: AgentType, cliVersion: string, contentHash: string): string {
-    const imageName = AGENT_IMAGE_NAMES[agentType];
+    const imageName = VERSIONED_AGENT_IMAGE_NAMES[agentType];
     return `${imageName}:${getDockerTagComponent(cliVersion)}-${contentHash}`;
 }
 
@@ -304,7 +304,6 @@ export {
     AGENT_CLI_PACKAGES,
     AGENT_CLI_TAGS,
     AGENT_DEFAULT_VERSIONS,
-    AGENT_IMAGE_NAMES,
     DOCKER_CONTENT_FILES
 };
 

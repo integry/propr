@@ -21,6 +21,8 @@ import {
   JsonInputError,
 } from "../utils/index.js";
 
+const AGENT_TYPE_LIST = AGENT_TYPES.join(", ");
+
 /**
  * Formats an agent type for display.
  */
@@ -29,6 +31,7 @@ function formatType(type: string): string {
     claude: "Claude",
     codex: "Codex",
     antigravity: "Antigravity",
+    opencode: "OpenCode",
     vibe: "Mistral Vibe",
   };
   return typeMap[type?.toLowerCase()] || type;
@@ -184,7 +187,7 @@ Examples:
   agent
     .command("add [alias]")
     .description("Add a new AI agent configuration for code implementation")
-    .option("-t, --type <type>", "Agent type (claude, codex, antigravity, or vibe)")
+    .option("-t, --type <type>", `Agent type (${AGENT_TYPE_LIST})`)
     .option("-m, --model <models>", "Comma-separated list of supported models")
     .option("-d, --default-model <model>", "Default model to use (defaults to first model)")
     .option("--docker-image <image>", "Docker image for the agent")
@@ -200,6 +203,7 @@ Agent Types:
   claude       Anthropic Claude models
   codex        OpenAI Codex models
   antigravity  Antigravity models
+  opencode     OpenCode models
   vibe         Mistral Vibe models
 
 JSON File Format:
@@ -215,6 +219,7 @@ JSON File Format:
 
 Examples:
   $ propr agent add my-claude -t claude -m claude-sonnet-4-20250514
+  $ propr agent add opencode -t opencode -m opencode/minimax-m3-free
   $ propr agent add prod-agent -t claude -m claude-sonnet-4-20250514,claude-opus-4-20250514 -d claude-sonnet-4-20250514
   $ propr agent add test-agent -t antigravity -m antigravity-gemini-3-pro-preview --disabled
   $ propr agent add --file agent-config.json
@@ -300,7 +305,7 @@ Examples:
 
           if (!isValidAgentType(type)) {
             console.error(
-              `Error: Invalid agent type '${type}'. Must be one of: ${AGENT_TYPES.join(", ")}`
+              `Error: Invalid agent type '${type}'. Must be one of: ${AGENT_TYPE_LIST}`
             );
             process.exit(1);
           }

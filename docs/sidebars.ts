@@ -92,6 +92,7 @@ const sidebars: SidebarsConfig = {
         'architecture/worker',
         'architecture/worker-runtime',
         'architecture/claude-integration',
+        'architecture/opencode-integration',
         'architecture/claude-code-runtime',
         'architecture/git-management',
         'architecture/git-runtime',

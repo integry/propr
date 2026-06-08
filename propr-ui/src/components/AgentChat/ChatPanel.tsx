@@ -9,6 +9,7 @@ const selectedBadgeColors: Record<AgentType, string> = {
   claude: 'bg-orange-500 text-white border-orange-600 shadow-md ring-2 ring-orange-300',
   codex: 'bg-green-500 text-white border-green-600 shadow-md ring-2 ring-green-300',
   antigravity: 'bg-violet-500 text-white border-violet-600 shadow-md ring-2 ring-violet-300',
+  opencode: 'bg-cyan-500 text-white border-cyan-600 shadow-md ring-2 ring-cyan-300',
   vibe: 'bg-pink-500 text-white border-pink-600 shadow-md ring-2 ring-pink-300'
 };
 

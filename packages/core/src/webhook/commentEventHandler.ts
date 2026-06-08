@@ -18,6 +18,7 @@ import { safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
+import { AgentRegistry } from '../agents/AgentRegistry.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -40,6 +41,24 @@ function loadUltrafixDeps(): UltrafixDeps {
         throw new Error('Ultrafix dependencies not initialized. Call setUltrafixDeps() during app startup.');
     }
     return _ultrafixDeps;
+}
+
+async function isKnownOrConfiguredModel(model: string): Promise<boolean> {
+    if (MODEL_INFO_MAP[model]) {
+        return true;
+    }
+
+    try {
+        const registry = AgentRegistry.getInstance();
+        await registry.ensureInitialized();
+        return registry.getAllAgents().some(agent =>
+            agent.config.enabled && agent.config.supportedModels.some(
+                supportedModel => supportedModel.toLowerCase() === model.toLowerCase()
+            )
+        );
+    } catch {
+        return false;
+    }
 }
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
@@ -240,7 +259,7 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
 
     if (commandMeta.mode === 'use' && commandMeta.models.length > 0) {
         const resolvedModel = resolveModelAlias(commandMeta.models[0]);
-        if (!MODEL_INFO_MAP[resolvedModel]) {
+        if (!await isKnownOrConfiguredModel(resolvedModel)) {
             correlatedLogger.warn({ pullRequestNumber: prNumber, invalidModels: [resolvedModel] }, '/use command contains unrecognized model(s), ignoring');
             return;
         }
@@ -275,7 +294,12 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
     }
 
     const resolvedModels = commandMeta.models.map(m => resolveModelAlias(m));
-    const invalidModels = resolvedModels.filter(m => !MODEL_INFO_MAP[m]);
+    const invalidModels: string[] = [];
+    for (const model of resolvedModels) {
+        if (!await isKnownOrConfiguredModel(model)) {
+            invalidModels.push(model);
+        }
+    }
     if (invalidModels.length > 0) {
         correlatedLogger.warn({ pullRequestNumber: prNumber, invalidModels }, '/switch command contains unrecognized model(s), ignoring');
         return;

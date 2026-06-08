@@ -4,6 +4,7 @@ const ENTRYPOINT_PATHS: Record<AgentType, string> = {
     claude: '/home/node/claude-entrypoint.sh',
     codex: '/home/node/codex-entrypoint.sh',
     antigravity: '/home/node/antigravity-entrypoint.sh',
+    opencode: '/home/node/opencode-entrypoint.sh',
     vibe: '/home/node/vibe-entrypoint.sh'
 };
 

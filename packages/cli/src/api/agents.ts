@@ -12,15 +12,16 @@ import { ApiClient, createApiClient } from "./index.js";
 /**
  * Agent type identifier.
  */
-export type AgentType = "claude" | "codex" | "antigravity" | "vibe";
+export type AgentType = "claude" | "codex" | "antigravity" | "opencode" | "vibe";
 
-export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "antigravity", "vibe"] as const;
+export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "antigravity", "opencode", "vibe"] as const;
 
 // Keep in sync with packages/core/src/agents/version/types.ts AGENT_IMAGE_NAMES
 const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
   claude: "propr/agent-claude",
   codex: "propr/agent-codex",
   antigravity: "propr/agent-antigravity",
+  opencode: "propr/agent-opencode",
   vibe: "propr/agent-vibe",
 };
 
@@ -34,7 +35,7 @@ export interface AgentConfig {
   id: string;
 
   /**
-   * The agent type (claude, codex, antigravity, or vibe).
+   * The agent type (claude, codex, antigravity, opencode, or vibe).
    */
   type: AgentType;
 
@@ -99,7 +100,7 @@ export interface AddAgentOptions {
   alias: string;
 
   /**
-   * The agent type (claude, codex, antigravity, or vibe).
+   * The agent type (claude, codex, antigravity, opencode, or vibe).
    */
   type: AgentType;
 
@@ -304,6 +305,8 @@ function getDefaultConfigPath(type: AgentType): string {
       return join(home, ".codex");
     case "antigravity":
       return join(home, ".gemini");
+    case "opencode":
+      return join(home, ".config", "opencode");
     case "vibe":
       return join(home, ".vibe");
     default:
@@ -321,7 +324,7 @@ function isRemoteApiUrl(baseUrl: string): boolean {
 }
 
 function resolveDefaultConfigPath(type: AgentType, client: ApiClient): string {
-  const baseUrl = client.getBaseUrl();
+  const baseUrl = typeof client.getBaseUrl === "function" ? client.getBaseUrl() : "http://localhost";
   if (isRemoteApiUrl(baseUrl)) {
     throw new Error(
       `Cannot infer config path for a remote ProPR server (${baseUrl}). ` +

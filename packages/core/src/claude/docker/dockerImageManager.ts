@@ -7,6 +7,7 @@ function getAgentImageName(agentType: string): string | undefined {
     return AGENT_IMAGE_NAMES[agentType as AgentType];
 }
 
+
 /**
  * Lists all Docker images for a specific agent type.
  *

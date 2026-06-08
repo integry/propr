@@ -119,6 +119,7 @@ Implement GitHub issues from plans using AI agents.
 propr issue implement <draft-id>/<issue-number>              # Trigger implementation
 propr issue implement <draft-id>/1 --wait                    # Wait for completion
 propr issue implement <draft-id>/1 -a claude -m model-name   # Use specific agent/model
+propr issue implement <draft-id>/1 -a opencode -m opencode/minimax-m3-free
 propr issue implement <draft-id>/1 --epic --auto-merge       # Epic PR + auto-merge
 ```
 
@@ -193,25 +194,42 @@ propr agent list                                         # List configured agent
 propr agent add my-claude -t claude -m model1,model2     # Add an agent
 propr agent add my-agent -t claude -m model -d model     # With default model
 propr agent add test -t antigravity -m antigravity-gemini-3-pro-preview --disabled   # Add in disabled state
+propr agent add opencode -t opencode -m opencode/minimax-m3-free -d opencode/minimax-m3-free --config-path /home/your-user/.config/opencode
 propr agent add --file agent-config.json                 # From JSON file
 cat config.json | propr agent add --file -               # From stdin
 propr agent delete my-agent                              # Delete (with confirmation)
 propr agent delete my-agent --force                      # Delete without confirmation
 ```
 
-**Agent types:** `claude`, `codex`, `antigravity`
+**Agent types:** `claude`, `codex`, `antigravity`, `opencode`
+
+For OpenCode agents, install and authenticate OpenCode on the host before adding the agent:
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+mkdir -p ~/.config/opencode ~/.opencode
+opencode auth login
+mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
+```
+
+OpenCode stores `auth.json` under `~/.local/share/opencode`, but ProPR mounts the configured OpenCode config directory into the agent container. When using copied file-based auth, set `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` on the OpenCode agent. Legacy agents can keep `~/.opencode` as their `configPath`; new agents should use `~/.config/opencode`.
+
+The example model `opencode/minimax-m3-free` is a built-in free OpenCode model. OpenCode's model list changes with auth providers; run `opencode models` after logging in and register any desired provider/model IDs, such as `openai/gpt-5.5`, as supported models. ProPR does not add authenticated provider models by default.
 
 **JSON file format** for `--file`:
 
 ```json
 {
-  "alias": "my-agent",
-  "type": "claude",
-  "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
-  "defaultModel": "claude-sonnet-4-20250514",
-  "dockerImage": "optional-image",
-  "configPath": "/optional/path",
-  "enabled": true
+  "alias": "opencode",
+  "type": "opencode",
+  "models": ["opencode/minimax-m3-free"],
+  "defaultModel": "opencode/minimax-m3-free",
+  "dockerImage": "propr/agent-opencode:latest",
+  "configPath": "/home/your-user/.config/opencode",
+  "enabled": true,
+  "envVars": {
+    "XDG_DATA_HOME": "/home/node/.config/opencode/xdg-data"
+  }
 }
 ```
 
@@ -398,7 +416,7 @@ propr todo list -p org3/repo3
 
 ## E2E Testing
 
-End-to-end tests run against a live ProPR instance and exercise the full workflow: system health, repo management, todo CRUD, plan lifecycle (create → generate → finalize), and multi-model implementation across all agents (Claude, Antigravity, Codex).
+End-to-end tests run against a live ProPR instance and exercise the full workflow: system health, repo management, todo CRUD, plan lifecycle (create → generate → finalize), and multi-model implementation across all agents (Claude, Antigravity, Codex, OpenCode).
 
 ### Prerequisites
 
@@ -459,7 +477,7 @@ The report includes:
 
 - **Plans** — ID, name, status, prompt, issues with their agent/model/task assignments
 - **Multi-model parallel results** — all models implementing the same issue simultaneously, with state, duration, tokens, PR number, history entries, and log counts
-- **Single-model results** — grouped by agent (Claude, Antigravity, Codex), showing each model's performance on its own issue
+- **Single-model results** — grouped by agent (Claude, Antigravity, Codex, OpenCode), showing each model's performance on its own issue
 - **Totals** — models tested, tasks created, completion rate, token usage
 
 ### File Structure

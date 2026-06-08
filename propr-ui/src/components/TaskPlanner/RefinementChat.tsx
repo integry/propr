@@ -148,6 +148,83 @@ function toMessages(chatMessages: ChatMessage[] | undefined): Message[] {
   return (chatMessages ?? []).map(m => ({ ...m, timestamp: new Date(m.timestamp) }));
 }
 
+const ChatHeader: React.FC<{ showEmptySubtitle: boolean }> = ({ showEmptySubtitle }) => (
+  <div className="px-4 py-3">
+    <div className="flex items-center">
+      <div className="w-10 flex-shrink-0 flex justify-center">
+        <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
+          <Bot size={16} className="text-white" />
+        </div>
+      </div>
+      <h3 className="font-semibold text-gray-900 ml-3">Assistant</h3>
+    </div>
+    {showEmptySubtitle && <p className="text-xs text-gray-500 mt-0.5 ml-[52px]">Refine your plan through conversation</p>}
+  </div>
+);
+
+const OnboardingCard: React.FC = () => (
+  <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+    <p className="text-sm text-gray-700 whitespace-pre-wrap">
+      I can help you refine this plan. You can:{'\n\n'}
+      <strong>Ask questions:</strong>{'\n'}
+      - "Why is task #2 structured this way?"{'\n'}
+      - "What would happen if we combined these tasks?"{'\n\n'}
+      <strong>Give instructions:</strong>{'\n'}
+      - "Make the testing task more detailed"{'\n'}
+      - "Split the backend task into two"{'\n'}
+      - "Add error handling to all tasks"
+    </p>
+  </div>
+);
+
+const getMessageBubbleClass = (role: Message['role']): string => {
+  if (role === 'user') return 'bg-white border border-indigo-100 text-slate-800 shadow-sm px-4 py-2 inline-block';
+  if (role === 'thinking') return 'bg-slate-200 text-gray-600 italic p-3 w-full max-w-xs';
+  return 'bg-transparent text-gray-800 inline-block';
+};
+
+const MessageIcon: React.FC<{ role: Message['role'] }> = ({ role }) => (
+  <div
+    className={`
+      w-8 h-8 rounded-full flex items-center justify-center
+      ${role === 'thinking' ? 'bg-gray-300' : role === 'assistant' ? 'bg-gray-700' : 'bg-white border border-slate-200'}
+    `}
+  >
+    {role === 'user' ? (
+      <User size={16} className="text-slate-600" />
+    ) : role === 'thinking' ? (
+      <Loader2 size={16} className="text-gray-600 animate-spin" />
+    ) : (
+      <Bot size={16} className="text-white" />
+    )}
+  </div>
+);
+
+const MessageRow: React.FC<{
+  message: Message; isLast: boolean; refinementProgress?: RefinementProgress;
+}> = ({ message, isLast, refinementProgress }) => (
+  <div className={`flex items-start pb-6 ${isLast ? '' : 'border-b border-slate-100'}`}>
+    <div className="w-10 flex-shrink-0 flex justify-center">
+      <MessageIcon role={message.role} />
+    </div>
+    <div className="flex-1 min-w-0 ml-3">
+      <div className={`rounded-lg ${getMessageBubbleClass(message.role)}`}>
+        <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+        {message.role === 'thinking' && refinementProgress?.startedAt && refinementProgress?.estimatedDuration && (
+          <RefinementProgressBar
+            startedAt={refinementProgress.startedAt}
+            estimatedDuration={refinementProgress.estimatedDuration}
+          />
+        )}
+      </div>
+    </div>
+  </div>
+);
+
+const getVisibleMessages = (syncInitialMessages: boolean, syncedMessages: Message[], messages: Message[]) => (
+  syncInitialMessages ? syncedMessages : messages
+);
+
 export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
   const isMobile = useIsMobile();
   const syncedMessages = useMemo<Message[]>(() => toMessages(initialMessages), [initialMessages]);
@@ -161,7 +238,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const visibleMessages = syncInitialMessages ? syncedMessages : messages;
+  const visibleMessages = getVisibleMessages(syncInitialMessages, syncedMessages, messages);
 
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -309,21 +386,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-      {!isMobile && (
-        <div className="px-4 py-3">
-          <div className="flex items-center">
-            <div className="w-10 flex-shrink-0 flex justify-center">
-              <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
-                <Bot size={16} className="text-white" />
-              </div>
-            </div>
-            <h3 className="font-semibold text-gray-900 ml-3">Assistant</h3>
-          </div>
-          {visibleMessages.length === 0 && (
-            <p className="text-xs text-gray-500 mt-0.5 ml-[52px]">Refine your plan through conversation</p>
-          )}
-        </div>
-      )}
+      {!isMobile && <ChatHeader showEmptySubtitle={visibleMessages.length === 0} />}
 
       <div
         className="refinement-chat-messages flex-1 overflow-y-auto px-4 pb-4 space-y-4 [scrollbar-gutter:stable]"
@@ -344,22 +407,9 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             border-radius: 3px;
           }
         `}</style>
-        {visibleMessages.length === 0 && (
-          <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
-            <p className="text-sm text-gray-700 whitespace-pre-wrap">
-              I can help you refine this plan. You can:{'\n\n'}
-              <strong>Ask questions:</strong>{'\n'}
-              - "Why is task #2 structured this way?"{'\n'}
-              - "What would happen if we combined these tasks?"{'\n\n'}
-              <strong>Give instructions:</strong>{'\n'}
-              - "Make the testing task more detailed"{'\n'}
-              - "Split the backend task into two"{'\n'}
-              - "Add error handling to all tasks"
-            </p>
-          </div>
-        )}
+        {visibleMessages.length === 0 && <OnboardingCard />}
         {visibleMessages.map((message, index) => (
-          <ChatMessageItem
+          <MessageRow
             key={message.id}
             message={message}
             isLast={index === visibleMessages.length - 1}

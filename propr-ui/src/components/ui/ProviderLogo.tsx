@@ -31,6 +31,17 @@ export const ProviderLogo: React.FC<ProviderLogoProps> = ({ provider, className 
     );
   }
 
+  if (normalized.includes('opencode')) {
+    // OpenCode Icon
+    return (
+      <svg className={className} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M8.75 5.75L3 12l5.75 6.25" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M15.25 5.75L21 12l-5.75 6.25" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M13.6 4.5L10.4 19.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
   if (normalized.includes('codex') || normalized.includes('openai') || normalized.includes('gpt')) {
     // OpenAI Icon
     return (

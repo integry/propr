@@ -1,5 +1,6 @@
 // API for fetching system data from backend
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+import type { AgentType } from '../config/modelDefinitions';
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -325,7 +326,7 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 
 export interface AgentConfig {
   id: string;
-  type: 'claude' | 'codex' | 'antigravity' | 'vibe';
+  type: AgentType;
   alias: string;
   enabled: boolean;
   dockerImage: string;
@@ -352,6 +353,13 @@ export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
     body: JSON.stringify({ agents }), credentials: 'include'
   });
   await handleApiResponse(response);
+};
+
+export const getOpenCodeModels = async (agentId?: string): Promise<{ models: string[] }> => {
+  const params = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
+  const response = await apiFetch(`${API_BASE_URL}/api/agents/opencode/models${params}`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
 };
 
 

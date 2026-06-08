@@ -9,6 +9,11 @@ export interface PRFile {
     patch?: string;
 }
 
+export interface FormattedPRDiff {
+    diff: string;
+    omittedFiles: string[];
+}
+
 interface FetchPRFilesParams {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
     repoOwner: string;
@@ -127,33 +132,120 @@ export function formatFileContents(contents: Map<string, string>, maxChars: numb
 
 /**
  * Formats PR files into a diff string for inclusion in review prompts.
- * Truncates if total size exceeds maxChars to avoid prompt bloat.
+ * Prioritizes concise, reviewable text diffs so the prompt budget is used on
+ * changes the reviewer can act on before large/generated/binary artifacts.
  */
 export function formatPRDiff(files: PRFile[], maxChars: number = 100000): string {
-    if (files.length === 0) return '';
+    return formatPRDiffWithMetadata(files, maxChars).diff;
+}
 
+export function formatPRDiffWithMetadata(files: PRFile[], maxChars: number = 100000): FormattedPRDiff {
+    if (files.length === 0) return { diff: '', omittedFiles: [] };
+
+    const totalAdditions = files.reduce((s, f) => s + f.additions, 0);
+    const totalDeletions = files.reduce((s, f) => s + f.deletions, 0);
+    const orderedFiles = [...files].sort(comparePRFilesForReview);
     const parts: string[] = [];
+    const omittedFiles: string[] = [];
     let currentSize = 0;
-    let truncated = false;
 
-    for (const file of files) {
-        const header = `## ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`;
-        const patch = file.patch || '(binary or too large to display)';
-        const section = `${header}\n\`\`\`diff\n${patch}\n\`\`\`\n`;
+    for (const file of orderedFiles) {
+        const section = formatPRFileDiffSection(file);
 
         if (currentSize + section.length > maxChars) {
-            truncated = true;
-            break;
+            omittedFiles.push(file.filename);
+            continue;
         }
 
         parts.push(section);
         currentSize += section.length;
     }
 
-    const summary = `**${files.length} files changed** (+${files.reduce((s, f) => s + f.additions, 0)}/-${files.reduce((s, f) => s + f.deletions, 0)})`;
-    const truncationNote = truncated ? `\n\n*Note: Diff truncated due to size. ${files.length - parts.length} files omitted.*` : '';
+    const summary = `**${files.length} files changed** (+${totalAdditions}/-${totalDeletions})`;
+    const truncationNote = omittedFiles.length > 0
+        ? buildOmittedFilesNote(omittedFiles)
+        : '';
 
-    return `${summary}\n\n${parts.join('\n')}${truncationNote}`;
+    return {
+        diff: `${summary}\n\n${parts.join('\n')}${truncationNote}`,
+        omittedFiles,
+    };
+}
+
+function buildOmittedFilesNote(omittedFiles: string[]): string {
+    const maxListedFiles = 50;
+    const listedFiles = omittedFiles.slice(0, maxListedFiles).map(filename => `- ${filename}`).join('\n');
+    const remainingCount = omittedFiles.length - maxListedFiles;
+    const remainingNote = remainingCount > 0 ? `\n- ...and ${remainingCount} more` : '';
+
+    return [
+        '',
+        '',
+        `*Note: Diff prioritized for review and truncated due to size. ${omittedFiles.length} files omitted. Large, binary, generated, and lockfile changes are deprioritized so smaller source changes fit first.*`,
+        '',
+        '**Files omitted from review diff:**',
+        listedFiles,
+        remainingNote,
+    ].join('\n');
+}
+
+function formatPRFileDiffSection(file: PRFile): string {
+    const header = `## ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`;
+    const patch = file.patch || '(binary or too large to display)';
+    return `${header}\n\`\`\`diff\n${patch}\n\`\`\`\n`;
+}
+
+function comparePRFilesForReview(a: PRFile, b: PRFile): number {
+    return reviewPriority(a) - reviewPriority(b)
+        || patchSize(a) - patchSize(b)
+        || changedLineCount(a) - changedLineCount(b)
+        || a.filename.localeCompare(b.filename);
+}
+
+function reviewPriority(file: PRFile): number {
+    if (!file.patch || isBinaryFile(file.filename)) return 50;
+    if (isLockfile(file.filename)) return 40;
+    if (isGeneratedOrVendorFile(file.filename)) return 35;
+    if (isDocumentationFile(file.filename)) return 20;
+    return 0;
+}
+
+function patchSize(file: PRFile): number {
+    return formatPRFileDiffSection(file).length;
+}
+
+function changedLineCount(file: PRFile): number {
+    return file.additions + file.deletions;
+}
+
+function isLockfile(filename: string): boolean {
+    const basename = filename.split('/').pop()?.toLowerCase() || filename.toLowerCase();
+    return basename === 'package-lock.json'
+        || basename === 'npm-shrinkwrap.json'
+        || basename === 'yarn.lock'
+        || basename === 'pnpm-lock.yaml'
+        || basename === 'bun.lock'
+        || basename === 'bun.lockb'
+        || basename === 'composer.lock'
+        || basename === 'poetry.lock'
+        || basename === 'cargo.lock'
+        || basename === 'gemfile.lock';
+}
+
+function isBinaryFile(filename: string): boolean {
+    return /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|pdf|zip|tar|gz|tgz|bz2|xz|7z|rar|woff2?|ttf|eot|otf|mp4|mov|avi|webm|mp3|wav|flac|exe|dll|so|dylib|class|jar)$/i.test(filename);
+}
+
+function isGeneratedOrVendorFile(filename: string): boolean {
+    return /(^|\/)(dist|build|coverage|vendor|third_party|node_modules)\//.test(filename)
+        || /\.min\.(js|css)$/i.test(filename)
+        || /\.(generated|gen)\.[cm]?[jt]sx?$/i.test(filename)
+        || /\.snap$/i.test(filename);
+}
+
+function isDocumentationFile(filename: string): boolean {
+    return /\.(md|mdx|rst|txt|adoc)$/i.test(filename)
+        || /(^|\/)docs\//i.test(filename);
 }
 
 /**

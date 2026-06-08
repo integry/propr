@@ -42,6 +42,12 @@ services:
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
     volumes:
       - propr-sqlite-data:/app/data
+      # Add agent credential mounts with a deployment-specific override file.
+      # Keeping them out of the base production compose file avoids Docker
+      # creating missing host credential directories as root-owned folders.
+      # Example OpenCode override (API only reads config/auth metadata):
+      #   - /home/propr/.config/opencode:/home/propr/.config/opencode:ro
+      #   - /home/propr/.local/share/opencode:/home/propr/.local/share/opencode:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -112,6 +118,17 @@ services:
       - ./repos:/usr/src/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
       - propr-sqlite-data:/usr/src/app/data
+      # Add Claude/Codex/Gemini/OpenCode credential mounts with a deployment-
+      # specific override file. The launcher conditionally mounts HOST_*
+      # credential directories and is the preferred production path for agent
+      # credential auth. Vibe keeps the legacy defaults below for compatibility.
+      # Example OpenCode override:
+      #   environment:
+      #     OPENCODE_CONFIG_PATH: /home/propr/.config/opencode
+      #     HOST_OPENCODE_DATA_DIR: /home/propr/.local/share/opencode
+      #   volumes:
+      #     - /home/propr/.config/opencode:/home/propr/.config/opencode:ro
+      #     - /home/propr/.local/share/opencode:/home/propr/.local/share/opencode:rw
       # Vibe prompt cache — mounted by default so API-key auth works without
       # manual edits. PREFLIGHT: create and own the host directory before starting:
       #   mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"

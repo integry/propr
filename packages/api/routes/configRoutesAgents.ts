@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
-import { RedisClientType } from 'redis';
-import { db } from '@propr/core';
+import { db, logger } from '@propr/core';
 import * as configManager from '@propr/core';
 import {
     AgentRegistry,
@@ -12,51 +11,7 @@ import {
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
 import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
-
-interface AgentsRoutesDeps {
-  redisClient: RedisClientType;
-  publishConfigUpdate: (subtype: string) => Promise<void>;
-  logActivityHelper: (description: string, idSuffix: string, type: string, username?: string) => Promise<void>;
-}
-interface AgentConfigStore {
-  loadAgents: typeof configManager.loadAgents;
-  loadSettings: typeof configManager.loadSettings;
-  loadSettingsRecord?: () => Promise<Record<string, unknown>>;
-  handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
-}
-interface AgentRegistrySync {
-  refresh: () => Promise<void>;
-  setDefaultAgentAlias: (alias: string | null) => void;
-}
-interface ApplyAgentsUpdateParams {
-  agents: AgentConfig[];
-  processedAgents?: AgentConfig[];
-  username?: string;
-  publishConfigUpdate: AgentsRoutesDeps['publishConfigUpdate'];
-  logActivityHelper: AgentsRoutesDeps['logActivityHelper'];
-  configStore?: AgentConfigStore;
-  registry?: AgentRegistrySync;
-  lock?: ConfigLockContext;
-}
-interface PublishAgentUpdatesParams {
-  processedAgents: AgentConfig[];
-  defaultChanged: boolean;
-  publishConfigUpdate: AgentsRoutesDeps['publishConfigUpdate'];
-  logActivityHelper: AgentsRoutesDeps['logActivityHelper'];
-  username?: string;
-}
-interface PersistAgentConfigurationResult {
-  settingsWereUpdated: boolean;
-}
-interface RollbackAgentConfigStateParams {
-  configStore: AgentConfigStore;
-  registry: AgentRegistrySync;
-  previousAgents: AgentConfig[];
-  currentDefault: string | undefined;
-  defaultChanged: boolean;
-  lock?: ConfigLockContext;
-  errorContext?: string;
-}
+import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
 async function rollbackAgentConfigState({
   configStore,
   registry,
@@ -236,7 +191,7 @@ async function applyCommittedAgentsUpdate({
   settingsWereUpdated: boolean;
   defaultChanged: boolean;
   lock?: ConfigLockContext;
-}): Promise<{ status: number; body: Record<string, unknown> } | void> {
+}): Promise<ApplyAgentsUpdateResult | void> {
   try {
     if (settingsWereUpdated) {
       await configStore.handleSettingsSaveSideEffects();
@@ -294,7 +249,7 @@ export async function applyAgentsUpdate({
   configStore = configManager,
   registry = AgentRegistry.getInstance(),
   lock
-}: ApplyAgentsUpdateParams): Promise<{ status: number; body: Record<string, unknown> }> {
+}: ApplyAgentsUpdateParams): Promise<ApplyAgentsUpdateResult> {
   const preparedAgents = await loadProcessedAgents(agents, providedProcessedAgents);
   if (preparedAgents.error) {
     return { status: preparedAgents.status ?? 400, body: { error: preparedAgents.error } };
@@ -343,7 +298,7 @@ export async function applyAgentsUpdate({
     };
   }
 
-  let publishResult: { status: number; body: Record<string, unknown> } | null = null;
+  let publishResult: ApplyAgentsUpdateResult | null = null;
   try {
     await publishAgentUpdates({ processedAgents, defaultChanged, publishConfigUpdate, logActivityHelper, username });
   } catch (error) {
@@ -367,7 +322,8 @@ export async function applyAgentsUpdate({
 }
 
 export function createAgentsRoutes(deps: AgentsRoutesDeps) {
-  const { redisClient, publishConfigUpdate, logActivityHelper } = deps;
+  const { redisClient, publishConfigUpdate, logActivityHelper, applyAgentsUpdateFn } = deps;
+  const effectiveApplyFn = applyAgentsUpdateFn ?? applyAgentsUpdate;
   async function getAgents(_req: Request, res: Response): Promise<void> {
     try {
       res.json({ agents: await configManager.loadAgents() });
@@ -393,9 +349,14 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
 
     // Agent updates share the settings lock because they may also rewrite default_agent_alias.
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
-      return applyAgentsUpdate({ agents: req.body.agents, processedAgents: prepared.processedAgents, username: req.user?.username, publishConfigUpdate, logActivityHelper, lock });
+      return effectiveApplyFn({ agents: req.body.agents, processedAgents: prepared.processedAgents, username: req.user?.username, publishConfigUpdate, logActivityHelper, lock });
     });
 
+    if (!result || typeof result.status !== 'number' || !result.body) {
+      logger.error({ hasResult: !!result, statusType: typeof result?.status, hasBody: !!result?.body, resultKeys: result ? Object.keys(result) : [] }, 'applyAgentsUpdate returned unexpected shape — possible bug in withConfigLock or applyFn');
+      res.status(500).json({ error: 'Unexpected response from agent configuration update' });
+      return;
+    }
     res.status(result.status).json(result.body);
   }
   return { getAgents, postAgents };

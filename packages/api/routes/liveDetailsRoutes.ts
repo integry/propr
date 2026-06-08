@@ -13,14 +13,17 @@ import {
   parseVibeOutputToConversationResult,
   type ConversationResult
 } from './liveDetailsCodexParser.js';
+import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
-import { parseRedisOutput } from '../services/redisOutputParser.js';
 import { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
+import { parseRedisOutput } from '../services/redisOutputParser.js';
+
+export { detectStoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 interface HistoryEntryWithSessionMetadata { state?: string; timestamp?: string; metadata?: { sessionId?: string }; }
-const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution']);
-const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'vibe_execution']);
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'opencode_execution']);
+const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'vibe_execution', 'opencode_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
@@ -180,8 +183,13 @@ export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSes
   return null;
 }
 interface StoredLogData { files?: Record<string, string>; }
-export { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
-export interface ParsedStoredOutput { parsed: ConversationResult | null; rawFallback: ConversationResult | null; format: StoredOutputFormat; }
+// Keep Codex first for unknown streams because its result-only usage envelope overlaps OpenCode.
+const STORED_OUTPUT_FALLBACK_ORDER: StoredOutputFormat[] = ['codex', 'claude', 'opencode', 'vibe'];
+export interface ParsedStoredOutput {
+  parsed: ConversationResult | null;
+  rawFallback: ConversationResult | null;
+  format: StoredOutputFormat;
+}
 function getClaudeProjectDirName(workspacePath: string): string {
   const normalizedPath = path.resolve(workspacePath).replace(/\\/g, '/');
   const collapsed = normalizedPath.replace(/\/+/g, '-');
@@ -245,27 +253,24 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex
 export function parseStoredOutputContent(output: string): ParsedStoredOutput {
   if (!output.trim()) return { parsed: null, rawFallback: null, format: 'unknown' };
   const format = detectStoredOutputFormat(output);
-  if (format === 'claude') {
-    const parsed = parseClaudeOutputToConversationResult(output);
-    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
+  const rawFallback = buildRawOutputConversationResult(output);
+  if (format !== 'unknown') return parseStoredOutputWithFormat(output, format, rawFallback);
+  for (const fallbackFormat of STORED_OUTPUT_FALLBACK_ORDER) {
+    const parsed = parseStoredOutputForFormat(output, fallbackFormat);
+    if (!isConversationResultEmpty(parsed)) return { parsed, rawFallback, format: fallbackFormat };
   }
-  if (format === 'codex' || format === 'antigravity') {
-    // Antigravity currently emits Codex-compatible JSONL for live details; the
-    // format detector keeps its stored-output classification explicit.
-    const parsed = parseCodexOutputToConversationResult(output);
-    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
-  }
-  if (format === 'vibe') {
-    const parsed = parseVibeOutputToConversationResult(output);
-    return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback: buildRawOutputConversationResult(output), format };
-  }
-  const codexParsed = parseCodexOutputToConversationResult(output);
-  if (!isConversationResultEmpty(codexParsed)) return { parsed: codexParsed, rawFallback: buildRawOutputConversationResult(output), format: 'codex' };
-  const claudeParsed = parseClaudeOutputToConversationResult(output);
-  if (!isConversationResultEmpty(claudeParsed)) return { parsed: claudeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'claude' };
-  const vibeParsed = parseVibeOutputToConversationResult(output);
-  if (!isConversationResultEmpty(vibeParsed)) return { parsed: vibeParsed, rawFallback: buildRawOutputConversationResult(output), format: 'vibe' };
-  return { parsed: null, rawFallback: buildRawOutputConversationResult(output), format };
+  return { parsed: null, rawFallback, format };
+}
+function parseStoredOutputWithFormat(output: string, format: StoredOutputFormat, rawFallback: ConversationResult | null): ParsedStoredOutput {
+  const parsed = parseStoredOutputForFormat(output, format);
+  return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback, format };
+}
+function parseStoredOutputForFormat(output: string, format: StoredOutputFormat): ConversationResult | null {
+  if (format === 'claude') return parseClaudeOutputToConversationResult(output);
+  if (format === 'codex' || format === 'antigravity') return parseCodexOutputToConversationResult(output);
+  if (format === 'opencode') return parseOpenCodeOutputToConversationResult(output);
+  if (format === 'vibe') return parseVibeOutputToConversationResult(output);
+  return null;
 }
 function buildRawOutputConversationResult(output: string): ConversationResult | null {
   const trimmed = output.trim();
