@@ -303,9 +303,7 @@ function getOpenCodeNestedUsage(value: unknown): OpenCodeUsage | undefined {
 
 function isOpenCodeTextContainer(value: unknown): value is { text?: unknown; content?: unknown; delta?: unknown } { return Boolean(value && typeof value === 'object' && hasOpenCodeTextField(value as { text?: unknown; content?: unknown; delta?: unknown })); }
 
-function isOpenCodeCumulativeUsageEvent(event: OpenCodeEvent): boolean {
-    return event.type?.toLowerCase() === 'result';
-}
+function isOpenCodeCumulativeUsageEvent(event: OpenCodeEvent): boolean { return event.type?.toLowerCase() === 'result'; }
 
 export function normalizeOpenCodeUsage(usage: OpenCodeUsage | undefined): NormalizedOpenCodeUsage | undefined {
     if (!usage) return undefined;
@@ -383,9 +381,7 @@ export function hasOpenCodeTokenUsage(usage: TokenUsage | NormalizedOpenCodeUsag
     );
 }
 
-function hasOpenCodeTextField(event: { text?: unknown; content?: unknown; delta?: unknown }): boolean {
-    return typeof event.text === 'string' || typeof event.content === 'string' || typeof event.delta === 'string';
-}
+function hasOpenCodeTextField(event: { text?: unknown; content?: unknown; delta?: unknown }): boolean { return typeof event.text === 'string' || typeof event.content === 'string' || typeof event.delta === 'string'; }
 
 function buildOpenCodeSummary(state: OpenCodeParseState): string | undefined {
     const lastAssistantMessage = state.assistantMessages.at(-1)?.trim();
@@ -420,9 +416,7 @@ function extractOpenCodeText(event: OpenCodeEvent): ExtractedOpenCodeText {
     };
 }
 
-function addPartsText(textParts: string[], parts?: OpenCodePart[]): void {
-    for (const part of parts || []) addPartText(textParts, part);
-}
+function addPartsText(textParts: string[], parts?: OpenCodePart[]): void { for (const part of parts || []) addPartText(textParts, part); }
 
 function addPartText(textParts: string[], part?: OpenCodePart): void {
     if (!part) return;
@@ -460,6 +454,4 @@ function buildOpenCodeContainerName(alias: string, taskType: string, shortTaskId
     return sanitized || `opencode-${Date.now().toString(36)}`;
 }
 
-function ensureDirectory(configPath: string): void {
-    fs.mkdirSync(configPath, { recursive: true, mode: 0o700 });
-}
+function ensureDirectory(configPath: string): void { fs.mkdirSync(configPath, { recursive: true, mode: 0o700 }); }
