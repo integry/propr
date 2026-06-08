@@ -3,8 +3,8 @@
  */
 
 import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import type { AgentType } from '../config/modelDefinitions';
 
-export type AgentType = 'claude' | 'codex' | 'gemini';
 export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 
 export interface AvailableTag {

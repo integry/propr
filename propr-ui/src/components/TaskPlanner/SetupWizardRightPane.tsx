@@ -1,25 +1,14 @@
 import React from 'react';
-import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace } from '../../api/proprApi';
+import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace, PreviewResult } from '../../api/proprApi';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';
 import { ContextRepositoriesSection, IndexedRepository } from './ContextRepositoriesSection';
 import { CostPreview } from './CostPreview';
 
-interface PreviewStats {
-  totalTokens?: number;
-  costEstimate?: number;
-  modelName?: string;
-  modelMaxContextTokens?: number;
-}
-
 interface PreviewState {
   isLoading: boolean;
-  data: {
-    stats: PreviewStats;
-    smartSelection: SmartFileInfo[];
-    warnings: string[];
-  } | null;
+  data: PreviewResult | null;
   error: string | null;
   lastSynced: Date | null;
 }
@@ -29,7 +18,6 @@ interface SetupWizardRightPaneProps {
   onContextLevelChange: (level: number) => void;
   smartSelection: SmartFileInfo[] | undefined;
   isPreviewLoading: boolean;
-  stats: PreviewStats | undefined;
   // Context repositories props
   contextRepositories: ContextRepository[];
   availableRepos: IndexedRepository[];
@@ -55,12 +43,17 @@ interface SetupWizardRightPaneProps {
   hideCostsAndTokens?: boolean;
 }
 
+function getEmptyStateMessage(isNewMode?: boolean, hasData?: boolean): string {
+  if (isNewMode) return 'Context preview will be available after entering a prompt';
+  if (hasData) return 'No files found in repository';
+  return 'Files will be selected after context analysis';
+}
+
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   contextLevel,
   onContextLevelChange,
   smartSelection,
   isPreviewLoading,
-  stats,
   contextRepositories,
   availableRepos,
   onAddContextRepo,
@@ -82,6 +75,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   const showContextRepositories = !hideContextRepositories;
   const showCostPreview = !hideCostsAndTokens || (preview.isLoading && showPreviewProgress) || !!preview.error;
   const showBottomSection = showContextRepositories || showCostPreview;
+  const hasSmartSelection = !!smartSelection?.length;
 
   return (
     <div
@@ -98,23 +92,16 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
       </div>
 
       {/* Smart file selection - scrollable area, hidden on mobile when empty to save space */}
-      <div className={`flex-1 overflow-auto flex flex-col min-h-0 ${!smartSelection || smartSelection.length === 0 ? 'hidden md:flex' : ''}`}>
-        {smartSelection && smartSelection.length > 0 ? (
+      <div className={`flex-1 overflow-auto flex flex-col min-h-0 ${hasSmartSelection ? '' : 'hidden md:flex'}`}>
+        {hasSmartSelection ? (
           <SmartFileSelection
-            smartSelection={smartSelection}
-            totalTokens={stats?.totalTokens}
-            costEstimate={stats?.costEstimate}
-            hideCostsAndTokens={hideCostsAndTokens}
+            smartSelection={smartSelection ?? []}
             onExcludeFile={onExcludeFile}
           />
         ) : (
           <div className="p-3 md:p-5 space-y-4">
             <p className="text-sm text-gray-400 italic">
-              {isNewMode
-                ? 'Context preview will be available after entering a prompt'
-                : preview.data
-                  ? 'No files found in repository'
-                  : 'Files will be selected after context analysis'}
+              {getEmptyStateMessage(isNewMode, !!preview.data)}
             </p>
             {isPreviewLoading && <FileSelectionSkeleton />}
           </div>

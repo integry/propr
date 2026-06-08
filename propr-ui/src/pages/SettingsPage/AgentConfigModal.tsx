@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { AgentConfig, CliVersionType } from '../../api/proprApi';
-import { AgentType, AGENT_DEFAULTS } from '../../config/modelDefinitions';
+import { Eye, EyeOff, ExternalLink } from 'lucide-react';
+import { AgentConfig, CliVersionType, getOpenCodeModels } from '../../api/proprApi';
+import { AgentType, AGENT_DEFAULTS, AGENT_DISPLAY_ORDER } from '../../config/modelDefinitions';
 import { getAgentVersions, AvailableVersionsResponse } from '../../api/agentVersionApi';
 import CliVersionSelector from './CliVersionSelector';
 import ModelSelector from './ModelSelector';
+import { buildSelectableModels } from './modelSelectionHelpers';
 
 interface AgentConfigModalProps {
   agent: AgentConfig | null;
@@ -19,6 +21,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   onSave
 }) => {
   const isEditing = agent !== null;
+  const getAgentTypeLabel = (type: AgentType) => type === 'opencode' ? 'OpenCode' : type === 'antigravity' ? 'Antigravity' : type;
 
   const [formData, setFormData] = useState<Omit<AgentConfig, 'id'> & { id?: string }>({
     type: 'claude',
@@ -29,6 +32,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     supportedModels: AGENT_DEFAULTS.claude.defaultModels,
     defaultModel: AGENT_DEFAULTS.claude.defaultModels[0],
     modelCustomLabels: {},
+    envVars: {},
     cliVersionType: 'default',
     cliVersion: undefined,
     cliVersionResolved: AGENT_DEFAULTS.claude.defaultCliVersion
@@ -37,6 +41,10 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [versionData, setVersionData] = useState<AvailableVersionsResponse | null>(null);
   const [versionLoading, setVersionLoading] = useState(false);
+  const [discoveredOpenCodeModels, setDiscoveredOpenCodeModels] = useState<string[]>([]);
+
+  // Separate state for API key visibility (password field toggle)
+  const [showApiKey, setShowApiKey] = useState(false);
 
   // Load version data when agent type changes
   const loadVersionData = useCallback(async (agentType: AgentType) => {
@@ -57,6 +65,27 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   }, [formData.type, loadVersionData]);
 
   useEffect(() => {
+    let cancelled = false;
+    if (formData.type !== 'opencode') {
+      setDiscoveredOpenCodeModels([]);
+      return;
+    }
+
+    getOpenCodeModels(formData.id)
+      .then(data => {
+        if (!cancelled) setDiscoveredOpenCodeModels(data.models);
+      })
+      .catch(error => {
+        console.error('Failed to discover OpenCode models:', error);
+        if (!cancelled) setDiscoveredOpenCodeModels([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [formData.type, formData.id]);
+
+  useEffect(() => {
     if (agent) {
       setFormData({
         id: agent.id,
@@ -68,8 +97,9 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         supportedModels: agent.supportedModels,
         defaultModel: agent.defaultModel || agent.supportedModels[0],
         modelCustomLabels: agent.modelCustomLabels || {},
+        envVars: agent.envVars || {},
         cliVersionType: agent.cliVersionType || 'default',
-        cliVersion: agent.cliVersion,
+        cliVersion: (agent.cliVersionType || 'default') === 'default' ? undefined : agent.cliVersion,
         cliVersionResolved: agent.cliVersionResolved || AGENT_DEFAULTS[agent.type].defaultCliVersion
       });
     }
@@ -135,7 +165,10 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   };
 
   const handleSelectAllModels = () => {
-    const allModels = AGENT_MODELS[formData.type].map(m => m.id);
+    const allModels = buildSelectableModels(
+      formData.type,
+      [...(formData.type === 'opencode' ? discoveredOpenCodeModels : []), ...formData.supportedModels]
+    ).map(m => m.id);
     setFormData(prev => ({ ...prev, supportedModels: allModels }));
   };
 
@@ -191,6 +224,18 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       }
     }
 
+    // Clean envVars - remove empty values
+    const cleanedEnvVars: Record<string, string> = {};
+    if (formData.envVars) {
+      for (const [key, value] of Object.entries(formData.envVars)) {
+        const trimmedValue = value?.trim();
+        if (trimmedValue) {
+          cleanedEnvVars[key] = trimmedValue;
+        }
+      }
+    }
+
+    const cliVersionType = formData.cliVersionType || 'default';
     const agentToSave: AgentConfig = {
       id: formData.id || crypto.randomUUID(),
       type: formData.type,
@@ -201,8 +246,9 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       supportedModels: formData.supportedModels,
       defaultModel: formData.defaultModel,
       modelCustomLabels: Object.keys(cleanedModelCustomLabels).length > 0 ? cleanedModelCustomLabels : undefined,
-      cliVersionType: formData.cliVersionType,
-      cliVersion: formData.cliVersion,
+      envVars: Object.keys(cleanedEnvVars).length > 0 ? cleanedEnvVars : undefined,
+      cliVersionType,
+      cliVersion: cliVersionType === 'default' ? undefined : formData.cliVersion,
       cliVersionResolved: formData.cliVersionResolved
     };
 
@@ -228,8 +274,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           {/* Agent Type - Pill Toggle Style */}
           <div>
             <label className="block text-gray-700 mb-1.5 font-medium text-sm">Agent Type</label>
-            <div className="inline-flex bg-gray-100 rounded-full p-1">
-              {(['claude', 'codex', 'gemini'] as AgentType[]).map(type => (
+            <div className="flex flex-wrap gap-1 bg-gray-100 rounded-full p-1 w-fit">
+              {AGENT_DISPLAY_ORDER.map(type => (
                 <button
                   key={type}
                   type="button"
@@ -240,7 +286,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  {type}
+                  {getAgentTypeLabel(type)}
                 </button>
               ))}
             </div>
@@ -257,6 +303,48 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             onVersionChange={handleVersionChange}
           />
 
+          {/* Mistral API Key - Only shown for Vibe agents */}
+          {formData.type === 'vibe' && (
+            <div>
+              <label className="block text-gray-700 mb-1.5 font-medium text-sm" htmlFor="mistralApiKey">
+                Mistral API Key
+              </label>
+              <div className="relative">
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  id="mistralApiKey"
+                  value={formData.envVars?.MISTRAL_API_KEY || ''}
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
+                    envVars: { ...prev.envVars, MISTRAL_API_KEY: e.target.value }
+                  }))}
+                  placeholder="Enter your Mistral API key"
+                  className="w-full px-3 py-1.5 pr-10 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  title={showApiKey ? 'Hide API key' : 'Show API key'}
+                >
+                  {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-gray-500 flex items-center gap-1">
+                Get your API key from
+                <a
+                  href="https://chat.mistral.ai/code/extensions"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary-600 hover:text-primary-700 inline-flex items-center gap-0.5"
+                >
+                  Mistral AI <ExternalLink className="w-3 h-3" />
+                </a>
+              </p>
+            </div>
+          )}
+
           {/* Alias */}
           <div>
             <label className="block text-gray-700 mb-1.5 font-medium text-sm" htmlFor="alias">
@@ -267,7 +355,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               id="alias"
               value={formData.alias}
               onChange={(e) => setFormData(prev => ({ ...prev, alias: e.target.value.toLowerCase() }))}
-              placeholder="e.g., primary-claude, fast-gemini"
+              placeholder="e.g., primary-claude, fast-antigravity"
               className={`w-full px-3 py-1.5 bg-gray-50 text-gray-900 border rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm ${
                 errors.alias ? 'border-red-500' : 'border-gray-300'
               }`}
@@ -300,6 +388,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             agentType={formData.type}
             supportedModels={formData.supportedModels}
             defaultModel={formData.defaultModel}
+            availableModelIds={formData.type === 'opencode' ? discoveredOpenCodeModels : undefined}
             modelCustomLabels={formData.modelCustomLabels}
             errors={errors}
             onModelToggle={handleModelToggle}

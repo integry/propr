@@ -1,0 +1,41 @@
+# OpenCode agent image. Extends propr/agent-base (alpine + common tooling).
+
+# BASE_IMAGE must point at the exact agent-base image built alongside this
+# agent image. scripts/build-images.sh passes it automatically.
+ARG BASE_IMAGE=propr/agent-base:latest
+FROM ${BASE_IMAGE}
+
+# Keep this default aligned with AGENT_DEFAULT_VERSIONS.opencode for
+# reproducible direct builds. scripts/build-images.sh may override it.
+ARG CLI_VERSION=1.16.2
+
+USER root
+# su-exec is used by scripts/opencode-entrypoint.sh when Docker starts the
+# container as root so it can drop back to the node user after setup.
+RUN apk add --no-cache su-exec \
+    && npm install -g opencode-ai@${CLI_VERSION}
+# Smoke-test the binary and verify the installed CLI exposes the flags the
+# entrypoint relies on. Keep the checks tolerant of help text indentation and
+# wrapping; pin CLI_VERSION above if opencode-ai changes its CLI contract.
+# Requires opencode-ai >= 0.1.0.
+RUN opencode --version || (echo "ERROR: opencode binary failed to execute - check installation" && exit 1)
+RUN opencode run --help 2>&1 | tee /tmp/oc-help \
+    && grep -qE '(^|[[:space:],])--file([=[:space:],]|$)' /tmp/oc-help \
+    && grep -qE '(^|[[:space:],])--format([=[:space:],]|$)' /tmp/oc-help \
+    && grep -qE '(^|[[:space:],])--model([=[:space:],]|$)' /tmp/oc-help \
+    || (echo "ERROR: opencode run missing required flags (--file, --format, --model)" && exit 1) \
+    && rm -f /tmp/oc-help
+
+COPY --chown=node:node scripts/opencode-entrypoint.sh /home/node/opencode-entrypoint.sh
+COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
+COPY --chown=node:node scripts/init-firewall.sh /usr/local/bin/init-firewall
+COPY --chown=node:node scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
+RUN chmod +x /home/node/opencode-entrypoint.sh /usr/local/bin/opencode-run /usr/local/bin/init-firewall /usr/local/bin/gh-wrapper
+USER node
+
+RUN git config --global user.name "ProPR OpenCode Bot" \
+    && git config --global user.email "opencode-bot@propr.dev" \
+    && git config --global init.defaultBranch main \
+    && git config --global --add safe.directory '*'
+
+ENTRYPOINT ["/sbin/tini", "--", "/home/node/opencode-entrypoint.sh"]

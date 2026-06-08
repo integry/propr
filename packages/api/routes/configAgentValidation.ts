@@ -1,7 +1,6 @@
-import type { AgentConfig, CliVersionType } from '@propr/core';
+import { AGENT_TYPES, validateAgentType, type AgentConfig, type CliVersionType } from '@propr/core';
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
-const VALID_AGENT_TYPES = ['claude', 'codex', 'gemini'];
 const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
 
 export function normalizeAgentAlias(alias: string): string {
@@ -21,10 +20,11 @@ export function normalizeAgentsConfig(agents: AgentConfig[]): AgentConfig[] {
     if (!isAgentRecord(agent)) {
       return agent;
     }
+    const cliVersionType = typeof agent.cliVersionType === 'string' ? agent.cliVersionType : undefined;
     return {
       ...agent,
       alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias,
-      cliVersion: typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion,
+      cliVersion: cliVersionType === 'default' ? undefined : (typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion),
       supportedModels: Array.isArray(agent.supportedModels)
         ? agent.supportedModels.map(model => typeof model === 'string' ? normalizeSupportedModel(model) : model)
         : agent.supportedModels
@@ -45,7 +45,8 @@ export function validateAgentsConfig(agents: AgentConfig[]): string | null {
 
 function validateAgentBaseFields(agent: AgentConfig, normalizedAlias: string): string | null {
   if (!agent.id || typeof agent.id !== 'string') return `Agent missing required 'id' field`;
-  if (!agent.type || !VALID_AGENT_TYPES.includes(agent.type)) return `Agent '${agent.id}' has invalid type. Must be one of: ${VALID_AGENT_TYPES.join(', ')}`;
+  const typeValidation = validateAgentType(agent.type);
+  if (!typeValidation.ok) return `Agent '${agent.id}' has invalid type. Must be one of: ${AGENT_TYPES.join(', ')}`;
   if (!agent.alias || typeof agent.alias !== 'string') return `Agent '${agent.id}' missing required 'alias' field`;
   if (!normalizedAlias) return `Agent '${agent.id}' missing required 'alias' field`;
   if (!ALIAS_REGEX.test(normalizedAlias)) return `Agent '${agent.id}' has invalid alias '${agent.alias}'. Must match pattern ^[a-z0-9-]+$`;

@@ -1,13 +1,8 @@
 import fs from 'fs-extra';
-import { parseCodexStreamOutput } from '@propr/core';
+import { parseCodexStreamOutput, parseVibeConversationLog } from '@propr/core';
+import type { TokenUsage, ConversationResult, TodoItem, PendingSubagent } from './liveDetailsTypes.js';
 
-export interface TokenUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
-}
-export interface ConversationResult { events: Array<Record<string, unknown>>; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsage | null; }
+export type { TokenUsage, ConversationResult, TodoItem, PendingSubagent };
 
 export function isConversationResultEmpty(result: ConversationResult | null): boolean {
   if (!result) return true;
@@ -17,9 +12,7 @@ export function isConversationResultEmpty(result: ConversationResult | null): bo
     && result.tokenUsage === null;
 }
 
-export interface TodoItem { status: string; content: string; }
 interface CodexTodoItem { text?: string; completed?: boolean; status?: string; }
-export interface PendingSubagent { toolUseId: string; subagentType: string; description: string; startTimestamp: string; }
 interface CodexEventContext { events: Array<Record<string, unknown>>; setTodos: (nextTodos: Array<{ status: string; content: string }>) => void; pendingCommandStarts: Map<string, string[]>; timestamp?: string; }
 interface ParseLineResult { newTodos?: TodoItem[]; tokenUsage?: TokenUsage; }
 export interface ClaudeMessageContent {
@@ -167,8 +160,8 @@ function appendToolUseConversationEvent(event: ReturnType<typeof parseCodexStrea
   return true;
 }
 function appendErrorConversationEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, timestamp?: string): boolean {
-  if (event.type !== 'error') return false;
-  pushCodexToolResultEvent(events, event.message || event.result || 'Execution error', true, timestamp);
+  if (event.type !== 'error' && event.type !== 'tool_result') return false;
+  pushCodexToolResultEvent(events, event.message || event.result || event.content || 'Execution error', event.type === 'error' || !!event.is_error || event.status === 'error', timestamp);
   return true;
 }
 function appendStartedCommandEvent(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], events: Array<Record<string, unknown>>, pendingCommandStarts: Map<string, string[]>, timestamp?: string): boolean {
@@ -395,4 +388,49 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
 
   const currentTask = deriveCurrentTask(todos);
   return { events, todos, currentTask, tokenUsage: buildCodexTokenUsage(parsed) };
+}
+
+export function parseVibeOutputToConversationResult(output: string): ConversationResult | null {
+  const conversationLog = parseVibeConversationLog(output);
+  if (!conversationLog.length) return null;
+
+  const events: Array<Record<string, unknown>> = [];
+  let todos: TodoItem[] = [];
+  const pendingSubagents: Map<string, PendingSubagent> = new Map();
+  const tokenUsage: TokenUsage = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0
+  };
+
+  for (const message of conversationLog) {
+    const timestamp = message.timestamp;
+    const usage = message.message?.usage;
+    if (message.type === 'assistant') {
+      appendClaudeAssistantMessageEvents(message.message.content as ClaudeMessageContent[], {
+        timestamp,
+        events,
+        pendingSubagents,
+        setTodos: nextTodos => {
+          todos = nextTodos;
+        }
+      });
+    } else if (message.type === 'user') {
+      appendClaudeUserMessageEvents(message.message.content as ClaudeMessageContent[], {
+        timestamp,
+        events,
+        pendingSubagents,
+        setTodos: () => {}
+      });
+    }
+    if (usage) {
+      tokenUsage.input_tokens += usage.input_tokens ?? 0;
+      tokenUsage.output_tokens += usage.output_tokens ?? 0;
+    }
+  }
+
+  const currentTask = deriveCurrentTask(todos);
+  const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0;
+  return { events, todos, currentTask, tokenUsage: hasTokens ? tokenUsage : null };
 }

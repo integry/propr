@@ -6,10 +6,10 @@
 # Requires:
 #   - propr/launcher:latest and propr/app:latest built locally
 #     (npm run images:build)
-#   - Agent images pulled or built locally (propr/agent-{claude,codex,gemini})
+#   - Agent images pulled or built locally (propr/agent-{claude,codex,antigravity,opencode})
 #   - `gh auth login` or PROPR_E2E_TOKEN
-#   - Mounted agent credentials on the host ($HOME/.claude, /.codex, /.gemini
-#     as applicable for the tests being run)
+#   - Mounted agent credentials on the host ($HOME/.claude, /.codex, /.gemini,
+#     and /.config/opencode or /.opencode as applicable for the tests being run)
 #
 # Env:
 #   PROPR_E2E_REPO   (default: integry/propr-test)
@@ -57,7 +57,7 @@ chmod 644 "$DATA_DIR/data/gh-app.pem"
 # Compose the test .env: base = dev .env with test-overrides appended. Bash
 # processes the file top-to-bottom, so later duplicates of a key win.
 {
-  grep -v -E '^(DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|CLAUDE_DOCKER_IMAGE|CODEX_DOCKER_IMAGE|GEMINI_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL)=' "$REPO_ROOT/.env"
+  grep -v -E '^(DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|CLAUDE_DOCKER_IMAGE|CODEX_DOCKER_IMAGE|ANTIGRAVITY_DOCKER_IMAGE|OPENCODE_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL)=' "$REPO_ROOT/.env"
   cat <<EOF
 NODE_ENV=production
 LOG_LEVEL=warn
@@ -72,7 +72,8 @@ GH_OAUTH_CALLBACK_URL=http://localhost:${API_PORT}/api/auth/github/callback
 ENABLE_BEARER_TOKEN_AUTH=true
 CLAUDE_DOCKER_IMAGE=propr/agent-claude:latest
 CODEX_DOCKER_IMAGE=propr/agent-codex:latest
-GEMINI_DOCKER_IMAGE=propr/agent-gemini:latest
+ANTIGRAVITY_DOCKER_IMAGE=propr/agent-antigravity:latest
+OPENCODE_DOCKER_IMAGE=propr/agent-opencode:latest
 SESSION_SECRET=itest-not-secret
 GH_OAUTH_CLIENT_ID=itest
 GH_OAUTH_CLIENT_SECRET=itest
@@ -125,7 +126,23 @@ LAUNCHER_ARGS=(
 )
 [ -d "$HOME/.claude" ] && LAUNCHER_ARGS+=(-e "HOST_CLAUDE_DIR=$HOME/.claude")
 [ -d "$HOME/.codex" ]  && LAUNCHER_ARGS+=(-e "HOST_CODEX_DIR=$HOME/.codex")
-[ -d "$HOME/.gemini" ] && LAUNCHER_ARGS+=(-e "HOST_GEMINI_DIR=$HOME/.gemini")
+[ -d "$HOME/.gemini" ] && LAUNCHER_ARGS+=(-e "HOST_ANTIGRAVITY_DIR=$HOME/.gemini")
+
+OPENCODE_LEGACY_CFG="$HOME/.opencode"
+OPENCODE_XDG_CFG="$HOME/.config/opencode"
+OPENCODE_CFG=""
+[ -d "$OPENCODE_LEGACY_CFG" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_LEGACY_DIR=$OPENCODE_LEGACY_CFG")
+[ -d "$OPENCODE_XDG_CFG" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_XDG_DIR=$OPENCODE_XDG_CFG")
+# Prefer XDG config when both OpenCode layouts exist, matching the app default.
+if [ -d "$OPENCODE_XDG_CFG" ]; then
+  OPENCODE_CFG="$OPENCODE_XDG_CFG"
+elif [ -d "$OPENCODE_LEGACY_CFG" ]; then
+  OPENCODE_CFG="$OPENCODE_LEGACY_CFG"
+elif [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
+  echo "✗ OpenCode credentials not found at $OPENCODE_XDG_CFG or $OPENCODE_LEGACY_CFG" >&2
+  echo "  Required for OpenCode-backed image integration tests; set PROPR_E2E_SKIP_SLOW=1 to skip agent execution." >&2
+  exit 1
+fi
 
 LAUNCHER_ARGS+=("$LAUNCHER_TAG")
 
@@ -159,7 +176,7 @@ probe=$(curl -s -o /dev/null -w '%{http_code}' \
 echo "✓ authenticated"
 
 # Bootstrap test configuration the tests assume:
-#   - three agents (claude/codex/gemini) with cheap/fast models
+#   - agents (claude/codex/antigravity/opencode) with cheap/fast models
 #   - test repo registered
 #   - summarization enabled so indexing works
 api() {
@@ -178,7 +195,18 @@ echo "▸ configuring agents"
 # containers via docker socket, the bind mount resolves correctly on the host.
 CLAUDE_CFG="${HOME}/.claude"
 CODEX_CFG="${HOME}/.codex"
-GEMINI_CFG="${HOME}/.gemini"
+ANTIGRAVITY_CFG="${HOME}/.gemini"
+OPENCODE_AGENT_JSON=""
+if [ -n "$OPENCODE_CFG" ]; then
+  OPENCODE_AGENT_JSON=$(cat <<JSON
+,
+  {"id":"itest-opencode","type":"opencode","alias":"opencode","enabled":true,
+   "dockerImage":"propr/agent-opencode:latest","configPath":"${OPENCODE_CFG}",
+   "supportedModels":["opencode/minimax-m3-free"],
+   "defaultModel":"opencode/minimax-m3-free"}
+JSON
+)
+fi
 agents_payload=$(cat <<JSON
 {"agents":[
   {"id":"itest-claude","type":"claude","alias":"claude","enabled":true,
@@ -189,10 +217,10 @@ agents_payload=$(cat <<JSON
    "dockerImage":"propr/agent-codex:latest","configPath":"${CODEX_CFG}",
    "supportedModels":["gpt-5","gpt-5-mini","gpt-5.4"],
    "defaultModel":"gpt-5-mini"},
-  {"id":"itest-gemini","type":"gemini","alias":"gemini","enabled":true,
-   "dockerImage":"propr/agent-gemini:latest","configPath":"${GEMINI_CFG}",
-   "supportedModels":["gemini-2.5-pro","gemini-2.5-flash"],
-   "defaultModel":"gemini-2.5-flash"}
+  {"id":"itest-antigravity","type":"antigravity","alias":"antigravity","enabled":true,
+   "dockerImage":"propr/agent-antigravity:latest","configPath":"${ANTIGRAVITY_CFG}",
+   "supportedModels":["antigravity-gemini-2.5-pro","antigravity-gemini-2.5-flash"],
+   "defaultModel":"antigravity-gemini-2.5-flash"}${OPENCODE_AGENT_JSON}
 ]}
 JSON
 )

@@ -243,7 +243,11 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
       const octokit = await getAuthenticatedOctokit();
-      const { models } = req.body as { models?: Array<{ agent_alias: string; model_name: string }> };
+      const { models, agent_alias, model_name } = req.body as {
+        models?: Array<{ agent_alias: string; model_name: string }>;
+        agent_alias?: string;
+        model_name?: string;
+      };
       const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);
       const correlationId = `implement-${draftId}-${issueNumber}`;
       const labelLogger = logger.withCorrelation(correlationId);
@@ -253,9 +257,13 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const context: ImplementIssueContext = {
         octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge: autoMerge as boolean, labelLogger
       };
+      // If single agent_alias/model_name passed (not models array), apply them to the plan issue
+      const effectivePlanIssue = (agent_alias || model_name)
+        ? { ...issueForImplementation, agent_alias: agent_alias ?? issueForImplementation.agent_alias, model_name: model_name ?? issueForImplementation.model_name }
+        : issueForImplementation;
       const result = (models && Array.isArray(models) && models.length > 0)
-        ? await handleMultiAgentImplementation({ ...context, draftId, planIssue: issueForImplementation, models })
-        : await handleSingleAgentImplementation({ ...context, draftId, planIssue: issueForImplementation });
+        ? await handleMultiAgentImplementation({ ...context, draftId, planIssue: effectivePlanIssue, models })
+        : await handleSingleAgentImplementation({ ...context, draftId, planIssue: effectivePlanIssue });
       res.json(result);
     } catch (error) {
       if (error instanceof ContextConfigParseError) {

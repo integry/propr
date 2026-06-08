@@ -1,5 +1,6 @@
 import React from 'react';
-import { AgentType, AGENT_MODELS } from '../../config/modelDefinitions';
+import { AgentType } from '../../config/modelDefinitions';
+import { buildSelectableModels } from './modelSelectionHelpers';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
@@ -12,6 +13,7 @@ interface ModelSelectorProps {
   agentType: AgentType;
   supportedModels: string[];
   defaultModel?: string;
+  availableModelIds?: string[];
   modelCustomLabels?: Record<string, string>;
   errors: Record<string, string>;
   onModelToggle: (modelId: string) => void;
@@ -22,10 +24,12 @@ interface ModelSelectorProps {
 }
 
 const ModelSelector: React.FC<ModelSelectorProps> = ({
-  agentType, supportedModels, defaultModel, modelCustomLabels,
+  agentType, supportedModels, defaultModel, availableModelIds = [], modelCustomLabels,
   errors, onModelToggle, onDefaultModelChange, onSelectAll, onDeselectAll, onCustomLabelChange
-}) => (
-  <div>
+}) => {
+  const models = buildSelectableModels(agentType, [...availableModelIds, ...supportedModels, ...(defaultModel ? [defaultModel] : [])]);
+
+  return <div>
     <div className="flex justify-between items-center mb-1.5">
       <label className="block text-gray-700 font-medium text-sm">
         Supported Models
@@ -43,7 +47,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     <div className={`border rounded-md p-3 bg-gray-50 max-h-80 overflow-y-auto ${
       errors.supportedModels ? 'border-red-500' : 'border-gray-300'
     }`}>
-      {AGENT_MODELS[agentType].map(model => {
+      {models.map(model => {
         const isSupported = supportedModels.includes(model.id);
         const isDefault = defaultModel === model.id;
         const modelCustomLabel = modelCustomLabels?.[model.id] || '';
@@ -105,6 +109,6 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
       Checkboxes enable models, radio buttons select the default. Custom labels allow alternative trigger names.
     </p>
   </div>
-);
+};
 
 export default ModelSelector;

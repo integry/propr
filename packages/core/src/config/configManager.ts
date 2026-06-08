@@ -1,9 +1,12 @@
 import logger from '../utils/logger.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 import { getConfig, saveConfig } from './configStore.js';
+import type { Knex } from 'knex';
 export {
+    clearRemovedRepositoryIndexData,
     getRepositoriesIndexingStatus,
     getRepositoryIndexingStatus,
+    type RepositoryIndexCleanupResult,
     type RepositoryIndexingProgress,
     type RepositoryIndexingStatus
 } from './configManagerIndexing.js';
@@ -26,6 +29,16 @@ interface ConfigSettings {
     planner_context_model?: string;
     planner_generation_model?: string;
     [key: string]: unknown;
+}
+
+function redactSettingsForLog(settings: ConfigSettings): ConfigSettings {
+    const redacted: ConfigSettings = {};
+    for (const [key, value] of Object.entries(settings)) {
+        redacted[key] = /(api[_-]?key|token|secret|password|credential)/i.test(key)
+            ? '[REDACTED]'
+            : value;
+    }
+    return redacted;
 }
 
 // --- Exported Functions ---
@@ -126,15 +139,15 @@ export async function loadMonitoredReposRaw(): Promise<RepoToMonitor[]> {
     return rawRepos;
 }
 
-export async function saveMonitoredRepos(repos: RepoToMonitor[]): Promise<boolean> {
-    await saveConfig('repos_to_monitor', repos);
+export async function saveMonitoredRepos(repos: RepoToMonitor[], client?: Knex | Knex.Transaction): Promise<boolean> {
+    await saveConfig('repos_to_monitor', repos, client);
     logger.info({ repos }, 'Successfully saved monitored repositories');
     return true;
 }
 
 export async function loadSettings(): Promise<ConfigSettings> {
     const settings = await getConfig<ConfigSettings>('settings', {});
-    logger.info({ settings }, 'Successfully loaded settings');
+    logger.info({ settings: redactSettingsForLog(settings) }, 'Successfully loaded settings');
     return settings;
 }
 

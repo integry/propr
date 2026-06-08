@@ -1,0 +1,180 @@
+# ProPR Vibe Integration Notes
+
+Vibe is Mistral's agentic coding assistant that brings Devstral and Mistral Medium
+models to your terminal. Use it to write, refactor, and review code with full
+project context.
+
+> **Scope:** This file documents ProPR-specific integration behavior — how
+> ProPR installs, configures, and invokes the Vibe CLI. It is **not**
+> authoritative upstream documentation. Settings and config paths below were
+> observed against `mistral-vibe==2.12.1` (the version pinned in
+> `Dockerfile.vibe`) and may differ in other releases. Always verify against
+> your installed version with `vibe --help`.
+
+> **Verified behavior:** Install, auth sub-commands, model selection, and
+> `--headless`/`--json` output have been tested against the pinned version.
+> Config file layout (`~/.vibe/`) and settings keys are inferred from observed
+> CLI behavior and may differ across versions. ProPR's entrypoint adds its own
+> flags (e.g., `--prompt-file`) — see
+> [vibe-cli.md](../vibe-cli.md#propr-entrypoint-extensions) for details.
+
+## Install
+
+Install from npm (see [mistral-vibe on npmjs.com](https://www.npmjs.com/package/mistral-vibe)):
+
+```bash
+npm install -g mistral-vibe
+```
+
+## Get started
+
+- **[Quickstart](#quickstart):** Your first session with Vibe.
+- **[Authentication](#authentication):** Setup instructions for API key
+  configuration.
+- **[Models](#models):** Available models and selection.
+- **[Configuration](#configuration):** Customization and settings.
+
+## Quickstart
+
+After installing, run the interactive setup wizard:
+
+```bash
+vibe --setup
+```
+
+Or jump straight into a session:
+
+```bash
+vibe
+```
+
+Vibe will prompt for a Mistral API key on first run if one isn't already
+configured.
+
+## Authentication
+
+Vibe stores credentials in `~/.vibe/credentials.json`.
+
+### Set API Key
+
+```bash
+vibe auth login
+```
+
+You'll be prompted to enter your Mistral API key. Obtain one from
+[console.mistral.ai](https://console.mistral.ai).
+
+### Environment Variable
+
+Alternatively, set the `MISTRAL_API_KEY` environment variable:
+
+```bash
+export MISTRAL_API_KEY=your-api-key-here
+```
+
+### Verify Authentication
+
+```bash
+vibe auth status
+```
+
+### Reset Credentials
+
+To clear stored credentials and re-authenticate:
+
+```bash
+vibe auth logout
+vibe auth login
+```
+
+Or remove the credentials file directly:
+
+```bash
+rm ~/.vibe/credentials.json
+```
+
+## Models
+
+Vibe supports the following models:
+
+| Model ID | Name | Context Window |
+|----------|------|----------------|
+| `mistral-medium-3.5` | Mistral Medium 3.5 | 256K |
+| `devstral-2512` | Devstral 2 | 256K |
+| `devstral-small-latest` | Devstral Small 2 | 256K |
+
+### Select a model
+
+```bash
+vibe --model devstral-2512
+```
+
+Or set a default model in `~/.vibe/settings.json`:
+
+```json
+{
+  "model": "devstral-2512"
+}
+```
+
+## Configuration
+
+> **Note:** The directory layout and settings keys below are inferred from
+> observed CLI behavior and may change between Vibe releases. Refer to the
+> official Mistral Vibe documentation for the current contract.
+
+Vibe configuration lives in `~/.vibe/`:
+
+```
+~/.vibe/
+  config.toml        # Model preferences and defaults
+  credentials.json   # API key and auth state
+  history/           # Session history
+```
+
+### Settings reference (inferred)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `model` | `mistral-medium-3.5` | Default model for new sessions |
+| `contextWindow` | `256000` | Max tokens for context |
+| `theme` | `auto` | Terminal color theme (auto, dark, light) |
+| `telemetry` | `true` | Send anonymous usage data |
+
+## ProPR Integration
+
+To add a Vibe agent to ProPR:
+
+### Via the UI
+
+1. Go to **AI Agents** page
+2. Click **Add Agent**
+3. Select **vibe** as the agent type
+4. Choose models (defaults to all Vibe models)
+5. Save
+
+### Via the CLI
+
+```bash
+propr agent add my-vibe -t vibe -m devstral-small-latest
+propr agent add vibe-prod -t vibe -m mistral-medium-3.5,devstral-2512 -d mistral-medium-3.5
+```
+
+### Docker Configuration
+
+The default Docker image is `propr/agent-vibe:latest`. The container mounts
+`~/.vibe` from the host for credential access.
+
+### Environment Variables
+
+When running inside a ProPR Docker container, ensure the following are available:
+
+```bash
+MISTRAL_API_KEY=your-api-key
+```
+
+Or mount the credentials directory:
+
+```bash
+docker run -v ~/.vibe:/home/node/.vibe propr/agent-vibe:latest
+```

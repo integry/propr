@@ -238,6 +238,14 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // 2. Get agent from registry
     const { agent, modelOverride, effectiveModel } = await setupAgent(settings);
+    const resolveSummarizationConfig = async () => {
+      const latestSettings = await loadSummarizationSettings();
+      if (!latestSettings.enabled) {
+        throw new Error('Summarization was disabled while indexing was in progress');
+      }
+      const latestAgentConfig = await setupAgent(latestSettings);
+      return { ...latestAgentConfig, customPrompt: latestSettings.custom_prompt };
+    };
 
     correlatedLogger.info(
       { agentAlias: agent.config.alias, model: effectiveModel },
@@ -292,6 +300,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         log: correlatedLogger,
         modelOverride,
         customPrompt: settings.custom_prompt,
+        resolveSummarizationConfig,
         branch
       });
     }
@@ -299,7 +308,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     // Phase C: Directory Aggregation (if files were processed or deleted)
     if (batchResult.filesProcessed > 0 || filesToDelete.length > 0) {
       await ensureIndexingProgress(fullName, branch);
-      await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, branch });
+      await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
     }
 
     // Phase D: Cleanup - Mark status based on results

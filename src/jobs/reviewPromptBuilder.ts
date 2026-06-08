@@ -45,7 +45,7 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
     } = options;
 
     const diffSection = prDiff
-        ? `\n**PR Diff (Current Code Changes):**\nThis diff shows the CURRENT state of all changes in this PR. Base your review on this actual code, not on what earlier comments may have mentioned.\n\n${prDiff}\n`
+        ? `\n**PR Diff (Current Code Changes):**\nThis diff shows the CURRENT state of the PR changes included below. Base your review on this actual code, not on what earlier comments may have mentioned. If the diff notes that files were omitted, treat the review as partial and call that out.\n\n${prDiff}\n`
         : '\n**Note:** No diff available. Review based on available context only.\n';
 
     const fileContentsSection = fileContents

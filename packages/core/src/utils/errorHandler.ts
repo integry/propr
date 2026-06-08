@@ -240,7 +240,7 @@ async function handleIssueFailure(
 This issue has been marked as failed and moved to the Dead Letter Queue for manual investigation.
 
 ---
-*This is an automated message from the Claude-powered GitHub Issue Processor*`;
+*This is an automated message from ProPR*`;
 
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: issueRef.repoOwner,

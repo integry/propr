@@ -19,16 +19,9 @@ interface PlanIssueRowProps {
   onImplement: (issueNumber: number, models?: AgentModelPair[]) => void;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
-  onRunUltrafixChange: (issueNumber: number, runUltrafix: boolean | null) => void;
-  onUltrafixGoalChange: (issueNumber: number, value: number | null) => void;
-  onUltrafixMaxCyclesChange: (issueNumber: number, value: number | null) => void;
-  plannerRunUltrafix?: boolean;
-  plannerUltrafixGoal?: number | null;
-  plannerUltrafixMaxCycles?: number | null;
   implementing?: boolean;
   disableImplementation?: boolean;
   isFirstPending?: boolean;
-  showUltrafixControls?: boolean;
   onImplementWithWarning?: (issueNumber: number, models?: AgentModelPair[]) => void;
   /** Inherited multi-mode state from parent (e.g., applied from global selection) */
   inheritedIsMulti?: boolean;
@@ -43,6 +36,8 @@ interface PlanIssueRowProps {
   /** Draft ID for attachment URLs */
   draftId?: string;
   implementButtonPressed?: boolean;
+  showImplementButton?: boolean;
+  implementButtonLabel?: string;
 }
 
 export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
@@ -52,16 +47,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   onImplement,
   onAgentChange,
   onModelChange,
-  onRunUltrafixChange,
-  onUltrafixGoalChange,
-  onUltrafixMaxCyclesChange,
-  plannerRunUltrafix,
-  plannerUltrafixGoal,
-  plannerUltrafixMaxCycles,
   implementing = false,
   disableImplementation = false,
   isFirstPending = true,
-  showUltrafixControls = true,
   onImplementWithWarning,
   inheritedIsMulti,
   inheritedSelectedModels,
@@ -69,7 +57,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   onMultiModelChange: onMultiModelChangeProp,
   task,
   draftId,
-  implementButtonPressed = false
+  implementButtonPressed = false,
+  showImplementButton = true,
+  implementButtonLabel = 'Implement'
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -169,15 +159,10 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               issue={issue}
               onAgentChange={onAgentChange}
               onModelChange={onModelChange}
-              onRunUltrafixChange={onRunUltrafixChange}
-              onUltrafixGoalChange={onUltrafixGoalChange}
-              onUltrafixMaxCyclesChange={onUltrafixMaxCyclesChange}
-              plannerRunUltrafix={plannerRunUltrafix}
-              plannerUltrafixGoal={plannerUltrafixGoal}
-              plannerUltrafixMaxCycles={plannerUltrafixMaxCycles}
               disableImplementation={disableImplementation}
-              showUltrafixControls={showUltrafixControls}
               implementButtonPressed={implementButtonPressed}
+              showImplementButton={showImplementButton}
+              implementButtonLabel={implementButtonLabel}
               handleMultiToggle={handleMultiToggle}
               handleMultiModelChange={handleMultiModelChange}
               handleImplementClick={handleImplementClick}

@@ -1,15 +1,19 @@
 import path from 'path';
 import os from 'os';
 import logger from '../utils/logger.js';
-import { Agent, AgentConfig, AgentType } from './types.js';
+import { Agent, AgentConfig } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
-import { GeminiAgent } from './impl/GeminiAgent.js';
+import { AntigravityAgent } from './impl/AntigravityAgent.js';
+import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
+import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
 import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
-import { computeContentHash } from './version/versionService.js';
+import { computeContentHash, generateImageTag, getDockerTagComponent } from './version/versionService.js';
+import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from './version/types.js';
+import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -232,20 +236,42 @@ export class AgentRegistry {
      * Uses versioned image if version config is present, otherwise uses default.
      */
     private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
+        if (config.type === 'antigravity') {
+            if (config.cliVersionType === 'default') {
+                delete config.cliVersion;
+            } else {
+                config.cliVersion = 'latest';
+            }
+            config.cliVersionResolved = AGENT_DEFAULT_VERSIONS.antigravity;
+        }
+        const cliVersionResolved = config.cliVersionResolved;
+        if (this.isManagedVersionedImage(config, cliVersionResolved)) {
+            const contentHash = computeContentHash(config.type);
+            const expectedImageTag = generateImageTag(config.type, cliVersionResolved!, contentHash);
+            const result = await ensureVersionedAgentImage(
+                config.type,
+                cliVersionResolved!,
+                contentHash
+            );
+            if (result.success) {
+                config.dockerImage = result.imageTag || expectedImageTag;
+            }
+            return result.success;
+        }
+
         // Prefer the user-configured dockerImage (pull-first, build fallback).
-        // This matters for production images like propr/agent-claude:latest —
-        // the versioned-build path below tries to build local Dockerfile tags
-        // (propr-claude:2.1.85-<hash>) which only works in dev checkouts.
+        // This matters for production images like propr/agent-claude:latest.
+        // The versioned-build path below only works when Dockerfiles are present.
         if (config.dockerImage && await ensureAgentDockerImage(config.type, config.dockerImage)) {
             return true;
         }
 
         // Fallback: versioned build (dev flow) — requires Dockerfile on disk.
         if (config.cliVersionType && config.cliVersionResolved) {
-            const contentHash = computeContentHash(config.type as AgentType);
+            const contentHash = computeContentHash(config.type);
             const result = await ensureVersionedAgentImage(
                 config.type,
-                config.cliVersionResolved,
+                cliVersionResolved!,
                 contentHash
             );
             if (result.success && result.imageTag !== config.dockerImage) {
@@ -256,18 +282,31 @@ export class AgentRegistry {
         return false;
     }
 
+    private isManagedVersionedImage(config: AgentConfig, cliVersionResolved = config.cliVersionResolved): boolean {
+        if (!config.cliVersionType || !cliVersionResolved) return false;
+        const managedImageName = AGENT_IMAGE_NAMES[config.type];
+        if (!managedImageName || !config.dockerImage?.startsWith(`${managedImageName}:`)) return false;
+        const tag = config.dockerImage.slice(managedImageName.length + 1);
+        const versionTag = getDockerTagComponent(cliVersionResolved);
+        return tag.startsWith(`${versionTag}-`) && /-[0-9a-f]{6}$/i.test(tag);
+    }
+
     /**
      * Creates an agent instance from configuration.
      * This is the factory method that handles different agent types.
      */
-    private createAgentFromConfig(config: AgentConfig): Agent {
+    createAgentFromConfig(config: AgentConfig): Agent {
         switch (config.type) {
             case 'claude':
                 return new ClaudeAgent(config);
             case 'codex':
                 return new CodexAgent(config);
-            case 'gemini':
-                return new GeminiAgent(config);
+            case 'antigravity':
+                return new AntigravityAgent(config);
+            case 'opencode':
+                return new OpenCodeAgent(config);
+            case 'vibe':
+                return new VibeAgent(config);
             default:
                 throw new Error(`Unknown agent type: ${config.type}`);
         }
@@ -283,9 +322,11 @@ export class AgentRegistry {
             type: 'claude',
             alias: 'default',
             enabled: true,
-            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || 'propr-claude:latest',
+            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude,
             configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
             supportedModels: [
+                'claude-opus-4-8',
+                'claude-opus-4-7',
                 'claude-opus-4-6',
                 'claude-sonnet-4-6',
                 'claude-opus-4-5-20251101',

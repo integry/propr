@@ -89,10 +89,8 @@ interface RepoContextResult {
 
 async function resolveEffectiveAuthToken(authToken: string): Promise<string> {
   try {
-    // Try to use installation token for private repo access
     return await getGitHubInstallationToken();
   } catch {
-    // Fall back to provided auth token
     return authToken;
   }
 }

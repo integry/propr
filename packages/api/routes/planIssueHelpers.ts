@@ -23,13 +23,13 @@ export interface ImplementIssueContext {
 
 export interface MultiAgentParams extends ImplementIssueContext {
   draftId: string;
-  planIssue: { model_name: string | null };
+  planIssue: { agent_alias: string | null; model_name: string | null };
   models: Array<{ agent_alias: string; model_name: string }>;
 }
 
 export interface SingleAgentParams extends ImplementIssueContext {
   draftId: string;
-  planIssue: { model_name: string | null };
+  planIssue: { agent_alias: string | null; model_name: string | null };
 }
 
 export interface EpicPRParams {
@@ -171,7 +171,11 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
     owner, repo, issue_number: issueNumber, labels: labelsToAdd
   });
 
-  await updatePlanIssue(draftId, issueNumber, { status: PlanIssueStatus.PROCESSING });
+  // Update status and also persist agent_alias/model_name if provided
+  const updateData: Record<string, unknown> = { status: PlanIssueStatus.PROCESSING };
+  if (planIssue.agent_alias) updateData.agent_alias = planIssue.agent_alias;
+  if (planIssue.model_name) updateData.model_name = planIssue.model_name;
+  await updatePlanIssue(draftId, issueNumber, updateData);
 
   const autoMergeNote = autoMerge ? ' with auto-merge enabled' : '';
   const labelMessage = llmLabel

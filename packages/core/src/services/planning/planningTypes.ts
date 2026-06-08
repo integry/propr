@@ -17,6 +17,15 @@ export const CHARS_PER_TOKEN = 3;
 /** Buffer for Claude Code overhead */
 export const CLAUDE_CODE_OVERHEAD = 5000;
 
+/** Codex CLI currently rejects turn/start inputs above 1,048,576 raw characters. */
+export const CODEX_RAW_INPUT_LIMIT_CHARS = 1_048_576;
+
+/** Leave room for agent-specific prompt suffixes added after planner validation. */
+export const CODEX_RAW_INPUT_SAFETY_MARGIN_CHARS = 48_576;
+
+/** Planner prompt cap for Codex-backed analysis calls. */
+export const CODEX_PLANNER_INPUT_LIMIT_CHARS = CODEX_RAW_INPUT_LIMIT_CHARS - CODEX_RAW_INPUT_SAFETY_MARGIN_CHARS;
+
 /** Minimal logger interface compatible with both pino Logger and EnhancedLogger */
 export type MinimalLogger = { info: LogFn; warn: LogFn; error: LogFn };
 

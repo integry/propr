@@ -72,10 +72,56 @@ interface ExecutionOptionsToolbarProps {
   runUltrafix?: boolean; onRunUltrafixChange?: (value: boolean) => void;
   ultrafixGoal?: number | null; onUltrafixGoalChange?: (value: number | null) => void;
   ultrafixMaxCycles?: number | null; onUltrafixMaxCyclesChange?: (value: number | null) => void;
-  tasks: PlanTask[]; pendingCount: number;
-  implementingAll: boolean; handleImplementAll: () => void;
+  tasks: PlanTask[];
   disableImplementation?: boolean;
 }
+
+const GlobalAgentControls: React.FC<Pick<ExecutionOptionsToolbarProps,
+  'agents' |
+  'globalAgent' |
+  'globalModel' |
+  'globalIsMulti' |
+  'globalSelectedModels' |
+  'applyingGlobal' |
+  'handleGlobalAgentChange' |
+  'handleGlobalModelChange' |
+  'handleGlobalMultiToggle' |
+  'handleGlobalMultiModelChange' |
+  'handleApplyToAll' |
+  'disableImplementation'
+>> = ({
+  agents, globalAgent, globalModel, globalIsMulti, globalSelectedModels,
+  applyingGlobal, handleGlobalAgentChange, handleGlobalModelChange,
+  handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
+  disableImplementation = false,
+}) => (
+  <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+    <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">Agent</span>
+    <div className="flex flex-wrap items-center gap-2">
+      <AgentModelSelector
+        agents={agents} selectedAgent={globalAgent} selectedModel={globalModel}
+        onAgentChange={handleGlobalAgentChange} onModelChange={handleGlobalModelChange}
+        disabled={applyingGlobal || disableImplementation} compact isMulti={globalIsMulti}
+        onMultiToggle={handleGlobalMultiToggle} selectedModels={globalSelectedModels}
+        onMultiModelChange={handleGlobalMultiModelChange}
+        onMultiConfirm={handleApplyToAll} autoOpenMultiDropdown
+      />
+      {!globalIsMulti && (
+        <button
+          onClick={handleApplyToAll}
+          disabled={!globalAgent || applyingGlobal || disableImplementation}
+          className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+        >
+          {applyingGlobal ? (
+            <><Loader2 size={14} className="animate-spin" /><span className="hidden sm:inline">Applying...</span></>
+          ) : (
+            <><CheckCircle size={14} /><span className="hidden sm:inline">Apply to All</span><span className="sm:hidden">Apply</span></>
+          )}
+        </button>
+      )}
+    </div>
+  </div>
+);
 
 export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = ({
   agents, globalAgent, globalModel, globalIsMulti, globalSelectedModels,
@@ -83,38 +129,29 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
   handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
   autoMerge, onAutoMergeChange, useEpic, onUseEpicChange,
   runUltrafix, onRunUltrafixChange, ultrafixGoal, onUltrafixGoalChange, ultrafixMaxCycles, onUltrafixMaxCyclesChange,
-  tasks, pendingCount, implementingAll, handleImplementAll, disableImplementation = false,
+  tasks, disableImplementation = false,
 }) => {
   const ultrafixEnabled = runUltrafix || false;
+  const showGlobalAgentControls = tasks.length >= 2;
 
   return (
     <div className="flex flex-col gap-2.5 sm:gap-3 py-2.5 border-b border-slate-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-3">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
-        <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">Agent</span>
-        <div className="flex flex-wrap items-center gap-2">
-          <AgentModelSelector
-            agents={agents} selectedAgent={globalAgent} selectedModel={globalModel}
-            onAgentChange={handleGlobalAgentChange} onModelChange={handleGlobalModelChange}
-            disabled={applyingGlobal || disableImplementation} compact isMulti={globalIsMulti}
-            onMultiToggle={handleGlobalMultiToggle} selectedModels={globalSelectedModels}
-            onMultiModelChange={handleGlobalMultiModelChange}
-            onMultiConfirm={handleApplyToAll} autoOpenMultiDropdown
-          />
-          {!globalIsMulti && (
-            <button
-              onClick={handleApplyToAll}
-              disabled={!globalAgent || applyingGlobal || disableImplementation}
-              className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-            >
-              {applyingGlobal ? (
-                <><Loader2 size={14} className="animate-spin" /><span className="hidden sm:inline">Applying...</span></>
-              ) : (
-                <><CheckCircle size={14} /><span className="hidden sm:inline">Apply to All</span><span className="sm:hidden">Apply</span></>
-              )}
-            </button>
-          )}
-        </div>
-      </div>
+      {showGlobalAgentControls && (
+        <GlobalAgentControls
+          agents={agents}
+          globalAgent={globalAgent}
+          globalModel={globalModel}
+          globalIsMulti={globalIsMulti}
+          globalSelectedModels={globalSelectedModels}
+          applyingGlobal={applyingGlobal}
+          handleGlobalAgentChange={handleGlobalAgentChange}
+          handleGlobalModelChange={handleGlobalModelChange}
+          handleGlobalMultiToggle={handleGlobalMultiToggle}
+          handleGlobalMultiModelChange={handleGlobalMultiModelChange}
+          handleApplyToAll={handleApplyToAll}
+          disableImplementation={disableImplementation}
+        />
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6">
         <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">PR Options</span>
         <div className="flex flex-wrap items-center gap-3 sm:gap-6">
@@ -136,38 +173,24 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
             <input type="checkbox" checked={runUltrafix || false} onChange={(e) => onRunUltrafixChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed" />
             <span>Run ultrafix after PR</span>
           </label>
-          <UltrafixSettingsControls
-            enabled={ultrafixEnabled && !disableImplementation}
-            goal={ultrafixGoal}
-            maxCycles={ultrafixMaxCycles}
-            onGoalChange={(value) => onUltrafixGoalChange?.(value)}
-            onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange?.(value)}
-            goalPlaceholder="UF goal"
-            maxPlaceholder="UF max"
-            inputClassName="rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-            goalInputWidthClassName="w-24"
-            maxInputWidthClassName="w-24"
-            containerClassName="flex flex-col gap-1"
-            errorClassName="text-[11px] text-amber-700"
-          />
+          {ultrafixEnabled && (
+            <UltrafixSettingsControls
+              enabled={!disableImplementation}
+              goal={ultrafixGoal}
+              maxCycles={ultrafixMaxCycles}
+              onGoalChange={(value) => onUltrafixGoalChange?.(value)}
+              onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange?.(value)}
+              goalPlaceholder="UF goal"
+              maxPlaceholder="Max turns"
+              inputClassName="rounded-md border border-slate-300 px-2 py-1 text-xs sm:text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+              goalInputWidthClassName="w-24"
+              maxInputWidthClassName="w-28"
+              containerClassName="flex flex-col gap-1"
+              errorClassName="text-[11px] text-amber-700"
+            />
+          )}
         </div>
       </div>
-      {pendingCount >= 2 && autoMerge && useEpic && (
-        <div className="flex items-center justify-end pt-1 border-t border-slate-200/50">
-          <button
-            onClick={handleImplementAll}
-            disabled={implementingAll || !globalAgent || disableImplementation}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md bg-green-600 text-white shadow-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title={!globalAgent ? 'Select an agent first' : 'Start sequential implementation: each issue will be processed and merged before the next one starts'}
-          >
-            {implementingAll ? (
-              <><Loader2 size={16} className="animate-spin" /><span>Starting sequence...</span></>
-            ) : (
-              <><CheckCircle size={16} /><span>Run All Sequentially ({pendingCount})</span></>
-            )}
-          </button>
-        </div>
-      )}
     </div>
   );
 };

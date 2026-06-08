@@ -60,7 +60,7 @@ export interface UsageTrackingResult<T> {
  * (e.g. "session", "weeklyAll", "weeklySonnet" for Claude).
  */
 export interface UsageMetricRecord {
-    /** The agent name (e.g. "claude", "gemini", "codex"). */
+    /** The agent name (e.g. "claude", "antigravity", "codex"). */
     agent: string;
     /** The metric key (e.g. "session", "weeklyAll", "fiveHour"). */
     metricKey: string;
@@ -144,7 +144,7 @@ export function humanizeMetricKey(key: string): string {
  * Examples of delta shapes handled:
  *   Claude:  { session: { percent: 16 }, weeklyAll: { percent: 4 } }
  *   Codex:   { fiveHour: { percentUsed: 3 }, weekly: { percentUsed: 1 } }
- *   Gemini:  { models: [...] } — array entries are mapped by model name
+ *   Antigravity: { models: [...] } - array entries are mapped by model name
  */
 export function extractMetricRecords(
     agent: string,
@@ -188,7 +188,7 @@ export function extractMetricRecords(
             }
         }
 
-        // Array (Gemini models array)
+        // Array of per-model usage records
         if (Array.isArray(value)) {
             extractArrayMetricRecords(agent, key, value, records);
         }
@@ -246,7 +246,7 @@ async function refreshAndGetStatus(
  * If Agent Tank is disabled or a status fetch fails, the LLM call still
  * proceeds — usage tracking is best-effort and never blocks execution.
  *
- * @param agent - The agent identifier to query (e.g. "claude", "gemini", "codex").
+ * @param agent - The agent identifier to query (e.g. "claude", "antigravity", "codex").
  * @param executeFn - An async function that performs the LLM call and returns its result.
  * @param timeoutMs - Optional timeout for each Agent Tank HTTP request (default: 5000ms).
  * @returns The execution result and usage metrics (metrics are null if tracking was skipped).

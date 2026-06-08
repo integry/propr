@@ -6,6 +6,7 @@ import { ProviderLogo } from './ui/ProviderLogo';
 const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
   const getModelFamily = (id: string): string => {
     const lower = id.toLowerCase();
+    if (lower.includes('antigravity')) return 'antigravity';
     if (lower.includes('claude') || lower.includes('anthropic')) return 'claude';
     if (lower.includes('gpt') || lower.includes('openai')) return 'openai';
     if (lower.includes('gemini') || lower.includes('google')) return 'gemini';
@@ -17,6 +18,7 @@ const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
   const iconColors: Record<string, string> = {
     claude: 'bg-violet-100 text-violet-600',
     openai: 'bg-emerald-100 text-emerald-600',
+    antigravity: 'bg-fuchsia-100 text-fuchsia-600',
     gemini: 'bg-blue-100 text-blue-600',
     llama: 'bg-orange-100 text-orange-600',
     other: 'bg-gray-100 text-gray-600',

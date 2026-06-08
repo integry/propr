@@ -60,7 +60,16 @@ npm install -g @anthropic-ai/claude-code
 claude login
 ```
 
-Use equivalent setup for Codex or Gemini if you plan to enable them.
+For Antigravity, install the official CLI and complete a login on the host before starting ProPR:
+
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+agy login
+```
+
+Antigravity stores CLI configuration and credentials under `~/.gemini`. The launcher command below passes that directory with `HOST_ANTIGRAVITY_DIR` so worker containers can mount the authenticated CLI state.
+
+Use equivalent setup for Codex if you plan to enable it.
 
 ## Start ProPR
 
@@ -75,7 +84,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR="$PWD/repos" \
   -e HOST_CLAUDE_DIR="$HOME/.claude" \
   -e HOST_CODEX_DIR="$HOME/.codex" \
-  -e HOST_GEMINI_DIR="$HOME/.gemini" \
+  -e HOST_ANTIGRAVITY_DIR="$HOME/.gemini" \
   propr/launcher:latest
 ```
 

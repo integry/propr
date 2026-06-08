@@ -141,7 +141,7 @@ export function calculateDelta(
                 result[key] = nested;
             }
         } else if (Array.isArray(postVal) && Array.isArray(preVal)) {
-            // Handle arrays of model objects (Gemini usage structure)
+            // Handle arrays of model usage objects
             const arrayDelta = calculateArrayDelta(preVal, postVal);
             if (arrayDelta.length > 0) {
                 result[key] = arrayDelta;

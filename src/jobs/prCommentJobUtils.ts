@@ -10,6 +10,7 @@ import {
 } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.js';
+import { extractModelLabelToken } from './prModelLabelUtils.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -73,17 +74,11 @@ export function buildCombinedComment(unprocessedComments: UnprocessedComment[]):
 }
 
 export function extractModelFromLabels(labels: Array<{ name: string }>, currentLlm: string | null | undefined, pullRequestNumber: number, correlatedLogger: Logger): string | null {
-    if (labels && Array.isArray(labels)) {
-        const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
-        for (const label of labels) {
-            const labelName = typeof label === 'string' ? label : label.name;
-            const match = labelName.match(modelLabelRegex);
-            if (match) {
-                const resolvedModel = resolveModelAlias(match[1]);
-                correlatedLogger.info({ pullRequestNumber, label: labelName, resolvedModel }, 'Using model from PR label');
-                return resolvedModel;
-            }
-        }
+    const modelLabel = extractModelLabelToken(labels, MODEL_LABEL_PATTERN);
+    if (modelLabel) {
+        const resolvedModel = resolveModelAlias(modelLabel);
+        correlatedLogger.info({ pullRequestNumber, modelLabel, resolvedModel }, 'Using model from PR label');
+        return modelLabel;
     }
     return currentLlm || null;
 }
@@ -403,5 +398,12 @@ export async function pickUpPendingComments(commentsToProcess: UnprocessedCommen
 export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
 export type { PRFile } from './prFileUtils.js';
-export { fetchPRFiles, fetchPRFileContents, formatPRDiff, formatFileContents, agentResultToClaudeResponse } from './prFileUtils.js';
+export {
+    fetchPRFiles,
+    fetchPRFileContents,
+    formatPRDiff,
+    formatPRDiffWithMetadata,
+    formatFileContents,
+    agentResultToClaudeResponse,
+} from './prFileUtils.js';
 export { applyPendingCommentCommandContext } from './prCommentCommandContext.js';

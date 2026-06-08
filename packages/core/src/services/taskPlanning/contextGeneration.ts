@@ -5,7 +5,7 @@
 import { generateContext } from '../context/index.js';
 import { buildSummaryContext } from '../relevance/contextBuilder.js';
 import {
-  validatePromptTokens, CLAUDE_CODE_OVERHEAD, CHARS_PER_TOKEN, PlanningFailedError, buildFullContext, getModelHardLimit
+  validatePromptTokens, CLAUDE_CODE_OVERHEAD, CHARS_PER_TOKEN, PlanningFailedError, buildFullContext, getModelHardLimit, getRawInputCharLimit
 } from '../planning/index.js';
 import { generateAdditionalContextIfNeeded } from './additionalContext.js';
 import { calculateEffectiveAdditionalContextBudget } from './tokenBudgets.js';
@@ -14,8 +14,10 @@ import type { ContextGenerationParams, ContextGenerationResult } from './types.j
 export async function generateContextWithRetry(params: ContextGenerationParams): Promise<ContextGenerationResult> {
   const { worktreePath, config, relevantFilePaths, candidateSummaries, budgets, base64Images, draft, draftId, githubToken, correlationId, generationModel, correlatedLogger } = params;
   const modelHardLimit = getModelHardLimit(generationModel);
+  const rawInputCharLimit = getRawInputCharLimit(generationModel);
   let currentRepomixLimit = budgets.repomixTokenLimit;
   let currentSmartSummaryBudget = budgets.smartSummaryBudget;
+  let currentAdditionalContextBudget = budgets.additionalContextBudget;
   let contextResult: Awaited<ReturnType<typeof generateContext>> | undefined;
   let fullContext = '';
   let retryCount = 0;
@@ -57,7 +59,7 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
     }
 
     const additionalContextBudget = calculateEffectiveAdditionalContextBudget({
-      baseBudget: budgets.additionalContextBudget,
+      baseBudget: currentAdditionalContextBudget,
       repomixBudget: currentRepomixLimit,
       repomixTokensUsed: contextResult.totalTokens,
       tokenLimit: config.tokenLimit,
@@ -79,9 +81,28 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
 
     fullContext = buildFullContext({ userRequest: draft.initial_prompt, repomixContext: contextResult.context, granularity: config.granularity, fileSummaries: filteredSummaries, smartSummaries, images: base64Images.length > 0 ? base64Images : undefined, additionalContext });
 
+    if (rawInputCharLimit !== null && fullContext.length > rawInputCharLimit) {
+      const reductionRatio = Math.max(0.35, (rawInputCharLimit / fullContext.length) * 0.85);
+      currentRepomixLimit = Math.floor(currentRepomixLimit * reductionRatio);
+      currentSmartSummaryBudget = Math.floor(currentSmartSummaryBudget * reductionRatio);
+      currentAdditionalContextBudget = Math.floor(currentAdditionalContextBudget * reductionRatio);
+
+      retryCount++;
+      correlatedLogger.warn({
+        contextLength: fullContext.length,
+        rawInputCharLimit,
+        reductionRatio,
+        newRepomixLimit: currentRepomixLimit,
+        newSmartSummaryBudget: currentSmartSummaryBudget,
+        newAdditionalContextBudget: currentAdditionalContextBudget,
+        retryCount
+      }, 'Context exceeds raw input character limit, reducing files and retrying');
+      continue;
+    }
+
     const validation = await validatePromptTokens(fullContext, modelHardLimit, correlatedLogger, generationModel);
     if (validation.valid) {
-      correlatedLogger.info({ tokenCount: validation.tokenCount, modelHardLimit, retryCount, filesIncluded: contextResult.includedFiles.length }, 'Context fits within model limit');
+      correlatedLogger.info({ tokenCount: validation.tokenCount, modelHardLimit, contextLength: fullContext.length, rawInputCharLimit, retryCount, filesIncluded: contextResult.includedFiles.length }, 'Context fits within model limit');
       return { fullContext, contextResult };
     }
 
@@ -91,9 +112,10 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
     const reductionRatio = Math.max(0.5, (targetTokens / validation.tokenCount) * 0.9);
     currentRepomixLimit = Math.floor(currentRepomixLimit * reductionRatio);
     currentSmartSummaryBudget = Math.floor(currentSmartSummaryBudget * reductionRatio);
+    currentAdditionalContextBudget = Math.floor(currentAdditionalContextBudget * reductionRatio);
 
     retryCount++;
-    correlatedLogger.warn({ tokenCount: validation.tokenCount, modelHardLimit, overage, newRepomixLimit: currentRepomixLimit, newSmartSummaryBudget: currentSmartSummaryBudget, retryCount }, 'Context exceeds model limit, reducing files and retrying');
+    correlatedLogger.warn({ tokenCount: validation.tokenCount, modelHardLimit, overage, newRepomixLimit: currentRepomixLimit, newSmartSummaryBudget: currentSmartSummaryBudget, newAdditionalContextBudget: currentAdditionalContextBudget, retryCount }, 'Context exceeds model limit, reducing files and retrying');
   }
 
   // If we exit the loop, it means currentRepomixLimit dropped below 5000

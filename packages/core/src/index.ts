@@ -5,7 +5,7 @@ export { withRetry, retryConfigs, calculateDelay } from './utils/retryHandler.js
 export type { RetryConfig, RetryOptions } from './utils/retryHandler.js';
 export * from './utils/constants.js';
 export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './utils/llmMetrics.js';
-export { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
+export { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
 export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
 export { WorkerStateManager, getStateManager, closeStateManager, STOPPABLE_TASK_STATES, TaskStates } from './utils/workerStateManager.js';
@@ -22,7 +22,7 @@ export { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '
 export { ensureGitRepository } from './utils/git/gitValidation.js';
 export { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
 export type { LabelContext, UpdateResults } from './utils/github/labelOperations.js';
-export { createLogFiles, generateCompletionComment } from './utils/github/logFiles.js';
+export { createLogFiles, generateCompletionComment, redactSecrets } from './utils/github/logFiles.js';
 export { formatSubscriptionUsage } from './utils/github/formatSubscriptionUsage.js';
 export type { SubscriptionUsageRecord, SubscriptionUsageMetrics } from './utils/github/formatSubscriptionUsage.js';
 
@@ -64,8 +64,8 @@ export { getPlanIssueDefaultSelection } from './config/planIssueDefaultSelection
 export type { PlanIssueSelectionAgent } from './config/planIssueDefaultSelection.js';
 export { resolveModelAlias, getDefaultModel, getPreferredModelForAgent, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, resolveLlmLabel, getOpenRouterId, resolveCustomLabel, getAllCustomLabels, findMatchingModel, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from './config/modelAliases.js';
 export type { LlmLabelResolution, ReviewAssignment } from './config/modelAliases.js';
-export { CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS, ALL_MODELS, AGENT_MODELS, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
-export type { AgentType as ModelAgentType, ModelInfo } from './config/modelDefinitions.js';
+export { CLAUDE_MODELS, CODEX_MODELS, ANTIGRAVITY_MODELS, OPENCODE_MODELS, VIBE_MODELS, ALL_MODELS, AGENT_MODELS, AGENT_DISPLAY, AGENT_DISPLAY_ORDER, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
+export type { AgentType as ModelAgentType, AgentDisplayInfo, ModelInfo } from './config/modelDefinitions.js';
 export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL, MIN_CONTEXT_LEVEL, MAX_CONTEXT_LEVEL, EFFECTIVE_MAX_RATIO, MODEL_LIMITS } from './config/modelLimits.js';
 export type { ContextLevel } from './config/modelLimits.js';
 
@@ -198,6 +198,8 @@ export {
     runLightweightLLMAnalysis,
     UsageLimitError
 } from './claude/claudeService.js';
+export { AGENT_TYPES, AGENT_IMAGE_NAMES, VERSIONED_AGENT_IMAGE_NAMES, DEFAULT_AGENT_DOCKER_IMAGES, validateAgentType } from './agents/constants.js';
+export type { AgentTypeValidationResult } from './agents/constants.js';
 export type {
     ExecuteClaudeCodeOptions,
     ClaudeCodeResponse,
@@ -247,7 +249,12 @@ export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetectio
 export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
-export { GeminiAgent } from './agents/impl/GeminiAgent.js';
+export { AntigravityAgent } from './agents/impl/AntigravityAgent.js';
+export { OpenCodeAgent } from './agents/impl/OpenCodeAgent.js';
+export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './agents/impl/openCodeUtils.js';
+export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
+export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
+export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
 export type {
     Agent,
     AgentConfig,

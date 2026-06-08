@@ -343,3 +343,10 @@ export function createLlmLogFromAnalysis(params: {
     workRef: params.workRef,
   };
 }
+
+/**
+ * Helper to create an LlmLogEntry from a full agent implementation run.
+ */
+export function createLlmLogFromAgentExecution(params: Parameters<typeof createLlmLogFromAnalysis>[0]): LlmLogEntry {
+  return createLlmLogFromAnalysis(params);
+}

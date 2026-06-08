@@ -22,9 +22,6 @@ export async function validatePrReviewModelValue(model: string): Promise<PrRevie
         const agentAlias = model.substring(0, colonIdx);
         const modelPart = model.substring(colonIdx + 1);
         const resolved = resolveModelAlias(modelPart);
-        if (!MODEL_INFO_MAP[resolved]) {
-            return { valid: false, error: `pr_review_model "${model}" does not resolve to a known model` };
-        }
         const registry = AgentRegistry.getInstance();
         await registry.ensureInitialized();
         const agent = registry.getAgentByAlias(agentAlias);
@@ -42,9 +39,6 @@ export async function validatePrReviewModelValue(model: string): Promise<PrRevie
         }
     } else {
         const resolved = resolveModelAlias(model);
-        if (!MODEL_INFO_MAP[resolved]) {
-            return { valid: false, error: `pr_review_model "${model}" does not resolve to a known model` };
-        }
         const registry = AgentRegistry.getInstance();
         await registry.ensureInitialized();
         const allAgents = registry.getAllAgents();
@@ -54,6 +48,9 @@ export async function validatePrReviewModelValue(model: string): Promise<PrRevie
             )
         );
         if (!canRun) {
+            if (!MODEL_INFO_MAP[resolved]) {
+                return { valid: false, error: `pr_review_model "${model}" does not resolve to a known configured model` };
+            }
             return { valid: false, error: `pr_review_model "${model}": no enabled agent supports this model` };
         }
     }

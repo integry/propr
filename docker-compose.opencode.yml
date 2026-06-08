@@ -1,0 +1,35 @@
+# Optional development override for OpenCode credentials.
+#
+# Usage:
+#   mkdir -p ~/.opencode ~/.config/opencode ~/.local/share/opencode
+#   docker compose -f docker-compose.yml -f docker-compose.opencode.yml up
+#
+# The paths are mounted at identical host/container locations so worker and API
+# containers can pass host-valid bind paths to spawned OpenCode agent containers.
+services:
+  worker:
+    volumes:
+      - ${HOME:?HOME must be set}/.opencode:${HOME:?HOME must be set}/.opencode
+      - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode
+      - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode
+
+  analysis-worker:
+    volumes:
+      - ${HOME:?HOME must be set}/.opencode:${HOME:?HOME must be set}/.opencode:ro
+      - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode:ro
+      - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode:ro
+
+  indexing-worker:
+    volumes:
+      - ${HOME:?HOME must be set}/.opencode:${HOME:?HOME must be set}/.opencode:ro
+      - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode:ro
+      - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode:ro
+
+  api:
+    # API-side mounts are read-only: the API reads saved config/auth metadata for
+    # validation and image/version operations. Auth refresh happens in spawned
+    # worker OpenCode agent containers, which mount the data dir read-write.
+    volumes:
+      - ${HOME:?HOME must be set}/.opencode:${HOME:?HOME must be set}/.opencode:ro
+      - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode:ro
+      - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode:ro

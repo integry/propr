@@ -1,9 +1,18 @@
+export interface SystemAgentStatus {
+  id: string;
+  type: 'claude' | 'codex' | 'antigravity' | 'vibe' | string;
+  alias: string;
+  status: string;
+}
+
 export interface SystemStatus {
   daemon: string;
   workers: { id: number; status: string }[];
   redis: string;
   githubAuth: string;
   claudeAuth: string;
+  indexing: string;
+  agents: SystemAgentStatus[];
 }
 
 export interface StatusResponse {
@@ -12,6 +21,8 @@ export interface StatusResponse {
   redis: string;
   githubAuth: string;
   claudeAuth: string;
+  indexing?: string;
+  agents?: SystemAgentStatus[];
 }
 
 export interface TaskAnalysisResponse {
@@ -76,7 +87,7 @@ export interface DeleteTaskResponse {
 
 export interface AgentConfig {
   id: string;
-  type: 'claude' | 'codex' | 'gemini';
+  type: 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe';
   alias: string;
   enabled: boolean;
   dockerImage: string;

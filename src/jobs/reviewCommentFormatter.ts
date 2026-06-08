@@ -62,6 +62,7 @@ export function buildReviewComment(
     assignment: ReviewAssignment,
     analysisResult: AnalysisResult,
     taskUrl?: string,
+    options: { omittedDiffFiles?: string[]; costUsd?: number | null } = {},
 ): string {
     const { model, label } = assignment;
     const { response, executionTimeMs, tokenUsage, modelUsed } = analysisResult;
@@ -76,13 +77,23 @@ export function buildReviewComment(
     comment += `* **Model:** ${effectiveModel}\n`;
     comment += `* **Time:** ${formatDuration(executionTimeMs)}\n`;
     if (tokenUsage) {
-        const total = (tokenUsage.input_tokens || 0) + (tokenUsage.output_tokens || 0);
+        const input = (tokenUsage.input_tokens || 0)
+            + (tokenUsage.cache_creation_input_tokens || 0)
+            + (tokenUsage.cache_read_input_tokens || 0);
+        const output = tokenUsage.output_tokens || 0;
+        const total = input + output;
         if (total > 0) {
-            comment += `* **Tokens:** ${total.toLocaleString()} (${(tokenUsage.input_tokens || 0).toLocaleString()} in / ${(tokenUsage.output_tokens || 0).toLocaleString()} out)\n`;
+            comment += `* **Tokens:** ${total.toLocaleString()} (${input.toLocaleString()} in / ${output.toLocaleString()} out)\n`;
         }
+    }
+    if (options.costUsd != null && options.costUsd > 0) {
+        comment += `* **Cost:** $${options.costUsd.toFixed(2)}\n`;
     }
     if (taskUrl) {
         comment += `\n[View Task](${taskUrl})`;
+    }
+    if (options.omittedDiffFiles && options.omittedDiffFiles.length > 0) {
+        comment += formatOmittedDiffFilesForComment(options.omittedDiffFiles);
     }
 
     // --- /fix instructions ---
@@ -96,6 +107,27 @@ export function buildReviewComment(
     comment += `\n<!-- propr:ai-review model="${effectiveModel}" -->`;
 
     return comment;
+}
+
+function formatOmittedDiffFilesForComment(omittedFiles: string[]): string {
+    const maxListedFiles = 50;
+    const listedFiles = omittedFiles.slice(0, maxListedFiles).map(filename => `  - \`${filename}\``).join('\n');
+    const remainingCount = omittedFiles.length - maxListedFiles;
+    const remainingNote = remainingCount > 0 ? `\n  - ...and ${remainingCount} more` : '';
+
+    return [
+        '',
+        '',
+        '<details>',
+        '<summary>Files omitted from review diff</summary>',
+        '',
+        `${omittedFiles.length} file${omittedFiles.length === 1 ? ' was' : 's were'} omitted from the prompt diff due to the review context budget. Large, binary, generated, and lockfile changes are deprioritized.`,
+        '',
+        listedFiles,
+        remainingNote,
+        '',
+        '</details>',
+    ].join('\n');
 }
 
 /**

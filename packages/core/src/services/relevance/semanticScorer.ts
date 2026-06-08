@@ -61,7 +61,7 @@ function getMaxChunkTokens(modelId?: string): number {
     return DEFAULT_MAX_CHUNK_TOKENS;
   }
 
-  // Handle agent:model format (e.g., 'gemini:gemini-2.5-flash')
+  // Handle agent:model format (e.g., 'antigravity:antigravity-gemini-2.5-flash')
   const effectiveModelId = modelId.includes(':') ? modelId.split(':')[1] : modelId;
   const modelInfo = MODEL_INFO_MAP[effectiveModelId];
 

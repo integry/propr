@@ -3,8 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="${PROPR_WORKSPACE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PROPR_CACHE_DIR="${PROPR_CACHE_DIR:-/tmp/propr-setup-cache}"
 
 cd "$WORKSPACE"
+
+export npm_config_cache="$PROPR_CACHE_DIR/npm"
+mkdir -p "$npm_config_cache"
 npm ci
 
 npm run build --workspace packages/shared

@@ -27,7 +27,7 @@ export async function up(knex) {
     table.text('correlation_id').nullable();
     table.text('draft_id').nullable(); // For planning-related calls
     table.text('repository').nullable();
-    table.text('agent_alias').nullable(); // claude, gemini, codex, etc.
+    table.text('agent_alias').nullable(); // claude, antigravity, codex, etc.
     table.json('metadata').nullable(); // Additional context
 
     // Indexes for common queries

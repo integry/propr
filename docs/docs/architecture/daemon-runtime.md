@@ -55,6 +55,8 @@ When an issue has multiple model labels, the daemon creates separate jobs. For e
 ```text
 llm-claude-sonnet46
 llm-codex-gpt54
+llm-antigravity-gemini-pro
+llm-antigravity-opus
 ```
 
 Each model gets its own branch, task record, and pull request.

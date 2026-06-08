@@ -23,6 +23,9 @@ cd "$REPO_ROOT"
 DOCKERHUB_NS="${DOCKERHUB_NS:-propr}"
 GHCR_NS="${GHCR_NS:-ghcr.io/proprdev}"
 GHCR_PREFIX="${GHCR_PREFIX:-propr-}"   # GHCR uses flat namespace: propr-app instead of propr/app
+CLAUDE_CLI_VERSION="${CLAUDE_CLI_VERSION:-2.1.85}"
+CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.133.0}"
+ANTIGRAVITY_CLI_VERSION="${ANTIGRAVITY_CLI_VERSION:-latest}"
 PUSH_LATEST="${PUSH_LATEST:-true}"
 
 VERSION="$(node -p "require('./package.json').version")"
@@ -31,6 +34,22 @@ BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 IMAGE_SOURCE="${IMAGE_SOURCE:-https://github.com/integry/propr}"
 IMAGE_URL="${IMAGE_URL:-https://github.com/integry/propr}"
 IMAGE_LICENSES="${IMAGE_LICENSES:-ISC}"
+
+resolve_vibe_cli_version() {
+  if [[ -x node_modules/.bin/tsx ]]; then
+    node_modules/.bin/tsx -e "import { AGENT_DEFAULT_VERSIONS } from './packages/core/src/agents/version/types.ts'; console.log(AGENT_DEFAULT_VERSIONS.vibe);"
+  else
+    npx tsx -e "import { AGENT_DEFAULT_VERSIONS } from './packages/core/src/agents/version/types.ts'; console.log(AGENT_DEFAULT_VERSIONS.vibe);"
+  fi
+}
+
+resolve_opencode_cli_version() {
+  if [[ -x node_modules/.bin/tsx ]]; then
+    node_modules/.bin/tsx -e "import { AGENT_DEFAULT_VERSIONS } from './packages/core/src/agents/version/types.ts'; console.log(AGENT_DEFAULT_VERSIONS.opencode);"
+  else
+    npx tsx -e "import { AGENT_DEFAULT_VERSIONS } from './packages/core/src/agents/version/types.ts'; console.log(AGENT_DEFAULT_VERSIONS.opencode);"
+  fi
+}
 
 # --- Arg parsing --------------------------------------------------------------
 PUSH=false
@@ -60,7 +79,9 @@ IMAGES=(
   "agent-base|docker/Dockerfile.agent-base|."
   "agent-claude|Dockerfile.claude|."
   "agent-codex|Dockerfile.codex|."
-  "agent-gemini|Dockerfile.gemini|."
+  "agent-antigravity|Dockerfile.antigravity|."
+  "agent-opencode|Dockerfile.opencode|."
+  "agent-vibe|Dockerfile.vibe|."
 )
 
 should_build() {
@@ -69,7 +90,23 @@ should_build() {
   for s in "${SELECTED[@]}"; do
     [[ "$s" == "$1" ]] && return 0
   done
+  if [[ "$1" == "agent-base" ]]; then
+    for s in "${SELECTED[@]}"; do
+      [[ "$s" == agent-* && "$s" != "agent-base" ]] && return 0
+    done
+  fi
   return 1
+}
+
+include_agent_base_when_needed() {
+  [[ -z "$ONLY" ]] && return
+  should_build "agent-base" && return
+  for agent_name in agent-claude agent-codex agent-vibe; do
+    if should_build "$agent_name"; then
+      ONLY="agent-base,$ONLY"
+      return
+    fi
+  done
 }
 
 # --- Derive tags --------------------------------------------------------------
@@ -131,7 +168,7 @@ image_title() {
     agent-base) echo "ProPR Agent Base" ;;
     agent-claude) echo "ProPR Claude Code Agent" ;;
     agent-codex) echo "ProPR Codex Agent" ;;
-    agent-gemini) echo "ProPR Gemini Agent" ;;
+    agent-antigravity) echo "ProPR Antigravity Agent" ;;
     launcher) echo "ProPR Launcher" ;;
     *) echo "ProPR $1" ;;
   esac
@@ -145,7 +182,7 @@ image_description() {
     agent-base) echo "Shared base image for ProPR coding agent execution containers." ;;
     agent-claude) echo "Claude Code execution container for ProPR agent runs." ;;
     agent-codex) echo "OpenAI Codex execution container for ProPR agent runs." ;;
-    agent-gemini) echo "Google Gemini CLI execution container for ProPR agent runs." ;;
+    agent-antigravity) echo "Antigravity execution container for ProPR agent runs." ;;
     launcher) echo "Single-command launcher that starts and manages the ProPR Docker stack." ;;
     *) echo "ProPR production image." ;;
   esac
@@ -169,7 +206,9 @@ write_manifest() {
     "docs": "$runtime_ns/${runtime_prefix}docs:$VERSION",
     "agent-claude": "$runtime_ns/${runtime_prefix}agent-claude:$VERSION",
     "agent-codex": "$runtime_ns/${runtime_prefix}agent-codex:$VERSION",
-    "agent-gemini": "$runtime_ns/${runtime_prefix}agent-gemini:$VERSION",
+    "agent-antigravity": "$runtime_ns/${runtime_prefix}agent-antigravity:$VERSION",
+    "agent-opencode": "$runtime_ns/${runtime_prefix}agent-opencode:$VERSION",
+    "agent-vibe": "$runtime_ns/${runtime_prefix}agent-vibe:$VERSION",
     "redis": "redis:7-alpine"
   }
 }
@@ -196,9 +235,22 @@ build_image() {
   fi
 
   # Agent images extend agent-base — pin to the exact image built in this run.
-  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-gemini ]]; then
+  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-antigravity || "$name" == agent-opencode || "$name" == agent-vibe ]]; then
     build_args+=("--build-arg" "BASE_IMAGE=$(agent_base_image)")
   fi
+  case "$name" in
+    agent-claude) build_args+=("--build-arg" "CLI_VERSION=$CLAUDE_CLI_VERSION") ;;
+    agent-codex) build_args+=("--build-arg" "CLI_VERSION=$CODEX_CLI_VERSION") ;;
+    agent-antigravity) build_args+=("--build-arg" "CLI_VERSION=$ANTIGRAVITY_CLI_VERSION") ;;
+    agent-opencode)
+      local opencode_cli_version="${OPENCODE_CLI_VERSION:-$(resolve_opencode_cli_version)}"
+      build_args+=("--build-arg" "CLI_VERSION=$opencode_cli_version")
+      ;;
+    agent-vibe)
+      local vibe_cli_version="${VIBE_CLI_VERSION:-$(resolve_vibe_cli_version)}"
+      build_args+=("--build-arg" "CLI_VERSION=$vibe_cli_version")
+      ;;
+  esac
 
   build_args+=(
     "--label" "org.opencontainers.image.title=$(image_title "$name")"
@@ -244,6 +296,7 @@ echo "  latest:     $PUSH_LATEST"
 
 write_manifest
 refresh_notices
+include_agent_base_when_needed
 
 for entry in "${IMAGES[@]}"; do
   IFS='|' read -r name dockerfile context <<< "$entry"

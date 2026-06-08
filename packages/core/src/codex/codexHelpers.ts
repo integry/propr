@@ -36,12 +36,14 @@ export interface CodexEvent {
     message?: string;
     status?: string;
     result?: string;
+    is_error?: boolean;
     session_id?: string;
     conversation_id?: string;
     thread_id?: string;
     model?: string;
     item?: CodexEventItem;
     usage?: Record<string, number>;
+    stats?: Record<string, number>;
 }
 
 export interface CodexOutput {
@@ -156,6 +158,11 @@ function handleResultEvent(event: CodexEvent, state: ParseState): void {
         state.isError = true;
         state.errorMessage = event.message || 'Unknown error';
     }
+    addCodexTokenUsage(event.usage, state);
+    if (event.stats) {
+        state.tokenUsage.input_tokens += (event.stats.input_tokens ?? 0) + (event.stats.cached_input_tokens ?? 0);
+        state.tokenUsage.output_tokens += event.stats.output_tokens ?? 0;
+    }
 }
 
 function captureEventMetadata(event: CodexEvent, state: ParseState): void {
@@ -167,10 +174,13 @@ function captureEventMetadata(event: CodexEvent, state: ParseState): void {
 
 function handleTurnCompleted(event: CodexEvent, state: ParseState): void {
     state.logs += `[${event.type}]\n`;
-    if (event.usage) {
-        state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
-        state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
-    }
+    addCodexTokenUsage(event.usage, state);
+}
+
+function addCodexTokenUsage(usage: CodexEvent['usage'] | undefined, state: ParseState): void {
+    if (!usage) return;
+    state.tokenUsage.input_tokens += (usage.input_tokens ?? 0) + (usage.cached_input_tokens ?? 0);
+    state.tokenUsage.output_tokens += usage.output_tokens ?? 0;
 }
 
 function handleErrorEvent(event: CodexEvent, state: ParseState): void {
@@ -189,6 +199,14 @@ function handleMessage(event: CodexEvent, state: ParseState): void {
 
 function handleToolUse(event: CodexEvent, state: ParseState): void {
     state.logs += `[Tool] ${event.tool} params: ${JSON.stringify(event.params)}\n`;
+}
+
+function handleToolResult(event: CodexEvent, state: ParseState): void {
+    if (event.is_error || event.status === 'error') {
+        state.isError = true;
+        state.errorMessage = event.message || event.result || event.content || 'Tool execution failed';
+    }
+    state.logs += `[Tool Result] ${event.result || event.content || event.message || ''}\n`;
 }
 
 function handleTurnStarted(event: CodexEvent, state: ParseState): void {
@@ -219,6 +237,7 @@ const eventHandlers: Record<string, EventHandler> = {
     'thread.started': handleThreadStarted,
     'message': handleMessage,
     'tool_use': handleToolUse,
+    'tool_result': handleToolResult,
     'error': handleErrorEvent,
     'result': handleResultEvent,
     'turn.started': handleTurnStarted,

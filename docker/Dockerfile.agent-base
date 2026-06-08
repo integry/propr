@@ -1,12 +1,12 @@
 # Shared base for propr/agent-* images.
 #
-# Contains everything common to Claude / Codex / Gemini agent containers:
+# Contains everything common to Claude / Codex / Antigravity / OpenCode agent containers:
 # system tools, GitHub CLI, firewall script, gh wrapper, third-party notices.
 # Each concrete agent image extends this with one `npm install -g` and its
 # own entrypoint.
 #
-# Alpine (musl) has been verified to boot all three CLIs (claude, codex, gemini
-# with coreutils providing GNU env). See git history for the empirical test.
+# Alpine (musl) has been verified to boot the supported CLIs with coreutils
+# providing GNU env. See git history for the empirical test.
 #
 # Build:
 #   docker build -f docker/Dockerfile.agent-base -t propr/agent-base .
@@ -18,7 +18,7 @@ FROM node:20-alpine
 #   sudo                        — entrypoints fix ownership before dropping privs
 #   iptables                    — optional firewall init
 #   procps                      — ps/top used by some CLI internals
-#   coreutils                   — GNU env: Gemini's shebang uses `env -S`
+#   coreutils                   — GNU env support for CLI shebangs
 #                                 which BusyBox env doesn't support
 #   github-cli                  — gh command
 #   tini                        — PID 1 for clean signal handling

@@ -108,7 +108,7 @@ test.skip('AgentConfig Validation', async (t) => {
         };
 
         assert.ok(validConfig.id, 'Should have id');
-        assert.ok(['claude', 'codex', 'gemini'].includes(validConfig.type), 'Type should be valid');
+        assert.ok(['claude', 'codex', 'antigravity', 'vibe'].includes(validConfig.type), 'Type should be valid');
         assert.ok(validConfig.alias, 'Should have alias');
         assert.strictEqual(typeof validConfig.enabled, 'boolean', 'Enabled should be boolean');
         assert.ok(validConfig.dockerImage, 'Should have dockerImage');

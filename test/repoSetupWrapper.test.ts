@@ -20,7 +20,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
 
         const wrapperScript = wrapped[imageIndex + 2];
         assert.match(wrapperScript, /\.propr\/setup\.sh/);
-        assert.match(wrapperScript, /sudo -E -u node -H \/bin\/bash/);
+        assert.match(wrapperScript, /\[ "\$\(id -u\)" = "0" \][\s\S]*sudo -E -u node -H \/bin\/bash/);
         assert.match(wrapperScript, /<\/dev\/null >&2/);
         assert.match(wrapperScript, /ProPR repo setup hook failed with exit code/);
         assert.match(wrapperScript, /PROPR_REPO_SETUP_STRICT/);
@@ -32,17 +32,32 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         const wrapped = wrapDockerRunArgsWithRepoSetup([
             'run', '--rm',
             '-e', 'PROPR_REPO_SETUP=0',
-            'propr/agent-gemini:latest',
-            'gemini', '--yolo'
-        ], 'propr/agent-gemini:latest', 'gemini');
+            'propr/agent-antigravity:latest',
+            'agy', '--dangerously-skip-permissions'
+        ], 'propr/agent-antigravity:latest', 'antigravity');
 
-        assert.ok(wrapped.includes('PROPR_AGENT_TYPE=gemini'));
+        assert.ok(wrapped.includes('PROPR_AGENT_TYPE=antigravity'));
         assert.ok(wrapped.includes('PROPR_WORKSPACE=/home/node/workspace'));
-        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/gemini'));
+        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/antigravity'));
         assert.ok(wrapped.includes('PROPR_REPO_SETUP=0'));
 
-        const imageIndex = wrapped.indexOf('propr/agent-gemini:latest');
-        assert.strictEqual(wrapped[imageIndex + 3], '/home/node/gemini-entrypoint.sh');
+        const imageIndex = wrapped.indexOf('propr/agent-antigravity:latest');
+        assert.strictEqual(wrapped[imageIndex + 3], '/home/node/antigravity-entrypoint.sh');
+    });
+
+    test('maps Vibe to the Vibe entrypoint', () => {
+        const wrapped = wrapDockerRunArgsWithRepoSetup([
+            'run', '--rm',
+            'propr/agent-vibe:latest',
+            'vibe', '--prompt', 'Analyze the codebase'
+        ], 'propr/agent-vibe:latest', 'vibe');
+
+        assert.ok(wrapped.includes('PROPR_AGENT_TYPE=vibe'));
+        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
+
+        const imageIndex = wrapped.indexOf('propr/agent-vibe:latest');
+        assert.strictEqual(wrapped[imageIndex + 3], '/home/node/vibe-entrypoint.sh');
+        assert.deepStrictEqual(wrapped.slice(imageIndex + 4), ['vibe', '--prompt', 'Analyze the codebase']);
     });
 
     test('throws when the configured docker image cannot be found', () => {

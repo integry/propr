@@ -16,7 +16,7 @@ export async function up(knex) {
     table.string('path').primary(); // Primary Key implies Index
     table.text('summary').notNullable();
     table.string('commit_hash').notNullable(); // Full SHA-1 hash of file content
-    table.string('model_used').nullable(); // Agent alias used (e.g., 'gemini-1.5-flash')
+    table.string('model_used').nullable(); // Agent alias used (e.g., 'antigravity-gemini-2.5-flash')
     table.timestamp('last_updated_at').defaultTo(knex.fn.now());
   });
 

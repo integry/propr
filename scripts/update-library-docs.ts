@@ -104,21 +104,15 @@ const EXCLUDED_FILES = new Set([
   // Experimental
   'experimental.md', // Experimental features
 
-  // === GEMINI DOCUMENTATION EXCLUSIONS ===
-
-  // Internal architecture/development
-  'architecture.md', // Internal design of the CLI tool itself
-  'integration-tests.md', // Internal: How to test Gemini CLI
-  'issue-and-pr-automation.md', // Internal: GitHub Actions for Gemini CLI
-  'local-development.md', // Internal: How to develop Gemini CLI locally
-  'release-confidence.md', // Internal Google release checklists
-  'releases.md', // Internal: Release process for maintainers
-
-  // Legal/Administrative
-  'CONTRIBUTING.md', // Guide for contributing to Gemini CLI
-  'tos-privacy.md', // Legal: Terms of Service
-
-  // User support (duplicates removed as 'faq.md' already listed)
+  // Agent CLI internals
+  'architecture.md', // Internal design of CLI tools
+  'integration-tests.md', // Internal CLI test docs
+  'issue-and-pr-automation.md', // Internal GitHub automation docs
+  'local-development.md', // Internal CLI development docs
+  'release-confidence.md', // Internal release checklists
+  'releases.md', // Internal release process docs
+  'CONTRIBUTING.md', // Contributor guide for upstream CLI repos
+  'tos-privacy.md', // Legal terms
 ]);
 
 const turndownService = new TurndownService({
@@ -400,7 +394,7 @@ async function fetchClaudeDocs(destDir: string): Promise<void> {
  */
 async function removeExcludedFiles(): Promise<void> {
   console.log('=== Removing Excluded Files ===');
-  const dirs = ['claude', 'codex', 'gemini'];
+  const dirs = ['claude', 'codex'];
   let removedCount = 0;
 
   for (const dir of dirs) {
@@ -444,12 +438,7 @@ async function main(): Promise<void> {
   // First, remove any existing excluded files
   await removeExcludedFiles();
 
-  // 1. Gemini CLI
-  console.log('=== Gemini CLI Documentation ===');
-  await fetchGithubDocs('google-gemini', 'gemini-cli', 'docs', path.join(DOCS_ROOT, 'gemini'));
-  console.log();
-
-  // 2. OpenAI Codex
+  // 1. OpenAI Codex
   console.log('=== OpenAI Codex Documentation ===');
   await fetchGithubDocs('openai', 'codex', 'docs', path.join(DOCS_ROOT, 'codex'));
   console.log();

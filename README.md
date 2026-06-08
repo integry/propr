@@ -16,7 +16,7 @@ A production-ready automated system that monitors GitHub issues, runs configured
 - **Model-Specific Enqueueing**: Separate jobs for different agent/model labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, and `llm-gemini-pro`
+- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, `llm-opencode-minimax-m3-free`, `llm-antigravity-gemini-pro`, and `llm-antigravity-opus`
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -136,7 +136,15 @@ npm install -g @anthropic-ai/claude-code
 claude login
 ```
 
-Use equivalent login and credential setup for Codex or Gemini if those are the agents you plan to enable.
+Use equivalent login and credential setup for Codex or Antigravity if those are the agents you plan to enable.
+For Antigravity, install the official CLI and authenticate before mounting the credential directory:
+
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+agy login
+```
+
+Set `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` when starting the launcher so the worker can mount the authenticated CLI state.
 
 ### 5. Start From Prebuilt Images
 
@@ -151,7 +159,7 @@ docker run --rm \
   -e PROPR_REPOS_DIR="$PWD/repos" \
   -e HOST_CLAUDE_DIR="$HOME/.claude" \
   -e HOST_CODEX_DIR="$HOME/.codex" \
-  -e HOST_GEMINI_DIR="$HOME/.gemini" \
+  -e HOST_ANTIGRAVITY_DIR="$HOME/.gemini" \
   propr/launcher:latest
 ```
 
@@ -196,7 +204,8 @@ propr/
 ├── scripts/
 │   ├── claude-entrypoint.sh     # Docker entrypoint for Claude execution
 │   ├── codex-entrypoint.sh      # Docker entrypoint for Codex execution
-│   ├── gemini-entrypoint.sh     # Docker entrypoint for Gemini execution
+│   ├── antigravity-entrypoint.sh # Docker entrypoint for Antigravity execution
+│   ├── opencode-entrypoint.sh   # Docker entrypoint for OpenCode execution
 │   ├── init-firewall.sh         # Security and firewall setup
 │   ├── fix-issue-labels.js      # Manual issue label management utility
 │   └── list-repo-configs.js     # Repository configuration display utility
@@ -232,7 +241,7 @@ npm run daemon:reset:dev
 
 The daemon will:
 - Poll configured repositories at the specified interval
-- Search for open issues with the AI tag
+- Search for open issues with configured primary labels such as `AI` or `propr`
 - Exclude issues already being processed or completed
 - Add detected issues to the task queue for processing
 
@@ -244,8 +253,8 @@ If jobs get stuck in failed/processing states, use the reset option to clear all
 # Clear all queue data and remove processing labels from issues
 npm run daemon:reset:dev
 
-# Or with direct node command
-node src/daemon.js --reset
+# Or against a production build
+npm run daemon:reset
 ```
 
 This will:
@@ -277,8 +286,8 @@ The worker will:
 
 ### GitHub Authentication
 
-```javascript
-import { getAuthenticatedOctokit } from './src/auth/githubAuth.js';
+```typescript
+import { getAuthenticatedOctokit } from '@propr/core';
 
 const octokit = await getAuthenticatedOctokit();
 // Use octokit for GitHub API operations
@@ -286,8 +295,8 @@ const octokit = await getAuthenticatedOctokit();
 
 ### Logging
 
-```javascript
-import logger from './src/utils/logger.js';
+```typescript
+import { logger } from '@propr/core';
 
 logger.info('Application started');
 logger.error('An error occurred', { error: err });
@@ -296,7 +305,7 @@ logger.debug('Debug information', { data: someData });
 
 ### Configuration
 
-```javascript
+```typescript
 import config from './config/index.js';
 
 console.log(config.github.appId);
@@ -322,13 +331,20 @@ docker run --rm \
   -e PROPR_REPOS_DIR=$PWD/repos \
   -e HOST_CLAUDE_DIR=$HOME/.claude \
   -e HOST_CODEX_DIR=$HOME/.codex \
-  -e HOST_GEMINI_DIR=$HOME/.gemini \
+  -e HOST_ANTIGRAVITY_DIR=$HOME/.gemini \
+  -e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode \
+  -e HOST_OPENCODE_DATA_DIR=$HOME/.local/share/opencode \
   propr/launcher:latest
 ```
 
 Paths are passed as host paths (not mounted into the launcher) because the
 launcher uses the host docker daemon via the mounted socket to spawn sibling
 containers — any `-v` values it passes need to resolve on the host.
+Pass `HOST_OPENCODE_LEGACY_DIR=/home/your-user/.opencode` only for OpenCode agents whose
+saved `configPath` is `/home/your-user/.opencode`. `HOST_OPENCODE_DIR` is accepted as a compatibility alias
+for `HOST_OPENCODE_XDG_DIR`. OpenCode auth from `opencode auth login` normally lives under
+`~/.local/share/opencode`, so pass `HOST_OPENCODE_DATA_DIR` or provide provider API keys
+through the agent config. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
 
 The launcher pulls redis + app + ui images on first run and orchestrates them
 via the mounted docker socket. See `.env.example` for required configuration.
@@ -344,7 +360,8 @@ via the mounted docker socket. See `.env.example` for required configuration.
 | `propr/agent-base` | Shared base for agent images | ~220 MB |
 | `propr/agent-claude` | Claude Code execution container | ~315 MB |
 | `propr/agent-codex` | OpenAI Codex execution container | ~470 MB |
-| `propr/agent-gemini` | Google Gemini CLI execution container | ~380 MB |
+| `propr/agent-antigravity` | Antigravity execution container | ~380 MB |
+| `propr/agent-opencode` | OpenCode CLI execution container | ~TBD |
 
 Images are also mirrored to GHCR. The current GitHub Actions release workflow
 publishes under `ghcr.io/integry/propr-*`; this namespace can be changed later
@@ -404,8 +421,9 @@ quick validation.
 Bundled third-party software attributions are preserved inside each image at
 `/usr/share/licenses/propr/`. See `NOTICE` and `THIRD_PARTY_LICENSES.md` in
 the repo root for the offline copies. End users must supply their own API
-credentials for Anthropic, OpenAI, and/or Google and accept those providers'
-terms of service independently.
+credentials for Anthropic, OpenAI, Google, OpenCode Go, and/or any other
+provider configured through OpenCode, and accept those providers' terms of
+service independently.
 
 ## Docker Compose Setup (development)
 
@@ -443,6 +461,9 @@ These commands use the `scripts/compose.sh` script which wraps Docker Compose op
 - **indexing-worker** and **analysis-worker**: Optional support workers in the development Compose stack
 
 All services are configured in `docker-compose.yml` with proper networking and volume management.
+For OpenCode development, create `~/.opencode`, `~/.config/opencode`, and
+`~/.local/share/opencode`, then add `-f docker-compose.opencode.yml` to include
+the optional OpenCode credential mounts.
 
 ## Redis Setup
 
@@ -493,7 +514,9 @@ npm test
 Add labels to GitHub issues to specify which enabled agent/model pair should process them:
 - `llm-claude-sonnet46` - Use the configured Claude Sonnet 4.6 model
 - `llm-codex-gpt54` - Use the configured Codex GPT-5.4 model
-- `llm-gemini-pro` - Use the configured Gemini Pro model
+- `llm-opencode-minimax-m3-free` - Use the configured OpenCode MiniMax M3 Free model
+- `llm-antigravity-gemini-pro` - Use the configured Antigravity Gemini Pro model
+- `llm-antigravity-opus` - Use the configured Antigravity Opus model
 - Multiple model labels can be used together for multi-model processing
 
 To target a non-default branch for direct labeled issue execution, add a `base-<branch>` label before processing starts.

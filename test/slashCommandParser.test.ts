@@ -25,8 +25,8 @@ describe('parseSlashCommand', () => {
     });
 
     test('parses /review with multiple models', () => {
-        const result = parseSlashCommand('/review llm-gemini-3-pro-preview gpt-54');
-        assert.deepStrictEqual(result, { command: 'review', args: ['llm-gemini-3-pro-preview', 'gpt-54'], instructions: '' });
+        const result = parseSlashCommand('/review llm-antigravity-3-pro-preview gpt-54');
+        assert.deepStrictEqual(result, { command: 'review', args: ['llm-antigravity-3-pro-preview', 'gpt-54'], instructions: '' });
     });
 
     test('parses /review with multiline instructions', () => {
@@ -80,8 +80,8 @@ describe('parseSlashCommand', () => {
     });
 
     test('parses /switch with multiple models', () => {
-        const result = parseSlashCommand('/switch llm-claude-opus gemini-pro');
-        assert.deepStrictEqual(result, { command: 'switch', args: ['llm-claude-opus', 'gemini-pro'], instructions: '' });
+        const result = parseSlashCommand('/switch llm-claude-opus antigravity-pro');
+        assert.deepStrictEqual(result, { command: 'switch', args: ['llm-claude-opus', 'antigravity-pro'], instructions: '' });
     });
 
     test('parses /switch with model and multiline instructions', () => {
@@ -104,16 +104,16 @@ describe('parseSlashCommand', () => {
     });
 
     test('parses /use with multiple models', () => {
-        const result = parseSlashCommand('/use llm-gemini-pro gpt-54');
-        assert.deepStrictEqual(result, { command: 'use', args: ['llm-gemini-pro', 'gpt-54'], instructions: '' });
+        const result = parseSlashCommand('/use llm-antigravity-pro gpt-54');
+        assert.deepStrictEqual(result, { command: 'use', args: ['llm-antigravity-pro', 'gpt-54'], instructions: '' });
     });
 
     test('parses /use with model and multiline instructions', () => {
-        const body = '/use gemini-pro\nFocus on performance';
+        const body = '/use antigravity-pro\nFocus on performance';
         const result = parseSlashCommand(body);
         assert.ok(result);
         assert.strictEqual(result.command, 'use');
-        assert.deepStrictEqual(result.args, ['gemini-pro']);
+        assert.deepStrictEqual(result.args, ['antigravity-pro']);
         assert.strictEqual(result.instructions, 'Focus on performance');
     });
 
@@ -169,10 +169,10 @@ describe('parseSlashCommand', () => {
     });
 
     test('handles tab-separated arguments', () => {
-        const result = parseSlashCommand('/review\tclaude\tgemini');
+        const result = parseSlashCommand('/review\tclaude\tantigravity');
         assert.ok(result);
         assert.strictEqual(result.command, 'review');
-        assert.deepStrictEqual(result.args, ['claude', 'gemini']);
+        assert.deepStrictEqual(result.args, ['claude', 'antigravity']);
     });
 
     test('returns empty instructions when only whitespace follows command line', () => {
@@ -200,11 +200,11 @@ describe('buildCommandMeta', () => {
     });
 
     test('builds review meta and strips llm- prefix', () => {
-        const parsed = parseSlashCommand('/review llm-gemini-3-pro-preview claude gpt-54')!;
+        const parsed = parseSlashCommand('/review llm-antigravity-pro-preview claude gpt-54')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual(meta, {
             mode: 'review',
-            models: ['gemini-3-pro-preview', 'claude', 'gpt-54'],
+            models: ['antigravity-pro-preview', 'claude', 'gpt-54'],
             instructions: '',
         });
     });
@@ -247,13 +247,13 @@ describe('buildCommandMeta', () => {
     });
 
     test('builds switch meta and strips llm- prefix (takes only first model)', () => {
-        const parsed = parseSlashCommand('/switch llm-claude-opus gemini-pro')!;
+        const parsed = parseSlashCommand('/switch llm-claude-opus antigravity-pro')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual(meta, {
             mode: 'switch',
             models: ['claude-opus'],
             instructions: '',
-            warning: '/switch accepts only one model argument; extra arguments were ignored: gemini-pro',
+            warning: '/switch accepts only one model argument; extra arguments were ignored: antigravity-pro',
         });
     });
 
@@ -274,22 +274,22 @@ describe('buildCommandMeta', () => {
     });
 
     test('builds use meta and strips llm- prefix (takes only first model)', () => {
-        const parsed = parseSlashCommand('/use llm-gemini-pro gpt-54')!;
+        const parsed = parseSlashCommand('/use llm-antigravity-pro gpt-54')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual(meta, {
             mode: 'use',
-            models: ['gemini-pro'],
+            models: ['antigravity-pro'],
             instructions: '',
             warning: '/use accepts only one model argument; extra arguments were ignored: gpt-54',
         });
     });
 
     test('builds use meta with instructions', () => {
-        const parsed = parseSlashCommand('/use gemini-pro\nFocus on performance')!;
+        const parsed = parseSlashCommand('/use antigravity-pro\nFocus on performance')!;
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual(meta, {
             mode: 'use',
-            models: ['gemini-pro'],
+            models: ['antigravity-pro'],
             instructions: 'Focus on performance',
         });
     });
@@ -551,4 +551,3 @@ describe('buildCommandMeta', () => {
         assert.strictEqual((meta as { goal?: number }).goal, 5);
     });
 });
-

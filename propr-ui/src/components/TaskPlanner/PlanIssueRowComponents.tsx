@@ -12,6 +12,8 @@ import { getModelName, getImplementButtonClassName, getImplementButtonTitle } fr
 
 interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; }
 
+const ULTRAFIX_GOAL_OPTIONS = [5, 6, 7, 8, 9, 10];
+
 function parseUltrafixIntegerInput(
   rawValue: string,
   options: { minimum: number; maximum?: number; label: string }
@@ -41,20 +43,13 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
   containerClassName = 'flex flex-col gap-1',
   errorClassName = 'text-[11px] text-amber-700',
 }) => {
-  const [goalInput, setGoalInput] = useState(goal?.toString() ?? '');
   const [maxCyclesInput, setMaxCyclesInput] = useState(maxCycles?.toString() ?? '');
-  const [goalError, setGoalError] = useState<string | null>(null), [maxCyclesError, setMaxCyclesError] = useState<string | null>(null);
-  useEffect(() => { setGoalInput(goal?.toString() ?? ''); setGoalError(null); }, [goal]);
+  const [maxCyclesError, setMaxCyclesError] = useState<string | null>(null);
   useEffect(() => { setMaxCyclesInput(maxCycles?.toString() ?? ''); setMaxCyclesError(null); }, [maxCycles]);
-  useEffect(() => { if (!enabled) { setGoalError(null); setMaxCyclesError(null); } }, [enabled]);
+  useEffect(() => { if (!enabled) setMaxCyclesError(null); }, [enabled]);
 
-  const commitGoal = () => {
-    const result = parseUltrafixIntegerInput(goalInput, { minimum: 1, maximum: 10, label: 'Ultrafix goal' });
-    if (result.error) { setGoalError(result.error); return; }
-    setGoalError(null); if (result.value !== goal) onGoalChange(result.value);
-  };
   const commitMaxCycles = () => {
-    const result = parseUltrafixIntegerInput(maxCyclesInput, { minimum: 1, label: 'Ultrafix max cycles' });
+    const result = parseUltrafixIntegerInput(maxCyclesInput, { minimum: 1, label: 'Max turns' });
     if (result.error) { setMaxCyclesError(result.error); return; }
     setMaxCyclesError(null); if (result.value !== maxCycles) onMaxCyclesChange(result.value);
   };
@@ -62,21 +57,21 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
   return (
     <div className={containerClassName}>
       <div className="flex items-center gap-1.5">
-        <input
-          type="number"
-          min={1}
-          max={10}
-          value={goalInput}
+        <select
+          value={ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) ? goal?.toString() : ''}
           disabled={!enabled}
           onChange={(e) => {
-            setGoalInput(e.target.value);
-            if (goalError) setGoalError(null);
+            const value = Number(e.target.value);
+            if (Number.isInteger(value)) onGoalChange(value);
           }}
-          onBlur={commitGoal}
-          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-          placeholder={goalPlaceholder}
           className={`${goalInputWidthClassName} ${inputClassName}`}
-        />
+          aria-label={goalPlaceholder}
+        >
+          {!ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) && <option value="" disabled>{goalPlaceholder}</option>}
+          {ULTRAFIX_GOAL_OPTIONS.map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
         <input
           type="number"
           min={1}
@@ -89,10 +84,11 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
           onBlur={commitMaxCycles}
           onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
           placeholder={maxPlaceholder}
+          aria-label={maxPlaceholder}
           className={`${maxInputWidthClassName} ${inputClassName}`}
         />
       </div>
-      {(goalError || maxCyclesError) && <p className={errorClassName}>{goalError ?? maxCyclesError}</p>}
+      {maxCyclesError && <p className={errorClassName}>{maxCyclesError}</p>}
     </div>
   );
 };
@@ -116,8 +112,8 @@ export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) =
   );
 };
 
-export interface ImplementButtonProps { implementing: boolean; disabled?: boolean; hasAgent: boolean; isFirstPending: boolean; pressed?: boolean; onClick: () => void; }
-export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, disabled = false, hasAgent, isFirstPending, pressed = false, onClick }) => (
+export interface ImplementButtonProps { implementing: boolean; disabled?: boolean; hasAgent: boolean; isFirstPending: boolean; pressed?: boolean; label?: string; onClick: () => void; }
+export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, disabled = false, hasAgent, isFirstPending, pressed = false, label = 'Implement', onClick }) => (
   <button
     onClick={onClick}
     disabled={implementing || disabled || !hasAgent}
@@ -143,7 +139,7 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
     ) : (
       <>
         <Play size={14} className={!isFirstPending && hasAgent ? 'opacity-60' : ''} />
-        <span className="hidden sm:inline">Implement</span>
+        <span className="hidden sm:inline">{label}</span>
       </>
     )}
   </button>
@@ -185,15 +181,10 @@ export interface RowActionsProps {
   issue: PlanIssue;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
-  onRunUltrafixChange: (issueNumber: number, runUltrafix: boolean | null) => void;
-  onUltrafixGoalChange: (issueNumber: number, value: number | null) => void;
-  onUltrafixMaxCyclesChange: (issueNumber: number, value: number | null) => void;
-  plannerRunUltrafix?: boolean;
-  plannerUltrafixGoal?: number | null;
-  plannerUltrafixMaxCycles?: number | null;
   disableImplementation?: boolean;
-  showUltrafixControls?: boolean;
   implementButtonPressed?: boolean;
+  showImplementButton?: boolean;
+  implementButtonLabel?: string;
   handleMultiToggle: (multi: boolean) => void;
   handleMultiModelChange: (models: AgentModelPair[]) => void;
   handleImplementClick: () => void;
@@ -213,26 +204,16 @@ export const RowActions: React.FC<RowActionsProps> = ({
   issue,
   onAgentChange,
   onModelChange,
-  onRunUltrafixChange,
-  onUltrafixGoalChange,
-  onUltrafixMaxCyclesChange,
-  plannerRunUltrafix,
-  plannerUltrafixGoal,
-  plannerUltrafixMaxCycles,
   disableImplementation = false,
-  showUltrafixControls = true,
   implementButtonPressed = false,
+  showImplementButton = true,
+  implementButtonLabel = 'Implement',
   handleMultiToggle,
   handleMultiModelChange,
   handleImplementClick,
   handleToggleExpand
 }) => {
-  const ultrafixEnabled = issue.run_ultrafix === true;
-  const inheritedUltrafixEnabled = issue.run_ultrafix === null && (plannerRunUltrafix ?? false);
   const issueNumber = issue.issue_number;
-  const ultrafixMode = issue.run_ultrafix === null ? 'inherit' : issue.run_ultrafix ? 'on' : 'off';
-  const effectiveGoalPlaceholder = plannerUltrafixGoal ? `Goal (${plannerUltrafixGoal})` : 'Goal';
-  const effectiveMaxPlaceholder = plannerUltrafixMaxCycles ? `Max (${plannerUltrafixMaxCycles})` : 'Max';
 
   return (
     <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
@@ -252,50 +233,14 @@ export const RowActions: React.FC<RowActionsProps> = ({
           onMultiConfirm={handleImplementClick}
         />
       )}
-      {isPending && showUltrafixControls && (
-        <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 max-w-full">
-          <label className="flex items-center gap-1 text-xs text-slate-600">
-            <span>UF</span>
-            <select
-              value={ultrafixMode}
-              onChange={(e) => {
-                const value = e.target.value === 'inherit' ? null : e.target.value === 'on';
-                onRunUltrafixChange(issueNumber, value);
-              }}
-              className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-xs text-slate-700"
-            >
-              <option value="inherit">Inherit</option>
-              <option value="on">On</option>
-              <option value="off">Off</option>
-            </select>
-          </label>
-          <span className="text-[10px] text-slate-500">Inherit follows planner defaults and updates if those defaults change later.</span>
-          <UltrafixSettingsControls
-            enabled={ultrafixEnabled}
-            goal={issue.run_ultrafix === true ? issue.ultrafix_goal : null}
-            maxCycles={issue.run_ultrafix === true ? issue.ultrafix_max_cycles : null}
-            onGoalChange={(value) => onUltrafixGoalChange(issueNumber, value)}
-            onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange(issueNumber, value)}
-            goalPlaceholder={effectiveGoalPlaceholder}
-            maxPlaceholder={effectiveMaxPlaceholder}
-            inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-            goalInputWidthClassName="w-14"
-            maxInputWidthClassName="w-14"
-            containerClassName="flex flex-col gap-1"
-            errorClassName="text-[10px] text-amber-700"
-          />
-          {inheritedUltrafixEnabled && (
-            <span className="text-[10px] text-slate-500">Using planner UF defaults</span>
-          )}
-        </div>
-      )}
-      {isPending && (
+      {isPending && showImplementButton && (
         <ImplementButton
           implementing={implementing}
           disabled={disableImplementation}
           hasAgent={hasAgent}
           isFirstPending={isFirstPending}
           pressed={implementButtonPressed}
+          label={implementButtonLabel}
           onClick={handleImplementClick}
         />
       )}

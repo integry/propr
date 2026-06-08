@@ -18,6 +18,31 @@ import { useToast } from '../ui/useToast';
 import { useSocket } from '../../contexts/useSocket';
 import { TaskUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 
+const eventFingerprint = (event: LiveDetails['events'][number]) => JSON.stringify({
+  type: event.type,
+  content: event.content,
+  toolName: event.toolName,
+  input: event.input,
+  toolUseId: event.toolUseId,
+  result: event.result,
+  isError: event.isError,
+});
+
+const appendUniqueEvents = (
+  currentEvents: LiveDetails['events'],
+  newEvents: LiveDetails['events']
+) => {
+  if (newEvents.length === 0) return currentEvents;
+  const seen = new Set(currentEvents.map(eventFingerprint));
+  const uniqueNewEvents = newEvents.filter(event => {
+    const fingerprint = eventFingerprint(event);
+    if (seen.has(fingerprint)) return false;
+    seen.add(fingerprint);
+    return true;
+  });
+  return uniqueNewEvents.length > 0 ? [...currentEvents, ...uniqueNewEvents] : currentEvents;
+};
+
 export const useTaskData = (taskId: string | undefined) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [taskInfo, setTaskInfo] = useState<TaskInfo | null>(null);
@@ -119,7 +144,7 @@ export const useTaskData = (taskId: string | undefined) => {
       // Append new events to existing ones
       console.log(`[useTaskData] Received incremental update via WebSocket: ${newEvents.length} new events`);
       setLiveDetails(prev => ({
-        events: newEvents.length > 0 ? [...prev.events, ...newEvents] : prev.events,
+        events: appendUniqueEvents(prev.events, newEvents),
         todos: payload.todos || [],
         currentTask: payload.currentTask || null,
       }));

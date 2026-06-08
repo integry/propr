@@ -1,0 +1,69 @@
+# Antigravity CLI agent image.
+#
+# Antigravity's installer currently publishes a linux_amd64 manifest for glibc
+# but not linux_amd64_musl, so this image uses Debian slim instead of the shared
+# Alpine agent base used by the other agent images.
+
+FROM node:20-slim
+
+ARG CLI_VERSION=latest
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        coreutils \
+        curl \
+        gh \
+        git \
+        iptables \
+        procps \
+        sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers \
+    && mkdir -p /home/node/workspace \
+    && chown -R node:node /home/node
+
+COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/gh-wrapper
+
+COPY NOTICE /usr/share/licenses/propr/NOTICE
+COPY THIRD_PARTY_LICENSES.md /usr/share/licenses/propr/THIRD_PARTY_LICENSES.md
+
+USER node
+WORKDIR /home/node/workspace
+ENV PATH="/home/node/.local/bin:${PATH}" \
+    AGY_CLI_DISABLE_AUTO_UPDATE=true \
+    NODE_OPTIONS="--max-old-space-size=8192"
+
+# The official Antigravity installer does not expose historical version
+# artifacts or checksums, so ProPR builds this image only with CLI_VERSION=latest.
+RUN if [ "$CLI_VERSION" != "latest" ]; then \
+        echo "Antigravity CLI installer only supports CLI_VERSION=latest; got CLI_VERSION=$CLI_VERSION" >&2; \
+        exit 1; \
+    fi \
+    && curl -fsSL -o /tmp/antigravity-install.sh https://antigravity.google/cli/install.sh \
+    && test -s /tmp/antigravity-install.sh \
+    && sha256sum /tmp/antigravity-install.sh | tee /tmp/antigravity-install.sha256 \
+    && bash -n /tmp/antigravity-install.sh \
+    && bash /tmp/antigravity-install.sh \
+    && rm -f /tmp/antigravity-install.sh
+
+RUN mkdir -p /home/node/.local/share/propr \
+    && agy --version | tee /home/node/.local/share/propr/antigravity-cli-version.txt \
+    && cp /tmp/antigravity-install.sha256 /home/node/.local/share/propr/antigravity-installer.sha256 \
+    && rm -f /tmp/antigravity-install.sha256
+
+RUN git config --global user.name "ProPR Antigravity Bot" \
+    && git config --global user.email "antigravity-bot@propr.dev" \
+    && git config --global init.defaultBranch main \
+    && git config --global --add safe.directory '*'
+
+COPY --chown=node:node scripts/antigravity-entrypoint.sh /home/node/antigravity-entrypoint.sh
+USER root
+RUN chmod +x /home/node/antigravity-entrypoint.sh
+USER node
+
+ENTRYPOINT ["/home/node/antigravity-entrypoint.sh"]
