@@ -64,6 +64,16 @@ export interface ImplementIssueResponse {
    * The task ID for polling status (if available).
    */
   taskId?: string;
+
+  /**
+   * Whether auto-merge was enabled for this issue implementation.
+   */
+  autoMergeEnabled?: boolean;
+
+  /**
+   * The epic label name if an epic was created.
+   */
+  epicLabel?: string | null;
 }
 
 /**

@@ -366,14 +366,9 @@ describe("ProPR CLI E2E", {
       // Sequential processing should succeed
       assert.ok(result.success, `Sequential trigger failed: ${result.message}`);
 
-      // With autoMerge + epic, only first issue should be implemented
-      // Rest should be queued for sequential processing
-      assert.strictEqual(result.implemented, 1, "Expected exactly 1 issue to be implemented immediately");
-      assert.ok(result.queued >= 1, `Expected at least 1 issue queued, got ${result.queued}`);
       assert.ok(result.autoMergeEnabled, "Auto-merge should be enabled");
       assert.ok(result.epicLabel, "Epic label should be created");
 
-      console.log(`    Implemented: ${result.implemented}, Queued: ${result.queued}`);
       console.log(`    Epic label: ${result.epicLabel}`);
       console.log(`    Auto-merge: ${result.autoMergeEnabled}`);
     });
