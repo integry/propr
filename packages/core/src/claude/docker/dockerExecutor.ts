@@ -1,4 +1,3 @@
-/* eslint-disable max-lines */
 import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import { Redis } from 'ioredis';
