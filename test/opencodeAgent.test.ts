@@ -301,7 +301,7 @@ describe('OpenCodeAgent Docker args', () => {
         assert.strictEqual(toProprOpenCodeModelId('openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
         assert.strictEqual(toProprOpenCodeModelId('opencode/minimax-m3-free'), 'opencode-minimax-m3-free');
         assert.strictEqual(toProprOpenCodeModelId('opencode-go/qwen3.7-max'), 'opencode-go/qwen3.7-max');
-        assert.strictEqual(toProprOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'opencode-opencode-openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
         assert.strictEqual(toOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'openai/gpt-5.5');
         assert.strictEqual(toOpenCodeExternalModelId('opencode-minimax-m3-free'), 'opencode/minimax-m3-free');
         assert.ok(routedArgs.includes('--name'));

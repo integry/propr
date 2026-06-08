@@ -9,6 +9,7 @@ import {
   loadSettings,
   AgentRegistry,
   toProprOpenCodeModelId,
+  shortHash,
   getIssueQueue,
   generateCorrelationId
 } from '@propr/core';
@@ -68,15 +69,6 @@ async function enqueueIssueImplementationJob(params: {
     removeOnComplete: true,
     removeOnFail: true
   });
-}
-
-function shortHash(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
 }
 
 function buildDynamicLlmLabel(agentAlias: string, labelModel: string): string {

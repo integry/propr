@@ -55,3 +55,5 @@ export {
 } from './usageTypes.js';
 
 export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
+
+export { shortHash } from './labelUtils.js';

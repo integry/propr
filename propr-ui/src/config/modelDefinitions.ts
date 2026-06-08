@@ -18,4 +18,5 @@ export {
   MODEL_SHORT_NAMES,
   AGENT_DEFAULTS,
   typeBadgeColors,
+  shortHash,
 } from '@propr/shared';

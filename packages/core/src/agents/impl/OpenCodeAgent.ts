@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
@@ -309,8 +310,10 @@ export class OpenCodeAgent implements Agent {
     }
 
     private isAnalysisTempPath(targetPath: string): boolean {
-        const root = (process.env.OPENCODE_ANALYSIS_ROOT || DEFAULT_OPENCODE_ANALYSIS_ROOT).replace(/\/+$/, '');
-        return targetPath.startsWith(`${root}/`);
+        const root = path.resolve((process.env.OPENCODE_ANALYSIS_ROOT || DEFAULT_OPENCODE_ANALYSIS_ROOT).replace(/\/+$/, ''));
+        const resolved = path.resolve(targetPath);
+        const rel = path.relative(root, resolved);
+        return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
     }
 
     private resolveAnalysisDataPath(): string | undefined {

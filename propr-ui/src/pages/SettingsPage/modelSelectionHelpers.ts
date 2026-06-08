@@ -1,5 +1,5 @@
 import { AgentConfig } from '../../api/proprApi';
-import { AgentType, AGENT_MODELS, MODEL_INFO_MAP, ModelInfo } from '../../config/modelDefinitions';
+import { AgentType, AGENT_MODELS, MODEL_INFO_MAP, ModelInfo, shortHash } from '../../config/modelDefinitions';
 
 export interface ModelOption {
   value: string;
@@ -101,15 +101,6 @@ function toTitleCase(value: string): string {
       return part.charAt(0).toUpperCase() + part.slice(1);
     })
     .join(' ');
-}
-
-function shortHash(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
 }
 
 function buildSyntheticGithubLabel(agentType: AgentType, modelId: string): string {

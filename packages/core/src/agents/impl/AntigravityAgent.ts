@@ -266,7 +266,7 @@ export class AntigravityAgent implements Agent {
             : `${alias}-${taskType}`;
         const maxPrefixLength = Math.max(1, 120 - suffix.length);
         const sanitizedPrefix = rawPrefix.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, maxPrefixLength).replace(/[^a-zA-Z0-9]+$/, '');
-        return `${sanitizedPrefix || 'antigravity'}${suffix}`;
+        return `${sanitizedPrefix || 'antigravity'}${suffix}`.slice(0, 128);
     }
 
     private getLastConversationsPath(): string {
